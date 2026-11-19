@@ -41,6 +41,29 @@ skeptical run --agent plan "how should I restructure the config module?"
 Without `--auto`, skeptical asks on the terminal before any action a rule
 marks `ask`: allow once, always allow, or reject with feedback for the model.
 
+## Skills and commands
+
+**Skills** are folders with a `SKILL.md` (a `name`/`description` header and
+instructions). The model sees the list and loads one with the `skill` tool when
+a task matches. skeptical looks in `~/.config/skeptical/skills/`,
+`~/.agents/skills/`, `~/.claude/skills/`, and in each project folder's
+`.skeptical/skills/`, `.claude/skills/` and `.agents/skills/`.
+
+**Commands** are prompt templates run as `skeptical run /name args`. Put them
+in `.skeptical/commands/<name>.md` (or `~/.config/skeptical/commands/`, or
+`commands` in config), optionally with `description`, `agent` and `model` in a
+header. `$ARGUMENTS` is the whole argument string and `$1`…`$9` single
+arguments. Built in: `/init` (write or improve `AGENTS.md`) and `/review`
+(review uncommitted changes, a commit, a branch or a PR). `skeptical commands`
+lists them.
+
+```markdown
+---
+description: Explain a file in one sentence
+---
+Read $1 and explain what it does in exactly one sentence.
+```
+
 ## Sessions
 
 Every run is saved to a local SQLite database
@@ -80,6 +103,7 @@ Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|p
 | `webfetch` | Fetch a URL as markdown, text or HTML; each redirect is permission-checked |
 | `todowrite` | Keep a visible todo list for multi-step work |
 | `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
+| `skill` | Load a skill's instructions when a task matches its description |
 
 ## Configuration
 
@@ -135,8 +159,8 @@ directory (with `CLAUDE.md` as a fallback), plus
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
-   webfetch, undo/redo snapshots~~; background shell commands, skills,
-   commands, web search
+   webfetch, undo/redo snapshots, skills, commands~~; background shell
+   commands, the question tool, web search (self-hosted SearXNG)
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations

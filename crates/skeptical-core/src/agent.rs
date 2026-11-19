@@ -215,7 +215,8 @@ mod tests {
                 "shell",
                 "webfetch",
                 "todowrite",
-                "subagent"
+                "subagent",
+                "skill"
             ]
         );
         assert_eq!(
@@ -227,7 +228,8 @@ mod tests {
                 "shell",
                 "webfetch",
                 "todowrite",
-                "subagent"
+                "subagent",
+                "skill"
             ]
         );
         assert_eq!(
@@ -244,7 +246,8 @@ mod tests {
                 "grep",
                 "shell",
                 "webfetch",
-                "todowrite"
+                "todowrite",
+                "skill"
             ]
         );
         let c = cfg(

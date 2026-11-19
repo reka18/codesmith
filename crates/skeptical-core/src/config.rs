@@ -38,6 +38,10 @@ pub struct Config {
     pub tool_output: ToolOutputConfig,
     /// Snapshot files at each turn so turns can be undone (default true).
     pub snapshots: Option<bool>,
+    /// Extra folders containing `<id>/SKILL.md` skills.
+    pub skills: Vec<String>,
+    /// Commands defined inline: name → template and options.
+    pub commands: BTreeMap<String, crate::command::Command>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

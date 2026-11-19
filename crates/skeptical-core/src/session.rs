@@ -105,6 +105,7 @@ pub struct Session {
     parent: Option<String>,
     depth: u32,
     pub todos: Vec<Todo>,
+    skills: Vec<crate::skill::Skill>,
 }
 
 impl Session {
@@ -148,9 +149,20 @@ impl Session {
             .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in skeptical.json"))?;
         let model = config.resolve_model(&model_spec)?;
         let subagents = agent::subagents(config);
+        let home = dirs::home_dir().unwrap_or_default();
+        let skills = crate::skill::discover(&crate::skill::roots(
+            &cwd,
+            &loaded.root,
+            &paths::config_dir(),
+            &home,
+            &config.skills,
+        ));
         let mut tools = agent::tools(&agent);
         if subagents.is_empty() {
             tools.retain(|t| *t != Tool::Subagent);
+        }
+        if skills.is_empty() {
+            tools.retain(|t| *t != Tool::Skill);
         }
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
@@ -175,6 +187,10 @@ impl Session {
             &env,
             &instructions::render(&files),
         );
+        if tools.contains(&Tool::Skill) {
+            system.push_str("\n\n");
+            system.push_str(&crate::skill::instructions(&skills));
+        }
         if agent.id == "plan" {
             system.push_str("\n\n");
             system.push_str(agent::PLAN_REMINDER);
@@ -233,6 +249,7 @@ impl Session {
             parent: opts.parent,
             depth: 0,
             todos: Vec::new(),
+            skills,
         })
     }
 
@@ -281,6 +298,14 @@ impl Session {
                     Tool::Subagent => {
                         let (description, parameters) =
                             tool::subagent::spec(&agent::subagents(&self.loaded.config));
+                        skeptical_ai::ToolSpec {
+                            name: t.name().into(),
+                            description,
+                            parameters,
+                        }
+                    }
+                    Tool::Skill => {
+                        let (description, parameters) = crate::skill::tool_spec(&self.skills);
                         skeptical_ai::ToolSpec {
                             name: t.name().into(),
                             description,
@@ -346,6 +371,7 @@ impl Session {
         // At most one compaction between model steps, so a prompt that stays
         // over the limit after compacting cannot loop.
         let mut compacted_this_step = false;
+        let mut repeats = RepeatGuard::default();
         while steps < max_steps {
             if !compacted_this_step && self.due_for_compaction() {
                 self.compact(sink).await?;
@@ -385,10 +411,19 @@ impl Session {
             let mut results = Vec::new();
             for (id, name, input) in calls {
                 sink.tool_start(&id, &name, &input);
+                let verdict = repeats.check(&name, &input);
+                if verdict == Repeat::Abort {
+                    return Err(anyhow!(
+                        "stopped: the model repeated the same {name} call {} times",
+                        RepeatGuard::ABORT
+                    ));
+                }
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
+                    _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
                     Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
                     Some(Tool::Subagent) => self.run_subagent(&input, sink).await,
+                    Some(Tool::Skill) => self.run_skill(&input),
                     _ => {
                         let ctx = Ctx {
                             cwd: self.cwd.clone(),
@@ -443,6 +478,30 @@ impl Session {
             }
             Err(e) => (e, true),
         }
+    }
+
+    fn run_skill(&self, input: &serde_json::Value) -> (String, bool) {
+        let input = tool::repair(input);
+        let Some(id) = input.get("id").and_then(|v| v.as_str()) else {
+            return ("Missing required string parameter `id`".into(), true);
+        };
+        // Accept a valid prefix: quantized models sometimes add stray characters.
+        let clean: String = id
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        let Some(skill) = self.skills.iter().find(|s| s.id == id || s.id == clean) else {
+            let ids: Vec<&str> = self.skills.iter().map(|s| s.id.as_str()).collect();
+            return (
+                format!("Unknown skill {id:?}. Available: {}", ids.join(", ")),
+                true,
+            );
+        };
+        if let Err(e) = self.allowed("skill", id, format!("Load the {id} skill")) {
+            return (e, true);
+        }
+        (crate::skill::content(skill), false)
     }
 
     async fn run_subagent(
@@ -766,6 +825,48 @@ pub async fn complete(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    Run,
+    Refuse,
+    Abort,
+}
+
+/// Catches a model stuck repeating the identical tool call.
+#[derive(Debug, Default)]
+pub struct RepeatGuard {
+    last: Option<String>,
+    count: u32,
+}
+
+impl RepeatGuard {
+    /// Identical calls in a row before further ones are refused.
+    pub const REFUSE: u32 = 3;
+    /// Identical calls in a row before the turn is stopped.
+    pub const ABORT: u32 = 6;
+
+    pub fn check(&mut self, name: &str, input: &serde_json::Value) -> Repeat {
+        let key = format!("{name}\u{0}{input}");
+        if self.last.as_deref() == Some(key.as_str()) {
+            self.count += 1;
+        } else {
+            self.last = Some(key);
+            self.count = 1;
+        }
+        if self.count > Self::ABORT {
+            Repeat::Abort
+        } else if self.count > Self::REFUSE {
+            Repeat::Refuse
+        } else {
+            Repeat::Run
+        }
+    }
+
+    pub fn refusal(name: &str) -> String {
+        format!("Not run: this is the same {name} call with the same input {} times in a row. Repeating it will not change the result. Read the earlier result, then try a different approach or different input.", Self::REFUSE + 1)
+    }
+}
+
 /// Undo the newest turn of a stored session: restore the files it changed
 /// and hide its messages. Returns the restored changes, or `None` if there
 /// is nothing to undo.
@@ -845,6 +946,24 @@ mod tests {
         let a = new_id();
         assert!(a.starts_with("ses_") && a.len() > 10);
         assert_ne!(a, new_id());
+    }
+
+    #[test]
+    fn repeat_guard() {
+        let mut g = RepeatGuard::default();
+        let a = serde_json::json!({"id": "x"});
+        let b = serde_json::json!({"id": "y"});
+        assert_eq!(g.check("skill", &a), Repeat::Run);
+        assert_eq!(g.check("skill", &a), Repeat::Run);
+        assert_eq!(g.check("skill", &a), Repeat::Run);
+        assert_eq!(g.check("skill", &a), Repeat::Refuse);
+        assert_eq!(g.check("skill", &b), Repeat::Run, "different input resets");
+        for _ in 0..5 {
+            g.check("read", &a);
+        }
+        assert_eq!(g.check("read", &a), Repeat::Refuse);
+        assert_eq!(g.check("read", &a), Repeat::Abort);
+        assert!(RepeatGuard::refusal("read").contains("4 times"));
     }
 
     #[test]

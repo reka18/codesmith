@@ -8,7 +8,7 @@ use skeptical_core::permission::{Asker, Fixed, Reply, Request};
 use skeptical_core::session::{self, Options, Session};
 use skeptical_core::snapshot::Snapshots;
 use skeptical_core::store::{self, Store};
-use skeptical_core::{agent, config, instructions, paths, prompt};
+use skeptical_core::{agent, command, config, instructions, paths, prompt};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ enum Command {
     Run(RunArgs),
     /// List configured providers and models.
     Models,
+    /// List commands available as `skeptical run /name ...`.
+    Commands,
     /// Manage stored sessions.
     Session {
         #[command(subcommand)]
@@ -186,6 +188,13 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
+        Some(Command::Commands) => {
+            let loaded = config::load(&cwd)?;
+            for (name, c) in all_commands(&cwd, &loaded) {
+                println!("/{name:<16} {}", c.description.as_deref().unwrap_or(""));
+            }
+            Ok(())
+        }
         Some(Command::Models) => {
             let loaded = config::load(&cwd)?;
             let c = &loaded.config;
@@ -335,6 +344,20 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn all_commands(
+    cwd: &std::path::Path,
+    loaded: &config::Loaded,
+) -> std::collections::BTreeMap<String, command::Command> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    command::discover(
+        command::builtins(&loaded.root),
+        &command::roots(cwd, &loaded.root, &paths::config_dir(), &home),
+        &loaded.config.commands,
+    )
 }
 
 fn open_store() -> Result<Store> {
@@ -532,6 +555,22 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         ));
     }
     let loaded = config::load(&cwd)?;
+    let (mut agent_arg, mut model_arg) = (args.agent, args.model);
+    if let Some((name, rest)) = command::parse_invocation(&message) {
+        let all = all_commands(&cwd, &loaded);
+        let c = all.get(&name).ok_or_else(|| {
+            anyhow!(
+                "unknown command /{name}; available: {}",
+                all.keys()
+                    .map(|k| format!("/{k}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        message = command::expand(&c.template, &rest);
+        agent_arg = agent_arg.or(c.agent.clone());
+        model_arg = model_arg.or(c.model.clone());
+    }
     let asker: Arc<dyn Asker> = if args.auto {
         Arc::new(Fixed(Reply::Once))
     } else {
@@ -541,8 +580,8 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         &loaded,
         cwd,
         Options {
-            agent: args.agent,
-            model: args.model,
+            agent: agent_arg,
+            model: model_arg,
             resume,
             title: args.title,
             parent: None,
