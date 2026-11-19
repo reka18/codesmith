@@ -35,24 +35,32 @@ impl Printer {
         }
     }
 
-    pub fn done(&mut self, usage: &Usage, error: Option<String>) {
+    pub fn done(
+        &mut self,
+        usage: &Usage,
+        error: Option<String>,
+        session: &str,
+        title: Option<&str>,
+    ) {
         self.end_reasoning();
         if self.json {
-            self.emit(json!({"type": "done", "usage": usage_json(usage), "error": error}));
+            self.emit(json!({"type": "done", "session": session, "title": title, "usage": usage_json(usage), "error": error}));
             return;
         }
         if !self.at_line_start {
             println!();
         }
         eprintln!(
-            "\x1b[2m{} in · {} out{}\x1b[0m",
+            "\x1b[2m{} in · {} out{} · {}{}\x1b[0m",
             usage.input,
             usage.output,
             if usage.cache_read > 0 {
                 format!(" · {} cached", usage.cache_read)
             } else {
                 String::new()
-            }
+            },
+            session,
+            title.map(|t| format!(" \"{t}\"")).unwrap_or_default()
         );
     }
 }
@@ -149,6 +157,14 @@ impl Sink for Printer {
                 "\x1b[33mretry {attempt} in {:.1}s: {error}\x1b[0m",
                 wait.as_secs_f32()
             );
+        }
+    }
+
+    fn compacted(&mut self, before: u64, after: u64) {
+        if self.json {
+            self.emit(json!({"type": "compacted", "before_tokens": before, "after_tokens": after}));
+        } else {
+            eprintln!("\x1b[2mcompacted context: ~{before} → ~{after} tokens\x1b[0m");
         }
     }
 }

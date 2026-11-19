@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use skeptical_core::permission::{Asker, Fixed, Reply, Request};
 use skeptical_core::session::{Options, Session};
+use skeptical_core::store::{self, Store};
 use skeptical_core::{agent, config, instructions, paths, prompt};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -26,6 +27,11 @@ enum Command {
     Run(RunArgs),
     /// List configured providers and models.
     Models,
+    /// Manage stored sessions.
+    Session {
+        #[command(subcommand)]
+        what: SessionCmd,
+    },
     /// Inspect configuration and internals.
     Debug {
         #[command(subcommand)]
@@ -55,12 +61,34 @@ struct RunArgs {
     /// Show the model's reasoning.
     #[arg(long)]
     thinking: bool,
-    /// Continue the last session (arrives with persistent sessions).
+    /// Continue the most recent session in this directory.
     #[arg(short, long)]
     r#continue: bool,
-    /// Continue a session by id (arrives with persistent sessions).
+    /// Continue the session with this id.
     #[arg(short, long)]
     session: Option<String>,
+    /// Title for a new session (otherwise one is generated).
+    #[arg(long)]
+    title: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum SessionCmd {
+    /// List sessions, newest first.
+    List {
+        /// Include sessions from every directory.
+        #[arg(long)]
+        all: bool,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a session (and its subagent sessions).
+    Delete { id: String },
+    /// Print a session as JSON.
+    Export { id: String },
+    /// Import a session exported as JSON (a file path, or - for stdin).
+    Import { file: String },
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
@@ -77,6 +105,11 @@ enum Debug {
     Config,
     /// List agents and their permission rules.
     Agents,
+    /// Show what a model resolves to: provider, URL, limits, extra body.
+    Model {
+        /// provider/model (default: the configured model).
+        spec: Option<String>,
+    },
     /// Print the system prompt the build agent would get here.
     Prompt {
         #[arg(short, long)]
@@ -167,6 +200,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Session { what }) => session_cmd(cwd, what),
         Some(Command::Debug { what }) => debug(cwd, what),
     }
 }
@@ -195,6 +229,48 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 c.providers.keys().cloned().collect::<Vec<_>>().join(", ")
             );
             println!("permissions: {}", serde_json::to_string(&c.permissions)?);
+        }
+        Debug::Model { spec } => {
+            let loaded = config::load(&cwd)?;
+            let spec = spec
+                .or(loaded.config.model.clone())
+                .ok_or_else(|| anyhow!("no model given or configured"))?;
+            let m = loaded.config.resolve_model(&spec)?;
+            println!(
+                "model:    {}/{} (sent as {})",
+                m.provider_id,
+                spec.split_once('/').map(|x| x.1).unwrap_or(""),
+                m.model_id
+            );
+            println!("protocol: {:?}", m.provider.protocol);
+            println!("url:      {}", m.provider.base_url);
+            println!(
+                "api key:  {}",
+                if m.provider.api_key.is_some() {
+                    "set"
+                } else {
+                    "none"
+                }
+            );
+            println!(
+                "context:  {}",
+                m.context
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown (no automatic compaction)".into())
+            );
+            if let Some(c) = m.context {
+                println!(
+                    "compacts above ~{} prompt tokens",
+                    skeptical_core::compaction::ceiling(c)
+                );
+            }
+            println!(
+                "output:   {}",
+                m.max_output
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "provider default".into())
+            );
+            println!("body:     {}", serde_json::Value::Object(m.body.clone()));
         }
         Debug::Agents => {
             let loaded = config::load(&cwd)?;
@@ -250,12 +326,102 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
     Ok(())
 }
 
-async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
-    if args.r#continue || args.session.is_some() {
-        return Err(anyhow!(
-            "--continue and --session need persistent sessions, which are not built yet"
-        ));
+fn open_store() -> Result<Store> {
+    let path = store::default_path();
+    Store::open(&path).with_context(|| format!("session store {}", path.display()))
+}
+
+fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
+    let mut db = open_store()?;
+    match what {
+        SessionCmd::List { all, json } => {
+            let dir = cwd.display().to_string();
+            let list = db.list(if all { None } else { Some(&dir) }, false)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+                return Ok(());
+            }
+            if list.is_empty() {
+                println!(
+                    "No sessions{}.",
+                    if all {
+                        ""
+                    } else {
+                        " in this directory (use --all for every directory)"
+                    }
+                );
+            }
+            for s in list {
+                let when = chrono_like(s.updated);
+                let title = s.title.as_deref().unwrap_or("(untitled)");
+                if all {
+                    println!("{}  {when}  {title}  \x1b[2m{}\x1b[0m", s.id, s.directory);
+                } else {
+                    println!("{}  {when}  {title}", s.id);
+                }
+            }
+        }
+        SessionCmd::Delete { id } => {
+            if db.delete(&id)? {
+                println!("Deleted {id}");
+            } else {
+                return Err(anyhow!("no session {id}"));
+            }
+        }
+        SessionCmd::Export { id } => {
+            println!("{}", serde_json::to_string_pretty(&db.export(&id)?)?)
+        }
+        SessionCmd::Import { file } => {
+            let text = if file == "-" {
+                let mut s = String::new();
+                std::io::stdin().read_to_string(&mut s)?;
+                s
+            } else {
+                std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?
+            };
+            let e: store::Export =
+                serde_json::from_str(&text).context("not a skeptical session export")?;
+            db.import(&e)?;
+            println!("Imported {}", e.info.id);
+        }
     }
+    Ok(())
+}
+
+/// "YYYY-MM-DD HH:MM" in local time for a millisecond timestamp.
+fn chrono_like(ms: i64) -> String {
+    let secs = ms / 1000;
+    let out = std::process::Command::new("/bin/date")
+        .arg("-r")
+        .arg(secs.to_string())
+        .arg("+%Y-%m-%d %H:%M")
+        .output();
+    out.ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| secs.to_string())
+}
+
+async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
+    let db = match open_store() {
+        Ok(s) => Some(s),
+        Err(e) => {
+            if args.r#continue || args.session.is_some() {
+                return Err(e);
+            }
+            eprintln!("\x1b[33mwarning:\x1b[0m sessions will not be saved: {e:#}");
+            None
+        }
+    };
+    let resume = match (&args.session, args.r#continue, &db) {
+        (Some(id), _, _) => Some(id.clone()),
+        (None, true, Some(s)) => Some(
+            s.latest(&cwd.display().to_string())?
+                .ok_or_else(|| anyhow!("no session to continue in {}", cwd.display()))?
+                .id,
+        ),
+        _ => None,
+    };
     let mut message = args.message.join(" ");
     if !std::io::stdin().is_terminal() {
         let mut piped = String::new();
@@ -293,18 +459,26 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         Options {
             agent: args.agent,
             model: args.model,
+            resume,
+            title: args.title,
         },
         asker,
+        db,
     )?;
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
     if !json {
         eprintln!(
-            "\x1b[2m> {} · {}/{}\x1b[0m",
-            session.agent.name, session.model.provider_id, session.model.model_id
+            "\x1b[2m> {} · {}/{} · {}\x1b[0m",
+            session.agent.name, session.model.provider_id, session.model.model_id, session.id
         );
     }
     let result = session.prompt(&message, &mut sink).await;
-    sink.done(&session.usage, result.as_ref().err().map(|e| e.to_string()));
+    sink.done(
+        &session.usage,
+        result.as_ref().err().map(|e| e.to_string()),
+        &session.id,
+        session.title.as_deref(),
+    );
     result
 }

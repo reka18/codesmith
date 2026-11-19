@@ -9,13 +9,15 @@ use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     User,
     Assistant,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Part {
     Text(String),
     /// Model reasoning, kept so it can be replayed to providers that want it.
@@ -33,7 +35,7 @@ pub enum Part {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub parts: Vec<Part>,
@@ -232,5 +234,38 @@ mod tests {
         merge_body(&mut body, &extra);
         assert_eq!(body["model"], "override");
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn messages_round_trip_as_json() {
+        let m = Message {
+            role: Role::Assistant,
+            parts: vec![
+                Part::Reasoning("r".into()),
+                Part::Text("t".into()),
+                Part::ToolCall {
+                    id: "c".into(),
+                    name: "read".into(),
+                    input: json!({"path": "a"}),
+                },
+                Part::ToolResult {
+                    id: "c".into(),
+                    name: "read".into(),
+                    content: "x".into(),
+                    is_error: false,
+                },
+            ],
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["role"], "assistant");
+        assert_eq!(v["parts"][1], json!({"type": "text", "data": "t"}));
+        assert_eq!(v["parts"][2]["data"]["name"], "read");
+        assert_eq!(serde_json::from_value::<Message>(v).unwrap(), m);
     }
 }

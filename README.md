@@ -6,10 +6,10 @@ terminal agent. It is fully local: no hosted services, no accounts, no
 telemetry. Point it at any model provider you like, including one running on
 your own machines.
 
-> **Status: early.** Phase 1 of the port is done. `skeptical run` works end
-> to end with the core tools, permissions and project instructions. Persistent
-> sessions, the interactive terminal UI, MCP and the long tail of providers are
-> still to come; see [Roadmap](#roadmap).
+> **Status: early.** `skeptical run` works end to end with the core tools,
+> permissions, project instructions and persistent sessions (continue, titles,
+> automatic compaction). The interactive terminal UI, MCP and the long tail of
+> providers are still to come; see [Roadmap](#roadmap).
 
 ## Install
 
@@ -34,11 +34,30 @@ skeptical run --agent plan "how should I restructure the config module?"
 | `--format json` | One JSON object per event, for scripting |
 | `--auto` | Approve every permission request that no rule denies |
 | `--thinking` | Show the model's reasoning |
+| `-c, --continue` | Continue the most recent session in this directory |
+| `-s, --session ID` | Continue a specific session |
+| `--title TEXT` | Title a new session (otherwise one is generated) |
 
 Without `--auto`, skeptical asks on the terminal before any action a rule
 marks `ask`: allow once, always allow, or reject with feedback for the model.
 
-Other commands: `skeptical models`, `skeptical debug paths|config|agents|prompt`.
+## Sessions
+
+Every run is saved to a local SQLite database
+(`~/.local/share/skeptical/skeptical.db`, or `$SKEPTICAL_DB`). New sessions
+get a short generated title. When a conversation nears the model's context
+window (`limit.context` in config), older history is replaced by a structured
+summary and the newest exchanges are kept verbatim, so long sessions keep
+going.
+
+```sh
+skeptical session list [--all] [--json]
+skeptical session export <id> > session.json
+skeptical session import session.json
+skeptical session delete <id>
+```
+
+Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|prompt`.
 
 ## Tools
 
@@ -104,9 +123,8 @@ directory (with `CLAUDE.md` as a fallback), plus
 ## Roadmap
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
-2. Persistent event-sourced sessions (SQLite): continue/resume, compaction,
-   undo/redo snapshots, subagents, background shell commands, skills,
-   commands, web tools
+2. Sessions: ~~persistence, continue, titles, compaction~~; undo/redo
+   snapshots, subagents, background shell commands, skills, commands, web tools
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
