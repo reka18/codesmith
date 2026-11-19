@@ -10,6 +10,7 @@ use skeptical_core::store::{self, Store};
 use skeptical_core::{agent, config, instructions, paths, prompt};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "skeptical", version, about = "A terminal coding agent")]
@@ -448,10 +449,10 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         ));
     }
     let loaded = config::load(&cwd)?;
-    let asker: Box<dyn Asker> = if args.auto {
-        Box::new(Fixed(Reply::Once))
+    let asker: Arc<dyn Asker> = if args.auto {
+        Arc::new(Fixed(Reply::Once))
     } else {
-        Box::new(Terminal)
+        Arc::new(Terminal)
     };
     let mut session = Session::new(
         &loaded,
@@ -461,6 +462,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             model: args.model,
             resume,
             title: args.title,
+            parent: None,
         },
         asker,
         db,

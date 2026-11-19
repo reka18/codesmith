@@ -6,6 +6,9 @@ mod glob;
 mod grep;
 mod read;
 mod shell;
+pub mod subagent;
+pub mod todo;
+mod webfetch;
 mod write;
 
 use crate::config::ToolOutputConfig;
@@ -27,6 +30,7 @@ pub struct Ctx<'a> {
     pub shell: String,
     pub session_id: String,
     pub limits: ToolOutputConfig,
+    pub client: reqwest::Client,
 }
 
 /// What a tool returns to the model. `Err` is shown to the model as a failed call.
@@ -62,15 +66,21 @@ pub enum Tool {
     Glob,
     Grep,
     Shell,
+    Webfetch,
+    Todowrite,
+    Subagent,
 }
 
-pub const ALL: [Tool; 6] = [
+pub const ALL: [Tool; 9] = [
     Tool::Read,
     Tool::Write,
     Tool::Edit,
     Tool::Glob,
     Tool::Grep,
     Tool::Shell,
+    Tool::Webfetch,
+    Tool::Todowrite,
+    Tool::Subagent,
 ];
 
 impl Tool {
@@ -82,7 +92,15 @@ impl Tool {
             Tool::Glob => "glob",
             Tool::Grep => "grep",
             Tool::Shell => "shell",
+            Tool::Webfetch => "webfetch",
+            Tool::Todowrite => "todowrite",
+            Tool::Subagent => "subagent",
         }
+    }
+
+    /// Tools the session runs itself, because they need session state.
+    pub fn session_level(self) -> bool {
+        matches!(self, Tool::Todowrite | Tool::Subagent)
     }
 
     pub fn from_name(name: &str) -> Option<Tool> {
@@ -105,6 +123,9 @@ impl Tool {
             Tool::Glob => glob::spec(),
             Tool::Grep => grep::spec(),
             Tool::Shell => shell::spec(shell),
+            Tool::Webfetch => webfetch::spec(),
+            Tool::Todowrite => todo::spec(),
+            Tool::Subagent => subagent::spec(&[]),
         };
         ToolSpec {
             name: self.name().to_string(),
@@ -121,6 +142,10 @@ impl Tool {
             Tool::Glob => glob::run(ctx, input),
             Tool::Grep => grep::run(ctx, input),
             Tool::Shell => shell::run(ctx, input).await,
+            Tool::Webfetch => webfetch::run(ctx, input).await,
+            Tool::Todowrite | Tool::Subagent => {
+                Err(format!("{} must be run by the session", self.name()))
+            }
         }
     }
 }
@@ -390,6 +415,7 @@ fn unique_id() -> String {
 pub(crate) mod testing {
     use super::*;
     use crate::permission::{base_rules, Fixed, Reply};
+    use std::sync::Arc;
 
     pub struct Env {
         pub dir: tempfile::TempDir,
@@ -400,13 +426,13 @@ pub(crate) mod testing {
         pub fn new() -> Self {
             Env {
                 dir: tempfile::tempdir().unwrap(),
-                gate: Gate::new(base_rules(), Box::new(Fixed(Reply::Once))),
+                gate: Gate::new(base_rules(), Arc::new(Fixed(Reply::Once))),
             }
         }
         pub fn with_reply(reply: Reply) -> Self {
             Env {
                 dir: tempfile::tempdir().unwrap(),
-                gate: Gate::new(vec![], Box::new(Fixed(reply))),
+                gate: Gate::new(vec![], Arc::new(Fixed(reply))),
             }
         }
         pub fn root(&self) -> PathBuf {
@@ -420,6 +446,7 @@ pub(crate) mod testing {
                 shell: "/bin/sh".into(),
                 session_id: "test".into(),
                 limits: ToolOutputConfig::default(),
+                client: reqwest::Client::new(),
             }
         }
         pub fn write(&self, rel: &str, content: &str) -> PathBuf {

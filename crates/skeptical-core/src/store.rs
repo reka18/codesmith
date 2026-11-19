@@ -52,7 +52,7 @@ pub struct Export {
 }
 
 pub struct Store {
-    conn: Connection,
+    conn: std::sync::Mutex<Connection>,
 }
 
 impl std::fmt::Debug for Store {
@@ -92,6 +92,16 @@ impl Store {
         Self::init(conn)
     }
 
+    /// The database file, or `None` for an in-memory store.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.conn
+            .lock()
+            .unwrap()
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+    }
+
     pub fn memory() -> Result<Store> {
         Self::init(Connection::open_in_memory()?)
     }
@@ -128,11 +138,14 @@ impl Store {
                 PRAGMA user_version = 1;",
             )?;
         }
-        Ok(Store { conn })
+        Ok(Store {
+            conn: std::sync::Mutex::new(conn),
+        })
     }
 
     pub fn create(&self, info: &Info) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT INTO session (id, directory, title, agent, model, parent_id, created, updated, usage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![info.id, info.directory, info.title, info.agent, info.model, info.parent_id, info.created, info.updated, serde_json::to_string(&info.usage)?],
         )?;
@@ -158,8 +171,8 @@ impl Store {
         "id, directory, title, agent, model, parent_id, created, updated, usage";
 
     pub fn get(&self, id: &str) -> Result<Option<Info>> {
-        Ok(self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
             .query_row(
                 &format!("SELECT {} FROM session WHERE id = ?1", Self::COLUMNS),
                 [id],
@@ -170,6 +183,7 @@ impl Store {
 
     /// Sessions, newest first; only top-level ones unless `children`.
     pub fn list(&self, directory: Option<&str>, children: bool) -> Result<Vec<Info>> {
+        let conn = self.conn.lock().unwrap();
         let mut sql = format!("SELECT {} FROM session WHERE 1=1", Self::COLUMNS);
         if directory.is_some() {
             sql.push_str(" AND directory = ?1");
@@ -178,7 +192,7 @@ impl Store {
             sql.push_str(" AND parent_id IS NULL");
         }
         sql.push_str(" ORDER BY updated DESC");
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = match directory {
             Some(d) => stmt
                 .query_map([d], Self::row)?
@@ -196,17 +210,18 @@ impl Store {
     }
 
     pub fn append(&self, id: &str, record: &Record) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
         let t = now();
-        let seq: i64 = self.conn.query_row(
+        let seq: i64 = conn.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM record WHERE session_id = ?1",
             [id],
             |r| r.get(0),
         )?;
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
             params![id, seq, t, serde_json::to_string(record)?],
         )?;
-        self.conn.execute(
+        conn.execute(
             "UPDATE session SET updated = ?2 WHERE id = ?1",
             params![id, t],
         )?;
@@ -214,8 +229,8 @@ impl Store {
     }
 
     pub fn entries(&self, id: &str) -> Result<Vec<Entry>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
             .prepare("SELECT seq, created, body FROM record WHERE session_id = ?1 ORDER BY seq")?;
         let rows = stmt.query_map([id], |r| {
             Ok((
@@ -244,7 +259,8 @@ impl Store {
     }
 
     pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "UPDATE session SET title = ?2 WHERE id = ?1",
             params![id, title],
         )?;
@@ -252,7 +268,8 @@ impl Store {
     }
 
     pub fn set_usage(&self, id: &str, usage: &Usage) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "UPDATE session SET usage = ?2 WHERE id = ?1",
             params![id, serde_json::to_string(usage)?],
         )?;
@@ -261,10 +278,10 @@ impl Store {
 
     /// Delete a session and, recursively, its child sessions.
     pub fn delete(&self, id: &str) -> Result<bool> {
+        // The lock is released before recursing; std's Mutex is not reentrant.
         let children: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id FROM session WHERE parent_id = ?1")?;
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT id FROM session WHERE parent_id = ?1")?;
             let rows = stmt
                 .query_map([id], |r| r.get(0))?
                 .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -273,10 +290,8 @@ impl Store {
         for c in children {
             self.delete(&c)?;
         }
-        Ok(self
-            .conn
-            .execute("DELETE FROM session WHERE id = ?1", [id])?
-            > 0)
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM session WHERE id = ?1", [id])? > 0)
     }
 
     pub fn export(&self, id: &str) -> Result<Export> {
@@ -291,7 +306,8 @@ impl Store {
         if self.get(&e.info.id)?.is_some() {
             return Err(anyhow!("session {} already exists", e.info.id));
         }
-        let tx = self.conn.transaction()?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO session (id, directory, title, agent, model, parent_id, created, updated, usage) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)",
             params![e.info.id, e.info.directory, e.info.title, e.info.agent, e.info.model, e.info.created, e.info.updated, serde_json::to_string(&e.info.usage)?],

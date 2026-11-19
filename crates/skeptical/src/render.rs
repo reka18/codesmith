@@ -72,7 +72,12 @@ fn usage_json(u: &Usage) -> Value {
 /// A one-line summary of a tool call's input for the activity log.
 pub fn describe(name: &str, input: &Value) -> String {
     let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("");
+    // Tools inside a subagent arrive as "agent › tool".
+    let name = name.rsplit(" › ").next().unwrap_or(name);
     match name {
+        "subagent" => format!("{}: {}", s("agent"), s("description")),
+        "webfetch" => s("url").to_string(),
+        "todowrite" => String::new(),
         "read" | "write" | "edit" => s("path").to_string(),
         "glob" | "grep" => {
             let p = s("path");
@@ -160,6 +165,23 @@ impl Sink for Printer {
         }
     }
 
+    fn todos(&mut self, todos: &[skeptical_core::tool::todo::Todo]) {
+        use skeptical_core::tool::todo::Status;
+        if self.json {
+            self.emit(json!({"type": "todos", "todos": todos}));
+            return;
+        }
+        for t in todos {
+            let (mark, style) = match t.status {
+                Status::Completed => ("✓", "\x1b[2m"),
+                Status::InProgress => ("▶", "\x1b[1m"),
+                Status::Pending => ("○", ""),
+                Status::Cancelled => ("✗", "\x1b[2;9m"),
+            };
+            eprintln!("  {style}{mark} {}\x1b[0m", t.content);
+        }
+    }
+
     fn compacted(&mut self, before: u64, after: u64) {
         if self.json {
             self.emit(json!({"type": "compacted", "before_tokens": before, "after_tokens": after}));
@@ -187,5 +209,20 @@ mod tests {
             "cargo test"
         );
         assert_eq!(describe("other", &json!({"a": 1})), "{\"a\":1}");
+        assert_eq!(
+            describe("explore › glob", &json!({"pattern": "*.py"})),
+            "*.py"
+        );
+        assert_eq!(
+            describe(
+                "subagent",
+                &json!({"agent": "explore", "description": "Find files", "prompt": "long"})
+            ),
+            "explore: Find files"
+        );
+        assert_eq!(
+            describe("webfetch", &json!({"url": "https://x.dev"})),
+            "https://x.dev"
+        );
     }
 }

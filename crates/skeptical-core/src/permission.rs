@@ -4,7 +4,7 @@
 
 use crate::wildcard;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -136,16 +136,21 @@ impl std::error::Error for Denied {}
 pub struct Gate {
     rules: Vec<Rule>,
     saved: Mutex<Vec<Rule>>,
-    asker: Box<dyn Asker>,
+    asker: Arc<dyn Asker>,
 }
 
 impl Gate {
-    pub fn new(rules: Vec<Rule>, asker: Box<dyn Asker>) -> Self {
+    pub fn new(rules: Vec<Rule>, asker: Arc<dyn Asker>) -> Self {
         Gate {
             rules,
             saved: Mutex::new(Vec::new()),
             asker,
         }
+    }
+
+    /// The asker, to share with child sessions.
+    pub fn asker(&self) -> Arc<dyn Asker> {
+        self.asker.clone()
     }
 
     pub fn rules(&self) -> Vec<Rule> {
@@ -296,7 +301,7 @@ mod tests {
         let n = Arc::new(AtomicUsize::new(0));
         let g = Gate::new(
             base_rules(),
-            Box::new(Counting(n.clone(), Reply::Reject(None))),
+            Arc::new(Counting(n.clone(), Reply::Reject(None))),
         );
         assert!(g.assert(&req("read", &["a.rs"])).is_ok());
         assert_eq!(n.load(Ordering::SeqCst), 0);
@@ -305,7 +310,7 @@ mod tests {
     #[test]
     fn always_saves_an_approval() {
         let n = Arc::new(AtomicUsize::new(0));
-        let g = Gate::new(vec![], Box::new(Counting(n.clone(), Reply::Always)));
+        let g = Gate::new(vec![], Arc::new(Counting(n.clone(), Reply::Always)));
         assert!(g.assert(&req("edit", &["a.rs"])).is_ok());
         assert!(g.assert(&req("edit", &["b.rs"])).is_ok());
         assert_eq!(
@@ -320,7 +325,7 @@ mod tests {
     #[test]
     fn once_does_not_save() {
         let n = Arc::new(AtomicUsize::new(0));
-        let g = Gate::new(vec![], Box::new(Counting(n.clone(), Reply::Once)));
+        let g = Gate::new(vec![], Arc::new(Counting(n.clone(), Reply::Once)));
         g.assert(&req("edit", &["a.rs"])).unwrap();
         g.assert(&req("edit", &["a.rs"])).unwrap();
         assert_eq!(n.load(Ordering::SeqCst), 2);
@@ -330,14 +335,14 @@ mod tests {
     fn reject_carries_feedback() {
         let g = Gate::new(
             vec![],
-            Box::new(Fixed(Reply::Reject(Some("use git mv".into())))),
+            Arc::new(Fixed(Reply::Reject(Some("use git mv".into())))),
         );
         let e = g.assert(&req("shell", &["mv a b"])).unwrap_err();
         assert_eq!(
             e.to_string(),
             "The user declined this request and said: use git mv"
         );
-        let g = Gate::new(vec![], Box::new(Fixed(Reply::Reject(None))));
+        let g = Gate::new(vec![], Arc::new(Fixed(Reply::Reject(None))));
         assert_eq!(
             g.assert(&req("shell", &["x"])).unwrap_err().to_string(),
             "The user declined this request."
@@ -350,7 +355,7 @@ mod tests {
             Rule::new("*", "*", Effect::Ask),
             Rule::new("shell", "rm *", Effect::Deny),
         ];
-        let g = Gate::new(rules, Box::new(Fixed(Reply::Always)));
+        let g = Gate::new(rules, Arc::new(Fixed(Reply::Always)));
         g.assert(&req("shell", &["ls"])).unwrap();
         assert!(matches!(
             g.assert(&req("shell", &["rm -rf /"])),
@@ -362,7 +367,7 @@ mod tests {
     fn deny_never_asks() {
         let n = Arc::new(AtomicUsize::new(0));
         let rules = vec![Rule::new("edit", "*", Effect::Deny)];
-        let g = Gate::new(rules, Box::new(Counting(n.clone(), Reply::Once)));
+        let g = Gate::new(rules, Arc::new(Counting(n.clone(), Reply::Once)));
         assert!(g.assert(&req("edit", &["a"])).is_err());
         assert_eq!(n.load(Ordering::SeqCst), 0);
     }

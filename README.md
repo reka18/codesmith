@@ -29,7 +29,7 @@ skeptical run --agent plan "how should I restructure the config module?"
 | Flag | Meaning |
 |---|---|
 | `-m, --model provider/model` | Model to use (otherwise `model` from config) |
-| `--agent build\|plan\|<custom>` | `build` (default) can edit; `plan` is read-only |
+| `--agent build\|plan\|<custom>` | `build` (default) can edit; `plan` is read-only. `general` and `explore` are subagents the model can delegate to |
 | `-f, --file PATH` | Attach a file's contents (repeatable) |
 | `--format json` | One JSON object per event, for scripting |
 | `--auto` | Approve every permission request that no rule denies |
@@ -69,6 +69,9 @@ Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|p
 | `glob` | Find files by glob pattern, respecting `.gitignore` |
 | `grep` | Search file contents with ripgrep's regex engine |
 | `shell` | Run a command with a timeout; large output is saved to a file |
+| `webfetch` | Fetch a URL as markdown, text or HTML; each redirect is permission-checked |
+| `todowrite` | Keep a visible todo list for multi-step work |
+| `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
 
 ## Configuration
 
@@ -123,8 +126,9 @@ directory (with `CLAUDE.md` as a fallback), plus
 ## Roadmap
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
-2. Sessions: ~~persistence, continue, titles, compaction~~; undo/redo
-   snapshots, subagents, background shell commands, skills, commands, web tools
+2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
+   webfetch~~; undo/redo snapshots, background shell commands, skills,
+   commands, web search
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations

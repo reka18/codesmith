@@ -18,6 +18,19 @@ pub struct Agent {
     pub permissions: Vec<Rule>,
 }
 
+pub const PROMPT_EXPLORE: &str =
+    "You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
+
+Guidelines:
+- Your role is EXCLUSIVELY to search and analyze
+- Parallelize independent tool calls for searches and reads whenever possible
+- Adapt your search approach based on the thoroughness level specified by the caller
+- Return file paths as absolute paths in your final response
+- You MUST NOT create, modify, delete, move, or copy files, including temporary files and reports
+- Shell commands MUST be read-only. NEVER run commands that write files or change system state
+
+Complete the user's search request efficiently and report your findings clearly.";
+
 pub const PLAN_REMINDER: &str = "<system-reminder>\nPlan mode is active. You are in a read-only planning phase: investigate, ask questions, and propose a plan. Do not modify files, change configuration, or run commands that change system state. The edit and write tools are disabled.\n</system-reminder>";
 
 fn builtin(id: &str) -> Option<Agent> {
@@ -46,12 +59,49 @@ fn builtin(id: &str) -> Option<Agent> {
                 .push(Rule::new("question", "*", Effect::Allow));
             a.permissions.push(Rule::new("edit", "*", Effect::Deny));
         }
+        "general" => {
+            a.name = "General".into();
+            a.description = "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.".into();
+            a.mode = "subagent".into();
+            a.permissions.push(Rule::new("question", "*", Effect::Deny));
+            a.permissions.push(Rule::new("subagent", "*", Effect::Deny));
+        }
+        "explore" => {
+            a.name = "Explore".into();
+            a.description = "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.".into();
+            a.mode = "subagent".into();
+            a.system = Some(PROMPT_EXPLORE.into());
+            a.permissions.extend([
+                Rule::new("*", "*", Effect::Deny),
+                Rule::new("shell", "*", Effect::Allow),
+                Rule::new("grep", "*", Effect::Allow),
+                Rule::new("glob", "*", Effect::Allow),
+                Rule::new("webfetch", "*", Effect::Allow),
+                Rule::new("websearch", "*", Effect::Allow),
+                Rule::new("read", "*", Effect::Allow),
+                Rule::new("read", "*.env", Effect::Ask),
+                Rule::new("read", "*.env.*", Effect::Ask),
+                Rule::new("read", "*.env.example", Effect::Allow),
+                Rule::new("subagent", "*", Effect::Deny),
+                Rule::new("external_directory", "*", Effect::Allow),
+            ]);
+        }
         _ => return None,
     }
     Some(a)
 }
 
-pub const BUILTIN: [&str; 2] = ["build", "plan"];
+pub const BUILTIN: [&str; 4] = ["build", "plan", "general", "explore"];
+
+/// Agents that can be delegated to, with descriptions.
+pub fn subagents(config: &Config) -> Vec<(String, String)> {
+    list(config)
+        .into_iter()
+        .filter_map(|id| resolve(config, &id))
+        .filter(|a| a.mode == "subagent" || a.mode == "all")
+        .map(|a| (a.id, a.description))
+        .collect()
+}
 
 /// Resolve an agent: built-in definition (if any) overlaid by config. Config
 /// rules come after the built-in ones and project-wide rules after those, so
@@ -140,7 +190,14 @@ mod tests {
         assert_eq!(evaluate("edit", "a.rs", &plan.permissions), Effect::Deny);
         assert_eq!(evaluate("read", "a.rs", &plan.permissions), Effect::Allow);
         assert!(resolve(&c, "nope").is_none());
-        assert_eq!(list(&c), vec!["build", "plan"]);
+        assert_eq!(list(&c), vec!["build", "plan", "general", "explore"]);
+        assert_eq!(
+            subagents(&c)
+                .iter()
+                .map(|s| s.0.as_str())
+                .collect::<Vec<_>>(),
+            ["general", "explore"]
+        );
     }
 
     #[test]
@@ -149,11 +206,46 @@ mod tests {
         let names = |a: &Agent| tools(a).iter().map(|t| t.name()).collect::<Vec<_>>();
         assert_eq!(
             names(&resolve(&c, "build").unwrap()),
-            vec!["read", "write", "edit", "glob", "grep", "shell"]
+            vec![
+                "read",
+                "write",
+                "edit",
+                "glob",
+                "grep",
+                "shell",
+                "webfetch",
+                "todowrite",
+                "subagent"
+            ]
         );
         assert_eq!(
             names(&resolve(&c, "plan").unwrap()),
-            vec!["read", "glob", "grep", "shell"]
+            vec![
+                "read",
+                "glob",
+                "grep",
+                "shell",
+                "webfetch",
+                "todowrite",
+                "subagent"
+            ]
+        );
+        assert_eq!(
+            names(&resolve(&c, "explore").unwrap()),
+            vec!["read", "glob", "grep", "shell", "webfetch"]
+        );
+        assert_eq!(
+            names(&resolve(&c, "general").unwrap()),
+            vec![
+                "read",
+                "write",
+                "edit",
+                "glob",
+                "grep",
+                "shell",
+                "webfetch",
+                "todowrite"
+            ]
         );
         let c = cfg(
             json!({"agents": {"plan": {"permissions": [{"action": "edit", "resource": "docs/*", "effect": "allow"}]}}}),
@@ -186,6 +278,6 @@ mod tests {
         assert_eq!(r.system.as_deref(), Some("You review code."));
         assert_eq!(evaluate("edit", "x", &r.permissions), Effect::Deny);
         assert!(resolve(&c, "plan").is_none());
-        assert_eq!(list(&c), vec!["build", "reviewer"]);
+        assert_eq!(list(&c), vec!["build", "general", "explore", "reviewer"]);
     }
 }

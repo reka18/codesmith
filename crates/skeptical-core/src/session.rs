@@ -9,12 +9,16 @@ use crate::config::{Loaded, ModelRef};
 use crate::permission::{Asker, Gate};
 use crate::store::{self, Info, Record, Store};
 use crate::title;
+use crate::tool::todo::Todo;
 use crate::tool::{self, Ctx, Tool};
 use crate::{instructions, paths, prompt};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use skeptical_ai::{Event, Message, Part, Request, Role, Usage};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Where the loop reports progress (the CLI prints; tests record).
@@ -26,7 +30,32 @@ pub trait Sink: Send {
     fn step_end(&mut self, _reason: &str, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     fn compacted(&mut self, _before: u64, _after: u64) {}
+    fn todos(&mut self, _todos: &[Todo]) {}
 }
+
+/// Relays a subagent's tool activity to the parent's sink under a label.
+struct ChildSink<'a> {
+    parent: &'a mut dyn Sink,
+    label: String,
+}
+
+impl Sink for ChildSink<'_> {
+    fn text(&mut self, _delta: &str) {}
+    fn tool_start(&mut self, id: &str, name: &str, input: &serde_json::Value) {
+        self.parent
+            .tool_start(id, &format!("{} › {name}", self.label), input);
+    }
+    fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
+        self.parent
+            .tool_end(id, &format!("{} › {name}", self.label), output, is_error);
+    }
+    fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
+        self.parent.retry(attempt, error, wait);
+    }
+}
+
+/// How deep subagents may nest.
+pub const MAX_DEPTH: u32 = 3;
 
 pub const MAX_RETRIES: u32 = 4;
 pub const DEFAULT_MAX_STEPS: u32 = 200;
@@ -43,6 +72,8 @@ pub struct Options {
     pub resume: Option<String>,
     /// Use this title instead of generating one.
     pub title: Option<String>,
+    /// The session that delegated to this one, for subagents.
+    pub parent: Option<String>,
 }
 
 pub struct Session {
@@ -67,6 +98,10 @@ pub struct Session {
     store: Option<Store>,
     stored: bool,
     title_task: Option<tokio::task::JoinHandle<Option<String>>>,
+    loaded: Loaded,
+    parent: Option<String>,
+    depth: u32,
+    pub todos: Vec<Todo>,
 }
 
 impl Session {
@@ -74,7 +109,7 @@ impl Session {
         loaded: &Loaded,
         cwd: PathBuf,
         opts: Options,
-        asker: Box<dyn Asker>,
+        asker: Arc<dyn Asker>,
         store: Option<Store>,
     ) -> Result<Session> {
         let config = &loaded.config;
@@ -109,7 +144,11 @@ impl Session {
             .or_else(|| config.model.clone())
             .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in skeptical.json"))?;
         let model = config.resolve_model(&model_spec)?;
-        let tools = agent::tools(&agent);
+        let subagents = agent::subagents(config);
+        let mut tools = agent::tools(&agent);
+        if subagents.is_empty() {
+            tools.retain(|t| *t != Tool::Subagent);
+        }
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
         let _ = std::fs::create_dir_all(&tmp);
@@ -187,6 +226,10 @@ impl Session {
             store,
             stored,
             title_task: None,
+            loaded: loaded.clone(),
+            parent: opts.parent,
+            depth: 0,
+            todos: Vec::new(),
         })
     }
 
@@ -202,7 +245,7 @@ impl Session {
                         title: self.title.clone(),
                         agent: self.agent.id.clone(),
                         model: self.model_spec.clone(),
-                        parent_id: None,
+                        parent_id: self.parent.clone(),
                         created: t,
                         updated: t,
                         usage: Usage::default(),
@@ -228,7 +271,22 @@ impl Session {
             model: self.model.model_id.clone(),
             system: self.system.clone(),
             messages: self.messages.clone(),
-            tools: self.tools.iter().map(|t| t.spec(&self.shell)).collect(),
+            tools: self
+                .tools
+                .iter()
+                .map(|t| match t {
+                    Tool::Subagent => {
+                        let (description, parameters) =
+                            tool::subagent::spec(&agent::subagents(&self.loaded.config));
+                        skeptical_ai::ToolSpec {
+                            name: t.name().into(),
+                            description,
+                            parameters,
+                        }
+                    }
+                    t => t.spec(&self.shell),
+                })
+                .collect(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
             body: self.model.body.clone(),
@@ -236,7 +294,18 @@ impl Session {
     }
 
     /// One user turn: runs steps until the model answers without tool calls.
-    pub async fn prompt(&mut self, text: &str, sink: &mut dyn Sink) -> Result<()> {
+    ///
+    /// Boxed with an explicit `Send` bound: a subagent's turn runs inside its
+    /// parent's, and naming the type breaks that recursive future.
+    pub fn prompt<'a>(
+        &'a mut self,
+        text: &'a str,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.prompt_inner(text, sink))
+    }
+
+    async fn prompt_inner(&mut self, text: &str, sink: &mut dyn Sink) -> Result<()> {
         if self.title.is_none() && self.title_task.is_none() {
             self.title_task = Some(self.spawn_title(text));
         }
@@ -297,15 +366,23 @@ impl Session {
             let mut results = Vec::new();
             for (id, name, input) in calls {
                 sink.tool_start(&id, &name, &input);
-                let ctx = Ctx {
-                    cwd: self.cwd.clone(),
-                    root: self.root.clone(),
-                    gate: &self.gate,
-                    shell: self.shell.clone(),
-                    session_id: self.id.clone(),
-                    limits: self.limits,
+                let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
+                {
+                    Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
+                    Some(Tool::Subagent) => self.run_subagent(&input, sink).await,
+                    _ => {
+                        let ctx = Ctx {
+                            cwd: self.cwd.clone(),
+                            root: self.root.clone(),
+                            gate: &self.gate,
+                            shell: self.shell.clone(),
+                            session_id: self.id.clone(),
+                            limits: self.limits,
+                            client: self.client.clone(),
+                        };
+                        tool::execute(&ctx, &name, &input).await
+                    }
                 };
-                let (content, is_error) = tool::execute(&ctx, &name, &input).await;
                 sink.tool_end(&id, &name, &content, is_error);
                 results.push(Part::ToolResult {
                     id,
@@ -322,6 +399,131 @@ impl Session {
         Err(anyhow!(
             "stopped after {max_steps} steps without a final answer"
         ))
+    }
+
+    fn allowed(&self, action: &str, resource: &str, title: String) -> Result<(), String> {
+        let gate = &self.gate;
+        let req = crate::permission::Request {
+            action: action.into(),
+            resources: vec![resource.into()],
+            save: vec![resource.into()],
+            title,
+        };
+        tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
+    }
+
+    fn run_todowrite(&mut self, input: &serde_json::Value, sink: &mut dyn Sink) -> (String, bool) {
+        if let Err(e) = self.allowed("todowrite", "*", "Update the todo list".into()) {
+            return (e, true);
+        }
+        match tool::todo::parse(&tool::repair(input)) {
+            Ok(todos) => {
+                self.todos = todos;
+                sink.todos(&self.todos);
+                (tool::todo::summarize(&self.todos), false)
+            }
+            Err(e) => (e, true),
+        }
+    }
+
+    async fn run_subagent(
+        &mut self,
+        input: &serde_json::Value,
+        sink: &mut dyn Sink,
+    ) -> (String, bool) {
+        match self.subagent(&tool::repair(input), sink).await {
+            Ok(text) => (text, false),
+            Err(e) => (e, true),
+        }
+    }
+
+    async fn subagent(
+        &mut self,
+        input: &serde_json::Value,
+        sink: &mut dyn Sink,
+    ) -> Result<String, String> {
+        let s = |k: &str| {
+            input
+                .get(k)
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let agent_id = s("agent").ok_or("Missing required string parameter `agent`")?;
+        let task = s("prompt").ok_or("Missing required string parameter `prompt`")?;
+        let label = s("description").unwrap_or_else(|| agent_id.clone());
+        let available = agent::subagents(&self.loaded.config);
+        if !available.iter().any(|(id, _)| *id == agent_id) {
+            let names: Vec<&str> = available.iter().map(|a| a.0.as_str()).collect();
+            return Err(format!(
+                "Unknown subagent {agent_id:?}. Available: {}",
+                names.join(", ")
+            ));
+        }
+        if self.depth + 1 >= MAX_DEPTH {
+            return Err(format!(
+                "Subagents can nest at most {MAX_DEPTH} levels deep."
+            ));
+        }
+        self.allowed(
+            "subagent",
+            &agent_id,
+            format!("Run the {agent_id} agent: {label}"),
+        )?;
+        let store = match self.store.as_ref().and_then(|st| st.path()) {
+            Some(p) => Some(Store::open(&p).map_err(|e| format!("{e:#}"))?),
+            None => None,
+        };
+        let opts = Options {
+            agent: Some(agent_id.clone()),
+            model: s("model"),
+            resume: s("sessionID"),
+            title: Some(label.clone()),
+            parent: Some(self.id.clone()),
+        };
+        let mut child = Session::new(
+            &self.loaded,
+            self.cwd.clone(),
+            opts,
+            self.gate.asker(),
+            store,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        child.depth = self.depth + 1;
+        let mut csink = ChildSink {
+            parent: sink,
+            label: agent_id.to_string(),
+        };
+        let outcome = child.prompt(&task, &mut csink).await;
+        add(&mut self.usage, &child.usage);
+        let answer = child
+            .messages
+            .iter()
+            .rev()
+            .find(|m| {
+                m.role == Role::Assistant && m.parts.iter().any(|p| matches!(p, Part::Text(_)))
+            })
+            .map(|m| {
+                m.parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let Part::Text(t) = p {
+                            Some(t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+        match outcome {
+            Ok(()) => Ok(tool::subagent::result(&child.id, &agent_id, &answer)),
+            Err(e) => Err(format!(
+                "The {agent_id} subagent failed (sessionID: {}): {e:#}",
+                child.id
+            )),
+        }
     }
 
     /// Estimated size of the next request: system prompt, tool definitions
