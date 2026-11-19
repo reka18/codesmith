@@ -5,7 +5,8 @@ mod render;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use skeptical_core::permission::{Asker, Fixed, Reply, Request};
-use skeptical_core::session::{Options, Session};
+use skeptical_core::session::{self, Options, Session};
+use skeptical_core::snapshot::Snapshots;
 use skeptical_core::store::{self, Store};
 use skeptical_core::{agent, config, instructions, paths, prompt};
 use std::io::{IsTerminal, Read, Write};
@@ -90,6 +91,15 @@ enum SessionCmd {
     Export { id: String },
     /// Import a session exported as JSON (a file path, or - for stdin).
     Import { file: String },
+    /// Undo the latest turn: restore the files it changed and hide it.
+    Undo {
+        /// Session id (default: the latest in this directory).
+        id: Option<String>,
+    },
+    /// Redo the latest undo.
+    Redo { id: Option<String> },
+    /// Show the file changes made since the latest turn began.
+    Diff { id: Option<String> },
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
@@ -369,6 +379,47 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
                 return Err(anyhow!("no session {id}"));
             }
         }
+        SessionCmd::Undo { id } => {
+            let (info, snaps) = snapshot_target(&db, &cwd, id)?;
+            match session::undo(&db, &info.id, &snaps)? {
+                Some(changes) => {
+                    println!(
+                        "Undid the latest turn of {}; restored {} file(s):",
+                        info.id,
+                        changes.len()
+                    );
+                    print_changes(&changes, false);
+                }
+                None => println!("Nothing to undo in {}.", info.id),
+            }
+        }
+        SessionCmd::Redo { id } => {
+            let (info, snaps) = snapshot_target(&db, &cwd, id)?;
+            match session::redo(&db, &info.id, &snaps)? {
+                Some(changes) => {
+                    println!(
+                        "Redid the turn in {}; reapplied {} file(s):",
+                        info.id,
+                        changes.len()
+                    );
+                    print_changes(&changes, true);
+                }
+                None => println!(
+                    "Nothing to redo in {} (a new turn after an undo makes it permanent).",
+                    info.id
+                ),
+            }
+        }
+        SessionCmd::Diff { id } => {
+            let (info, snaps) = snapshot_target(&db, &cwd, id)?;
+            match session::turn_diff(&db, &info.id, &snaps)? {
+                Some(d) if d.trim().is_empty() => {
+                    println!("No file changes since the latest turn began.")
+                }
+                Some(d) => print!("{d}"),
+                None => println!("No snapshot recorded for {}.", info.id),
+            }
+        }
         SessionCmd::Export { id } => {
             println!("{}", serde_json::to_string_pretty(&db.export(&id)?)?)
         }
@@ -387,6 +438,38 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn snapshot_target(
+    db: &Store,
+    cwd: &std::path::Path,
+    id: Option<String>,
+) -> Result<(store::Info, Snapshots)> {
+    let info = match id {
+        Some(id) => db.get(&id)?.ok_or_else(|| anyhow!("no session {id}"))?,
+        None => db
+            .latest(&cwd.display().to_string())?
+            .ok_or_else(|| anyhow!("no session in {}", cwd.display()))?,
+    };
+    let root = config::project_root(std::path::Path::new(&info.directory));
+    let snaps = Snapshots::for_project(&root)
+        .ok_or_else(|| anyhow!("snapshots are not kept for {}", root.display()))?;
+    Ok((info, snaps))
+}
+
+/// `changes` are relative to the tree being restored: `A` files exist now but
+/// not there, `D` files exist there but not now.
+fn print_changes(changes: &[skeptical_core::snapshot::Change], redo: bool) {
+    for c in changes {
+        let what = match (c.status, redo) {
+            ('A', _) => "removed",
+            ('D', false) => "restored",
+            ('D', true) => "recreated",
+            (_, false) => "reverted",
+            (_, true) => "reapplied",
+        };
+        println!("  {what:9} {}", c.path);
+    }
 }
 
 /// "YYYY-MM-DD HH:MM" in local time for a millisecond timestamp.

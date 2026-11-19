@@ -182,6 +182,14 @@ impl Sink for Printer {
         }
     }
 
+    fn notice(&mut self, message: &str) {
+        if self.json {
+            self.emit(json!({"type": "notice", "message": message}));
+        } else {
+            eprintln!("\x1b[33m{message}\x1b[0m");
+        }
+    }
+
     fn compacted(&mut self, before: u64, after: u64) {
         if self.json {
             self.emit(json!({"type": "compacted", "before_tokens": before, "after_tokens": after}));

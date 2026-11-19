@@ -7,6 +7,7 @@ use crate::agent::{self, Agent};
 use crate::compaction;
 use crate::config::{Loaded, ModelRef};
 use crate::permission::{Asker, Gate};
+use crate::snapshot::{Change, Snapshots};
 use crate::store::{self, Info, Record, Store};
 use crate::title;
 use crate::tool::todo::Todo;
@@ -31,6 +32,8 @@ pub trait Sink: Send {
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     fn compacted(&mut self, _before: u64, _after: u64) {}
     fn todos(&mut self, _todos: &[Todo]) {}
+    /// Something worth telling the user that is not part of the answer.
+    fn notice(&mut self, _message: &str) {}
 }
 
 /// Relays a subagent's tool activity to the parent's sink under a label.
@@ -235,35 +238,35 @@ impl Session {
 
     /// Save a message (creating the session row on first use) and keep it in memory.
     fn push(&mut self, message: Message) -> Result<()> {
-        let seq = match &self.store {
-            Some(s) => {
-                if !self.stored {
-                    let t = store::now();
-                    s.create(&Info {
-                        id: self.id.clone(),
-                        directory: self.cwd.display().to_string(),
-                        title: self.title.clone(),
-                        agent: self.agent.id.clone(),
-                        model: self.model_spec.clone(),
-                        parent_id: self.parent.clone(),
-                        created: t,
-                        updated: t,
-                        usage: Usage::default(),
-                    })?;
-                    self.stored = true;
-                }
-                Some(s.append(
-                    &self.id,
-                    &Record::Message {
-                        message: message.clone(),
-                    },
-                )?)
-            }
-            None => None,
-        };
+        let seq = self.record(&Record::Message {
+            message: message.clone(),
+        })?;
         self.messages.push(message);
         self.seqs.push(seq);
         Ok(())
+    }
+
+    /// Append a record, creating the session row on first use.
+    fn record(&mut self, record: &Record) -> Result<Option<i64>> {
+        let Some(s) = &self.store else {
+            return Ok(None);
+        };
+        if !self.stored {
+            let t = store::now();
+            s.create(&Info {
+                id: self.id.clone(),
+                directory: self.cwd.display().to_string(),
+                title: self.title.clone(),
+                agent: self.agent.id.clone(),
+                model: self.model_spec.clone(),
+                parent_id: self.parent.clone(),
+                created: t,
+                updated: t,
+                usage: Usage::default(),
+            })?;
+            self.stored = true;
+        }
+        Ok(Some(s.append(&self.id, record)?))
     }
 
     fn request(&self) -> Request {
@@ -306,6 +309,22 @@ impl Session {
     }
 
     async fn prompt_inner(&mut self, text: &str, sink: &mut dyn Sink) -> Result<()> {
+        // Subagents share the parent's turn snapshot.
+        if self.parent.is_none()
+            && self.store.is_some()
+            && self.loaded.config.snapshots.unwrap_or(true)
+        {
+            if let Some(snaps) = Snapshots::for_project(&self.root) {
+                match tokio::task::block_in_place(|| snaps.capture()) {
+                    Ok(tree) => {
+                        self.record(&Record::Snapshot { tree })?;
+                    }
+                    Err(e) => sink.notice(&format!(
+                        "snapshot skipped (undo unavailable for this turn): {e:#}"
+                    )),
+                }
+            }
+        }
         if self.title.is_none() && self.title_task.is_none() {
             self.title_task = Some(self.spawn_title(text));
         }
@@ -745,6 +764,41 @@ pub async fn complete(
             Err(e) => return Err(anyhow!("{e}")),
         }
     }
+}
+
+/// Undo the newest turn of a stored session: restore the files it changed
+/// and hide its messages. Returns the restored changes, or `None` if there
+/// is nothing to undo.
+pub fn undo(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Vec<Change>>> {
+    let entries = db.entries(id)?;
+    let Some((from_seq, tree)) = store::undo_target(&entries) else {
+        return Ok(None);
+    };
+    let after = snaps.capture()?;
+    let changes = snaps.restore(&tree)?;
+    db.append(id, &Record::Revert { from_seq, after })?;
+    Ok(Some(changes))
+}
+
+/// Redo the newest undo, if nothing was added since.
+pub fn redo(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Vec<Change>>> {
+    let entries = db.entries(id)?;
+    let Some((revert_seq, after)) = store::redo_target(&entries) else {
+        return Ok(None);
+    };
+    let changes = snaps.restore(&after)?;
+    db.append(id, &Record::Redo { revert_seq })?;
+    Ok(Some(changes))
+}
+
+/// The unified diff of files changed since the newest visible turn began.
+pub fn turn_diff(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<String>> {
+    let entries = db.entries(id)?;
+    let Some((_, tree)) = store::undo_target(&entries) else {
+        return Ok(None);
+    };
+    let now = snaps.capture()?;
+    Ok(Some(snaps.diff(&tree, &now)?))
 }
 
 fn add(total: &mut Usage, u: &Usage) {

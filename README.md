@@ -55,7 +55,15 @@ skeptical session list [--all] [--json]
 skeptical session export <id> > session.json
 skeptical session import session.json
 skeptical session delete <id>
+skeptical session diff  [id]   # file changes since the latest turn began
+skeptical session undo  [id]   # restore the files and hide the latest turn
+skeptical session redo  [id]   # bring it back (until a new turn is added)
 ```
+
+Undo works by snapshotting the project at the start of each turn into a
+private git repository under skeptical's data directory. It never touches your
+own `.git`, works in folders that are not git repositories, and respects
+`.gitignore`. Set `"snapshots": false` to turn it off.
 
 Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|prompt`.
 
@@ -127,7 +135,7 @@ directory (with `CLAUDE.md` as a fallback), plus
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
-   webfetch~~; undo/redo snapshots, background shell commands, skills,
+   webfetch, undo/redo snapshots~~; background shell commands, skills,
    commands, web search
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats

@@ -36,6 +36,8 @@ pub struct Config {
     /// Extra instruction files (paths or globs, relative to the project root).
     pub instructions: Vec<String>,
     pub tool_output: ToolOutputConfig,
+    /// Snapshot files at each turn so turns can be undone (default true).
+    pub snapshots: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -35,6 +35,20 @@ pub enum Record {
         summary: String,
         keep_from: i64,
     },
+    /// The project's files (a snapshot tree) at the start of a turn.
+    Snapshot {
+        tree: String,
+    },
+    /// Undo: everything from `from_seq` up to this record is hidden, and the
+    /// files were restored. `after` is the tree just before undoing, for redo.
+    Revert {
+        from_seq: i64,
+        after: String,
+    },
+    /// Redo of the revert at `revert_seq`.
+    Redo {
+        revert_seq: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -339,9 +353,11 @@ pub fn history_of(entries: &[Entry]) -> Vec<Message> {
 /// The model's view of a log, each message with its sequence number (`None`
 /// for the checkpoint that opens it).
 pub fn history_with_seqs(entries: &[Entry]) -> Vec<(Option<i64>, Message)> {
+    let hidden = hidden_ranges(entries);
+    let visible = |seq: i64| !hidden.iter().any(|(from, to)| seq >= *from && seq < *to);
     let last_checkpoint = entries
         .iter()
-        .rposition(|e| matches!(e.record, Record::Checkpoint { .. }));
+        .rposition(|e| matches!(e.record, Record::Checkpoint { .. }) && visible(e.seq));
     let (mut out, keep_from) = match last_checkpoint.map(|i| &entries[i].record) {
         Some(Record::Checkpoint { summary, keep_from }) => (
             vec![(None, Message::user(checkpoint_text(summary)))],
@@ -351,12 +367,78 @@ pub fn history_with_seqs(entries: &[Entry]) -> Vec<(Option<i64>, Message)> {
     };
     for e in entries {
         if let Record::Message { message } = &e.record {
-            if e.seq >= keep_from {
+            if e.seq >= keep_from && visible(e.seq) {
                 out.push((Some(e.seq), message.clone()));
             }
         }
     }
     out
+}
+
+/// `[from, to)` sequence ranges hidden by reverts that have not been redone.
+pub fn hidden_ranges(entries: &[Entry]) -> Vec<(i64, i64)> {
+    let redone: Vec<i64> = entries
+        .iter()
+        .filter_map(|e| {
+            if let Record::Redo { revert_seq } = e.record {
+                Some(revert_seq)
+            } else {
+                None
+            }
+        })
+        .collect();
+    entries
+        .iter()
+        .filter_map(|e| match e.record {
+            Record::Revert { from_seq, .. } if !redone.contains(&e.seq) => Some((from_seq, e.seq)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What `undo` would revert: the newest visible turn that has messages,
+/// as (its snapshot record's seq, the snapshot tree).
+pub fn undo_target(entries: &[Entry]) -> Option<(i64, String)> {
+    let hidden = hidden_ranges(entries);
+    let visible = |seq: i64| !hidden.iter().any(|(from, to)| seq >= *from && seq < *to);
+    entries
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, e)| match &e.record {
+            Record::Snapshot { tree } if visible(e.seq) => {
+                let has_messages = entries[i + 1..]
+                    .iter()
+                    .any(|n| matches!(n.record, Record::Message { .. }) && visible(n.seq));
+                has_messages.then(|| (e.seq, tree.clone()))
+            }
+            _ => None,
+        })
+}
+
+/// What `redo` would restore: the newest revert not yet redone, as long as
+/// no new messages were added after it. Returns (its seq, the tree to restore).
+pub fn redo_target(entries: &[Entry]) -> Option<(i64, String)> {
+    let redone: Vec<i64> = entries
+        .iter()
+        .filter_map(|e| {
+            if let Record::Redo { revert_seq } = e.record {
+                Some(revert_seq)
+            } else {
+                None
+            }
+        })
+        .collect();
+    for e in entries.iter().rev() {
+        match &e.record {
+            Record::Message { .. } | Record::Checkpoint { .. } => return None,
+            Record::Revert { after, .. } if !redone.contains(&e.seq) => {
+                return Some((e.seq, after.clone()))
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -440,6 +522,108 @@ mod tests {
         let h = s.history("a").unwrap();
         assert_eq!(h.len(), 1, "a newer checkpoint wins");
         assert!(matches!(&h[0].parts[0], Part::Text(t) if t.contains("S2")));
+    }
+
+    fn entry(seq: i64, record: Record) -> Entry {
+        Entry {
+            seq,
+            created: 0,
+            record,
+        }
+    }
+
+    #[test]
+    fn undo_and_redo_targets() {
+        let snap = |s: &str| Record::Snapshot { tree: s.into() };
+        let mut log = vec![
+            entry(1, snap("t1")),
+            entry(2, msg(Role::User, "first")),
+            entry(3, msg(Role::Assistant, "done 1")),
+            entry(4, snap("t2")),
+            entry(5, msg(Role::User, "second")),
+            entry(6, msg(Role::Assistant, "done 2")),
+        ];
+        assert_eq!(undo_target(&log), Some((4, "t2".into())));
+        assert_eq!(redo_target(&log), None);
+        log.push(entry(
+            7,
+            Record::Revert {
+                from_seq: 4,
+                after: "t3".into(),
+            },
+        ));
+        assert_eq!(history_of(&log).len(), 2, "the second turn is hidden");
+        assert_eq!(
+            undo_target(&log),
+            Some((1, "t1".into())),
+            "a second undo goes further back"
+        );
+        assert_eq!(redo_target(&log), Some((7, "t3".into())));
+        log.push(entry(
+            8,
+            Record::Revert {
+                from_seq: 1,
+                after: "t2b".into(),
+            },
+        ));
+        assert!(history_of(&log).is_empty());
+        assert_eq!(undo_target(&log), None);
+        assert_eq!(
+            redo_target(&log),
+            Some((8, "t2b".into())),
+            "redo pops the newest undo first"
+        );
+        log.push(entry(9, Record::Redo { revert_seq: 8 }));
+        assert_eq!(history_of(&log).len(), 2);
+        assert_eq!(redo_target(&log), Some((7, "t3".into())));
+        log.push(entry(10, Record::Redo { revert_seq: 7 }));
+        assert_eq!(history_of(&log).len(), 4);
+        assert_eq!(redo_target(&log), None);
+    }
+
+    #[test]
+    fn a_new_turn_after_undo_makes_it_permanent() {
+        let log = vec![
+            entry(1, Record::Snapshot { tree: "t1".into() }),
+            entry(2, msg(Role::User, "a")),
+            entry(
+                3,
+                Record::Revert {
+                    from_seq: 1,
+                    after: "t2".into(),
+                },
+            ),
+            entry(4, Record::Snapshot { tree: "t1".into() }),
+            entry(5, msg(Role::User, "b")),
+        ];
+        assert_eq!(redo_target(&log), None);
+        assert_eq!(history_of(&log).len(), 1);
+    }
+
+    #[test]
+    fn hidden_checkpoints_are_ignored() {
+        let log = vec![
+            entry(1, msg(Role::User, "a")),
+            entry(2, Record::Snapshot { tree: "t".into() }),
+            entry(3, msg(Role::User, "b")),
+            entry(
+                4,
+                Record::Checkpoint {
+                    summary: "S".into(),
+                    keep_from: 3,
+                },
+            ),
+            entry(
+                5,
+                Record::Revert {
+                    from_seq: 2,
+                    after: "t2".into(),
+                },
+            ),
+        ];
+        let h = history_of(&log);
+        assert_eq!(h.len(), 1);
+        assert!(matches!(&h[0].parts[0], Part::Text(t) if t == "a"));
     }
 
     #[test]
