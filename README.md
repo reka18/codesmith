@@ -99,7 +99,7 @@ Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|p
 | `edit` | Exact find-and-replace, tolerant of typographic quotes, dashes and trailing whitespace; preserves CRLF/LF line endings |
 | `glob` | Find files by glob pattern, respecting `.gitignore` |
 | `grep` | Search file contents with ripgrep's regex engine |
-| `shell` | Run a command with a timeout; large output is saved to a file |
+| `shell` | Run a command; long-running ones move to the background and the agent is told when they finish. Large output is saved to a file |
 | `webfetch` | Fetch a URL as markdown, text or HTML; each redirect is permission-checked |
 | `todowrite` | Keep a visible todo list for multi-step work |
 | `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
@@ -159,8 +159,8 @@ directory (with `CLAUDE.md` as a fallback), plus
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
-   webfetch, undo/redo snapshots, skills, commands~~; background shell
-   commands, the question tool, web search (self-hosted SearXNG)
+   webfetch, undo/redo snapshots, skills, commands, background shell commands~~; the question tool, web search
+   (self-hosted SearXNG)
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations

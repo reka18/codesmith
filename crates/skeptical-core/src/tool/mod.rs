@@ -5,7 +5,7 @@ mod edit;
 mod glob;
 mod grep;
 mod read;
-mod shell;
+pub mod shell;
 pub mod subagent;
 pub mod todo;
 mod webfetch;
@@ -31,6 +31,8 @@ pub struct Ctx<'a> {
     pub session_id: String,
     pub limits: ToolOutputConfig,
     pub client: reqwest::Client,
+    /// Background command registry; `None` where background commands are unavailable.
+    pub jobs: Option<shell::Jobs>,
 }
 
 /// What a tool returns to the model. `Err` is shown to the model as a failed call.
@@ -406,7 +408,7 @@ fn byte_boundary(text: &str, max: usize) -> usize {
     i
 }
 
-fn unique_id() -> String {
+pub(crate) fn unique_id() -> String {
     use rand::Rng;
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -451,6 +453,7 @@ pub(crate) mod testing {
                 session_id: "test".into(),
                 limits: ToolOutputConfig::default(),
                 client: reqwest::Client::new(),
+                jobs: Some(shell::Jobs::default()),
             }
         }
         pub fn write(&self, rel: &str, content: &str) -> PathBuf {

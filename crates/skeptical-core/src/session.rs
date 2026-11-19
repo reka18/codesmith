@@ -106,6 +106,7 @@ pub struct Session {
     depth: u32,
     pub todos: Vec<Todo>,
     skills: Vec<crate::skill::Skill>,
+    jobs: tool::shell::Jobs,
 }
 
 impl Session {
@@ -250,6 +251,7 @@ impl Session {
             depth: 0,
             todos: Vec::new(),
             skills,
+            jobs: tool::shell::Jobs::default(),
         })
     }
 
@@ -373,6 +375,7 @@ impl Session {
         let mut compacted_this_step = false;
         let mut repeats = RepeatGuard::default();
         while steps < max_steps {
+            self.report_finished_jobs()?;
             if !compacted_this_step && self.due_for_compaction() {
                 self.compact(sink).await?;
                 compacted_this_step = true;
@@ -406,7 +409,17 @@ impl Session {
                 parts,
             })?;
             if calls.is_empty() {
-                return Ok(());
+                if self.jobs.running() == 0 && self.jobs_pending() == 0 {
+                    return Ok(());
+                }
+                // The model is done for now, but background commands are still
+                // running: wait for one, report it, and let the model continue.
+                sink.notice(&format!(
+                    "waiting for {} background command(s)…",
+                    self.jobs.running()
+                ));
+                self.jobs.wait_any().await;
+                continue;
             }
             let mut results = Vec::new();
             for (id, name, input) in calls {
@@ -433,6 +446,7 @@ impl Session {
                             session_id: self.id.clone(),
                             limits: self.limits,
                             client: self.client.clone(),
+                            jobs: Some(self.jobs.clone()),
                         };
                         tool::execute(&ctx, &name, &input).await
                     }
@@ -453,6 +467,27 @@ impl Session {
         Err(anyhow!(
             "stopped after {max_steps} steps without a final answer"
         ))
+    }
+
+    fn jobs_pending(&self) -> usize {
+        // Finished but not yet reported jobs (peek without taking).
+        self.jobs.running_or_unreported() - self.jobs.running()
+    }
+
+    /// Tell the model about background commands that finished since its last step.
+    fn report_finished_jobs(&mut self) -> Result<()> {
+        let done = self.jobs.take_finished();
+        if done.is_empty() {
+            return Ok(());
+        }
+        let parts = done
+            .iter()
+            .map(|j| Part::Text(tool::shell::notification(j, self.limits)))
+            .collect();
+        self.push(Message {
+            role: Role::User,
+            parts,
+        })
     }
 
     fn allowed(&self, action: &str, resource: &str, title: String) -> Result<(), String> {
