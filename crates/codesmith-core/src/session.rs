@@ -15,7 +15,7 @@ use crate::tool::{self, Ctx, Tool};
 use crate::{instructions, paths, prompt};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
-use skeptical_ai::{Event, Message, Part, Request, Role, Usage};
+use codesmith_ai::{Event, Message, Part, Request, Role, Usage};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -150,7 +150,7 @@ impl Session {
             .or_else(|| resumed.as_ref().map(|r| r.0.model.clone()))
             .or_else(|| agent.model.clone())
             .or_else(|| config.model.clone())
-            .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in skeptical.json"))?;
+            .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in codesmith.json"))?;
         let model = config.resolve_model(&model_spec)?;
         let subagents = agent::subagents(config);
         let home = dirs::home_dir().unwrap_or_default();
@@ -310,7 +310,7 @@ impl Session {
                     Tool::Subagent => {
                         let (description, parameters) =
                             tool::subagent::spec(&agent::subagents(&self.loaded.config));
-                        skeptical_ai::ToolSpec {
+                        codesmith_ai::ToolSpec {
                             name: t.name().into(),
                             description,
                             parameters,
@@ -318,7 +318,7 @@ impl Session {
                     }
                     Tool::Skill => {
                         let (description, parameters) = crate::skill::tool_spec(&self.skills);
-                        skeptical_ai::ToolSpec {
+                        codesmith_ai::ToolSpec {
                             name: t.name().into(),
                             description,
                             parameters,
@@ -804,7 +804,7 @@ impl Session {
         &self,
         req: &Request,
         sink: &mut dyn Sink,
-    ) -> Result<(Vec<Part>, String, Usage), (skeptical_ai::Error, bool)> {
+    ) -> Result<(Vec<Part>, String, Usage), (codesmith_ai::Error, bool)> {
         let mut stream = self
             .model
             .provider
@@ -867,7 +867,7 @@ pub async fn complete(
     loop {
         let mut out = String::new();
         let mut usage = Usage::default();
-        let res: Result<(), skeptical_ai::Error> = async {
+        let res: Result<(), codesmith_ai::Error> = async {
             let mut s = model.provider.stream(client, &req).await?;
             while let Some(ev) = s.next().await {
                 match ev? {

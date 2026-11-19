@@ -1,5 +1,5 @@
 [package]
-name = "skeptical"
+name = "codesmith"
 description = "A terminal coding agent. A Rust port of OpenCode."
 version.workspace = true
 edition.workspace = true
@@ -8,13 +8,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "skeptical"
+name = "codesmith"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
-skeptical-ai.workspace = true
-skeptical-core.workspace = true
+codesmith-ai.workspace = true
+codesmith-core.workspace = true
 tokio.workspace = true

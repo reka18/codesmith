@@ -248,6 +248,56 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 
 [[package]]
+name = "codesmith"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "codesmith-ai",
+ "codesmith-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "codesmith-ai"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "codesmith-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codesmith-ai",
+ "dirs",
+ "futures-util",
+ "globset",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "htmd",
+ "ignore",
+ "rand 0.8.8",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1539,56 +1589,6 @@ name = "siphasher"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
-
-[[package]]
-name = "skeptical"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde_json",
- "skeptical-ai",
- "skeptical-core",
- "tokio",
-]
-
-[[package]]
-name = "skeptical-ai"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "skeptical-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "futures-util",
- "globset",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "htmd",
- "ignore",
- "rand 0.8.8",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "skeptical-ai",
- "tempfile",
- "tokio",
-]
 
 [[package]]
 name = "slab"

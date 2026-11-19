@@ -1,4 +1,4 @@
-//! Where skeptical keeps things. XDG-style on every platform, overridable by
+//! Where codesmith keeps things. XDG-style on every platform, overridable by
 //! environment variables, so a fresh install needs nothing configured.
 
 use std::path::PathBuf;
@@ -14,16 +14,16 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
         .unwrap_or_else(|| home().join(fallback))
 }
 
-/// `$SKEPTICAL_CONFIG_DIR`, else `$XDG_CONFIG_HOME/skeptical`, else `~/.config/skeptical`.
+/// `$CODESMITH_CONFIG_DIR`, else `$XDG_CONFIG_HOME/codesmith`, else `~/.config/codesmith`.
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("SKEPTICAL_CONFIG_DIR")
+    std::env::var_os("CODESMITH_CONFIG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("skeptical"))
+        .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("codesmith"))
 }
 
-/// `$XDG_DATA_HOME/skeptical`, else `~/.local/share/skeptical`.
+/// `$XDG_DATA_HOME/codesmith`, else `~/.local/share/codesmith`.
 pub fn data_dir() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join("skeptical")
+    xdg("XDG_DATA_HOME", ".local/share").join("codesmith")
 }
 
 /// Full tool outputs that were too large to show inline.

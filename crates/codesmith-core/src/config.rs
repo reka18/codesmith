@@ -1,12 +1,12 @@
-//! `skeptical.json` / `skeptical.jsonc` discovery, merging and parsing.
+//! `codesmith.json` / `codesmith.jsonc` discovery, merging and parsing.
 //!
 //! Lowest to highest precedence:
-//!   1. `<config dir>/skeptical.json[c]` (global)
-//!   2. the file named by `$SKEPTICAL_CONFIG`
+//!   1. `<config dir>/codesmith.json[c]` (global)
+//!   2. the file named by `$CODESMITH_CONFIG`
 //!   3. from the project root down to the working directory, each folder's
-//!      `skeptical.json[c]` and `.skeptical/skeptical.json[c]`
-//!      (skipped when `$SKEPTICAL_DISABLE_PROJECT_CONFIG` is set)
-//!   4. inline JSON in `$SKEPTICAL_CONFIG_CONTENT`
+//!      `codesmith.json[c]` and `.codesmith/codesmith.json[c]`
+//!      (skipped when `$CODESMITH_DISABLE_PROJECT_CONFIG` is set)
+//!   4. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 //!
 //! Objects merge key by key; `permissions` and `instructions` lists append,
 //! so a later file's rules come after (and so override) earlier ones.
@@ -16,7 +16,7 @@ use crate::permission::Rule;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use skeptical_ai::Protocol;
+use codesmith_ai::Protocol;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -124,7 +124,7 @@ pub struct Loaded {
     pub root: PathBuf,
 }
 
-pub const NAMES: [&str; 2] = ["skeptical.json", "skeptical.jsonc"];
+pub const NAMES: [&str; 2] = ["codesmith.json", "codesmith.jsonc"];
 
 /// The nearest ancestor of `dir` (inclusive) containing `.git`, else `dir`.
 pub fn project_root(dir: &Path) -> PathBuf {
@@ -137,10 +137,10 @@ pub fn project_root(dir: &Path) -> PathBuf {
 /// Config file candidates in precedence order (lowest first).
 pub fn candidates(cwd: &Path, root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = NAMES.iter().map(|n| paths::config_dir().join(n)).collect();
-    if let Some(p) = std::env::var_os("SKEPTICAL_CONFIG") {
+    if let Some(p) = std::env::var_os("CODESMITH_CONFIG") {
         out.push(PathBuf::from(p));
     }
-    if std::env::var_os("SKEPTICAL_DISABLE_PROJECT_CONFIG").is_none() {
+    if std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_none() {
         let mut dirs: Vec<&Path> = cwd
             .ancestors()
             .take_while(|d| d.starts_with(root))
@@ -151,7 +151,7 @@ pub fn candidates(cwd: &Path, root: &Path) -> Vec<PathBuf> {
                 out.push(d.join(n));
             }
             for n in NAMES {
-                out.push(d.join(".skeptical").join(n));
+                out.push(d.join(".codesmith").join(n));
             }
         }
     }
@@ -173,13 +173,13 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
         merge(&mut merged, v);
         files.push(path);
     }
-    if let Ok(text) = std::env::var("SKEPTICAL_CONFIG_CONTENT") {
+    if let Ok(text) = std::env::var("CODESMITH_CONFIG_CONTENT") {
         merge(
             &mut merged,
-            parse(&text, cwd).context("in $SKEPTICAL_CONFIG_CONTENT")?,
+            parse(&text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?,
         );
     }
-    let config: Config = serde_json::from_value(merged).context("invalid skeptical config")?;
+    let config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
     Ok(Loaded {
         config,
         files,
@@ -305,7 +305,7 @@ pub fn merge(base: &mut Value, top: Value) {
 pub struct ModelRef {
     pub provider_id: String,
     pub model_id: String,
-    pub provider: skeptical_ai::Provider,
+    pub provider: codesmith_ai::Provider,
     pub body: Map<String, Value>,
     pub max_output: Option<u32>,
     pub context: Option<u64>,
@@ -365,7 +365,7 @@ impl Config {
             .split_once('/')
             .ok_or_else(|| anyhow!("model must be provider/model, got {spec:?}"))?;
         let p = self.provider(pid).ok_or_else(|| {
-            anyhow!("unknown provider {pid:?}; add it under \"providers\" in skeptical.json")
+            anyhow!("unknown provider {pid:?}; add it under \"providers\" in codesmith.json")
         })?;
         let protocol = p.protocol.unwrap_or(Protocol::OpenaiChat);
         let base_url = p
@@ -390,7 +390,7 @@ impl Config {
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id: m.id.clone().unwrap_or_else(|| mid.to_string()),
-            provider: skeptical_ai::Provider {
+            provider: codesmith_ai::Provider {
                 protocol,
                 base_url,
                 api_key,
@@ -428,8 +428,8 @@ mod tests {
     fn env_and_file_substitution() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("key.txt"), "se\"cret\n").unwrap();
-        std::env::set_var("SKEPTICAL_TEST_SUB", "v1");
-        let v = parse(r#"{"a": "{env:SKEPTICAL_TEST_SUB}", "b": "{file:key.txt}", "c": "{env:SKEPTICAL_TEST_UNSET_X}"}"#, dir.path()).unwrap();
+        std::env::set_var("CODESMITH_TEST_SUB", "v1");
+        let v = parse(r#"{"a": "{env:CODESMITH_TEST_SUB}", "b": "{file:key.txt}", "c": "{env:CODESMITH_TEST_UNSET_X}"}"#, dir.path()).unwrap();
         assert_eq!(v, json!({"a": "v1", "b": "se\"cret", "c": ""}));
     }
 
@@ -462,8 +462,8 @@ mod tests {
             .map(|p| p.display().to_string())
             .filter(|p| p.starts_with("/r"))
             .collect();
-        assert_eq!(project.first().unwrap(), "/r/skeptical.json");
-        assert_eq!(project.last().unwrap(), "/r/a/b/.skeptical/skeptical.jsonc");
+        assert_eq!(project.first().unwrap(), "/r/codesmith.json");
+        assert_eq!(project.last().unwrap(), "/r/a/b/.codesmith/codesmith.jsonc");
         assert_eq!(project.len(), 12);
     }
 
@@ -559,8 +559,8 @@ mod tests {
 
     #[test]
     fn api_key_from_env_list() {
-        std::env::set_var("SKEPTICAL_TEST_KEY_B", "kb");
-        let c: Config = serde_json::from_value(json!({"providers": {"p": {"settings": {"baseURL": "http://x"}, "env": ["SKEPTICAL_TEST_KEY_A_UNSET", "SKEPTICAL_TEST_KEY_B"]}}})).unwrap();
+        std::env::set_var("CODESMITH_TEST_KEY_B", "kb");
+        let c: Config = serde_json::from_value(json!({"providers": {"p": {"settings": {"baseURL": "http://x"}, "env": ["CODESMITH_TEST_KEY_A_UNSET", "CODESMITH_TEST_KEY_B"]}}})).unwrap();
         assert_eq!(
             c.resolve_model("p/m").unwrap().provider.api_key.as_deref(),
             Some("kb")

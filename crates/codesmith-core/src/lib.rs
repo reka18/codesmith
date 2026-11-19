@@ -1,4 +1,4 @@
-//! skeptical's agent core: config, permissions, tools, prompts and the
+//! codesmith's agent core: config, permissions, tools, prompts and the
 //! session loop. Ported from OpenCode (MIT); see LICENSE.
 
 pub mod agent;

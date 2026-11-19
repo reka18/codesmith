@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 fn claude_fallback() -> bool {
-    std::env::var_os("SKEPTICAL_DISABLE_CLAUDE_CODE").is_none()
+    std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none()
 }
 
 /// The instruction file in `dir`: `AGENTS.md`, else `CLAUDE.md`.

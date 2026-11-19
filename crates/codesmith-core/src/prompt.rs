@@ -108,7 +108,7 @@ mod tests {
         assert!(base("gpt-5", &[]).contains("## Intermediate Commentary"));
         assert!(base("claude-sonnet", &[]).contains("# Code comments"));
         let q = base("Qwen3.5-122B", &[]);
-        assert!(q.starts_with("You are an AI agent running in skeptical"));
+        assert!(q.starts_with("You are an AI agent running in CodeSmith"));
         assert!(!q.contains("# Code comments") && !q.contains("Intermediate Commentary"));
     }
 

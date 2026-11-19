@@ -121,7 +121,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             .get(current.clone())
             .header(
                 "User-Agent",
-                concat!("skeptical/", env!("CARGO_PKG_VERSION")),
+                concat!("codesmith/", env!("CARGO_PKG_VERSION")),
             )
             .header("Accept", accept(format))
             .timeout(Duration::from_secs_f64(timeout))

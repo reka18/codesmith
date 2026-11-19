@@ -64,8 +64,8 @@ pub fn is_safe_id(id: &str) -> bool {
 }
 
 fn claude_compat() -> bool {
-    std::env::var_os("SKEPTICAL_DISABLE_CLAUDE_CODE_SKILLS").is_none()
-        && std::env::var_os("SKEPTICAL_DISABLE_CLAUDE_CODE").is_none()
+    std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE_SKILLS").is_none()
+        && std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none()
 }
 
 /// Folders that may contain `<id>/SKILL.md`, lowest precedence first.
@@ -90,7 +90,7 @@ pub fn roots(
         if claude_compat() {
             out.push(d.join(".claude/skills"));
         }
-        out.push(d.join(".skeptical/skills"));
+        out.push(d.join(".codesmith/skills"));
     }
     for e in extra {
         let p = PathBuf::from(e);
@@ -299,9 +299,9 @@ mod tests {
         assert_eq!(r.last().unwrap(), Path::new("/r/extra"));
         assert!(
             r.iter()
-                .position(|p| p == Path::new("/r/.skeptical/skills"))
+                .position(|p| p == Path::new("/r/.codesmith/skills"))
                 < r.iter()
-                    .position(|p| p == Path::new("/r/a/.skeptical/skills"))
+                    .position(|p| p == Path::new("/r/a/.codesmith/skills"))
         );
     }
 }

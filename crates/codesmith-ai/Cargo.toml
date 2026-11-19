@@ -1,6 +1,6 @@
 [package]
-name = "skeptical-ai"
-description = "Model provider protocols for skeptical"
+name = "codesmith-ai"
+description = "Model provider protocols for codesmith"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

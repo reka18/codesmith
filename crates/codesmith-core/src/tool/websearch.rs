@@ -11,7 +11,7 @@ use std::time::Duration;
 pub const NO_RESULTS: &str = "No search results found. Please try a different query.";
 pub const DEFAULT_RESULTS: usize = 8;
 
-/// `websearch` in skeptical.json.
+/// `websearch` in codesmith.json.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WebSearchConfig {
@@ -109,7 +109,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         return Err("Query must not be empty".into());
     }
     let cfg = ctx.websearch.as_ref().filter(|c| c.enabled()).ok_or(
-        "Web search is not configured. Set websearch.url to a SearXNG instance in skeptical.json.",
+        "Web search is not configured. Set websearch.url to a SearXNG instance in codesmith.json.",
     )?;
     let base = cfg.url.as_deref().unwrap().trim_end_matches('/');
     let limit = opt_u64(input, "limit")
@@ -131,7 +131,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         .query(&params)
         .header(
             "User-Agent",
-            concat!("skeptical/", env!("CARGO_PKG_VERSION")),
+            concat!("codesmith/", env!("CARGO_PKG_VERSION")),
         )
         .timeout(Duration::from_secs(60))
         .send()

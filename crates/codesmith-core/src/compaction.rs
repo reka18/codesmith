@@ -3,7 +3,7 @@
 //! the newest exchanges are kept verbatim. The prompt and budget rules are
 //! ported from OpenCode's `SessionCompaction`.
 
-use skeptical_ai::{Message, Part, Role};
+use codesmith_ai::{Message, Part, Role};
 
 /// The least of the window kept free for the last reply and the summary.
 pub const RESERVE_MIN: u64 = 16_000;

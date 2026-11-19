@@ -1,5 +1,5 @@
 //! File snapshots for undo/redo, ported from OpenCode's design: a private git
-//! repository per project (in skeptical's data dir, never the project's own
+//! repository per project (in codesmith's data dir, never the project's own
 //! `.git`) records the working tree as git trees. Capturing is `add -A` +
 //! `write-tree`; restoring checks files out of a tree and removes files that
 //! did not exist in it. `.gitignore` is respected, so build output is skipped.

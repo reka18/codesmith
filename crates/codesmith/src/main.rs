@@ -1,20 +1,20 @@
-//! `skeptical`: a terminal coding agent (a Rust port of OpenCode).
+//! `codesmith`: a terminal coding agent (a Rust port of OpenCode).
 
 mod render;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use skeptical_core::permission::{Asker, Fixed, Reply, Request};
-use skeptical_core::session::{self, Options, Session};
-use skeptical_core::snapshot::Snapshots;
-use skeptical_core::store::{self, Store};
-use skeptical_core::{agent, command, config, instructions, paths, prompt};
+use codesmith_core::permission::{Asker, Fixed, Reply, Request};
+use codesmith_core::session::{self, Options, Session};
+use codesmith_core::snapshot::Snapshots;
+use codesmith_core::store::{self, Store};
+use codesmith_core::{agent, command, config, instructions, paths, prompt};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "skeptical", version, about = "A terminal coding agent")]
+#[command(name = "codesmith", version, about = "A terminal coding agent")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -29,7 +29,7 @@ enum Command {
     Run(RunArgs),
     /// List configured providers and models.
     Models,
-    /// List commands available as `skeptical run /name ...`.
+    /// List commands available as `codesmith run /name ...`.
     Commands,
     /// Manage stored sessions.
     Session {
@@ -112,7 +112,7 @@ enum Format {
 
 #[derive(Subcommand)]
 enum Debug {
-    /// Show where skeptical reads and writes files.
+    /// Show where codesmith reads and writes files.
     Paths,
     /// Show the merged config and the files it came from.
     Config,
@@ -167,8 +167,8 @@ impl Asker for Terminal {
     }
 }
 
-impl skeptical_core::question::Questioner for Terminal {
-    fn ask(&self, prompts: &[skeptical_core::question::Prompt]) -> Option<Vec<Vec<String>>> {
+impl codesmith_core::question::Questioner for Terminal {
+    fn ask(&self, prompts: &[codesmith_core::question::Prompt]) -> Option<Vec<Vec<String>>> {
         let mut tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -220,7 +220,7 @@ impl skeptical_core::question::Questioner for Terminal {
             if line.trim() == "q" {
                 return None;
             }
-            answers.push(skeptical_core::question::interpret(&line, p));
+            answers.push(codesmith_core::question::interpret(&line, p));
         }
         Some(answers)
     }
@@ -243,7 +243,7 @@ async fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     match cli.command {
         None => {
-            eprintln!("The interactive terminal UI is not built yet. Use `skeptical run \"your message\"`.");
+            eprintln!("The interactive terminal UI is not built yet. Use `codesmith run \"your message\"`.");
             Ok(())
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
@@ -340,7 +340,7 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             if let Some(c) = m.context {
                 println!(
                     "compacts above ~{} prompt tokens",
-                    skeptical_core::compaction::ceiling(c)
+                    codesmith_core::compaction::ceiling(c)
                 );
             }
             println!(
@@ -533,7 +533,7 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
                 std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?
             };
             let e: store::Export =
-                serde_json::from_str(&text).context("not a skeptical session export")?;
+                serde_json::from_str(&text).context("not a codesmith session export")?;
             db.import(&e)?;
             println!("Imported {}", e.info.id);
         }
@@ -560,7 +560,7 @@ fn snapshot_target(
 
 /// `changes` are relative to the tree being restored: `A` files exist now but
 /// not there, `D` files exist there but not now.
-fn print_changes(changes: &[skeptical_core::snapshot::Change], redo: bool) {
+fn print_changes(changes: &[codesmith_core::snapshot::Change], redo: bool) {
     for c in changes {
         let what = match (c.status, redo) {
             ('A', _) => "removed",
@@ -655,7 +655,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             .write(true)
             .open("/dev/tty")
             .is_ok();
-    let questioner: Option<Arc<dyn skeptical_core::question::Questioner>> = if interactive {
+    let questioner: Option<Arc<dyn codesmith_core::question::Questioner>> = if interactive {
         Some(Arc::new(Terminal))
     } else {
         None

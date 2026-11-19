@@ -16,7 +16,7 @@ use crate::config::ToolOutputConfig;
 use crate::paths;
 use crate::permission::{Denied, Gate, Request};
 use serde_json::Value;
-use skeptical_ai::ToolSpec;
+use codesmith_ai::ToolSpec;
 use std::path::{Component, Path, PathBuf};
 
 pub use edit::apply_edit;

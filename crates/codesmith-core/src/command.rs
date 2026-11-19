@@ -45,7 +45,7 @@ pub fn builtins(project: &Path) -> BTreeMap<String, Command> {
 
 /// Folders that may contain `<name>.md` commands, lowest precedence first.
 pub fn roots(cwd: &Path, root: &Path, config_dir: &Path, home: &Path) -> Vec<PathBuf> {
-    let claude = std::env::var_os("SKEPTICAL_DISABLE_CLAUDE_CODE").is_none();
+    let claude = std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none();
     let mut out = vec![config_dir.join("commands")];
     if claude {
         out.push(home.join(".claude/commands"));
@@ -59,7 +59,7 @@ pub fn roots(cwd: &Path, root: &Path, config_dir: &Path, home: &Path) -> Vec<Pat
         if claude {
             out.push(d.join(".claude/commands"));
         }
-        out.push(d.join(".skeptical/commands"));
+        out.push(d.join(".codesmith/commands"));
     }
     out
 }

@@ -1,12 +1,12 @@
-# skeptical
+# CodeSmith
 
-A terminal coding agent, written in Rust. skeptical is a port of
+A terminal coding agent, written in Rust. CodeSmith is a port of
 [OpenCode](https://github.com/sst/opencode) aiming for feature parity with its
 terminal agent. It is fully local: no hosted services, no accounts, no
 telemetry. Point it at any model provider you like, including one running on
 your own machines.
 
-> **Status: early.** `skeptical run` works end to end with the core tools,
+> **Status: early.** `codesmith run` works end to end with the core tools,
 > permissions, project instructions and persistent sessions (continue, titles,
 > automatic compaction). The interactive terminal UI, MCP and the long tail of
 > providers are still to come; see [Roadmap](#roadmap).
@@ -14,16 +14,16 @@ your own machines.
 ## Install
 
 ```sh
-cargo install --path crates/skeptical
+cargo install --path crates/codesmith
 ```
 
 ## Use
 
 ```sh
-skeptical run "explain what src/main.rs does"
-skeptical run -m anthropic/claude-sonnet-4-5 "add a --verbose flag"
-git diff | skeptical run "review this change"
-skeptical run --agent plan "how should I restructure the config module?"
+codesmith run "explain what src/main.rs does"
+codesmith run -m anthropic/claude-sonnet-4-5 "add a --verbose flag"
+git diff | codesmith run "review this change"
+codesmith run --agent plan "how should I restructure the config module?"
 ```
 
 | Flag | Meaning |
@@ -38,23 +38,23 @@ skeptical run --agent plan "how should I restructure the config module?"
 | `-s, --session ID` | Continue a specific session |
 | `--title TEXT` | Title a new session (otherwise one is generated) |
 
-Without `--auto`, skeptical asks on the terminal before any action a rule
+Without `--auto`, CodeSmith asks on the terminal before any action a rule
 marks `ask`: allow once, always allow, or reject with feedback for the model.
 
 ## Skills and commands
 
 **Skills** are folders with a `SKILL.md` (a `name`/`description` header and
 instructions). The model sees the list and loads one with the `skill` tool when
-a task matches. skeptical looks in `~/.config/skeptical/skills/`,
+a task matches. CodeSmith looks in `~/.config/codesmith/skills/`,
 `~/.agents/skills/`, `~/.claude/skills/`, and in each project folder's
-`.skeptical/skills/`, `.claude/skills/` and `.agents/skills/`.
+`.codesmith/skills/`, `.claude/skills/` and `.agents/skills/`.
 
-**Commands** are prompt templates run as `skeptical run /name args`. Put them
-in `.skeptical/commands/<name>.md` (or `~/.config/skeptical/commands/`, or
+**Commands** are prompt templates run as `codesmith run /name args`. Put them
+in `.codesmith/commands/<name>.md` (or `~/.config/codesmith/commands/`, or
 `commands` in config), optionally with `description`, `agent` and `model` in a
 header. `$ARGUMENTS` is the whole argument string and `$1`…`$9` single
 arguments. Built in: `/init` (write or improve `AGENTS.md`) and `/review`
-(review uncommitted changes, a commit, a branch or a PR). `skeptical commands`
+(review uncommitted changes, a commit, a branch or a PR). `codesmith commands`
 lists them.
 
 ```markdown
@@ -67,28 +67,28 @@ Read $1 and explain what it does in exactly one sentence.
 ## Sessions
 
 Every run is saved to a local SQLite database
-(`~/.local/share/skeptical/skeptical.db`, or `$SKEPTICAL_DB`). New sessions
+(`~/.local/share/codesmith/codesmith.db`, or `$CODESMITH_DB`). New sessions
 get a short generated title. When a conversation nears the model's context
 window (`limit.context` in config), older history is replaced by a structured
 summary and the newest exchanges are kept verbatim, so long sessions keep
 going.
 
 ```sh
-skeptical session list [--all] [--json]
-skeptical session export <id> > session.json
-skeptical session import session.json
-skeptical session delete <id>
-skeptical session diff  [id]   # file changes since the latest turn began
-skeptical session undo  [id]   # restore the files and hide the latest turn
-skeptical session redo  [id]   # bring it back (until a new turn is added)
+codesmith session list [--all] [--json]
+codesmith session export <id> > session.json
+codesmith session import session.json
+codesmith session delete <id>
+codesmith session diff  [id]   # file changes since the latest turn began
+codesmith session undo  [id]   # restore the files and hide the latest turn
+codesmith session redo  [id]   # bring it back (until a new turn is added)
 ```
 
 Undo works by snapshotting the project at the start of each turn into a
-private git repository under skeptical's data directory. It never touches your
+private git repository under CodeSmith's data directory. It never touches your
 own `.git`, works in folders that are not git repositories, and respects
 `.gitignore`. Set `"snapshots": false` to turn it off.
 
-Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|prompt`.
+Other commands: `codesmith models`, `codesmith debug paths|config|model|agents|prompt`.
 
 ## Tools
 
@@ -109,14 +109,14 @@ Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|p
 
 ## Configuration
 
-skeptical reads `skeptical.json` or `skeptical.jsonc` (comments and trailing
+codesmith reads `codesmith.json` or `codesmith.jsonc` (comments and trailing
 commas allowed), lowest to highest precedence:
 
-1. `~/.config/skeptical/skeptical.json` (global)
-2. the file named by `$SKEPTICAL_CONFIG`
+1. `~/.config/codesmith/codesmith.json` (global)
+2. the file named by `$CODESMITH_CONFIG`
 3. from the project root (nearest `.git`) down to the working directory: each
-   folder's `skeptical.json` and `.skeptical/skeptical.json`
-4. inline JSON in `$SKEPTICAL_CONFIG_CONTENT`
+   folder's `codesmith.json` and `.codesmith/codesmith.json`
+4. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 
 `{env:VAR}` and `{file:path}` are substituted anywhere in the text.
 
@@ -144,7 +144,7 @@ commas allowed), lowest to highest precedence:
 
 **Web search** uses a self-hosted SearXNG instance, never a hosted search
 API. Enable the JSON format in its `settings.yml` (`search: formats: [html,
-json]`) and point skeptical at it:
+json]`) and point CodeSmith at it:
 
 ```jsonc
 { "websearch": { "url": "http://localhost:8888", "results": 8 } }
@@ -163,7 +163,7 @@ reading `.env` files, which asks.
 
 **Instructions**: `AGENTS.md` files from the project root down to the working
 directory (with `CLAUDE.md` as a fallback), plus
-`~/.config/skeptical/AGENTS.md` and anything listed under `instructions`.
+`~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
 ## Roadmap
 
@@ -177,5 +177,5 @@ directory (with `CLAUDE.md` as a fallback), plus
 
 ## License
 
-MIT. skeptical is derived from OpenCode, © 2025 opencode, also MIT; see
+MIT. CodeSmith is derived from OpenCode, © 2025 opencode, also MIT; see
 [LICENSE](LICENSE).

@@ -2,8 +2,8 @@
 //! one JSON object per event line with `--format json`.
 
 use serde_json::{json, Value};
-use skeptical_ai::Usage;
-use skeptical_core::session::Sink;
+use codesmith_ai::Usage;
+use codesmith_core::session::Sink;
 use std::io::Write;
 use std::time::Duration;
 
@@ -167,8 +167,8 @@ impl Sink for Printer {
         }
     }
 
-    fn todos(&mut self, todos: &[skeptical_core::tool::todo::Todo]) {
-        use skeptical_core::tool::todo::Status;
+    fn todos(&mut self, todos: &[codesmith_core::tool::todo::Todo]) {
+        use codesmith_core::tool::todo::Status;
         if self.json {
             self.emit(json!({"type": "todos", "todos": todos}));
             return;

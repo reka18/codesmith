@@ -1,6 +1,6 @@
 [package]
-name = "skeptical-core"
-description = "Agent loop, tools, permissions and config for skeptical"
+name = "codesmith-core"
+description = "Agent loop, tools, permissions and config for codesmith"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -24,7 +24,7 @@ reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-skeptical-ai.workspace = true
+codesmith-ai.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

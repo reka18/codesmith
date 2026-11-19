@@ -37,7 +37,7 @@ pub fn spec(shell: &str) -> (String, Value) {
         "Rely on automatic truncation unless filtering the output is more useful.".into(),
         "Commands still running after their timeout move to the background.".into(),
         "Background commands return immediately, and you will be notified when they complete.".into(),
-        "The current session ID is available in the SKEPTICAL_SESSION_ID environment variable.".into(),
+        "The current session ID is available in the CODESMITH_SESSION_ID environment variable.".into(),
     ]
     .join(" ");
     (
@@ -350,7 +350,7 @@ fn spawn(
     cmd.arg("-c")
         .arg(command)
         .current_dir(dir)
-        .env("SKEPTICAL_SESSION_ID", session)
+        .env("CODESMITH_SESSION_ID", session)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
@@ -445,7 +445,7 @@ mod tests {
         std::fs::create_dir(env.root().join("sub")).unwrap();
         let out = run(
             &env.ctx(),
-            &json!({"command": "pwd; echo $SKEPTICAL_SESSION_ID", "workdir": "sub"}),
+            &json!({"command": "pwd; echo $CODESMITH_SESSION_ID", "workdir": "sub"}),
         )
         .await
         .unwrap()

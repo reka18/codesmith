@@ -5,7 +5,7 @@
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use skeptical_ai::{Message, Usage};
+use codesmith_ai::{Message, Usage};
 use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i32 = 1;
@@ -82,11 +82,11 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// `$SKEPTICAL_DB`, else `<data dir>/skeptical.db`.
+/// `$CODESMITH_DB`, else `<data dir>/codesmith.db`.
 pub fn default_path() -> PathBuf {
-    std::env::var_os("SKEPTICAL_DB")
+    std::env::var_os("CODESMITH_DB")
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::paths::data_dir().join("skeptical.db"))
+        .unwrap_or_else(|| crate::paths::data_dir().join("codesmith.db"))
 }
 
 /// The text the model sees for a checkpoint.
@@ -126,7 +126,7 @@ impl Store {
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > SCHEMA_VERSION {
-            return Err(anyhow!("database schema {version} is newer than this skeptical understands ({SCHEMA_VERSION}); upgrade skeptical"));
+            return Err(anyhow!("database schema {version} is newer than this codesmith understands ({SCHEMA_VERSION}); upgrade codesmith"));
         }
         if version < 1 {
             conn.execute_batch(
@@ -444,7 +444,7 @@ pub fn redo_target(entries: &[Entry]) -> Option<(i64, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skeptical_ai::{Part, Role};
+    use codesmith_ai::{Part, Role};
 
     fn info(id: &str, dir: &str, updated: i64) -> Info {
         Info {
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn reopening_a_file_keeps_data() {
         let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("db/skeptical.db");
+        let path = d.path().join("db/codesmith.db");
         {
             let s = Store::open(&path).unwrap();
             s.create(&info("a", "/p", 1)).unwrap();
