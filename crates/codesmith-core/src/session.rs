@@ -77,6 +77,8 @@ pub struct Options {
     pub title: Option<String>,
     /// The session that delegated to this one, for subagents.
     pub parent: Option<String>,
+    /// Connected MCP servers, shared across the sessions of one process.
+    pub mcp: Option<Arc<crate::mcp::Mcp>>,
     /// Who answers the `question` tool; without one the tool is not offered.
     pub questioner: Option<Arc<dyn crate::question::Questioner>>,
 }
@@ -110,6 +112,7 @@ pub struct Session {
     skills: Vec<crate::skill::Skill>,
     jobs: tool::shell::Jobs,
     questioner: Option<Arc<dyn crate::question::Questioner>>,
+    mcp: Arc<crate::mcp::Mcp>,
 }
 
 impl Session {
@@ -262,6 +265,7 @@ impl Session {
             skills,
             jobs: tool::shell::Jobs::default(),
             questioner: opts.questioner,
+            mcp: opts.mcp.unwrap_or_else(crate::mcp::Mcp::empty),
         })
     }
 
@@ -326,6 +330,11 @@ impl Session {
                     }
                     t => t.spec(&self.shell),
                 })
+                .chain(self.mcp_tools().map(|t| codesmith_ai::ToolSpec {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.schema.clone(),
+                }))
                 .collect(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
@@ -444,6 +453,7 @@ impl Session {
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
                     _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
+                    _ if self.mcp.tool(&name).is_some() => self.run_mcp(&name, &input).await,
                     Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
                     Some(Tool::Subagent) => self.run_subagent(&input, sink).await,
                     Some(Tool::Skill) => self.run_skill(&input),
@@ -524,6 +534,35 @@ impl Session {
                 (tool::todo::summarize(&self.todos), false)
             }
             Err(e) => (e, true),
+        }
+    }
+
+    /// MCP tools this agent may use: hidden when its rules deny the tool outright.
+    fn mcp_tools(&self) -> impl Iterator<Item = &crate::mcp::McpTool> {
+        let rules = &self.agent.permissions;
+        self.mcp.tools.iter().filter(move |t| {
+            crate::permission::evaluate(&t.name, "*", rules) != crate::permission::Effect::Deny
+        })
+    }
+
+    async fn run_mcp(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        if !self.mcp_tools().any(|t| t.name == name) {
+            return (
+                format!("The {name} tool is not available to this agent."),
+                true,
+            );
+        }
+        let args = tool::repair(input);
+        let title = format!("Run MCP tool {name}");
+        if let Err(e) = self.allowed(name, "*", title) {
+            return (e, true);
+        }
+        match self.mcp.call(name, args).await {
+            Ok((text, is_error)) => (
+                tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+                is_error,
+            ),
+            Err(e) => (format!("MCP tool {name} failed: {e:#}"), true),
         }
     }
 
@@ -618,6 +657,7 @@ impl Session {
         };
         let opts = Options {
             questioner: None,
+            mcp: Some(self.mcp.clone()),
             agent: Some(agent_id.clone()),
             model: s("model"),
             resume: s("sessionID"),

@@ -42,6 +42,7 @@ struct Runner {
     tx: UnboundedSender<Ev>,
     asker: Arc<dyn Asker>,
     questioner: Option<Arc<dyn Questioner>>,
+    mcp: Arc<codesmith_core::mcp::Mcp>,
     agent: Option<String>,
     model: Option<String>,
     session: Option<Session>,
@@ -65,6 +66,7 @@ impl Runner {
                 title: None,
                 parent: None,
                 questioner: self.questioner.clone(),
+                mcp: Some(self.mcp.clone()),
             },
             self.asker.clone(),
             open_store(),
@@ -333,6 +335,17 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         prompter.clone()
     };
     let questioner: Option<Arc<dyn Questioner>> = if opts.auto { None } else { Some(prompter) };
+    let mcp = crate::connect_mcp(&loaded, false).await;
+    let mcp_failures: Vec<String> = mcp
+        .statuses
+        .iter()
+        .filter_map(|(n, s)| match s {
+            codesmith_core::mcp::Status::Failed(e) => {
+                Some(format!("MCP server {n} failed to start: {e}"))
+            }
+            _ => None,
+        })
+        .collect();
     let mut r = Runner {
         app: App::new(),
         loaded,
@@ -340,6 +353,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         tx: tx.clone(),
         asker,
         questioner,
+        mcp,
         agent: opts.agent,
         model: opts.model,
         session: None,
@@ -354,6 +368,9 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             env!("CARGO_PKG_VERSION"),
             r.cwd.display()
         ));
+    }
+    for f in mcp_failures {
+        r.app.notice(f);
     }
     if let Some(p) = opts.prompt.filter(|p| !p.trim().is_empty()) {
         r.submit(p.clone(), p);

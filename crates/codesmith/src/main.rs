@@ -50,6 +50,11 @@ enum Command {
     Models,
     /// List commands available as `codesmith run /name ...`.
     Commands,
+    /// Show MCP servers and their tools.
+    Mcp {
+        #[command(subcommand)]
+        what: McpCmd,
+    },
     /// Manage stored sessions.
     Session {
         #[command(subcommand)]
@@ -93,6 +98,12 @@ struct RunArgs {
     /// Title for a new session (otherwise one is generated).
     #[arg(long)]
     title: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum McpCmd {
+    /// Connect to each configured server and list its status and tools.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -288,6 +299,35 @@ async fn run(cli: Cli) -> Result<()> {
             .await
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
+        Some(Command::Mcp { what: McpCmd::List }) => {
+            let loaded = config::load(&cwd)?;
+            if loaded.config.mcp.servers.is_empty() {
+                println!("No MCP servers configured (add them under \"mcp\": {{\"servers\": ...}} in codesmith.json).");
+                return Ok(());
+            }
+            let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
+            for (name, s) in &mcp.statuses {
+                match s {
+                    codesmith_core::mcp::Status::Connected { tools } => {
+                        println!("{name}: connected, {tools} tool(s)")
+                    }
+                    codesmith_core::mcp::Status::Disabled => println!("{name}: disabled"),
+                    codesmith_core::mcp::Status::Failed(e) => println!("{name}: failed: {e}"),
+                }
+                for t in mcp.tools.iter().filter(|t| &t.server == name) {
+                    let d: String = t
+                        .description
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(70)
+                        .collect();
+                    println!("  {}  {d}", t.name);
+                }
+            }
+            Ok(())
+        }
         Some(Command::Commands) => {
             let loaded = config::load(&cwd)?;
             for (name, c) in all_commands(&cwd, &loaded) {
@@ -463,6 +503,22 @@ fn stdin_has_input() -> bool {
     }
     #[cfg(not(unix))]
     true
+}
+
+/// Connect to the configured MCP servers, warning about any that fail.
+pub(crate) async fn connect_mcp(
+    loaded: &config::Loaded,
+    warn: bool,
+) -> Arc<codesmith_core::mcp::Mcp> {
+    let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
+    if warn {
+        for (name, s) in &mcp.statuses {
+            if let codesmith_core::mcp::Status::Failed(e) = s {
+                eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} failed to start: {e}");
+            }
+        }
+    }
+    mcp
 }
 
 pub(crate) fn all_commands(
@@ -706,6 +762,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     } else {
         Arc::new(Terminal)
     };
+    let mcp = connect_mcp(&loaded, args.format != Format::Json).await;
     let mut session = Session::new(
         &loaded,
         cwd,
@@ -716,6 +773,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             title: args.title,
             parent: None,
             questioner,
+            mcp: Some(mcp),
         },
         asker,
         db,

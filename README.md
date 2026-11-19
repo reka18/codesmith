@@ -177,6 +177,30 @@ reading `.env` files, which asks.
 directory (with `CLAUDE.md` as a fallback), plus
 `~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
+## MCP servers
+
+Tools from [Model Context Protocol](https://modelcontextprotocol.io) servers
+appear to the model as `<server>_<tool>`, in OpenCode's config shape:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "fs": { "type": "local", "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."] },
+      "docs": { "type": "remote", "url": "http://127.0.0.1:8080/mcp", "headers": { "Authorization": "Bearer {env:DOCS_TOKEN}" } }
+    }
+  }
+}
+```
+
+Local servers run over stdio (their stderr goes to the data dir's
+`log/mcp-<name>.log`); remote servers use streamable HTTP. Each server can set
+`disabled`, `environment`, `cwd` and `timeout` (`startup`, `catalog`,
+`execution`, in milliseconds). Calls go through permissions like any other
+tool, keyed by the tool's name: `{"action": "github_*", "resource": "*", "effect": "deny"}` hides a
+server's tools from the model.
+`codesmith mcp list` shows each server's status and tools.
+
 ## Roadmap
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
@@ -184,7 +208,7 @@ directory (with `CLAUDE.md` as a fallback), plus
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
 3. ~~Interactive terminal UI~~; local server API
-4. MCP, more providers and logins, formatters, worktrees, stats
+4. ~~MCP (stdio and HTTP tools)~~, MCP OAuth, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
 
 ## License
