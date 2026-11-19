@@ -216,7 +216,8 @@ mod tests {
                 "webfetch",
                 "todowrite",
                 "subagent",
-                "skill"
+                "skill",
+                "question"
             ]
         );
         assert_eq!(
@@ -229,7 +230,8 @@ mod tests {
                 "webfetch",
                 "todowrite",
                 "subagent",
-                "skill"
+                "skill",
+                "question"
             ]
         );
         assert_eq!(

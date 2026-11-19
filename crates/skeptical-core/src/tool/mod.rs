@@ -72,9 +72,10 @@ pub enum Tool {
     Todowrite,
     Subagent,
     Skill,
+    Question,
 }
 
-pub const ALL: [Tool; 10] = [
+pub const ALL: [Tool; 11] = [
     Tool::Read,
     Tool::Write,
     Tool::Edit,
@@ -85,6 +86,7 @@ pub const ALL: [Tool; 10] = [
     Tool::Todowrite,
     Tool::Subagent,
     Tool::Skill,
+    Tool::Question,
 ];
 
 impl Tool {
@@ -100,12 +102,16 @@ impl Tool {
             Tool::Todowrite => "todowrite",
             Tool::Subagent => "subagent",
             Tool::Skill => "skill",
+            Tool::Question => "question",
         }
     }
 
     /// Tools the session runs itself, because they need session state.
     pub fn session_level(self) -> bool {
-        matches!(self, Tool::Todowrite | Tool::Subagent | Tool::Skill)
+        matches!(
+            self,
+            Tool::Todowrite | Tool::Subagent | Tool::Skill | Tool::Question
+        )
     }
 
     pub fn from_name(name: &str) -> Option<Tool> {
@@ -132,6 +138,7 @@ impl Tool {
             Tool::Todowrite => todo::spec(),
             Tool::Subagent => subagent::spec(&[]),
             Tool::Skill => crate::skill::tool_spec(&[]),
+            Tool::Question => crate::question::spec(),
         };
         ToolSpec {
             name: self.name().to_string(),
@@ -149,7 +156,7 @@ impl Tool {
             Tool::Grep => grep::run(ctx, input),
             Tool::Shell => shell::run(ctx, input).await,
             Tool::Webfetch => webfetch::run(ctx, input).await,
-            Tool::Todowrite | Tool::Subagent | Tool::Skill => {
+            Tool::Todowrite | Tool::Subagent | Tool::Skill | Tool::Question => {
                 Err(format!("{} must be run by the session", self.name()))
             }
         }

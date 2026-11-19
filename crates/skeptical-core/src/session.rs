@@ -77,6 +77,8 @@ pub struct Options {
     pub title: Option<String>,
     /// The session that delegated to this one, for subagents.
     pub parent: Option<String>,
+    /// Who answers the `question` tool; without one the tool is not offered.
+    pub questioner: Option<Arc<dyn crate::question::Questioner>>,
 }
 
 pub struct Session {
@@ -107,6 +109,7 @@ pub struct Session {
     pub todos: Vec<Todo>,
     skills: Vec<crate::skill::Skill>,
     jobs: tool::shell::Jobs,
+    questioner: Option<Arc<dyn crate::question::Questioner>>,
 }
 
 impl Session {
@@ -164,6 +167,9 @@ impl Session {
         }
         if skills.is_empty() {
             tools.retain(|t| *t != Tool::Skill);
+        }
+        if opts.questioner.is_none() {
+            tools.retain(|t| *t != Tool::Question);
         }
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
@@ -252,6 +258,7 @@ impl Session {
             todos: Vec::new(),
             skills,
             jobs: tool::shell::Jobs::default(),
+            questioner: opts.questioner,
         })
     }
 
@@ -437,6 +444,7 @@ impl Session {
                     Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
                     Some(Tool::Subagent) => self.run_subagent(&input, sink).await,
                     Some(Tool::Skill) => self.run_skill(&input),
+                    Some(Tool::Question) => self.run_question(&input),
                     _ => {
                         let ctx = Ctx {
                             cwd: self.cwd.clone(),
@@ -515,6 +523,23 @@ impl Session {
         }
     }
 
+    fn run_question(&self, input: &serde_json::Value) -> (String, bool) {
+        let Some(q) = self.questioner.clone() else {
+            return ("No user is available to answer questions in this session. Make a reasonable assumption, state it, and continue.".into(), true);
+        };
+        if let Err(e) = self.allowed("question", "*", "Ask the user".into()) {
+            return (format!("Permission denied: question ({e})"), true);
+        }
+        let prompts = match crate::question::parse(&tool::repair(input)) {
+            Ok(p) => p,
+            Err(e) => return (e, true),
+        };
+        match tokio::task::block_in_place(|| q.ask(&prompts)) {
+            Some(answers) => (crate::question::to_model_content(&prompts, &answers), false),
+            None => ("The user dismissed these questions without answering. Continue with your best judgement, or end your turn and wait for the user.".into(), true),
+        }
+    }
+
     fn run_skill(&self, input: &serde_json::Value) -> (String, bool) {
         let input = tool::repair(input);
         let Some(id) = input.get("id").and_then(|v| v.as_str()) else {
@@ -588,6 +613,7 @@ impl Session {
             None => None,
         };
         let opts = Options {
+            questioner: None,
             agent: Some(agent_id.clone()),
             model: s("model"),
             resume: s("sessionID"),

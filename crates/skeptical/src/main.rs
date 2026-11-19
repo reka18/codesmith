@@ -167,6 +167,65 @@ impl Asker for Terminal {
     }
 }
 
+impl skeptical_core::question::Questioner for Terminal {
+    fn ask(&self, prompts: &[skeptical_core::question::Prompt]) -> Option<Vec<Vec<String>>> {
+        let mut tty = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .ok()?;
+        let mut answers = Vec::new();
+        for p in prompts {
+            let _ = write!(
+                tty,
+                "\n\x1b[35m{}\x1b[0m {}\n",
+                if p.header.is_empty() {
+                    "Question"
+                } else {
+                    &p.header
+                },
+                p.question
+            );
+            for (i, o) in p.options.iter().enumerate() {
+                let _ = writeln!(
+                    tty,
+                    "  {}. {}\x1b[2m{}\x1b[0m",
+                    i + 1,
+                    o.label,
+                    if o.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", o.description)
+                    }
+                );
+            }
+            let _ = write!(
+                tty,
+                "  {}or type your own answer; empty to skip, q to dismiss all\n> ",
+                if p.multiple {
+                    "numbers separated by commas, "
+                } else {
+                    "a number, "
+                }
+            );
+            let _ = tty.flush();
+            let mut line = String::new();
+            let mut buf = [0u8; 1];
+            while let Ok(1) = tty.read(&mut buf) {
+                if buf[0] == b'\n' {
+                    break;
+                }
+                line.push(buf[0] as char);
+            }
+            if line.trim() == "q" {
+                return None;
+            }
+            answers.push(skeptical_core::question::interpret(&line, p));
+        }
+        Some(answers)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -571,6 +630,17 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         agent_arg = agent_arg.or(c.agent.clone());
         model_arg = model_arg.or(c.model.clone());
     }
+    let interactive = !args.auto
+        && std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .is_ok();
+    let questioner: Option<Arc<dyn skeptical_core::question::Questioner>> = if interactive {
+        Some(Arc::new(Terminal))
+    } else {
+        None
+    };
     let asker: Arc<dyn Asker> = if args.auto {
         Arc::new(Fixed(Reply::Once))
     } else {
@@ -585,6 +655,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             resume,
             title: args.title,
             parent: None,
+            questioner,
         },
         asker,
         db,

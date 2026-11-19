@@ -104,6 +104,7 @@ Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|p
 | `todowrite` | Keep a visible todo list for multi-step work |
 | `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
 | `skill` | Load a skill's instructions when a task matches its description |
+| `question` | Ask you multiple-choice or free-form questions on the terminal (not offered with `--auto` or without a terminal) |
 
 ## Configuration
 
@@ -159,8 +160,8 @@ directory (with `CLAUDE.md` as a fallback), plus
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
-   webfetch, undo/redo snapshots, skills, commands, background shell commands~~; the question tool, web search
-   (self-hosted SearXNG)
+   webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool~~; web search (self-hosted
+   SearXNG)
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
