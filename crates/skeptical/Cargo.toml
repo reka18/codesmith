@@ -1,0 +1,20 @@
+[package]
+name = "skeptical"
+description = "A terminal coding agent. A Rust port of OpenCode."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "skeptical"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+skeptical-ai.workspace = true
+skeptical-core.workspace = true
+tokio.workspace = true

@@ -1,0 +1,117 @@
+# skeptical
+
+A terminal coding agent, written in Rust. skeptical is a port of
+[OpenCode](https://github.com/sst/opencode) aiming for feature parity with its
+terminal agent. It is fully local: no hosted services, no accounts, no
+telemetry. Point it at any model provider you like, including one running on
+your own machines.
+
+> **Status: early.** Phase 1 of the port is done. `skeptical run` works end
+> to end with the core tools, permissions and project instructions. Persistent
+> sessions, the interactive terminal UI, MCP and the long tail of providers are
+> still to come; see [Roadmap](#roadmap).
+
+## Install
+
+```sh
+cargo install --path crates/skeptical
+```
+
+## Use
+
+```sh
+skeptical run "explain what src/main.rs does"
+skeptical run -m anthropic/claude-sonnet-4-5 "add a --verbose flag"
+git diff | skeptical run "review this change"
+skeptical run --agent plan "how should I restructure the config module?"
+```
+
+| Flag | Meaning |
+|---|---|
+| `-m, --model provider/model` | Model to use (otherwise `model` from config) |
+| `--agent build\|plan\|<custom>` | `build` (default) can edit; `plan` is read-only |
+| `-f, --file PATH` | Attach a file's contents (repeatable) |
+| `--format json` | One JSON object per event, for scripting |
+| `--auto` | Approve every permission request that no rule denies |
+| `--thinking` | Show the model's reasoning |
+
+Without `--auto`, skeptical asks on the terminal before any action a rule
+marks `ask`: allow once, always allow, or reject with feedback for the model.
+
+Other commands: `skeptical models`, `skeptical debug paths|config|agents|prompt`.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `read` | Read a file (numbered lines, paged) or list a directory |
+| `write` | Create or overwrite a file |
+| `edit` | Exact find-and-replace, tolerant of typographic quotes, dashes and trailing whitespace; preserves CRLF/LF line endings |
+| `glob` | Find files by glob pattern, respecting `.gitignore` |
+| `grep` | Search file contents with ripgrep's regex engine |
+| `shell` | Run a command with a timeout; large output is saved to a file |
+
+## Configuration
+
+skeptical reads `skeptical.json` or `skeptical.jsonc` (comments and trailing
+commas allowed), lowest to highest precedence:
+
+1. `~/.config/skeptical/skeptical.json` (global)
+2. the file named by `$SKEPTICAL_CONFIG`
+3. from the project root (nearest `.git`) down to the working directory: each
+   folder's `skeptical.json` and `.skeptical/skeptical.json`
+4. inline JSON in `$SKEPTICAL_CONFIG_CONTENT`
+
+`{env:VAR}` and `{file:path}` are substituted anywhere in the text.
+
+```jsonc
+{
+  "model": "local/qwen3-coder",
+  "providers": {
+    "local": {
+      "protocol": "openai-chat",            // or "anthropic-messages"
+      "settings": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "{env:LOCAL_API_KEY}" },
+      "body": { "chat_template_kwargs": { "enable_thinking": false } },
+      "models": { "qwen3-coder": { "limit": { "context": 32768, "output": 8192 } } }
+    }
+  },
+  "permissions": [
+    { "action": "shell", "resource": "rm *", "effect": "ask" },
+    { "action": "shell", "resource": "git push *", "effect": "deny" }
+  ],
+  "agents": {
+    "reviewer": { "system": "You review code. Never edit files.", "permissions": [{ "action": "edit", "resource": "*", "effect": "deny" }] }
+  },
+  "instructions": ["docs/STYLE.md"]
+}
+```
+
+`anthropic` (`ANTHROPIC_API_KEY`) and `openai` (`OPENAI_API_KEY`) work with no
+config. Any OpenAI-compatible server (oMLX, vLLM, llama.cpp, Ollama, LM Studio,
+OpenRouter, …) works as a provider with `"protocol": "openai-chat"`.
+
+**Permissions** are an ordered list of `{action, resource, effect}`; the last
+matching rule wins and anything unmatched asks. Actions are tool names, with
+`write` and `edit` sharing `edit`, plus `external_directory` for paths outside
+the project. `*` matches anything; a trailing ` *` also matches the bare
+command (`git *` matches `git`). By default everything is allowed except
+reading `.env` files, which asks.
+
+**Instructions**: `AGENTS.md` files from the project root down to the working
+directory (with `CLAUDE.md` as a fallback), plus
+`~/.config/skeptical/AGENTS.md` and anything listed under `instructions`.
+
+## Roadmap
+
+1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
+2. Persistent event-sourced sessions (SQLite): continue/resume, compaction,
+   undo/redo snapshots, subagents, background shell commands, skills,
+   commands, web tools
+3. Local server API and the interactive terminal UI
+4. MCP, more providers and logins, formatters, worktrees, stats
+5. Native Rust plugins, code mode, ACP, automations
+
+## License
+
+MIT. skeptical is derived from OpenCode, © 2025 opencode, also MIT; see
+[LICENSE](LICENSE).
