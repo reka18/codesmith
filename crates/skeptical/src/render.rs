@@ -77,6 +77,8 @@ pub fn describe(name: &str, input: &Value) -> String {
     match name {
         "subagent" => format!("{}: {}", s("agent"), s("description")),
         "webfetch" => s("url").to_string(),
+        "websearch" => s("query").to_string(),
+        "skill" => s("id").to_string(),
         "todowrite" => String::new(),
         "read" | "write" | "edit" => s("path").to_string(),
         "glob" | "grep" => {

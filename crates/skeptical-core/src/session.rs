@@ -171,6 +171,9 @@ impl Session {
         if opts.questioner.is_none() {
             tools.retain(|t| *t != Tool::Question);
         }
+        if !config.websearch.enabled() {
+            tools.retain(|t| *t != Tool::Websearch);
+        }
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
         let _ = std::fs::create_dir_all(&tmp);
@@ -455,6 +458,7 @@ impl Session {
                             limits: self.limits,
                             client: self.client.clone(),
                             jobs: Some(self.jobs.clone()),
+                            websearch: Some(self.loaded.config.websearch.clone()),
                         };
                         tool::execute(&ctx, &name, &input).await
                     }

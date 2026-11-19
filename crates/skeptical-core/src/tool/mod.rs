@@ -9,6 +9,7 @@ pub mod shell;
 pub mod subagent;
 pub mod todo;
 mod webfetch;
+pub mod websearch;
 mod write;
 
 use crate::config::ToolOutputConfig;
@@ -33,6 +34,7 @@ pub struct Ctx<'a> {
     pub client: reqwest::Client,
     /// Background command registry; `None` where background commands are unavailable.
     pub jobs: Option<shell::Jobs>,
+    pub websearch: Option<websearch::WebSearchConfig>,
 }
 
 /// What a tool returns to the model. `Err` is shown to the model as a failed call.
@@ -69,13 +71,14 @@ pub enum Tool {
     Grep,
     Shell,
     Webfetch,
+    Websearch,
     Todowrite,
     Subagent,
     Skill,
     Question,
 }
 
-pub const ALL: [Tool; 11] = [
+pub const ALL: [Tool; 12] = [
     Tool::Read,
     Tool::Write,
     Tool::Edit,
@@ -83,6 +86,7 @@ pub const ALL: [Tool; 11] = [
     Tool::Grep,
     Tool::Shell,
     Tool::Webfetch,
+    Tool::Websearch,
     Tool::Todowrite,
     Tool::Subagent,
     Tool::Skill,
@@ -99,6 +103,7 @@ impl Tool {
             Tool::Grep => "grep",
             Tool::Shell => "shell",
             Tool::Webfetch => "webfetch",
+            Tool::Websearch => "websearch",
             Tool::Todowrite => "todowrite",
             Tool::Subagent => "subagent",
             Tool::Skill => "skill",
@@ -135,6 +140,7 @@ impl Tool {
             Tool::Grep => grep::spec(),
             Tool::Shell => shell::spec(shell),
             Tool::Webfetch => webfetch::spec(),
+            Tool::Websearch => websearch::spec(),
             Tool::Todowrite => todo::spec(),
             Tool::Subagent => subagent::spec(&[]),
             Tool::Skill => crate::skill::tool_spec(&[]),
@@ -156,6 +162,7 @@ impl Tool {
             Tool::Grep => grep::run(ctx, input),
             Tool::Shell => shell::run(ctx, input).await,
             Tool::Webfetch => webfetch::run(ctx, input).await,
+            Tool::Websearch => websearch::run(ctx, input).await,
             Tool::Todowrite | Tool::Subagent | Tool::Skill | Tool::Question => {
                 Err(format!("{} must be run by the session", self.name()))
             }
@@ -461,6 +468,7 @@ pub(crate) mod testing {
                 limits: ToolOutputConfig::default(),
                 client: reqwest::Client::new(),
                 jobs: Some(shell::Jobs::default()),
+                websearch: None,
             }
         }
         pub fn write(&self, rel: &str, content: &str) -> PathBuf {

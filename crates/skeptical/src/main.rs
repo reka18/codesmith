@@ -405,6 +405,25 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
     Ok(())
 }
 
+/// Whether stdin is something to read a prompt from: a pipe or a file.
+/// A terminal, a socket or a device left open by the parent may never reach
+/// end-of-file, so reading it would hang.
+fn stdin_has_input() -> bool {
+    if std::io::stdin().is_terminal() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::metadata("/dev/stdin") {
+            Ok(m) => m.file_type().is_fifo() || m.file_type().is_file(),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 fn all_commands(
     cwd: &std::path::Path,
     loaded: &config::Loaded,
@@ -589,7 +608,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         _ => None,
     };
     let mut message = args.message.join(" ");
-    if !std::io::stdin().is_terminal() {
+    if stdin_has_input() {
         let mut piped = String::new();
         std::io::stdin().read_to_string(&mut piped)?;
         if !piped.trim().is_empty() {

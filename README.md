@@ -104,6 +104,7 @@ Other commands: `skeptical models`, `skeptical debug paths|config|model|agents|p
 | `todowrite` | Keep a visible todo list for multi-step work |
 | `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
 | `skill` | Load a skill's instructions when a task matches its description |
+| `websearch` | Search the web through your own [SearXNG](https://docs.searxng.org/) instance (only offered when `websearch.url` is set) |
 | `question` | Ask you multiple-choice or free-form questions on the terminal (not offered with `--auto` or without a terminal) |
 
 ## Configuration
@@ -141,6 +142,14 @@ commas allowed), lowest to highest precedence:
 }
 ```
 
+**Web search** uses a self-hosted SearXNG instance, never a hosted search
+API. Enable the JSON format in its `settings.yml` (`search: formats: [html,
+json]`) and point skeptical at it:
+
+```jsonc
+{ "websearch": { "url": "http://localhost:8888", "results": 8 } }
+```
+
 `anthropic` (`ANTHROPIC_API_KEY`) and `openai` (`OPENAI_API_KEY`) work with no
 config. Any OpenAI-compatible server (oMLX, vLLM, llama.cpp, Ollama, LM Studio,
 OpenRouter, …) works as a provider with `"protocol": "openai-chat"`.
@@ -160,8 +169,8 @@ directory (with `CLAUDE.md` as a fallback), plus
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
-   webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool~~; web search (self-hosted
-   SearXNG)
+   webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
+   SearXNG)~~
 3. Local server API and the interactive terminal UI
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations

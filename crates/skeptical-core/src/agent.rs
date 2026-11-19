@@ -214,6 +214,7 @@ mod tests {
                 "grep",
                 "shell",
                 "webfetch",
+                "websearch",
                 "todowrite",
                 "subagent",
                 "skill",
@@ -228,6 +229,7 @@ mod tests {
                 "grep",
                 "shell",
                 "webfetch",
+                "websearch",
                 "todowrite",
                 "subagent",
                 "skill",
@@ -236,7 +238,7 @@ mod tests {
         );
         assert_eq!(
             names(&resolve(&c, "explore").unwrap()),
-            vec!["read", "glob", "grep", "shell", "webfetch"]
+            vec!["read", "glob", "grep", "shell", "webfetch", "websearch"]
         );
         assert_eq!(
             names(&resolve(&c, "general").unwrap()),
@@ -248,6 +250,7 @@ mod tests {
                 "grep",
                 "shell",
                 "webfetch",
+                "websearch",
                 "todowrite",
                 "skill"
             ]
