@@ -1,9 +1,9 @@
 //! Printing a run: streamed text on stdout, tool activity on stderr, or
 //! one JSON object per event line with `--format json`.
 
-use serde_json::{json, Value};
 use codesmith_ai::Usage;
 use codesmith_core::session::Sink;
+use serde_json::{json, Value};
 use std::io::Write;
 use std::time::Duration;
 

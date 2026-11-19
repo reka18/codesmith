@@ -1,6 +1,7 @@
 //! `codesmith`: a terminal coding agent (a Rust port of OpenCode).
 
 mod render;
+mod tui;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -21,6 +22,24 @@ struct Cli {
     /// Print logs to stderr.
     #[arg(long, global = true)]
     print_logs: bool,
+    /// Continue the most recent session in this directory (interactive UI).
+    #[arg(short, long)]
+    r#continue: bool,
+    /// Continue the session with this id (interactive UI).
+    #[arg(short, long)]
+    session: Option<String>,
+    /// Model as provider/model (interactive UI).
+    #[arg(short, long)]
+    model: Option<String>,
+    /// Agent to start with (interactive UI).
+    #[arg(long)]
+    agent: Option<String>,
+    /// Send this prompt as soon as the UI opens.
+    #[arg(long)]
+    prompt: Option<String>,
+    /// Approve every permission request that isn't denied (interactive UI).
+    #[arg(long)]
+    auto: bool,
 }
 
 #[derive(Subcommand)]
@@ -243,8 +262,30 @@ async fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     match cli.command {
         None => {
-            eprintln!("The interactive terminal UI is not built yet. Use `codesmith run \"your message\"`.");
-            Ok(())
+            if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+                return Err(anyhow!("the interactive UI needs a terminal; use `codesmith run \"your message\"` for scripts"));
+            }
+            let resume = match (cli.session, cli.r#continue) {
+                (Some(id), _) => Some(id),
+                (None, true) => Some(
+                    open_store()?
+                        .latest(&cwd.display().to_string())?
+                        .ok_or_else(|| anyhow!("no session to continue in {}", cwd.display()))?
+                        .id,
+                ),
+                (None, false) => None,
+            };
+            tui::run(
+                cwd,
+                tui::Opts {
+                    resume,
+                    agent: cli.agent,
+                    model: cli.model,
+                    prompt: cli.prompt,
+                    auto: cli.auto,
+                },
+            )
+            .await
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
         Some(Command::Commands) => {
@@ -424,7 +465,7 @@ fn stdin_has_input() -> bool {
     true
 }
 
-fn all_commands(
+pub(crate) fn all_commands(
     cwd: &std::path::Path,
     loaded: &config::Loaded,
 ) -> std::collections::BTreeMap<String, command::Command> {

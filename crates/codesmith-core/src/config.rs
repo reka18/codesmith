@@ -14,9 +14,9 @@
 use crate::paths;
 use crate::permission::Rule;
 use anyhow::{anyhow, Context, Result};
+use codesmith_ai::Protocol;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use codesmith_ai::Protocol;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

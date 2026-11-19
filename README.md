@@ -6,10 +6,10 @@ terminal agent. It is fully local: no hosted services, no accounts, no
 telemetry. Point it at any model provider you like, including one running on
 your own machines.
 
-> **Status: early.** `codesmith run` works end to end with the core tools,
-> permissions, project instructions and persistent sessions (continue, titles,
-> automatic compaction). The interactive terminal UI, MCP and the long tail of
-> providers are still to come; see [Roadmap](#roadmap).
+> **Status: early.** The interactive terminal UI and `codesmith run` work end
+> to end with the core tools, permissions, project instructions, persistent
+> sessions, subagents, skills, commands and undo. MCP, the local server API and
+> the long tail of providers are still to come; see [Roadmap](#roadmap).
 
 ## Install
 
@@ -18,6 +18,18 @@ cargo install --path crates/codesmith
 ```
 
 ## Use
+
+Run `codesmith` in a project for the interactive UI (`-c` continues the latest
+session here, `-s ID` a specific one, `--prompt "..."` sends a first message):
+
+- **Enter** sends, **Alt+Enter** or **Ctrl+J** adds a line, **↑/↓** recalls
+  earlier messages, **PgUp/PgDn** scroll
+- **Esc** interrupts a running turn; **Ctrl+C** on an empty prompt quits
+- Permission requests and questions open as dialogs
+- `/new`, `/sessions`, `/undo`, `/redo`, `/agent`, `/model`, `/compact`,
+  `/clear`, `/help`, `/exit`, plus every custom and built-in command
+
+For scripts and one-shot use, `codesmith run`:
 
 ```sh
 codesmith run "explain what src/main.rs does"
@@ -171,7 +183,7 @@ directory (with `CLAUDE.md` as a fallback), plus
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
-3. Local server API and the interactive terminal UI
+3. ~~Interactive terminal UI~~; local server API
 4. MCP, more providers and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
 

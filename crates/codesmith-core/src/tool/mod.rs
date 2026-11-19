@@ -15,8 +15,8 @@ mod write;
 use crate::config::ToolOutputConfig;
 use crate::paths;
 use crate::permission::{Denied, Gate, Request};
-use serde_json::Value;
 use codesmith_ai::ToolSpec;
+use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
 pub use edit::apply_edit;

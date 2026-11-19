@@ -3,9 +3,9 @@
 //! rebuilt from the log, starting at the latest checkpoint.
 
 use anyhow::{anyhow, Context, Result};
+use codesmith_ai::{Message, Usage};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use codesmith_ai::{Message, Usage};
 use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i32 = 1;
