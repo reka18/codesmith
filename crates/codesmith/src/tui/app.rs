@@ -34,6 +34,8 @@ pub struct Tool {
     /// The whole result.
     pub output: String,
     pub diff: Option<Diff>,
+    /// Shown while the model streams the call; it has not started yet.
+    pub forming: bool,
 }
 
 impl Tool {
@@ -298,18 +300,56 @@ impl App {
                 Some(Entry::Reasoning(t)) => t.push_str(&d),
                 _ => self.entries.push(Entry::Reasoning(d)),
             },
+            Ev::ToolInput { id, name } => self.entries.push(Entry::Tool(Tool {
+                id,
+                name,
+                forming: true,
+                ..Default::default()
+            })),
+            Ev::ToolInputEnd { id, call } => {
+                let at = self
+                    .entries
+                    .iter()
+                    .rposition(|e| matches!(e, Entry::Tool(t) if t.forming && t.id == id));
+                match (at, call) {
+                    (Some(i), Some(call)) => {
+                        if let Entry::Tool(t) = &mut self.entries[i] {
+                            t.id = call;
+                        }
+                    }
+                    (Some(i), None) => {
+                        self.entries.remove(i);
+                    }
+                    (None, _) => {}
+                }
+            }
             Ev::ToolStart {
                 id,
                 name,
                 detail,
                 diff,
-            } => self.entries.push(Entry::Tool(Tool {
-                id,
-                name,
-                detail,
-                diff,
-                ..Default::default()
-            })),
+            } => {
+                // The row shown while the call streamed becomes the call.
+                let formed = self.entries.iter_mut().find_map(|e| match e {
+                    Entry::Tool(t) if t.forming && t.id == id => Some(t),
+                    _ => None,
+                });
+                match formed {
+                    Some(t) => {
+                        t.forming = false;
+                        t.name = name;
+                        t.detail = detail;
+                        t.diff = diff;
+                    }
+                    None => self.entries.push(Entry::Tool(Tool {
+                        id,
+                        name,
+                        detail,
+                        diff,
+                        ..Default::default()
+                    })),
+                }
+            }
             Ev::ToolEnd {
                 id,
                 name,
@@ -317,7 +357,7 @@ impl App {
                 error,
             } => {
                 if let Some(Entry::Tool(t)) = self.entries.iter_mut().rev().find(|e| {
-                    matches!(e, Entry::Tool(t) if t.result.is_none()
+                    matches!(e, Entry::Tool(t) if t.result.is_none() && !t.forming
                         && (t.id == id || (id.is_empty() && t.name == name)))
                 }) {
                     t.result = Some((first_line(&output), error));
@@ -346,7 +386,7 @@ impl App {
                 // The asking tool is the latest one still running.
                 let diff = if req.action == "edit" {
                     self.entries.iter().rev().find_map(|e| match e {
-                        Entry::Tool(t) if t.result.is_none() => Some(t.diff.clone()),
+                        Entry::Tool(t) if t.result.is_none() && !t.forming => Some(t.diff.clone()),
                         _ => None,
                     })
                 } else {
@@ -378,6 +418,13 @@ impl App {
             | Ev::Stopped
             | Ev::Background => {}
         }
+    }
+
+    /// The turn is over: calls shown while they streamed that never ran
+    /// (the turn stopped first) go.
+    pub fn drop_forming(&mut self) {
+        self.entries
+            .retain(|e| !matches!(e, Entry::Tool(t) if t.forming));
     }
 
     /// Cancel an open prompt (the session sees a rejection or dismissal).
@@ -1010,6 +1057,60 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_call_shows_while_it_streams() {
+        let mut a = App::new();
+        let input = |id: &str| Ev::ToolInput {
+            id: id.into(),
+            name: "glob".into(),
+        };
+        let end = |id: &str, call: Option<&str>| Ev::ToolInputEnd {
+            id: id.into(),
+            call: call.map(Into::into),
+        };
+        let rows = |a: &App| -> Vec<(String, bool, bool)> {
+            a.entries
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::Tool(t) => Some((t.id.clone(), t.forming, t.result.is_some())),
+                    _ => None,
+                })
+                .collect()
+        };
+        a.on_event(input("call_a"));
+        assert_eq!(rows(&a), [("call_a".into(), true, false)]);
+        // The call the input formed carries a signature after its id.
+        a.on_event(end("call_a", Some("call_a~SIG")));
+        a.on_event(input("call_b"));
+        a.on_event(end("call_b", None));
+        a.on_event(input("call_c"));
+        a.on_event(end("call_c", Some("call_c")));
+        assert_eq!(
+            rows(&a),
+            [
+                ("call_a~SIG".into(), true, false),
+                ("call_c".into(), true, false)
+            ],
+            "a dropped call's row goes"
+        );
+        // The row becomes the running call, then its result.
+        a.on_event(start("call_a~SIG", "glob", "*.rs"));
+        a.on_event(Ev::ToolEnd {
+            id: "call_a~SIG".into(),
+            name: "glob".into(),
+            output: "a.rs".into(),
+            error: false,
+        });
+        let Some(Entry::Tool(t)) = a.entries.first() else {
+            panic!("{:?}", a.entries)
+        };
+        assert_eq!((t.detail.as_str(), t.forming), ("*.rs", false));
+        assert_eq!(rows(&a)[0], ("call_a~SIG".into(), false, true));
+        // A formed call the turn never ran goes when the turn ends.
+        a.drop_forming();
+        assert_eq!(rows(&a), [("call_a~SIG".into(), false, true)]);
+    }
+
+    #[test]
     fn streaming_events_build_the_transcript() {
         let mut a = App::new();
         a.on_event(Ev::Text("Hel".into()));
@@ -1033,6 +1134,7 @@ mod tests {
                     result: Some(("Read file a.rs, lines 1-3".into(), false)),
                     output: "\nRead file a.rs, lines 1-3\n1: x".into(),
                     diff: None,
+                    forming: false,
                 }),
                 Entry::Assistant("Done".into()),
             ]
@@ -1381,6 +1483,7 @@ mod replay_tests {
                     result: Some(("Read file a.rs, lines 1-2".into(), false)),
                     output: "Read file a.rs, lines 1-2".into(),
                     diff: None,
+                    forming: false,
                 }),
                 Entry::Assistant("Fixed.".into()),
             ]

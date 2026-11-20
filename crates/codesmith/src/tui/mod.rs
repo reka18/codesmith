@@ -314,6 +314,7 @@ impl Runner {
         self.stopping = false;
         self.task = None;
         self.app.busy = false;
+        self.app.drop_forming();
         self.app.notice("interrupted");
         if let Err(e) = self.reload() {
             self.app.error(format!("{e:#}"));
@@ -684,6 +685,7 @@ impl Runner {
             // or reloading once `Stopped` arrives.
             Ev::Done { .. } if self.skip_done > 0 || self.stopping => {
                 self.skip_done = self.skip_done.saturating_sub(1);
+                self.app.drop_forming();
             }
             Ev::Stopped => self.stopped(),
             // Acted on by `watch_background` before the next redraw.
@@ -691,6 +693,7 @@ impl Runner {
             Ev::Done { result, session } => {
                 self.task = None;
                 self.app.busy = false;
+                self.app.drop_forming();
                 if let Err(e) = result {
                     self.app.error(e);
                 }

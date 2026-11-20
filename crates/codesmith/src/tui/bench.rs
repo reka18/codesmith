@@ -45,6 +45,7 @@ fn long_session(n: usize) -> App {
                 result: Some(("running 3 tests".into(), false)),
                 output: (0..30).map(|l| format!("test line {l}\n")).collect(),
                 diff: None,
+                forming: false,
             }),
             _ => Entry::Assistant(format!("Done with {i}; the test passes now.")),
         });

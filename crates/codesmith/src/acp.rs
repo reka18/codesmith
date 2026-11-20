@@ -379,6 +379,13 @@ struct AcpSink {
     tools: HashMap<String, (String, Value, Option<Before>)>,
     /// Media of the call about to end, from `tool_media`.
     media: HashMap<String, Vec<Media>>,
+    /// Calls announced `pending` while they streamed and not started yet,
+    /// by the id the client knows them by.
+    pending: BTreeSet<String>,
+    /// The id the client knows a call by, when it differs from the call's
+    /// own (the streamed id, before Gemini via Chat appended its
+    /// signature).
+    aliases: HashMap<String, String>,
     retrying: bool,
 }
 
@@ -396,8 +403,37 @@ impl AcpSink {
             in_reasoning: false,
             tools: HashMap::new(),
             media: HashMap::new(),
+            pending: BTreeSet::new(),
+            aliases: HashMap::new(),
             retrying: false,
         }
+    }
+
+    /// The id the client knows call `id` by.
+    fn client_id(&self, id: &str) -> String {
+        self.aliases
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// A call announced while it streamed will not run: it failed.
+    fn fail_pending(&mut self, id: &str) {
+        if self.pending.remove(id) {
+            self.conn.update(
+                &self.session,
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}),
+            );
+        }
+    }
+
+    /// The turn is over: calls announced while they streamed that never
+    /// ran (the turn stopped first) failed.
+    fn settle(&mut self) {
+        for id in self.pending.clone() {
+            self.fail_pending(&id);
+        }
+        self.aliases.clear();
     }
 
     /// The step a retry waited for has started: clear the retry marker.
@@ -430,9 +466,28 @@ impl Sink for AcpSink {
         self.conn
             .update(&self.session, chunk("agent_thought_chunk", &id, delta));
     }
+    fn tool_input(&mut self, id: &str, name: &str) {
+        self.settle_retry();
+        self.in_reasoning = false;
+        // OpenCode's ACP announces a call as soon as its input starts.
+        let mut call = tool_call(&self.cwd, id, name, &json!({}), "pending");
+        call["sessionUpdate"] = json!("tool_call");
+        self.conn.update(&self.session, call);
+        self.pending.insert(id.to_string());
+    }
+    fn tool_input_end(&mut self, id: &str, call: Option<&str>) {
+        match call {
+            Some(call) if call != id => {
+                self.aliases.insert(call.to_string(), id.to_string());
+            }
+            Some(_) => {}
+            None => self.fail_pending(id),
+        }
+    }
     fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
         self.settle_retry();
         self.in_reasoning = false;
+        let shown = self.client_id(id);
         let before = matches!(base_name(name), "edit" | "write")
             .then(|| file_path(input).map(|p| absolute(&self.cwd, p)))
             .flatten()
@@ -442,11 +497,14 @@ impl Sink for AcpSink {
             });
         self.tools
             .insert(id.into(), (name.into(), input.clone(), before));
-        *self.current.lock().unwrap() = Some((id.to_string(), name.to_string(), input.clone()));
-        let mut call = tool_call(&self.cwd, id, name, input, "pending");
-        call["sessionUpdate"] = json!("tool_call");
-        self.conn.update(&self.session, call);
-        let mut running = tool_call(&self.cwd, id, name, input, "in_progress");
+        *self.current.lock().unwrap() = Some((shown.clone(), name.to_string(), input.clone()));
+        // A call announced while it streamed is already known to the client.
+        if !self.pending.remove(&shown) {
+            let mut call = tool_call(&self.cwd, &shown, name, input, "pending");
+            call["sessionUpdate"] = json!("tool_call");
+            self.conn.update(&self.session, call);
+        }
+        let mut running = tool_call(&self.cwd, &shown, name, input, "in_progress");
         running["sessionUpdate"] = json!("tool_call_update");
         running.as_object_mut().unwrap().remove("name");
         self.conn.update(&self.session, running);
@@ -458,7 +516,8 @@ impl Sink for AcpSink {
             .remove(id)
             .unwrap_or_else(|| (name.to_string(), json!({}), None));
         let media = self.media.remove(id).unwrap_or_default();
-        let mut update = result_update(&self.cwd, id, &name, &input, output, is_error, &media);
+        let shown = self.aliases.remove(id).unwrap_or_else(|| id.to_string());
+        let mut update = result_update(&self.cwd, &shown, &name, &input, output, is_error, &media);
         if let (false, Some((path, old))) = (is_error, before) {
             if let Ok(new) = std::fs::read_to_string(&path) {
                 if old.as_deref() != Some(new.as_str()) {
@@ -1762,6 +1821,7 @@ impl Agent {
             let result = me
                 .run_turn(&mut s, &slot2, &text, attached, &mut sink)
                 .await;
+            sink.settle();
             // A cancel took the request: it answers, and reloads the session.
             let rpc = match slot2.running.lock().unwrap().take() {
                 Some(Running::Prompt(rpc)) => rpc,
@@ -1915,6 +1975,7 @@ impl Agent {
         if let Err(e) = s.resume_background(&mut sink).await {
             eprintln!("acp: resuming session {}: {e:#}", slot.id);
         }
+        sink.settle();
         {
             let mut g = slot.session.lock().await;
             // A cancel took the turn: it reloads the session.
@@ -2399,6 +2460,26 @@ mod tests {
                 match done {
                     0 => call(1, "read", json!({"path": path})),
                     _ => reply(&after),
+                }
+            } else if prompt.contains("signed call") {
+                // Gemini via Chat: the call's id gains its signature.
+                match done {
+                    0 => vec![
+                        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "g1", "type": "function",
+                            "function": {"name": "read", "arguments": "{\"path\":"},
+                            "extra_content": {"google": {"thought_signature": "SIG"}}}]}}]}),
+                        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\"a.txt\"}"}}]}, "finish_reason": "tool_calls"}]}),
+                    ],
+                    _ => reply(&after),
+                }
+            } else if prompt.contains("cut call") {
+                if last == codesmith_core::runner::CONTINUE_AFTER_OUTPUT_LIMIT {
+                    reply("smaller")
+                } else {
+                    vec![
+                        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "cut1", "type": "function",
+                        "function": {"name": "read", "arguments": "{\"pa"}}]}, "finish_reason": "length"}]}),
+                    ]
                 }
             } else if prompt.contains("flaky") {
                 if FLAKY.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -3047,6 +3128,73 @@ mod tests {
         );
     }
 
+    /// prompt.test.ts (tool lifecycle): a call is announced `pending` as its
+    /// input starts streaming, then updated under the same id, even when the
+    /// call's own id gained a Gemini signature; a call cut off by the output
+    /// limit fails.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_calls_are_announced_while_they_stream() {
+        let (_d, cwd, base) = tmp().await;
+        std::fs::write(cwd.join("a.txt"), "hello\n").unwrap();
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        let lifecycle = |seen: &[Value]| -> Vec<(String, String, String)> {
+            seen.iter()
+                .filter(|m| m["params"]["update"].get("toolCallId").is_some())
+                .map(|m| {
+                    let u = &m["params"]["update"];
+                    (
+                        u["sessionUpdate"].as_str().unwrap().into(),
+                        u["toolCallId"].as_str().unwrap().into(),
+                        u["status"].as_str().unwrap().into(),
+                    )
+                })
+                .collect()
+        };
+        let owned = |v: &[(&str, &str, &str)]| -> Vec<(String, String, String)> {
+            v.iter()
+                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+                .collect()
+        };
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "signed call"}]}),
+            )
+            .await;
+        let (done, seen) = c
+            .until(id, |_| {
+                Some(json!({"outcome": {"outcome": "selected", "optionId": "once"}}))
+            })
+            .await;
+        assert_eq!(done["result"]["stopReason"], "end_turn");
+        assert_eq!(
+            lifecycle(&seen),
+            owned(&[
+                ("tool_call", "g1", "pending"),
+                ("tool_call_update", "g1", "in_progress"),
+                ("tool_call_update", "g1", "completed"),
+            ])
+        );
+        let running = updates(&seen, "tool_call_update")[0];
+        assert_eq!(running["rawInput"]["path"], "a.txt");
+
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "cut call"}]}),
+            )
+            .await;
+        let (_, seen) = c.until(id, |_| None).await;
+        assert_eq!(
+            lifecycle(&seen),
+            owned(&[
+                ("tool_call", "cut1", "pending"),
+                ("tool_call_update", "cut1", "failed"),
+            ])
+        );
+    }
+
     // prompt.test.ts (tool lifecycle part) and permission.test.ts:
     // "forwards allow-once and allow-always selections to the server"
     #[tokio::test(flavor = "multi_thread")]
@@ -3108,10 +3256,17 @@ mod tests {
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(lifecycle, expected);
+        // The call is announced as its input starts streaming; the input
+        // arrives with the update that starts it.
         let call = updates(&seen, "tool_call")[0];
         assert_eq!(
-            (&call["name"], &call["title"], &call["rawInput"]["command"]),
-            (&json!("shell"), &json!("echo acp"), &json!("echo acp"))
+            (&call["name"], &call["kind"]),
+            (&json!("shell"), &json!("execute"))
+        );
+        let running = updates(&seen, "tool_call_update")[0];
+        assert_eq!(
+            (&running["title"], &running["rawInput"]["command"]),
+            (&json!("echo acp"), &json!("echo acp"))
         );
         // "always" covers the next call.
         let id = c.call("session/prompt", prompt("run it")).await;

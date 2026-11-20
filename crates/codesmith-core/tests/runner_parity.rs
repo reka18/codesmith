@@ -124,6 +124,9 @@ struct Seen {
     notices: Vec<String>,
     tools: Vec<(String, String, bool)>,
     text: String,
+    /// Tool lifecycle: `input id name`, `formed id call`, `dropped id`,
+    /// `start id`.
+    lifecycle: Vec<String>,
 }
 
 struct Rec(Arc<Mutex<Seen>>);
@@ -136,6 +139,21 @@ impl Sink for Rec {
     }
     fn notice(&mut self, m: &str) {
         self.0.lock().unwrap().notices.push(m.into());
+    }
+    fn tool_input(&mut self, id: &str, name: &str) {
+        let mut s = self.0.lock().unwrap();
+        s.lifecycle.push(format!("input {id} {name}"));
+    }
+    fn tool_input_end(&mut self, id: &str, call: Option<&str>) {
+        let mut s = self.0.lock().unwrap();
+        s.lifecycle.push(match call {
+            Some(c) => format!("formed {id} {c}"),
+            None => format!("dropped {id}"),
+        });
+    }
+    fn tool_start(&mut self, id: &str, _: &str, _: &Value) {
+        let mut s = self.0.lock().unwrap();
+        s.lifecycle.push(format!("start {id}"));
     }
     fn tool_end(&mut self, _: &str, name: &str, output: &str, is_error: bool) {
         self.0
@@ -583,6 +601,35 @@ async fn oc_session_settles_unfinished_tool_input_after_an_output_limit() {
     assert_eq!(
         last_message(&t.requests()[1])["content"],
         codesmith_core::runner::CONTINUE_AFTER_OUTPUT_LIMIT
+    );
+}
+
+/// A tool call is shown while its arguments stream, and paired with the call
+/// it forms by order even when the call's id differs (Gemini via Chat
+/// appends its signature); a call cut off by the output limit is dropped.
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_inputs_pair_with_the_calls_they_form() {
+    let mut t = plain().await;
+    t.push([
+        sse(&[
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_a", "type": "function",
+                "function": {"name": "glob", "arguments": "{\"pattern\":"},
+                "extra_content": {"google": {"thought_signature": "SIG"}}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\"*.rs\"}"}}]}, "finish_reason": "tool_calls"}]}),
+        ]),
+        calls_with("length", &[("call_b", "glob", r#"{"pattern":"par"#)]),
+        text("done"),
+    ]);
+    t.prompt("Find files").await.unwrap();
+    assert_eq!(
+        t.seen.lock().unwrap().lifecycle,
+        [
+            "input call_a glob",
+            "formed call_a call_a~SIG",
+            "start call_a~SIG",
+            "input call_b glob",
+            "dropped call_b",
+        ]
     );
 }
 

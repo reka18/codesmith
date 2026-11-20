@@ -49,6 +49,12 @@ pub trait Sink: Send {
     /// A tool call started streaming its arguments; its `tool_start` comes
     /// once the response is complete and the call runs.
     fn tool_input(&mut self, _id: &str, _name: &str) {}
+    /// A call's arguments finished streaming: `call` is the id of the call
+    /// they formed (which can differ from the streamed `id`: Gemini via Chat
+    /// appends its signature), or `None` when the call was dropped (cut off
+    /// by the output limit or a content filter, or the stream failed). A
+    /// formed call may still not run, when the turn stops first.
+    fn tool_input_end(&mut self, _id: &str, _call: Option<&str>) {}
     fn tool_start(&mut self, _id: &str, _name: &str, _input: &serde_json::Value) {}
     fn tool_end(&mut self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
     /// Images and PDFs a call returned, sent just before its `tool_end`.
@@ -2079,14 +2085,68 @@ impl Session {
             })?;
         // Parts in stream order, reasoning with its provider signature. A
         // stream that ends without finishing was cut off, and is retried.
-        let r = codesmith_ai::assemble(stream, |ev| match ev {
-            Event::TextDelta(d) => sink.text(d),
-            Event::ReasoningDelta(d) => sink.reasoning(d),
-            Event::ToolInputStart { id, name } => sink.tool_input(id, name),
-            _ => {}
+        let mut inputs = InputPairs::default();
+        let r = codesmith_ai::assemble(stream, |ev| {
+            inputs.push(ev, &mut *sink);
+            match ev {
+                Event::TextDelta(d) => sink.text(d),
+                Event::ReasoningDelta(d) => sink.reasoning(d),
+                _ => {}
+            }
         })
-        .await?;
+        .await;
+        inputs.settle(sink);
+        let r = r?;
         Ok((r.parts, r.reason, r.usage))
+    }
+}
+
+/// Pairs streamed tool inputs with the calls they form, for the sink. A
+/// call follows the end of its input straight away, so it pairs with the
+/// input that just ended whatever its id; an input that ends without a
+/// call after it was dropped.
+#[derive(Default)]
+struct InputPairs {
+    /// Inputs still streaming.
+    forming: Vec<String>,
+    /// The input that just ended, waiting for its call.
+    ended: Option<String>,
+}
+
+impl InputPairs {
+    fn push(&mut self, ev: &Event, sink: &mut dyn Sink) {
+        match ev {
+            Event::ToolCall { id, .. } => {
+                if let Some(input) = self.ended.take() {
+                    sink.tool_input_end(&input, Some(id));
+                }
+                return;
+            }
+            Event::ToolInputDelta { .. } => return,
+            _ => {}
+        }
+        if let Some(input) = self.ended.take() {
+            sink.tool_input_end(&input, None);
+        }
+        match ev {
+            Event::ToolInputStart { id, name } if !self.forming.contains(id) => {
+                self.forming.push(id.clone());
+                sink.tool_input(id, name);
+            }
+            Event::ToolInputEnd { id } => {
+                if let Some(i) = self.forming.iter().position(|f| f == id) {
+                    self.ended = Some(self.forming.remove(i));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The stream is over: inputs that formed no call were dropped.
+    fn settle(self, sink: &mut dyn Sink) {
+        for input in self.ended.into_iter().chain(self.forming) {
+            sink.tool_input_end(&input, None);
+        }
     }
 }
 

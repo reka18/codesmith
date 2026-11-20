@@ -23,6 +23,17 @@ pub enum Ev {
     Files(Vec<String>),
     Text(String),
     Reasoning(String),
+    /// A tool call started streaming its arguments.
+    ToolInput {
+        id: String,
+        name: String,
+    },
+    /// Its arguments finished: the id of the call they formed, or `None`
+    /// when the call was dropped.
+    ToolInputEnd {
+        id: String,
+        call: Option<String>,
+    },
     ToolStart {
         id: String,
         name: String,
@@ -71,6 +82,18 @@ impl Sink for ChanSink {
     }
     fn reasoning(&mut self, delta: &str) {
         let _ = self.tx.send(Ev::Reasoning(delta.to_string()));
+    }
+    fn tool_input(&mut self, id: &str, name: &str) {
+        let _ = self.tx.send(Ev::ToolInput {
+            id: id.to_string(),
+            name: name.to_string(),
+        });
+    }
+    fn tool_input_end(&mut self, id: &str, call: Option<&str>) {
+        let _ = self.tx.send(Ev::ToolInputEnd {
+            id: id.to_string(),
+            call: call.map(str::to_string),
+        });
     }
     fn tool_start(&mut self, id: &str, name: &str, input: &serde_json::Value) {
         let _ = self.tx.send(Ev::ToolStart {

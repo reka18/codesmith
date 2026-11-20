@@ -973,6 +973,7 @@ mod tests {
             result: result.map(|(s, e)| (s.to_string(), e)),
             output: output.into(),
             diff: None,
+            forming: false,
         })
     }
 
