@@ -838,6 +838,16 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             }
         }
     }
+    for (r, s) in &analysis.deny_only {
+        if !resources.contains(r)
+            && ctx
+                .check_not_denied("shell", std::slice::from_ref(r))
+                .is_err()
+        {
+            resources.push(r.clone());
+            save.push(s.clone());
+        }
+    }
     if !resources.is_empty() {
         ctx.ask(Request {
             action: "shell".into(),

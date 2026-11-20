@@ -40,7 +40,7 @@ $'\x72m' F
 $'\162m' F
 %%
 $'rm' F
-%% known: Zsh has no $"..." and looks up a command named `$rm`; the scan reports the Bash reading `rm F`, which only over-reports
+%% Zsh has no $"..." and looks up `$rm` (found nowhere); the scan reports the Bash reading
 $"rm" F
 %%
 X=1 rm F
@@ -68,7 +68,7 @@ exec -a foo rm F
 nohup rm F
 %%
 time rm F
-%% known: Zsh's `time` takes no options and looks up a command named `-p`, which no PATH provides
+%% Zsh's `time` takes no options and looks up `-p` (found nowhere)
 time -p rm F
 %%
 nice -n 1 rm F
@@ -849,7 +849,7 @@ ${x:-rm} F
 ${x-rm} F
 %%
 "${x:-rm}" F
-%% known: Zsh keeps the escaped newline and looks up `r<newline>m`; Bash runs `rm`, which the scan reports
+%% Zsh keeps the escaped newline and looks up `r<newline>m` (found nowhere)
 $'r\
 m' F
 %%
@@ -1427,3 +1427,42 @@ env -u PATH -- rm F
 env --unset=X rm F
 %%
 command -p -- rm F
+%% ---- found by mutating the corpus
+$'r\m' F
+%%
+$'\rm' F
+%%
+eval $'rm\x20\
+F'
+%%
+$'r\xm' F
+%%
+(( (rm F) ))
+%%
+(( (rm F) ; (touch G) ))
+%%
+((rm F) )
+%%
+x=1; (( (x) ))
+%%
+env -vS'rm F'
+%%
+env -iP ../bin rm F
+%%
+env -iu X rm F
+%%
+builtin - eval 'rm F'
+%%
+command - rm F
+%%
+exec - rm F
+%%
+echo x > ~+//out
+%%
+echo x > ~''+//out
+%%
+echo x > ~+/./out
+%%
+trap --'rm F' 0 1
+%%
+command -p] -- rm F

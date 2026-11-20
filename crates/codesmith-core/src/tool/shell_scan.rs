@@ -43,6 +43,10 @@ pub struct Command {
     /// Files the command's redirects write to (`>`, `>>`, `&>`, `>|`, `<>`,
     /// `>&file`), as `(raw, value)`.
     pub writes: Vec<(String, String)>,
+    /// Only one shell's reading: Dash has no `((`, so `(( (rm x) ))` is two
+    /// subshells running `rm x` there. Checked as another name for what
+    /// runs (see [`Analysis::delegated`]), not as a command of its own.
+    pub alternate: bool,
 }
 
 /// What `scan_all` found: the commands, and whether the input can run code
@@ -1009,9 +1013,8 @@ impl<'a> Scanner<'a> {
                                             j += 1;
                                         }
                                         if j == from {
-                                            decoded.push('\\');
-                                            decoded.push(n);
-                                            i += 2;
+                                            // `\x` without digits: Bash keeps it, Zsh drops the `\`.
+                                            return Err("ansi-c-escape");
                                         } else {
                                             match char::from_u32(code) {
                                                 Some(ch) if code != 0 => decoded.push(ch),
@@ -1023,7 +1026,10 @@ impl<'a> Scanner<'a> {
                                         }
                                         continue;
                                     }
-                                    'c' => {
+                                    'c' if self
+                                        .at(i + 2)
+                                        .is_some_and(|x| x.is_ascii_alphabetic()) =>
+                                    {
                                         // `\cX`: a control character.
                                         let x = self.at(i + 2).ok_or("unterminated-quote")?;
                                         decoded
@@ -1031,9 +1037,10 @@ impl<'a> Scanner<'a> {
                                         i += 3;
                                         continue;
                                     }
-                                    other => {
-                                        decoded.push('\\');
-                                        decoded.push(other);
+                                    _ => {
+                                        // Bash keeps an unknown escape, Zsh
+                                        // drops the `\`: `$'r\m'` is `rm` in Zsh.
+                                        return Err("ansi-c-escape");
                                     }
                                 }
                                 i += 2;
@@ -1732,7 +1739,25 @@ impl<'a> Scanner<'a> {
             span: Some((p, end)),
         });
         self.out.extend(inner);
+        self.dash_reading(p + 2, end - 2);
         self.trailing_redirects()
+    }
+
+    /// `((text))` as Dash reads it: subshells running `text`.
+    fn dash_reading(&mut self, a: usize, b: usize) {
+        if self.depth + 1 >= MAX_DEPTH {
+            return;
+        }
+        let chars: Vec<char> = self.s[a..b].to_vec();
+        let mut sub = Scanner::new(&chars, self.depth + 1);
+        if !matches!(sub.list(), Ok((_, Stop::Eof))) || !sub.heredocs.is_empty() {
+            return; // A syntax error in Dash too.
+        }
+        for mut cmd in sub.finish() {
+            cmd.alternate = true;
+            cmd.writes.clear();
+            self.out.push(Item { cmd, span: None });
+        }
     }
 
     fn function_body(&mut self) -> Result<(), Opaque> {
@@ -2051,6 +2076,7 @@ impl<'a> Scanner<'a> {
             redirect_word_count,
             redirect_prefix_end: None,
             writes,
+            alternate: false,
         };
         self.push(cmd, start, end, heredoc);
         self.out.extend(nested);
@@ -2077,6 +2103,9 @@ pub struct Analysis {
     /// commands in a static `sh -c`/`eval`/`trap` string. Checked too, so a
     /// rule denying `rm *` also denies those spellings.
     pub delegated: Vec<(String, String)>,
+    /// Readings only some shell gives (see [`Command::alternate`]): checked
+    /// only against deny rules, so they never add a question.
+    pub deny_only: Vec<(String, String)>,
     /// Files redirects write to, `(raw, value)`; `static` when `raw` names one
     /// fixed path.
     pub writes: Vec<Write>,
@@ -2284,6 +2313,26 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
         if item.declaration {
             continue;
         }
+        if item.alternate {
+            if item.words.is_empty() || !static_command_name(&item.raw_words[0]) {
+                continue;
+            }
+            // Collected apart, then moved to `deny_only`.
+            let mut alt = Analysis::default();
+            let entry = (
+                item.resource.clone(),
+                save_pattern(&item.words, &item.resource),
+            );
+            alt.delegated.push(entry);
+            let cooked = item.words.join(" ");
+            alt.delegated
+                .push((cooked.clone(), save_pattern(&item.words, &cooked)));
+            delegate(&item.raw_words, &item.words, cwd, depth + 1, &mut alt)?;
+            out.deny_only.extend(alt.commands);
+            out.deny_only.extend(alt.delegated);
+            out.deny_only.extend(alt.deny_only);
+            continue;
+        }
         if let Some(end) = item.redirect_prefix_end {
             let chars: Vec<char> = item.resource.chars().collect();
             let head: String = chars[..end.min(chars.len())].iter().collect();
@@ -2430,7 +2479,7 @@ fn delegate(
     }
     if base == "xargs" {
         if let Some(Some(at)) = wrapped_command(base, cooked) {
-            let repl = xargs_replace(&cooked[..at]);
+            let repl = xargs_replace(&cooked[..at.min(cooked.len())]);
             let words = cooked.get(at..).unwrap_or_default();
             if runs_input(
                 raw.get(at..).unwrap_or_default(),
@@ -2467,6 +2516,7 @@ fn run_string(code: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> Resul
     }
     out.delegated.extend(inner.commands);
     out.delegated.extend(inner.delegated);
+    out.deny_only.extend(inner.deny_only);
     out.directories.extend(inner.directories);
     out.writes.extend(inner.writes);
     if let Some(d) = inner.dynamic {
@@ -2693,11 +2743,22 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     let mut i = 1;
     while i < cooked.len() {
         let w = cooked[i].as_str();
-        if w == "--" {
+        if w == "--"
+            || (w == "-"
+                && matches!(
+                    base,
+                    "builtin" | "command" | "exec" | "noglob" | "nocorrect"
+                ))
+        {
+            // Zsh takes a lone `-` as the end of options: `builtin - eval x`.
             i += 1;
             break;
         }
-        if base == "env" && (w == "-S" || w.starts_with("-S") || w.starts_with("--split-string")) {
+        if base == "env"
+            && (w.starts_with("--split-string")
+                || (w.starts_with('-') && !w.starts_with("--") && w.contains('S')))
+        {
+            // `-S` splits a string into a command line, also in a cluster (`-vS'rm x'`).
             return Some(None);
         }
         if base == "command" && w.starts_with('-') && w[1..].contains(['v', 'V']) {
@@ -2708,7 +2769,18 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
             continue;
         }
         if w.starts_with('-') && w.len() > 1 {
-            i += if with_arg.contains(&w) { 2 } else { 1 };
+            let takes_next = if w.starts_with("--") {
+                with_arg.contains(&w)
+            } else {
+                // In a cluster (`-iP dir`), the first option taking an
+                // argument takes the rest of the word, or the next word.
+                let letters: Vec<char> = w[1..].chars().collect();
+                letters
+                    .iter()
+                    .position(|c| with_arg.contains(&format!("-{c}").as_str()))
+                    .is_some_and(|k| k == letters.len() - 1)
+            };
+            i += if takes_next { 2 } else { 1 };
             continue;
         }
         break;
@@ -2822,14 +2894,20 @@ fn expand_known_directory(value: &str, cwd: &Path, unquoted_tilde: bool) -> Opti
         return Some(home().display().to_string());
     }
     if let Some(rest) = value.strip_prefix("~/") {
-        return Some(home().join(rest).display().to_string());
+        // `~//x` is `$HOME/x`, not `/x`.
+        return Some(
+            home()
+                .join(rest.trim_start_matches('/'))
+                .display()
+                .to_string(),
+        );
     }
     if unquoted_tilde {
         if value == "~+" {
             return Some(cwd.display().to_string());
         }
         if let Some(rest) = value.strip_prefix("~+/") {
-            return Some(cwd.join(rest).display().to_string());
+            return Some(cwd.join(rest.trim_start_matches('/')).display().to_string());
         }
         let body = &value[1..];
         let name_end = body.find('/').unwrap_or(body.len());
@@ -4235,6 +4313,7 @@ mod tests {
                 .commands
                 .iter()
                 .chain(&a.delegated)
+                .chain(&a.deny_only)
                 .map(|(r, _)| r)
                 .collect();
             assert!(
@@ -4266,6 +4345,9 @@ mod tests {
         ] {
             let a = analyze(src, Path::new("/workspace")).unwrap_or_else(|e| panic!("{src:?}: {e}"));
             assert!(a.dynamic.is_none(), "{src:?}: {:?}", a.dynamic);
+        }
+        for src in ["xargs -I", "xargs -n", "env -u", "(( ))", "$'\\c'"] {
+            let _ = analyze(src, Path::new("/workspace"));
         }
         let a = full("/usr/bin/git status");
         assert!(
