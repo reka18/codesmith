@@ -1399,6 +1399,9 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             println!("model:    {base} (sent as {})", m.model_id);
             println!("protocol: {:?}", m.provider.protocol);
             println!("url:      {}", m.provider.base_url);
+            if m.local {
+                println!("local:    yes (a session's title waits for the turn's response)");
+            }
             if let Some(route) = m.websocket {
                 println!("transport: websocket ({})", route.name());
             }

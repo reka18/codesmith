@@ -332,7 +332,8 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
 pub fn list(config: &Config) -> Vec<String> {
     let mut ids: Vec<String> = BUILTIN.iter().map(|s| s.to_string()).collect();
     for k in config.agents.keys() {
-        if !ids.contains(k) {
+        // `agents.title` configures session titles, not an agent.
+        if !ids.contains(k) && k != crate::title::AGENT {
             ids.push(k.clone());
         }
     }

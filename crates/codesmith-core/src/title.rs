@@ -10,9 +10,15 @@
 //!   OpenCode leaves it untitled and tries again on the next turn.
 //! - Beyond OpenCode's first-non-empty-line rule, a `Title:` label and
 //!   wrapping quotes, emphasis and a trailing period are removed.
-//! - The title is written by the session's own model (no small-model or
-//!   variant selection, no title hooks, no regeneration from later history),
-//!   and a very long first message is clipped to its start and end.
+//! - No title hooks and no regeneration from later history, and a very
+//!   long first message is clipped to its start and end.
+//! - The model is chosen as OpenCode does (`agents.title.model`, then
+//!   `small_model`, then the session's), without OpenCode's per-provider
+//!   list of small models. `title: false` (or `agents.title.disabled`)
+//!   names sessions after their first line without a model request.
+//! - On a local server shared with the turn the request waits for the
+//!   turn's first response instead of competing with it, and is capped
+//!   with thinking switched off (see [`thinking_off`]).
 
 pub const SYSTEM: &str = r#"You name conversations so the user can find them later in a list of past sessions.
 
@@ -34,6 +40,78 @@ Examples:
 "compare the new cache layer with the v1 one in packages/legacy" -> New cache layer vs v1
 "Investigate https://github.com/acme/app/issues/412, don't make edits" -> Issue #412
 "hey" -> Greeting"#;
+
+/// The `agents` key that configures titles (OpenCode's hidden `title`
+/// agent): its `model` and `disabled`. It is never an agent of its own.
+pub const AGENT: &str = "title";
+
+/// Reply cap for a title request.
+pub const MAX_TOKENS: u32 = 256;
+/// Reply cap for a title request to a local server, with thinking off.
+pub const LOCAL_MAX_TOKENS: u32 = 64;
+
+/// The model that writes titles: `agents.title.model`, then `small_model`,
+/// then the session's `session_model`. `None` when titles are turned off.
+pub fn model_spec(config: &crate::config::Config, session_model: &str) -> Option<String> {
+    let agent = config.agents.get(AGENT);
+    if config.title == Some(false) || agent.is_some_and(|a| a.disabled) {
+        return None;
+    }
+    Some(
+        agent
+            .and_then(|a| a.model.clone())
+            .or_else(|| config.small_model.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| session_model.to_string()),
+    )
+}
+
+/// Model ids whose chat template reads `chat_template_kwargs.enable_thinking`
+/// (Qwen 3 and later, GLM 4.5 and later, as vLLM, SGLang, llama.cpp, LM
+/// Studio and MLX servers render them).
+fn template_thinking(model_id: &str) -> bool {
+    let id = model_id.to_ascii_lowercase();
+    let id = id.rsplit('/').next().unwrap_or(&id);
+    id.contains("qwen3")
+        || ["glm-4.5", "glm-4.6", "glm-4.7", "glm-5"]
+            .iter()
+            .any(|g| id.contains(g))
+}
+
+/// Switch thinking off for a title request with `model`, where that is
+/// known: the model's `none` variant when it has one (a configured `none`
+/// variant is the per-model way to say how), else, on an OpenAI-compatible
+/// Chat server, `chat_template_kwargs.enable_thinking: false` for model
+/// families whose template reads it or a model already configured with
+/// `chat_template_kwargs`. Returns the options and body to send.
+pub fn thinking_off(
+    model: &crate::config::ModelRef,
+) -> (
+    codesmith_ai::Options,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    use serde_json::{json, Value};
+    let mut body = model.body.clone();
+    if let Some((_, v)) = model.variant_list.iter().find(|(n, _)| n == "none") {
+        let mut b = Value::Object(body);
+        crate::config::merge(&mut b, Value::Object(v.body.clone()));
+        let Value::Object(body) = b else {
+            unreachable!()
+        };
+        return (v.options.clone(), body);
+    }
+    let chat = model.provider.protocol == codesmith_ai::Protocol::OpenaiChat;
+    if chat && (template_thinking(&model.model_id) || body.contains_key("chat_template_kwargs")) {
+        let kwargs = body
+            .entry("chat_template_kwargs")
+            .or_insert_with(|| json!({}));
+        if !kwargs.is_object() {
+            *kwargs = json!({});
+        }
+        kwargs["enable_thinking"] = json!(false);
+    }
+    (codesmith_ai::Options::default(), body)
+}
 
 /// The longest title, in UTF-16 code units as OpenCode counts it.
 pub const MAX_CHARS: usize = 100;

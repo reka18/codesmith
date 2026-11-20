@@ -43,6 +43,13 @@ pub struct Config {
     pub schema: Option<String>,
     /// Default model as `provider/model`.
     pub model: Option<String>,
+    /// The model that writes session titles, as `provider/model[#variant]`
+    /// (OpenCode's `small_model`); the session's own model when unset.
+    #[serde(deserialize_with = "model_selection")]
+    pub small_model: Option<String>,
+    /// `false` turns generated session titles off: a session is named after
+    /// its first message, with no model request.
+    pub title: Option<bool>,
     pub default_agent: Option<String>,
     /// Shell for the `shell` tool; defaults to `$SHELL`, then `/bin/sh`.
     pub shell: Option<String>,
@@ -144,6 +151,11 @@ pub struct CatalogConfig {
 #[serde(default)]
 pub struct ProviderConfig {
     pub name: Option<String>,
+    /// Whether the provider is a server on this machine or network, which
+    /// one request at a time keeps busy (so a session's title waits for the
+    /// turn's response). Unset, a loopback, private-network or `.local`
+    /// base URL is local.
+    pub local: Option<bool>,
     pub protocol: Option<Protocol>,
     /// Environment variables that may hold the API key, in order.
     pub env: Vec<String>,
@@ -644,6 +656,7 @@ pub struct AgentConfig {
     #[serde(deserialize_with = "hex_color")]
     pub color: Option<String>,
     pub steps: Option<u32>,
+    #[serde(alias = "disable")]
     pub disabled: bool,
     pub permissions: Vec<Rule>,
     /// Extra request `headers` and `body` fields for this agent's model
@@ -1075,6 +1088,8 @@ pub struct ModelRef {
     /// (`compaction: {"type": "native"}`), with the mechanism to use when
     /// one was chosen.
     pub native_compaction: Option<Option<codesmith_ai::CompactMechanism>>,
+    /// A server on this machine or network (see [`ProviderConfig::local`]).
+    pub local: bool,
 }
 
 /// Built-in providers: (id, name, protocol, base URL, key variables).
@@ -1248,6 +1263,7 @@ impl Config {
             (None, Some(c)) => Some(c),
             (Some(b), Some(c)) => Some(ProviderConfig {
                 name: c.name.or(b.name),
+                local: c.local.or(b.local),
                 protocol: c.protocol.or(b.protocol),
                 env: if c.env.is_empty() { b.env } else { c.env },
                 settings: ProviderSettings {
@@ -1533,6 +1549,7 @@ impl Config {
             _ => websocket_route(pid, protocol, &p.settings, &base_url)?,
         };
         let native_compaction = native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
+        let local = p.local.unwrap_or_else(|| is_local_url(&base_url));
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id: wire_model,
@@ -1560,7 +1577,54 @@ impl Config {
             cache,
             websocket,
             native_compaction,
+            local,
         })
+    }
+}
+
+/// Whether `url` points at this machine or a private network: a loopback,
+/// private, link-local, shared (CGNAT, as Tailscale uses) or unique-local
+/// address, `localhost`, a single-label host name, or a `.local`, `.lan`,
+/// `.internal`, `.home.arpa` or `.ts.net` name.
+pub fn is_local_url(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    match u.host() {
+        Some(url::Host::Ipv4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || (a == 100 && (64..128).contains(&b))
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| is_local_url(&format!("http://{v4}/")))
+        }
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost"
+                || !d.contains('.')
+                || [
+                    ".localhost",
+                    ".local",
+                    ".lan",
+                    ".internal",
+                    ".home.arpa",
+                    ".ts.net",
+                ]
+                .iter()
+                .any(|s| d.ends_with(s))
+        }
+        None => false,
     }
 }
 
@@ -2531,5 +2595,81 @@ mod tests {
         let c: Config = serde_json::from_value(json!({"compaction": {"auto": false}})).unwrap();
         assert!(!c.compaction.auto());
         assert_eq!(c.compaction.keep(), crate::compaction::KEEP_TOKENS);
+    }
+
+    #[test]
+    fn local_urls() {
+        for u in [
+            "http://127.0.0.1:8000/v1",
+            "http://localhost:1234/v1",
+            "http://[::1]:8080/v1",
+            "http://10.0.0.5:8000/v1",
+            "http://192.168.1.20:8000/v1",
+            "http://172.20.0.2/v1",
+            "http://100.101.102.103:8000/v1",
+            "http://skeptic-macmini.local:8000/v1",
+            "http://macmini:8000/v1",
+            "http://gpu.tail1234.ts.net/v1",
+            "http://[fd00::1]/v1",
+        ] {
+            assert!(is_local_url(u), "{u}");
+        }
+        for u in [
+            "https://api.openai.com/v1",
+            "https://openrouter.ai/api/v1",
+            "http://8.8.8.8/v1",
+            "http://172.32.0.1/v1",
+            "http://100.128.0.1/v1",
+            "not a url",
+        ] {
+            assert!(!is_local_url(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn local_providers() {
+        let c: Config = serde_json::from_value(json!({"providers": {
+            "box": {"settings": {"baseURL": "http://192.168.1.2:8000/v1"}, "models": {"m": {}}},
+            "far": {"local": true, "settings": {"baseURL": "https://gpu.example.com/v1"}, "models": {"m": {}}},
+            "near": {"local": false, "settings": {"baseURL": "http://127.0.0.1:9/v1"}, "models": {"m": {}}},
+        }}))
+        .unwrap();
+        assert!(c.resolve_model("box/m").unwrap().local);
+        assert!(c.resolve_model("far/m").unwrap().local);
+        assert!(!c.resolve_model("near/m").unwrap().local);
+        assert!(c.resolve_model("ollama/llama3").unwrap().local);
+        assert!(!c.resolve_model("openrouter/x").unwrap().local);
+    }
+
+    #[test]
+    fn title_models() {
+        use crate::title::model_spec;
+        let c = |v: Value| serde_json::from_value::<Config>(v).unwrap();
+        assert_eq!(model_spec(&c(json!({})), "a/b").as_deref(), Some("a/b"));
+        assert_eq!(
+            model_spec(&c(json!({"small_model": "s/m"})), "a/b").as_deref(),
+            Some("s/m")
+        );
+        assert_eq!(
+            model_spec(
+                &c(json!({"small_model": {"providerID": "s", "model": "m"}})),
+                "a/b"
+            )
+            .as_deref(),
+            Some("s/m")
+        );
+        assert_eq!(
+            model_spec(
+                &c(json!({"small_model": "s/m", "agents": {"title": {"model": "t/m"}}})),
+                "a/b"
+            )
+            .as_deref(),
+            Some("t/m")
+        );
+        assert_eq!(model_spec(&c(json!({"title": false})), "a/b"), None);
+        assert_eq!(
+            model_spec(&c(json!({"title": true})), "a/b").as_deref(),
+            Some("a/b")
+        );
     }
 }
