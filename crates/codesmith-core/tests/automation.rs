@@ -39,6 +39,12 @@ async fn model() -> String {
                 };
                 let last = body["messages"].as_array().unwrap().last().unwrap().clone();
                 let content = last["content"].as_str().unwrap_or("").to_string();
+                if content.contains("fail this turn") {
+                    let err =
+                        r#"{"error": {"message": "bad request", "type": "invalid_request_error"}}"#;
+                    let _ = s.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{err}", err.len()).as_bytes()).await;
+                    return;
+                }
                 let chunk = if body.get("tools").is_none() {
                     json!({"choices": [{"delta": {"content": "T"}, "finish_reason": "stop"}]})
                 } else if let Some(rest) = content
@@ -386,6 +392,33 @@ async fn event_triggered_runs() {
     au::remove(&db, &a.id).unwrap();
     runner.tick().await.unwrap();
     assert_eq!(runner.watching(), 0, "a removed automation stops watching");
+
+    // A run whose turn fails is recorded as failed, and the watch goes on
+    // to the next event instead of pausing.
+    let f = au::create(
+        &db,
+        au::New {
+            action: Action::Prompt {
+                prompt: "fail this turn".into(),
+                to: Target::Subagent {
+                    subagent: "build".into(),
+                },
+            },
+            ..new("failing", event(json!({"queue": "ops"})))
+        },
+    )
+    .unwrap();
+    until(&runner, "two failed runs", || {
+        runs_of(&db, &f.id).len() == 2
+    })
+    .await;
+    let fr = runs_of(&db, &f.id);
+    assert!(fr.iter().all(|r| r.outcome == "failed"), "{fr:?}");
+    let fa = au::get(&db, &f.id).unwrap().unwrap();
+    assert_eq!(fa.status, "active", "{:?}", fa.last_error);
+    assert_eq!(fa.event.unwrap().id.as_deref(), Some("e2"));
+    au::remove(&db, &f.id).unwrap();
+    runner.tick().await.unwrap();
 
     // Watches that cannot go on are paused with the reason.
     for (args, reason) in [

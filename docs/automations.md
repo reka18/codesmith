@@ -22,7 +22,7 @@ Each automation has exactly one trigger:
 | Flag | Runs |
 |---|---|
 | `--at T` | Once. `"in 30 minutes"`, a local wall-clock time such as `"2026-10-27T09:00"`, or an RFC 3339 time. |
-| `--every I` | On an interval: `"90 seconds"`, `"10 minutes"`, `"2 hours"`, `"1 day"`. |
+| `--every I` | On an interval: `"90 seconds"`, `"10 minutes"`, `"2 hours"`, `"1 day"`; from a minute to 10 years. |
 | `--cron C` | On a five-field cron schedule, such as `"0 9 * * 1-5"`. |
 | `--event SERVER:EVENT` | Once for each event an MCP server pushes. See [MCP events](#mcp-events). |
 
@@ -122,11 +122,14 @@ extension, as in OpenCode):
   and `--event-args` must match the event's input schema.
 - Each run's prompt carries the event (`{id, timestamp, data}`) quoted as
   untrusted data. A program gets it as `input.event`.
-- The watch saves the server's cursor after every message, so pausing and
-  resuming, or a restart, picks up where it left off without running an
-  event twice. A stream that breaks is reopened up to three times.
+- The watch saves the server's cursor after every message (for an event,
+  when its run starts), so pausing and resuming, a restart, or another
+  process taking over picks up where it left off without running an event
+  twice. A stream that breaks is reopened up to three times.
 - A watch that cannot go on is paused, with the reason shown in
   `automation list`. That happens for a refused or ended subscription, a
   server that can't replay from the saved cursor, an event that doesn't match
-  its schema, a failed run, or a `watch_mcp_event` rule that denies the
-  server.
+  its schema, a run that can't start (its config, session or agent is
+  gone), a failed Code Mode program, or a `watch_mcp_event` rule that
+  denies the server. A prompt whose turn fails (the model returned an
+  error, say) is logged as `failed` and the watch goes on, as in OpenCode.

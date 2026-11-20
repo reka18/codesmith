@@ -147,11 +147,26 @@ pub fn duration(s: &str) -> Result<i64> {
         "w" | "week" | "weeks" => 7.0 * 86400e3,
         _ => return Err(anyhow!("unknown duration unit {unit:?}")),
     };
-    let v = (n * ms) as i64;
+    let v = n * ms;
+    if !v.is_finite() || v > MAX_DELAY as f64 {
+        return Err(anyhow!(
+            "{s:?} is too long; intervals can be at most 10 years"
+        ));
+    }
+    let v = v as i64;
     if v < 60_000 {
         return Err(anyhow!("intervals must be at least a minute"));
     }
     Ok(v)
+}
+
+/// The longest interval or delay: 10 years, in milliseconds.
+pub const MAX_DELAY: i64 = 10 * 366 * 86_400_000;
+
+/// `now + ms`, refusing a time past what can be stored.
+fn later(now: i64, ms: i64) -> Result<i64> {
+    now.checked_add(ms)
+        .ok_or_else(|| anyhow!("that time is too far in the future"))
 }
 
 /// A time zone: an IANA name, or local time.
@@ -191,7 +206,7 @@ fn wall_clock(z: Zone, dt: NaiveDateTime) -> Option<i64> {
 pub fn parse_at(s: &str, z: Zone, now: i64) -> Result<i64> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix("in ") {
-        return Ok(now + duration(rest).or_else(|_| duration_any(rest))?);
+        return later(now, duration(rest).or_else(|_| duration_any(rest))?);
     }
     if let Ok(t) = DateTime::parse_from_rfc3339(s) {
         return Ok(t.timestamp_millis());
@@ -220,7 +235,10 @@ fn duration_any(s: &str) -> Result<i64> {
         .ok_or_else(|| anyhow!("invalid duration"))?;
     let n: i64 = s[..split].parse()?;
     match s[split..].trim() {
-        "s" | "sec" | "secs" | "second" | "seconds" => Ok(n * 1000),
+        "s" | "sec" | "secs" | "second" | "seconds" => n
+            .checked_mul(1000)
+            .filter(|v| *v <= MAX_DELAY)
+            .ok_or_else(|| anyhow!("{s:?} is too long; delays can be at most 10 years")),
         _ => Err(anyhow!("invalid duration {s:?}")),
     }
 }
@@ -254,7 +272,7 @@ pub fn first_due(t: &Trigger, now: i64) -> Result<i64> {
         }
         Trigger::Every { every, tz } => {
             zone(tz.as_deref())?;
-            Ok(now + duration(every)?)
+            later(now, duration(every)?)
         }
         Trigger::Cron { cron, tz } => next_cron(cron, zone(tz.as_deref())?, now),
         Trigger::Event { .. } => Err(anyhow!("an event trigger has no due time")),
@@ -278,7 +296,7 @@ fn due(t: &Trigger, now: i64) -> Result<Option<i64>> {
 pub fn following(t: &Trigger, now: i64) -> Result<Option<i64>> {
     match t {
         Trigger::At { .. } => Ok(None),
-        Trigger::Every { every, .. } => Ok(Some(now + duration(every)?)),
+        Trigger::Every { every, .. } => Ok(Some(later(now, duration(every)?)?)),
         Trigger::Cron { cron, tz } => next_cron(cron, zone(tz.as_deref())?, now).map(Some),
         Trigger::Event { .. } => Ok(None),
     }
@@ -482,12 +500,14 @@ pub fn set_position(db: &Store, id: &str, p: &EventPosition) -> Result<()> {
     Ok(())
 }
 
-/// Claim one run of an event automation: its run count goes up.
-fn claim_event(db: &Store, id: &str, now: i64) -> Result<Automation> {
+/// Claim one run of an event automation: its run count goes up and the
+/// watch's position moves past the event, in one statement.
+fn claim_event(db: &Store, id: &str, now: i64, p: &EventPosition) -> Result<Automation> {
+    let p = serde_json::to_string(p)?;
     db.with_conn(|c| {
         Ok(c.execute(
-            "UPDATE automation SET runs = runs + 1, last_run = ?2 WHERE id = ?1",
-            params![id, now],
+            "UPDATE automation SET runs = runs + 1, last_run = ?2, event_position = ?3 WHERE id = ?1",
+            params![id, now, p],
         )?)
     })?;
     get(db, id)?.ok_or_else(|| anyhow!("no automation {id}"))
@@ -745,6 +765,29 @@ enum Watch {
     Broken(String),
 }
 
+/// Why a run failed, and whether the automation cannot run at all (its
+/// config, target session or program is broken) rather than one turn of it
+/// failing.
+struct RunError {
+    message: String,
+    fatal: bool,
+}
+
+/// The model turn of a run failed (the run itself was set up fine).
+#[derive(Debug)]
+struct TurnFailed;
+
+impl std::fmt::Display for TurnFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the run's turn failed")
+    }
+}
+
+/// How long the scheduler lease lasts, and how often it is renewed while
+/// runs are in flight.
+const LEASE_MS: i64 = 60_000;
+const LEASE_RENEW: Duration = Duration::from_secs(20);
+
 pub struct Runner {
     pub db: PathBuf,
     pub load: Loader,
@@ -784,7 +827,7 @@ impl Runner {
     /// how many timed automations fired.
     pub async fn tick(&self) -> Result<usize> {
         let db = Store::open(&self.db)?;
-        if !lease(&db, &self.holder, 60_000)? {
+        if !lease(&db, &self.holder, LEASE_MS)? {
             self.stop_watches();
             return Ok(0);
         }
@@ -792,10 +835,22 @@ impl Runner {
         let now = crate::store::now();
         let due = claim_due(&db, now)?;
         let n = due.len();
-        let jobs = due
-            .into_iter()
-            .map(|(a, was)| self.fire(a, now - was > 60_000));
-        futures_util::future::join_all(jobs).await;
+        let jobs = futures_util::future::join_all(
+            due.into_iter()
+                .map(|(a, was)| self.fire(a, now - was > 60_000)),
+        );
+        // Runs can outlast the lease; keep it while they are in flight, so
+        // no other process takes over scheduling (and the event watches)
+        // in the middle of them.
+        tokio::pin!(jobs);
+        loop {
+            tokio::select! {
+                _ = &mut jobs => break,
+                _ = tokio::time::sleep(LEASE_RENEW) => {
+                    let _ = lease(&db, &self.holder, LEASE_MS);
+                }
+            }
+        }
         Ok(n)
     }
 
@@ -979,7 +1034,7 @@ impl Runner {
             let Some(current) = get(db, id).map_err(fatal)? else {
                 return Ok(());
             };
-            if current.status != "active" || !lease(db, &self.holder, 60_000).map_err(fatal)? {
+            if current.status != "active" || !lease(db, &self.holder, LEASE_MS).map_err(fatal)? {
                 return Ok(());
             }
             check_watch(&loaded, &server).map_err(Watch::Fatal)?;
@@ -1005,12 +1060,22 @@ impl Runner {
                 if p.id.as_deref() == Some(eid.as_str()) {
                     continue;
                 }
-                let run = claim_event(db, id, crate::store::now()).map_err(fatal)?;
-                self.run(&run, "fired", Some(&input))
-                    .await
-                    .map_err(Watch::Fatal)?;
+                // The position moves on with the claim, before the run, as
+                // OpenCode commits it with the hand-off: a scheduler that
+                // takes over mid-run, or a restart, does not run it again.
                 p.cursor = cursor.clone();
                 p.id = Some(eid.clone());
+                let run = claim_event(db, id, crate::store::now(), &p).map_err(fatal)?;
+                *attempt = 0;
+                // A failed run is recorded; the watch goes on unless the
+                // automation itself cannot run (OpenCode pauses on those,
+                // and on a failed Code Mode program).
+                if let Err(e) = self.run(&run, "fired", Some(&input)).await {
+                    if e.fatal {
+                        return Err(Watch::Fatal(e.message));
+                    }
+                }
+                continue;
             } else {
                 p.cursor = msg.cursor().map(str::to_string);
             }
@@ -1083,9 +1148,16 @@ impl Runner {
         };
         s.set_wait_for_turn(wait);
         let mut out = Quiet(String::new());
-        s.prompt(prompt, &mut out).await?;
+        let turn_failed = |e: anyhow::Error| {
+            if e.downcast_ref::<crate::store::Busy>().is_some() {
+                e
+            } else {
+                e.context(TurnFailed)
+            }
+        };
+        s.prompt(prompt, &mut out).await.map_err(turn_failed)?;
         // The session is dropped next, which would stop its background commands.
-        s.settle_background(&mut out).await?;
+        s.settle_background(&mut out).await.map_err(turn_failed)?;
         Ok((s.id.clone(), out.0))
     }
 
@@ -1097,23 +1169,32 @@ impl Runner {
 
     /// Run the action once and record the outcome; an error says why it failed.
     /// `event` is the `{id, timestamp, data}` of the event that set it off.
-    async fn run(&self, a: &Automation, ok: &str, event: Option<&Value>) -> Result<(), String> {
+    async fn run(&self, a: &Automation, ok: &str, event: Option<&Value>) -> Result<(), RunError> {
         let db = match Store::open(&self.db) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("automation {}: {e:#}", a.id);
-                return Err(format!("{e:#}"));
+                return Err(RunError {
+                    message: format!("{e:#}"),
+                    fatal: false,
+                });
             }
         };
         let r = self.act(&db, a, ok, event).await;
-        if let Err(e) = &r {
-            if e.downcast_ref::<crate::store::Busy>().is_some() {
-                // Its session is running a turn elsewhere: try again next tick.
-                return defer(&db, a).map_err(|e| format!("{e:#}"));
-            }
-            let _ = finish(&db, a, "failed", None, &format!("{e:#}"), None, false);
+        let Err(e) = r else { return Ok(()) };
+        if e.downcast_ref::<crate::store::Busy>().is_some() {
+            // Its session is running a turn elsewhere: try again next tick.
+            return defer(&db, a).map_err(|e| RunError {
+                message: format!("{e:#}"),
+                fatal: false,
+            });
         }
-        r.map_err(|e| format!("{e:#}"))
+        let message = format!("{e:#}");
+        let _ = finish(&db, a, "failed", None, &message, None, false);
+        Err(RunError {
+            fatal: e.downcast_ref::<TurnFailed>().is_none(),
+            message,
+        })
     }
 
     async fn act(&self, db: &Store, a: &Automation, ok: &str, event: Option<&Value>) -> Result<()> {
@@ -1330,6 +1411,29 @@ mod tests {
             "intervals of at least a minute"
         );
         assert!(duration("5 fortnights").is_err());
+        // Huge intervals are refused instead of overflowing.
+        assert!(duration("10 weeks").is_ok());
+        assert_eq!(duration("520 weeks").unwrap(), 520 * 7 * 86_400_000);
+        for huge in [
+            "3700 days",
+            "1000 weeks",
+            "99999999999999999999 days",
+            "1e300 days",
+            "9223372036854775807 ms",
+        ] {
+            assert!(duration(huge).is_err(), "{huge}");
+        }
+        assert!(parse_at("in 9223372036854775807 seconds", Zone::Local, 0).is_err());
+        assert!(parse_at("in 999999999999 seconds", Zone::Local, 0).is_err());
+        assert!(later(i64::MAX - 5, 60_000).is_err());
+        assert!(first_due(
+            &Trigger::Every {
+                every: "1000000 weeks".into(),
+                tz: None
+            },
+            1_000_000
+        )
+        .is_err());
         let now = 1_000_000;
         assert_eq!(
             parse_at("in 10 minutes", Zone::Local, now).unwrap(),
