@@ -7,7 +7,10 @@ tests in [`src/parity_tests.rs`](src/parity_tests.rs) (provider options and
 reasoning replay in [`src/parity_options.rs`](src/parity_options.rs), prompt
 caching and tool choice in [`src/parity_cache.rs`](src/parity_cache.rs),
 stream lifecycle, partial output and Gemini continuation in
-[`src/parity_stream.rs`](src/parity_stream.rs), the partial JSON parser in
+[`src/parity_stream.rs`](src/parity_stream.rs), endpoints, auth, billed
+cost, compatibility overrides and request encoding in
+[`src/parity_endpoint.rs`](src/parity_endpoint.rs) (and the two
+default-auth cases in `codesmith-core/src/config.rs`), the partial JSON parser in
 [`src/partial_json.rs`](src/partial_json.rs), and the session's handling of a
 failed step's partial output in `codesmith-core/tests/runner_parity.rs`).
 Response parsing is also checked against OpenCode's recorded traffic in
@@ -33,14 +36,14 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 75 | 25 |
-| OpenAI Responses | 159 | 20 | 72 | 67 |
-| Anthropic Messages | 95 | 9 | 65 | 21 |
-| Gemini | 61 | 12 | 42 | 7 |
-| Shared | 85 | 10 | 57 | 18 |
-| **Total** | **515** | **66** | **311** | **138** |
+| OpenAI Chat | 115 | 15 | 83 | 17 |
+| OpenAI Responses | 159 | 22 | 75 | 62 |
+| Anthropic Messages | 95 | 9 | 67 | 19 |
+| Gemini | 61 | 12 | 43 | 6 |
+| Shared | 85 | 10 | 59 | 16 |
+| **Total** | **515** | **68** | **327** | **120** |
 
-Of the gaps, 103 are missing provider features (the roadmap) and
+Of the gaps, 85 are missing provider features (the roadmap) and
 35 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -326,6 +329,32 @@ Streams (`lib.rs`, all protocols)
   request's output. A blocked prompt now fails at the end of the stream, so a
   continued request can still finish.
 
+Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
+`billing.rs`, `src/parity_endpoint.rs`)
+- Providers take query parameters added to every request URL (Azure's
+  `api-version`), a header for the key in place of the protocol's own
+  (Azure's `api-key`, which also drops a configured `Authorization`
+  header), and a gzip or zstd request body (OpenCode's `encoding`). Every
+  protocol builds its request in one place; `Provider::prepare` returns it
+  unsent. Azure's URL rules (`/openai/v1` with `api-version`, deployment
+  URLs, proxies as given) are `azure_endpoint`, used by the built-in
+  `azure` provider.
+- Usage carries the cost the endpoint reports it billed: `usage.cost`
+  (OpenRouter, LiteLLM, OpenCode Zen) on Chat, Responses, Anthropic and
+  Gemini, else GitHub Copilot's `copilot_usage.total_nano_aiu` beside the
+  usage; a malformed or negative cost is dropped. A continued Gemini
+  response sums its requests' costs. Session cost and `codesmith stats` use
+  a step's billed cost when it has one and price its tokens otherwise, as
+  OpenCode's session usage does.
+- OpenAI Chat takes explicit overrides of what it detects (OpenCode's model
+  `compatibility`): `maxTokensField`, `streamUsage: false`,
+  `requireReasoning` and `requireAssistantAfterTool`.
+- "loads OpenAI default auth from Effect Config" and "lets explicit auth
+  override OpenAI default API key auth" already held (config resolves the
+  key from `settings.apiKey`, then the provider's variables); they are
+  config tests, and the first reads a test variable in place of
+  `OPENAI_API_KEY` (adapted).
+
 ## Partially ported
 
 - `gemini` "does not resume a response cut off by its own timeout": a reqwest
@@ -342,15 +371,18 @@ Streams (`lib.rs`, all protocols)
 
 - `openai-compatible-chat` "matches AI SDK compatible tool request body
   fixture": no `tool_choice` or `strict`.
-- `openai-compatible-chat` "bridges tool results for Mistral-family models …"
-  and "requires reasoning for DeepSeek …": the detected cases; explicit
-  compatibility overrides and provider-name detection are not modelled.
+- `openai-compatible-chat` "requires reasoning for DeepSeek …": no
+  provider-name detection (CodeSmith detects from the endpoint and model id)
+  and no `reasoningField` override.
+- `openai-compatible-chat` "posts to the configured compatible endpoint and
+  parses text usage": no total token count (`Usage` has none).
 - `openai-responses` "preserves standard refusal content …": text only, no
   item id/phase replay.
 - `anthropic-messages` "prepares Anthropic Messages target": a system-only
   cache policy stands for OpenCode's manual system hint.
-- `openai-compatible-chat` "prepares generic Chat target": no endpoint query
-  parameters and no `strict` flag on tools.
+- `openai-compatible-chat` "prepares generic Chat target": no `strict` flag
+  on tools (the endpoint query is checked by "posts to the configured
+  compatible endpoint …").
 - `gemini` "merges parallel tool results into one function-response turn":
   CodeSmith's function response payload is `{"output": …}` / `{"error": …}`
   (Google's documented keys) where OpenCode sends `{name, content}`.
@@ -507,44 +539,6 @@ _OpenAI Responses 2, Anthropic Messages 4, Gemini 1._
 </details>
 
 
-### Billed cost reporting (7 tests)
-
-Provider-reported cost (`cost`, OpenCode allowance, GitHub Copilot nano-AIU billing) is not read into `Usage`.
-
-_OpenAI Chat 3, OpenAI Responses 1, Anthropic Messages 2, Gemini 1._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — reports the cost the endpoint billed
-- `openai-chat` — converts the GitHub Copilot billing beside usage to USD
-- `openai-chat` — drops a malformed billed cost without failing the stream
-- `openai-responses` — reports the cost the endpoint billed
-- `anthropic-messages` — reports the cost the endpoint billed
-- `anthropic-messages` — converts the GitHub Copilot billing on the message delta to USD
-- `gemini` — reports the cost the endpoint billed
-
-</details>
-
-
-### Endpoint and auth configuration (7 tests)
-
-Native query params (e.g. Azure `api-version`), Azure `api-key` auth, default auth from config. CodeSmith appends the path to `base_url` and sends bearer/x-api-key/x-goog-api-key.
-
-_OpenAI Chat 3, OpenAI Responses 4._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — adds native query params to the Chat Completions URL
-- `openai-chat` — uses Azure api-key header for static OpenAI Chat keys
-- `openai-compatible-chat` — posts to the configured compatible endpoint and parses text usage
-- `openai-responses` — adds native query params to the Responses URL
-- `openai-responses` — uses Azure api-key header for static OpenAI Responses keys
-- `openai-responses` — loads OpenAI default auth from Effect Config
-- `openai-responses` — lets explicit auth override OpenAI default API key auth
-
-</details>
-
-
 ### Normalized finish reasons (6 tests)
 
 CodeSmith passes provider finish reasons through raw (they are informational; control flow looks only at tool calls). The common reason algebra (`end`→stop, `pause_turn`, `model_context_window_exceeded`→length, content-filter categories and refusal explanations) is not modelled.
@@ -599,7 +593,7 @@ _OpenAI Responses 4, Shared 1._
 
 ### Responses message item ids and phases (3 tests)
 
-Reasoning items replay with their ids and encrypted content, but assistant text keeps no item id or `phase`, and a reasoning item is one stored part (OpenCode keeps one per summary part).
+Reasoning items replay with their ids and encrypted content, but assistant text keeps no item id or `phase`, and a reasoning item is one stored part (OpenCode keeps one per summary part). Not request-side only: replaying ids and phases needs provider metadata on stored text and tool-call parts, captured while decoding.
 
 _OpenAI Responses 3._
 
@@ -623,34 +617,6 @@ _OpenAI Chat 2, Gemini 1._
 - `openai-chat` — uses the configured provider metadata namespace for reasoning and usage
 - `openai-chat` — falls back to the selected provider for the metadata namespace
 - `gemini` — leaves total usage undefined when component counts are missing
-
-</details>
-
-
-### Per-model compatibility overrides (2 tests)
-
-Explicit overrides of detected behaviour (`maxTokensField`, `streamUsage: false`, `requireReasoning`, `sanitizer`, `requireAssistantAfterTool`). CodeSmith detects from the endpoint and model id only.
-
-_OpenAI Chat 2._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — omits stream usage options when compatibility disables them
-- `openai-compatible-chat` — configures the max tokens request field
-
-</details>
-
-
-### Request body compression (2 tests)
-
-gzip/deflate request bodies.
-
-_Shared 2._
-
-<details><summary>Tests</summary>
-
-- `request-encoding` — compresses the JSON body with the requested encoding
-- `request-encoding` — sends plain JSON when unset or none
 
 </details>
 

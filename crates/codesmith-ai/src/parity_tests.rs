@@ -491,15 +491,23 @@ fn openai_chat_requests() {
                 assert_eq!(m[1]["tool_call_id"], want, "{model}");
             }
         }),
-        ("openai-compatible-chat :: bridges tool results for Mistral-family models", || {
-            for (model, bridge) in [
-                ("mistral-small", true),
-                ("devstral-small", true),
-                ("codestral-latest", true),
-                ("pixtral-large", true),
-                ("open-mixtral-8x22b", true),
-                ("ordinary-model", false),
+        ("openai-compatible-chat :: bridges tool results for Mistral-family models and honors compatibility overrides", || {
+            for (model, over, bridge) in [
+                ("mistral-small", None, true),
+                ("devstral-small", None, true),
+                ("codestral-latest", None, true),
+                ("pixtral-large", None, true),
+                ("open-mixtral-8x22b", None, true),
+                ("ordinary-model", None, false),
+                ("ordinary-model", Some(true), true),
+                ("mistral-small", Some(false), false),
             ] {
+                let mut p = crate::Provider {
+                    base_url: COMPATIBLE.into(),
+                    ..Default::default()
+                };
+                p.compat.require_assistant_after_tool = over;
+                let compat = openai::Compat::for_provider(&p, model);
                 // The user text in its own message, and sharing the results' message.
                 let apart = vec![
                     asst(vec![call("call_1", "lookup", json!({}))]),
@@ -511,7 +519,7 @@ fn openai_chat_requests() {
                     results(vec![result("call_1", "lookup", "Sunny"), text("What next?")]),
                 ];
                 for msgs in [apart, shared] {
-                    let b = chat_at(COMPATIBLE, &req(model, msgs));
+                    let b = openai::body_for(&req(model, msgs), &compat);
                     let roles: Vec<&str> = b["messages"]
                         .as_array()
                         .unwrap()
@@ -527,12 +535,19 @@ fn openai_chat_requests() {
                 }
             }
         }),
-        ("openai-compatible-chat :: requires reasoning for DeepSeek models, providers, and endpoints", || {
-            for (model, url, required) in [
-                ("DeepSeek-V3", COMPATIBLE, true),
-                ("custom-model", "https://API.DeepSeek.COM/v1", true),
-                ("ordinary-model", COMPATIBLE, false),
+        ("openai-compatible-chat :: requires reasoning for DeepSeek models, providers, and endpoints unless explicitly overridden (adapted: no provider-name or reasoningField cases)", || {
+            for (model, url, over, required) in [
+                ("DeepSeek-V3", COMPATIBLE, None, true),
+                ("custom-model", "https://API.DeepSeek.COM/v1", None, true),
+                ("ordinary-model", COMPATIBLE, None, false),
+                ("ordinary-model", COMPATIBLE, Some(true), true),
+                ("deepseek-chat", "https://api.deepseek.com/v1", Some(false), false),
             ] {
+                let mut p = crate::Provider {
+                    base_url: url.into(),
+                    ..Default::default()
+                };
+                p.compat.require_reasoning = over;
                 let r = req(
                     model,
                     vec![
@@ -541,7 +556,7 @@ fn openai_chat_requests() {
                         results(vec![result("call_1", "lookup", "Sunny")]),
                     ],
                 );
-                let b = chat_at(url, &r);
+                let b = openai::body_for(&r, &openai::Compat::for_provider(&p, model));
                 for m in b["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "assistant") {
                     if required {
                         assert_eq!(m["reasoning_content"], "", "{model}");
