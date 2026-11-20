@@ -1030,15 +1030,25 @@ impl Session {
             }
             // The last allowed step must answer in text (OpenCode's MAX_STEPS).
             let final_step = steps + 1 >= max_steps;
+            let before = self.messages.len();
             let (parts, reason, usage) = match self.step(sink, final_step).await {
                 Ok(r) => r,
+                // A context overflow is recovered by compacting once, unless
+                // the response had already streamed output (which the step
+                // kept in the history): then it fails the turn, as in
+                // OpenCode. When the summary fails, the overflow is what
+                // the turn reports; the compaction's own error went to the
+                // sink.
                 Err(e)
                     if !overflow_compacted
                         && self.loaded.config.compaction.auto()
+                        && self.messages.len() == before
                         && compaction::is_overflow(&e.to_string()) =>
                 {
                     overflow_compacted = true;
-                    self.compact(sink).await?;
+                    if self.compact(sink).await.is_err() {
+                        return Err(e);
+                    }
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -2330,7 +2340,7 @@ impl Session {
         let mut convo = compaction::for_summary(&self.messages[..k]);
         convo.push(Message::user(compaction::prompt(update)));
         let mut delta = |d: &str| sink.compaction_delta(d);
-        let (mut summary, usage) = complete_streaming(
+        let (mut summary, usage, reason) = complete_streaming(
             &self.client,
             &self.model,
             SUMMARY_SYSTEM,
@@ -2341,15 +2351,16 @@ impl Session {
         )
         .await?;
         self.count_side_call(usage)?;
+        cut_short(reason.as_ref())?;
         if !compaction::is_summary(&summary) {
             convo.push(Message {
                 role: Role::Assistant,
                 parts: vec![Part::text(summary.clone())],
             });
             convo.push(Message::user(compaction::NUDGE));
-            let usage;
+            let (usage, reason);
             let mut delta = |d: &str| sink.compaction_delta(d);
-            (summary, usage) = complete_streaming(
+            (summary, usage, reason) = complete_streaming(
                 &self.client,
                 &self.model,
                 SUMMARY_SYSTEM,
@@ -2360,6 +2371,7 @@ impl Session {
             )
             .await?;
             self.count_side_call(usage)?;
+            cut_short(reason.as_ref())?;
         }
         if summary.trim().is_empty() {
             return Err(anyhow!(
@@ -2520,7 +2532,7 @@ impl Session {
         let mut policy = retry::Policy::default();
         let mut attempt = 0;
         loop {
-            match self.attempt(&req, sink).await {
+            match self.attempt(&req, sink).await.and_then(unknown_finish) {
                 Ok(r) => return Ok(r),
                 Err(codesmith_ai::Failure { error: e, partial }) => {
                     let Some(wait) = policy.next(&e, std::time::Instant::now()) else {
@@ -2678,6 +2690,55 @@ impl HostedRows {
     }
 }
 
+/// A summary the output limit or a content filter cut short is not a
+/// summary: compacting with it would lose the history it left out. As in
+/// OpenCode, it fails the compaction without a retry.
+fn cut_short(reason: Option<&FinishReason>) -> Result<()> {
+    match reason {
+        Some(r) if r.is_length() => Err(anyhow!(
+            "compaction failed: the summary was cut off at the output limit"
+        )),
+        Some(r) if r.is_content_filter() => Err(anyhow!(
+            "Compaction summary was blocked by the provider{}",
+            runner::content_filtered(r)
+                .strip_prefix(runner::CONTENT_FILTERED)
+                .unwrap_or_default()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A response that ended with a finish reason the provider did not name
+/// (OpenCode's normalized `unknown`) and ran no tool is treated as a failed
+/// attempt, so it is retried from the prompt like an incomplete stream; its
+/// text and reasoning are kept only if the retries run out.
+fn unknown_finish(
+    r: (Vec<Part>, FinishReason, Usage),
+) -> Result<(Vec<Part>, FinishReason, Usage), codesmith_ai::Failure> {
+    let (parts, reason, usage) = r;
+    let tools = parts
+        .iter()
+        .any(|p| matches!(p, Part::ToolCall { .. } | Part::Hosted(_)));
+    if reason.normalized != codesmith_ai::Reason::Unknown || tools {
+        return Ok((parts, reason, usage));
+    }
+    Err(codesmith_ai::Failure {
+        error: codesmith_ai::Error::Provider {
+            message: format!(
+                "the provider ended the response with an unknown finish reason ({})",
+                reason.as_str()
+            ),
+            retryable: true,
+        },
+        partial: Some(Box::new(codesmith_ai::Response {
+            parts,
+            reason,
+            usage,
+            ..Default::default()
+        })),
+    })
+}
+
 /// A tool-free model call that returns the whole text reply.
 /// The summary message a compaction leaves at the start of the history.
 fn is_checkpoint(m: &Message) -> bool {
@@ -2731,6 +2792,7 @@ async fn complete_with(
         &mut |_| {},
     )
     .await
+    .map(|(text, usage, _)| (text, usage))
 }
 
 /// [`complete_with`], handing each text delta to `delta` as it arrives (a
@@ -2743,7 +2805,7 @@ async fn complete_streaming(
     max_tokens: Option<u32>,
     mut policy: retry::Policy,
     delta: &mut (dyn FnMut(&str) + Send),
-) -> Result<(String, Usage)> {
+) -> Result<(String, Usage, Option<FinishReason>)> {
     let req = Request {
         model: model.model_id.clone(),
         system: system.to_string(),
@@ -2765,6 +2827,7 @@ async fn complete_streaming(
     loop {
         let mut out = String::new();
         let mut usage = Usage::default();
+        let mut reason = None;
         let res: Result<(), codesmith_ai::Error> = async {
             let mut s = model.provider.stream(client, &req).await?;
             while let Some(ev) = s.next().await {
@@ -2773,7 +2836,14 @@ async fn complete_streaming(
                         delta(&d);
                         out.push_str(&d)
                     }
-                    Event::Finish { usage: u, .. } => usage = u,
+                    Event::Finish {
+                        usage: u,
+                        reason: r,
+                        ..
+                    } => {
+                        usage = u;
+                        reason = Some(r);
+                    }
                     _ => {}
                 }
             }
@@ -2781,7 +2851,7 @@ async fn complete_streaming(
         }
         .await;
         match res {
-            Ok(()) => return Ok((out, usage)),
+            Ok(()) => return Ok((out, usage, reason)),
             Err(e) => match policy.next(&e, std::time::Instant::now()) {
                 Some(wait) => tokio::time::sleep(wait).await,
                 None => return Err(anyhow!("{e}")),

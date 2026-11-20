@@ -250,10 +250,32 @@ async fn oc_compaction_preserves_provider_errors_from_manual_compaction() {
     assert_eq!(s.messages, before, "a failed compaction changes nothing");
 }
 
-/// "rejects compaction ${response} without retrying or committing its
-/// draft" (length and content-filter).
+/// "explains a compaction blocked by the provider" (adapted: without a
+/// refusal category). Fixed: the blocked reply was nudged like a reply
+/// without the template.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "found bug: session::complete_with ignores the finish reason, so a cut-short summary is committed (see PARITY.md)"]
+async fn oc_compaction_explains_a_compaction_blocked_by_the_provider() {
+    let (mut s, script, _d) = session(json!({}), Some("t")).await;
+    s.prompt("Earlier question", &mut Quiet).await.unwrap();
+    let before = s.messages.clone();
+    script
+        .lock()
+        .unwrap()
+        .raw_summaries
+        .push_back(finish("content_filter", ""));
+    let e = s.compact(&mut Quiet).await.unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "Compaction summary was blocked by the provider"
+    );
+    assert_eq!(requests(&script, Kind::Summary).len(), 1, "no nudge");
+    assert_eq!(s.messages, before);
+}
+
+/// "rejects compaction ${response} without retrying or committing its
+/// draft" (length and content-filter). Fixed: the summary's finish reason
+/// was ignored, so a truncated summary replaced the history.
+#[tokio::test(flavor = "multi_thread")]
 async fn oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it() {
     for reason in ["length", "content_filter"] {
         let (mut s, script, _d) = session(json!({}), Some("t")).await;
@@ -272,9 +294,9 @@ async fn oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committin
     }
 }
 
-/// "publishes the original overflow when recovery summarization fails"
+/// "publishes the original overflow when recovery summarization fails".
+/// Fixed: the summary's error was reported instead.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "found difference: the summary's error is reported instead of the overflow (see PARITY.md)"]
 async fn oc_compaction_reports_the_original_overflow_when_recovery_fails() {
     let (mut s, script, _d) = session(json!({}), Some("t")).await;
     s.prompt("one", &mut Quiet).await.unwrap();

@@ -374,6 +374,46 @@ fn assistant_texts_sent(body: &Value) -> Vec<String> {
 
 // --- Retries before output ---
 
+/// "retries an unknown finish before output". Fixed: an unknown finish
+/// ended the turn as if the model had stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_retries_an_unknown_finish_before_output() {
+    let mut t = plain().await;
+    t.push([finish("unknown", ""), text("Recovered")]);
+    t.prompt("Retry unknown finish").await.unwrap();
+    assert_eq!(t.requests().len(), 2);
+    assert_eq!(t.seen.lock().unwrap().retries.len(), 1);
+    assert_eq!(texts(&t.s), ["Recovered"]);
+}
+
+/// "retries an unknown finish cleanly after observable text when no tool
+/// ran". Fixed as above.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_retries_an_unknown_finish_cleanly_after_text() {
+    let mut t = plain().await;
+    t.push([finish("unknown", "Partial"), text("Recovered")]);
+    t.prompt("Continue unknown finish").await.unwrap();
+    let reqs = t.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(user_texts(&reqs[1]), ["Continue unknown finish"]);
+    assert!(assistant_texts_sent(&reqs[1]).is_empty(), "{}", reqs[1]);
+    assert_eq!(texts(&t.s), ["Recovered"]);
+}
+
+/// Not from OpenCode: a tool call with an unknown finish still runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_finish_with_a_tool_call_runs_the_tool() {
+    let mut t = plain().await;
+    std::fs::write(t.path("a.txt"), "x").unwrap();
+    t.push([
+        calls_with("unknown", &[("c1", "read", r#"{"path":"a.txt"}"#)]),
+        text("Done"),
+    ]);
+    t.prompt("Read it").await.unwrap();
+    assert_eq!(results(&t.s).len(), 1);
+    assert_eq!(t.requests().len(), 2);
+}
+
 /// "retries an incomplete stream cleanly from the prompt when no tool ran"
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_session_retries_an_incomplete_stream_cleanly_from_the_prompt() {
@@ -467,6 +507,27 @@ async fn oc_session_projects_provider_errors_as_terminal_failures() {
         user_texts(t.requests().last().unwrap()),
         ["Fail durably", "Again"]
     );
+}
+
+/// "does not recover context overflow after durable assistant output".
+/// Fixed: the overflow was compacted and retried after partial output.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_does_not_recover_context_overflow_after_output() {
+    let mut t = plain().await;
+    let broken = http(
+        200,
+        "text/event-stream",
+        &format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"choices": [{"delta": {"content": "Partial"}}]}),
+            json!({"error": {"code": "context_length_exceeded", "message": "prompt too long"}})
+        ),
+    );
+    t.push([broken]);
+    let err = t.prompt("Fail after output").await.unwrap_err();
+    assert!(err.to_string().contains("prompt too long"), "{err}");
+    assert_eq!(t.requests().len(), 1);
+    assert_eq!(texts(&t.s), ["Partial"]);
 }
 
 /// "settles a local tool before one content-filter step failure"
