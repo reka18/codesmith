@@ -62,6 +62,7 @@ async fn diagnostics_follow_writes_and_edits() {
     );
 
     // write: errors in this file (warnings left out) and in other files.
+    let started = Instant::now();
     let (out, err) = tool::execute(
         &ctx,
         "write",
@@ -73,7 +74,13 @@ async fn diagnostics_follow_writes_and_edits() {
         "Created file successfully: a.fake\n\nLSP errors detected in this file, please fix:\n<diagnostics file=\"{}\">\nERROR [2:3] error found (spicy)\n</diagnostics>",
         file.display()
     );
-    assert!(out.starts_with(&expected), "{out}");
+    assert!(
+        out.starts_with(&expected),
+        "{out}\n--- after {:?}; diagnostics held: {:#?}; expected file {}",
+        started.elapsed(),
+        lsp.diagnostics(),
+        file.display()
+    );
     assert!(!out.contains("warn found"), "{out}");
     assert!(
         out.contains(&format!(
