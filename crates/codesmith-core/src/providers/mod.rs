@@ -12,6 +12,7 @@ pub mod copilot;
 pub mod copilot_models;
 pub mod digitalocean;
 pub mod gateways;
+pub mod gitlab;
 pub mod live;
 pub mod modal;
 pub mod oauth;
@@ -384,6 +385,7 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
             };
             Some(format!("project {project} in {location}, {creds}"))
         }
+        gitlab::ID => gitlab::stored_instance(stored).map(|i| format!("saved GitLab login ({i})")),
         digitalocean::ID => {
             let s = stored?;
             (s["type"] == "oauth").then(|| {

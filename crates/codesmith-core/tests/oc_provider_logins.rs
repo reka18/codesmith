@@ -1044,3 +1044,366 @@ async fn oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener() {
             .unwrap();
     }
 }
+
+// plugin/provider-gitlab-oauth.test.ts
+
+use codesmith_core::providers::gitlab;
+
+fn gitlab_endpoints(srv: &Server, client: &str) -> gitlab::Endpoints {
+    gitlab::Endpoints {
+        instance: srv.url.clone(),
+        client_id: client.into(),
+        port: 0,
+    }
+}
+
+fn renewal() -> Reply {
+    reply(
+        200,
+        json!({"access_token": "renewed-access", "refresh_token": "renewed-refresh", "expires_in": 3600}).to_string(),
+    )
+}
+
+fn expired_gitlab(instance: &str, client: Option<&str>) -> Value {
+    let mut metadata = json!({"instanceUrl": instance});
+    if let Some(c) = client {
+        metadata["clientID"] = c.into();
+    }
+    json!({"type": "oauth", "method": "pkce", "access": "stale-access", "refresh": "stored-refresh", "expires": 1, "metadata": metadata})
+}
+
+#[test]
+fn oc_gitlab_oauth_is_registered_alongside_the_other_provider_plugins() {
+    assert_eq!(gitlab::LABEL, "Login with GitLab (OAuth)");
+    assert_eq!(
+        gitlab::redirect_uri(gitlab::PORT),
+        "http://127.0.0.1:8080/callback"
+    );
+}
+
+#[test]
+fn oc_gitlab_oauth_registers_pkce_oauth_alongside_the_generic_key_env_methods_from_models_dev_plugin(
+) {
+    // The instance defaults to GITLAB_INSTANCE_URL, then gitlab.com.
+    assert_eq!(
+        gitlab::normalize_instance(None, &env(&[])).unwrap(),
+        "https://gitlab.com"
+    );
+    assert_eq!(
+        gitlab::normalize_instance(
+            None,
+            &env(&[("GITLAB_INSTANCE_URL", "https://git.example/")])
+        )
+        .unwrap(),
+        "https://git.example"
+    );
+    assert!(gitlab::normalize_instance(Some("ftp://x"), &env(&[])).is_err());
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_exchanges_a_pkce_code_for_a_native_gitlab_oauth_credential() {
+    let srv = server().await;
+    let login = gitlab::start(&gitlab_endpoints(&srv, "my-gitlab-app"))
+        .await
+        .unwrap();
+    let url = login.url.clone();
+    assert!(url.starts_with(&format!("{}/oauth/authorize?", srv.url)));
+    let p = params(&url);
+    assert_eq!(p["client_id"], "my-gitlab-app");
+    assert_eq!(p["response_type"], "code");
+    assert_eq!(p["scope"], "api");
+    assert_eq!(p["code_challenge_method"], "S256");
+    assert!(p["redirect_uri"].starts_with("http://127.0.0.1:"));
+    assert!(p["redirect_uri"].ends_with("/callback"));
+    srv.push(reply(
+        200,
+        json!({"access_token": "access-token", "refresh_token": "refresh-token"}).to_string(),
+    ));
+    let now = oauth::now_ms();
+    let client = reqwest::Client::new();
+    let to = redirect(&url, &[]);
+    let (saved, page) = tokio::join!(gitlab::finish(&client, login, None, WAIT), browse(&to));
+    assert_eq!(page.unwrap().0, 200);
+    let saved = saved.unwrap();
+    let seen = srv.seen();
+    assert_eq!(seen[0].path, "/oauth/token");
+    assert!(seen[0].headers["content-type"].contains("application/x-www-form-urlencoded"));
+    let form = seen[0].form();
+    assert_eq!(form["grant_type"], "authorization_code");
+    assert_eq!(form["client_id"], "my-gitlab-app");
+    assert_eq!(form["code"], "auth-code");
+    assert_eq!(form["redirect_uri"], p["redirect_uri"]);
+    assert_eq!(
+        codesmith_core::mcp::oauth::challenge(&form["code_verifier"]),
+        p["code_challenge"]
+    );
+    assert_eq!(saved["access"], "access-token");
+    assert_eq!(saved["refresh"], "refresh-token");
+    assert_eq!(
+        saved["metadata"],
+        json!({"instanceUrl": srv.url, "clientID": "my-gitlab-app"})
+    );
+    let exp = saved["expires"].as_u64().unwrap();
+    assert!(exp >= now + 7_200_000 && exp <= oauth::now_ms() + 7_200_000);
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_uses_the_answered_self_managed_instance_url_including_a_relative_url_root()
+{
+    assert_eq!(
+        gitlab::normalize_instance(Some("https://example.com/gitlab/"), &env(&[])).unwrap(),
+        "https://example.com/gitlab"
+    );
+    let srv = server().await;
+    let mut e = gitlab_endpoints(&srv, "self-managed-client");
+    e.instance = format!("{}/gitlab", srv.url);
+    let login = gitlab::start(&e).await.unwrap();
+    assert!(login
+        .url
+        .starts_with(&format!("{}/gitlab/oauth/authorize?", srv.url)));
+    srv.push(reply(
+        200,
+        json!({"access_token": "a", "refresh_token": "r", "expires_in": 3600}).to_string(),
+    ));
+    let client = reqwest::Client::new();
+    let to = redirect(&login.url, &[]);
+    let (saved, _) = tokio::join!(gitlab::finish(&client, login, None, WAIT), browse(&to));
+    assert_eq!(srv.seen()[0].path, "/gitlab/oauth/token");
+    assert_eq!(
+        saved.unwrap()["metadata"],
+        json!({"instanceUrl": format!("{}/gitlab", srv.url), "clientID": "self-managed-client"})
+    );
+}
+
+#[test]
+fn oc_gitlab_oauth_fails_early_for_self_managed_instances_without_gitlab_oauth_client_id() {
+    let e = gitlab::client_id(
+        None,
+        &Default::default(),
+        &env(&[]),
+        "https://gitlab.example.com",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("GITLAB_OAUTH_CLIENT_ID"), "{e}");
+    assert!(e.contains("gitlab.example.com"), "{e}");
+    assert!(e.contains("http://127.0.0.1:8080/callback"), "{e}");
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_refreshes_an_oauth_credential_using_its_stored_instance_url_and_includes_redirect_uri(
+) {
+    let srv = server().await;
+    srv.push(renewal());
+    let login = expired_gitlab(&format!("{}/self", srv.url), Some("app-1"));
+    let now = oauth::now_ms();
+    let r = gitlab::refresh(&reqwest::Client::new(), &login, &env(&[]), 8080)
+        .await
+        .unwrap();
+    assert_eq!(r["access"], "renewed-access");
+    assert_eq!(r["refresh"], "renewed-refresh");
+    assert!(r["expires"].as_u64().unwrap() >= now + 3_600_000);
+    assert_eq!(
+        r["metadata"],
+        json!({"instanceUrl": format!("{}/self", srv.url), "clientID": "app-1"})
+    );
+    let seen = srv.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].path, "/self/oauth/token");
+    let form = seen[0].form();
+    assert_eq!(form["grant_type"], "refresh_token");
+    assert_eq!(form["refresh_token"], "stored-refresh");
+    assert_eq!(form["client_id"], "app-1");
+    assert_eq!(form["redirect_uri"], "http://127.0.0.1:8080/callback");
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_shares_one_token_exchange_between_concurrent_refreshes_of_the_same_credential(
+) {
+    let srv = server().await;
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let mut r = renewal();
+    r.gate = Some(gate);
+    srv.push(r);
+    let mut login = expired_gitlab(&srv.url, Some("app-1"));
+    login["refresh"] = "shared-refresh".into();
+    let client = reqwest::Client::new();
+    let e = env(&[]);
+    let all =
+        futures_util::future::join_all((0..3).map(|_| gitlab::refresh(&client, &login, &e, 8080)));
+    let go = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = release.send(());
+    };
+    let (out, ()) = tokio::join!(all, go);
+    let access: Vec<String> = out
+        .into_iter()
+        .map(|r| r.unwrap()["access"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(access, ["renewed-access"; 3]);
+    assert_eq!(srv.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_refreshes_credentials_without_a_client_id_only_with_gitlab_oauth_client_id(
+) {
+    // CodeSmith never refreshes with another project's application: a
+    // login without one needs GITLAB_OAUTH_CLIENT_ID (or a new login).
+    let srv = server().await;
+    let login = expired_gitlab(&srv.url, None);
+    let e = gitlab::refresh(&reqwest::Client::new(), &login, &env(&[]), 8080)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("GITLAB_OAUTH_CLIENT_ID"), "{e}");
+    assert!(srv.seen().is_empty());
+    srv.push(renewal());
+    let mut login = login;
+    login["refresh"] = "other-refresh".into();
+    let r = gitlab::refresh(
+        &reqwest::Client::new(),
+        &login,
+        &env(&[("GITLAB_OAUTH_CLIENT_ID", "env-app")]),
+        8080,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["metadata"]["clientID"], "env-app");
+    assert_eq!(srv.seen()[0].form()["client_id"], "env-app");
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_refreshes_only_with_the_recorded_client_id_when_the_credential_has_one() {
+    let srv = server().await;
+    srv.push(renewal());
+    let mut login = expired_gitlab(&srv.url, Some("recorded-app"));
+    login["refresh"] = "recorded-refresh".into();
+    gitlab::refresh(
+        &reqwest::Client::new(),
+        &login,
+        &env(&[("GITLAB_OAUTH_CLIENT_ID", "env-app")]),
+        8080,
+    )
+    .await
+    .unwrap();
+    assert_eq!(srv.seen()[0].form()["client_id"], "recorded-app");
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_reports_a_revoked_refresh_token_with_a_sign_in_again_hint_instead_of_authorization_code_hints(
+) {
+    let srv = server().await;
+    srv.push(reply(400, json!({"error": "invalid_grant"}).to_string()));
+    let mut login = expired_gitlab(&srv.url, Some("app-1"));
+    login["refresh"] = "revoked-refresh".into();
+    let e = gitlab::refresh(&reqwest::Client::new(), &login, &env(&[]), 8080)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("refresh token was revoked, expired"), "{e}");
+    assert!(e.contains("Sign in to GitLab again"), "{e}");
+    assert!(!e.contains("authorization code"), "{e}");
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_rejects_invalid_or_denied_callbacks() {
+    let cases: &[(&[(&str, &str)], &str)] = &[
+        (&[("state", "")], "Invalid OAuth state"),
+        (&[("code", "")], "Missing authorization code"),
+        (
+            &[
+                ("error", "access_denied"),
+                ("error_description", "User declined access"),
+            ],
+            "User declined access",
+        ),
+        (&[("error", "access_denied")], "access_denied"),
+    ];
+    for (extra, message) in cases {
+        let srv = server().await;
+        let login = gitlab::start(&gitlab_endpoints(&srv, "app")).await.unwrap();
+        let to = redirect(&login.url, extra);
+        let client = reqwest::Client::new();
+        let (done, page) = tokio::join!(gitlab::finish(&client, login, None, WAIT), browse(&to));
+        let (status, page) = page.unwrap();
+        assert_eq!(status, 400);
+        assert!(page.contains("Authorization failed"));
+        assert_eq!(done.unwrap_err().to_string(), *message);
+        assert!(srv.seen().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_preserves_the_active_connection_after_a_failed_token_exchange() {
+    let cases = [
+        (
+            400,
+            json!({"error": "invalid_grant", "error_description": "Code expired"}).to_string(),
+            "Code expired",
+        ),
+        (
+            400,
+            json!({"error": "invalid_grant"}).to_string(),
+            "client_id used:",
+        ),
+        (502, "Bad gateway".to_string(), "HTTP 502"),
+    ];
+    for (status, body, contains) in cases {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("auth.json");
+        codesmith_core::auth::set_in(&file, "gitlab", "previous-key").unwrap();
+        let srv = server().await;
+        let login = gitlab::start(&gitlab_endpoints(&srv, "app")).await.unwrap();
+        srv.push(reply(status, body));
+        let to = redirect(&login.url, &[]);
+        let client = reqwest::Client::new();
+        let (done, page) = tokio::join!(gitlab::finish(&client, login, None, WAIT), browse(&to));
+        let (code, page) = page.unwrap();
+        assert_eq!(code, 400);
+        assert!(page.contains(contains), "{page}");
+        assert!(done.unwrap_err().to_string().contains(contains));
+        assert_eq!(
+            codesmith_core::auth::key_in(&file, "gitlab").as_deref(),
+            Some("previous-key")
+        );
+    }
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_reports_eaddrinuse_with_a_clear_message_when_the_callback_port_is_occupied(
+) {
+    let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = blocker.local_addr().unwrap().port();
+    let srv = server().await;
+    let e = gitlab::Endpoints {
+        port,
+        ..gitlab_endpoints(&srv, "app")
+    };
+    let err = gitlab::start(&e).await.err().unwrap().to_string();
+    assert!(err.contains(&format!("port {port}")), "{err}");
+    assert!(err.contains("already in use"), "{err}");
+}
+
+#[tokio::test]
+async fn oc_gitlab_oauth_honors_gitlab_oauth_client_id_for_self_managed_applications() {
+    let id = gitlab::client_id(
+        None,
+        &Default::default(),
+        &env(&[("GITLAB_OAUTH_CLIENT_ID", " custom-client-id ")]),
+        "https://gitlab.com",
+    )
+    .unwrap();
+    assert_eq!(id, "custom-client-id");
+    let srv = server().await;
+    let login = gitlab::start(&gitlab_endpoints(&srv, &id)).await.unwrap();
+    assert_eq!(params(&login.url)["client_id"], "custom-client-id");
+    srv.push(reply(
+        200,
+        json!({"access_token": "a", "refresh_token": "r", "expires_in": 3600}).to_string(),
+    ));
+    let client = reqwest::Client::new();
+    let to = redirect(&login.url, &[]);
+    let (done, _) = tokio::join!(gitlab::finish(&client, login, None, WAIT), browse(&to));
+    done.unwrap();
+    assert_eq!(srv.seen()[0].form()["client_id"], "custom-client-id");
+}

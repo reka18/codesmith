@@ -548,6 +548,28 @@ with `--client-id`, `settings.clientId` on the `digitalocean` provider, or
 `CODESMITH_DIGITALOCEAN_CLIENT_ID`. The login listens on port 1456 and says
 so if another program holds it.
 
+### GitLab sign-in
+
+`codesmith auth login gitlab --oauth [--field instanceUrl=https://gitlab.example.com]`
+signs in to gitlab.com (or `GITLAB_INSTANCE_URL`, or the instance given,
+which may sit under a relative URL root) with OAuth and PKCE (scope `api`),
+and saves the login with its instance and application. The access token is
+refreshed with the application that issued it (GitLab binds refresh tokens
+to it and rotates them on each refresh; concurrent refreshes share one
+exchange). A revoked or expired refresh token asks you to sign in again.
+
+The login runs as an OAuth application you register on the instance (User
+settings → Applications) with redirect URI `http://127.0.0.1:8080/callback`,
+scope `api`, and **Confidential** unticked; CodeSmith ships none of its own
+(nor borrows another project's). Give its application id with
+`--client-id`, `settings.clientId` on the `gitlab` provider, or
+`GITLAB_OAUTH_CLIENT_ID`. The login listens on port 8080 and says so if
+another program holds it.
+
+GitLab Duo's models run through GitLab's AI gateway (agentic chat and Duo
+workflows), which CodeSmith does not speak yet, so `gitlab/duo-*` models
+cannot be used for sessions yet; the login is kept for when they can.
+
 ### Snowflake Cortex
 
 `snowflake-cortex` uses the account's Cortex REST API
@@ -830,7 +852,8 @@ they are asked in the terminal after the key, or given with
 `--field KEY=VALUE`, and saved with it. `codesmith auth login azure --cli`
 saves an [Azure CLI](#azure-openai) login. `--oauth` logs in through a
 provider's browser OAuth instead of a key ([Poe](#poe),
-[DigitalOcean](#digitalocean), [Snowflake Cortex](#snowflake-cortex)).
+[DigitalOcean](#digitalocean), [GitLab](#gitlab-sign-in),
+[Snowflake Cortex](#snowflake-cortex)).
 
 ## Instructions
 

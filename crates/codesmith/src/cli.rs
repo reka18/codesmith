@@ -505,7 +505,7 @@ enum AuthCmd {
         #[arg(long)]
         client_id: Option<String>,
         /// Log in through the provider's browser OAuth instead of pasting a
-        /// key (poe, digitalocean, snowflake-cortex).
+        /// key (poe, gitlab, digitalocean, snowflake-cortex).
         #[arg(long)]
         oauth: bool,
         /// azure: sign requests with Microsoft Entra ID tokens from the
@@ -1690,6 +1690,19 @@ async fn browser_login(
             )
             .await?;
         }
+        providers::gitlab::ID => {
+            let instance = providers::gitlab::normalize_instance(
+                answers.get("instanceUrl").and_then(|v| v.as_str()),
+                &env,
+            )?;
+            let id = providers::gitlab::client_id(client_id, &settings.plugin, &env, &instance)?;
+            let e = providers::gitlab::Endpoints {
+                instance,
+                client_id: id,
+                port: providers::gitlab::PORT,
+            };
+            providers::gitlab::login(&client, file, &e, open).await?;
+        }
         providers::digitalocean::ID => {
             let id = providers::digitalocean::client_id(client_id, &settings.plugin, &env)?;
             let e = providers::digitalocean::Endpoints::digitalocean(&id);
@@ -1711,7 +1724,7 @@ async fn browser_login(
         }
         p => {
             return Err(anyhow!(
-                "{p} has no browser login; --oauth is for poe, digitalocean and snowflake-cortex"
+                "{p} has no browser login; --oauth is for poe, gitlab, digitalocean and snowflake-cortex"
             ))
         }
     }

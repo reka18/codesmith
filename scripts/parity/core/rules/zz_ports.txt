@@ -439,3 +439,18 @@
 207 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_shows_a_returning_accounts_cached_routers_at_once :: adapted: the kept list serves at once; nothing refreshes in the background
 236 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_completes_browser_oauth_independently_of_router_discovery_and_releases_the_listener
 301 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener
+@plugin/provider-gitlab-oauth.test.ts
+87 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_is_registered_alongside_the_other_provider_plugins
+93 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_registers_pkce_oauth_alongside_the_generic_key_env_methods_from_models_dev_plugin :: adapted: `codesmith auth login gitlab --oauth [--field instanceUrl=…]`
+125 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_exchanges_a_pkce_code_for_a_native_gitlab_oauth_credential :: adapted: the application is the user's own (no bundled one)
+180 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_uses_the_answered_self_managed_instance_url_including_a_relative_url_root
+215 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_fails_early_for_self_managed_instances_without_gitlab_oauth_client_id :: adapted: every instance needs the user's application
+230 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_refreshes_an_oauth_credential_using_its_stored_instance_url_and_includes_redirect_uri
+267 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_shares_one_token_exchange_between_concurrent_refreshes_of_the_same_credential
+288 :: design :: deliberate :: CodeSmith never refreshes with another project's OAuth application; a login without one needs GITLAB_OAUTH_CLIENT_ID (tests/oc_provider_logins.rs::oc_gitlab_oauth_refreshes_credentials_without_a_client_id_only_with_gitlab_oauth_client_id)
+307 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_refreshes_only_with_the_recorded_client_id_when_the_credential_has_one
+321 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_reports_a_revoked_refresh_token_with_a_sign_in_again_hint_instead_of_authorization_code_hints
+344 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_rejects_invalid_or_denied_callbacks
+375 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_preserves_the_active_connection_after_a_failed_token_exchange
+393 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_reports_eaddrinuse_with_a_clear_message_when_the_callback_port_is_occupied
+407 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_honors_gitlab_oauth_client_id_for_self_managed_applications
