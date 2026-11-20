@@ -2852,7 +2852,13 @@ impl Session {
         // rule names the action: the blanket allow agents start with does
         // not cover it. (Unattended runs deny the tool outright.)
         let explicit = |action: &str, resource: &str, title: String| {
-            use crate::permission::{evaluate, Denied, Effect, Gate, Request};
+            use crate::permission::{evaluate, policy_denial, Denied, Effect, Gate, Request};
+            // A policy deny refuses whatever the rules say.
+            if let Some(message) =
+                policy_denial(action, &[resource.to_string()], self.gate.configured())
+            {
+                return Err(Denied::Policy { message }.to_string());
+            }
             let rules = self.gate.rules();
             let named = au::explicit_effect(action, resource, &rules);
             // A saved approval must not hide a configured deny.

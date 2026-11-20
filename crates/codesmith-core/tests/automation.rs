@@ -635,6 +635,28 @@ async fn the_automation_tool_asks_and_keeps_agents_in_bounds() {
     s.prompt(&create(None), &mut out).await.unwrap();
     assert!(out.0.contains("a rule blocks automation"), "{}", out.0);
     assert_eq!(count(), 1);
+    // A policy deny refuses it outright, rather than becoming a prompt,
+    // whatever the rules allow.
+    let policy = json!({"policies": [{"action": "tool.use", "resource": "automation:create", "effect": "deny", "message": "no automations here"}],
+        "permissions": [{"action": "automation", "resource": "*", "effect": "allow"}]});
+    let (mut s, asker) = session(policy, "build", Reply::Once);
+    let mut out = Collect(String::new());
+    s.prompt(&create(None), &mut out).await.unwrap();
+    assert!(out.0.contains("no automations here"), "{}", out.0);
+    assert!(asker.0.lock().unwrap().is_empty());
+    assert_eq!(count(), 1);
+    let policy =
+        json!({"policies": [{"action": "tool.use", "resource": "automation:*", "effect": "deny"}]});
+    let (mut s, asker) = session(policy, "build", Reply::Once);
+    let mut out = Collect(String::new());
+    s.prompt(&create(None), &mut out).await.unwrap();
+    assert!(
+        out.0.contains("Blocked by configuration policy"),
+        "{}",
+        out.0
+    );
+    assert!(asker.0.lock().unwrap().is_empty());
+    assert_eq!(count(), 1);
 
     // The plan agent cannot schedule work for build; read-only targets are fine.
     let (mut s, _) = session(rule, "plan", Reply::Once);
