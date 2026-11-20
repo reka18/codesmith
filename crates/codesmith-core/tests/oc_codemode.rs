@@ -80,6 +80,9 @@ const LIMIT: &str = "CodeSmith's limits";
 /// addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag,
 /// `substr`, `super` in arrows, some TDZ and property-order cases, ...).
 const ENGINE: &str = "Boa differs from the specification";
+/// Boa's result depends on the local time zone: it passes in UTC (CI) and
+/// fails elsewhere, so either outcome is accepted.
+const TIMEZONE: &str = "Boa's answer depends on the local time zone";
 
 /// Cases that fail on purpose, by file, test name and assertion number,
 /// with the reason.
@@ -905,7 +908,7 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         "parity.test.ts",
         r#"Date components convert through ToPrimitive > setters on an invalid Date answer NaN without overwriting a time set during coercion"#,
         1,
-        ENGINE,
+        TIMEZONE,
     ),
     (
         "parity.test.ts",
@@ -1228,6 +1231,7 @@ async fn oc_codemode_language_cases() {
         let listed = known.get(&(file, test, n));
         match (outcome, listed) {
             (Ok(()), None) => passed += 1,
+            (Ok(()), Some(why)) if *why == TIMEZONE => passed += 1,
             (Ok(()), Some(_)) => fixed.push(format!("{file} | {test} | {n}")),
             (Err(_), Some(_)) => {}
             (Err(e), None) => unexpected.push(format!("{file} | {test} | {n}: {e}")),
