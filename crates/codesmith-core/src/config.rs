@@ -9,6 +9,10 @@
 //!      (3 and 4 are skipped when `$CODESMITH_DISABLE_PROJECT_CONFIG` is set)
 //!   5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 //!
+//! `$CODESMITH_DISABLE_GLOBAL_CONFIG` skips the global config folder, and
+//! the home folder's `.claude` and `.agents` folders, however they are
+//! reached (see [`global_disabled`]).
+//!
 //! Objects merge key by key; `permissions` and `instructions` lists append,
 //! so a later file's rules come after (and so override) earlier ones. A file
 //! reached twice loads once.
@@ -811,15 +815,41 @@ pub enum Layer {
     Dir(PathBuf),
 }
 
+/// Whether `$CODESMITH_DISABLE_GLOBAL_CONFIG` turns the global sources off
+/// (OpenCode's `global: false`): the global config folder and the home
+/// folder's `.claude` and `.agents` folders are then not read, even when
+/// the project walk passes through them. The explicit file and inline
+/// config still load.
+pub fn global_disabled() -> bool {
+    std::env::var_os("CODESMITH_DISABLE_GLOBAL_CONFIG").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Whether `dir` is a global source that [`global_disabled`] turns off:
+/// the global config folder (also through a symlink) or the home folder.
+pub fn global_source(dir: &Path, global_dir: &Path, home: &Path) -> bool {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let d = real(dir);
+    d == real(global_dir) || d == real(home)
+}
+
 /// Every layer: the global files and then the global folder, the explicit
 /// file, every folder's `codesmith.json[c]`, then each folder's
 /// `.codesmith/codesmith.json[c]` followed by its `.codesmith/` folder.
 pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
-    let mut out: Vec<Layer> = NAMES
-        .iter()
-        .map(|n| Layer::File(sources.global_dir.join(n)))
-        .collect();
-    out.push(Layer::Dir(sources.global_dir.clone()));
+    let global = !global_disabled();
+    let mut out: Vec<Layer> = Vec::new();
+    if global {
+        out.extend(
+            NAMES
+                .iter()
+                .map(|n| Layer::File(sources.global_dir.join(n))),
+        );
+        out.push(Layer::Dir(sources.global_dir.clone()));
+    }
+    let home = dirs::home_dir().unwrap_or_default();
+    // The project walk may reach the global folder (a project inside it):
+    // it is still global.
+    let walked = |d: &Path| global || !global_source(d, &sources.global_dir, &home);
     if let Some(p) = &sources.file {
         out.push(Layer::File(p.clone()));
     }
@@ -827,6 +857,7 @@ pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
         let mut dirs: Vec<&Path> = cwd
             .ancestors()
             .take_while(|d| d.starts_with(root))
+            .filter(|d| walked(d))
             .collect();
         dirs.reverse();
         for d in &dirs {

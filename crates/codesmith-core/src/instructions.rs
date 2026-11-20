@@ -70,16 +70,19 @@ fn walk(
             out.push(p);
         }
     };
+    let global_on = !crate::config::global_disabled();
     let global = global_dir.join("AGENTS.md");
     let claude_global = home.join(".claude/CLAUDE.md");
-    if global.is_file() {
+    if global_on && global.is_file() {
         add(global);
-    } else if claude && claude_global.is_file() {
+    } else if global_on && claude && claude_global.is_file() {
         add(claude_global);
     }
     let stop = if cwd.starts_with(home) { home } else { root };
     for d in cwd.ancestors() {
-        if let Some(f) = in_dir(d) {
+        // The home and global folders are global sources.
+        let skip = !global_on && crate::config::global_source(d, global_dir, home);
+        if let Some(f) = in_dir(d).filter(|_| !skip) {
             add(f);
         }
         if d == stop || !d.starts_with(stop) {

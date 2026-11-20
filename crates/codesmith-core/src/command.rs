@@ -142,14 +142,19 @@ pub fn plugin_commands(config: &crate::config::Config) -> BTreeMap<String, Comma
 /// Claude Code's command folders, lowest precedence first: `<name>.md`
 /// files there sit below every config layer. (CodeSmith's own `commands/`
 /// folders are config layers: see [`documents`].)
-pub fn roots(cwd: &Path, root: &Path, _config_dir: &Path, home: &Path) -> Vec<PathBuf> {
+pub fn roots(cwd: &Path, root: &Path, config_dir: &Path, home: &Path) -> Vec<PathBuf> {
     if std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_some() {
         return Vec::new();
     }
-    let mut out = vec![home.join(".claude/commands")];
+    let global = !crate::config::global_disabled();
+    let mut out = Vec::new();
+    if global {
+        out.push(home.join(".claude/commands"));
+    }
     let mut dirs: Vec<&Path> = cwd
         .ancestors()
         .take_while(|d| d.starts_with(root))
+        .filter(|d| global || !crate::config::global_source(d, config_dir, home))
         .collect();
     dirs.reverse();
     for d in dirs {

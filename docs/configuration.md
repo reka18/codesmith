@@ -32,7 +32,12 @@ and trailing commas. Files load in this order, and later files win:
 4. then each folder's `.codesmith/codesmith.json[c]`, in the same order
 5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 
-Set `$CODESMITH_DISABLE_PROJECT_CONFIG` to skip steps 3 and 4.
+Set `$CODESMITH_DISABLE_PROJECT_CONFIG` to skip steps 3 and 4, and
+`$CODESMITH_DISABLE_GLOBAL_CONFIG` to skip step 1 together with every
+other global source: the global folder's agents, commands, skills and
+`AGENTS.md`, and the home folder's `.claude` and `.agents` folders (and
+`AGENTS.md`), even when the project walk passes through the global or home
+folder, as OpenCode's `global: false` does. Steps 2 and 5 still load.
 
 Objects merge key by key. `permissions` and `instructions` are the exception:
 those lists are appended, so a later file's rules come after an earlier
@@ -1380,6 +1385,7 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `CODESMITH_CONFIG_CONTENT` | Inline JSON config, loaded last. |
 | `CODESMITH_CONFIG_DIR` | The global config folder (default `$XDG_CONFIG_HOME/codesmith`, else `~/.config/codesmith`). |
 | `CODESMITH_DISABLE_PROJECT_CONFIG` | Ignore `codesmith.json[c]` and `.codesmith/` in the project. |
+| `CODESMITH_DISABLE_GLOBAL_CONFIG` | Ignore the global config folder and the home folder's `.claude` and `.agents`, however they are reached ([files and precedence](#files-and-precedence)). |
 | `CODESMITH_DISABLE_CLAUDE_CODE` | Don't read `CLAUDE.md` or `.claude/` skills and commands. |
 | `CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` | Don't read `.claude/skills` only. |
 | `CODESMITH_DB` | The session database (default `<data>/codesmith.db`). |

@@ -85,13 +85,20 @@ pub fn roots(
     home: &Path,
     extra: &[String],
 ) -> Vec<PathBuf> {
-    let mut out = vec![config_dir.join("skills"), home.join(".agents/skills")];
-    if claude_compat() {
-        out.push(home.join(".claude/skills"));
+    let global = !crate::config::global_disabled();
+    let mut out = Vec::new();
+    if global {
+        out.extend([config_dir.join("skills"), home.join(".agents/skills")]);
+        if claude_compat() {
+            out.push(home.join(".claude/skills"));
+        }
     }
+    // The home folder's `.agents` and `.claude` are global however the
+    // walk reaches them.
     let mut dirs: Vec<&Path> = cwd
         .ancestors()
         .take_while(|d| d.starts_with(root))
+        .filter(|d| global || !crate::config::global_source(d, config_dir, home))
         .collect();
     dirs.reverse();
     for d in dirs {
