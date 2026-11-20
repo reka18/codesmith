@@ -5,7 +5,11 @@ CodeSmith's provider protocols (`src/openai.rs`, `src/responses.rs`,
 OpenCode's provider unit tests (`packages/ai/test`, MIT) as table-driven Rust
 tests in [`src/parity_tests.rs`](src/parity_tests.rs) (provider options and
 reasoning replay in [`src/parity_options.rs`](src/parity_options.rs), prompt
-caching and tool choice in [`src/parity_cache.rs`](src/parity_cache.rs)).
+caching and tool choice in [`src/parity_cache.rs`](src/parity_cache.rs),
+stream lifecycle, partial output and Gemini continuation in
+[`src/parity_stream.rs`](src/parity_stream.rs), the partial JSON parser in
+[`src/partial_json.rs`](src/partial_json.rs), and the session's handling of a
+failed step's partial output in `codesmith-core/tests/runner_parity.rs`).
 Response parsing is also checked against OpenCode's recorded traffic in
 `src/replay_tests.rs`; this matrix covers the unit tests, which are mostly
 about how requests are built.
@@ -29,15 +33,15 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 73 | 27 |
-| OpenAI Responses | 159 | 20 | 66 | 73 |
-| Anthropic Messages | 95 | 9 | 64 | 22 |
-| Gemini | 61 | 12 | 29 | 20 |
-| Shared | 85 | 10 | 44 | 31 |
-| **Total** | **515** | **66** | **276** | **173** |
+| OpenAI Chat | 115 | 15 | 75 | 25 |
+| OpenAI Responses | 159 | 20 | 72 | 67 |
+| Anthropic Messages | 95 | 9 | 65 | 21 |
+| Gemini | 61 | 12 | 42 | 7 |
+| Shared | 85 | 10 | 57 | 18 |
+| **Total** | **515** | **66** | **311** | **138** |
 
-Of the gaps, 141 are missing provider features (the roadmap) and
-32 are by design or not applicable.
+Of the gaps, 103 are missing provider features (the roadmap) and
+35 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
 or a configuration knob it has no equivalent for), the case says so in its
@@ -292,7 +296,49 @@ Mid-conversation system updates (every protocol; `Role::System` in `lib.rs`,
 - `normalize_tool_history` moves a system update that arrives while calls are
   pending after their results, as it does user text.
 
+Streams (`lib.rs`, all protocols)
+- Decoders emit block lifecycle events as OpenCode does: `TextStart`/`TextEnd`
+  and `ReasoningStart` with block ids (Chat has one text and one reasoning
+  block per response; Gemini numbers `text-N` and `reasoning-N`; Anthropic
+  opens a block at `content_block_start`, so an empty text block is kept),
+  and `ToolInputStart`/`ToolInputDelta`/`ToolInputEnd` around each call whose
+  arguments stream (Chat, Anthropic, Responses; a Responses call that arrives
+  only completed still opens its input).
+- The `Collector` keeps separate text blocks as separate parts, starts a new
+  reasoning part at each reasoning start (separated Gemini thoughts no longer
+  merge), and reports forming tool calls with their input parsed so far
+  (`partial_json`, a port of OpenCode's partial JSON parser).
+- `assemble` consumes a stream into a `Response`; a stream that fails, or ends
+  without finishing, is a `Failure` carrying the text, reasoning and complete
+  calls that arrived first (OpenCode's `AIError.partial`). The session keeps
+  that partial text and reasoning in the history when the failure ends the
+  turn (OpenCode's "durably closes partial text/reasoning when the provider
+  stream fails"); a retried attempt still drops its partial output.
+- Responses: text for a message item that a later item concluded is dropped,
+  and a repeated `output_item.added` for a known reasoning or call item is
+  ignored.
+- Gemini: a response Gemini splits across requests is continued. After
+  `CONTINUATION`, a request that ends at a checkpoint without finishing, or a
+  dropped connection after a checkpoint (not a timeout), the body is resent
+  with the latest `continuationToken`; blocks stay open across requests,
+  `CONTINUATION` without a token is an error, a length finish is not
+  continued, and usage counts the first request's input with every
+  request's output. A blocked prompt now fails at the end of the stream, so a
+  continued request can still finish.
+
 ## Partially ported
+
+- `gemini` "does not resume a response cut off by its own timeout": a reqwest
+  read timeout stands for OpenCode's request timeout.
+- `error-partial` "loop reports only the failed step as partial" is a session
+  test (`runner_parity.rs`): the failed step's partial text is the last
+  assistant message, without the earlier step's call. The session's port of
+  "durably closes partial tool input" keeps no message: a call whose input
+  never completed did not run and is left out (OpenCode keeps it as a failed
+  tool).
+- `gemini` "assigns unique ids to separated reasoning blocks": delta ids are
+  implied (a delta belongs to the latest open block of its kind), and an
+  unsigned thought block has no end event.
 
 - `openai-compatible-chat` "matches AI SDK compatible tool request body
   fixture": no `tool_choice` or `strict`.
@@ -336,7 +382,11 @@ Mid-conversation system updates (every protocol; `Role::System` in `lib.rs`,
   responses server-side).
 - Finish reasons are raw provider strings; see "Normalized finish reasons".
 - Streams are decoded leniently; see "Strict stream validation".
-- Gemini prompt blocks without candidates are an error naming the block reason.
+- Gemini prompt blocks without candidates are an error naming the block reason
+  (raised when the stream ends without a finish).
+- Responses: a reasoning item is one block and one stored part, its summary
+  parts joined by blank lines; OpenCode streams each summary part as its own
+  block.
 - Chat: a system update right after tool results still gets the Mistral
   assistant bridge (OpenCode bridges only before user messages); Mistral
   rejects user content straight after a tool message.
@@ -415,83 +465,11 @@ _OpenAI Responses 16, Anthropic Messages 5._
 </details>
 
 
-### Partial results: streaming partial tool input and partial output on errors (14 tests)
+### Configured Chat reasoning fields (8 tests)
 
-CodeSmith parses tool arguments once complete and has no partial-JSON parser (`partial-json.test.ts`), and errors carry no partial response (`error-partial.test.ts`; the session layer tracks whether anything streamed instead).
+Reasoning details, `reasoning_opaque` and the field a model streamed reasoning under are stored and replayed, but a model cannot declare its reasoning field (`compatibility.reasoningField`, `requireReasoning`).
 
-_Shared 14._
-
-<details><summary>Tests</summary>
-
-- `partial-json` — parses complete JSON
-- `partial-json` — parses partial strings
-- `partial-json` — repairs invalid escapes and raw control characters
-- `partial-json` — preserves prototype keys in partial objects
-- `partial-json` — controls partial collection values independently
-- `partial-json` — parses partial literals and numbers
-- `partial-json` — distinguishes disallowed partial values from malformed values
-- `partial-json` — rejects empty input
-- `error-partial` — generate keeps the output that arrived before a mid-stream failure
-- `error-partial` — generate keeps the same error when the failure comes before any output
-- `error-partial` — generate with schema keeps the raw output when the token limit cuts off the forced tool call
-- `error-partial` — stream keeps the output that arrived before a mid-stream failure
-- `error-partial` — loop reports only the failed step as partial
-- `error-partial` — rejects with the root-exported AIError carrying partial
-
-</details>
-
-
-### Block lifecycle events (11 tests)
-
-OpenCode emits start/delta/end events with block ids (separate reasoning blocks per summary part, text blocks split around tool calls). CodeSmith streams flat text/reasoning deltas, so these orderings have no equivalent.
-
-_OpenAI Responses 8, Anthropic Messages 1, Gemini 2._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — routes reasoning summary events by output index
-- `openai-responses` — routes native reasoning text deltas by output index
-- `openai-responses` — closes sequential output messages before starting the next
-- `openai-responses` — streams each reasoning summary part as a separate block
-- `openai-responses` — concludes reasoning at implicit summary boundaries
-- `openai-responses` — concludes text at implicit message boundaries
-- `openai-responses` — opens the tool lifecycle for a done-only function call
-- `openai-responses` — ignores duplicate item start events
-- `anthropic-messages` — retains empty text blocks
-- `gemini` — assigns unique ids to separated reasoning blocks
-- `gemini` — separates text blocks around streamed tool calls
-
-</details>
-
-
-### Gemini stream resumption (11 tests)
-
-Resuming a dropped Gemini stream from a continuation checkpoint, stitching the parts and counting usage once. CodeSmith retries the whole request instead.
-
-_Gemini 11._
-
-<details><summary>Tests</summary>
-
-- `gemini` — stitches text split across three requests into one block
-- `gemini` — finishes with a signed tool call from a later request
-- `gemini` — forgets a block once the resumed request finishes
-- `gemini` — resumes a dropped stream from its latest checkpoint
-- `gemini` — counts the usage of a dropped request once resumed
-- `gemini` — continues a stream that ends at a checkpoint without finishing
-- `gemini` — fails a stream dropped before any checkpoint
-- `gemini` — does not resume a response cut off by its own timeout
-- `gemini` — fails a continuation without a token
-- `gemini` — does not continue a length finish
-- `gemini` — reports the first request's input with all output
-
-</details>
-
-
-### Configured Chat reasoning fields and reasoning lifecycle (10 tests)
-
-Reasoning details, `reasoning_opaque` and the field a model streamed reasoning under are stored and replayed, but a model cannot declare its reasoning field (`compatibility.reasoningField`, `requireReasoning`), and CodeSmith has no reasoning start/end lifecycle events to order against content.
-
-_OpenAI Chat 10._
+_OpenAI Chat 8._
 
 <details><summary>Tests</summary>
 
@@ -503,8 +481,6 @@ _OpenAI Chat 10._
 - `openai-chat` — does not replay reasoning details when the model declares another reasoning field
 - `openai-chat` — keeps replayed reasoning details when the model declares reasoning_details
 - `openai-chat` — parses and replays a configured custom reasoning field
-- `openai-chat` — preserves scalar reasoning after content starts in one lifecycle
-- `openai-chat` — keeps one reasoning lifecycle across many content chunks
 
 </details>
 
@@ -739,11 +715,11 @@ _Shared 7._
 </details>
 
 
-### Deliberate differences (4 tests)
+### Deliberate differences (7 tests)
 
-Gemini prompt-safety blocks (`promptFeedback.blockReason` without candidates) are an error in CodeSmith (the user sees why), not a content-filter finish; `OpenResponses.lowerConversation` is an OpenCode compaction helper with no counterpart. CodeSmith's Responses requests are always stateless, so a reasoning item goes back only with its encrypted content (an id alone cannot be resolved with `store: false`) and only before the output item that follows it (the API rejects a reasoning item without its following item).
+Gemini prompt-safety blocks (`promptFeedback.blockReason` without candidates) are an error in CodeSmith (the user sees why), not a content-filter finish; `OpenResponses.lowerConversation` is an OpenCode compaction helper with no counterpart. CodeSmith's Responses requests are always stateless, so a reasoning item goes back only with its encrypted content (an id alone cannot be resolved with `store: false`) and only before the output item that follows it (the API rejects a reasoning item without its following item). A Responses reasoning item is one block and one stored part (its summary parts joined by blank lines), not a block per summary part. `generate` with an output schema has no counterpart (CodeSmith has no structured-output call).
 
-_OpenAI Responses 2, Gemini 1, Shared 1._
+_OpenAI Responses 4, Gemini 1, Shared 2._
 
 <details><summary>Tests</summary>
 
@@ -751,6 +727,9 @@ _OpenAI Responses 2, Gemini 1, Shared 1._
 - `openai-responses` — replays stateless reasoning without encrypted state
 - `gemini` — preserves candidate-less prompt safety blocks as content-filter outcomes
 - `conversation-lowering` — conversation lowering excludes generation settings and tool definitions
+- `openai-responses` — streams each reasoning summary part as a separate block
+- `openai-responses` — concludes reasoning at implicit summary boundaries
+- `error-partial` — generate with schema keeps the raw output when the token limit cuts off the forced tool call
 
 </details>
 

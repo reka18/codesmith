@@ -30,6 +30,9 @@ mod options;
 #[path = "parity_cache.rs"]
 mod cache;
 
+#[path = "parity_stream.rs"]
+mod stream;
+
 /// Run named cases, reporting every failing name rather than the first.
 fn run(cases: &[(&str, fn())]) {
     let failed: Vec<&str> = cases
