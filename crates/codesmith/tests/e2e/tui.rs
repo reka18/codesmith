@@ -467,3 +467,39 @@ async fn a_new_session_stops_the_old_ones_background_commands() {
     assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
     m.assert_done();
 }
+
+// A running command's output is drawn as it prints, in the call's row (as
+// OpenCode's shell rows show it), and the result replaces it at the end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_command_shows_its_output_as_it_prints() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Live")
+            .then(
+                "run",
+                M::tools().and(M::prompt("run it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo first-chunk; sleep 2; x=second; echo $x-chunk", "description": "print"}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("run it")).and(M::step(1)),
+                Reply::text("It printed twice."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'run it'") else {
+        return;
+    };
+    // Live rows are marked `│`; the finished row's output `→`.
+    ui.wait_for("│ first-chunk").await;
+    // Drawn while the command still runs: its second line is not out yet.
+    assert!(!plain(&ui.screen).contains("second-chunk"));
+    ui.wait_for("It printed twice.").await;
+    ui.quit().await;
+    m.assert_done();
+}

@@ -47,6 +47,18 @@ pub enum Ev {
         output: String,
         error: bool,
     },
+    /// Output a running command printed since the last report.
+    ToolOutput {
+        id: String,
+        delta: String,
+    },
+    /// Labels of the images and files a call returned, before its end.
+    ToolMedia {
+        id: String,
+        labels: Vec<String>,
+    },
+    /// The label of an image (or other file) the model generated.
+    Media(String),
     Todos(Vec<Todo>),
     Notice(String),
     Compacted(u64, u64),
@@ -110,6 +122,21 @@ impl Sink for ChanSink {
             output: output.to_string(),
             error: is_error,
         });
+    }
+    fn tool_output(&mut self, id: &str, delta: &str) {
+        let _ = self.tx.send(Ev::ToolOutput {
+            id: id.to_string(),
+            delta: delta.to_string(),
+        });
+    }
+    fn tool_media(&mut self, id: &str, media: &[codesmith_ai::Media]) {
+        let _ = self.tx.send(Ev::ToolMedia {
+            id: id.to_string(),
+            labels: media.iter().map(super::app::media_label).collect(),
+        });
+    }
+    fn media(&mut self, media: &codesmith_ai::Media) {
+        let _ = self.tx.send(Ev::Media(super::app::media_label(media)));
     }
     fn step_end(&mut self, _reason: &FinishReason, usage: &Usage) {
         let _ = self.tx.send(Ev::StepEnd(*usage));

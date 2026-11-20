@@ -19,7 +19,10 @@ See [CLI](cli.md#codesmith) for every flag.
 - **Transcript.** Replies render as Markdown: headings, bold and italic,
   inline code, links, lists and task lists, quotes, tables, and fenced code
   blocks with syntax highlighting. `edit` and `write` calls show a colored
-  diff. Long tool output is collapsed to a few lines.
+  diff. Long tool output is collapsed to a few lines. A running shell
+  command shows the last lines it printed (marked `│`) until its result
+  replaces them. Images and files a tool returned, and images a model
+  generates (Gemini image models), are listed by type and size (`▣`).
 - **Header.** The agent, model, session id and title.
 - **Status line.** Context in use (the last call's tokens, and the share of
   the model's `limit.context` when it is configured), the session's cost when

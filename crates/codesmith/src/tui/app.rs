@@ -22,6 +22,8 @@ pub enum Entry {
     Notice(String),
     Error(String),
     Todos(Vec<Todo>),
+    /// An image (or other file) the model generated: its label.
+    Media(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -36,6 +38,45 @@ pub struct Tool {
     pub diff: Option<Diff>,
     /// Shown while the model streams the call; it has not started yet.
     pub forming: bool,
+    /// What a running command printed so far (its latest [`LIVE_KEEP`]
+    /// bytes), shown as a tail until the result replaces it.
+    pub live: String,
+    /// Labels of the images and files the call returned.
+    pub media: Vec<String>,
+}
+
+/// Most bytes of a running command's output kept for its row.
+pub const LIVE_KEEP: usize = 64 * 1024;
+
+impl Tool {
+    /// Add what the running call printed, keeping the latest
+    /// [`LIVE_KEEP`] bytes from a line start where there is one.
+    fn print(&mut self, delta: &str) {
+        self.live.push_str(delta);
+        if self.live.len() <= LIVE_KEEP {
+            return;
+        }
+        let mut cut = self.live.len() - LIVE_KEEP;
+        while !self.live.is_char_boundary(cut) {
+            cut += 1;
+        }
+        if let Some(nl) = self.live[cut..].find('\n') {
+            cut += nl + 1;
+        }
+        self.live.drain(..cut);
+    }
+}
+
+/// How a returned or generated file is listed: `[image: a.png] image/png, 2 KB`.
+pub fn media_label(m: &codesmith_ai::Media) -> String {
+    let bytes = m.inline_len() / 4 * 3;
+    let size = match bytes {
+        0 => String::new(),
+        b if b < 1024 => format!(", {b} B"),
+        b if b < 1024 * 1024 => format!(", {} KB", (b + 512) / 1024),
+        b => format!(", {:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    };
+    format!("{} {}{size}", codesmith_core::media::label(m), m.mime)
 }
 
 impl Tool {
@@ -291,6 +332,14 @@ impl App {
         self.spend.cost(self.header.cost.as_ref())
     }
 
+    /// The running call `id`, the latest one by that id.
+    fn running(&mut self, id: &str) -> Option<&mut Tool> {
+        self.entries.iter_mut().rev().find_map(|e| match e {
+            Entry::Tool(t) if t.result.is_none() && !t.forming && t.id == id => Some(t),
+            _ => None,
+        })
+    }
+
     /// Apply a session event.
     pub fn on_event(&mut self, ev: Ev) {
         match ev {
@@ -363,6 +412,7 @@ impl App {
                         && (t.id == id || (id.is_empty() && t.name == name)))
                 }) {
                     t.result = Some((first_line(&output), error));
+                    t.live = String::new();
                     if error {
                         // A failed edit changed nothing.
                         t.diff = None;
@@ -370,6 +420,17 @@ impl App {
                     t.output = output;
                 }
             }
+            Ev::ToolOutput { id, delta } => {
+                if let Some(t) = self.running(&id) {
+                    t.print(&delta);
+                }
+            }
+            Ev::ToolMedia { id, labels } => {
+                if let Some(t) = self.running(&id) {
+                    t.media.extend(labels);
+                }
+            }
+            Ev::Media(label) => self.entries.push(Entry::Media(label)),
             Ev::Todos(t) => {
                 self.entries.retain(|e| !matches!(e, Entry::Todos(_)));
                 self.entries.push(Entry::Todos(t));
@@ -1147,8 +1208,7 @@ mod tests {
                     detail: "a.rs".into(),
                     result: Some(("Read file a.rs, lines 1-3".into(), false)),
                     output: "\nRead file a.rs, lines 1-3\n1: x".into(),
-                    diff: None,
-                    forming: false,
+                    ..Default::default()
                 }),
                 Entry::Assistant("Done".into()),
             ]
@@ -1406,6 +1466,7 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                 ))),
                 (Role::Assistant, Part::Text(t)) => out.push(Entry::Assistant(t.to_string())),
                 (Role::Assistant, Part::Reasoning(t)) => out.push(Entry::Reasoning(t.to_string())),
+                (Role::Assistant, Part::Media(m)) => out.push(Entry::Media(media_label(m))),
                 (
                     Role::Assistant,
                     Part::ToolCall {
@@ -1439,7 +1500,7 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                         name,
                         content,
                         is_error,
-                        ..
+                        media,
                     },
                 ) => {
                     if let Some(Entry::Tool(t)) = out.iter_mut().rev().find(|e| {
@@ -1448,6 +1509,7 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                     }) {
                         t.result = Some((first_line(content), *is_error));
                         t.output = content.clone();
+                        t.media = media.iter().map(media_label).collect();
                     }
                 }
                 _ => {}
@@ -1515,10 +1577,59 @@ mod replay_tests {
                     detail: "a.rs".into(),
                     result: Some(("Read file a.rs, lines 1-2".into(), false)),
                     output: "Read file a.rs, lines 1-2".into(),
-                    diff: None,
-                    forming: false,
+                    ..Default::default()
                 }),
                 Entry::Assistant("Fixed.".into()),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod replay_media_tests {
+    use super::*;
+    use codesmith_ai::{Media, Message, Part, Role};
+    use serde_json::json;
+
+    #[test]
+    fn replays_returned_and_generated_media() {
+        let png = Media::base64("image/png", "A".repeat(2732)).named("cat.png");
+        let msgs = vec![
+            Message {
+                role: Role::Assistant,
+                parts: vec![Part::tool_call("c", "read", json!({"path": "cat.png"}))],
+            },
+            Message {
+                role: Role::User,
+                parts: vec![Part::ToolResult {
+                    id: "c".into(),
+                    name: "read".into(),
+                    content: "Image read successfully".into(),
+                    is_error: false,
+                    media: vec![png],
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                parts: vec![
+                    Part::text("Here it is."),
+                    Part::Media(
+                        Media::base64("image/png", "AAECAw==")
+                            .with_meta("google", json!({"thoughtSignature": "s"})),
+                    ),
+                ],
+            },
+        ];
+        let e = replay(&msgs);
+        let Entry::Tool(t) = &e[0] else {
+            panic!("{e:?}")
+        };
+        assert_eq!(t.media, ["[image: cat.png] image/png, 2 KB"]);
+        assert_eq!(
+            e[1..],
+            [
+                Entry::Assistant("Here it is.".into()),
+                Entry::Media("[image] image/png, 6 B".into()),
             ]
         );
     }

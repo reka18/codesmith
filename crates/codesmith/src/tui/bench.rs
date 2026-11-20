@@ -44,8 +44,7 @@ fn long_session(n: usize) -> App {
                 detail: "cargo test".into(),
                 result: Some(("running 3 tests".into(), false)),
                 output: (0..30).map(|l| format!("test line {l}\n")).collect(),
-                diff: None,
-                forming: false,
+                ..Default::default()
             }),
             _ => Entry::Assistant(format!("Done with {i}; the test passes now.")),
         });
@@ -82,6 +81,29 @@ fn bench_transcript() {
         term.draw(|f| view::draw(f, &a)).unwrap();
     });
     report("tui streaming frame (2k entries)", t, "");
+    // A running command's output grows every frame (its row keeps the
+    // latest 64 KiB, of which it shows a tail).
+    a.entries.push(Entry::Tool(Tool {
+        id: "live".into(),
+        name: "shell".into(),
+        detail: "cargo build".into(),
+        ..Default::default()
+    }));
+    let mut n = 0;
+    let t = time(50, || {
+        let chunk: String = (0..40)
+            .map(|_| {
+                n += 1;
+                format!("\x1b[32m   Compiling\x1b[0m crate{n} v0.1.0 (/src/crate{n})\n")
+            })
+            .collect();
+        a.on_event(super::bridge::Ev::ToolOutput {
+            id: "live".into(),
+            delta: chunk,
+        });
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui live output frame (2k entries)", t, "");
     let mut w = 80;
     let t = time(10, || {
         w = if w == 80 { 100 } else { 80 };

@@ -85,6 +85,8 @@ const DIFF_COLLAPSED: usize = 12;
 const OUTPUT_COLLAPSED: usize = 4;
 /// Most rows shown even when expanded.
 const EXPANDED_MAX: usize = 400;
+/// Rows of a running command's latest output shown while collapsed.
+const LIVE_ROWS: usize = 8;
 
 /// Tools whose result is summed up by its first line.
 fn quiet(tool: &str) -> bool {
@@ -388,7 +390,91 @@ pub fn diff_lines(d: &Diff, max: usize, width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// A returned or generated file, listed by its label.
+fn media_line(label: &str, w: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  ▣ {}", cut(&escape_controls(label), w.saturating_sub(4))),
+        Style::default().fg(Color::Magenta),
+    ))
+}
+
+/// A terminal line as it would look once drawn, for a running command's
+/// output: text a carriage return went back over is gone, escape
+/// sequences (colors, cursor moves) are dropped, tabs are spaces and other
+/// controls are shown escaped. Stops after `max` characters.
+fn terminal_line(line: &str, max: usize) -> String {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let line = line.rsplit('\r').next().unwrap_or(line);
+    let mut out = String::new();
+    let mut n = 0;
+    let mut it = line.chars().peekable();
+    while let Some(c) = it.next() {
+        if n > max {
+            break;
+        }
+        match c {
+            '\x1b' => match it.next() {
+                // CSI: parameters, then a final byte.
+                Some('[') => {
+                    for d in it.by_ref() {
+                        if ('\x40'..='\x7e').contains(&d) {
+                            break;
+                        }
+                    }
+                }
+                // OSC (titles, links): up to BEL or ST.
+                Some(']') => {
+                    while let Some(d) = it.next() {
+                        if d == '\x07' || (d == '\x1b' && it.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\t' => {
+                out.push_str("    ");
+                n += 4;
+            }
+            c if (c as u32) < 0x20 || c.is_control() || invisible(c) => {
+                let e = escape_controls(c.encode_utf8(&mut [0; 4]));
+                n += e.chars().count();
+                out.push_str(&e);
+            }
+            c => {
+                out.push(c);
+                n += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The latest output of a running command, at most `max` rows.
+fn live_lines(live: &str, max: usize, w: usize) -> Vec<Line<'static>> {
+    let mut rows: Vec<&str> = live.trim_end_matches('\n').rsplit('\n').take(max).collect();
+    rows.reverse();
+    if rows.len() == 1 && rows[0].is_empty() {
+        return vec![];
+    }
+    let w = w.saturating_sub(4);
+    rows.into_iter()
+        .map(|l| {
+            Line::from(Span::styled(
+                format!("  │ {}", cut(&terminal_line(l, w), w)),
+                dim(),
+            ))
+        })
+        .collect()
+}
+
 fn tool_lines(t: &Tool, expand: bool, w: usize) -> Vec<Line<'static>> {
+    let mut out = tool_body(t, expand, w);
+    out.extend(t.media.iter().map(|m| media_line(m, w)));
+    out
+}
+
+fn tool_body(t: &Tool, expand: bool, w: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut head = vec![
         Span::styled(format!("⚙ {} ", t.name), Style::default().fg(Color::Cyan)),
@@ -405,6 +491,8 @@ fn tool_lines(t: &Tool, expand: bool, w: usize) -> Vec<Line<'static>> {
     }
     out.push(Line::from(head));
     let Some((first, err)) = &t.result else {
+        let max = if expand { EXPANDED_MAX } else { LIVE_ROWS };
+        out.extend(live_lines(&t.live, max, w));
         return out;
     };
     if *err {
@@ -518,6 +606,7 @@ fn entry_lines(app: &App, e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
         Entry::Reasoning(_) => {}
         Entry::Tool(t) => out.extend(tool_lines(t, app.expand_tools, w)),
         Entry::Notice(t) => out.extend(styled(wrap(t, w), "", Style::default().fg(Color::Yellow))),
+        Entry::Media(label) => out.push(media_line(label, w)),
         Entry::Error(t) => out.extend(styled(
             wrap(t, w),
             "error: ",
@@ -972,8 +1061,7 @@ mod tests {
             detail: detail.into(),
             result: result.map(|(s, e)| (s.to_string(), e)),
             output: output.into(),
-            diff: None,
-            forming: false,
+            ..Default::default()
         })
     }
 
@@ -1082,6 +1170,140 @@ mod tests {
         let t = text(&transcript(&a, 60));
         assert_eq!(t.len(), 21);
         assert_eq!(t[20], "    line 20");
+    }
+
+    // A running command shows the tail of what it printed (as OpenCode's
+    // shell rows do), at most `LIVE_ROWS` rows, cleaned of what a
+    // terminal would not show; the result replaces it.
+    #[test]
+    fn running_commands_show_their_latest_output() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        a.on_event(Ev::ToolStart {
+            id: "c1".into(),
+            name: "shell".into(),
+            detail: "make".into(),
+            diff: None,
+        });
+        // Output for another call goes nowhere.
+        a.on_event(Ev::ToolOutput {
+            id: "other".into(),
+            delta: "stray\n".into(),
+        });
+        assert_eq!(text(&transcript(&a, 60)), ["⚙ shell make …"]);
+        a.on_event(Ev::ToolOutput {
+            id: "c1".into(),
+            delta: "\x1b[32mcompiling\x1b[0m a\n".into(),
+        });
+        a.on_event(Ev::ToolOutput {
+            id: "c1".into(),
+            delta: "progress 10%\rprogress 90%\r\nta\tb \x1b]0;title\x07\u{7}x\npart".into(),
+        });
+        assert_eq!(
+            text(&transcript(&a, 60)),
+            [
+                "⚙ shell make …",
+                "  │ compiling a",
+                "  │ progress 90%",
+                "  │ ta    b \\x07x",
+                "  │ part",
+            ]
+        );
+        // A line streams in pieces.
+        a.on_event(Ev::ToolOutput {
+            id: "c1".into(),
+            delta: "ial\n".into(),
+        });
+        let t = text(&transcript(&a, 60));
+        assert_eq!(t.last().unwrap(), "  │ partial");
+        // Only the latest rows, cut to the width.
+        let many: String = (1..=30)
+            .map(|i| format!("line {i} {}\n", "x".repeat(80)))
+            .collect();
+        a.on_event(Ev::ToolOutput {
+            id: "c1".into(),
+            delta: many,
+        });
+        let t = text(&transcript(&a, 60));
+        assert_eq!(t.len(), 1 + LIVE_ROWS, "{t:?}");
+        assert!(t[1].starts_with("  │ line 23 x"), "{t:?}");
+        assert!(t.iter().all(|l| l.width() <= 56), "{t:?}");
+        a.expand_tools = true;
+        assert_eq!(text(&transcript(&a, 60)).len(), 1 + 34);
+        a.expand_tools = false;
+        // The result replaces it.
+        a.on_event(Ev::ToolEnd {
+            id: "c1".into(),
+            name: "shell".into(),
+            output: "done".into(),
+            error: false,
+        });
+        assert_eq!(text(&transcript(&a, 60)), ["⚙ shell make", "  → done"]);
+        let Entry::Tool(t) = &a.entries[0] else {
+            panic!()
+        };
+        assert!(t.live.is_empty());
+    }
+
+    #[test]
+    fn live_output_is_bounded() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        a.on_event(Ev::ToolStart {
+            id: "c1".into(),
+            name: "shell".into(),
+            detail: "yes".into(),
+            diff: None,
+        });
+        for i in 0..5000 {
+            a.on_event(Ev::ToolOutput {
+                id: "c1".into(),
+                delta: format!("é line {i} ..........\n"),
+            });
+        }
+        let Entry::Tool(t) = &a.entries[0] else {
+            panic!()
+        };
+        assert!(
+            t.live.len() <= crate::tui::app::LIVE_KEEP,
+            "{}",
+            t.live.len()
+        );
+        assert!(t.live.starts_with("é line "), "kept from a line start");
+        assert!(t.live.ends_with("line 4999 ..........\n"));
+    }
+
+    // Images a call returned and images the model generated are listed.
+    #[test]
+    fn returned_and_generated_media_are_listed() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        a.on_event(Ev::ToolStart {
+            id: "c1".into(),
+            name: "read".into(),
+            detail: "cat.png".into(),
+            diff: None,
+        });
+        a.on_event(Ev::ToolMedia {
+            id: "c1".into(),
+            labels: vec!["[image: cat.png] image/png, 2 KB".into()],
+        });
+        a.on_event(Ev::ToolEnd {
+            id: "c1".into(),
+            name: "read".into(),
+            output: "Image read successfully".into(),
+            error: false,
+        });
+        a.on_event(Ev::Media("[image] image/png, 68 B".into()));
+        assert_eq!(
+            text(&transcript(&a, 60)),
+            [
+                "⚙ read cat.png",
+                "  → Image read successfully",
+                "  ▣ [image: cat.png] image/png, 2 KB",
+                "  ▣ [image] image/png, 68 B",
+            ]
+        );
     }
 
     #[test]
