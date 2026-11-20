@@ -355,9 +355,7 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
                 .unwrap_or(json!({}));
             if c2.fetch_add(1, Ordering::SeqCst) >= max_calls {
                 return Err(JsNativeError::error()
-                    .with_message(format!(
-                        "Code Mode allows at most {max_calls} tool calls per execution"
-                    ))
+                    .with_message(too_many_calls(max_calls))
                     .into());
             }
             match caller(tool.clone(), input) {
@@ -430,6 +428,10 @@ fn timed_out(timeout: Duration, calls: usize) -> Outcome {
         logs: vec![],
         calls,
     }
+}
+
+fn too_many_calls(max_calls: usize) -> String {
+    format!("Code Mode allows at most {max_calls} tool calls per execution")
 }
 
 fn failed(e: String) -> Outcome {
@@ -730,6 +732,15 @@ where
             return outcome_from(&v);
         }
         let Some(call) = v.get("call") else { continue };
+        // The helper counts too, but it runs the program: enforce the
+        // limit here as well, so a helper that doesn't gets stopped.
+        if calls >= max_calls {
+            let _ = child.kill().await;
+            return Outcome {
+                calls,
+                ..failed(too_many_calls(max_calls))
+            };
+        }
         calls += 1;
         let (tool, input) = (
             call["tool"].as_str().unwrap_or_default().to_string(),
@@ -796,6 +807,12 @@ where
     loop {
         tokio::select! {
             Some(c) = rx.recv() => {
+                // The program's thread counts too; this keeps the limit
+                // here whatever runs the program.
+                if calls >= max_calls {
+                    let _ = c.reply.send(Err(too_many_calls(max_calls)));
+                    continue;
+                }
                 calls += 1;
                 let r = exec(c.tool, c.input).await;
                 let _ = c.reply.send(r);
@@ -975,6 +992,40 @@ mod tests {
         )
         .await;
         (out, seen)
+    }
+
+    /// A helper that ignores the call limit is stopped by the parent.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_parent_enforces_the_call_limit() {
+        // Reads the job, then asks for a tool call after every reply, forever.
+        let rogue = Helper {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                r#"read job; while :; do echo '{"call":{"tool":"gh_issues","input":{}}}'; read reply || exit 0; done"#.into(),
+            ],
+            env: vec![],
+        };
+        let mut n = 0;
+        let out = execute_with(
+            Some(&rogue),
+            "1",
+            &entries(),
+            3,
+            Duration::from_secs(10),
+            |_, _| {
+                n += 1;
+                async { Ok("[]".to_string()) }
+            },
+        )
+        .await;
+        assert_eq!(n, 3, "only the allowed calls ran");
+        assert_eq!(out.calls, 3);
+        assert_eq!(
+            out.result,
+            Err("Code Mode allows at most 3 tool calls per execution".into())
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
