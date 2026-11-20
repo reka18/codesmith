@@ -176,6 +176,7 @@ fn is_response_turn(c: &Value) -> bool {
 }
 
 pub fn body(req: &Request) -> Value {
+    let req = &*crate::flatten_namespaces(req);
     let omit_ids = omits_call_ids(&req.model);
     let legacy = legacy_tool_media(&req.model);
     let mut contents: Vec<Value> = Vec::new();

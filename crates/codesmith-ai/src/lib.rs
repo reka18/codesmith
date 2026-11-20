@@ -598,12 +598,61 @@ pub struct ToolSpec {
     pub parameters: Value,
 }
 
+/// A group of tools (OpenCode's `ToolNamespace`). OpenAI Responses declares
+/// it natively, with its tools under their own names; the other protocols
+/// declare its tools flat, as `<namespace>_<name>`. Calls to them are named
+/// the flat way on every protocol, so a call means the same tool whichever
+/// protocol made it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ToolNamespace {
+    pub name: String,
+    /// Responses requires one; `Tools in the <name> namespace.` by default.
+    pub description: Option<String>,
+    pub tools: Vec<ToolSpec>,
+    /// Nested groups. A native namespace holds only functions, so their
+    /// tools join this one's as `<nested>_<name>`.
+    pub namespaces: Vec<ToolNamespace>,
+}
+
+impl ToolNamespace {
+    /// Its tools, nested groups' included, named within this namespace
+    /// (`<nested>_<name>`).
+    pub fn leaves(&self) -> Vec<ToolSpec> {
+        let mut out = self.tools.clone();
+        for n in &self.namespaces {
+            out.extend(n.leaves().into_iter().map(|t| ToolSpec {
+                name: format!("{}_{}", n.name, t.name),
+                ..t
+            }));
+        }
+        out
+    }
+}
+
+/// `req` with its tool namespaces declared flat, after its plain tools, for
+/// protocols without native namespaces (OpenCode's `flattenToolRequest`).
+pub(crate) fn flatten_namespaces(req: &Request) -> std::borrow::Cow<'_, Request> {
+    if req.namespaces.is_empty() {
+        return std::borrow::Cow::Borrowed(req);
+    }
+    let mut r = req.clone();
+    for n in std::mem::take(&mut r.namespaces) {
+        r.tools.extend(n.leaves().into_iter().map(|t| ToolSpec {
+            name: format!("{}_{}", n.name, t.name),
+            ..t
+        }));
+    }
+    std::borrow::Cow::Owned(r)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Request {
     pub model: String,
     pub system: String,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
+    /// Groups of tools, declared after `tools`.
+    pub namespaces: Vec<ToolNamespace>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     /// Provider options (reasoning effort, thinking, service tier, …),

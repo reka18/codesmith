@@ -383,13 +383,26 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
             json!({"type": "message", "role": "developer", "content": req.system}),
         );
     }
+    namespace_calls(&mut input, &req.namespaces);
     let mut body = json!({"model": req.model, "input": input, "stream": true, "store": false});
     // Malformed hosted tools are rejected by `check` before anything is sent.
     let hosted = crate::hosted::declared(req, Protocol::OpenaiResponses).unwrap_or_default();
-    if !req.tools.is_empty() || !hosted.is_empty() {
+    if !req.tools.is_empty() || !req.namespaces.is_empty() || !hosted.is_empty() {
         let sanitizer = schema::for_model(&req.model);
-        let functions = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false}));
-        body["tools"] = functions.chain(hosted.iter().cloned()).collect();
+        let function = |t: &crate::ToolSpec| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false});
+        let mut tools: Vec<Value> = req.tools.iter().map(function).collect();
+        // Namespaces natively (OpenCode's), their leaves under their own
+        // names; OpenAI requires a description.
+        tools.extend(req.namespaces.iter().map(|n| {
+            let description = n
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Tools in the {} namespace.", n.name));
+            json!({"type": "namespace", "name": n.name, "description": description,
+                "tools": n.leaves().iter().map(function).collect::<Vec<_>>()})
+        }));
+        tools.extend(hosted.iter().cloned());
+        body["tools"] = json!(tools);
         // An `allowedTools` option (in `lower_options`) wins.
         if let Some(c) = &req.tool_choice {
             body["tool_choice"] = match c {
@@ -727,6 +740,36 @@ fn call_id(call_id: &str, item_id: &str) -> String {
         .unwrap_or_else(crate::fresh_id)
 }
 
+/// A function call item's name: a call into a namespace is named
+/// `<namespace>_<name>`, as the other protocols declare it.
+fn call_name(it: &Value) -> String {
+    match it["namespace"].as_str().filter(|n| !n.is_empty()) {
+        Some(n) => format!("{n}_{}", item_str(it, "name")),
+        None => item_str(it, "name").to_string(),
+    }
+}
+
+/// Replayed calls to a declared namespace's tools go back with their
+/// namespace and their name within it.
+fn namespace_calls(input: &mut [Value], namespaces: &[crate::ToolNamespace]) {
+    for item in input.iter_mut().filter(|i| i["type"] == "function_call") {
+        let Some(name) = item["name"].as_str() else {
+            continue;
+        };
+        let found = namespaces.iter().find_map(|n| {
+            let leaf = name.strip_prefix(&n.name)?.strip_prefix('_')?;
+            n.leaves()
+                .iter()
+                .any(|t| t.name == leaf)
+                .then(|| (n.name.clone(), leaf.to_string()))
+        });
+        if let Some((namespace, leaf)) = found {
+            item["namespace"] = json!(namespace);
+            item["name"] = json!(leaf);
+        }
+    }
+}
+
 fn item_str<'a>(it: &'a Value, key: &str) -> &'a str {
     it[key].as_str().unwrap_or("")
 }
@@ -952,7 +995,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 output_index: v["output_index"].as_u64(),
                 item_id: item_id.into(),
                 call_id: item_str(it, "call_id").into(),
-                name: item_str(it, "name").into(),
+                name: call_name(it),
                 args: item_str(it, "arguments").into(),
                 stream_id: call_id(item_str(it, "call_id"), item_id),
             };
@@ -1000,7 +1043,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                     let id = call_id(item_str(it, "call_id"), item_id);
                     out.push(Event::ToolInputStart {
                         id: id.clone(),
-                        name: item_str(it, "name").into(),
+                        name: call_name(it),
                     });
                     id
                 }
@@ -1009,7 +1052,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
             state.call(
                 item_str(it, "call_id"),
                 item_id,
-                item_str(it, "name"),
+                &call_name(it),
                 item_str(it, "arguments"),
                 &mut out,
             );
@@ -1050,8 +1093,11 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 let args = done
                     .and_then(|o| o["arguments"].as_str())
                     .unwrap_or(&p.args);
-                let name = done.and_then(|o| o["name"].as_str()).unwrap_or(&p.name);
-                state.call(&p.stream_id, &p.item_id, name, args, &mut out);
+                let name = done
+                    .filter(|o| o["name"].is_string())
+                    .map(call_name)
+                    .unwrap_or_else(|| p.name.clone());
+                state.call(&p.stream_id, &p.item_id, &name, args, &mut out);
             }
             let u = &r["usage"];
             let details = &u["input_tokens_details"];

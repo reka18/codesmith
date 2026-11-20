@@ -629,6 +629,7 @@ fn hosted_blocks(h: &crate::Hosted) -> Vec<Value> {
 
 /// The request body for provider `p`.
 pub fn body_with(req: &Request, p: &Provider) -> Value {
+    let req = &*crate::flatten_namespaces(req);
     let require_signature = require_signature(p, &req.model);
     let mut messages: Vec<Value> = Vec::new();
     // System updates on models that take them natively are held until the

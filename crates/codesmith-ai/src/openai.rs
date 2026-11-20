@@ -231,6 +231,7 @@ pub fn body(req: &Request) -> Value {
 }
 
 pub fn body_for(req: &Request, compat: &Compat) -> Value {
+    let req = &*crate::flatten_namespaces(req);
     let mut messages = Vec::new();
     if !req.system.is_empty() {
         messages.push(json!({"role": "system", "content": req.system}));

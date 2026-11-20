@@ -5,7 +5,7 @@
 //! ports.
 
 use super::*;
-use crate::{collect, Compatibility, Provider, Reasoning, ReasoningMeta};
+use crate::{collect, Compatibility, Provider, Reasoning, ReasoningMeta, ToolNamespace};
 
 fn chat_provider(compat: Compatibility) -> Provider {
     Provider {
@@ -356,6 +356,152 @@ fn signed_text_and_signature_overrides() {
                 gemini::body(&req("gemini-2.5-flash", vec![asst(collect(&evs))]))["contents"],
                 json!([{"role": "model", "parts": [{"text": "Working.", "thoughtSignature": "tail_sig"}]}])
             );
+        }),
+    ]);
+}
+
+fn leaf(name: &str, description: &str) -> ToolSpec {
+    ToolSpec {
+        name: name.into(),
+        description: description.into(),
+        parameters: json!({}),
+    }
+}
+
+fn namespace(name: &str, description: Option<&str>, tools: Vec<ToolSpec>) -> ToolNamespace {
+    ToolNamespace {
+        name: name.into(),
+        description: description.map(str::to_string),
+        tools,
+        namespaces: vec![],
+    }
+}
+
+fn function(name: &str, description: &str) -> Value {
+    json!({"type": "function", "name": name, "description": description, "parameters": {"type": "object"}, "strict": false})
+}
+
+fn crm() -> ToolNamespace {
+    namespace(
+        "crm",
+        Some("Customer management"),
+        vec![
+            leaf("lookup", "Look up a customer"),
+            leaf("orders", "List customer orders"),
+        ],
+    )
+}
+
+#[test]
+fn tool_namespaces() {
+    run(&[
+        ("openai-responses :: lowers tool namespaces without flattening leaf names", || {
+            let mut r = req("gpt-4.1-mini", vec![user("Find a customer and their orders.")]);
+            r.namespaces = vec![crm()];
+            assert_eq!(
+                responses::body(&r)["tools"],
+                json!([{"type": "namespace", "name": "crm", "description": "Customer management", "tools": [
+                    function("lookup", "Look up a customer"),
+                    function("orders", "List customer orders"),
+                ]}])
+            );
+        }),
+        ("openai-responses :: flattens nested levels within a native tool namespace", || {
+            let mut r = req("gpt-4.1-mini", vec![user("Hello")]);
+            let mut ns = namespace("crm", Some("Customer management"), vec![]);
+            ns.namespaces = vec![namespace(
+                "orders",
+                Some("Order management"),
+                vec![leaf("list", "List orders")],
+            )];
+            r.namespaces = vec![ns];
+            assert_eq!(
+                responses::body(&r)["tools"],
+                json!([{"type": "namespace", "name": "crm", "description": "Customer management", "tools": [
+                    function("orders_list", "List orders"),
+                ]}])
+            );
+        }),
+        ("openai-responses :: defaults tool namespace descriptions", || {
+            let mut r = req("gpt-4.1-mini", vec![user("Hello")]);
+            r.namespaces = vec![namespace("crm", None, vec![leaf("lookup", "Look up a customer")])];
+            let b = responses::body(&r);
+            assert_eq!(b["tools"][0]["type"], "namespace");
+            assert_eq!(b["tools"][0]["name"], "crm");
+            assert_eq!(b["tools"][0]["description"], "Tools in the crm namespace.");
+        }),
+        ("openai-responses :: preserves tool namespaces through streaming and history replay (adapted)", || {
+            // (adapted) The call is stored as `crm_lookup`, the name the
+            // other protocols declare it by, and replayed with its namespace
+            // when the request declares it.
+            let item = json!({"type": "function_call", "id": "fc_1", "call_id": "call_1", "namespace": "crm", "name": "lookup", "arguments": ""});
+            let mut done = item.clone();
+            done["arguments"] = json!(r#"{"id":"123"}"#);
+            let evs = resp(&sse(&[
+                json!({"type": "response.output_item.added", "output_index": 0, "item": item}),
+                json!({"type": "response.function_call_arguments.delta", "output_index": 0, "item_id": "fc_1", "delta": r#"{"id":"123"}"#}),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": done}),
+                json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+            ]))
+            .unwrap();
+            assert!(evs.iter().any(|e| matches!(e, Event::ToolInputStart { name, .. } if name == "crm_lookup")));
+            let parts = collect(&evs);
+            let mut item_meta = ReasoningMeta::of(Protocol::OpenaiResponses);
+            item_meta.item_id = Some("fc_1".into());
+            assert_eq!(
+                parts,
+                [Part::ToolCall {
+                    id: "call_1".into(),
+                    name: "crm_lookup".into(),
+                    input: json!({"id": "123"}),
+                    meta: Some(item_meta),
+                }]
+            );
+            let mut r = req(
+                "gpt-4.1-mini",
+                vec![
+                    asst(parts),
+                    results(vec![result("call_1", "crm_lookup", r#"{"customer":"Ada"}"#)]),
+                ],
+            );
+            r.namespaces = vec![crm()];
+            assert_eq!(
+                responses::body(&r)["input"],
+                json!([
+                    {"type": "function_call", "id": "fc_1", "call_id": "call_1", "namespace": "crm", "name": "lookup", "arguments": r#"{"id":"123"}"#},
+                    {"type": "function_call_output", "call_id": "call_1", "output": r#"{"customer":"Ada"}"#},
+                ])
+            );
+            // A protocol without namespaces declares the same name flat.
+            let b = chat_at(COMPATIBLE, &r);
+            let names: Vec<&str> = b["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["function"]["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, ["crm_lookup", "crm_orders"]);
+        }),
+        ("cache-policy :: marks the final leaf inside a tool namespace (adapted: on the lowered body)", || {
+            let mut r = req("claude-sonnet-4-5", vec![user("Hello")]);
+            r.namespaces = vec![namespace(
+                "crm",
+                None,
+                vec![leaf("lookup", "lookup"), leaf("orders", "orders")],
+            )];
+            r.cache = Cache {
+                placement: CachePlacement::Custom {
+                    tools: true,
+                    system: false,
+                    messages: None,
+                },
+                ttl: None,
+            };
+            let b = anthropic::body(&r);
+            assert_eq!(b["tools"][0]["name"], "crm_lookup");
+            assert!(b["tools"][0].get("cache_control").is_none());
+            assert_eq!(b["tools"][1]["name"], "crm_orders");
+            assert_eq!(b["tools"][1]["cache_control"], json!({"type": "ephemeral"}));
         }),
     ]);
 }

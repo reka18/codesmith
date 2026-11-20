@@ -576,6 +576,7 @@ impl Session {
                 self.model.input.as_deref(),
             ),
             tools: self.tool_specs(plugins, &code),
+            namespaces: Vec::new(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
             options: self.model.options.clone(),
