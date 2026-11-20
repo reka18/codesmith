@@ -348,13 +348,41 @@ pub fn thought_text(t: &str) -> String {
 /// A thought's title: the bold first line it starts with
 /// (`**Planning the fix**`), as OpenCode's reasoning summary takes it.
 pub fn thought_title(text: &str) -> Option<&str> {
-    let t = text.trim();
-    let rest = t.strip_prefix("**")?;
-    let end = rest.find("**")?;
+    reasoning_summary(text).0
+}
+
+/// A reasoning summary split as OpenCode's `reasoningSummary` splits it:
+/// a leading bold title block (`**Inspecting the workflow**` followed by a
+/// blank line, or alone while its body still streams) and the Markdown
+/// body after it, indentation kept. Bold text that is part of a sentence
+/// (`**Important:** keep this`) is not a title.
+pub fn reasoning_summary(text: &str) -> (Option<&str>, &str) {
+    let content = text.trim();
+    let whole = (None, content);
+    let Some(rest) = content.strip_prefix("**") else {
+        return whole;
+    };
+    let Some(end) = rest.find("**") else {
+        return whole;
+    };
     let title = &rest[..end];
+    if title.is_empty() || title.contains(['*', '\n']) {
+        return whole;
+    }
     let after = &rest[end + 2..];
-    let ends = after.is_empty() || after.starts_with("\n\n") || after.starts_with("\r\n\r\n");
-    (!title.is_empty() && !title.contains(['*', '\n']) && ends).then(|| title.trim())
+    let body = if after.is_empty() {
+        after
+    } else if let Some(b) = after
+        .strip_prefix("\n\n")
+        .or_else(|| after.strip_prefix("\r\n\r\n"))
+        .or_else(|| after.strip_prefix("\n\r\n"))
+        .or_else(|| after.strip_prefix("\r\n\n"))
+    {
+        b
+    } else {
+        return whole;
+    };
+    (Some(title.trim()), body.trim_end())
 }
 
 #[cfg(test)]

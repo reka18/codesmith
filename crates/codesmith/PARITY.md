@@ -65,6 +65,8 @@ Where the tests live:
   tabs of `app-lifecycle` and the tab settings of `config-v2`);
   `tests/e2e/tui.rs` runs tabs in a pty (`oc_keeps_each_visited_session_open`,
   background tabs and their permission requests).
+- `src/tui/parity_ui.rs`: the UI's smaller features (reasoning titles,
+  `cli/tui/thinking`, and the groups listed with their tests below).
 - `src/tui/parity_keys.rs`: key bindings and the UI's settings
   (`tui/test/config`, `config-v2`, `keymap`, `cli/tui/dialog-prompt`,
   `cli/tui/reasoning-body`, `cli/test/config`).
@@ -94,14 +96,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 299 | 268 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 304 | 263 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **558** | **721** | **2357** | **259** |
+| **Total** | **4637** | **742** | **563** | **716** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -563,6 +565,11 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/panel` | presentation changes preserve the selected panel identity | after a fix | oc_presentation_changes_preserve_the_selected_panel_identity (adapted: `/diff` closes an open viewer) |
 | `tui/test/panel` | narrow geometry overrides presentation without discarding the user's choice | after a fix | oc_narrow_geometry_overrides_presentation_without_discarding_the_users_choice |
 | `tui/test/config-v2` | validates the explicit diff source defaults | after a fix | oc_validates_the_explicit_diff_source_defaults (adapted: the `tui.diffs` setting) |
+| `tui/test/cli/tui/thinking` | extracts a leading summary title and leaves markdown body | after a fix | oc_extracts_a_leading_summary_title_and_leaves_the_markdown_body |
+| `tui/test/cli/tui/thinking` | extracts a completed title before its streamed body arrives | after a fix | oc_extracts_a_completed_title_before_its_streamed_body_arrives |
+| `tui/test/cli/tui/thinking` | preserves markdown-significant indentation in the extracted body | after a fix | oc_preserves_markdown_significant_indentation_in_the_extracted_body |
+| `tui/test/cli/tui/thinking` | does not consume ordinary leading bold content | after a fix | oc_does_not_consume_ordinary_leading_bold_content |
+| `tui/test/cli/tui/thinking` | leaves content without a leading title in its body | after a fix | oc_leaves_content_without_a_leading_title_in_its_body |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -885,14 +892,6 @@ transport and its tool presentation.
 - `tui/test/editor`: says which variable to set when no external editor is configured
 - `tui/test/editor`: normalizes a single trailing editor newline for one-line prompts
 - `tui/test/editor`: preserves multiline prompts that end with a newline
-
-### tui: reasoning titles (5)
-
-- `tui/test/cli/tui/thinking`: extracts a leading summary title and leaves markdown body
-- `tui/test/cli/tui/thinking`: extracts a completed title before its streamed body arrives
-- `tui/test/cli/tui/thinking`: preserves markdown-significant indentation in the extracted body
-- `tui/test/cli/tui/thinking`: does not consume ordinary leading bold content
-- `tui/test/cli/tui/thinking`: leaves content without a leading title in its body
 
 ### tui: sidebar and footer status (5)
 

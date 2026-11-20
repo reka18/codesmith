@@ -37,6 +37,8 @@ mod parity_groups;
 mod parity_keys;
 #[cfg(test)]
 mod parity_tabs;
+#[cfg(test)]
+mod parity_ui;
 pub(crate) mod settings;
 mod tabs;
 mod tabs_host;
