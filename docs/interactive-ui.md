@@ -370,6 +370,15 @@ ends, **enter** chooses, and **esc** closes. The model picker
 lists the models configured under `providers`, plus the current one. To use
 any other model, type `/model provider/model`.
 
+As in OpenCode, the model picker lists your favourite models first (`★`),
+then the ones used recently, then the rest; **ctrl+f** adds the
+highlighted model to the favourites or takes it off. **F2** and
+**shift+F2** step through the ten models used last
+(`model.cycle_recent`), and `model.cycle_favorite` (unbound) through the
+favourites. Each model's chosen [variant](configuration.md#provider-options-and-variants)
+is remembered and comes back when you pick it again. They are kept in
+`~/.local/share/codesmith/model.json`, in OpenCode's shape.
+
 ## Autocomplete and `@` mentions
 
 Typing `/` lists commands: built-in, custom, and MCP prompts. Typing `@`

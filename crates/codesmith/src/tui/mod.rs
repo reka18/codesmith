@@ -31,6 +31,7 @@ pub(crate) mod keymap;
 mod markdown;
 mod mention;
 pub(crate) mod mini;
+mod models;
 mod navigation;
 mod outside;
 #[cfg(test)]
@@ -156,6 +157,8 @@ struct Runner {
     outside: outside::Outside,
     /// The prompt history file.
     history: history::Store,
+    /// Model favourites, recents and variants.
+    models: models::Repository,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -734,7 +737,7 @@ impl Runner {
                 if args.is_empty() {
                     // The kept lists show at once; the local servers are
                     // asked again meanwhile.
-                    let items = model_items(&self.loaded.config, &self.app.header.model);
+                    let items = self.model_items();
                     self.app.modal = Some(Modal::Picker(Picker::new(Pick::Model, "Models", items)));
                     refresh_local_models(&self.loaded.config, self.tx.clone());
                 } else {
@@ -818,6 +821,11 @@ impl Runner {
             self.model = prev;
             return Err(e);
         }
+        if let Some(m) = models::Model::parse(spec) {
+            self.models.add_recent(&m);
+            let (_, variant) = config::split_variant(spec);
+            self.models.save_variant(&m, variant.unwrap_or("default"));
+        }
         self.app.notice(format!("model: {spec}"));
         Ok(())
     }
@@ -847,6 +855,99 @@ impl Runner {
             Some(v) => self.set_model(&format!("{base}#{v}")),
             None => self.set_model(&base),
         }
+    }
+
+    /// The model picker's items: favourites, then recent models, then the
+    /// rest.
+    fn model_items(&self) -> Vec<PickItem> {
+        let prefs = self.models.read();
+        let mut items = model_items(&self.loaded.config, &self.app.header.model);
+        let rank = |id: &str| {
+            let key = id.split('#').next().unwrap_or(id);
+            if prefs.favorite.iter().any(|m| m.key() == key) {
+                0
+            } else if prefs.recent.iter().any(|m| m.key() == key) {
+                1
+            } else {
+                2
+            }
+        };
+        for i in &mut items {
+            match rank(&i.id) {
+                0 => i.detail = format!("★ favorite · {}", i.detail),
+                1 => i.detail = format!("recent · {}", i.detail),
+                _ => {}
+            }
+        }
+        // Recents in the order used; the sort is stable for the rest.
+        let order = |id: &str| {
+            let key = id.split('#').next().unwrap_or(id);
+            prefs
+                .favorite
+                .iter()
+                .chain(&prefs.recent)
+                .position(|m| m.key() == key)
+                .unwrap_or(usize::MAX)
+        };
+        items.sort_by_key(|i| (rank(&i.id), order(&i.id)));
+        items
+    }
+
+    /// ctrl+f in the model picker: the model goes on or off the
+    /// favourites, and the picker opens again on it.
+    fn toggle_favorite(&mut self, id: &str) {
+        let Some(m) = models::Model::parse(id) else {
+            return;
+        };
+        let on = self.models.toggle_favorite(&m);
+        let filter = match &self.app.modal {
+            Some(Modal::Picker(p)) => p.filter.clone(),
+            _ => String::new(),
+        };
+        let mut p = Picker::new(Pick::Model, "Models", self.model_items());
+        p.set_filter(&filter);
+        p.select(id);
+        self.app.modal = Some(Modal::Picker(p));
+        self.app.notice(format!(
+            "{} {}",
+            m.key(),
+            if on {
+                "added to favorites"
+            } else {
+                "removed from favorites"
+            }
+        ));
+    }
+
+    /// F2 and friends: the next or previous recent (or favourite) model.
+    fn cycle_model(&mut self, favorites: bool, dir: i32) -> Result<()> {
+        if !self.idle_or_say() {
+            return Ok(());
+        }
+        let prefs = self.models.read();
+        let list = if favorites {
+            &prefs.favorite
+        } else {
+            &prefs.recent
+        };
+        let current = models::Model::parse(&self.app.header.model);
+        let Some(next) = models::cycle(list, current.as_ref(), dir) else {
+            self.app.notice(if favorites {
+                "no favorite models yet: ctrl+f in the model picker adds one"
+            } else {
+                "no recent models yet"
+            });
+            return Ok(());
+        };
+        let key = next.key();
+        let spec = match self.models.resolve_variant(&next) {
+            Some(v) => format!("{key}#{v}"),
+            None => key.clone(),
+        };
+        if spec.contains('#') && self.set_model(&spec).is_ok() {
+            return Ok(());
+        }
+        self.set_model(&key)
     }
 
     fn current_agent(&self) -> String {
@@ -925,7 +1026,17 @@ impl Runner {
             }
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
-            Pick::Model if self.idle_or_say() => self.set_model(&id)?,
+            Pick::Model if self.idle_or_say() => {
+                // A model without a variant gets the one chosen for it last.
+                let remembered = (!id.contains('#'))
+                    .then(|| models::Model::parse(&id))
+                    .flatten()
+                    .and_then(|m| self.models.resolve_variant(&m));
+                match remembered {
+                    Some(v) if self.set_model(&format!("{id}#{v}")).is_ok() => {}
+                    _ => self.set_model(&id)?,
+                }
+            }
             Pick::DiffSource | Pick::DiffBase => self.app.diff_picked(kind, &id),
             Pick::Session | Pick::Fork | Pick::Agent | Pick::Model => {}
         }
@@ -1010,6 +1121,12 @@ impl Runner {
         self.app.notice(format!("theme mode: {}", mode.key()));
     }
 
+    fn try_run(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) {
+        if let Err(e) = f(self) {
+            self.app.error(format!("{e:#}"));
+        }
+    }
+
     /// A command the app hands over: theme mode switches and suspend.
     fn run_command(&mut self, id: &str) {
         match id {
@@ -1023,6 +1140,10 @@ impl Runner {
             }
             "terminal.suspend" => self.suspend = true,
             "prompt.editor" => self.edit = true,
+            "model.cycle_recent" => self.try_run(|r| r.cycle_model(false, 1)),
+            "model.cycle_recent_reverse" => self.try_run(|r| r.cycle_model(false, -1)),
+            "model.cycle_favorite" => self.try_run(|r| r.cycle_model(true, 1)),
+            "model.cycle_favorite_reverse" => self.try_run(|r| r.cycle_model(true, -1)),
             "terminal.title.toggle" => {
                 let on = self.outside.toggle_title();
                 self.app.notice(if on {
@@ -1195,6 +1316,10 @@ impl Runner {
                         Ok(())
                     }
                     Some(Action::CycleAgent(d)) => self.cycle_agent(d),
+                    Some(Action::Favorite(id)) => {
+                        self.toggle_favorite(&id);
+                        Ok(())
+                    }
                     Some(Action::Quit) | None => Ok(()),
                 };
                 if let Err(e) = result {
@@ -1215,9 +1340,10 @@ impl Runner {
                 self.app.set_files(f);
             }
             Ev::LocalModels => {
+                let items = self.model_items();
                 if let Some(Modal::Picker(p)) = self.app.modal.as_mut() {
                     if p.kind == Pick::Model {
-                        p.replace_items(model_items(&self.loaded.config, &self.app.header.model));
+                        p.replace_items(items);
                     }
                 }
             }
@@ -1541,6 +1667,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         diffs: settings::Diffs::default(),
         tabs,
         history: history::Store::default(),
+        models: models::Repository::new(models::Repository::default_file()),
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),

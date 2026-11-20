@@ -545,3 +545,36 @@ mod history {
         assert_eq!(a.attachments.len(), 1);
     }
 }
+
+// ctrl+f in the model picker asks to toggle the highlighted model's
+// favourite; elsewhere it does nothing.
+#[test]
+fn ctrl_f_in_the_model_picker_toggles_a_favorite() {
+    use super::app::{Action, App, Modal, Pick, PickItem, Picker};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let item = |id: &str| PickItem {
+        id: id.into(),
+        label: id.into(),
+        detail: String::new(),
+        current: false,
+    };
+    let mut a = App::new();
+    let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    a.modal = Some(Modal::Picker(Picker::new(
+        Pick::Model,
+        "Models",
+        vec![item("openai/gpt-5"), item("anthropic/claude")],
+    )));
+    assert_eq!(
+        a.on_key(ctrl_f),
+        Some(Action::Favorite("openai/gpt-5".into()))
+    );
+    assert!(a.modal.is_some());
+    a.modal = Some(Modal::Picker(Picker::new(
+        Pick::Agent,
+        "Agents",
+        vec![item("build")],
+    )));
+    assert_eq!(a.on_key(ctrl_f), None);
+    assert!(a.modal.is_some());
+}

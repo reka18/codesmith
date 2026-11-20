@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 357 | 210 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 361 | 206 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **633** | **646** | **2357** | **259** |
+| **Total** | **4637** | **742** | **637** | **642** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -634,6 +634,10 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/history` | does not dedupe entries with different attachments | after a fix | oc_does_not_dedupe_entries_with_different_attachments |
 | `tui/test/prompt/history` | preserves duplicate attachment mentions for prompt restoration | after a fix | oc_preserves_duplicate_attachment_mentions |
 | `tui/test/prompt/persistence` | persistence creates parent directories and supports text, append, and JSON | after a fix | oc_persistence_creates_parent_directories_and_appends (adapted: the history's writes) |
+| `tui/test/model-preference` | repairs known model preferences and preserves unrelated fields | after a fix | oc_repairs_known_model_preferences_and_preserves_unrelated_fields (`tui/models.rs`) |
+| `tui/test/model-preference` | atomically serializes model preference updates | after a fix | oc_atomically_serializes_model_preference_updates (adapted: threads under the repository's lock) |
+| `tui/test/context/local-selection` | cycles all recent models in a stable order in both directions | after a fix | oc_cycles_all_recent_models_in_a_stable_order_in_both_directions (adapted: the cycle over the recents) |
+| `tui/test/context/local` | moves a model to the front, deduplicates, and limits recents | after a fix | oc_moves_a_model_to_the_front_deduplicates_and_limits_recents |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -853,11 +857,8 @@ transport and its tool presentation.
 - `tui/test/prompt/attachment`: deduplicates visible inline image cards without dropping durable references
 - `tui/test/prompt/attachment`: deduplicates visible image cards the server sent as media refs by their ref
 
-### tui: model favourites and recents (12)
+### tui: per-agent and per-session model selection (8)
 
-- `tui/test/model-preference`: repairs known model preferences and preserves unrelated fields
-- `tui/test/model-preference`: atomically serializes model preference updates
-- `tui/test/context/local-selection`: cycles all recent models in a stable order in both directions
 - `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents
 - `tui/test/context/local-selection`: switching agents restores their model and variant within the session
 - `tui/test/context/local-selection`: agent and model drafts are isolated across sessions and survive navigation
@@ -866,7 +867,6 @@ transport and its tool presentation.
 - `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit
 - `tui/test/context/local-selection`: a late inactive-agent acknowledgment preserves its choice after the active agent commits
 - `tui/test/context/local-selection`: same-model agent switches clear drafts without a model acknowledgment
-- `tui/test/context/local`: moves a model to the front, deduplicates, and limits recents
 
 ### tui: background command output viewer (10)
 

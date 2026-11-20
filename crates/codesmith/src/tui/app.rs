@@ -239,6 +239,19 @@ impl Picker {
         self.sel = 0;
     }
 
+    /// Filter the list by `filter`.
+    pub fn set_filter(&mut self, filter: &str) {
+        self.filter = filter.to_string();
+        self.refilter();
+    }
+
+    /// Move the selection to item `id`, when it is shown.
+    pub fn select(&mut self, id: &str) {
+        if let Some(at) = self.shown.iter().position(|&i| self.items[i].id == id) {
+            self.sel = at;
+        }
+    }
+
     pub fn selected(&self) -> Option<&PickItem> {
         self.shown.get(self.sel).map(|&i| &self.items[i])
     }
@@ -303,6 +316,9 @@ pub enum Action {
     Preview(Pick, String),
     /// A picker closed without a choice.
     Cancelled(Pick),
+    /// Add the model to the favourites, or take it off (ctrl+f in the
+    /// model picker).
+    Favorite(String),
     /// A command the runner carries out: `theme.switch_mode`,
     /// `theme.mode.lock`, `terminal.suspend`.
     Run(&'static str),
@@ -512,6 +528,8 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("agent.list", "pick an agent"),
     ("model.list", "pick a model"),
     ("variant.cycle", "next model variant"),
+    ("model.cycle_recent", "next recently used model"),
+    ("model.cycle_recent_reverse", "previous recently used model"),
     ("session.list", "pick a session"),
     ("session.new", "new session"),
     ("session.tab.next", "next session tab"),
@@ -1322,6 +1340,14 @@ impl App {
             "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
             "terminal.title.toggle" => return Some(Some(Action::Run("terminal.title.toggle"))),
             "prompt.editor" => return Some(Some(Action::Run("prompt.editor"))),
+            "model.cycle_recent" => return Some(Some(Action::Run("model.cycle_recent"))),
+            "model.cycle_recent_reverse" => {
+                return Some(Some(Action::Run("model.cycle_recent_reverse")))
+            }
+            "model.cycle_favorite" => return Some(Some(Action::Run("model.cycle_favorite"))),
+            "model.cycle_favorite_reverse" => {
+                return Some(Some(Action::Run("model.cycle_favorite_reverse")))
+            }
             // Tab commands while tabs are on, as OpenCode enables them.
             id if id.starts_with("session.tab.") => {
                 self.tabs.as_ref()?;
@@ -1738,6 +1764,10 @@ impl App {
                 let before = p.selected().map(|i| i.id.clone());
                 let last = p.shown.len().saturating_sub(1);
                 match hits(scope::PICKER).first().copied() {
+                    Some("model.dialog.favorite") if p.kind == Pick::Model => {
+                        return p.selected().map(|i| Action::Favorite(i.id.clone()));
+                    }
+                    Some("model.dialog.favorite") => {}
                     Some("dialog.select.prev") => p.sel = p.sel.saturating_sub(1),
                     Some("dialog.select.next") => p.sel = (p.sel + 1).min(last),
                     Some("dialog.select.page_up") => p.sel = p.sel.saturating_sub(10),

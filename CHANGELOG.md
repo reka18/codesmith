@@ -78,6 +78,9 @@ replays of its recorded provider traffic.
 - **Prompt history:** kept across restarts in OpenCode's
   `prompt-history.jsonl` shape (the newest 50, shared by all tabs, with
   their attachments).
+- **Model favourites and recents:** the model picker lists favourites
+  (ctrl+f) and recent models first; F2 steps through the recent ones, and
+  each model's variant is remembered, in OpenCode's `model.json`.
 - **Message navigation:** OpenCode's `session.message.*` commands jump
   to the next or previous prompt or answer; alt+end to the last prompt.
 - **External editor:** `<leader>e` or `/editor` edits the prompt in

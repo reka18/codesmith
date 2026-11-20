@@ -1531,6 +1531,10 @@ pub mod scope {
         "session.message.user.next",
         "session.message.user.previous",
         "session.messages_last_user",
+        "model.cycle_recent",
+        "model.cycle_recent_reverse",
+        "model.cycle_favorite",
+        "model.cycle_favorite_reverse",
         "app.clear",
         "agent.cycle",
         "agent.cycle.reverse",
@@ -1615,6 +1619,7 @@ pub mod scope {
         "dialog.select.home",
         "dialog.select.end",
         "dialog.select.submit",
+        "model.dialog.favorite",
     ];
     pub const QUESTION: &[&str] = &["dialog.prompt.submit"];
     pub const PERMISSION: &[&str] = &[
