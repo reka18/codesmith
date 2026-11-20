@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const INITIALIZE: &str = include_str!("prompt/initialize.txt");
-const REVIEW: &str = include_str!("prompt/review.txt");
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -19,9 +18,13 @@ pub struct Command {
     pub description: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
+    /// Handled by CodeSmith itself rather than expanded into a prompt
+    /// (`/review`, `/calibrate`). A same-named custom command replaces it.
+    #[serde(skip)]
+    pub native: bool,
 }
 
-/// Built-in commands: `/init` and `/review`.
+/// Built-in commands: `/init`, plus the native `/review` and `/calibrate`.
 pub fn builtins(project: &Path) -> BTreeMap<String, Command> {
     let mut m = BTreeMap::new();
     m.insert(
@@ -35,8 +38,18 @@ pub fn builtins(project: &Path) -> BTreeMap<String, Command> {
     m.insert(
         "review".into(),
         Command {
-            template: REVIEW.to_string(),
-            description: Some("review changes [commit|branch|pr], defaults to uncommitted".into()),
+            description: Some("review changes [commit|range|branch|#pr] [--comment] with parallel reviewers and verification; defaults to uncommitted".into()),
+            native: true,
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "calibrate".into(),
+        Command {
+            description: Some(
+                "survey the codebase and choose the review dimensions /review uses".into(),
+            ),
+            native: true,
             ..Default::default()
         },
     );
@@ -71,6 +84,7 @@ pub fn from_markdown(text: &str) -> Command {
         description: meta.get("description").cloned(),
         agent: meta.get("agent").cloned(),
         model: meta.get("model").cloned(),
+        native: false,
     }
 }
 
@@ -232,6 +246,11 @@ mod tests {
             all["review"].template, "My own review",
             "files override built-ins"
         );
+        assert!(
+            !all["review"].native,
+            "a custom review command replaces the native one"
+        );
+        assert!(all["calibrate"].native);
         assert!(all["init"].template.contains("/p"));
         assert!(!all.contains_key("notes"));
         let c = from_markdown("---\ndescription: Run tests\nagent: build\n---\nRun $1");
@@ -241,7 +260,8 @@ mod tests {
                 template: "Run $1".into(),
                 description: Some("Run tests".into()),
                 agent: Some("build".into()),
-                model: None
+                model: None,
+                native: false,
             }
         );
     }
@@ -251,8 +271,7 @@ mod tests {
         for (_, c) in builtins(Path::new("/p")) {
             assert!(!c.template.to_lowercase().contains("opencode"));
         }
-        assert!(builtins(Path::new("/p"))["review"]
-            .template
-            .contains("$ARGUMENTS"));
+        let b = builtins(Path::new("/p"));
+        assert!(b["review"].native && b["calibrate"].native && !b["init"].native);
     }
 }

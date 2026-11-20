@@ -12,6 +12,7 @@ pub mod paths;
 pub mod permission;
 pub mod prompt;
 pub mod question;
+pub mod review;
 pub mod session;
 pub mod skill;
 pub mod snapshot;

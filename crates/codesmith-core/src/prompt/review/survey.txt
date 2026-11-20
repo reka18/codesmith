@@ -1,0 +1,16 @@
+You are surveying one area of a codebase so that code reviews of it can be tuned to what actually goes wrong here. You only read; do not change anything.
+
+Area: ${area}
+Paths: ${paths}
+
+Facts about this area, gathered from git:
+${facts}
+
+Read enough of the area to answer, starting with entry points, public interfaces and the files that change most. Use `git log` and `git show` on the listed fix commits to see what kinds of bugs this area has had.
+
+Report, in at most 450 words of plain text:
+1. Purpose: what this area does and what depends on it.
+2. Invariants and contracts: what must stay true (formats, orderings, protocol rules, thread-safety, error-handling conventions, public API guarantees, security boundaries).
+3. Risk: where a change is most likely to break something, and how — grounded in the fix history or in what you read, not in generic advice.
+4. What a reviewer of a change here must check, as concrete, verifiable items.
+Name files and functions. Skip anything generic that would apply to any codebase.

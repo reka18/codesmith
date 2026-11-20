@@ -86,12 +86,43 @@ fn builtin(id: &str) -> Option<Agent> {
                 Rule::new("external_directory", "*", Effect::Allow),
             ]);
         }
+        "review" => {
+            a.name = "Review".into();
+            a.description = "Read-only code reviewer: reads files and runs read-only git commands to check one aspect of a change, then reports findings with evidence. Used by /review and /calibrate.".into();
+            a.mode = "subagent".into();
+            a.system = Some(PROMPT_EXPLORE.into());
+            a.permissions.extend([
+                Rule::new("*", "*", Effect::Deny),
+                Rule::new("read", "*", Effect::Allow),
+                Rule::new("read", "*.env", Effect::Deny),
+                Rule::new("read", "*.env.*", Effect::Deny),
+                Rule::new("read", "*.env.example", Effect::Allow),
+                Rule::new("grep", "*", Effect::Allow),
+                Rule::new("glob", "*", Effect::Allow),
+                Rule::new("external_directory", "*", Effect::Deny),
+            ]);
+            for cmd in [
+                "git diff *",
+                "git show *",
+                "git log *",
+                "git blame *",
+                "git status *",
+                "git grep *",
+                "git ls-files *",
+                "git rev-parse *",
+                "git merge-base *",
+                "ls *",
+                "wc *",
+            ] {
+                a.permissions.push(Rule::new("shell", cmd, Effect::Allow));
+            }
+        }
         _ => return None,
     }
     Some(a)
 }
 
-pub const BUILTIN: [&str; 4] = ["build", "plan", "general", "explore"];
+pub const BUILTIN: [&str; 5] = ["build", "plan", "general", "explore", "review"];
 
 /// Agents that can be delegated to, with descriptions.
 pub fn subagents(config: &Config) -> Vec<(String, String)> {
@@ -190,13 +221,34 @@ mod tests {
         assert_eq!(evaluate("edit", "a.rs", &plan.permissions), Effect::Deny);
         assert_eq!(evaluate("read", "a.rs", &plan.permissions), Effect::Allow);
         assert!(resolve(&c, "nope").is_none());
-        assert_eq!(list(&c), vec!["build", "plan", "general", "explore"]);
+        assert_eq!(
+            list(&c),
+            vec!["build", "plan", "general", "explore", "review"]
+        );
+        let rv = resolve(&c, "review").unwrap();
+        for (action, res, want) in [
+            ("read", "src/a.rs", Effect::Allow),
+            ("read", ".env", Effect::Deny),
+            ("edit", "a.rs", Effect::Deny),
+            ("write", "a.rs", Effect::Deny),
+            ("shell", "git diff HEAD", Effect::Allow),
+            ("shell", "git log", Effect::Allow),
+            ("shell", "git push origin main", Effect::Deny),
+            ("shell", "rm -rf x", Effect::Deny),
+            ("subagent", "general", Effect::Deny),
+        ] {
+            assert_eq!(
+                evaluate(action, res, &rv.permissions),
+                want,
+                "{action} {res}"
+            );
+        }
         assert_eq!(
             subagents(&c)
                 .iter()
                 .map(|s| s.0.as_str())
                 .collect::<Vec<_>>(),
-            ["general", "explore"]
+            ["general", "explore", "review"]
         );
     }
 
@@ -286,6 +338,9 @@ mod tests {
         assert_eq!(r.system.as_deref(), Some("You review code."));
         assert_eq!(evaluate("edit", "x", &r.permissions), Effect::Deny);
         assert!(resolve(&c, "plan").is_none());
-        assert_eq!(list(&c), vec!["build", "general", "explore", "reviewer"]);
+        assert_eq!(
+            list(&c),
+            vec!["build", "general", "explore", "review", "reviewer"]
+        );
     }
 }

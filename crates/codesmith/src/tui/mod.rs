@@ -123,6 +123,55 @@ impl Runner {
         }));
     }
 
+    /// Run a native command (`/review`, `/calibrate`) on a task; its report
+    /// joins the session as an exchange.
+    fn native(&mut self, name: &str, args: &str) {
+        if self.app.busy {
+            self.app
+                .notice("A turn is still running. Press Esc to interrupt it first.");
+            return;
+        }
+        let Some(mut s) = self.session.take() else {
+            self.app.error("no session");
+            return;
+        };
+        let shown = if args.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("/{name} {args}")
+        };
+        self.app.entries.push(Entry::User(shown.clone()));
+        self.app.busy = true;
+        let env = codesmith_core::review::Env::new(
+            &self.loaded,
+            s.cwd.clone(),
+            Some(s.model_spec.clone()),
+            Some(store::default_path()),
+            Some(s.id.clone()),
+            None,
+        );
+        let (tx, name, args) = (self.tx.clone(), name.to_string(), args.to_string());
+        self.task = Some(tokio::spawn(async move {
+            let notes = tx.clone();
+            let progress = move |m: String| {
+                let _ = notes.send(Ev::Notice(m));
+            };
+            let result =
+                match codesmith_core::review::run_command(&name, &args, &env, &progress).await {
+                    Ok((report, usage)) => {
+                        let _ = tx.send(Ev::Text(report.clone()));
+                        s.append_exchange(&shown, &report, &usage)
+                            .map_err(|e| format!("{e:#}"))
+                    }
+                    Err(e) => Err(format!("{e:#}")),
+                };
+            let _ = tx.send(Ev::Done {
+                result,
+                session: Box::new(s),
+            });
+        }));
+    }
+
     fn interrupt(&mut self) {
         self.app.cancel_modal();
         if let Some(t) = self.task.take() {
@@ -252,6 +301,10 @@ impl Runner {
                     .get(other)
                     .ok_or_else(|| anyhow!("unknown command /{other}; /help lists commands"))?
                     .clone();
+                if c.native {
+                    self.native(other, args);
+                    return Ok(());
+                }
                 let mut rebuild = false;
                 if c.agent.is_some() && c.agent != self.agent {
                     self.agent = c.agent.clone();

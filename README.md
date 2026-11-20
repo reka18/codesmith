@@ -65,8 +65,8 @@ a task matches. CodeSmith looks in `~/.config/codesmith/skills/`,
 in `.codesmith/commands/<name>.md` (or `~/.config/codesmith/commands/`, or
 `commands` in config), optionally with `description`, `agent` and `model` in a
 header. `$ARGUMENTS` is the whole argument string and `$1`…`$9` single
-arguments. Built in: `/init` (write or improve `AGENTS.md`) and `/review`
-(review uncommitted changes, a commit, a branch or a PR). `codesmith commands`
+arguments. Built in: `/init` (write or improve `AGENTS.md`), `/calibrate` and
+`/review` (see [Code review](#code-review)). `codesmith commands`
 lists them.
 
 ```markdown
@@ -177,6 +177,41 @@ reading `.env` files, which asks.
 directory (with `CLAUDE.md` as a fallback), plus
 `~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
+## Code review
+
+Reviews are tuned to the codebase in two steps.
+
+**`/calibrate`** (or `codesmith calibrate`) studies the whole repository and
+chooses its review dimensions. CodeSmith gathers facts from git itself — the
+file mix, how files group into areas, the most-changed files, and which files
+and commits bug fixes have touched — then surveys each area with a read-only
+agent in parallel, and has a final agent turn the facts and surveys into 4–12
+dimensions specific to this code: its invariants, cross-module contracts,
+formats, concurrency, security boundaries and the kinds of bugs its history
+shows. Each dimension has the paths it covers, concrete checks and the
+evidence behind it. They are saved to `.codesmith/review.json`; edit it as you
+like and commit it so everyone reviews the same way.
+
+**`/review [target]`** (or `codesmith review`) reviews uncommitted changes by
+default, or a commit, a range (`a..b`), a branch, or a pull request (`#12`,
+needs `gh`). It runs one independent reviewer per dimension that covers the
+changed files, plus two that always run — correctness, and compliance with
+`AGENTS.md`/`CLAUDE.md` — in parallel and read-only. Reviewers report only
+high-signal issues they can show are real. Findings that describe the same
+problem are merged, then every finding goes to its own verifier, which tries
+to refute it; only findings confirmed at 80% confidence or more are reported,
+most severe first. The report joins the session, so "fix 1" works next.
+`--comment` posts it to the pull request.
+
+```jsonc
+"review": { "model": "provider/model", "concurrency": 3, "threshold": 80, "max_diff_chars": 60000 }
+```
+
+The method builds on Anthropic's
+[code-review plugin](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/code-review)
+(Apache License 2.0); the adapted prompts, the license and a note of the
+changes are in [`crates/codesmith-core/src/prompt/review/`](crates/codesmith-core/src/prompt/review/).
+
 ## Providers
 
 Built in, with the key read from the usual environment variable:
@@ -261,4 +296,6 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
 ## License
 
 MIT. CodeSmith is derived from OpenCode, © 2025 opencode, also MIT; see
-[LICENSE](LICENSE).
+[LICENSE](LICENSE). The code review prompts adapt Anthropic's code-review
+plugin under the Apache License 2.0; see
+[its notice](crates/codesmith-core/src/prompt/review/NOTICE.md).

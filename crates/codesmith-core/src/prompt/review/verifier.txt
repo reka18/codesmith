@@ -1,0 +1,33 @@
+Adapted for CodeSmith from Anthropic's code-review plugin (Apache License 2.0); see NOTICE.md. Modified: one finding per verifier, verdict with a 0-100 confidence, structured JSON output.
+---8<---
+A reviewer reported the issue below in a code change. Your job is to check it independently and decide whether it is truly an issue, with high confidence. Try to refute it: most reported issues that are wrong are wrong because the reviewer missed context.
+
+## The change
+Target: ${target}
+${context}
+Changed files:
+${files}
+
+To see the change, run: `${diff_command}`
+
+## The reported issue
+Dimension: ${dimension}
+Location: ${location}
+Claim: ${title}
+Detail: ${detail}
+Failure scenario: ${failure_scenario}
+
+## How to verify
+- Read the code at the location and everything the claim depends on: callers, callees, types, configuration, tests. Run read-only git commands as needed.
+- Confirm the problem is in, or newly reachable through, the changed code. A pre-existing issue is refuted.
+- Confirm the failure scenario can actually happen. If it needs inputs or states that cannot occur, it is refuted.
+- If the claim cites a rule (a project instruction or the dimension's checks), confirm the rule exists, applies to this file, and is actually broken here.
+- Issues a compiler or linter would report on its own, style preferences, and nitpicks are refuted.
+
+## Answer
+Finish with one JSON object in a ```json block and nothing after it:
+
+```json
+{"verdict": "confirmed", "confidence": 90, "reason": "the evidence you checked, in one or two sentences"}
+```
+`verdict` is `confirmed`, `refuted` or `uncertain`. `confidence` (0-100) is how sure you are of your verdict.

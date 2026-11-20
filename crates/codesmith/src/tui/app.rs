@@ -91,7 +91,9 @@ Esc or Ctrl+C interrupt a running turn · Ctrl+C on an empty prompt quits · Ctr
 /clear          clear the screen (the session is kept)
 /help           this help
 /exit           quit
-/<command>      run a custom or built-in command (/init, /review, …)";
+/calibrate      survey the codebase and choose review dimensions
+/review [what]  review changes (uncommitted, a commit, a..b, a branch, #pr)
+/<command>      run a custom or built-in command (/init, …)";
 
 impl App {
     pub fn new() -> Self {

@@ -1,0 +1,26 @@
+You are calibrating code review for this repository: choosing the review dimensions that future reviews will use. Each dimension gets its own reviewer, which looks at a change only through that dimension, so dimensions must be specific to this codebase, distinct from each other, and checkable in a diff.
+
+Repository facts:
+${facts}
+
+Surveys of each area:
+${surveys}
+
+Two dimensions always run and must NOT be repeated: general correctness (compile errors, logic errors in the changed code) and compliance with the project's written instructions (AGENTS.md, CLAUDE.md).
+
+Choose between 4 and 12 dimensions. Good dimensions come from this repository's real risks: its invariants, cross-module contracts, persistence and protocol formats, concurrency model, security boundaries, platform differences, performance-critical paths, and the kinds of bugs its history shows. Avoid generic dimensions like "code quality", "readability" or "best practices". A dimension that applies only to part of the tree should say so with path globs.
+
+You may read files to check details. Then finish with one JSON object in a ```json block and nothing after it:
+
+```json
+{"summary": "two or three sentences on what this codebase is and where its review risk lies",
+ "dimensions": [
+  {"id": "kebab-case-id",
+   "name": "Short name",
+   "focus": "One to three sentences: what this reviewer looks for and why it matters here.",
+   "paths": ["crates/core/src/store/**", "**/*.sql"],
+   "checks": ["A concrete thing to verify in a diff", "Another"],
+   "evidence": ["file, function or commit that motivated this dimension"]}
+ ]}
+```
+`paths` are globs relative to the repository root; use `[]` when the dimension applies everywhere. Give 2 to 6 checks per dimension.

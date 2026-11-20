@@ -40,6 +40,8 @@ pub struct Config {
     pub snapshots: Option<bool>,
     /// Extra folders containing `<id>/SKILL.md` skills.
     pub skills: Vec<String>,
+    /// Code review settings for `/review` and `/calibrate`.
+    pub review: crate::review::ReviewConfig,
     /// Model Context Protocol servers whose tools the agent can use.
     pub mcp: crate::mcp::McpConfig,
     /// Web search through a self-hosted SearXNG instance.

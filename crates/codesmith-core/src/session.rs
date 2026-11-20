@@ -279,6 +279,27 @@ impl Session {
         Ok(())
     }
 
+    /// Record a command and its result as a user/assistant exchange (used by
+    /// native commands such as `/review`), so later turns can refer to it.
+    pub fn append_exchange(&mut self, user: &str, assistant: &str, usage: &Usage) -> Result<()> {
+        self.push(Message::user(user))?;
+        self.push(Message {
+            role: Role::Assistant,
+            parts: vec![Part::Text(assistant.to_string())],
+        })?;
+        add(&mut self.usage, usage);
+        if self.title.is_none() {
+            self.title = Some(user.chars().take(60).collect());
+        }
+        if let Some(st) = &self.store {
+            let _ = st.set_usage(&self.id, &self.usage);
+            if let Some(t) = &self.title {
+                let _ = st.set_title(&self.id, t);
+            }
+        }
+        Ok(())
+    }
+
     /// Append a record, creating the session row on first use.
     fn record(&mut self, record: &Record) -> Result<Option<i64>> {
         let Some(s) = &self.store else {

@@ -7,7 +7,7 @@ mod tui;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use codesmith_core::permission::{Asker, Fixed, Reply, Request};
-use codesmith_core::session::{self, Options, Session};
+use codesmith_core::session::{self, Options, Session, Sink};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::{self, Store};
 use codesmith_core::{agent, command, config, instructions, paths, prompt};
@@ -51,6 +51,22 @@ enum Command {
     Models {
         /// A provider id: list the models its API reports.
         provider: Option<String>,
+    },
+    /// Review changes with parallel per-dimension reviewers and independent verification.
+    Review {
+        /// Commit, range (a..b), branch, or pull request (#12); default: uncommitted changes.
+        target: Vec<String>,
+        /// Post the review to the pull request.
+        #[arg(long)]
+        comment: bool,
+        /// Model for this review, as provider/model.
+        #[arg(short, long)]
+        model: Option<String>,
+    },
+    /// Survey the codebase and choose the dimensions `review` uses.
+    Calibrate {
+        #[arg(short, long)]
+        model: Option<String>,
     },
     /// Serve a local HTTP API for driving sessions from other programs.
     Serve {
@@ -169,6 +185,24 @@ enum SessionCmd {
     Redo { id: Option<String> },
     /// Show the file changes made since the latest turn began.
     Diff { id: Option<String> },
+}
+
+impl RunArgs {
+    /// Arguments for running a native command as a new session.
+    fn native(message: String, model: Option<String>) -> RunArgs {
+        RunArgs {
+            message: vec![message],
+            model,
+            agent: None,
+            files: vec![],
+            format: Format::Default,
+            auto: true,
+            thinking: false,
+            r#continue: false,
+            session: None,
+            title: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
@@ -458,6 +492,20 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what),
+        Some(Command::Review {
+            target,
+            comment,
+            model,
+        }) => {
+            let mut msg = format!("/review {}", target.join(" "));
+            if comment {
+                msg.push_str(" --comment");
+            }
+            run_prompt(cwd, RunArgs::native(msg.trim_end().to_string(), model)).await
+        }
+        Some(Command::Calibrate { model }) => {
+            run_prompt(cwd, RunArgs::native("/calibrate".into(), model)).await
+        }
         Some(Command::Serve {
             host,
             port,
@@ -933,6 +981,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     }
     let loaded = config::load(&cwd)?;
     let (mut agent_arg, mut model_arg) = (args.agent, args.model);
+    let mut native: Option<(String, String)> = None;
     if let Some((name, rest)) = command::parse_invocation(&message) {
         let all = all_commands(&cwd, &loaded);
         let c = all.get(&name).ok_or_else(|| {
@@ -944,7 +993,11 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
                     .join(", ")
             )
         })?;
-        message = command::expand(&c.template, &rest);
+        if c.native {
+            native = Some((name.clone(), rest.clone()));
+        } else {
+            message = command::expand(&c.template, &rest);
+        }
         agent_arg = agent_arg.or(c.agent.clone());
         model_arg = model_arg.or(c.model.clone());
     }
@@ -988,7 +1041,27 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             session.agent.name, session.model.provider_id, session.model.model_id, session.id
         );
     }
-    let result = session.prompt(&message, &mut sink).await;
+    let result = match native {
+        Some((name, rest)) => {
+            let env = codesmith_core::review::Env::new(
+                &loaded,
+                session.cwd.clone(),
+                Some(session.model_spec.clone()),
+                Some(store::default_path()),
+                Some(session.id.clone()),
+                None,
+            );
+            let progress = |s: String| eprintln!("\x1b[2m{name}: {s}\x1b[0m");
+            match codesmith_core::review::run_command(&name, &rest, &env, &progress).await {
+                Ok((report, usage)) => {
+                    sink.text(&report);
+                    session.append_exchange(&message, &report, &usage)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        None => session.prompt(&message, &mut sink).await,
+    };
     sink.done(
         &session.usage,
         result.as_ref().err().map(|e| e.to_string()),
