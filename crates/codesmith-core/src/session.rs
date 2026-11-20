@@ -283,6 +283,9 @@ pub struct Session {
     base_system: String,
     /// The `<env>` block the environment instruction reads.
     env_block: String,
+    /// The instruction baseline without the date and environment, which
+    /// Claude Code writes itself (for Claude Agent models).
+    claude_instructions: String,
     /// The instruction state; `None` until the next observation makes a
     /// baseline.
     instruction: Option<crate::instruction_state::State>,
@@ -620,6 +623,7 @@ impl Session {
             system,
             base_system,
             env_block,
+            claude_instructions: String::new(),
             instruction,
             tools,
             messages,
@@ -1103,7 +1107,52 @@ impl Session {
             }
         }
         plugins.request(config, &self.id, &mut req);
+        if self.model.provider.protocol == codesmith_ai::Protocol::ClaudeAgent {
+            self.claude_context(kind, &mut req);
+        }
         (req, renamed)
+    }
+
+    /// What a Claude Agent request carries beside the conversation
+    /// (OpenCode's session and instruction hooks for the provider): its
+    /// kind, a fork's source, the agent's own prompt as its role,
+    /// CodeSmith's instructions (Claude Code's own prompt replaces
+    /// CodeSmith's base prompt, and it writes the date and environment
+    /// itself), the tool calls that were stopped rather than run, and the
+    /// session's folder.
+    pub(crate) fn claude_context(&self, kind: crate::plugin::RequestKind, req: &mut Request) {
+        use codesmith_ai::claude_agent as ca;
+        req.headers
+            .push((ca::KIND_HEADER.into(), kind.name().into()));
+        if kind == crate::plugin::RequestKind::Primary {
+            let origin = self
+                .store
+                .as_ref()
+                .and_then(|st| st.meta(&self.id, crate::fork::ORIGIN_META).ok().flatten())
+                .and_then(|o| serde_json::from_str::<crate::fork::Origin>(&o).ok());
+            if let Some(o) = origin {
+                req.headers.push((ca::FORK_HEADER.into(), o.session));
+            }
+        }
+        let mut instructions = self.claude_instructions.clone();
+        // What plugins appended to the system prompt.
+        if let Some(extra) = req.system.strip_prefix(self.system.as_str()) {
+            let extra = extra.trim_start_matches('\n');
+            if !extra.is_empty() {
+                if !instructions.is_empty() {
+                    instructions.push_str("\n\n");
+                }
+                instructions.push_str(extra);
+            }
+        }
+        let o = &mut req.options;
+        o.set(
+            ca::AGENT_OPTION,
+            self.agent.system.clone().unwrap_or_default().into(),
+        );
+        o.set(ca::INSTRUCTIONS_OPTION, instructions.into());
+        o.set(ca::ABORTED_OPTION, aborted_calls(&req.messages).into());
+        o.set(ca::DIRECTORY_OPTION, self.cwd.display().to_string().into());
     }
 
     /// Plugin tools this agent may use (hidden when its rules deny them).
@@ -1264,8 +1313,21 @@ impl Session {
             .as_ref()
             .map(|s| s.initial.clone())
             .unwrap_or_default();
-        let text = is::join(&is::render_initial(&list, &initial)?);
+        let rendered = is::render_initial(&list, &initial)?;
+        let text = is::join(&rendered);
         self.system = assemble_system(&self.base_system, &text, self.agent.id == "plan");
+        let own: Vec<is::Rendered> = rendered
+            .into_iter()
+            .filter(|r| !CLAUDE_WRITES.contains(&r.key.as_str()))
+            .collect();
+        let mut claude = is::join(&own);
+        if self.agent.id == "plan" {
+            if !claude.is_empty() {
+                claude.push_str("\n\n");
+            }
+            claude.push_str(agent::PLAN_REMINDER);
+        }
+        self.claude_instructions = claude;
         Ok(())
     }
 
@@ -1437,6 +1499,10 @@ impl Session {
             id: self.id.clone(),
             finished: false,
         };
+        // However the turn ends, a Claude turn still waiting for tool
+        // results will not get them: its idle timer starts.
+        let _idle = (self.model.provider.protocol == codesmith_ai::Protocol::ClaudeAgent)
+            .then(|| ClaudeIdle(self.id.clone()));
         let r = self.turn_inner(origin, text, attached, sink).await;
         stop.finished = true;
         r
@@ -3584,7 +3650,7 @@ impl Session {
             req.tool_choice = Some(codesmith_ai::ToolChoice::None);
         }
         self.warm_send(Some(&req));
-        let mut policy = retry::Policy::default();
+        let mut policy = retry::Policy::default().for_protocol(self.model.provider.protocol);
         let mut attempt = 0;
         loop {
             match self.attempt(&req, sink).await.and_then(unknown_finish) {
@@ -4030,9 +4096,10 @@ async fn stream_text(
     client: &reqwest::Client,
     model: &ModelRef,
     req: &Request,
-    mut policy: retry::Policy,
+    policy: retry::Policy,
     delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<(String, Usage, Option<FinishReason>)> {
+    let mut policy = policy.for_protocol(model.provider.protocol);
     loop {
         let mut out = String::new();
         let mut usage = Usage::default();
@@ -4180,6 +4247,46 @@ pub fn turn_diff(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Strin
 
 /// The system prompt: the base, the instruction baseline, and the plan
 /// agent's reminder.
+/// Tells Claude Agent's registry the session stopped running (OpenCode's
+/// `session.execution.*` events).
+struct ClaudeIdle(String);
+
+impl Drop for ClaudeIdle {
+    fn drop(&mut self) {
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let id = std::mem::take(&mut self.0);
+            rt.spawn(async move { codesmith_ai::claude_agent::global().idle(&id).await });
+        }
+    }
+}
+
+/// The instruction sources Claude Code writes itself.
+const CLAUDE_WRITES: [&str; 2] = ["core/date", "core/environment"];
+
+/// The tool calls a stopped turn left with a result rather than run: a
+/// declined call, a dismissed question, or a call the stop interrupted
+/// (OpenCode's aborted tool results).
+fn aborted_calls(messages: &[Message]) -> Vec<String> {
+    messages
+        .iter()
+        .flat_map(|m| &m.parts)
+        .filter_map(|p| match p {
+            Part::ToolResult {
+                id,
+                content,
+                is_error: true,
+                ..
+            } if content == runner::DECLINED
+                || content == runner::QUESTION_DISMISSED
+                || content.starts_with(runner::TOOLS_INTERRUPTED) =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn assemble_system(base: &str, instructions: &str, plan: bool) -> String {
     let mut parts = vec![base];
     if !instructions.is_empty() {

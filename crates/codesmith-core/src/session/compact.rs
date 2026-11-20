@@ -539,7 +539,7 @@ impl Session {
         };
         let mut req = plan.request;
         req.max_tokens = self.model.max_output;
-        let mut policy = retry::Policy::default();
+        let mut policy = retry::Policy::default().for_protocol(provider.protocol);
         let compacted = loop {
             // A trigger rides the session's socket when its steps do, so
             // it continues the latest response instead of resending all.
@@ -663,6 +663,9 @@ impl Session {
         let mut request = hooked.request;
         if supplied.is_none() {
             plugins.request(&self.loaded.config, &self.id, &mut request);
+            if self.model.provider.protocol == codesmith_ai::Protocol::ClaudeAgent {
+                self.claude_context(crate::plugin::RequestKind::Compaction, &mut request);
+            }
         }
         let head = crate::media::sendable(
             &crate::runner::model_messages(&self.messages[..k]),
@@ -784,7 +787,7 @@ async fn deliver(
         usages.extend(s.usage);
         return (Ok(s.summary), usages);
     }
-    let mut policy = retry::Policy::default();
+    let mut policy = retry::Policy::default().for_protocol(model.provider.protocol);
     let mut rejections = 0usize;
     let mut rejected: Option<u64> = None;
     let mut as_text = plan.as_text;

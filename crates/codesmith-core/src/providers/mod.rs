@@ -7,6 +7,7 @@
 
 pub mod azure;
 pub mod bedrock;
+pub mod claude_agent;
 pub mod cloudflare;
 pub mod copilot;
 pub mod copilot_models;
@@ -77,6 +78,14 @@ pub struct Settings {
     /// then `default`).
     #[serde(alias = "resourceGroup")]
     pub resource_group: Option<String>,
+    /// Claude Agent: Claude Code's wait for response headers, in
+    /// milliseconds (`API_TIMEOUT_MS`).
+    #[serde(alias = "headerTimeout")]
+    pub header_timeout: Option<u64>,
+    /// Claude Agent: Claude Code's wait between stream chunks, in
+    /// milliseconds (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`).
+    #[serde(alias = "chunkTimeout")]
+    pub chunk_timeout: Option<u64>,
 }
 
 /// What a provider plugin is given.
@@ -252,6 +261,8 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         &["CLOUDFLARE_API_TOKEN", "CF_AIG_TOKEN"],
     ),
     (poe::ID, "Poe", &["POE_API_KEY"]),
+    // Claude Code's own login; CodeSmith takes no key for it.
+    (claude_agent::ID, "Claude Agent", &[]),
     (
         digitalocean::ID,
         "DigitalOcean",
@@ -302,6 +313,7 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
         digitalocean::ID => return digitalocean::route(input).map(Some),
         snowflake::ID => return snowflake::route(input).map(Some),
         sap::ID => return sap::route(input).map(Some),
+        claude_agent::ID => return Ok(Some(claude_agent::route(input))),
         _ => {}
     }
     Ok(None)
@@ -321,6 +333,7 @@ pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
         }
         poe::ID | digitalocean::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
         sap::ID => env(sap::KEY_VAR).is_some() || set(&settings.service_key).is_some(),
+        claude_agent::ID => claude_agent::available(env),
         snowflake::ID => {
             snowflake::env_token(env).is_some()
                 || crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth")
@@ -387,6 +400,8 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
             Some(format!("project {project} in {location}, {creds}"))
         }
         gitlab::ID => gitlab::stored_instance(stored).map(|i| format!("saved GitLab login ({i})")),
+        claude_agent::ID => claude_agent::available(&process_env())
+            .then(|| "Claude Code's own login (claude auth login)".into()),
         digitalocean::ID => {
             let s = stored?;
             (s["type"] == "oauth").then(|| {

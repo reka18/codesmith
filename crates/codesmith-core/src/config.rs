@@ -445,6 +445,17 @@ impl Config {
         if let Some(c) = configured.as_ref().and_then(|c| c.cost) {
             return Some(c);
         }
+        if p == crate::providers::claude_agent::ID {
+            let saved = crate::providers::claude_agent::catalog();
+            let catalog = self.models_dev.as_ref().map(|c| c.catalog());
+            return match catalog.as_ref() {
+                Some(c) => crate::providers::claude_agent::cost(&saved, m, c),
+                None => saved
+                    .model(m)
+                    .filter(|_| saved.price_source.is_none())
+                    .map(|_| Cost::default()),
+            };
+        }
         let id = configured.and_then(|c| c.id);
         let catalog = self.models_dev.as_ref()?.catalog();
         let cm = id
@@ -490,6 +501,14 @@ impl Config {
             .and_then(|c| c.provider(provider))
             .map(|p| p.models.as_slice())
             .unwrap_or(&[]);
+        // Claude Code's saved list (`codesmith models claude-agent`).
+        if provider == crate::providers::claude_agent::ID && types.contains(&"chat") {
+            for m in crate::providers::claude_agent::catalog().models {
+                if !out.contains(&m.id) {
+                    out.push(m.id);
+                }
+            }
+        }
         // A kept live list stands in for the catalog's models.
         let live = crate::providers::live::models(
             provider,
@@ -1472,6 +1491,8 @@ impl Config {
             .or(catalog_url)
             .or_else(|| p.settings.base_url.clone())
             .filter(|u| !u.is_empty())
+            // Claude Agent runs through Claude Code, which has its own.
+            .or_else(|| (protocol == Protocol::ClaudeAgent).then(String::new))
             .or_else(|| {
                 azure_resource
                     .as_deref()
@@ -1539,8 +1560,15 @@ impl Config {
         compat.extend(m.compatibility.clone());
         let compat: codesmith_ai::Compatibility = serde_json::from_value(Value::Object(compat))
             .map_err(|e| anyhow!("model {base:?} has an invalid compatibility setting: {e}"))?;
+        let claude = (pid == crate::providers::claude_agent::ID)
+            .then(crate::providers::claude_agent::catalog);
         let input = m
             .input()
+            .or_else(|| {
+                claude
+                    .as_ref()
+                    .map(|_| vec!["text".into(), "image".into(), "pdf".into()])
+            })
             .or_else(|| {
                 cm.map(|cm| cm.capabilities.input.clone())
                     .filter(|i| !i.is_empty())
@@ -1549,7 +1577,13 @@ impl Config {
         let context = m
             .limit
             .context
-            .or(cm.map(|cm| cm.limit.context).filter(|c| *c > 0));
+            .or(cm.map(|cm| cm.limit.context).filter(|c| *c > 0))
+            .or_else(|| {
+                claude
+                    .as_ref()
+                    .and_then(|c| c.model(&model_id))
+                    .and_then(|m| m.context_window)
+            });
         // As in OpenCode, no reply asks for more than 256k tokens.
         let max_output = m.limit.output.or(cm
             .map(|cm| cm.limit.output.min(256_000) as u32)
@@ -1560,6 +1594,18 @@ impl Config {
         }
         body.extend(m.body.clone());
         let mut options = codesmith_ai::Options::from_map(plugin_options);
+        if claude.is_some() {
+            use codesmith_ai::claude_agent::{CHUNK_TIMEOUT_OPTION, HEADER_TIMEOUT_OPTION};
+            let s = &p.settings.plugin;
+            for (k, v) in [
+                (HEADER_TIMEOUT_OPTION, s.header_timeout),
+                (CHUNK_TIMEOUT_OPTION, s.chunk_timeout),
+            ] {
+                if let Some(v) = v {
+                    options.set(k, v.into());
+                }
+            }
+        }
         options.merge(&codesmith_ai::Options::from_map(p.options.clone()));
         options.merge(&codesmith_ai::Options::from_map(m.options.clone()));
         let cache = cache_setting(&p, &m)
@@ -1597,6 +1643,9 @@ impl Config {
                 .and_then(|c| c.reasoning.as_ref())
                 .map(ReasoningConfig::to_catalog),
         });
+        if let Some(c) = &claude {
+            variants.extend(crate::providers::claude_agent::variants(c, &model_id));
+        }
         for (name, v) in m.variants() {
             match variants.iter_mut().find(|(n, _)| *n == name) {
                 Some(slot) => {

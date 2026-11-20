@@ -1182,6 +1182,19 @@ async fn run(cli: Cli) -> Result<()> {
             let loaded = config::load(&cwd)?;
             let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
             let client = reqwest::Client::new();
+            // Claude Code reports its own models (no prompt is sent).
+            if pid == codesmith_core::providers::claude_agent::ID {
+                use codesmith_core::providers::claude_agent;
+                let p = loaded.config.provider(&pid).unwrap_or_default();
+                let state = claude_agent::check(&claude_agent::connection(&p)).await;
+                if let Some(problem) = state.problem() {
+                    return Err(anyhow!(problem));
+                }
+                for m in claude_agent::catalog().models {
+                    println!("{pid}/{}", m.id);
+                }
+                return Ok(());
+            }
             // Providers with a live list keep it for model resolution.
             let settings = loaded.config.provider(&pid).unwrap_or_default().settings;
             if let Some(ids) =
@@ -1780,6 +1793,14 @@ async fn plugin_login(
         fields,
         cwd,
     } = login;
+    // Claude Code keeps its own login: check it and save its models; no
+    // credential is asked for or saved.
+    if provider == providers::claude_agent::ID {
+        let loaded = config::load(&cwd)?;
+        let p = loaded.config.provider(provider).unwrap_or_default();
+        let state = providers::claude_agent::check(&providers::claude_agent::connection(&p)).await;
+        return providers::claude_agent::describe(&state).map(Some);
+    }
     if cli {
         if provider != providers::azure::ID {
             return Err(anyhow!("--cli is for azure"));

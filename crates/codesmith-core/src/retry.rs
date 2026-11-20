@@ -292,6 +292,8 @@ const UNREACHABLE_GAP_MAX: Duration = Duration::from_secs(30);
 pub struct Policy {
     /// Retry only failures the provider never ran, at most this many times.
     one_shot: Option<u32>,
+    /// Never retry.
+    never: bool,
     general: u32,
     timeouts: u32,
     unreachable: u32,
@@ -342,9 +344,22 @@ impl Policy {
         }
     }
 
+    /// This policy for a request on `protocol`. Claude Code already retries
+    /// API failures (Claude Agent), so retrying its turn would only repeat
+    /// permanent ones, such as a billing error (OpenCode's retry hook).
+    pub fn for_protocol(self, protocol: codesmith_ai::Protocol) -> Policy {
+        Policy {
+            never: self.never || protocol == codesmith_ai::Protocol::ClaudeAgent,
+            ..self
+        }
+    }
+
     /// The wait before the next attempt, or `None` to give up. `now` is
     /// passed in so tests can step a clock.
     pub fn next(&mut self, e: &Error, now: Instant) -> Option<Duration> {
+        if self.never {
+            return None;
+        }
         if let Some(left) = &mut self.one_shot {
             if *left == 0 || !not_run(e) {
                 return None;
