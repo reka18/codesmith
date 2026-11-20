@@ -192,3 +192,17 @@ impl Sink for Collect {
         self.0.push_str(d);
     }
 }
+
+/// Tests of one binary share its plugin registry: each takes this lock
+/// first, so they run one at a time. (A tokio lock, which may be held
+/// across awaits; each test has its own runtime, so it is taken without
+/// one.)
+pub fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    loop {
+        if let Ok(g) = LOCK.try_lock() {
+            return g;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}

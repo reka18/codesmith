@@ -95,7 +95,6 @@ impl Plugin for Hooks {
 /// in turn, since they share it.
 fn state() -> (Arc<State>, tokio::sync::MutexGuard<'static, ()>) {
     static STATE: std::sync::OnceLock<Arc<State>> = std::sync::OnceLock::new();
-    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let s = STATE
         .get_or_init(|| {
             let s = Arc::new(State::default());
@@ -103,12 +102,7 @@ fn state() -> (Arc<State>, tokio::sync::MutexGuard<'static, ()>) {
             s
         })
         .clone();
-    let guard = loop {
-        if let Ok(g) = LOCK.try_lock() {
-            break g;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    let guard = plugin_support::serial();
     s.seen.lock().unwrap().clear();
     s.replace.store(false, Ordering::SeqCst);
     (s, guard)

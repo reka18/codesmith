@@ -278,6 +278,9 @@ pub struct Session {
     pub messages: Vec<Message>,
     /// Store sequence number of each message (`None` for a checkpoint).
     seqs: Vec<Option<i64>>,
+    /// Metadata plugins' prompt hooks kept with messages, by sequence
+    /// number (see [`crate::plugin::Prompt`]).
+    metadata: std::collections::HashMap<i64, serde_json::Value>,
     /// The model spec the history last ran with (its latest step's), to
     /// tell a variant switch since then: see [`Session::effort_switch`].
     ran_with: Option<String>,
@@ -338,10 +341,15 @@ struct Turn {
     declined: Arc<AtomicBool>,
     /// Why the current turn stopped early, if it did.
     stopped: Option<&'static str>,
-    /// Tool names offered to the model in the latest request.
+    /// Tool names offered to the model in the latest request, as offered.
     offered: Vec<String>,
-    /// Their input schemas, for [`tool::input_repair`].
+    /// The names the latest request offered tools under (a context hook
+    /// may have renamed some), and their input schemas there, for
+    /// [`tool::input_repair`].
     schemas: Vec<(String, serde_json::Value)>,
+    /// Tools a context hook renamed for the latest request: offered name,
+    /// then the session's.
+    renamed: std::collections::HashMap<String, String>,
     /// Scales retry waits (tests shorten them).
     retry_scale: f64,
     /// Resumes for finished background commands that failed in a row
@@ -436,6 +444,7 @@ impl Session {
         let mut seen = 0;
         let mut ran_with = None;
         let mut instruction = None;
+        let mut metadata = std::collections::HashMap::new();
         let resumed: Option<Resumed> = match (&opts.resume, &store) {
             (Some(id), Some(s)) => {
                 let info = s.get(id)?.ok_or_else(|| anyhow!("no session {id}"))?;
@@ -443,6 +452,11 @@ impl Session {
                 seen = entries.last().map_or(0, |e| e.seq);
                 ran_with = last_step_model(&entries);
                 instruction = crate::instruction_state::fold(&entries);
+                for e in &entries {
+                    if let Record::Metadata { seq, metadata: m } = &e.record {
+                        metadata.insert(*seq, m.clone());
+                    }
+                }
                 // A native window replays only on the model that made it.
                 let model = opts.model.as_deref().unwrap_or(&info.model);
                 let history = store::history_for(&entries, Some(model));
@@ -573,6 +587,7 @@ impl Session {
             tools,
             messages,
             seqs,
+            metadata,
             ran_with,
             usage,
             unbilled,
@@ -614,6 +629,7 @@ impl Session {
                 stopped: None,
                 offered: Vec::new(),
                 schemas: Vec::new(),
+                renamed: Default::default(),
                 retry_scale: 1.0,
                 resume_failures: 0,
                 resume_due: None,
@@ -831,22 +847,33 @@ impl Session {
         self.push(Message::user(text))
     }
 
-    /// A call as it runs: the name called, the tool it runs as (another
-    /// harness's name for an offered tool, see [`tool::input_repair::alias`]),
-    /// and its input repaired against that tool's schema.
+    /// A call as it runs: the name called, the name of the offered tool it
+    /// reaches (another harness's name for an offered tool, see
+    /// [`tool::input_repair::alias`]), the session's name for that tool (a
+    /// context hook may have renamed it), and its input repaired against
+    /// the schema it was offered with.
     fn repair_call(
         &self,
         name: String,
         input: serde_json::Value,
-    ) -> (String, String, serde_json::Value) {
-        let ran = tool::input_repair::alias(&name, &self.turn.offered)
+    ) -> (String, String, String, serde_json::Value) {
+        // The name it was offered under: its own, or the one another
+        // harness's name stands for (only a tool offered as itself, so an
+        // alias never reaches a renamed or hidden tool).
+        let offered = tool::input_repair::alias(&name, &self.turn.offered)
             .map_or_else(|| name.clone(), str::to_string);
+        let ran = self
+            .turn
+            .renamed
+            .get(&offered)
+            .cloned()
+            .unwrap_or_else(|| offered.clone());
         // Code Mode's input is trivial; the calls it makes are repaired.
         let schema = self
             .turn
             .schemas
             .iter()
-            .find(|(n, _)| *n == ran && ran != crate::codemode::TOOL)
+            .find(|(n, _)| *n == offered && ran != crate::codemode::TOOL)
             .map(|(_, s)| s);
         let input = match schema {
             Some(s) if runner::invalid_json(&input).is_none() => {
@@ -854,7 +881,7 @@ impl Session {
             }
             _ => input,
         };
-        (name, ran, input)
+        (name, offered, ran, input)
     }
 
     /// After a step's tool results: the instruction files its reads bring
@@ -972,17 +999,65 @@ impl Session {
         Ok(Some(seq))
     }
 
-    fn request(&self) -> Request {
+    fn request(&self) -> (Request, std::collections::HashMap<String, String>) {
         self.request_for(crate::plugin::RequestKind::Primary)
     }
 
     /// The request a `kind` model call starts from, after the plugins'
-    /// request hooks.
-    fn request_for(&self, _kind: crate::plugin::RequestKind) -> Request {
+    /// context and request hooks, and the tools a context hook renamed
+    /// (offered name, then the session's).
+    fn request_for(
+        &self,
+        kind: crate::plugin::RequestKind,
+    ) -> (Request, std::collections::HashMap<String, String>) {
         let plugins = crate::plugin::active();
+        let config = &self.loaded.config;
         let mut req = self.base_request(&plugins);
-        plugins.request(&self.loaded.config, &self.id, &mut req);
-        req
+        let mut renamed = std::collections::HashMap::new();
+        if plugins.any(config) {
+            use crate::plugin::{Context, ContextMessage};
+            let mut ctx = Context {
+                session_id: self.id.clone(),
+                agent: self.agent.id.clone(),
+                model: self.model_spec.clone(),
+                kind,
+                system: std::mem::take(&mut req.system),
+                messages: self
+                    .messages
+                    .iter()
+                    .zip(&self.seqs)
+                    .map(|(m, seq)| ContextMessage {
+                        message: m.clone(),
+                        metadata: seq.and_then(|s| self.metadata.get(&s).cloned()),
+                    })
+                    .collect(),
+                tools: req.tools.iter().map(Context::tool).collect(),
+            };
+            plugins.context(config, &mut ctx);
+            req.system = ctx.system;
+            // Metadata stays behind: it is never sent.
+            let messages: Vec<Message> = ctx.messages.into_iter().map(|m| m.message).collect();
+            req.messages = crate::media::sendable(
+                &runner::model_messages(&messages),
+                self.model.input.as_deref(),
+            );
+            let known = std::mem::take(&mut req.tools);
+            for t in ctx.tools {
+                if !known.iter().any(|k| k.name == t.original) {
+                    continue;
+                }
+                if t.name != t.original {
+                    renamed.insert(t.name.clone(), t.original.clone());
+                }
+                req.tools.push(codesmith_ai::ToolSpec {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                });
+            }
+        }
+        plugins.request(config, &self.id, &mut req);
+        (req, renamed)
     }
 
     /// Plugin tools this agent may use (hidden when its rules deny them).
@@ -1255,6 +1330,23 @@ impl Session {
         // A denied skill mention refuses the prompt before anything is written.
         let skills = self.mentioned_skills(text)?;
         let _lease = self.take_turn(sink).await?;
+        let plugins = crate::plugin::active();
+        // Plugins' prompt hooks may change the text and keep metadata with it.
+        let mut prompt_metadata = None;
+        let hooked;
+        let text = if plugins.any(&self.loaded.config) {
+            let mut p = crate::plugin::Prompt {
+                session_id: self.id.clone(),
+                text: text.to_string(),
+                metadata: None,
+            };
+            plugins.prompt(&self.loaded.config, &mut p);
+            prompt_metadata = p.metadata;
+            hooked = p.text;
+            hooked.as_str()
+        } else {
+            text
+        };
         // What changed since the last turn comes before the new prompt; a
         // baseline that cannot be made yet leaves the prompt unsent.
         self.mcp.refresh().await;
@@ -1310,7 +1402,13 @@ impl Session {
         };
         user.parts.extend(media.into_iter().map(Part::Media));
         self.push(user)?;
-        let plugins = crate::plugin::active();
+        if let (Some(metadata), Some(Some(seq))) = (prompt_metadata, self.seqs.last().copied()) {
+            self.record(&Record::Metadata {
+                seq,
+                metadata: metadata.clone(),
+            })?;
+            self.metadata.insert(seq, metadata);
+        }
         plugins.event(
             &self.loaded.config,
             &crate::plugin::Event::TurnStart {
@@ -1529,9 +1627,11 @@ impl Session {
                     });
                     continue;
                 }
-                // Repaired against the tool's schema, as OpenCode does
-                // before checking it; `bash` runs as `shell`.
-                let (called, name, input) = self.repair_call(name, input);
+                // Repaired against the schema of the tool as offered (a
+                // context hook's rename and edits included), as OpenCode
+                // does before checking it; `bash` runs as `shell` only when
+                // `shell` is offered under its own name.
+                let (called, offered, name, input) = self.repair_call(name, input);
                 sink.tool_start(&id, &name, &input);
                 if !runner::read_only_tool(&name) {
                     self.agent_changed_files = true;
@@ -1578,7 +1678,9 @@ impl Session {
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
                     _ if final_step => (runner::TOOLS_DISABLED.into(), true),
-                    _ if !self.turn.offered.contains(&name) => (runner::unavailable(&name), true),
+                    _ if !self.turn.offered.contains(&offered) => {
+                        (runner::unavailable(&called), true)
+                    }
                     _ if runner::invalid_json(&input).is_some() => (
                         runner::invalid_input(runner::invalid_json(&input).unwrap_or(""), length),
                         true,
@@ -1653,9 +1755,9 @@ impl Session {
                     self.turn.stopped = Some("you declined a tool call");
                 }
                 plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
-                if called != name {
+                if called != offered {
                     content.push_str("\n\n");
-                    content.push_str(&tool::input_repair::alias_note(&called, &name));
+                    content.push_str(&tool::input_repair::alias_note(&called, &offered));
                 }
                 let (media, notes) =
                     crate::media::fit_tool_media(media, &self.loaded.config.media.image);
@@ -1696,6 +1798,7 @@ impl Session {
                         is_error,
                     },
                 );
+                // The result answers the call by the name it was made by.
                 results.push(Part::ToolResult {
                     id,
                     name: called,
@@ -2757,7 +2860,7 @@ impl Session {
 
     /// [`Session::generate`] without counting its usage.
     async fn generate_text(&self, prompt: &str) -> Result<(String, Usage)> {
-        let mut req = self.request_for(crate::plugin::RequestKind::Generate);
+        let (mut req, _) = self.request_for(crate::plugin::RequestKind::Generate);
         req.messages.push(Message::user(prompt));
         req.tool_choice = Some(codesmith_ai::ToolChoice::None);
         req.interaction = codesmith_ai::Interaction::Background;
@@ -2893,13 +2996,14 @@ impl Session {
     ) -> Result<(Vec<Part>, FinishReason, Usage)> {
         // Pick up tool and prompt lists a server announced as changed.
         self.mcp.refresh().await;
-        let mut req = self.request();
+        let (mut req, renamed) = self.request();
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
         self.turn.schemas = req
             .tools
             .iter()
             .map(|t| (t.name.clone(), t.parameters.clone()))
             .collect();
+        self.turn.renamed = renamed;
         if final_step {
             req.messages.push(Message::system(runner::MAX_STEPS_PROMPT));
             // The tool definitions stay, so the cached prefix does too.

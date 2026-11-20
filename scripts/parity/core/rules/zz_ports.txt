@@ -462,3 +462,9 @@
 80 :: ported :: tests/oc_http_hooks.rs::oc_tags_every_session_request_kind_on_http_request_and_http_response :: adapted: `Plugin::http_request`/`http_response` with a `RequestScope`
 120 :: ported :: tests/oc_http_hooks.rs::oc_sends_a_kept_requests_original_body_and_a_replaced_requests_new_body :: adapted: the hook gets the `reqwest::Request`
 203 :: ported :: tests/oc_http_hooks.rs::oc_offers_the_websocket_executor_alongside_http_hooks_and_routes_the_websocket_hooks :: adapted: a scripted `Connector`; the hooks ride on the provider
+@session-runner.test.ts
+1185 :: ported :: tests/oc_context_hooks.rs::oc_executes_a_tool_renamed_by_a_session_context_hook :: adapted: `Plugin::context` renames a `ContextTool` by its `name`
+1203 :: ported :: tests/oc_context_hooks.rs::oc_passes_stored_message_metadata_to_the_context_hook_but_not_to_the_model_request :: adapted: `Plugin::prompt` keeps the metadata as a session record
+1231 :: ported :: tests/oc_context_hooks.rs::oc_keeps_context_hook_edits_to_messages_without_stored_metadata
+@session-model-request-hooks.test.ts
+168 :: ported :: tests/oc_context_hooks.rs::oc_keeps_hook_edits_to_a_tool_schema_out_of_later_requests

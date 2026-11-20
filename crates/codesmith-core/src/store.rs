@@ -102,6 +102,12 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         fork: bool,
     },
+    /// Metadata a plugin's prompt hook kept with the message at `seq`,
+    /// for later context hooks; never sent to the model.
+    Metadata {
+        seq: i64,
+        metadata: serde_json::Value,
+    },
     /// A record kind from a newer CodeSmith; ignored.
     #[serde(other)]
     Unknown,

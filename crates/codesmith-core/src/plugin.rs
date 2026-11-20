@@ -11,8 +11,10 @@
 //! hooks around tool calls, shell commands, model requests, compactions,
 //! permission prompts, session events and going idle.
 
+mod context;
 mod request;
 
+pub use context::{Context, ContextMessage, ContextTool, Prompt};
 pub use request::{RequestKind, RequestScope};
 /// The HTTP types the request hooks take.
 pub use reqwest;
@@ -219,6 +221,20 @@ pub trait Plugin: Send + Sync {
         None
     }
 
+    // --- Session context hooks (OpenCode's session `prompt` and
+    // `context`). ---
+
+    /// A user prompt is about to join the session: change its text, or
+    /// keep metadata with it for later context hooks (never sent to the
+    /// model).
+    fn prompt(&self, _prompt: &mut Prompt) {}
+
+    /// Just before a step (or `Session::generate`) builds its request:
+    /// change the system prompt, the messages, or which tools are offered
+    /// and under what names. Edits reach this request only; the session's
+    /// history is not changed. Runs before [`Plugin::request`].
+    fn context(&self, _context: &mut Context) {}
+
     // --- HTTP and WebSocket hooks (OpenCode's session `http.request`,
     // `http.response` and `experimental.ws.*`). They run for every model
     // request a session makes (`scope.kind` says which), after the
@@ -380,6 +396,23 @@ impl Registry {
     pub fn event(&self, config: &Config, e: &Event) {
         for p in self.enabled(config) {
             p.event(e);
+        }
+    }
+
+    /// Whether any plugin is enabled, so a hook needs its input built.
+    pub fn any(&self, config: &Config) -> bool {
+        self.enabled(config).next().is_some()
+    }
+
+    pub fn prompt(&self, config: &Config, prompt: &mut Prompt) {
+        for p in self.enabled(config) {
+            p.prompt(prompt);
+        }
+    }
+
+    pub fn context(&self, config: &Config, context: &mut Context) {
+        for p in self.enabled(config) {
+            p.context(context);
         }
     }
 
