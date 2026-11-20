@@ -1,0 +1,229 @@
+//! Command-line tests ported from OpenCode's `packages/cli/test` (MIT) that
+//! need the real binary. Each names the OpenCode file and test it comes
+//! from; see `crates/codesmith/PARITY.md`.
+
+use crate::harness::*;
+use crate::model::*;
+use serde_json::{json, Value};
+use std::process::Stdio;
+
+async fn run_env(e: &Env, args: &[&str], env: &[(&str, &str)], stdin: Option<&str>) -> Out {
+    use tokio::io::AsyncWriteExt;
+    let mut c = e.command(args);
+    c.envs(env.iter().copied());
+    if stdin.is_some() {
+        c.stdin(Stdio::piped());
+    }
+    let mut child = c.spawn().unwrap();
+    if let Some(input) = stdin {
+        let mut s = child.stdin.take().unwrap();
+        s.write_all(input.as_bytes()).await.unwrap();
+    }
+    let o = child.wait_with_output().await.unwrap();
+    Out {
+        code: o.status.code(),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+    }
+}
+
+// debug-paths.test.ts: "prints resolved global paths without starting a
+// server".
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_debug_paths_prints_the_resolved_folders() {
+    let e = Env::new();
+    let out = e.run(&["debug", "paths"]).await;
+    out.ok();
+    let config = e.config_dir.display().to_string();
+    let data = e.data.display().to_string();
+    assert!(
+        out.stdout.contains(&config) && out.stdout.contains(&data),
+        "{}",
+        out.both()
+    );
+}
+
+// mini.test.ts: "uses piped stdin as the initial prompt" (with a message as
+// well, see run_cli.rs `piped_stdin_attached_files_and_titles`).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_piped_stdin_alone_is_the_prompt() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Piped").then(
+        "answer",
+        M::tools().and(M::prompt("only from stdin")),
+        Reply::text("Got it."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let out = e.run_with_stdin(&["run"], "only from stdin\n").await;
+    out.ok();
+    assert_eq!(out.stdout.trim(), "Got it.");
+    m.assert_done();
+}
+
+// import-export.test.ts: "export reports a missing session without a stack
+// trace".
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_export_reports_a_missing_session_without_a_stack_trace() {
+    let e = Env::new();
+    let out = e.run(&["session", "export", "ses_missing"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(out.stderr.contains("ses_missing"), "{}", out.both());
+    assert!(
+        !out.stderr.contains("panicked") && !out.stderr.contains("stack backtrace"),
+        "{}",
+        out.both()
+    );
+    assert!(out.stdout.is_empty());
+}
+
+/// A finished one-turn session; returns its id.
+async fn one_session(e: &Env) -> String {
+    let m = Model::start(Script::new().titled("Hello").then(
+        "answer",
+        M::tools().and(M::prompt("hello")),
+        Reply::text("Hi."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    e.run(&["run", "hello"]).await.ok();
+    e.store().list(None, false).unwrap()[0].id.clone()
+}
+
+// import-export.test.ts: "export is raw by default and supports explicit
+// sanitization" (CodeSmith has no sanitizing export; the raw half) and
+// "import sends the file unchanged to the resolved location" (adapted:
+// imported into a fresh store, it exports the same).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_export_is_raw_and_import_keeps_it_unchanged() {
+    let e = Env::new();
+    let id = one_session(&e).await;
+    let first = e.run(&["session", "export", &id]).await;
+    first.ok();
+    let v: Value = serde_json::from_str(&first.stdout).unwrap();
+    assert!(first.stdout.contains("hello") && first.stdout.contains("Hi."));
+    assert_eq!(v["info"]["id"], json!(id));
+
+    let other = Env::new();
+    std::fs::write(other.path("s.json"), &first.stdout).unwrap();
+    other.run(&["session", "import", "s.json"]).await.ok();
+    let again = other.run(&["session", "export", &id]).await;
+    again.ok();
+    assert_eq!(serde_json::from_str::<Value>(&again.stdout).unwrap(), v);
+}
+
+// import-export.test.ts: "import reports an existing session without a stack
+// trace".
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_import_reports_an_existing_session_without_a_stack_trace() {
+    let e = Env::new();
+    let id = one_session(&e).await;
+    let out = e.run(&["session", "export", &id]).await;
+    std::fs::write(e.path("s.json"), &out.stdout).unwrap();
+    let out = e.run(&["session", "import", "s.json"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(out.stderr.contains("already exists"), "{}", out.both());
+    assert!(!out.stderr.contains("panicked"), "{}", out.both());
+}
+
+// auth.test.ts: "lists stored and environment connections" (adapted:
+// CodeSmith lists where each provider's key comes from).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_auth_list_shows_stored_and_environment_keys() {
+    let e = Env::new();
+    run_env(
+        &e,
+        &["auth", "login", "openai"],
+        &[],
+        Some("sk-saved-123456\n"),
+    )
+    .await
+    .ok();
+    let out = run_env(
+        &e,
+        &["auth", "list"],
+        &[("ANTHROPIC_API_KEY", "sk-env")],
+        None,
+    )
+    .await;
+    out.ok();
+    let line = |id: &str| {
+        out.stdout
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(id))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        line("anthropic").contains("$ANTHROPIC_API_KEY"),
+        "{}",
+        out.both()
+    );
+    assert!(line("openai").contains("saved"), "{}", out.both());
+    assert!(!out.stdout.contains("sk-saved-123456"), "keys are masked");
+}
+
+// auth.test.ts: "removes a selected stored credential".
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_auth_logout_removes_a_stored_key() {
+    let e = Env::new();
+    run_env(
+        &e,
+        &["auth", "login", "openai"],
+        &[],
+        Some("sk-saved-123456\n"),
+    )
+    .await
+    .ok();
+    let out = e.run(&["auth", "logout", "openai"]).await;
+    out.ok();
+    assert!(out.stdout.contains("Removed"), "{}", out.both());
+    let out = e.run(&["auth", "list"]).await;
+    let openai = out
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("openai"))
+        .unwrap_or_default();
+    assert!(!openai.contains("saved"), "{}", out.both());
+}
+
+// env.test.ts: "session environment omits server credentials" (adapted:
+// CodeSmith's server token, `$CODESMITH_SERVER_TOKEN`, never reaches a
+// session's shell commands; other variables do).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_shell_commands_do_not_see_the_server_token() {
+    let e = Env::new();
+    let ask = M::tools().and(M::prompt("print it"));
+    let m = Model::start(
+        Script::new()
+            .titled("Env")
+            .then(
+                "shell",
+                ask.clone().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo \"[$CODESMITH_SERVER_TOKEN][$SESSION_ENV_TEST]\"", "description": "env"}),
+                ),
+            )
+            .then("done", ask.and(M::step(1)), Reply::text("Done.")),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let out = run_env(
+        &e,
+        &["run", "--auto", "print it"],
+        &[
+            ("CODESMITH_SERVER_TOKEN", "secret-token"),
+            ("SESSION_ENV_TEST", "included"),
+        ],
+        None,
+    )
+    .await;
+    out.ok();
+    m.assert_done();
+    let results: Vec<String> = m.seen().iter().flat_map(|s| results(&s.body)).collect();
+    assert!(
+        results.iter().any(|r| r.contains("[][included]")),
+        "{results:?}"
+    );
+}

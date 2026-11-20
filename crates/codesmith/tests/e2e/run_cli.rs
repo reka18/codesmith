@@ -381,6 +381,7 @@ async fn config_permission_rules_allow_deny_and_ask() {
     assert_eq!(parts(&h[0], "text")[0], "mark again");
 }
 
+// OpenCode: mini.test.ts, "merges non-interactive argument and stdin input".
 #[tokio::test(flavor = "multi_thread")]
 async fn piped_stdin_attached_files_and_titles() {
     let e = Env::new();
@@ -457,6 +458,8 @@ async fn processes_opening_a_new_database_together_all_succeed() {
 
 /// As OpenCode's `run`: the prompt's background commands are waited for,
 /// and the model is resumed with each result before the run exits.
+/// OpenCode: run/noninteractive.test.ts, "waits for a background shell and
+/// streams the reply it wakes".
 #[tokio::test(flavor = "multi_thread")]
 async fn run_waits_for_background_commands_and_resumes_the_model() {
     let e = Env::new();
@@ -505,6 +508,9 @@ async fn run_waits_for_background_commands_and_resumes_the_model() {
 /// running (it is in its own process group, which never got the signal).
 /// Now the run stops it and exits; before the fix the turn itself never
 /// ended while the command ran, in `run` and in the TUI and server.
+/// OpenCode: run/noninteractive.test.ts, "cancelling while waiting on
+/// background work stops the Session and this prompt's jobs" (adapted: no
+/// subagent jobs, which run inside the turn here).
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn interrupting_a_run_stops_its_background_server() {

@@ -1428,6 +1428,9 @@ fn spawn(
         // `cd` must resolve as the scan resolved it (see `shell_scan`).
         .env_remove("CDPATH")
         .env_remove("OLDPWD")
+        // The local server's token would let a command drive the server
+        // (as OpenCode keeps its server password out of sessions).
+        .env_remove("CODESMITH_SERVER_TOKEN")
         .env("AGENT", "1")
         .env("CODESMITH", "1")
         .env("AI_AGENT", ai_agent)
