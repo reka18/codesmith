@@ -129,6 +129,11 @@ from `settings.apiKey` in config.
 | `ollama` | OpenAI Chat | none (`http://127.0.0.1:11434/v1`) |
 | `lmstudio` | OpenAI Chat | none (`http://127.0.0.1:1234/v1`) |
 | `llamacpp` | OpenAI Chat | none (`http://127.0.0.1:8080/v1`) |
+| `amazon-bedrock` | Bedrock Converse (Mantle models: Responses, Chat or Messages) | `AWS_BEARER_TOKEN_BEDROCK`, else SigV4 with AWS credentials; see [Amazon Bedrock](#amazon-bedrock) |
+| `google-vertex` | Gemini, Anthropic Messages for Claude, OpenAI Chat for partner models | Application Default Credentials, or `GOOGLE_VERTEX_API_KEY` (Express Mode); see [Google Vertex AI](#google-vertex-ai) |
+| `google-vertex-anthropic` | Anthropic Messages | as `google-vertex` |
+| `github-copilot` | per model: Anthropic Messages, OpenAI Responses or Chat | `codesmith auth login github-copilot`, or `COPILOT_GITHUB_TOKEN`; see [GitHub Copilot](#github-copilot) |
+| `databricks` | OpenAI Chat | `DATABRICKS_TOKEN` (and `DATABRICKS_HOST`, with or without `https://`) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -333,6 +338,100 @@ given, with only `queryParams`. With `"protocol": "anthropic-messages"`, the
 resource's Claude endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1`)
 is used with the key in `x-api-key`. Set `"protocol": "openai-chat"` for Chat
 Completions.
+
+### Amazon Bedrock
+
+`amazon-bedrock` runs models on the Converse API
+(`https://bedrock-runtime.<region>.amazonaws.com`), and models the catalog
+lists only on Bedrock Mantle on its Responses, Chat or Messages API
+(`https://bedrock-mantle.<region>.api.aws`), as OpenCode does.
+
+- **Region**: `settings.region`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`,
+  else `us-east-1`. `settings.endpoint` (a private or VPC endpoint) becomes the
+  base URL; `settings.baseURL` beats it.
+- **A Bedrock API key** (`AWS_BEARER_TOKEN_BEDROCK`, `settings.apiKey`, or
+  `codesmith auth login amazon-bedrock`) is sent as a bearer token and wins
+  over AWS credentials.
+- **AWS credentials** otherwise sign each request with SigV4, from the
+  standard chain, read afresh for every request: `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` (unless a profile is named),
+  then the profile (`settings.profile`, a saved login, `AWS_PROFILE`, or
+  `default`) in `~/.aws/credentials` and `~/.aws/config` (or
+  `AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE`): static keys,
+  `credential_process`, `web_identity_token_file`, and for SSO,
+  `role_arn` and console-login profiles the AWS CLI
+  (`aws configure export-credentials`), then `AWS_WEB_IDENTITY_TOKEN_FILE`
+  with `AWS_ROLE_ARN`, then ECS/EKS container credentials. Credentials that
+  say when they expire are reused until five minutes before then.
+  CodeSmith does not query the EC2 instance metadata service.
+- `settings.auth`: `"sigv4"` ignores an ambient `AWS_BEARER_TOKEN_BEDROCK`,
+  `"bearer"` requires a key.
+- `codesmith auth login amazon-bedrock --profile work` saves a profile to
+  sign with (it also ignores an ambient bearer token).
+
+Model ids go to Bedrock as given, so cross-region inference profiles
+(`us.anthropic.claude-sonnet-4-5-20250929-v1:0`, `eu.`, `apac.`, `global.`)
+and inference profile ARNs work. A model Bedrock serves only through a
+profile answers its bare id with an error that names the profile ids to use.
+
+```jsonc
+"providers": { "amazon-bedrock": { "settings": { "region": "eu-west-1", "profile": "work" } } }
+```
+
+### Google Vertex AI
+
+`google-vertex` runs Gemini models on `generateContent`, Claude models on
+Anthropic Messages (`:streamRawPredict`), and the catalog's partner models
+on Vertex's OpenAI-compatible endpoints. `google-vertex-anthropic` is the
+older id for Claude on Vertex.
+
+- **Project**: a saved login, `settings.project`, then
+  `GOOGLE_VERTEX_PROJECT`, `GOOGLE_CLOUD_PROJECT`, `GCP_PROJECT`,
+  `GCLOUD_PROJECT`.
+- **Location**: a saved login, `settings.location`, then
+  `GOOGLE_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `VERTEX_LOCATION`, then
+  `global`. `global` uses `aiplatform.googleapis.com`, `eu` and `us` their
+  multi-region hosts (`aiplatform.eu.rep.googleapis.com`), and a region its
+  own (`us-east5-aiplatform.googleapis.com`).
+- **Credentials**: Application Default Credentials: the file
+  `GOOGLE_APPLICATION_CREDENTIALS` names, else gcloud's
+  `application_default_credentials.json` (under `CLOUDSDK_CONFIG` when set),
+  else the metadata server on Google Cloud. Service-account keys and
+  `gcloud auth application-default login` user credentials are exchanged
+  for an access token by CodeSmith (and the user credentials' quota project
+  is billed); other types (workload identity federation, impersonation) go
+  through `gcloud auth application-default print-access-token`. Tokens are
+  reused until a minute before they expire. `settings.accessToken` uses a
+  token of your own instead.
+- **Express Mode**: `GOOGLE_VERTEX_API_KEY` (or `settings.apiKey`) serves
+  Gemini without a project, unless a project or location is configured.
+- `codesmith auth login google-vertex --project my-project [--location eu]`
+  saves the project and location.
+
+### GitHub Copilot
+
+`codesmith auth login github-copilot` signs in with GitHub's device flow
+(`--enterprise company.ghe.com` for GitHub Enterprise), checks that the
+account has Copilot, and saves the login. The device flow runs as a GitHub
+OAuth app, and CodeSmith ships none of its own (nor borrows another
+project's): register one at
+[github.com/settings/applications/new](https://github.com/settings/applications/new)
+(any homepage and callback URL) with **Enable Device Flow** ticked, and give
+its client id with `--client-id`, `settings.clientId` on the
+`github-copilot` provider, or `CODESMITH_COPILOT_CLIENT_ID`, in that order.
+Without one the login stops and says so.
+
+`COPILOT_GITHUB_TOKEN` works instead of a login (not `GITHUB_TOKEN`, which
+git and CI usually set without Copilot access). Requests identify
+themselves as `codesmith/<version>` in `User-Agent`; Copilot needs no
+editor identification headers. Each model goes to the API Copilot serves it on: the catalog's
+(Anthropic Messages, OpenAI Responses or Chat Completions), else, as in
+OpenCode, Responses for GPT-5 and later (but GPT-5 mini), Grok and MAI Code,
+and Chat for the rest. Requests go to the account's own API endpoint, looked
+up once per run (the one saved at login until then), with Copilot's headers:
+who started the request (`x-initiator`), whether it carries images, and the
+kind of step (agent, subagent, title, compaction). Copilot's Auto model
+router and its free title model are not used.
 
 ### Responses over WebSocket
 
@@ -546,6 +645,10 @@ Anthropic, reads much less).
 echoing it, or from stdin, and saves it in the data folder's `auth.json`,
 which only you can read. `codesmith auth list` shows where each provider's key
 comes from, and `codesmith auth logout <provider>` removes a saved key.
+Some providers sign in differently: `codesmith auth login github-copilot`
+(GitHub's device flow), `codesmith auth login amazon-bedrock --profile <name>`
+and `codesmith auth login google-vertex --project <id>` save a login instead
+of a key; `auth logout` removes those too.
 
 ## Instructions
 

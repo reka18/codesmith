@@ -59,6 +59,27 @@ The built-in providers are `anthropic`, `openai`, `google`, `azure`,
 and `cerebras`. See [providers](configuration.md#built-in-providers) for their
 key variables (`azure` also needs its resource name).
 
+Three more sign in their own way:
+
+```sh
+export CODESMITH_COPILOT_CLIENT_ID=Iv1.…          # your GitHub OAuth app, device flow on
+codesmith auth login github-copilot              # GitHub's device flow (or set COPILOT_GITHUB_TOKEN)
+codesmith -m github-copilot/claude-sonnet-4.6
+
+export AWS_PROFILE=work                           # or AWS keys, SSO, AWS_BEARER_TOKEN_BEDROCK
+codesmith -m amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+gcloud auth application-default login             # Application Default Credentials
+codesmith auth login google-vertex --project my-project
+codesmith -m google-vertex/gemini-2.5-pro
+```
+
+The Copilot login needs a GitHub OAuth app of your own (CodeSmith ships
+none); [GitHub Copilot](configuration.md#github-copilot) says how to register
+one. See [Amazon Bedrock](configuration.md#amazon-bedrock),
+[Google Vertex AI](configuration.md#google-vertex-ai) and
+[GitHub Copilot](configuration.md#github-copilot).
+
 **A local server.** `ollama`, `lmstudio` and `llamacpp` are built in at their
 default ports, with no key:
 

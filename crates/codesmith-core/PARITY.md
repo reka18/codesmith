@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 56 | 0 | 385 | 317 | 38 | 0 |
+| Providers, models and credentials | 796 | 127 | 0 | 307 | 325 | 37 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **882** | **15** | **961** | **2326** | **1404** | **0** |
+| **Total** | **5588** | **953** | **15** | **883** | **2334** | **1403** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,11 +78,11 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (961 cases in 66 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (883 cases in 66 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Provider Plugins](#provider-plugins) | 232 | GitHub Copilot; Modal; … |
+| [Provider Plugins](#provider-plugins) | 154 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [PTY Sessions](#pty-sessions) | 38 | persistent PTY daemon; persistent terminals; … |
@@ -151,7 +151,7 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 
 ### Provider Plugins
 
-232 cases.
+154 cases.
 
 - `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
 - `github-copilot/models.test.ts`: prices cache reads from either token price spelling
@@ -159,22 +159,6 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 - `modal/models.test.ts`: maps live Modal models onto catalog templates
 - `modal/models.test.ts`: keeps template cost and limits when the proxy omits them
 - `modal/models.test.ts`: throws on proxy failure so the plugin can fail soft
-- `model-resolver.test.ts`: maps Bedrock Mantle GPT-OSS models to Chat and other models to Responses
-- `model-resolver.test.ts`: resolves Bedrock Mantle catalog endpoints from the configured region
-- `model-resolver.test.ts`: fills Mantle catalog URLs from the provider region
-- `model-resolver.test.ts`: prefers the configured Mantle region over the environment
-- `model-resolver.test.ts`: routes Vertex Anthropic catalog models through native Messages
-- `plugin/provider-amazon-bedrock.test.ts`: moves endpoint setting to baseURL
-- `plugin/provider-amazon-bedrock.test.ts`: gives the package the profile of a stored AWS profile login
-- `plugin/provider-amazon-bedrock.test.ts`: keeps an explicit baseURL over endpoint
-- `plugin/provider-amazon-bedrock.test.ts`: only treats the bearer token env var as a key credential
-- `plugin/provider-amazon-bedrock.test.ts`: leaves activation on auto without ambient AWS configuration
-- `plugin/provider-amazon-bedrock.test.ts`: enables the provider when ${name} is set (7 cases)
-- `plugin/provider-amazon-bedrock.test.ts`: enables the provider when a profile is configured
-- `plugin/provider-amazon-bedrock.test.ts`: does not override a disabled provider
-- `plugin/provider-amazon-bedrock.test.ts`: fills region from AWS_REGION then AWS_DEFAULT_REGION without overriding config
-- `plugin/provider-amazon-bedrock.test.ts`: falls back to AWS_DEFAULT_REGION then us-east-1
-- `plugin/provider-amazon-bedrock.test.ts`: applies to Mantle and native Bedrock packages
 - `plugin/provider-azure.test.ts`: hides Azure CLI authentication when the Azure CLI is not installed
 - `plugin/provider-azure.test.ts`: asks for the resource name as text without calling Azure
 - `plugin/provider-azure.test.ts`: starts without calling Azure, then lists deployments
@@ -193,9 +177,6 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 - `plugin/provider-azure.test.ts`: {item.name} (6 cases)
 - `plugin/provider-azure.test.ts`: leaves models unchanged and uncloned without a resource name
 - `plugin/provider-azure.test.ts`: prefers WebSockets on the provider for the Azure Responses API only
-- `plugin/provider-cerebras.test.ts`: applies the legacy integration header
-- `plugin/provider-cerebras.test.ts`: ignores non-Cerebras providers
-- `plugin/provider-cerebras.test.ts`: applies the integration header to custom native Cerebras providers
 - `plugin/provider-cloudflare-ai-gateway.test.ts`: registers account and gateway forms when the environment does not provide them
 - `plugin/provider-cloudflare-ai-gateway.test.ts`: uses environment account and gateway values without requesting form fields
 - `plugin/provider-cloudflare-ai-gateway.test.ts`: requests only the gateway ID when the environment provides the account ID
@@ -211,8 +192,6 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 - `plugin/provider-cloudflare-workers-ai.test.ts`: follows the account ID when another form login becomes active
 - `plugin/provider-cloudflare-workers-ai.test.ts`: preserves a configured endpoint URL instead of deriving one from account ID
 - `plugin/provider-cloudflare-workers-ai.test.ts`: uses configured account ID over env account ID
-- `plugin/provider-databricks.test.ts`: fills the base URL from a bare host
-- `plugin/provider-databricks.test.ts`: fills the base URL from a host that includes the scheme
 - `plugin/provider-digitalocean.test.ts`: is registered alongside the other provider plugins
 - `plugin/provider-digitalocean.test.ts`: registers browser OAuth alongside generic key and environment methods
 - `plugin/provider-digitalocean.test.ts`: loads routers for the signed-in account
@@ -229,36 +208,12 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 - `plugin/provider-dynamic.test.ts`: wraps dynamic import failures as AISDK init errors
 - `plugin/provider-dynamic.test.ts`: wraps missing provider factory exports as AISDK init errors
 - `plugin/provider-dynamic.test.ts`: uses the model modelID for the default language model
-- `plugin/provider-github-copilot.test.ts`: prefers the account-specific Copilot API endpoint
-- `plugin/provider-github-copilot.test.ts`: rejects accounts without Copilot chat access
-- `plugin/provider-github-copilot.test.ts`: only blocks on an explicit entitlement denial
 - `plugin/provider-github-copilot.test.ts`: reloads providers only when a refreshed model list changes
-- `plugin/provider-github-copilot.test.ts`: refreshes the account's API endpoint instead of keeping the one stored at login
-- `plugin/provider-github-copilot.test.ts`: keeps the stored endpoint when the account lookup fails
-- `plugin/provider-github-copilot.test.ts`: serves an Enterprise login from its own host until the first model list arrives
-- `plugin/provider-github-copilot.test.ts`: serves a login from the endpoint saved with it until the first model list arrives
-- `plugin/provider-github-copilot.test.ts`: registers GitHub Copilot device OAuth
-- `plugin/provider-github-copilot.test.ts`: removes the generic key method and reads COPILOT_GITHUB_TOKEN instead of GITHUB_TOKEN
-- `plugin/provider-github-copilot.test.ts`: adds Copilot authentication and request metadata headers to OpenAI requests
-- `plugin/provider-github-copilot.test.ts`: adds Copilot authentication to native Anthropic requests
-- `plugin/provider-github-copilot.test.ts`: classifies main-loop steps as agent interactions
-- `plugin/provider-github-copilot.test.ts`: classifies child-session steps as subagent interactions
-- `plugin/provider-github-copilot.test.ts`: classifies title generation as a background interaction
-- `plugin/provider-github-copilot.test.ts`: classifies compaction requests by kind rather than agent
-- `plugin/provider-github-copilot.test.ts`: does not classify by agent name
-- `plugin/provider-github-copilot.test.ts`: ignores other providers' model requests
 - `plugin/provider-github-copilot.test.ts`: names sessions with the utility model as a free background request
 - `plugin/provider-github-copilot.test.ts`: sends the utility title request through the host's fetch
 - `plugin/provider-github-copilot.test.ts`: fails the utility title on rate limits so the billable path can run
 - `plugin/provider-github-copilot.test.ts`: fails the utility title on an empty completion
-- `plugin/provider-github-copilot.test.ts`: flags images returned by tools in Responses requests
-- `plugin/provider-github-copilot.test.ts`: treats tool images moved into a Chat Completions user message as agent-initiated
-- `plugin/provider-github-copilot.test.ts`: keeps a declared agent initiator when the body looks user-initiated
-- `plugin/provider-github-copilot.test.ts`: classifies session generation requests as agent interactions
-- `plugin/provider-github-copilot.test.ts`: routes models.dev fallback models to native Copilot APIs
 - `plugin/provider-github-copilot.test.ts`: routes Auto through Copilot's router and keeps the pick until compaction
-- `plugin/provider-github-copilot.test.ts`: disables gpt-5-chat-latest before Copilot language selection
-- `plugin/provider-github-copilot.test.ts`: does not disable gpt-5-chat-latest for non-Copilot providers
 - `plugin/provider-gitlab-oauth.test.ts`: is registered alongside the other provider plugins
 - `plugin/provider-gitlab-oauth.test.ts`: registers PKCE OAuth alongside the generic key/env methods from ModelsDevPlugin
 - `plugin/provider-gitlab-oauth.test.ts`: exchanges a PKCE code for a native GitLab OAuth credential against gitlab.com by default
@@ -289,27 +244,6 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-- `plugin/provider-google-vertex.test.ts`: ignores OpenAI-compatible providers that are not Google Vertex
-- `plugin/provider-google-vertex.test.ts`: resolves project and location from env using legacy precedence
-- `plugin/provider-google-vertex.test.ts`: enables the provider when a project resolves and leaves it automatic otherwise
-- `plugin/provider-google-vertex.test.ts`: enables the provider when a project resolves from env
-- `plugin/provider-google-vertex.test.ts`: resolves the advertised GOOGLE_VERTEX_PROJECT env for provider updates and SDKs
-- `plugin/provider-google-vertex.test.ts`: keeps configured project and location over env and uses global endpoint
-- `plugin/provider-google-vertex.test.ts`: expands Vertex endpoint templates to the multi-region host for ${location} (2 cases)
-- `plugin/provider-google-vertex.test.ts`: expands endpoint templates on Vertex chat models
-- `plugin/provider-google-vertex.test.ts`: defaults location to global when only project is configured
-- `plugin/provider-kilo.test.ts`: is registered so legacy referer headers can be applied
-- `plugin/provider-kilo.test.ts`: applies legacy referer headers only to Kilo endpoints
-- `plugin/provider-kilo.test.ts`: uses the exact legacy Kilo header casing and set
-- `plugin/provider-kilo.test.ts`: uses endpoint package matching instead of a provider ID guard
-- `plugin/provider-llmgateway.test.ts`: is registered so legacy referer headers can be applied
-- `plugin/provider-llmgateway.test.ts`: applies legacy referer headers only to enabled llmgateway
-- `plugin/provider-llmgateway.test.ts`: does not apply legacy headers to a disabled llmgateway provider
-- `plugin/provider-nvidia.test.ts`: is registered so legacy referer headers can be applied
-- `plugin/provider-nvidia.test.ts`: applies NVIDIA tracking headers only to nvidia
-- `plugin/provider-nvidia.test.ts`: adds billing origin for custom NVIDIA endpoints
-- `plugin/provider-nvidia.test.ts`: preserves an explicit NVIDIA billing origin header
-- `plugin/provider-openrouter.test.ts`: is registered so legacy OpenRouter behavior can be applied
 - `plugin/provider-openrouter.test.ts`: filters OpenRouter's gpt-5 chat alias
 - `plugin/provider-openrouter.test.ts`: does not disable gpt-5-chat-latest for non-OpenRouter providers
 - `plugin/provider-poe.test.ts`: registers Poe browser OAuth alongside generic key and environment methods without fetching
@@ -331,11 +265,6 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 - `plugin/provider-snowflake-cortex.test.ts`: uses environment tokens rather than the account identifier and bypasses expired stored OAuth
 - `plugin/provider-snowflake-cortex.test.ts`: requires a token separately from the account and supports environment PATs
 - `plugin/provider-snowflake-cortex.test.ts`: refreshes expired OAuth during native model resolution and persists rotated credentials
-- `plugin/provider-zenmux.test.ts`: is registered so legacy referer headers can be applied
-- `plugin/provider-zenmux.test.ts`: applies the exact legacy Zenmux headers
-- `plugin/provider-zenmux.test.ts`: merges legacy Zenmux headers with existing headers
-- `plugin/provider-zenmux.test.ts`: lets configured Zenmux legacy headers override defaults
-- `plugin/provider-zenmux.test.ts`: guards legacy Zenmux headers to the exact zenmux provider id
 - `variant.test.ts`: recognizes Claude version spellings and future models
 - `variant.test.ts`: spells Cloudflare AI Gateway variants for their upstream routes
 - `variant.test.ts`: spells Vercel AI Gateway variants for their selected routes
@@ -1364,7 +1293,7 @@ Missing features, by how many OpenCode test cases each would unlock (961 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1404 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1403 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -2164,7 +2093,7 @@ Tests for behaviour CodeSmith already has but no test pins (1404 cases), by area
 - the setup (start) command runs with worktree paths (S) — `worktree::create`
   - `worktree.test.ts`: runs the project setup script with worktree paths
 
-### Providers, models and credentials (38)
+### Providers, models and credentials (37)
 
 - default model when none is configured; a disabled provider's default ignored (S) — `config::resolve_model`
   - `catalog.test.ts`: falls back to newest available model when no default is configured
@@ -2216,8 +2145,6 @@ Tests for behaviour CodeSmith already has but no test pins (1404 cases), by area
   - `plugin/provider-azure.test.ts`: expands provider and model resource URLs
 - no default output limit sent to OpenAI (S) — `session request`
   - `plugin/provider-openai.test.ts`: omits the default output limit from OpenAI steps and compaction
-- OpenRouter referer headers (S) — `config providers`
-  - `plugin/provider-openrouter.test.ts`: applies legacy referer headers only to openrouter
 
 ### Runtime, locations and filesystem (4)
 
@@ -2232,7 +2159,7 @@ Tests for behaviour CodeSmith already has but no test pins (1404 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 531 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 539 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 312 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
@@ -3565,7 +3492,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (373 of 796)</summary>
+<details><summary>Providers, models and credentials (452 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3619,7 +3546,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`model-resolver.test.ts`**
 
-- D routes compatible packages to the host's dedicated package when one exists · resolves environment templates before native providers inspect endpoints · keeps catalog apiKey credentials out of provider JSON · uses no native API-key auth for explicitly enabled providers without credentials · keeps native provider environment auth strict when no API key is configured · maps catalog Anthropic AI SDK models into native routes · does not project API key metadata into settings or the request body · does not project OAuth account metadata into the request body · applies plugin-projected OpenAI endpoint and headers · does not route native OpenAI-compatible packages to the codex backend · maps legacy OpenAI organization and project settings to headers · keeps non-ChatGPT OAuth credentials on the configured endpoint · loads dynamic native provider packages through the injected package loader · maps OAuth credentials to native provider auth settings without their metadata · routes supported AISDK catalog packages through native provider packages · never loads the AI SDK for packages with native implementations · loads supported AISDK catalog packages as native routes · loads arbitrary AISDK packages through the injected AISDK loader · rejects unresolved variables before loading opaque AISDK packages · rejects placeholders introduced by environment expansion before loading providers · rejects unresolved variables before loading native provider packages · rejects AISDK packages without an available loader · reports provider configuration errors from supported packages · distinguishes unexpected constructor failures from configuration errors · reports package load and AISDK initialization failures with their causes · drops an empty API key before loading an AISDK package · applies provider timeouts to resolved image, video, and decision models · reports whether a catalog model declares a provider package — platform: AI SDK / native package routing and loaders
+- D routes compatible packages to the host's dedicated package when one exists · resolves environment templates before native providers inspect endpoints — platform: AI SDK / native package routing and loaders
+- P maps Bedrock Mantle GPT-OSS models to Chat and other models to Responses — `tests/oc_providers.rs::oc_resolver_maps_bedrock_mantle_chat_and_responses_packages` (adapted: by the catalog's native Mantle packages)
+- P resolves Bedrock Mantle catalog endpoints from the configured region — `tests/oc_providers.rs::oc_resolver_resolves_bedrock_mantle_catalog_endpoints_from_the_configured_region`
+- P fills Mantle catalog URLs from the provider region — `tests/oc_providers.rs::oc_resolver_fills_mantle_catalog_urls_from_the_provider_region`
+- P prefers the configured Mantle region over the environment — `tests/oc_providers.rs::oc_resolver_prefers_the_configured_mantle_region_over_the_environment`
+- D keeps catalog apiKey credentials out of provider JSON · uses no native API-key auth for explicitly enabled providers without credentials · keeps native provider environment auth strict when no API key is configured · maps catalog Anthropic AI SDK models into native routes · does not project API key metadata into settings or the request body · does not project OAuth account metadata into the request body · applies plugin-projected OpenAI endpoint and headers · does not route native OpenAI-compatible packages to the codex backend · maps legacy OpenAI organization and project settings to headers · keeps non-ChatGPT OAuth credentials on the configured endpoint · loads dynamic native provider packages through the injected package loader · maps OAuth credentials to native provider auth settings without their metadata · routes supported AISDK catalog packages through native provider packages · never loads the AI SDK for packages with native implementations — platform: AI SDK / native package routing and loaders
+- P routes Vertex Anthropic catalog models through native Messages — `tests/oc_providers.rs::oc_resolver_routes_vertex_anthropic_catalog_models_through_native_messages`
+- D loads supported AISDK catalog packages as native routes · loads arbitrary AISDK packages through the injected AISDK loader · rejects unresolved variables before loading opaque AISDK packages · rejects placeholders introduced by environment expansion before loading providers · rejects unresolved variables before loading native provider packages · rejects AISDK packages without an available loader · reports provider configuration errors from supported packages · distinguishes unexpected constructor failures from configuration errors · reports package load and AISDK initialization failures with their causes · drops an empty API key before loading an AISDK package · applies provider timeouts to resolved image, video, and decision models · reports whether a catalog model declares a provider package — platform: AI SDK / native package routing and loaders
 
 **`model.test.ts`**
 
@@ -3685,6 +3619,90 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P registers every listed environment variable for provider plugins to narrow — `tests/oc_catalog.rs::oc_catalog_registers_every_listed_environment_variable_for_provider_plugins_to_narrow`
 - P converts reasoning options into settings variants — `tests/oc_catalog.rs::oc_catalog_converts_reasoning_options_into_settings_variants`
 
+**`plugin/provider-amazon-bedrock.test.ts`**
+
+- P moves endpoint setting to baseURL — `tests/oc_providers.rs::oc_bedrock_moves_endpoint_setting_to_base_url`
+- P gives the package the profile of a stored AWS profile login — `tests/oc_providers.rs::oc_bedrock_gives_the_package_the_profile_of_a_stored_aws_profile_login` (adapted: `codesmith auth login amazon-bedrock --profile` saves it)
+- P keeps an explicit baseURL over endpoint — `tests/oc_providers.rs::oc_bedrock_keeps_an_explicit_base_url_over_endpoint`
+- P only treats the bearer token env var as a key credential — `tests/oc_providers.rs::oc_bedrock_only_treats_the_bearer_token_env_var_as_a_key_credential`
+- P leaves activation on auto without ambient AWS configuration — `tests/oc_providers.rs::oc_bedrock_leaves_activation_on_auto_without_ambient_aws_configuration` (adapted: activation is whether `codesmith models` lists the provider)
+- P enables the provider when ${name} is set ×7 — `tests/oc_providers.rs::oc_bedrock_enables_the_provider_when_an_ambient_variable_is_set`
+- P enables the provider when a profile is configured — `tests/oc_providers.rs::oc_bedrock_enables_the_provider_when_a_profile_is_configured`
+- D does not override a disabled provider — deliberate: CodeSmith has no provider activation to override; a provider is used when a model names it
+- P fills region from AWS_REGION then AWS_DEFAULT_REGION without overriding config — `tests/oc_providers.rs::oc_bedrock_fills_region_from_aws_region_then_aws_default_region_without_overriding_config`
+- P falls back to AWS_DEFAULT_REGION then us-east-1 — `tests/oc_providers.rs::oc_bedrock_falls_back_to_aws_default_region_then_us_east_1`
+- P applies to Mantle and native Bedrock packages — `tests/oc_providers.rs::oc_bedrock_applies_to_mantle_and_native_bedrock_packages`
+
+**`plugin/provider-cerebras.test.ts`**
+
+- P applies the legacy integration header — `tests/oc_providers.rs::oc_cerebras_applies_the_legacy_integration_header` (adapted: the header names CodeSmith)
+- P ignores non-Cerebras providers — `tests/oc_providers.rs::oc_cerebras_ignores_non_cerebras_providers`
+- P applies the integration header to custom native Cerebras providers — `tests/oc_providers.rs::oc_cerebras_applies_the_integration_header_to_custom_native_cerebras_providers`
+
+**`plugin/provider-databricks.test.ts`**
+
+- P fills the base URL from a bare host — `tests/oc_providers.rs::oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme`
+- P fills the base URL from a host that includes the scheme — `tests/oc_providers.rs::oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme`
+
+**`plugin/provider-github-copilot.test.ts`**
+
+- P prefers the account-specific Copilot API endpoint — `tests/oc_providers.rs::oc_copilot_prefers_the_account_specific_copilot_api_endpoint`
+- P rejects accounts without Copilot chat access — `tests/oc_providers.rs::oc_copilot_rejects_accounts_without_copilot_chat_access`
+- P only blocks on an explicit entitlement denial — `tests/oc_providers.rs::oc_copilot_only_blocks_on_an_explicit_entitlement_denial`
+- P refreshes the account's API endpoint instead of keeping the one stored at login — `tests/oc_providers.rs::oc_copilot_refreshes_the_account_api_endpoint_instead_of_keeping_the_one_stored_at_login` (adapted: looked up once per run)
+- P keeps the stored endpoint when the account lookup fails — `tests/oc_providers.rs::oc_copilot_keeps_the_stored_endpoint_when_the_account_lookup_fails`
+- P serves an Enterprise login from its own host until the first model list arrives — `tests/oc_providers.rs::oc_copilot_serves_an_enterprise_login_from_its_own_host_until_the_first_model_list_arrives`
+- P serves a login from the endpoint saved with it until the first model list arrives — `tests/oc_providers.rs::oc_copilot_serves_a_login_from_the_endpoint_saved_with_it_until_the_first_model_list_arrives`
+- P registers GitHub Copilot device OAuth — `tests/oc_providers.rs::oc_copilot_registers_github_copilot_device_oauth` (adapted: the OAuth client id is deliberately not OpenCode's; the user supplies their own app (--client-id, settings.clientId, CODESMITH_COPILOT_CLIENT_ID))
+- P removes the generic key method and reads COPILOT_GITHUB_TOKEN instead of GITHUB_TOKEN — `tests/oc_providers.rs::oc_copilot_removes_the_generic_key_method_and_reads_copilot_github_token_instead_of_github_token`
+- P adds Copilot authentication and request metadata headers to OpenAI requests — `tests/oc_providers.rs::oc_copilot_adds_copilot_authentication_and_request_metadata_headers_to_openai_requests`
+- P adds Copilot authentication to native Anthropic requests — `tests/oc_providers.rs::oc_copilot_adds_copilot_authentication_to_native_anthropic_requests`
+- P classifies main-loop steps as agent interactions — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind`
+- P classifies child-session steps as subagent interactions — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind`
+- P classifies title generation as a background interaction — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind`
+- P classifies compaction requests by kind rather than agent — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind`
+- P does not classify by agent name — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (the kind comes from the step, never the agent name)
+- P ignores other providers' model requests — `tests/oc_providers.rs::oc_copilot_ignores_other_providers_model_requests`
+- P flags images returned by tools in Responses requests — `tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests`
+- P treats tool images moved into a Chat Completions user message as agent-initiated — `tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests` (the Chat half)
+- P keeps a declared agent initiator when the body looks user-initiated — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (a declared agent step stays agent-initiated)
+- P classifies session generation requests as agent interactions — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (agent steps)
+- P routes models.dev fallback models to native Copilot APIs — `tests/oc_providers.rs::oc_copilot_routes_models_dev_fallback_models_to_native_copilot_apis`
+- P disables gpt-5-chat-latest before Copilot language selection — `tests/oc_providers.rs::oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection` (adapted: hidden from `codesmith models`)
+- P does not disable gpt-5-chat-latest for non-Copilot providers — `tests/oc_providers.rs::oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection` (only Copilot's list hides it)
+
+**`plugin/provider-google-vertex.test.ts`**
+
+- P ignores OpenAI-compatible providers that are not Google Vertex — `tests/oc_providers.rs::oc_vertex_ignores_openai_compatible_providers_that_are_not_google_vertex`
+- P resolves project and location from env using legacy precedence — `tests/oc_providers.rs::oc_vertex_resolves_project_and_location_from_env_using_legacy_precedence`
+- P enables the provider when a project resolves and leaves it automatic otherwise — `tests/oc_providers.rs::oc_vertex_enables_the_provider_when_a_project_resolves_and_leaves_it_automatic_otherwise`
+- P enables the provider when a project resolves from env — `tests/oc_providers.rs::oc_vertex_enables_the_provider_when_a_project_resolves_from_env`
+- P resolves the advertised GOOGLE_VERTEX_PROJECT env for provider updates and SDKs — `tests/oc_providers.rs::oc_vertex_resolves_the_advertised_google_vertex_project_env`
+- P keeps configured project and location over env and uses global endpoint — `tests/oc_providers.rs::oc_vertex_keeps_configured_project_and_location_over_env_and_uses_global_endpoint`
+- P expands Vertex endpoint templates to the multi-region host for ${location} ×2 — `tests/oc_providers.rs::oc_vertex_expands_endpoint_templates_to_the_multi_region_host`
+- P expands endpoint templates on Vertex chat models — `tests/oc_providers.rs::oc_vertex_expands_endpoint_templates_on_vertex_chat_models`
+- P defaults location to global when only project is configured — `tests/oc_providers.rs::oc_vertex_defaults_location_to_global_when_only_project_is_configured`
+
+**`plugin/provider-kilo.test.ts`**
+
+- D is registered so legacy referer headers can be applied — deliberate: plugin.rs: provider plugins are compiled in
+- P applies legacy referer headers only to Kilo endpoints — `tests/oc_providers.rs::oc_kilo_applies_legacy_referer_headers_only_to_kilo_endpoints` (adapted: the headers name CodeSmith)
+- P uses the exact legacy Kilo header casing and set — `tests/oc_providers.rs::oc_kilo_applies_legacy_referer_headers_only_to_kilo_endpoints` (adapted: the headers name CodeSmith)
+- P uses endpoint package matching instead of a provider ID guard — `tests/oc_providers.rs::oc_kilo_uses_endpoint_matching_instead_of_a_provider_id_guard`
+
+**`plugin/provider-llmgateway.test.ts`**
+
+- D is registered so legacy referer headers can be applied — deliberate: plugin.rs: provider plugins are compiled in
+- P applies legacy referer headers only to enabled llmgateway — `tests/oc_providers.rs::oc_llmgateway_applies_legacy_referer_headers` (adapted: the headers name CodeSmith)
+- D does not apply legacy headers to a disabled llmgateway provider — deliberate: CodeSmith has no provider activation; a provider is used when a model names it
+
+**`plugin/provider-nvidia.test.ts`**
+
+- D is registered so legacy referer headers can be applied — deliberate: plugin.rs: provider plugins are compiled in
+- P applies NVIDIA tracking headers only to nvidia — `tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin` (adapted: the headers name CodeSmith)
+- P adds billing origin for custom NVIDIA endpoints — `tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin` (adapted: the headers name CodeSmith)
+- P preserves an explicit NVIDIA billing origin header — `tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin` (adapted: the headers name CodeSmith)
+
 **`plugin/provider-openai.test.ts`**
 
 - P selects WebSocket only from explicit policy — `tests/websocket_session.rs` (WebSocket only from explicit policy)
@@ -3700,6 +3718,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`plugin/provider-opencode.test.ts`**
 
 - D registers account and service account methods · uses a canonical custom server throughout device authorization · rejects malformed device verification URLs · uses the device token organization during authorization: ${orgID} ×4 · persists rotated credentials for ${scenario.orgID}${scenario.unavailable ? " with discovery unavailable" : ""} ×6 · rejects non-HTTP OpenCode servers · rejects non-string OpenCode servers · loads native V2 providers and models from the connected OpenCode server · builds Console reasoning variants after provider and model package normalization · refreshes hosted search with Console config, retains it on failure, and skips unchanged snapshots · refreshes past future-only policies while retaining config on malformed statements · reports Console SSO sign-in, keeps the last config, and clears once Console accepts again · explains rejected Console inference from at most one config check per 30 seconds · ignores 403 responses that are not a Console SSO error · releases unread Console config responses when the fetch completes · sends credentials saved with the retired console.opencode.ai host to the default Console · reports a rejected Console refresh token as signed out without removing the credential · activates when the Console accepts the config request but never answers · reports a Console session rejected before its token expires as signed out · loads and executes hosted web search from the connected OpenCode server · sends hosted search to the default Console when the credential names none · follows a hosted search redirect without sending credentials to another origin · follows a 302 hosted search redirect as a GET · stops following a hosted search redirect loop at the hop limit · downloads a skill through a redirect without sending credentials to another origin · keeps Console instructions and skills through an edit or a Console error, and clears them on 404 · applies Console policies while its instructions and skills fail, and keeps a list over a malformed one · requests Console instructions and skills together · keeps credentials on a same-origin skill redirect · closes a rejected hosted search response without waiting for its body · preserves native Console OpenAI variant bodies in inference requests · uses a public key and disables paid models without credentials · keeps free models without credentials · treats output-only cost as free without credentials · uses OPENCODE_API_KEY as credentials · uses configured provider env vars as credentials · uses configured apiKey as credentials · ignores non-opencode providers and models · merges the Console response as config, with its policy named after the organization · passes only providers, remote MCP servers, policies, and the web search selection, without credentials · keeps a newer Console config loadable despite values this version does not know · layers Console providers below user config, bound to the Console connection · applies Console providers before provider plugins tune their canonical provider · offers Console web search only when the Console selects it, and user config still wins · replaces the Console config on an account switch and clears it on sign-out · disabled free models with ${key ? "an API key" : "a Console login after startup"} ×2 — cloud: OpenCode Zen / hosted provider
+
+**`plugin/provider-openrouter.test.ts`**
+
+- D is registered so legacy OpenRouter behavior can be applied — deliberate: plugin.rs: provider plugins are compiled in
+- P applies legacy referer headers only to openrouter — `tests/oc_providers.rs::oc_openrouter_applies_referer_headers` (adapted: the headers name CodeSmith)
+
+**`plugin/provider-zenmux.test.ts`**
+
+- D is registered so legacy referer headers can be applied — deliberate: plugin.rs: provider plugins are compiled in
+- P applies the exact legacy Zenmux headers — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
+- P merges legacy Zenmux headers with existing headers — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
+- P lets configured Zenmux legacy headers override defaults — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
+- D guards legacy Zenmux headers to the exact zenmux provider id — deliberate: CodeSmith matches ZenMux by its endpoint, as it does Kilo, LLM Gateway and NVIDIA, not by provider id
 
 **`provider.test.ts`**
 

@@ -229,3 +229,80 @@
 441 :: ported :: tests/oc_watch.rs::oc_location_watcher_uses_the_policy_changed_while_target_discovery_was_suspended :: adapted: discovery is suspended through an injected discover function
 499 :: ported :: tests/oc_watch.rs::oc_location_watcher_does_not_start_before_configured_policy_is_ready :: adapted: the policy is seeded by the activation future
 590 :: ported :: tests/oc_watch.rs::oc_location_watcher_native_publishes_git_head_events :: with the symlinked .git, .hg/branch, exact-target and missing-directory tests beside it; adapted: waits for the change, as FSEvents may report a recent creation in the same event
+@plugin/provider-amazon-bedrock.test.ts
+48 :: ported :: tests/oc_providers.rs::oc_bedrock_moves_endpoint_setting_to_base_url
+60 :: ported :: tests/oc_providers.rs::oc_bedrock_gives_the_package_the_profile_of_a_stored_aws_profile_login :: adapted: `codesmith auth login amazon-bedrock --profile` saves it
+81 :: ported :: tests/oc_providers.rs::oc_bedrock_keeps_an_explicit_base_url_over_endpoint
+94 :: ported :: tests/oc_providers.rs::oc_bedrock_only_treats_the_bearer_token_env_var_as_a_key_credential
+115 :: ported :: tests/oc_providers.rs::oc_bedrock_leaves_activation_on_auto_without_ambient_aws_configuration :: adapted: activation is whether `codesmith models` lists the provider
+126 :: ported :: tests/oc_providers.rs::oc_bedrock_enables_the_provider_when_an_ambient_variable_is_set
+137 :: ported :: tests/oc_providers.rs::oc_bedrock_enables_the_provider_when_a_profile_is_configured
+149 :: design :: deliberate :: CodeSmith has no provider activation to override; a provider is used when a model names it
+165 :: ported :: tests/oc_providers.rs::oc_bedrock_fills_region_from_aws_region_then_aws_default_region_without_overriding_config
+186 :: ported :: tests/oc_providers.rs::oc_bedrock_falls_back_to_aws_default_region_then_us_east_1
+203 :: ported :: tests/oc_providers.rs::oc_bedrock_applies_to_mantle_and_native_bedrock_packages
+@model-resolver.test.ts
+175 :: ported :: tests/oc_providers.rs::oc_resolver_maps_bedrock_mantle_chat_and_responses_packages :: adapted: by the catalog's native Mantle packages
+204 :: ported :: tests/oc_providers.rs::oc_resolver_resolves_bedrock_mantle_catalog_endpoints_from_the_configured_region
+226 :: ported :: tests/oc_providers.rs::oc_resolver_fills_mantle_catalog_urls_from_the_provider_region
+244 :: ported :: tests/oc_providers.rs::oc_resolver_prefers_the_configured_mantle_region_over_the_environment
+1199 :: ported :: tests/oc_providers.rs::oc_resolver_routes_vertex_anthropic_catalog_models_through_native_messages
+@plugin/provider-google-vertex.test.ts
+26 :: ported :: tests/oc_providers.rs::oc_vertex_ignores_openai_compatible_providers_that_are_not_google_vertex
+42 :: ported :: tests/oc_providers.rs::oc_vertex_resolves_project_and_location_from_env_using_legacy_precedence
+80 :: ported :: tests/oc_providers.rs::oc_vertex_enables_the_provider_when_a_project_resolves_and_leaves_it_automatic_otherwise
+103 :: ported :: tests/oc_providers.rs::oc_vertex_enables_the_provider_when_a_project_resolves_from_env
+126 :: ported :: tests/oc_providers.rs::oc_vertex_resolves_the_advertised_google_vertex_project_env
+165 :: ported :: tests/oc_providers.rs::oc_vertex_keeps_configured_project_and_location_over_env_and_uses_global_endpoint
+206 :: ported :: tests/oc_providers.rs::oc_vertex_expands_endpoint_templates_to_the_multi_region_host
+232 :: ported :: tests/oc_providers.rs::oc_vertex_expands_endpoint_templates_on_vertex_chat_models
+262 :: ported :: tests/oc_providers.rs::oc_vertex_defaults_location_to_global_when_only_project_is_configured
+@plugin/provider-github-copilot.test.ts
+73 :: ported :: tests/oc_providers.rs::oc_copilot_prefers_the_account_specific_copilot_api_endpoint
+82 :: ported :: tests/oc_providers.rs::oc_copilot_rejects_accounts_without_copilot_chat_access
+90 :: ported :: tests/oc_providers.rs::oc_copilot_only_blocks_on_an_explicit_entitlement_denial
+142 :: feature :: Provider Plugins :: GitHub Copilot live model list (CodeSmith routes by the models.dev catalog)
+164 :: ported :: tests/oc_providers.rs::oc_copilot_refreshes_the_account_api_endpoint_instead_of_keeping_the_one_stored_at_login :: adapted: looked up once per run
+183 :: ported :: tests/oc_providers.rs::oc_copilot_keeps_the_stored_endpoint_when_the_account_lookup_fails
+224 :: ported :: tests/oc_providers.rs::oc_copilot_serves_an_enterprise_login_from_its_own_host_until_the_first_model_list_arrives
+233 :: ported :: tests/oc_providers.rs::oc_copilot_serves_a_login_from_the_endpoint_saved_with_it_until_the_first_model_list_arrives
+241 :: ported :: tests/oc_providers.rs::oc_copilot_registers_github_copilot_device_oauth :: adapted: the OAuth client id is deliberately not OpenCode's; the user supplies their own app (--client-id, settings.clientId, CODESMITH_COPILOT_CLIENT_ID)
+254 :: ported :: tests/oc_providers.rs::oc_copilot_removes_the_generic_key_method_and_reads_copilot_github_token_instead_of_github_token
+280 :: ported :: tests/oc_providers.rs::oc_copilot_adds_copilot_authentication_and_request_metadata_headers_to_openai_requests
+301 :: ported :: tests/oc_providers.rs::oc_copilot_adds_copilot_authentication_to_native_anthropic_requests
+330,338,351,363 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind
+376 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind :: the kind comes from the step, never the agent name
+384 :: ported :: tests/oc_providers.rs::oc_copilot_ignores_other_providers_model_requests
+413,446,512,522 :: feature :: Provider Plugins :: GitHub Copilot free utility-model titles
+532 :: ported :: tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests
+557 :: ported :: tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests :: the Chat half
+583 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind :: a declared agent step stays agent-initiated
+597 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind :: agent steps
+605 :: ported :: tests/oc_providers.rs::oc_copilot_routes_models_dev_fallback_models_to_native_copilot_apis
+662 :: feature :: Provider Plugins :: GitHub Copilot Auto model router
+796 :: ported :: tests/oc_providers.rs::oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection :: adapted: hidden from `codesmith models`
+813 :: ported :: tests/oc_providers.rs::oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection :: only Copilot's list hides it
+@plugin/provider-cerebras.test.ts
+19 :: ported :: tests/oc_providers.rs::oc_cerebras_applies_the_legacy_integration_header :: adapted: the header names CodeSmith
+36 :: ported :: tests/oc_providers.rs::oc_cerebras_ignores_non_cerebras_providers
+45 :: ported :: tests/oc_providers.rs::oc_cerebras_applies_the_integration_header_to_custom_native_cerebras_providers
+@plugin/provider-kilo.test.ts
+20 :: design :: deliberate :: plugin.rs: provider plugins are compiled in
+24,45 :: ported :: tests/oc_providers.rs::oc_kilo_applies_legacy_referer_headers_only_to_kilo_endpoints :: adapted: the headers name CodeSmith
+66 :: ported :: tests/oc_providers.rs::oc_kilo_uses_endpoint_matching_instead_of_a_provider_id_guard
+@plugin/provider-llmgateway.test.ts
+21 :: design :: deliberate :: plugin.rs: provider plugins are compiled in
+25 :: ported :: tests/oc_providers.rs::oc_llmgateway_applies_legacy_referer_headers :: adapted: the headers name CodeSmith
+52 :: design :: deliberate :: CodeSmith has no provider activation; a provider is used when a model names it
+@plugin/provider-nvidia.test.ts
+20 :: design :: deliberate :: plugin.rs: provider plugins are compiled in
+24,46,65 :: ported :: tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin :: adapted: the headers name CodeSmith
+@plugin/provider-zenmux.test.ts
+25 :: design :: deliberate :: plugin.rs: provider plugins are compiled in
+29,45,65 :: ported :: tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults :: adapted: the headers name CodeSmith
+84 :: design :: deliberate :: CodeSmith matches ZenMux by its endpoint, as it does Kilo, LLM Gateway and NVIDIA, not by provider id
+@plugin/provider-openrouter.test.ts
+21 :: design :: deliberate :: plugin.rs: provider plugins are compiled in
+25 :: ported :: tests/oc_providers.rs::oc_openrouter_applies_referer_headers :: adapted: the headers name CodeSmith
+@plugin/provider-databricks.test.ts
+30,38 :: ported :: tests/oc_providers.rs::oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme
