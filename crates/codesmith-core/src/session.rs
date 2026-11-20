@@ -2,6 +2,18 @@
 //! calls, feed the results back, repeat until the model stops calling tools.
 //! Every message is saved to the session store as it happens, history is
 //! compacted near the context limit, and new sessions get a title.
+//!
+//! Pinned to OpenCode's session runner by `tests/runner_parity.rs` (ports of
+//! `session-runner*.test.ts`, `session-revert.test.ts` and the subagent
+//! tests); the loop's texts and rules live in `runner.rs` and `retry.rs`.
+//! Deliberate differences, beyond those listed there:
+//! - Subagents run to completion inside the tool call (OpenCode runs them in
+//!   the background and reports later), so there are no steers, queues,
+//!   background-subagent reports or restart recovery.
+//! - A declined permission or dismissed question ends the turn normally
+//!   (`stopped()` says why) instead of interrupting it; calls after the
+//!   declined one in the same response are not run.
+//! - Retries never consult `retry-after`; see `retry.rs`.
 
 use crate::agent::{self, Agent};
 use crate::compaction;
@@ -12,13 +24,14 @@ use crate::store::{self, Info, Record, Store};
 use crate::title;
 use crate::tool::todo::Todo;
 use crate::tool::{self, Ctx, Tool};
-use crate::{instructions, paths, prompt};
+use crate::{instructions, paths, prompt, retry, runner};
 use anyhow::{anyhow, Result};
 use codesmith_ai::{Event, Message, Part, Request, Role, Usage};
 use futures_util::StreamExt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,10 +70,13 @@ impl Sink for ChildSink<'_> {
     }
 }
 
-/// How deep subagents may nest.
-pub const MAX_DEPTH: u32 = 3;
+/// How deep subagents may nest unless `subagent_depth` says otherwise: a
+/// subagent cannot start subagents of its own (OpenCode's default).
+pub const MAX_DEPTH: u32 = 1;
 
-pub const MAX_RETRIES: u32 = 4;
+pub const MAX_RETRIES: u32 = retry::MAX_RETRIES;
+/// Steps for an agent without a `steps` setting; the last one is forced to
+/// answer in text.
 pub const DEFAULT_MAX_STEPS: u32 = 200;
 const TITLE_MAX_TOKENS: u32 = 256;
 const SUMMARY_SYSTEM: &str = "You are a helpful assistant that writes concise, structured summaries of coding sessions so another agent can resume the work.";
@@ -115,6 +131,45 @@ pub struct Session {
     mcp: Arc<crate::mcp::Mcp>,
     format: Option<Arc<crate::format::Formatter>>,
     lsp: Option<Arc<crate::lsp::Lsp>>,
+    turn: Turn,
+}
+
+/// Per-session state of the running turn, kept apart from the rest.
+struct Turn {
+    /// Who answers permission requests, unwrapped (children get this one).
+    asker: Arc<dyn Asker>,
+    /// Set when the user declines a permission request without feedback.
+    declined: Arc<AtomicBool>,
+    /// Why the current turn stopped early, if it did.
+    stopped: Option<&'static str>,
+    /// Tool names offered to the model in the latest request.
+    offered: Vec<String>,
+    /// Scales retry waits (tests shorten them).
+    retry_scale: f64,
+}
+
+/// Passes permission questions through and notes a plain decline, which ends
+/// the turn (OpenCode interrupts the run on one).
+struct DeclineWatch {
+    inner: Arc<dyn Asker>,
+    declined: Arc<AtomicBool>,
+}
+
+impl Asker for DeclineWatch {
+    fn ask(&self, req: &crate::permission::Request) -> crate::permission::Reply {
+        let reply = self.inner.ask(req);
+        if matches!(reply, crate::permission::Reply::Reject(None)) {
+            self.declined.store(true, Ordering::SeqCst);
+        }
+        reply
+    }
+}
+
+fn watch(asker: Arc<dyn Asker>, declined: &Arc<AtomicBool>) -> Arc<dyn Asker> {
+    Arc::new(DeclineWatch {
+        inner: asker,
+        declined: declined.clone(),
+    })
 }
 
 impl Session {
@@ -219,7 +274,8 @@ impl Session {
             .clone()
             .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
             .unwrap_or_else(|| "/bin/sh".into());
-        let gate = Gate::new(agent.permissions.clone(), asker);
+        let declined = Arc::new(AtomicBool::new(false));
+        let gate = Gate::new(agent.permissions.clone(), watch(asker.clone(), &declined));
         let (id, messages, seqs, usage, title, stored) = match resumed {
             Some((info, hist)) => {
                 let (seqs, messages): (Vec<_>, Vec<_>) = hist.into_iter().unzip();
@@ -281,6 +337,13 @@ impl Session {
                 f.enabled().then(|| Arc::new(f))
             },
             lsp,
+            turn: Turn {
+                asker,
+                declined,
+                stopped: None,
+                offered: Vec::new(),
+                retry_scale: 1.0,
+            },
         })
     }
 
@@ -296,7 +359,20 @@ impl Session {
 
     /// Replace who answers this session's permission requests.
     pub fn set_asker(&mut self, asker: Arc<dyn crate::permission::Asker>) {
-        self.gate.set_asker(asker);
+        self.gate
+            .set_asker(watch(asker.clone(), &self.turn.declined));
+        self.turn.asker = asker;
+    }
+
+    /// Scale the waits between retried model calls (tests use a tiny factor).
+    pub fn set_retry_scale(&mut self, scale: f64) {
+        self.turn.retry_scale = scale;
+    }
+
+    /// Why the last turn stopped before the model finished, if it did: the
+    /// user declined a tool call or dismissed a question.
+    pub fn stopped(&self) -> Option<&'static str> {
+        self.turn.stopped
     }
 
     /// Record a command and its result as a user/assistant exchange (used by
@@ -397,7 +473,7 @@ impl Session {
         Request {
             model: self.model.model_id.clone(),
             system,
-            messages: self.messages.clone(),
+            messages: runner::model_messages(&self.messages),
             tools: self
                 .tools
                 .iter()
@@ -463,6 +539,7 @@ impl Session {
 
     async fn prompt_inner(&mut self, text: &str, sink: &mut dyn Sink) -> Result<()> {
         // Subagents share the parent's turn snapshot.
+        let mut snapshots = None;
         if self.parent.is_none()
             && self.store.is_some()
             && self.loaded.config.snapshots.unwrap_or(true)
@@ -471,6 +548,7 @@ impl Session {
                 match tokio::task::block_in_place(|| snaps.capture()) {
                     Ok(tree) => {
                         self.record(&Record::Snapshot { tree })?;
+                        snapshots = Some(snaps);
                     }
                     Err(e) => sink.notice(&format!(
                         "snapshot skipped (undo unavailable for this turn): {e:#}"
@@ -481,6 +559,11 @@ impl Session {
         if self.title.is_none() && self.title_task.is_none() {
             self.title_task = Some(self.spawn_title(text));
         }
+        // A stopped turn can leave calls without results; providers reject those.
+        if let Some(results) = runner::unsettled(&self.messages) {
+            self.push(results)?;
+        }
+        self.turn.stopped = None;
         self.push(Message::user(text))?;
         let plugins = crate::plugin::active();
         plugins.event(
@@ -491,6 +574,12 @@ impl Session {
             },
         );
         let result = self.run_steps(sink).await;
+        // The end tree tells undo which files this turn changed.
+        if let Some(snaps) = snapshots {
+            if let Ok(tree) = tokio::task::block_in_place(|| snaps.capture()) {
+                self.record(&Record::TurnEnd { tree })?;
+            }
+        }
         let err = result.as_ref().err().map(|e| format!("{e:#}"));
         plugins.event(
             &self.loaded.config,
@@ -509,7 +598,7 @@ impl Session {
     }
 
     async fn run_steps(&mut self, sink: &mut dyn Sink) -> Result<()> {
-        let max_steps = self.agent.steps.unwrap_or(DEFAULT_MAX_STEPS);
+        let max_steps = self.agent.steps.unwrap_or(DEFAULT_MAX_STEPS).max(1);
         let mut overflow_compacted = false;
         let mut steps = 0;
         // At most one compaction between model steps, so a prompt that stays
@@ -517,13 +606,17 @@ impl Session {
         let mut compacted_this_step = false;
         let mut repeats = RepeatGuard::default();
         let mut continued = 0u32;
-        while steps < max_steps {
+        // Responses in a row cut off by the output token limit.
+        let mut truncated = 0u32;
+        loop {
             self.report_finished_jobs()?;
             if !compacted_this_step && self.due_for_compaction() {
                 self.compact(sink).await?;
                 compacted_this_step = true;
             }
-            let (parts, reason, usage) = match self.step(sink).await {
+            // The last allowed step must answer in text (OpenCode's MAX_STEPS).
+            let final_step = steps + 1 >= max_steps;
+            let (parts, reason, usage) = match self.step(sink, final_step).await {
                 Ok(r) => r,
                 Err(e)
                     if !overflow_compacted
@@ -554,6 +647,20 @@ impl Session {
                     usage: &usage,
                 },
             );
+            if runner::is_content_filter(&reason) {
+                // Keep what was shown, but no calls: the response was blocked.
+                let kept: Vec<Part> = parts
+                    .into_iter()
+                    .filter(|p| !matches!(p, Part::ToolCall { .. }))
+                    .collect();
+                self.push(Message {
+                    role: Role::Assistant,
+                    parts: kept,
+                })?;
+                return Err(anyhow!(runner::CONTENT_FILTERED));
+            }
+            let length = runner::is_length(&reason);
+            truncated = if length { truncated + 1 } else { 0 };
             let calls: Vec<(String, String, serde_json::Value)> = parts
                 .iter()
                 .filter_map(|p| match p {
@@ -567,7 +674,32 @@ impl Session {
                 role: Role::Assistant,
                 parts,
             })?;
+            if truncated > runner::OUTPUT_LIMIT_CONTINUATIONS {
+                if !calls.is_empty() {
+                    self.push(Message {
+                        role: Role::User,
+                        parts: calls
+                            .iter()
+                            .map(|(id, name, _)| Part::ToolResult {
+                                id: id.clone(),
+                                name: name.clone(),
+                                content: runner::TOOLS_INTERRUPTED.into(),
+                                is_error: true,
+                            })
+                            .collect(),
+                    })?;
+                }
+                return Err(anyhow!(runner::OUTPUT_LIMIT_EXHAUSTED));
+            }
             if calls.is_empty() {
+                if final_step {
+                    return Ok(());
+                }
+                if length {
+                    // Cut off mid-answer: ask for the rest in smaller pieces.
+                    self.push(Message::user(runner::CONTINUE_AFTER_OUTPUT_LIMIT))?;
+                    continue;
+                }
                 if self.jobs.running() == 0 && self.jobs_pending() == 0 {
                     let answer = self.last_answer();
                     let idle = crate::plugin::Idle {
@@ -596,6 +728,16 @@ impl Session {
             let mut results = Vec::new();
             let plugins = crate::plugin::active();
             for (id, name, input) in calls {
+                if self.turn.stopped.is_some() {
+                    // The user stopped the turn: leave the rest unrun.
+                    results.push(Part::ToolResult {
+                        id,
+                        name,
+                        content: runner::TOOLS_INTERRUPTED.into(),
+                        is_error: true,
+                    });
+                    continue;
+                }
                 sink.tool_start(&id, &name, &input);
                 plugins.event(
                     &self.loaded.config,
@@ -622,8 +764,15 @@ impl Session {
                         RepeatGuard::ABORT
                     ));
                 }
+                self.turn.declined.store(false, Ordering::SeqCst);
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
+                    _ if final_step => (runner::TOOLS_DISABLED.into(), true),
+                    _ if !self.turn.offered.contains(&name) => (runner::unavailable(&name), true),
+                    _ if runner::invalid_json(&input).is_some() => (
+                        runner::invalid_input(runner::invalid_json(&input).unwrap_or(""), length),
+                        true,
+                    ),
                     _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
                     _ if refused.is_some() => (refused.clone().unwrap_or_default(), true),
                     _ if name == crate::codemode::TOOL && !self.code_entries().is_empty() => {
@@ -663,6 +812,11 @@ impl Session {
                     }
                 };
                 let (mut content, mut is_error) = (content, is_error);
+                if self.turn.declined.swap(false, Ordering::SeqCst) {
+                    content = runner::DECLINED.into();
+                    is_error = true;
+                    self.turn.stopped = Some("you declined a tool call");
+                }
                 plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
                 self.record(&Record::Tool {
                     name: name.clone(),
@@ -691,10 +845,14 @@ impl Session {
                 role: Role::User,
                 parts: results,
             })?;
+            if let Some(why) = self.turn.stopped {
+                sink.notice(&format!("stopped: {why}"));
+                return Ok(());
+            }
+            if final_step {
+                return Ok(());
+            }
         }
-        Err(anyhow!(
-            "stopped after {max_steps} steps without a final answer"
-        ))
     }
 
     fn jobs_pending(&self) -> usize {
@@ -1102,7 +1260,7 @@ impl Session {
         }
     }
 
-    fn run_question(&self, input: &serde_json::Value) -> (String, bool) {
+    fn run_question(&mut self, input: &serde_json::Value) -> (String, bool) {
         let Some(q) = self.questioner.clone() else {
             return ("No user is available to answer questions in this session. Make a reasonable assumption, state it, and continue.".into(), true);
         };
@@ -1115,7 +1273,11 @@ impl Session {
         };
         match tokio::task::block_in_place(|| q.ask(&prompts)) {
             Some(answers) => (crate::question::to_model_content(&prompts, &answers), false),
-            None => ("The user dismissed these questions without answering. Continue with your best judgement, or end your turn and wait for the user.".into(), true),
+            None => {
+                // Dismissing a question stops the turn, as a decline does.
+                self.turn.stopped = Some("you dismissed the question");
+                (runner::QUESTION_DISMISSED.into(), true)
+            }
         }
     }
 
@@ -1177,10 +1339,9 @@ impl Session {
                 names.join(", ")
             ));
         }
-        if self.depth + 1 >= MAX_DEPTH {
-            return Err(format!(
-                "Subagents can nest at most {MAX_DEPTH} levels deep."
-            ));
+        let limit = self.loaded.config.subagent_depth.unwrap_or(MAX_DEPTH);
+        if self.depth >= limit {
+            return Err(format!("Subagent depth limit reached ({limit}). Increase \"subagent_depth\" to allow nested subagents."));
         }
         self.allowed(
             "subagent",
@@ -1191,12 +1352,29 @@ impl Session {
             Some(p) => Some(Store::open(&p).map_err(|e| format!("{e:#}"))?),
             None => None,
         };
+        // Only this session's own children can be continued.
+        let resume = s("sessionID");
+        if let Some(id) = &resume {
+            let info = store
+                .as_ref()
+                .and_then(|st| st.get(id).ok().flatten())
+                .ok_or_else(|| format!("Subagent session not found: {id}"))?;
+            if info.parent_id.as_deref() != Some(self.id.as_str()) {
+                return Err(format!(
+                    "Session {id} is not a child of the current session"
+                ));
+            }
+        }
+        let task = match resume {
+            Some(_) => task,
+            None => format!("{}\n{task}", tool::subagent::PREAMBLE),
+        };
         let opts = Options {
             questioner: None,
             mcp: Some(self.mcp.clone()),
             agent: Some(agent_id.clone()),
             model: s("model"),
-            resume: s("sessionID"),
+            resume,
             title: Some(label.clone()),
             parent: Some(self.id.clone()),
         };
@@ -1204,7 +1382,7 @@ impl Session {
             &self.loaded,
             self.cwd.clone(),
             opts,
-            self.gate.asker(),
+            self.turn.asker.clone(),
             store,
         )
         .map_err(|e| format!("{e:#}"))?;
@@ -1221,28 +1399,36 @@ impl Session {
             .iter()
             .rev()
             .find(|m| {
-                m.role == Role::Assistant && m.parts.iter().any(|p| matches!(p, Part::Text(_)))
+                m.role == Role::Assistant
+                    && m.parts
+                        .iter()
+                        .any(|p| matches!(p, Part::Text(t) if !t.is_empty()))
             })
             .map(|m| {
                 m.parts
                     .iter()
-                    .filter_map(|p| {
-                        if let Part::Text(t) = p {
-                            Some(t.as_str())
-                        } else {
-                            None
-                        }
+                    .filter_map(|p| match p {
+                        Part::Text(t) if !t.is_empty() => Some(t.as_str()),
+                        _ => None,
                     })
                     .collect::<Vec<_>>()
-                    .join("")
+                    .join("\n\n")
             })
             .unwrap_or_default();
+        use tool::subagent::{report, State};
         match outcome {
-            Ok(()) => Ok(tool::subagent::result(&child.id, &agent_id, &answer)),
-            Err(e) => Err(format!(
-                "The {agent_id} subagent failed (sessionID: {}): {e:#}",
-                child.id
+            Ok(()) if child.stopped().is_some() => Err(report(
+                &child.id,
+                State::Cancelled,
+                &label,
+                if answer.is_empty() {
+                    "Subagent cancelled"
+                } else {
+                    &answer
+                },
             )),
+            Ok(()) => Ok(report(&child.id, State::Completed, &label, &answer)),
+            Err(e) => Err(report(&child.id, State::Error, &label, &format!("{e:#}"))),
         }
     }
 
@@ -1341,10 +1527,18 @@ impl Session {
         let msg = vec![Message::user(title::request(first))];
         let fallback = title::fallback(first);
         tokio::spawn(async move {
-            let reply = complete(&client, &model, title::SYSTEM, &msg, Some(TITLE_MAX_TOKENS))
-                .await
-                .ok()
-                .map(|r| r.0);
+            let policy = retry::Policy::one_shot();
+            let reply = complete_with(
+                &client,
+                &model,
+                title::SYSTEM,
+                &msg,
+                Some(TITLE_MAX_TOKENS),
+                policy,
+            )
+            .await
+            .ok()
+            .map(|r| r.0);
             Some(reply.and_then(|r| title::clean(&r)).unwrap_or(fallback))
         })
     }
@@ -1365,22 +1559,35 @@ impl Session {
         }
     }
 
-    /// One model call with retries. A failure after output has streamed is not
-    /// retried, since the user has already seen part of the answer.
-    async fn step(&mut self, sink: &mut dyn Sink) -> Result<(Vec<Part>, String, Usage)> {
+    /// One model call with retries (OpenCode's schedule, see `retry`). A
+    /// response that fails part way is retried from the prompt: its partial
+    /// output is dropped, and no tool from it has run yet. On the final step
+    /// the model is told to answer in text and tool calls are switched off.
+    async fn step(
+        &mut self,
+        sink: &mut dyn Sink,
+        final_step: bool,
+    ) -> Result<(Vec<Part>, String, Usage)> {
         // Pick up tool and prompt lists a server announced as changed.
         self.mcp.refresh().await;
-        let req = self.request();
+        let mut req = self.request();
+        self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
+        if final_step {
+            req.messages.push(Message::user(runner::MAX_STEPS_PROMPT));
+            let (key, value) = runner::tool_choice_none(self.model.provider.protocol);
+            req.body.entry(key).or_insert(value);
+        }
+        let mut policy = retry::Policy::default();
         let mut attempt = 0;
         loop {
             match self.attempt(&req, sink).await {
                 Ok(r) => return Ok(r),
-                Err((e, streamed)) => {
-                    if streamed || !e.retryable() || attempt >= MAX_RETRIES {
+                Err((e, _streamed)) => {
+                    let Some(wait) = policy.next(&e, std::time::Instant::now()) else {
                         return Err(anyhow!("{e}"));
-                    }
+                    };
                     attempt += 1;
-                    let wait = backoff(attempt);
+                    let wait = wait.mul_f64(self.turn.retry_scale);
                     sink.retry(attempt, &e.to_string(), wait);
                     tokio::time::sleep(wait).await;
                 }
@@ -1403,7 +1610,7 @@ impl Session {
         let mut reasoning = String::new();
         let mut calls = Vec::new();
         let mut streamed = false;
-        let mut finish = ("stop".to_string(), Usage::default());
+        let mut finish = None;
         while let Some(ev) = stream.next().await {
             match ev.map_err(|e| (e, streamed))? {
                 Event::TextDelta(d) => {
@@ -1419,9 +1626,18 @@ impl Session {
                 Event::ToolCall { id, name, input } => {
                     calls.push(Part::ToolCall { id, name, input })
                 }
-                Event::Finish { reason, usage } => finish = (reason, usage),
+                Event::Finish { reason, usage } => finish = Some((reason, usage)),
             }
         }
+        // A stream that ends without finishing was cut off: retry it.
+        let Some((reason, usage)) = finish else {
+            return Err((
+                codesmith_ai::Error::Transport(
+                    "the response stream ended before the model finished".into(),
+                ),
+                streamed,
+            ));
+        };
         let mut parts = Vec::new();
         if !reasoning.is_empty() {
             parts.push(Part::Reasoning(reasoning));
@@ -1430,7 +1646,7 @@ impl Session {
             parts.push(Part::Text(text));
         }
         parts.extend(calls);
-        Ok((parts, finish.0, finish.1))
+        Ok((parts, reason, usage))
     }
 }
 
@@ -1442,6 +1658,25 @@ pub async fn complete(
     messages: &[Message],
     max_tokens: Option<u32>,
 ) -> Result<(String, Usage)> {
+    complete_with(
+        client,
+        model,
+        system,
+        messages,
+        max_tokens,
+        retry::Policy::default(),
+    )
+    .await
+}
+
+async fn complete_with(
+    client: &reqwest::Client,
+    model: &ModelRef,
+    system: &str,
+    messages: &[Message],
+    max_tokens: Option<u32>,
+    mut policy: retry::Policy,
+) -> Result<(String, Usage)> {
     let req = Request {
         model: model.model_id.clone(),
         system: system.to_string(),
@@ -1451,7 +1686,6 @@ pub async fn complete(
         temperature: model.temperature,
         body: model.body.clone(),
     };
-    let mut attempt = 0;
     loop {
         let mut out = String::new();
         let mut usage = Usage::default();
@@ -1469,11 +1703,10 @@ pub async fn complete(
         .await;
         match res {
             Ok(()) => return Ok((out, usage)),
-            Err(e) if e.retryable() && attempt < MAX_RETRIES => {
-                attempt += 1;
-                tokio::time::sleep(backoff(attempt)).await;
-            }
-            Err(e) => return Err(anyhow!("{e}")),
+            Err(e) => match policy.next(&e, std::time::Instant::now()) {
+                Some(wait) => tokio::time::sleep(wait).await,
+                None => return Err(anyhow!("{e}")),
+            },
         }
     }
 }
@@ -1528,8 +1761,9 @@ pub fn undo(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Vec<Change
     let Some((from_seq, tree)) = store::undo_target(&entries) else {
         return Ok(None);
     };
+    let paths = turn_paths(snaps, &tree, &store::turn_ends(&entries, from_seq, None))?;
     let after = snaps.capture()?;
-    let changes = snaps.restore(&tree)?;
+    let changes = snaps.restore_only(&tree, paths.as_deref())?;
     db.append(id, &Record::Revert { from_seq, after })?;
     Ok(Some(changes))
 }
@@ -1540,9 +1774,40 @@ pub fn redo(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Vec<Change
     let Some((revert_seq, after)) = store::redo_target(&entries) else {
         return Ok(None);
     };
-    let changes = snaps.restore(&after)?;
+    let paths = entries
+        .iter()
+        .find_map(|e| match (&e.record, e.seq == revert_seq) {
+            (Record::Revert { from_seq, .. }, true) => Some(*from_seq),
+            _ => None,
+        })
+        .and_then(|from_seq| {
+            let start = entries.iter().find_map(|e| match &e.record {
+                Record::Snapshot { tree } if e.seq == from_seq => Some(tree.clone()),
+                _ => None,
+            })?;
+            let ends = store::turn_ends(&entries, from_seq, Some(revert_seq));
+            turn_paths(snaps, &start, &ends).ok().flatten()
+        });
+    let changes = snaps.restore_only(&after, paths.as_deref())?;
     db.append(id, &Record::Redo { revert_seq })?;
     Ok(Some(changes))
+}
+
+/// The paths changed between a turn's start tree and its end trees, or
+/// `None` when no end was recorded (then everything since is restored).
+fn turn_paths(snaps: &Snapshots, start: &str, ends: &[String]) -> Result<Option<Vec<String>>> {
+    if ends.is_empty() {
+        return Ok(None);
+    }
+    let mut paths = Vec::new();
+    for end in ends {
+        for c in snaps.changes(start, end)? {
+            if !paths.contains(&c.path) {
+                paths.push(c.path);
+            }
+        }
+    }
+    Ok(Some(paths))
 }
 
 /// The unified diff of files changed since the newest visible turn began.
@@ -1562,14 +1827,6 @@ fn add(total: &mut Usage, u: &Usage) {
     total.cache_write += u.cache_write;
 }
 
-/// Exponential backoff with jitter: about 1, 2, 4, 8 seconds.
-pub fn backoff(attempt: u32) -> Duration {
-    use rand::Rng;
-    let base = 1000u64 << (attempt.saturating_sub(1)).min(5);
-    let jitter = rand::thread_rng().gen_range(0..=base / 4);
-    Duration::from_millis(base + jitter)
-}
-
 fn new_id() -> String {
     use rand::Rng;
     let t = std::time::SystemTime::now()
@@ -1585,14 +1842,6 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn backoff_grows_with_jitter() {
-        for (a, lo) in [(1, 1000), (2, 2000), (3, 4000), (4, 8000)] {
-            let d = backoff(a).as_millis() as u64;
-            assert!(d >= lo && d <= lo + lo / 4, "attempt {a}: {d}");
-        }
-    }
 
     #[test]
     fn ids_look_right() {

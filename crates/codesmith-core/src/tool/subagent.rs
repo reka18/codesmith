@@ -1,8 +1,13 @@
 //! `subagent`: delegate a task to an agent in a child session. The session
 //! runs the child; this module defines the schema and result text.
 //!
-//! OpenCode runs subagents in the background and notifies the parent; here
-//! the call runs the child to completion and returns its final answer.
+//! OpenCode runs subagents in the background and delivers the `<subagent>`
+//! report as a later message; here the call runs the child to completion and
+//! the same report is the tool's result (an error result when the child
+//! failed or was cancelled). There is no "background work still running"
+//! list: a child waits for its own background commands before it finishes.
+//! Unknown agents get a list of the available ones, where OpenCode says only
+//! "Unknown agent".
 
 use serde_json::{json, Value};
 
@@ -37,12 +42,43 @@ pub fn spec(agents: &[(String, String)]) -> (String, Value) {
     )
 }
 
-/// What the parent sees when a subagent finishes.
-pub fn result(session_id: &str, agent: &str, answer: &str) -> String {
-    let answer = answer.trim();
+/// The first line of a new child session's prompt.
+pub const PREAMBLE: &str = "You are a subagent spawned by another session.";
+
+/// What a subagent's report says when its last message has no text.
+pub const NO_TEXT: &str = "Subagent completed without a text response.";
+
+/// How a subagent's run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Completed,
+    Error,
+    /// The user stopped it (declined a tool call or dismissed a question).
+    Cancelled,
+}
+
+impl State {
+    fn as_str(self) -> &'static str {
+        match self {
+            State::Completed => "completed",
+            State::Error => "error",
+            State::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// What the parent sees when a subagent finishes: OpenCode's `<subagent>`
+/// report, with the child's final text, or the failure.
+pub fn report(session_id: &str, state: State, description: &str, body: &str) -> String {
+    let body = body.trim();
+    let body = if body.is_empty() && state == State::Completed {
+        NO_TEXT
+    } else {
+        body
+    };
     format!(
-        "<subagent sessionID=\"{session_id}\" agent=\"{agent}\" state=\"completed\">\n{}\n</subagent>",
-        if answer.is_empty() { "(The subagent finished without a final message.)" } else { answer }
+        "<subagent sessionID=\"{session_id}\" state=\"{}\" description=\"{description}\">\n{body}\n</subagent>",
+        state.as_str()
     )
 }
 
@@ -59,9 +95,19 @@ mod tests {
         assert!(!d.contains("Available agents"));
     }
 
+    // subagent-completion.ts `deliver`: the report envelope.
     #[test]
-    fn results() {
-        assert_eq!(result("ses_1", "explore", " found it \n"), "<subagent sessionID=\"ses_1\" agent=\"explore\" state=\"completed\">\nfound it\n</subagent>");
-        assert!(result("s", "a", "").contains("without a final message"));
+    fn oc_subagent_report_format() {
+        assert_eq!(
+            report("ses_1", State::Completed, "Find it", " found it \n"),
+            "<subagent sessionID=\"ses_1\" state=\"completed\" description=\"Find it\">\nfound it\n</subagent>"
+        );
+        assert!(report("s", State::Completed, "d", "").contains(NO_TEXT));
+        assert_eq!(
+            report("s", State::Error, "d", "Disconnected"),
+            "<subagent sessionID=\"s\" state=\"error\" description=\"d\">\nDisconnected\n</subagent>"
+        );
+        assert!(report("s", State::Cancelled, "d", "Subagent cancelled")
+            .contains("state=\"cancelled\""));
     }
 }

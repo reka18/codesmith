@@ -71,6 +71,9 @@ pub struct Config {
     /// `false` offers every MCP tool as a direct tool call instead of
     /// through Code Mode (useful for models that write JavaScript poorly).
     pub codemode: Option<bool>,
+    /// How deep subagents may nest: 1 (the default) lets the main session
+    /// start subagents but not a subagent start its own.
+    pub subagent_depth: Option<u32>,
     /// Compiled-in plugins: `false` turns one off, an object is its options.
     pub plugins: BTreeMap<String, Value>,
     /// Code review settings for `/review` and `/calibrate`.

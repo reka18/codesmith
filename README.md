@@ -155,8 +155,9 @@ codesmith session undo  [id]   # restore the files and hide the latest turn
 codesmith session redo  [id]   # bring it back (until a new turn is added)
 ```
 
-Undo works by snapshotting the project at the start of each turn into a
-private git repository under CodeSmith's data directory. It never touches your
+Undo works by snapshotting the project at the start and end of each turn into
+a private git repository under CodeSmith's data directory, and restores only
+the files the turn changed, so your own later edits stay. It never touches your
 own `.git`, works in folders that are not git repositories, and respects
 `.gitignore`. Set `"snapshots": false` to turn it off.
 
@@ -174,7 +175,7 @@ Other commands: `codesmith models`, `codesmith debug paths|config|model|agents|p
 | `shell` | Run a command; long-running ones move to the background and the agent is told when they finish. Large output is saved to a file |
 | `webfetch` | Fetch a URL as markdown, text or HTML; redirect targets are checked against deny rules |
 | `todowrite` | Keep a visible todo list for multi-step work |
-| `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
+| `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session. Subagents cannot start subagents unless `"subagent_depth"` allows more levels |
 | `skill` | Load a skill's instructions when a task matches its description |
 | `websearch` | Search the web through your own [SearXNG](https://docs.searxng.org/) instance (only offered when `websearch.url` is set) |
 | `question` | Ask you multiple-choice or free-form questions on the terminal (not offered with `--auto` or without a terminal) |

@@ -3,6 +3,11 @@
 //! `.git`) records the working tree as git trees. Capturing is `add -A` +
 //! `write-tree`; restoring checks files out of a tree and removes files that
 //! did not exist in it. `.gitignore` is respected, so build output is skipped.
+//!
+//! Undo restores only the paths a turn changed (between its start and end
+//! snapshots), as OpenCode's revert restores its steps' files, so edits made
+//! after the turn survive. A turn with no end snapshot (stopped mid-way, or
+//! recorded by an older CodeSmith) restores every change since it began.
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
@@ -142,8 +147,17 @@ impl Snapshots {
     /// Make the working tree match `tree` for every path changed since, and
     /// return those changes (relative to `tree`).
     pub fn restore(&self, tree: &str) -> Result<Vec<Change>> {
+        self.restore_only(tree, None)
+    }
+
+    /// Like `restore`, but only for `paths` when given: files changed since
+    /// for other reasons (the user's own edits) are left alone.
+    pub fn restore_only(&self, tree: &str, paths: Option<&[String]>) -> Result<Vec<Change>> {
         let now = self.capture()?;
-        let changes = self.changes(tree, &now)?;
+        let mut changes = self.changes(tree, &now)?;
+        if let Some(paths) = paths {
+            changes.retain(|c| paths.contains(&c.path));
+        }
         let (added, rest): (Vec<&Change>, Vec<&Change>) =
             changes.iter().partition(|c| c.status == 'A');
         for c in &added {

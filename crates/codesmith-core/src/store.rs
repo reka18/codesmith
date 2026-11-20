@@ -39,6 +39,11 @@ pub enum Record {
     Snapshot {
         tree: String,
     },
+    /// The project's files at the end of a turn, so undo can restore only
+    /// the files the turn changed.
+    TurnEnd {
+        tree: String,
+    },
     /// Undo: everything from `from_seq` up to this record is hidden, and the
     /// files were restored. `after` is the tree just before undoing, for redo.
     Revert {
@@ -411,6 +416,26 @@ pub fn history_with_seqs(entries: &[Entry]) -> Vec<(Option<i64>, Message)> {
 
 /// `[from, to)` sequence ranges hidden by reverts that have not been redone.
 pub fn hidden_ranges(entries: &[Entry]) -> Vec<(i64, i64)> {
+    hidden_ranges_except(entries, None)
+}
+
+/// The end-of-turn trees recorded after the turn snapshot at `from_seq`,
+/// treating the revert at `except` (if any) as not applied. Empty for
+/// turns recorded before end snapshots existed, or stopped before the end.
+pub fn turn_ends(entries: &[Entry], from_seq: i64, except: Option<i64>) -> Vec<String> {
+    let hidden = hidden_ranges_except(entries, except);
+    let visible = |seq: i64| !hidden.iter().any(|(from, to)| seq >= *from && seq < *to);
+    entries
+        .iter()
+        .filter(|e| e.seq > from_seq && except.is_none_or(|r| e.seq < r) && visible(e.seq))
+        .filter_map(|e| match &e.record {
+            Record::TurnEnd { tree } => Some(tree.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn hidden_ranges_except(entries: &[Entry], except: Option<i64>) -> Vec<(i64, i64)> {
     let redone: Vec<i64> = entries
         .iter()
         .filter_map(|e| {
@@ -424,7 +449,11 @@ pub fn hidden_ranges(entries: &[Entry]) -> Vec<(i64, i64)> {
     entries
         .iter()
         .filter_map(|e| match e.record {
-            Record::Revert { from_seq, .. } if !redone.contains(&e.seq) => Some((from_seq, e.seq)),
+            Record::Revert { from_seq, .. }
+                if !redone.contains(&e.seq) && Some(e.seq) != except =>
+            {
+                Some((from_seq, e.seq))
+            }
             _ => None,
         })
         .collect()
