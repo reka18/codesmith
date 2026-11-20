@@ -1438,7 +1438,7 @@ async fn oc_tool_patch_reports_a_destination_written_before_move_removal_fails()
 async fn oc_tool_patch_approves_an_external_directory_before_reading_and_requests_edit_permission_afterward(
 ) {
     // OpenCode names the directory (`<dir>/*`) and saves the repository's;
-    // CodeSmith names the file and saves its directory, as `edit` does.
+    // CodeSmith names the file, as `edit` does, and saves the repository's.
     let (env, rec) = recording();
     let (_o, out) = outside();
     let dir = out.join("repository/nested");
@@ -1462,7 +1462,10 @@ async fn oc_tool_patch_approves_an_external_directory_before_reading_and_request
     assert_eq!(rec.actions(), ["external_directory", "edit"]);
     let asked = rec.asked.lock().unwrap().clone();
     assert_eq!(asked[0].resources, [target.display().to_string()]);
-    assert_eq!(asked[0].save, [format!("{}/*", dir.display())]);
+    assert_eq!(
+        asked[0].save,
+        [format!("{}/*", out.join("repository").display())]
+    );
     assert_eq!(asked[1].resources, [target.display().to_string()]);
     assert_eq!(files.reads_before_edit.load(Ordering::SeqCst), 1);
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "after\n");

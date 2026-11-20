@@ -641,7 +641,8 @@ impl Ctx<'_> {
     }
 
     /// For paths outside the project, ask for `external_directory` on the
-    /// containing directory first. A file is named by its path; a directory
+    /// containing directory first (answering "always" saves the enclosing
+    /// repository; see [`repository_glob`]). A file is named by its path; a directory
     /// as `<dir>/*`, as OpenCode names it, so a rule for `<dir>/*` covers the
     /// directory itself. A symlink is judged by where it points.
     pub fn authorize_external(&self, t: &Target, is_dir: bool) -> Result<(), String> {
@@ -654,7 +655,13 @@ impl Ctx<'_> {
         let files = self.external_names(t, Path::to_path_buf);
         let dirs =
             self.external_names(t, |p| p.parent().map(Path::to_path_buf).unwrap_or_default());
-        let save: Vec<String> = dirs.iter().map(|d| format!("{}/*", d.display())).collect();
+        let mut save: Vec<String> = Vec::new();
+        for d in &dirs {
+            let g = repository_glob(d);
+            if !save.contains(&g) {
+                save.push(g);
+            }
+        }
         self.ask(Request {
             action: "external_directory".into(),
             resources: files.iter().map(|f| f.display().to_string()).collect(),
@@ -683,10 +690,17 @@ impl Ctx<'_> {
             return Ok(());
         }
         let shown: Vec<&str> = globs.iter().map(|g| g.trim_end_matches("/*")).collect();
+        let mut save: Vec<String> = Vec::new();
+        for g in &globs {
+            let s = repository_glob(Path::new(g.trim_end_matches("/*")));
+            if !save.contains(&s) {
+                save.push(s);
+            }
+        }
         self.ask(Request {
             action: "external_directory".into(),
             resources: globs.clone(),
-            save: globs.clone(),
+            save,
             title: format!("Access outside the project: {}", shown.join(", ")),
         })
     }
@@ -914,6 +928,18 @@ pub(crate) fn unique_id() -> String {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!("{t:012x}{:08x}", rand::thread_rng().gen::<u32>())
+}
+
+/// What "always" saves for an external directory, as OpenCode saves it:
+/// the enclosing repository (the nearest folder above it with `.git` or
+/// `.hg`) as `<repo>/*`, else the directory itself. A repository at the
+/// home folder or above still saves only the file
+/// ([`crate::permission::always_saves`]).
+pub fn repository_glob(dir: &Path) -> String {
+    let root = crate::vcs::marker(dir)
+        .map(|(r, _)| r)
+        .unwrap_or_else(|| dir.to_path_buf());
+    format!("{}/*", root.display())
 }
 
 #[cfg(test)]

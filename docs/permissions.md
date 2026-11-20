@@ -174,7 +174,7 @@ rules allow writes in general.
 
 ## Paths outside the project
 
-The project is the nearest folder with `.git` above the working directory, or
+The project is the nearest folder with `.git` (or `.hg`) above the working directory, or
 the working directory itself. Reading, writing or editing a file outside it,
 searching there, or `cd`-ing there needs `external_directory` approval first,
 and then the tool's own permission. Symlinks are resolved first, so a link
@@ -216,9 +216,11 @@ asked again either (see [saved approvals](#saved-approvals)):
   `git status *`, `npm run build *`, `cargo test *`. CodeSmith knows how many
   words make up a subcommand for common tools (`git`, `npm run`,
   `docker compose`, `cargo`, `kubectl`, and others).
-- For `external_directory`, it saves the folder (`<dir>/*`). If the folder is
-  `/`, your home folder or above it, only that file is saved: approving
-  `~/.zshrc` doesn't approve all of `$HOME`.
+- For `external_directory`, it saves the enclosing repository (`<repo>/*`,
+  the nearest folder above the path with `.git` or `.hg`), as OpenCode does,
+  else the folder itself (`<dir>/*`). If that is `/`, your home folder or
+  above it, only that file is saved: approving `~/.zshrc` doesn't approve
+  all of `$HOME`, even when your home folder is a repository.
 - A saved approval never overrides a configured `deny`, a built-in agent's
   own rules or a [policy](#policies).
 

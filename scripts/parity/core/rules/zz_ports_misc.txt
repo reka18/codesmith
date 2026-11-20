@@ -47,3 +47,7 @@
 @permission.test.ts
 422 :: ported :: tests/oc_saved_approvals.rs::oc_permission_stores_and_removes_saved_resources_for_a_project :: adapted: kept in the session database per project; `codesmith permissions` and `/permissions/saved` list and remove them
 454 :: ported :: tests/oc_saved_approvals.rs::oc_permission_edits_saved_approvals_and_enforces_the_edited_rule
+@file-access-path.test.ts
+242 :: ported :: tests/oc_external_approvals.rs::oc_file_access_saves_external_approval_at_the_enclosing_repository_on_the_host_filesystem
+@tool-write.test.ts
+335 :: ported :: tests/oc_external_approvals.rs::oc_write_saves_external_directory_approval_at_the_nearest_project_directory :: adapted: the request names the file; the saved approval is the repository's
