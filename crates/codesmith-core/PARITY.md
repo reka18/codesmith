@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 74 | 0 | 1 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 75 | 0 | 0 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1655** | **18** | **120** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1656** | **18** | **119** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (120 cases in 13 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (119 cases in 12 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -99,7 +99,6 @@ Missing features, by how many OpenCode test cases each would unlock (120 cases i
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
-| [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 
 ### ChatGPT Subscription Login
 
@@ -270,12 +269,6 @@ Missing features, by how many OpenCode test cases each would unlock (120 cases i
 1 cases.
 
 - `session-model-request.test.ts`: replaces images xAI cannot decode and keeps png, jpeg and webp
-
-### Directory Attachments
-
-1 cases.
-
-- `session-runner-message.test.ts`: exposes admitted reference directory source paths in model context
 
 ## Porting backlog
 
@@ -1526,7 +1519,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (253 of 308)</summary>
+<details><summary>Sessions and their store (254 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1668,6 +1661,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P ignores switches that are not effort changes on the requested model — `tests/oc_effort_switch.rs::oc_session_ignores_switches_that_are_not_effort_changes_on_the_requested_model`
 - P lowers each prepared skill once before the prompt — `tests/oc_session_skill_mention.rs::oc_session_lowers_each_mentioned_skill_once_before_the_prompt`
 - P does not inject skill content for reference-only attachments — `tests/oc_session_skill_mention.rs::oc_session_does_not_inject_skill_content_for_mere_references` (adapted: a reference is an @word that is not a mention)
+- P exposes admitted reference directory source paths in model context — `tests/oc_attachments.rs::oc_runner_message_exposes_admitted_reference_directory_source_paths_in_model_context` (adapted: the path and listing are their own text part)
 - P exposes admitted local image source paths before provider media — `tests/oc_attachments.rs::oc_runner_message_exposes_admitted_local_image_source_paths_before_provider_media` (adapted: the announcement is part of the stored user message (`Session::prompt_attached`; the server's path attachments))
 - P falls back to attachment names for invalid local source paths — `tests/oc_attachments.rs::oc_runner_message_falls_back_to_attachment_names_for_invalid_local_source_paths` (adapted: the media part keeps its name; directory attachments are a separate group)
 - P does not add attachment location text for non-local provider media — `tests/oc_attachments.rs::oc_runner_message_does_not_add_attachment_location_text_for_non_local_provider_media`

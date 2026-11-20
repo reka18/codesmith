@@ -2,6 +2,8 @@
 //! (`session-runner-message.test.ts`): local source paths announced next
 //! to provider media, and duplicate labeled images sent once.
 
+mod support;
+
 use codesmith_ai::{Media, Part};
 use codesmith_core::attachment::{self, Attached};
 
@@ -101,4 +103,31 @@ fn oc_runner_message_preserves_provider_media_with_distinct_labels_or_uri_source
         Attached::inline(png("image.png")),
     ]);
     assert_eq!(media(&parts), 4);
+}
+
+#[test]
+fn oc_runner_message_exposes_admitted_reference_directory_source_paths_in_model_context() {
+    let location = std::path::Path::new("/references/harness-engineering");
+    let parts = attachment::parts(vec![Attached::directory(location, "lib/\nindex.ts")]);
+    assert_eq!(
+        texts(&parts),
+        ["Attached directory: /references/harness-engineering\n\nlib/\nindex.ts"]
+    );
+    assert_eq!(media(&parts), 0, "a directory is text, not media");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_attached_by_path_is_listed_folders_first() {
+    let h = support::H::new().await;
+    let dir = h.root().join("docs");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("index.ts"), "").unwrap();
+    let a = h.s.attach_local("docs").unwrap().unwrap();
+    assert_eq!(
+        texts(&attachment::parts(vec![a])),
+        [format!(
+            "Attached directory: {}\n\nlib/\nindex.ts",
+            dir.display()
+        )]
+    );
 }

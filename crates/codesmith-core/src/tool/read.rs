@@ -76,14 +76,47 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
 /// user's behalf (prompt attachments by path): `external_directory` when it
 /// is outside the project, then `read`. Returns the file's absolute path.
 pub fn authorize(ctx: &Ctx, path: &str) -> Result<std::path::PathBuf, String> {
+    match authorize_any(ctx, path)? {
+        (_, true) => Err(format!(
+            "Cannot attach a directory: {}",
+            ctx.resolve(path).resource
+        )),
+        (p, false) => Ok(p),
+    }
+}
+
+/// [`authorize`] for a file or a directory: its absolute path, and
+/// whether it is a directory.
+pub fn authorize_any(ctx: &Ctx, path: &str) -> Result<(std::path::PathBuf, bool), String> {
     let target = ctx.resolve(path);
     let is_dir = target.absolute.is_dir();
     ctx.authorize_external(&target, is_dir)?;
     ask_read(ctx, &target)?;
-    if is_dir {
-        return Err(format!("Cannot attach a directory: {}", target.resource));
+    Ok((target.absolute, is_dir))
+}
+
+/// A directory's entries, one per line, folders first (with a trailing
+/// `/`) and then by name, at most [`MAX_LINES`] of them.
+pub fn directory_listing(dir: &Path) -> Result<String, String> {
+    let mut entries: Vec<(bool, String)> = std::fs::read_dir(dir)
+        .map_err(|e| format!("Unable to read {}: {e}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let t = e.file_type().ok()?;
+            Some((
+                t.is_dir(),
+                if t.is_dir() { format!("{name}/") } else { name },
+            ))
+        })
+        .collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| locale_cmp(&a.1, &b.1)));
+    let more = entries.len().saturating_sub(MAX_LINES);
+    let mut out: Vec<String> = entries.into_iter().take(MAX_LINES).map(|e| e.1).collect();
+    if more > 0 {
+        out.push(format!("... and {more} more"));
     }
-    Ok(target.absolute)
+    Ok(out.join("\n"))
 }
 
 fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> {

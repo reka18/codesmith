@@ -201,7 +201,7 @@
 211 :: ported :: tests/oc_references.rs::oc_repository_cache_does_not_take_an_enclosing_repository_for_the_checkout
 225 :: ported :: tests/oc_references.rs::oc_repository_cache_returns_typed_branch_and_clone_failures
 @session-runner-message.test.ts
-399 :: feature :: Directory Attachments :: a directory attached to a prompt, listed in model context
+399 :: ported :: tests/oc_attachments.rs::oc_runner_message_exposes_admitted_reference_directory_source_paths_in_model_context :: adapted: the path and listing are their own text part
 @filesystem/file-watch.test.ts
 36 :: ported :: tests/oc_watch.rs::oc_file_watch_shares_one_watch_per_file_and_resubscribes_after_unwatch
 48 :: ported :: tests/oc_watch.rs::oc_file_watch_expires_a_watch_after_24_hours_unless_watched_again

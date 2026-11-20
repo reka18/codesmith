@@ -3269,7 +3269,13 @@ impl Session {
     /// requests, then taken as media when it is an image, PDF or video
     /// (`Ok(None)` for anything else).
     pub fn attach(&self, path: &str) -> std::result::Result<Option<codesmith_ai::Media>, String> {
-        let ctx = Ctx {
+        let target = crate::tool::read::authorize(&self.attach_ctx(), path)?;
+        crate::media::attachment(&target, path, &self.loaded.config.media.image)
+    }
+
+    /// The tool context an attachment's read is authorized in.
+    fn attach_ctx(&self) -> Ctx<'_> {
+        Ctx {
             cwd: self.cwd.clone(),
             root: self.root.clone(),
             gate: &self.gate,
@@ -3282,9 +3288,7 @@ impl Session {
             format: None,
             lsp: None,
             progress: None,
-        };
-        let target = crate::tool::read::authorize(&ctx, path)?;
-        crate::media::attachment(&target, path, &self.loaded.config.media.image)
+        }
     }
 
     /// [`Session::attach`], with the file's absolute path as its source.
@@ -3293,9 +3297,17 @@ impl Session {
         path: &str,
     ) -> std::result::Result<Option<crate::attachment::Attached>, String> {
         let abs = self.cwd.join(path);
-        Ok(self
-            .attach(path)?
-            .map(|m| crate::attachment::Attached::local(m, &abs)))
+        let (target, is_dir) = crate::tool::read::authorize_any(&self.attach_ctx(), path)?;
+        if is_dir {
+            let listing = crate::tool::read::directory_listing(&target)?;
+            return Ok(Some(crate::attachment::Attached::directory(
+                &target, &listing,
+            )));
+        }
+        Ok(
+            crate::media::attachment(&target, path, &self.loaded.config.media.image)?
+                .map(|m| crate::attachment::Attached::local(m, &abs)),
+        )
     }
 
     fn run_question(&mut self, input: &serde_json::Value) -> (String, bool) {

@@ -2,9 +2,14 @@
 //! OpenCode's `session/runner/to-llm-message.ts`): an image or PDF taken
 //! from a local file is announced by its path (`Attached file: <path>`)
 //! just before its media, so the model can refer to the file itself, and
-//! an inline image attached twice under the same label is sent once.
+//! an inline image attached twice under the same label is sent once. A
+//! directory is sent as its path and listing (`Attached directory:
+//! <path>`).
 
 use codesmith_ai::{Media, MediaKind, Part};
+
+/// The type a directory attachment carries (OpenCode's).
+pub const DIRECTORY_MIME: &str = "application/x-directory";
 
 /// A file attached to a prompt.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +42,17 @@ impl Attached {
             source: Some(path.display().to_string()),
             ..Attached::inline(media)
         }
+    }
+
+    /// A local directory at `path`, carried as its `listing`.
+    pub fn directory(path: &std::path::Path, listing: &str) -> Attached {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let media =
+            Media::base64(DIRECTORY_MIME, crate::media::base64(listing.as_bytes())).named(&name);
+        Attached::local(media, path)
     }
 
     pub fn labeled(mut self, label: &str) -> Attached {
@@ -76,6 +92,25 @@ pub fn parts(files: Vec<Attached>) -> Vec<Part> {
     let mut seen: Vec<(String, String)> = Vec::new();
     let mut out = Vec::new();
     for f in files {
+        // A directory is its path and listing, as text.
+        if f.media.mime == DIRECTORY_MIME {
+            let listing = f
+                .media
+                .inline()
+                .and_then(crate::media::unbase64)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            let path = f
+                .source
+                .as_deref()
+                .and_then(local_path)
+                .or_else(|| f.media.filename.clone())
+                .unwrap_or_default();
+            out.push(Part::text(format!(
+                "Attached directory: {path}\n\n{listing}"
+            )));
+            continue;
+        }
         if dedupe && eligible(&f) {
             let key = serde_json::json!([f.media.mime, f.media.filename, f.description, f.label])
                 .to_string();
