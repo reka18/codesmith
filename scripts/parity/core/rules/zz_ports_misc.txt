@@ -55,3 +55,7 @@
 98 :: ported :: tests/oc_config_sources.rs::oc_config_excludes_home_level_claude_and_agents_directories_when_global_is_disabled :: adapted: `$CODESMITH_DISABLE_GLOBAL_CONFIG`; skills, commands and instructions (CodeSmith watches no config folders)
 186 :: ported :: tests/oc_config_sources.rs::oc_config_excludes_global_config_reached_through_the_project_walk_when_global_is_disabled
 743 :: ported :: tests/oc_config_sources.rs::oc_config_excludes_missing_files_under_symlinked_global_roots_when_global_is_disabled :: adapted: no config layer at the global folder, by any name (CodeSmith watches none)
+@session-runner-message.test.ts
+528 :: ported :: tests/oc_attachments.rs::oc_runner_message_exposes_admitted_local_image_source_paths_before_provider_media :: adapted: the announcement is part of the stored user message (`Session::prompt_attached`; the server's path attachments)
+558 :: ported :: tests/oc_attachments.rs::oc_runner_message_falls_back_to_attachment_names_for_invalid_local_source_paths :: adapted: the media part keeps its name; directory attachments are a separate group
+596 :: ported :: tests/oc_attachments.rs::oc_runner_message_does_not_add_attachment_location_text_for_non_local_provider_media

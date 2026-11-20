@@ -406,4 +406,7 @@ anything that isn't an image, PDF or video is refused. Images are fitted to the
 A path goes through the same checks as the `read` tool: `external_directory`
 if it is outside the project, then `read`. These are asked over the turn's
 stream, or settled by your permission rules. A refusal ends the turn with an
-error before anything is sent to the model.
+error before anything is sent to the model. An image or PDF attached by path
+reaches the model announced by its absolute path (`Attached file:
+/project/screenshots/shot.png`) just before it, as in OpenCode, so the model
+can refer to the file; inline data is not announced.

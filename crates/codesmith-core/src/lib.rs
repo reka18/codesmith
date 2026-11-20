@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod approvals;
+pub mod attachment;
 pub mod auth;
 pub mod automation;
 pub mod catalog;

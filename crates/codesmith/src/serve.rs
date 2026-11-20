@@ -1125,8 +1125,8 @@ async fn message(
         let mut failed = None;
         for a in attachments {
             match a {
-                Attachment::Media(m) => media.push(m),
-                Attachment::Path(p) => match s.attach(&p) {
+                Attachment::Media(m) => media.push(codesmith_core::attachment::Attached::inline(m)),
+                Attachment::Path(p) => match s.attach_local(&p) {
                     Ok(Some(m)) => media.push(m),
                     Ok(None) => {
                         failed = Some(format!("attachment {p} is not an image, PDF or video"));
@@ -1141,7 +1141,7 @@ async fn message(
         }
         let r = match failed {
             Some(e) => Err(anyhow::anyhow!(e)),
-            None => s.prompt_with(&text, media, &mut sink).await,
+            None => s.prompt_attached(&text, media, &mut sink).await,
         };
         let done = json!({"type": "done", "error": r.err().map(|e| format!("{e:#}")), "usage": s.usage, "title": s.title});
         let mut g = live2.lock().await;

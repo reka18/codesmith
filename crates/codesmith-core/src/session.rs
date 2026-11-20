@@ -1362,7 +1362,8 @@ impl Session {
         media: Vec<codesmith_ai::Media>,
         sink: &'a mut dyn Sink,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prompt_inner(Origin::User, text, media, sink))
+        let parts = media.into_iter().map(Part::Media).collect();
+        Box::pin(self.prompt_inner(Origin::User, text, parts, sink))
     }
 
     /// A turn whose text comes from `origin`.
@@ -1373,14 +1374,27 @@ impl Session {
         media: Vec<codesmith_ai::Media>,
         sink: &'a mut dyn Sink,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prompt_inner(origin, text, media, sink))
+        let parts = media.into_iter().map(Part::Media).collect();
+        Box::pin(self.prompt_inner(origin, text, parts, sink))
+    }
+
+    /// A user turn with files attached after the text, local ones
+    /// announced by their path (see [`crate::attachment::parts`]); the text
+    /// is the user's own.
+    pub fn prompt_attached<'a>(
+        &'a mut self,
+        text: &'a str,
+        files: Vec<crate::attachment::Attached>,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.prompt_inner(Origin::User, text, crate::attachment::parts(files), sink))
     }
 
     async fn prompt_inner(
         &mut self,
         origin: Origin,
         text: &str,
-        media: Vec<codesmith_ai::Media>,
+        attached: Vec<Part>,
         sink: &mut dyn Sink,
     ) -> Result<()> {
         // A turn dropped before it finishes was stopped: plugins hear of it.
@@ -1394,7 +1408,7 @@ impl Session {
             id: self.id.clone(),
             finished: false,
         };
-        let r = self.turn_inner(origin, text, media, sink).await;
+        let r = self.turn_inner(origin, text, attached, sink).await;
         stop.finished = true;
         r
     }
@@ -1403,7 +1417,7 @@ impl Session {
         &mut self,
         origin: Origin,
         text: &str,
-        media: Vec<codesmith_ai::Media>,
+        attached: Vec<Part>,
         sink: &mut dyn Sink,
     ) -> Result<()> {
         let _lease = self.take_turn(sink).await?;
@@ -1504,7 +1518,7 @@ impl Session {
                 .chain([Part::text(text)])
                 .collect(),
         };
-        user.parts.extend(media.into_iter().map(Part::Media));
+        user.parts.extend(attached);
         self.push(user)?;
         if let (Some(metadata), Some(Some(seq))) = (prompt_metadata, self.seqs.last().copied()) {
             self.record(&Record::Metadata {
@@ -2755,6 +2769,17 @@ impl Session {
         };
         let target = crate::tool::read::authorize(&ctx, path)?;
         crate::media::attachment(&target, path, &self.loaded.config.media.image)
+    }
+
+    /// [`Session::attach`], with the file's absolute path as its source.
+    pub fn attach_local(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Option<crate::attachment::Attached>, String> {
+        let abs = self.cwd.join(path);
+        Ok(self
+            .attach(path)?
+            .map(|m| crate::attachment::Attached::local(m, &abs)))
     }
 
     fn run_question(&mut self, input: &serde_json::Value) -> (String, bool) {
