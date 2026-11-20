@@ -85,7 +85,7 @@ fn is_textual(mime: &str) -> bool {
 }
 
 /// Check a URL the way the rules will see it.
-fn check_url(url: &reqwest::Url) -> Result<(), String> {
+pub(crate) fn check_url(url: &reqwest::Url) -> Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err("URL must use http:// or https://".into());
     }
@@ -99,7 +99,7 @@ fn check_url(url: &reqwest::Url) -> Result<(), String> {
 
 /// The rules "always allow" saves for `url` (as written): its origin, with
 /// or without a path. Narrower than OpenCode's `*` (any URL).
-fn save_patterns(url: &str) -> Vec<String> {
+pub(crate) fn save_patterns(url: &str) -> Vec<String> {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let authority = rest.split(['/', '?']).next().unwrap_or("");
     let origin = format!("{scheme}://{authority}");
@@ -136,14 +136,73 @@ async fn fetch(
     format: &str,
     user_agent: &str,
 ) -> Result<Fetched, String> {
+    let accept = accept(format);
+    let resp = get_following(ctx, url, |rb| {
+        rb.header("User-Agent", user_agent)
+            .header("Accept", accept)
+            .header("Accept-Language", "en-US,en;q=0.9")
+    })
+    .await?;
+    let status = resp.status().as_u16();
+    if status == 403
+        && resp
+            .headers()
+            .get("cf-mitigated")
+            .is_some_and(|v| v == "challenge")
+    {
+        return Ok(Fetched::Challenge);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Unable to fetch {url}: HTTP {status}"));
+    }
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let mime = mime_of(&content_type);
+    if mime.starts_with("image/") && mime != "image/svg+xml" && mime != "image/vnd.fastbidsheet" {
+        return Err(format!("Unsupported fetched image content type: {mime}"));
+    }
+    if !is_textual(&mime) {
+        return Err(format!("Unsupported fetched file content type: {mime}"));
+    }
+    let too_large = || format!("Response too large (exceeds {MAX_BYTES} byte limit)");
+    if resp.content_length().is_some_and(|n| n > MAX_BYTES as u64) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Unable to fetch {url}: {e}"))?;
+        if body.len() + chunk.len() > MAX_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    // A textual type over binary bytes is refused rather than garbled.
+    if crate::tool::read::is_binary(&body) {
+        return Err(format!(
+            "Unable to fetch {url}: the response is binary ({content_type})"
+        ));
+    }
+    Ok(Fetched::Body { content_type, body })
+}
+
+/// GET `url` (already checked and approved), following redirects by hand:
+/// each target must pass [`check_url`] and no rule may deny fetching it.
+/// `build` adds headers to each hop's request. The final, non-redirect
+/// response is returned whatever its status.
+pub(crate) async fn get_following(
+    ctx: &Ctx<'_>,
+    url: &str,
+    build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, String> {
     let mut current = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL {url:?}: {e}"))?;
     let mut redirects = 0;
     loop {
-        let resp = client()?
-            .get(current.clone())
-            .header("User-Agent", user_agent)
-            .header("Accept", accept(format))
-            .header("Accept-Language", "en-US,en;q=0.9")
+        let resp = build(client()?.get(current.clone()))
             .send()
             .await
             .map_err(|e| format!("Unable to fetch {url}: {e}"))?;
@@ -153,65 +212,20 @@ async fn fetch(
             .get("location")
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        if let (true, Some(location)) = (REDIRECTS.contains(&status), location) {
-            if redirects >= MAX_REDIRECTS {
-                return Err(format!("Too many redirects (more than {MAX_REDIRECTS})"));
-            }
-            let mut next = current
-                .join(&location)
-                .map_err(|e| format!("Invalid redirect location {location:?}: {e}"))?;
-            check_url(&next)?;
-            next.set_fragment(None);
-            ctx.check_not_denied("webfetch", &[next.to_string()])?;
-            current = next;
-            redirects += 1;
-            continue;
+        let (true, Some(location)) = (REDIRECTS.contains(&status), location) else {
+            return Ok(resp);
+        };
+        if redirects >= MAX_REDIRECTS {
+            return Err(format!("Too many redirects (more than {MAX_REDIRECTS})"));
         }
-        if status == 403
-            && resp
-                .headers()
-                .get("cf-mitigated")
-                .is_some_and(|v| v == "challenge")
-        {
-            return Ok(Fetched::Challenge);
-        }
-        if !resp.status().is_success() {
-            return Err(format!("Unable to fetch {url}: HTTP {status}"));
-        }
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let mime = mime_of(&content_type);
-        if mime.starts_with("image/") && mime != "image/svg+xml" && mime != "image/vnd.fastbidsheet"
-        {
-            return Err(format!("Unsupported fetched image content type: {mime}"));
-        }
-        if !is_textual(&mime) {
-            return Err(format!("Unsupported fetched file content type: {mime}"));
-        }
-        let too_large = || format!("Response too large (exceeds {MAX_BYTES} byte limit)");
-        if resp.content_length().is_some_and(|n| n > MAX_BYTES as u64) {
-            return Err(too_large());
-        }
-        let mut body = Vec::new();
-        let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Unable to fetch {url}: {e}"))?;
-            if body.len() + chunk.len() > MAX_BYTES {
-                return Err(too_large());
-            }
-            body.extend_from_slice(&chunk);
-        }
-        // A textual type over binary bytes is refused rather than garbled.
-        if crate::tool::read::is_binary(&body) {
-            return Err(format!(
-                "Unable to fetch {url}: the response is binary ({content_type})"
-            ));
-        }
-        return Ok(Fetched::Body { content_type, body });
+        let mut next = current
+            .join(&location)
+            .map_err(|e| format!("Invalid redirect location {location:?}: {e}"))?;
+        check_url(&next)?;
+        next.set_fragment(None);
+        ctx.check_not_denied("webfetch", &[next.to_string()])?;
+        current = next;
+        redirects += 1;
     }
 }
 

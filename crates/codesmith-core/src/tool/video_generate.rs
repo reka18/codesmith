@@ -158,10 +158,15 @@ fn audio_type(b: &[u8]) -> Option<&'static str> {
 /// rule, since the agent chose it); a local file is read and sent inline.
 async fn read_media(ctx: &Ctx<'_>, value: &str, kinds: &[&str]) -> Result<Media, String> {
     let m = if image::is_url(value) {
+        // The provider fetches it, so its redirects are out of reach; the
+        // URL itself gets webfetch's checks, and "always" saves its origin.
+        let parsed =
+            reqwest::Url::parse(value).map_err(|e| format!("Invalid URL {value:?}: {e}"))?;
+        super::webfetch::check_url(&parsed)?;
         ctx.ask(Request {
             action: "webfetch".into(),
             resources: vec![value.to_string()],
-            save: vec!["*".into()],
+            save: super::webfetch::save_patterns(value),
             title: format!("Fetch {value}"),
         })?;
         Media::url(url_type(value).unwrap_or("application/octet-stream"), value)
@@ -416,5 +421,35 @@ mod default_tests {
         assert!(enabled(&c));
         c.experimental.video_generate = Some(Value::Bool(false));
         assert!(!enabled(&c));
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+    use crate::permission::Reply;
+    use crate::tool::testing::Env;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn input_urls_get_webfetchs_checks_and_always_saves_their_origin() {
+        let (env, rec) = Env::recording(vec![]);
+        let err = read_media(&env.ctx(), "https://user@example.test/a.png", &["image"])
+            .await
+            .unwrap_err();
+        assert!(err.contains("credentials"), "{err}");
+        assert!(rec.actions().is_empty());
+
+        let env = Env::with_reply(Reply::Always);
+        read_media(&env.ctx(), "https://example.test/a.png", &["image"])
+            .await
+            .unwrap();
+        let saved: Vec<String> = env.gate.saved().into_iter().map(|r| r.resource).collect();
+        assert_eq!(
+            saved,
+            vec![
+                "https://example.test".to_string(),
+                "https://example.test/*".to_string()
+            ]
+        );
     }
 }

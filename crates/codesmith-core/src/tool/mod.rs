@@ -1006,6 +1006,40 @@ pub(crate) mod testing {
         }
     }
 
+    /// A reply from [`serve`]: status, extra header lines (each ending in
+    /// `\r\n`), body.
+    pub type Reply3 = (u16, String, Vec<u8>);
+
+    /// Serve `reply(path)` on a loopback port for as long as the test's
+    /// runtime lives; returns the base URL and the paths requested.
+    pub async fn serve(
+        reply: impl Fn(&str) -> Reply3 + Send + Sync + 'static,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split(' ').nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let (status, headers, body) = reply(&path);
+                let mut out = format!(
+                    "HTTP/1.1 {status} X\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                out.extend_from_slice(&body);
+                let _ = s.write_all(&out).await;
+            }
+        });
+        (url, seen)
+    }
+
     impl Env {
         pub fn new() -> Self {
             Env {

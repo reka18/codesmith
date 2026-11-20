@@ -219,26 +219,32 @@ pub fn is_url(s: &str) -> bool {
 }
 
 /// Fetch `url` under the `webfetch` rule (denying web access covers media
-/// URLs too), bounded in time and size.
+/// URLs too), with webfetch's safeguards: http(s) only, no credentials in
+/// the URL, "always" saving only its origin, and each redirect checked
+/// against the rules. Bounded in time and size.
 pub async fn download(ctx: &Ctx<'_>, url: &str, max: usize) -> Result<Vec<u8>, String> {
+    // Rules match the URL as written; the fragment is never sent.
+    let url = url.split('#').next().unwrap_or(url);
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL {url:?}: {e}"))?;
+    super::webfetch::check_url(&parsed)?;
     ctx.ask(Request {
         action: "webfetch".into(),
         resources: vec![url.to_string()],
-        save: vec!["*".into()],
+        save: super::webfetch::save_patterns(url),
         title: format!("Fetch {url}"),
     })?;
     let fetch =
         async {
-            let resp = ctx.client.get(url).send().await.map_err(|e| {
-                format!("Unable to download {url}: {}", codesmith_ai::Error::from(e))
-            })?;
+            let mut resp = super::webfetch::get_following(ctx, url, |rb| rb).await?;
             if !resp.status().is_success() {
                 return Err(format!(
                     "Unable to download {url}: HTTP {}",
                     resp.status().as_u16()
                 ));
             }
-            let mut resp = resp;
+            if resp.content_length().is_some_and(|n| n > max as u64) {
+                return Err(format!("{url} is larger than {} MiB.", max / (1024 * 1024)));
+            }
             let mut out = Vec::new();
             while let Some(chunk) = resp.chunk().await.map_err(|e| {
                 format!("Unable to download {url}: {}", codesmith_ai::Error::from(e))
@@ -488,5 +494,67 @@ pub fn through_blob_store(store: Option<&Path>, session: &str, data: &[u8], mime
             .map(|(_, b)| b)
             .unwrap_or_else(|| data.to_vec()),
         _ => data.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+    use crate::permission::{Effect, Fixed, Reply, Rule};
+    use crate::tool::testing::{serve, Env};
+    use std::sync::Arc;
+
+    fn png() -> Vec<u8> {
+        crate::media::unbase64(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        )
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_input_url_with_credentials_is_refused_before_asking() {
+        let (env, rec) = Env::recording(vec![]);
+        let err = read_image(&env.ctx(), "https://user@example.test/x.png")
+            .await
+            .unwrap_err();
+        assert!(err.contains("credentials"), "{err}");
+        assert!(rec.actions().is_empty());
+        let err = read_image(&env.ctx(), "https://a:b@example.test/x.png")
+            .await
+            .unwrap_err();
+        assert!(err.contains("credentials"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_redirect_of_an_input_url_is_checked_against_the_rules() {
+        let (denied, denied_seen) = serve(|_| (200, String::new(), png())).await;
+        let to = format!("{denied}/b.png");
+        let (base, _) = serve(move |_| (302, format!("location: {to}\r\n"), Vec::new())).await;
+        let mut env = Env::new();
+        env.gate = Gate::new(
+            vec![
+                Rule::new("webfetch", "*", Effect::Allow),
+                Rule::new("webfetch", &format!("{denied}/*"), Effect::Deny),
+            ],
+            Arc::new(Fixed(Reply::Once)),
+        );
+        let err = read_image(&env.ctx(), &format!("{base}/a.png"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("denied") || err.contains("Denied"), "{err}");
+        assert!(denied_seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn always_saves_only_the_input_urls_origin() {
+        let (base, seen) = serve(|_| (200, String::new(), png())).await;
+        let env = Env::with_reply(Reply::Always);
+        let m = read_image(&env.ctx(), &format!("{base}/a.png#frag"))
+            .await
+            .unwrap();
+        assert_eq!(m.mime, "image/png");
+        assert_eq!(seen.lock().unwrap().clone(), vec!["/a.png".to_string()]);
+        let saved: Vec<String> = env.gate.saved().into_iter().map(|r| r.resource).collect();
+        assert_eq!(saved, vec![base.clone(), format!("{base}/*")]);
     }
 }
