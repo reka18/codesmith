@@ -97,6 +97,34 @@ impl Runner {
         Ok(())
     }
 
+    /// Run an MCP prompt command: fetch the prompt, then send it.
+    fn submit_command(&mut self, shown: String, c: command::Command, args: String) {
+        if self.app.busy {
+            self.app
+                .notice("A turn is still running. Press Esc to interrupt it first.");
+            return;
+        }
+        let Some(mut s) = self.session.take() else {
+            self.app.error("no session");
+            return;
+        };
+        self.app.entries.push(Entry::User(shown));
+        self.app.busy = true;
+        let tx = self.tx.clone();
+        self.task = Some(tokio::spawn(async move {
+            let mut sink = ChanSink(tx.clone());
+            let result = match s.expand_command(&c, &args).await {
+                Ok(text) => s.prompt(&text, &mut sink).await,
+                Err(e) => Err(e),
+            }
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Ev::Done {
+                result,
+                session: Box::new(s),
+            });
+        }));
+    }
+
     fn submit(&mut self, shown: String, text: String) {
         if self.app.busy {
             self.app
@@ -296,7 +324,7 @@ impl Runner {
             }
             "new" | "sessions" | "undo" | "redo" | "agent" | "model" | "compact" => {}
             other => {
-                let all = crate::all_commands(&self.cwd, &self.loaded);
+                let all = crate::all_commands_with(&self.cwd, &self.loaded, &self.mcp);
                 let c = all
                     .get(other)
                     .ok_or_else(|| anyhow!("unknown command /{other}; /help lists commands"))?
@@ -322,7 +350,11 @@ impl Runner {
                 } else {
                     format!("/{other} {args}")
                 };
-                self.submit(shown, command::expand(&c.template, args));
+                if c.mcp.is_some() {
+                    self.submit_command(shown, c, args.to_string());
+                } else {
+                    self.submit(shown, command::expand(&c.template, args));
+                }
             }
         }
         Ok(())

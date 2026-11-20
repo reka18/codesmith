@@ -209,6 +209,12 @@ enum AutomationCmd {
         /// Run once ("in 30 minutes", "2026-10-27T09:00").
         #[arg(long, group = "when")]
         at: Option<String>,
+        /// Run on each `server:event` an MCP server pushes (MCP Events).
+        #[arg(long, group = "when", value_name = "SERVER:EVENT")]
+        event: Option<String>,
+        /// JSON subscription arguments for --event.
+        #[arg(long, requires = "event")]
+        event_args: Option<String>,
         /// IANA time zone for --cron and --at (default: local).
         #[arg(long)]
         tz: Option<String>,
@@ -290,6 +296,8 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
             every,
             cron,
             at,
+            event,
+            event_args,
             tz,
             prompt,
             code_file,
@@ -297,11 +305,35 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
             session,
             agent,
         } => {
-            let trigger = match (every, cron, at) {
-                (Some(every), _, _) => au::Trigger::Every { every, tz },
-                (_, Some(cron), _) => au::Trigger::Cron { cron, tz },
-                (_, _, Some(at)) => au::Trigger::At { at, tz },
-                _ => return Err(anyhow!("give one of --every, --cron or --at")),
+            let trigger = match (every, cron, at, event) {
+                (Some(every), ..) => au::Trigger::Every { every, tz },
+                (_, Some(cron), ..) => au::Trigger::Cron { cron, tz },
+                (_, _, Some(at), _) => au::Trigger::At { at, tz },
+                (.., Some(e)) => {
+                    let (server, event) = e
+                        .split_once(':')
+                        .filter(|(s, e)| !s.is_empty() && !e.is_empty())
+                        .ok_or_else(|| anyhow!("--event takes SERVER:EVENT"))?;
+                    let args: Option<serde_json::Value> = event_args
+                        .map(|a| serde_json::from_str(&a))
+                        .transpose()
+                        .context("--event-args must be JSON")?;
+                    // The server must be reachable now and offer the event for push delivery.
+                    let loaded = config::load(cwd)?;
+                    let mut one = loaded.config.mcp.clone();
+                    one.servers.retain(|n, _| n == server);
+                    if one.servers.is_empty() {
+                        return Err(anyhow!("no MCP server {server} is configured here"));
+                    }
+                    let mcp = codesmith_core::mcp::Mcp::connect(&one, &loaded.root).await;
+                    mcp.check_event(server, event, args.as_ref()).await?;
+                    au::Trigger::Event {
+                        server: server.into(),
+                        event: event.into(),
+                        args,
+                    }
+                }
+                _ => return Err(anyhow!("give one of --every, --cron, --at or --event")),
             };
             let action = match (prompt, code_file) {
                 (Some(prompt), _) => au::Action::Prompt {
@@ -333,12 +365,19 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
                     action,
                 },
             )?;
-            println!(
-                "Created {} ({}); first run {}",
-                a.id,
-                au::describe(&a.trigger),
-                au::when(a.next_due)
-            );
+            match a.next_due {
+                Some(_) => println!(
+                    "Created {} ({}); first run {}",
+                    a.id,
+                    au::describe(&a.trigger),
+                    au::when(a.next_due)
+                ),
+                None => println!(
+                    "Created {} ({}); it runs once per event",
+                    a.id,
+                    au::describe(&a.trigger)
+                ),
+            }
             println!("It runs while CodeSmith is open here, or keep `codesmith automation serve` running.");
         }
         AutomationCmd::Pause { id } => {
@@ -346,7 +385,12 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
         }
         AutomationCmd::Resume { id } => {
             let a = au::set_status(&db, &id, "active")?;
-            println!("{id} is active; next run {}", au::when(a.next_due));
+            match a.trigger {
+                au::Trigger::Event { .. } => {
+                    println!("{id} is active; it resumes from its saved event cursor")
+                }
+                _ => println!("{id} is active; next run {}", au::when(a.next_due)),
+            }
         }
         AutomationCmd::Remove { id } => println!(
             "{}",
@@ -685,7 +729,7 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                     codesmith_core::mcp::Status::Failed(e) => println!("{name}: failed: {e}"),
                 }
-                for t in mcp.tools.iter().filter(|t| &t.server == name) {
+                for t in mcp.tools().iter().filter(|t| &t.server == name) {
                     let d: String = t
                         .description
                         .lines()
@@ -696,12 +740,19 @@ async fn run(cli: Cli) -> Result<()> {
                         .collect();
                     println!("  {}  {d}", t.name);
                 }
+                for p in mcp.prompts().iter().filter(|p| &p.server == name) {
+                    println!(
+                        "  /{}  (prompt)",
+                        codesmith_core::mcp::command_name(&p.server, &p.name)
+                    );
+                }
             }
             Ok(())
         }
         Some(Command::Commands) => {
             let loaded = config::load(&cwd)?;
-            for (name, c) in all_commands(&cwd, &loaded) {
+            let mcp = connect_mcp(&loaded, false).await;
+            for (name, c) in all_commands_with(&cwd, &loaded, &mcp) {
                 println!("/{name:<16} {}", c.description.as_deref().unwrap_or(""));
             }
             Ok(())
@@ -1171,6 +1222,18 @@ pub(crate) fn all_commands(
     )
 }
 
+/// Every command, with the MCP servers' prompts as `/server:prompt`
+/// (a same-named custom command wins).
+pub(crate) fn all_commands_with(
+    cwd: &std::path::Path,
+    loaded: &config::Loaded,
+    mcp: &codesmith_core::mcp::Mcp,
+) -> std::collections::BTreeMap<String, command::Command> {
+    let mut all = mcp.commands();
+    all.extend(all_commands(cwd, loaded));
+    all
+}
+
 fn open_store() -> Result<Store> {
     let path = store::default_path();
     Store::open(&path).with_context(|| format!("session store {}", path.display()))
@@ -1373,8 +1436,10 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     let loaded = config::load(&cwd)?;
     let (mut agent_arg, mut model_arg) = (args.agent, args.model);
     let mut native: Option<(String, String)> = None;
+    let mut mcp_prompt: Option<(command::Command, String)> = None;
+    let mcp = connect_mcp(&loaded, args.format != Format::Json).await;
     if let Some((name, rest)) = command::parse_invocation(&message) {
-        let all = all_commands(&cwd, &loaded);
+        let all = all_commands_with(&cwd, &loaded, &mcp);
         let c = all.get(&name).ok_or_else(|| {
             anyhow!(
                 "unknown command /{name}; available: {}",
@@ -1386,6 +1451,8 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         })?;
         if c.native {
             native = Some((name.clone(), rest.clone()));
+        } else if c.mcp.is_some() {
+            mcp_prompt = Some((c.clone(), rest.clone()));
         } else {
             message = command::expand(&c.template, &rest);
         }
@@ -1408,7 +1475,6 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     } else {
         Arc::new(Terminal)
     };
-    let mcp = connect_mcp(&loaded, args.format != Format::Json).await;
     let mut session = Session::new(
         &loaded,
         cwd,
@@ -1424,6 +1490,9 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         asker,
         db,
     )?;
+    if let Some((c, rest)) = &mcp_prompt {
+        message = session.expand_command(c, rest).await?;
+    }
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
     if !json {

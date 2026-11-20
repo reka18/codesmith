@@ -22,6 +22,10 @@ pub struct Command {
     /// (`/review`, `/calibrate`). A same-named custom command replaces it.
     #[serde(skip)]
     pub native: bool,
+    /// An MCP server's prompt, `(server, prompt)`, fetched with `prompts/get`
+    /// when run (`/server:prompt args`).
+    #[serde(skip)]
+    pub mcp: Option<(String, String)>,
 }
 
 /// Built-in commands: `/init`, plus the native `/review` and `/calibrate`.
@@ -85,6 +89,7 @@ pub fn from_markdown(text: &str) -> Command {
         agent: meta.get("agent").cloned(),
         model: meta.get("model").cloned(),
         native: false,
+        mcp: None,
     }
 }
 
@@ -262,6 +267,7 @@ mod tests {
                 agent: Some("build".into()),
                 model: None,
                 native: false,
+                mcp: None,
             }
         );
     }

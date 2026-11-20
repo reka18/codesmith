@@ -391,7 +391,7 @@ impl Agent {
     }
 
     fn commands(&self, slot: &Slot) -> Value {
-        let cmds: Vec<Value> = crate::all_commands(&slot.cwd, &slot.loaded)
+        let cmds: Vec<Value> = crate::all_commands_with(&slot.cwd, &slot.loaded, &slot.mcp)
             .into_iter()
             .map(|(name, c)| json!({"name": name, "description": c.description.unwrap_or_default(), "input": {"hint": "arguments"}}))
             .collect();
@@ -634,7 +634,7 @@ impl Agent {
         sink: &mut AcpSink,
     ) -> Result<()> {
         if let Some((name, args)) = command::parse_invocation(text) {
-            let all = crate::all_commands(&slot.cwd, &slot.loaded);
+            let all = crate::all_commands_with(&slot.cwd, &slot.loaded, &slot.mcp);
             if let Some(c) = all.get(&name) {
                 if c.native {
                     let env = codesmith_core::review::Env::new(
@@ -654,7 +654,8 @@ impl Agent {
                     sink.text(&report);
                     return s.append_exchange(text, &report, &usage);
                 }
-                return s.prompt(&command::expand(&c.template, &args), sink).await;
+                let text = s.expand_command(c, &args).await?;
+                return s.prompt(&text, sink).await;
             }
         }
         s.prompt(text, sink).await

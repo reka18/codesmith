@@ -368,6 +368,25 @@ and refreshed automatically; `codesmith mcp logout <name>` forgets them. Set
 `"oauth": {"clientId": "...", "clientSecret": "...", "scope": "...", "port": 19876}`
 to use a pre-registered client, or `"oauth": false` to turn it off.
 
+**Beyond tools**, following OpenCode:
+
+- A server's `instructions` (from its `initialize` reply) join the system
+  prompt in an `<mcp_instructions>` block, but only while the session can
+  reach at least one of its tools.
+- Resources are read through two tools, `list_mcp_resources` (resources and
+  URI templates, from one server or all) and `read_mcp_resource` (one URI),
+  offered when a connected server has resources. Both are permission-checked:
+  listing by server name, reading by `server:uri`, so
+  `{"action": "read_mcp_resource", "resource": "docs:secret://*", "effect": "deny"}`
+  keeps a server's secrets out.
+- Prompts become slash commands named `/<server>:<prompt>`. Arguments fill the
+  prompt's declared arguments in order (quote one with spaces); `codesmith
+  commands` lists them with their argument names.
+- `tools/list_changed` and `prompts/list_changed` notifications refresh the
+  lists before the next model request, and `notifications/message` log lines
+  go to the server's log file. Over HTTP, notifications and server requests
+  inside a response's SSE stream are handled too.
+
 ## Automations
 
 Automations run a prompt — or a Code Mode program — later or on a schedule,
@@ -380,12 +399,26 @@ codesmith automation add --name standup --cron "0 9 * * 1-5" --tz Europe/Paris \
   --prompt "Summarize yesterday's commits in three bullets"
 codesmith automation add --name tidy --every "1 day" --agent build --prompt "…"
 codesmith automation add --name once --at "in 30 minutes" --session ses_… --prompt "…"
+codesmith automation add --name tickets --event tracker:ticket.created \
+  --event-args '{"queue": "ops"}' --prompt "Triage the new ticket"
 codesmith automation list | pause ID | resume ID | remove ID | log ID
 ```
 
 Triggers: `--at` (once: "in 30 minutes", "2026-10-27T09:00", or an RFC 3339
 time), `--every` ("10 minutes", "2 hours", "1 day") and `--cron` (five
-fields, in `--tz` or local time). A prompt goes to an existing session
+fields, in `--tz` or local time). `--event server:event` runs once for each
+event an MCP server pushes, for servers that offer MCP Events (the draft
+`io.modelcontextprotocol/events` extension, as in OpenCode): the server must
+be connected and advertise the event for push delivery, and `--event-args`
+must match its input schema. Each run's prompt carries the event
+(`{id, timestamp, data}`) as quoted, untrusted data; a program gets it as
+`input.event`. The watch saves the server's cursor after every message, so
+pausing and resuming (or a restart) picks up where it left off without
+running an event twice; a stream that breaks is reopened up to three times.
+A watch that cannot go on — a refused or ended subscription, a server that
+cannot replay from the saved cursor, an event that does not match its
+schema, a failed run, or a `watch_mcp_event` rule that denies the server —
+is paused with the reason in `automation list`. A prompt goes to an existing session
 (`--session`) or to a new session with an agent on each run. A Code Mode
 program (`--code-file`) gets `input = {state, now, runs, args}` and may
 return `{state, done, send: {prompt, to: {subagent}}}` to keep state between
@@ -397,7 +430,7 @@ or by `codesmith automation serve`, which you can keep running under launchd
 or systemd; a lease in the database keeps two processes from firing the same
 run. Runs are unattended: they follow your permission rules, but anything
 that would ask is refused. Each run's outcome, session and answer are kept for
-`automation log`. Triggers from MCP server events are not supported yet.
+`automation log`.
 
 ## Plugins
 
@@ -480,7 +513,8 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
 4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees, stats~~
-5. ~~ACP, native Rust plugins, Code Mode, automations~~ (MCP event triggers to come)
+5. ~~ACP, native Rust plugins, Code Mode, automations, MCP resources, prompts
+   and event triggers~~
 
 ## License
 

@@ -364,15 +364,13 @@ impl Session {
 
     fn base_request(&self, plugins: &crate::plugin::Registry) -> Request {
         let code = self.code_entries();
-        let system = if code.is_empty() {
-            self.system.clone()
-        } else {
-            format!(
-                "{}\n\n{}",
-                self.system,
-                crate::codemode::instructions(&code)
-            )
-        };
+        let mut system = self.system.clone();
+        if !code.is_empty() {
+            system = format!("{system}\n\n{}", crate::codemode::instructions(&code));
+        }
+        if let Some(mcp) = self.mcp_instructions(&code) {
+            system = format!("{system}\n\n{mcp}");
+        }
         let automation = self
             .store
             .as_ref()
@@ -423,11 +421,16 @@ impl Session {
                     }
                     t => t.spec(&self.shell),
                 })
-                .chain(self.mcp_tools().map(|t| codesmith_ai::ToolSpec {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.schema.clone(),
-                }))
+                .chain(
+                    self.mcp_tools()
+                        .into_iter()
+                        .map(|t| codesmith_ai::ToolSpec {
+                            name: t.name,
+                            description: t.description,
+                            parameters: t.schema,
+                        }),
+                )
+                .chain(self.resource_tools())
                 .chain(
                     self.plugin_tools(plugins)
                         .iter()
@@ -623,10 +626,13 @@ impl Session {
                         self.run_code(&input).await
                     }
                     _ if name == crate::automation::TOOL && self.store.is_some() => {
-                        self.run_automation(&input)
+                        self.run_automation(&input).await
                     }
-                    _ if self.mcp_tools().any(|t| t.name == name) => {
+                    _ if self.mcp_tools().iter().any(|t| t.name == name) => {
                         self.run_mcp(&name, &input).await
+                    }
+                    _ if self.resource_tools().iter().any(|t| t.name == name) => {
+                        self.run_resource_tool(&name, &input).await
                     }
                     _ if self.plugin_tools(&plugins).iter().any(|t| t.name() == name) => {
                         self.run_plugin_tool(&plugins, &name, &input).await
@@ -709,11 +715,22 @@ impl Session {
     }
 
     fn allowed(&self, action: &str, resource: &str, title: String) -> Result<(), String> {
+        self.allowed_with(action, vec![resource.into()], vec![resource.into()], title)
+    }
+
+    /// A permission check whose remembered ("always") answer covers `save`.
+    fn allowed_with(
+        &self,
+        action: &str,
+        resources: Vec<String>,
+        save: Vec<String>,
+        title: String,
+    ) -> Result<(), String> {
         let gate = &self.gate;
         let req = crate::permission::Request {
             action: action.into(),
-            resources: vec![resource.into()],
-            save: vec![resource.into()],
+            resources,
+            save,
             title,
         };
         tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
@@ -788,11 +805,107 @@ impl Session {
     }
 
     /// MCP tools this agent may use: hidden when its rules deny the tool outright.
-    fn permitted_mcp(&self) -> impl Iterator<Item = &crate::mcp::McpTool> {
+    fn permitted_mcp(&self) -> Vec<crate::mcp::McpTool> {
         let rules = &self.agent.permissions;
-        self.mcp.tools.iter().filter(move |t| {
-            crate::permission::evaluate(&t.name, "*", rules) != crate::permission::Effect::Deny
-        })
+        self.mcp
+            .tools()
+            .into_iter()
+            .filter(|t| {
+                crate::permission::evaluate(&t.name, "*", rules) != crate::permission::Effect::Deny
+            })
+            .collect()
+    }
+
+    /// `list_mcp_resources` and `read_mcp_resource`, when a connected server
+    /// has resources and the rules do not deny them.
+    fn resource_tools(&self) -> Vec<codesmith_ai::ToolSpec> {
+        if self.mcp.resource_servers().is_empty() {
+            return vec![];
+        }
+        crate::mcp::resource_tools()
+            .into_iter()
+            .filter(|(name, ..)| {
+                crate::permission::evaluate(name, "*", &self.agent.permissions)
+                    != crate::permission::Effect::Deny
+            })
+            .map(|(name, description, parameters)| codesmith_ai::ToolSpec {
+                name: name.into(),
+                description,
+                parameters,
+            })
+            .collect()
+    }
+
+    async fn run_resource_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        let input = tool::repair(input);
+        let server = input["server"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let result = if name == crate::mcp::LIST_RESOURCES {
+            // Listing every server checks each name, so per-server rules still apply.
+            let servers = match server {
+                Some(s) => vec![s.to_string()],
+                None => self.mcp.resource_servers(),
+            };
+            let title = format!("List MCP resources from {}", servers.join(", "));
+            match self.allowed_with(name, servers.clone(), servers, title) {
+                Err(e) => return (e, true),
+                Ok(()) => self
+                    .mcp
+                    .list_resources(server)
+                    .await
+                    .map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()),
+            }
+        } else {
+            let (Some(server), Some(uri)) = (server, input["uri"].as_str()) else {
+                return ("`server` and `uri` are required".into(), true);
+            };
+            let resource = format!("{server}:{uri}");
+            let title = format!("Read MCP resource {resource}");
+            if let Err(e) =
+                self.allowed_with(name, vec![resource], vec![format!("{server}:*")], title)
+            {
+                return (e, true);
+            }
+            self.mcp
+                .read_resource(server, uri)
+                .await
+                .map_err(|e| anyhow!("Unable to read MCP resource {server}:{uri}: {e:#}"))
+        };
+        match result {
+            Ok(text) => (
+                tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+                false,
+            ),
+            Err(e) => (format!("{e:#}"), true),
+        }
+    }
+
+    /// The `<mcp_instructions>` block for servers whose tools this session can
+    /// reach, directly or through Code Mode (OpenCode's rule).
+    fn mcp_instructions(&self, code: &[crate::codemode::Entry]) -> Option<String> {
+        let direct = self.mcp_tools();
+        let servers: Vec<(String, String, bool)> = self
+            .mcp
+            .instructions()
+            .into_iter()
+            .filter_map(|(server, text)| {
+                let in_code = code.iter().any(|e| e.namespace == server);
+                let in_direct = direct.iter().any(|t| t.server == server);
+                (in_code || in_direct).then_some((server, text, in_code))
+            })
+            .collect();
+        (!servers.is_empty()).then(|| crate::mcp::render_instructions(&servers))
+    }
+
+    /// The prompt a custom command sends: its template filled in, or an MCP
+    /// server's prompt fetched with the arguments.
+    pub async fn expand_command(&self, c: &crate::command::Command, args: &str) -> Result<String> {
+        match &c.mcp {
+            Some((server, name)) => self.mcp.prompt_text(server, name, args).await,
+            None => Ok(crate::command::expand(&c.template, args)),
+        }
     }
 
     fn codemode_on(&self) -> bool {
@@ -800,9 +913,12 @@ impl Session {
     }
 
     /// MCP tools offered as direct tool calls.
-    fn mcp_tools(&self) -> impl Iterator<Item = &crate::mcp::McpTool> {
+    fn mcp_tools(&self) -> Vec<crate::mcp::McpTool> {
         let on = self.codemode_on();
-        self.permitted_mcp().filter(move |t| !(on && t.codemode))
+        self.permitted_mcp()
+            .into_iter()
+            .filter(|t| !(on && t.codemode))
+            .collect()
     }
 
     /// Tools callable inside Code Mode.
@@ -811,6 +927,7 @@ impl Session {
             return vec![];
         }
         self.permitted_mcp()
+            .into_iter()
             .filter(|t| t.codemode)
             .map(|t| crate::codemode::Entry {
                 tool: t.name.clone(),
@@ -822,7 +939,7 @@ impl Session {
             .collect()
     }
 
-    fn run_automation(&self, input: &serde_json::Value) -> (String, bool) {
+    async fn run_automation(&self, input: &serde_json::Value) -> (String, bool) {
         use crate::automation as au;
         let input = tool::repair(input);
         let Some(db) = &self.store else {
@@ -837,6 +954,21 @@ impl Session {
         };
         let dir = self.cwd.display().to_string();
         let action = s("action").unwrap_or_default();
+        // An event trigger needs a connected server offering that push event.
+        let trigger = &input["trigger"];
+        if action == "create" && trigger["type"] == "event" {
+            let (server, event) = (
+                trigger["server"].as_str().unwrap_or(""),
+                trigger["event"].as_str().unwrap_or(""),
+            );
+            if let Err(e) = self
+                .mcp
+                .check_event(server, event, trigger.get("args").filter(|a| !a.is_null()))
+                .await
+            {
+                return (format!("{e:#}"), true);
+            }
+        }
         let result: anyhow::Result<String> = (|| match action.as_str() {
             "list" => Ok(au::table(&au::list(db, Some(&dir))?)),
             "create" => {
@@ -857,6 +989,11 @@ impl Session {
                 let title = format!("Schedule \"{name}\" ({})", au::describe(&trigger));
                 self.allowed(au::TOOL, "create", title)
                     .map_err(|e| anyhow!(e))?;
+                if let au::Trigger::Event { server, event, .. } = &trigger {
+                    let title = format!("Watch {event} events from MCP server {server}");
+                    self.allowed(au::WATCH_EVENT, server, title)
+                        .map_err(|e| anyhow!(e))?;
+                }
                 let a = au::create(
                     db,
                     au::New {
@@ -867,7 +1004,11 @@ impl Session {
                         action: au::Action::Prompt { prompt, to },
                     },
                 )?;
-                Ok(format!("Created {} ({}); first run {}. It runs while any CodeSmith is open, or under `codesmith automation serve`.", a.id, au::describe(&a.trigger), au::when(a.next_due)))
+                let first = match a.next_due {
+                    Some(_) => format!("first run {}", au::when(a.next_due)),
+                    None => "it runs once per event".into(),
+                };
+                Ok(format!("Created {} ({}); {first}. It runs while any CodeSmith is open, or under `codesmith automation serve`.", a.id, au::describe(&a.trigger)))
             }
             "pause" | "resume" | "remove" => {
                 let id = s("id").ok_or_else(|| anyhow!("`id` is required"))?;
@@ -937,7 +1078,7 @@ impl Session {
     }
 
     async fn run_mcp(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
-        if !self.permitted_mcp().any(|t| t.name == name) {
+        if !self.permitted_mcp().iter().any(|t| t.name == name) {
             return (
                 format!("The {name} tool is not available to this agent."),
                 true,
@@ -1214,6 +1355,8 @@ impl Session {
     /// One model call with retries. A failure after output has streamed is not
     /// retried, since the user has already seen part of the answer.
     async fn step(&mut self, sink: &mut dyn Sink) -> Result<(Vec<Part>, String, Usage)> {
+        // Pick up tool and prompt lists a server announced as changed.
+        self.mcp.refresh().await;
         let req = self.request();
         let mut attempt = 0;
         loop {

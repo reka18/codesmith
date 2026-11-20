@@ -27,7 +27,7 @@ pub use codesmith_core as core;
 pub use codesmith_core::plugin;
 use std::sync::Arc;
 
-pub(crate) use cli::{all_commands, connect_mcp};
+pub(crate) use cli::{all_commands_with, connect_mcp};
 
 /// Run the CodeSmith command line with these plugins installed, then exit.
 pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
