@@ -5,6 +5,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | Command | Purpose |
 |---|---|
 | [`codesmith`](#codesmith) | The interactive UI. |
+| [`mini`](#codesmith-mini) | The interactive UI in the terminal's scrollback. |
 | [`run`](#codesmith-run) | Run one prompt and print the result. |
 | [`session`](#codesmith-session) | List, export, import, delete, undo, redo, diff sessions. |
 | [`models`](#codesmith-models) | List providers and models. |
@@ -33,6 +34,23 @@ Opens the [interactive UI](interactive-ui.md).
 | `-w, --worktree[=NAME]` | Start in a new git [worktree](sessions.md#worktrees). |
 | `--auto` | Approve every permission request that no rule denies. |
 | `--print-logs` | Accepted on every command, but has no effect yet. |
+
+## `codesmith mini`
+
+Opens the interactive UI in [mini mode](interactive-ui.md#mini-mode): the
+transcript goes into the terminal's scrollback, with a live footer for the
+prompt. Piped stdin, then `--prompt`, is the first message.
+
+| Flag | Meaning |
+|---|---|
+| `-m, --model provider/model` | Model to use. |
+| `--agent ID` | Agent to start with. |
+| `-c, --continue` | Continue the most recent session in this folder. |
+| `-s, --session ID` | Continue this session. |
+| `--prompt TEXT` | Send this prompt as soon as the UI opens. |
+| `--auto` | Approve every permission request that no rule denies. |
+| `--replay`, `--no-replay` | Write a continued session's history, and the transcript again after a resize (default: `tui.mini.replay`, on). |
+| `--replay-limit N` | The newest N prompts and answers a replay writes (default: 200). |
 
 ## `codesmith run`
 

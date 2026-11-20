@@ -41,6 +41,12 @@ Where the tests live:
   triggers, pasted files and attachment labels (`tui/test/prompt*`,
   `dialog-select`, `app-lifecycle`, `mini/prompt.shared`,
   `mini/runtime.queue`).
+- `src/tui/mini/`: mini mode, `codesmith mini` (`mini/verbosity`,
+  `footer.width`, `splash`, `footer`, `footer.responsive`,
+  `scrollback.surface`, `entry.body`, `stream`, `runtime.boot` and the mini
+  settings of `config-v2`): `settings.rs`, `width.rs` and `splash.rs` for
+  the pure parts, `tests.rs` for the scrollback and footer on a `vt100`
+  terminal; `tests/e2e/mini.rs` runs the binary in a pty.
 - `src/tui/theme/tests.rs`: themes, their V1 migration, mode selection and
   the system theme (`tui/test/theme*`, `cli/tui/theme-mode`,
   `context/theme`).
@@ -83,14 +89,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 256 | 344 | 624 | 13 |
-| tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
+| tui: main UI | 1250 | 13 | 257 | 343 | 624 | 13 |
+| tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **453** | **891** | **2292** | **259** |
+| **Total** | **4637** | **742** | **516** | **796** | **2324** | **259** |
 
 ## Fixes made while porting
 
@@ -250,6 +256,43 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/util/locale` | truncates text from the right by terminal width | after a fix | oc_cut_truncates_from_the_right_by_terminal_width |
 | `tui/test/util/locale` | takes whole graphemes within terminal width | after a fix | oc_take_keeps_whole_graphemes_within_terminal_width (adapted) |
 | `tui/test/util/locale` | rolls the compact form over at the rounding boundary | after a fix | oc_token_counts_roll_over_at_the_rounding_boundary (adapted: `1M` for `1.0M`) |
+| `tui/test/mini/verbosity` | default Mini settings match the default verbosity preset | after a fix | oc_default_mini_settings_match_the_default_preset |
+| `tui/test/mini/verbosity` | verbosity presets leave splash, spinner, and mono alone | after a fix | oc_verbosity_presets_leave_splash_spinner_and_mono_alone |
+| `tui/test/mini/verbosity` | individual knobs mark verbosity custom until a preset matches again | after a fix | oc_individual_knobs_mark_verbosity_custom |
+| `tui/test/mini/verbosity` | verbosity cycles like a clamped slider | after a fix | oc_verbosity_cycles_like_a_clamped_slider |
+| `tui/test/mini/verbosity` | custom verbosity moves toward the nearest preset | after a fix | oc_custom_verbosity_moves_toward_the_nearest_preset |
+| `tui/test/mini/footer.width` | progressive layouts fit and preserve information at every width (2 cases) | after a fix | oc_progressive_layouts_fit_and_preserve_information_at_every_width |
+| `tui/test/mini/footer.width` | identity admission cannot separate the selected variant from its model | after a fix | oc_identity_admission_keeps_the_variant_with_its_model |
+| `tui/test/mini/footer.width` | allocation priority is separate from placement | after a fix | oc_allocation_priority_is_separate_from_placement |
+| `tui/test/mini/footer.width` | a non-fitting high-priority stage does not backfill with shorter facts | after a fix | oc_a_non_fitting_stage_does_not_backfill |
+| `tui/test/mini/footer.width` | context and cost are distinct additions | after a fix | oc_context_and_cost_are_distinct_additions |
+| `tui/test/mini/footer.width` | stop-label enhancement cannot remove identity at the former 56-column breakpoint | after a fix | oc_the_stop_label_never_removes_the_identity |
+| `tui/test/mini/footer.width` | required controls use an explicit wrapping fallback without optional groups | after a fix | oc_required_controls_wrap_without_optional_groups |
+| `tui/test/mini/splash` | entry renders metadata with distinct foreground roles (3 cases) | after a fix | oc_entry_renders_metadata_with_distinct_foreground_roles (adapted: `cs mini`, theme text and muted colors) |
+| `tui/test/mini/splash` | entry progressively admits the basename, whole version, and parent directories (8 cases) | after a fix | oc_entry_progressively_admits_basename_version_and_parents |
+| `tui/test/mini/splash` | entry handles absent and root locations (5 cases) | after a fix | oc_entry_handles_absent_and_root_locations |
+| `tui/test/mini/splash` | entry layout preserves admitted information at every width (2 cases) | after a fix | oc_entry_layout_preserves_admitted_information_at_every_width |
+| `tui/test/mini/splash` | entry skips abbreviated paths that are longer than the full path (2 cases) | after a fix | oc_entry_skips_abbreviated_paths_longer_than_the_full_path |
+| `tui/test/mini/splash` | %s commits one scrollback snapshot without reflow on resize (2 cases) | after a fix | oc_banners_are_written_once (adapted: with replay off a resize writes neither again) |
+| `tui/test/mini/splash` | exit retains the complete resume command (8 cases) | after a fix | oc_exit_retains_the_complete_resume_command (adapted: no logo, so the wide form needs room for `Continue <command>` only) |
+| `tui/test/mini/footer` | tools setting %s controls tool and skill transcript (2 cases) | after a fix | oc_the_tools_setting_controls_tool_rows_in_the_scrollback (adapted: no skill rows) |
+| `tui/test/mini/footer` | reasoning in scrollback follows session.markdown %s (2 cases) | after a fix | oc_reasoning_in_the_scrollback_follows_session_markdown |
+| `tui/test/mini/footer` | startup preserves the terminal prompt row from cursor row %s (3 cases) | after a fix | oc_startup_preserves_the_terminal_prompt_row (adapted: the shell's rows stay and the cursor row holds still) |
+| `tui/test/mini/footer` | command menu uses its full height on first open (2 cases) | after a fix | oc_a_picker_uses_its_full_height_when_it_opens (adapted: a picker) |
+| `tui/test/mini/footer` | production footer preserves wrapped input and status on resize (2 cases) | after a fix | oc_the_footer_keeps_the_draft_and_status_across_resizes |
+| `tui/test/mini/footer.responsive` | ctrl+l clears the split-footer screen without wiping scrollback | after a fix | oc_clearing_the_screen_keeps_the_scrollback |
+| `tui/test/mini/scrollback.surface` | turn summary starts at the left edge | after a fix | oc_the_turn_summary_starts_at_the_left_edge |
+| `tui/test/mini/scrollback.surface` | renders plain errors with one blank line before and after the error block | after a fix | oc_errors_have_one_blank_row_before_and_after |
+| `tui/test/mini/scrollback.surface` | inserts spacers for new visible groups | after a fix | oc_spacers_come_between_new_visible_groups (adapted) |
+| `tui/test/mini/scrollback.surface` | markdown written in several commits keeps its blank rows on the terminal | after a fix | oc_markdown_written_in_several_commits_keeps_its_blank_rows |
+| `tui/test/mini/scrollback.surface` | holds markdown code blocks until final commit and keeps newline ownership | after a fix | oc_code_blocks_are_held_until_they_close |
+| `tui/test/mini/scrollback.surface` | finalizes markdown tables for streamed and coalesced input | after a fix | oc_tables_render_the_same_streamed_or_whole |
+| `tui/test/mini/scrollback.surface` | renders monochrome scrollback as ASCII markdown | after a fix | oc_monochrome_scrollback_is_ascii (adapted: CodeSmith's renderer with ASCII symbols) |
+| `tui/test/mini/entry.body` | keeps running subagent tool state out of scrollback | after a fix | oc_a_running_subagent_stays_out_of_the_scrollback |
+| `tui/test/mini/entry.body` | hides shell tool output but not direct shell output | after a fix | oc_shell_output_shows_only_when_asked (adapted: no direct shell rows yet) |
+| `tui/test/mini/stream` | delivers commits before ordered footer updates | after a fix | oc_commits_come_before_the_footer_in_a_frame |
+| `tui/test/mini/runtime.boot` | preserves shared config while resolving independent Mini defaults | after a fix | oc_mini_defaults_resolve_independently_of_the_shared_config (adapted) |
+| `tui/test/config-v2` | validates mini replay and work spinner settings | after a fix | oc_validates_mini_replay_and_work_spinner_settings |
 | `tui/test/mini/prompt.shared` | recognizes exit commands | after a fix | oc_exit_commands_ignore_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes the new-session command | after a fix | oc_the_new_session_command_ignores_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes only the compact command | after a fix | oc_only_the_compact_command_compacts |
@@ -558,35 +601,35 @@ Missing features, largest first, with the OpenCode tests that would come
 with each (every test for groups up to 30 cases; by file, with examples,
 for larger ones).
 
-### tui: mini (inline scrollback) mode (418)
+### tui: mini mode, the rest (323)
+
+`codesmith mini` writes the scrollback and draws its footer (see
+[ported tests](#ported-tests)); these need what OpenCode's mini footer has
+beyond that: image paste previews, queued prompts, the command and
+settings menu, subagent panels, rich question forms, OpenCode's V2 event
+transport and its tool presentation.
 
 - `tui/test/mini/footer.view` (81): e.g. "mini pastes, previews, submits, and recalls an image ($"; "mini waits for image paste before submitting and drops a paste after editing the draft"
 - `tui/test/mini/stream-v2.transport` (70): e.g. "cancels the first local %s after attaching while busy"; "renders user content once (%s first)"
 - `tui/test/mini/blocker.responsive` (39): e.g. "roomy question forms retain the established spacing and inline descriptions"; "complete questions and distinct option details remain r"
-- `tui/test/mini/splash` (26): e.g. "entry renders metadata with distinct foreground roles (%o)"; "entry progressively admits the basename, whole version, an"
-- `tui/test/mini/scrollback.surface` (25): e.g. "turn summary starts at the left edge"; "theme swaps restyle active reasoning without resetting the stream"
-- `tui/test/mini/theme` (25): e.g. "theme lookup does not allocate resources after renderer shutdown"; "preserves %s monochrome terminal defaults"
-- `tui/test/mini/footer` (23): e.g. "coalesces progress only within the same message and tool state"; "tools setting %s controls tool and skill transcript"
 - `tui/test/mini/runtime.queue` (21): e.g. "runs and queues image-only prompts without optimistic image rows"; "treats %s as a close command"
-- `tui/test/mini/entry.body` (19): e.g. "renders a failed direct shell as an error instead of completed success"; "renders assistant, reasoning, and user entries in their display formats"
-- `tui/test/mini/footer.responsive` (15): e.g. "production footer confirms exit with a visible menu hint a"; "production statusline restores identity and trailing me"
+- `tui/test/mini/scrollback.surface` (18): e.g. "turn summary starts at the left edge"; "theme swaps restyle active reasoning without resetting the stream"
+- `tui/test/mini/entry.body` (17): e.g. "renders a failed direct shell as an error instead of completed success"; "renders assistant, reasoning, and user entries in their display formats"
+- `tui/test/mini/footer.responsive` (14): e.g. "production footer confirms exit with a visible menu hint a"; "production statusline restores identity and trailing me"
+- `tui/test/mini/footer` (12): e.g. "coalesces progress only within the same message and tool state"; "tools setting %s controls tool and skill transcript"
 - `tui/test/mini/scrollback.image` (12): e.g. "fits a $name image at the left edge and commits only its f"; "reserves wrapped caption rows and allows caption-only output in a short terminal"
-- `tui/test/mini/footer.width` (8): e.g. "progressive layouts fit and preserve information at every"; "identity admission cannot separate the selected variant from its model"
-- `tui/test/mini/permission.shared` (7): e.g. "replies immediately for allow once"; "requires confirmation for allow always"
 - `tui/test/mini/runtime` (6): e.g. "resolves the default model reactively without blocking catalog startup"; "routes form responses to their owners with global location and local settlement"
 - `tui/test/mini/session.shared` (6): e.g. "builds user prompts from projected text and attachments"; "leaves attachment sources undefined when projected mentions are absent"
 - `tui/test/mini/prompt.editor` (5): e.g. "strips the local /editor command from the initial editor text"; "realigns file and agent parts after external editing"
 - `tui/test/mini/tool` (5): e.g. "uses V2 shell output without the model-facing status"; "normalizes only persisted tool aliases into current fields"
-- `tui/test/mini/verbosity` (5): e.g. "default Mini settings match the default verbosity preset"; "verbosity presets leave splash, spinner, and mono alone"
 - `tui/test/mini/variant.shared` (4): e.g. "prefers cli then session then saved variants"; "cycles through variants and back to default"
-- `tui/test/mini/runtime.boot` (3): e.g. "falls back to default tui keymap config when config load fails"; "preserves shared config while resolving independent Mini defaults"
+- `tui/test/mini/runtime.boot` (2): e.g. "falls back to default tui keymap config when config load fails"; "preserves shared config while resolving independent Mini defaults"
 - `tui/test/mini/catalog.shared` (2): e.g. "loads visible project references from the current reference catalog"; "merges current providers and models into the footer catalog shape"
 - `tui/test/mini/footer-keymap` (2): e.g. "configured subagent key updates its hint and action"; "disabled subagent interrupt has no component fallback"
 - `tui/test/mini/footer.menu` (2): e.g. "footer menu scrolls before the selected row hits the bottom edge"; "footer menu scrolls before the selected row hits the top edge"
 - `tui/test/mini/form.shared` (2): e.g. "builds every supported answer and preserves owner location"; "rejects invalid and deliberately unsupported shapes"
 - `tui/test/mini/prompt.shared` (2): e.g. "appends and shifts part ranges by the %s offset"
-- `tui/test/mini/stream` (2): e.g. "defaults status patches to running phase"; "delivers commits before ordered footer updates"
-- `tui/test/config-v2` (1): e.g. "validates mini replay and work spinner settings"
+- `tui/test/mini/stream` (1): e.g. "defaults status patches to running phase"; "delivers commits before ordered footer updates"
 
 ### tui: session tabs (75)
 
@@ -934,6 +977,7 @@ for larger ones).
 | codemode: strict-mode checks | by design | 6 | 3 | Boa's strict mode words frozen-write errors differently, rejects early what OpenCode accepts (`delete` of a variable, a parameter named `arguments`), and misses two read-only writes |
 | acp: child sessions | by design | 13 | 3 | subagents run inside the parent turn; subagents run inside the parent turn; no steering |
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
+| tui: mini themes and permission prompt | by design | 32 | 2 | mini mode draws with the full UI's themes (its tests are ported there), not a separate mini theme resolver; its permission prompt is the full UI's dialog (y, a, n, typed feedback; `always` is for the session and asks no confirmation) |
 | tui: attachments | by design | 7 | 1 | attachments are read on send by path; SVG is not media; no remote server |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |
 | tui: new designs experiment | by design | 6 | 3 | OpenCode's `opencode2` theme and its V1 migration exist only behind its `new-designs` experiment |

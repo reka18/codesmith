@@ -53,6 +53,15 @@ replays of its recorded provider traffic.
   a file tree, split or unified patches with syntax colors, hunk and file
   navigation, review marks and single-file review, all on rebindable
   `diff.*` keys.
+- **Mini mode:** `codesmith mini` is OpenCode's split-footer interface:
+  finished transcript rows are written once into the terminal's own
+  scrollback (searchable and selectable after exit) while a live footer
+  holds the prompt, the running turn and permission, question and picker
+  dialogs. Streamed answers are written a block at a time; resizes and
+  resumes replay the history (`tui.mini.replay`, `replay_limit`); entry
+  and exit banners, turn summaries, `tui.mini` knobs with OpenCode's
+  quiet/default/everything presets, monochrome output, and synchronized
+  output frames.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
   web search, todos, questions, and image, PDF and video input (video only
   for models that take it).
