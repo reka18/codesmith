@@ -468,3 +468,17 @@
 1231 :: ported :: tests/oc_context_hooks.rs::oc_keeps_context_hook_edits_to_messages_without_stored_metadata
 @session-model-request-hooks.test.ts
 168 :: ported :: tests/oc_context_hooks.rs::oc_keeps_hook_edits_to_a_tool_schema_out_of_later_requests
+@plugin.test.ts
+537 :: ported :: tests/oc_plugin_session.rs::oc_creates_child_sessions_from_a_plugin_at_the_parents_location :: adapted: `plugin::Host::create`; the child takes the parent's folder, agent and model (sessions have no metadata)
+@plugin/session-compact.test.ts
+13 :: ported :: tests/oc_plugin_session.rs::oc_plugins_can_admit_session_compaction :: adapted: `Host::compact`; it waits in the store for the session's next step (CodeSmith has no inbox)
+31 :: ported :: tests/oc_plugin_session.rs::oc_an_admitted_compaction_runs_at_the_sessions_next_step :: adapted: one Rust API; checks the default delivery and that the session runs it
+@plugin/session-instructions.test.ts
+27 :: ported :: tests/oc_plugin_session.rs::oc_plugins_put_list_and_remove_session_instruction_entries_seen_by_the_next_model_request :: adapted: `Host::put_instruction`, `list_instructions`, `remove_instruction`
+120 :: ported :: tests/oc_plugin_session.rs::oc_plugins_remove_an_instruction_entry_before_the_session_runs_again :: adapted: one Rust API
+@plugin/session-list.test.ts
+12 :: ported :: tests/oc_plugin_session.rs::oc_plugins_list_sessions_in_pages :: adapted: `Host::list`; the cursor carries its query
+31 :: ported :: tests/oc_plugin_session.rs::oc_plugins_list_sessions_and_follow_cursors
+@plugin/session-remove.test.ts
+12 :: ported :: tests/oc_plugin_session.rs::oc_plugins_can_remove_sessions_and_their_children
+39 :: ported :: tests/oc_plugin_session.rs::oc_removing_a_session_leaves_only_the_unrelated_ones_listed :: adapted: one Rust API

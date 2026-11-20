@@ -12,9 +12,11 @@
 //! permission prompts, session events and going idle.
 
 mod context;
+pub mod host;
 mod request;
 
 pub use context::{Context, ContextMessage, ContextTool, Prompt};
+pub use host::{Host, HostError};
 pub use request::{RequestKind, RequestScope};
 /// The HTTP types the request hooks take.
 pub use reqwest;
@@ -277,6 +279,41 @@ pub struct Registry {
 }
 
 static ACTIVE: RwLock<Option<Arc<Registry>>> = RwLock::new(None);
+
+static HOST: RwLock<Option<Arc<Host>>> = RwLock::new(None);
+
+/// The plugin host of this process: the session store at
+/// [`crate::store::default_path`] (opened on first use), creating sessions
+/// in the current folder, unless [`set_host`] installed another.
+pub fn host() -> Result<Arc<Host>, HostError> {
+    if let Some(h) = HOST.read().unwrap().clone() {
+        return Ok(h);
+    }
+    let mut slot = HOST.write().unwrap();
+    if let Some(h) = slot.clone() {
+        return Ok(h);
+    }
+    let path = crate::store::default_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let h = Arc::new(Host::open(&path, cwd)?);
+    *slot = Some(h.clone());
+    Ok(h)
+}
+
+/// Whether this process has a plugin host yet (one was installed or used):
+/// without one, nothing can have admitted a compaction.
+pub(crate) fn host_in_use() -> bool {
+    HOST.read().unwrap().is_some()
+}
+
+/// Use `host` as this process's plugin host (tests, and embedders with
+/// their own store).
+pub fn set_host(host: Arc<Host>) {
+    *HOST.write().unwrap() = Some(host);
+}
 
 /// Install the plugins for this process (called once at startup).
 pub fn install(plugins: Vec<Arc<dyn Plugin>>) {

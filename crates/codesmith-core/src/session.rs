@@ -471,7 +471,13 @@ impl Session {
         };
         let agent_id = opts
             .agent
-            .or_else(|| resumed.as_ref().map(|r| r.0.agent.clone()))
+            // A session a plugin created without one takes the default.
+            .or_else(|| {
+                resumed
+                    .as_ref()
+                    .map(|r| r.0.agent.clone())
+                    .filter(|a| !a.is_empty())
+            })
             .unwrap_or_else(|| agent::default_id(config));
         let agent = agent::resolve(config, &agent_id).ok_or_else(|| {
             anyhow!(
@@ -481,7 +487,7 @@ impl Session {
         })?;
         let model_spec = opts
             .model
-            .or_else(|| resumed.as_ref().map(|r| r.0.model.clone()))
+            .or_else(|| resumed.as_ref().map(|r| r.0.model.clone()).filter(|m| !m.is_empty()))
             .or_else(|| agent.model.clone())
             .or_else(|| config.model.clone())
             .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in codesmith.json"))?;
@@ -1382,6 +1388,7 @@ impl Session {
         // Commands that finished since the last turn ended come first, in
         // the order things happened.
         self.report_finished_jobs()?;
+        self.run_admitted_compaction(sink, true).await?;
         // A fork is told it is one before its first prompt.
         if self.stored
             && self
@@ -1458,6 +1465,9 @@ impl Session {
         let mut truncated = 0u32;
         loop {
             self.report_finished_jobs()?;
+            if !compacted_this_step {
+                compacted_this_step = self.run_admitted_compaction(sink, false).await?;
+            }
             if !compacted_this_step && self.due_for_compaction() {
                 if self.worth_compacting() {
                     self.compact_for(sink, compact::Reason::Auto).await?;
@@ -2874,6 +2884,38 @@ impl Session {
         )
         .await?;
         Ok((text, usage))
+    }
+
+    /// Run the compaction a plugin admitted for this session (see
+    /// [`crate::plugin::Host::compact`]), if one waits: a `Queue` one only
+    /// before a prompt. Whether one ran; one that fails is reported to the
+    /// sink and dropped.
+    async fn run_admitted_compaction(
+        &mut self,
+        sink: &mut dyn Sink,
+        at_prompt: bool,
+    ) -> Result<bool> {
+        use crate::plugin::host;
+        if !crate::plugin::host_in_use() || !self.stored {
+            return Ok(false);
+        }
+        let Some(st) = &self.store else {
+            return Ok(false);
+        };
+        let Some(c) = host::pending(st, &self.id).ok().flatten() else {
+            return Ok(false);
+        };
+        if !at_prompt && c.delivery == host::Delivery::Queue {
+            return Ok(false);
+        }
+        st.set_meta(&self.id, host::COMPACT_KEY, None)?;
+        if let Err(e) = self.compact(sink).await {
+            sink.notice(&format!(
+                "the compaction a plugin asked for did not run: {e:#}"
+            ));
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Record what call `id` changed in `path`, when the change is small
