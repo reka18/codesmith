@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 461 | 89 | 672 | 13 |
+| tui: main UI | 1250 | 15 | 461 | 88 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **737** | **525** | **2372** | **259** |
+| **Total** | **4637** | **744** | **737** | **524** | **2373** | **259** |
 
 ## Fixes made while porting
 
@@ -967,10 +967,6 @@ transport and its tool presentation.
 - `tui/test/cli/tui/dialog-mcp`: returns to the MCP server list after OAuth completes
 - `tui/test/cli/tui/dialog-mcp`: opens an investigation draft for a failed MCP server at its originating location
 
-### tui: settings in the command palette (1)
-
-- `tui/test/cli/tui/command-palette`: searches settings globally and opens the matching setting
-
 ### cli: worktree from a subfolder (3)
 
 - `cli/test/session-target`: creates a worktree from the caller's checkout
@@ -1055,6 +1051,7 @@ transport and its tool presentation.
 | tui: diff viewer: mouse, images and routes | by design | 33 | 5 | no mouse: OpenCode's right-click file menu, clicked folders and source label; no image previews in the terminal; the viewer is always a session's panel (no standalone route, session tabs or plugin to disable, one kind of panel); the file tree's unused list layout, and its loading and empty states, which the viewer never shows |
 | tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
 | tui: toasts and completion notices | by design | 6 | 2 | no mouse: a toast is not clicked to run its action or dismissed early, nor paused while hovered; completion notices are not clicked (subagents run inside the turn, so no background subagent sends one) |
+| tui: settings dialog | by design | 1 | 1 | no settings dialog to search from the palette: the UI never writes the config; settings it can change are commands (`app.toggle.paste_summary`, the theme mode), which the palette lists |
 | tui: group disclosure | by design | 3 | 1 | no mouse: ctrl+o opens every group, so the rows above an opened group move when scrolled up |
 | server: API command | by design | 3 | 1 | no `api` command for a server |
 | tui: model notices | by design | 3 | 1 | model switch notices are worded differently |
