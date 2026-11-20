@@ -710,3 +710,32 @@ mod footer {
         );
     }
 }
+
+// Shell mode completes the command's directory argument.
+#[test]
+fn shell_mode_completes_directories() {
+    use super::app::App;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src/nested")).unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    let mut a = App::new();
+    a.cwd = tmp.path().to_path_buf();
+    for c in "!cd s".chars() {
+        a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let p = a.popup.as_ref().expect("a directory popup");
+    assert_eq!(p.items[0].label, "src/");
+    a.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(a.input.text(), "!cd src/");
+    let labels: Vec<&str> = a
+        .popup
+        .as_ref()
+        .map(|p| p.items.iter().map(|i| i.label.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(labels, ["src/", "src/nested/"]);
+    // The command itself is not completed.
+    a.input.set("!c");
+    a.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(a.popup.is_none());
+}

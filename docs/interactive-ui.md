@@ -363,6 +363,12 @@ is drawn as a shell row (Ctrl+O shows its output), and its output and exit
 code join the conversation, so the model sees them with your next message.
 Esc leaves it running; it is recorded when it ends.
 
+The words after the command complete to directories as you type, as
+OpenCode completes a location: relative to the session's folder, or after
+`~/`, `/` or `../` from there (`..` and `~` themselves are offered too);
+dot directories show once you type the `.`. **tab** takes the highlighted
+one.
+
 ## Pickers
 
 `/model`, `/agent`, `/sessions` and `/themes` without arguments open a

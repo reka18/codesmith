@@ -81,6 +81,8 @@ replays of its recorded provider traffic.
 - **Model favourites and recents:** the model picker lists favourites
   (ctrl+f) and recent models first; F2 steps through the recent ones, and
   each model's variant is remembered, in OpenCode's `model.json`.
+- **Shell mode completion:** a `!command`'s arguments complete to
+  directories, as OpenCode completes locations.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

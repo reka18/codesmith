@@ -1241,6 +1241,29 @@ impl App {
             return;
         }
         self.dismissed = None;
+        // Shell mode completes the command's directory arguments.
+        if let Some((start, query)) =
+            super::dirs::shell_argument(self.input.text(), self.input.cursor())
+        {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let home = home.unwrap_or_else(|| self.cwd.clone());
+            let items: Vec<complete::Item> = super::dirs::complete(query, &self.cwd, &home)
+                .into_iter()
+                .take(complete::MAX_ITEMS)
+                .map(|(value, abs)| complete::Item {
+                    detail: super::dirs::recent_value(&abs, &home),
+                    label: value,
+                })
+                .collect();
+            let only_typed = items.len() == 1 && items[0].label == query;
+            self.popup = (!items.is_empty() && !only_typed).then_some(Popup {
+                kind: Kind::Dir,
+                start,
+                items,
+                sel: 0,
+            });
+            return;
+        }
         self.popup = complete::popup(
             self.input.text(),
             self.input.cursor(),
@@ -1261,6 +1284,9 @@ impl App {
                 }
                 self.input
                     .replace_before_cursor(p.start, &format!("/{} ", item.label));
+            }
+            Kind::Dir => {
+                self.input.replace_before_cursor(p.start, &item.label);
             }
             Kind::File => {
                 // A directory stays open for drilling down.

@@ -1643,7 +1643,11 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
         .skip(top)
         .take(rows)
         .map(|(i, it)| {
-            let sigil = if pop.kind == Kind::Slash { "/" } else { "@" };
+            let sigil = match pop.kind {
+                Kind::Slash => "/",
+                Kind::File => "@",
+                Kind::Dir => "",
+            };
             let sel = i == pop.sel;
             let base = if sel {
                 Style::default().fg(p.selected_fg).bg(p.selected_bg)
@@ -1671,6 +1675,14 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
         Kind::File => format!(
             " files · {} ",
             keys_line(&[(select, "attach"), (complete, "attach"), (hide, "close")])
+        ),
+        Kind::Dir => format!(
+            " directories · {} ",
+            keys_line(&[
+                (select, "complete"),
+                (complete, "complete"),
+                (hide, "close")
+            ])
         ),
     };
     f.render_widget(Clear, r);

@@ -16,6 +16,8 @@ pub struct Item {
 pub enum Kind {
     Slash,
     File,
+    /// A directory argument in shell mode (`!cd src/`).
+    Dir,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +99,7 @@ pub fn popup(text: &str, cursor: usize, commands: &[Item], files: &[String]) -> 
             .into_iter()
             .map(|i| commands[i].clone())
             .collect(),
+        Kind::Dir => return None,
         Kind::File => filter(files, query, |f| f.as_str(), true, MAX_ITEMS)
             .into_iter()
             .map(|i| Item {

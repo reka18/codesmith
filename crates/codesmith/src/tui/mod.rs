@@ -23,6 +23,7 @@ mod diff_draw;
 mod diff_source;
 mod diff_tree;
 mod diff_view;
+mod dirs;
 mod editor;
 mod external;
 mod group;

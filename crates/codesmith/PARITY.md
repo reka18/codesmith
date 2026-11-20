@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 366 | 199 | 657 | 13 |
+| tui: main UI | 1250 | 15 | 383 | 182 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **642** | **635** | **2357** | **259** |
+| **Total** | **4637** | **744** | **659** | **618** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -641,6 +641,20 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/copy-session-id` | Copy session ID from Ctrl+P (%s) (3 cases) | after a fix | oc_copy_session_id_from_ctrl_p (adapted: `OSC 52` reports no failure, and a UI with no session stands for home) |
 | `tui/test/feature-plugins/prompt-footer` | prompt footer separates simultaneous subagent, shell, and usage status | after a fix | oc_prompt_footer_separates_subagent_shell_and_usage_status (adapted: no clicks; the status line leads with it) |
 | `tui/test/feature-plugins/prompt-footer` | prompt footer can hide details | after a fix | oc_prompt_footer_can_hide_details |
+| `tui/test/prompt/autocomplete` | lists parents and siblings without changing location | after a fix | oc_lists_parents_and_siblings_without_changing_location (`tui/dirs.rs`; adapted: the folder read directly) |
+| `tui/test/prompt/autocomplete` | resolves home and nested sibling completions against the current location | after a fix | oc_resolves_home_and_nested_sibling_completions (adapted) |
+| `tui/test/prompt/autocomplete` | starts %j after the command separator (4 cases) | after a fix | oc_starts_after_the_command_separator (adapted: the arguments of a `!command`, CodeSmith having no `/cd`) |
+| `tui/test/prompt/autocomplete` | does not complete the command token | after a fix | oc_does_not_complete_the_command_token (adapted) |
+| `tui/test/prompt/autocomplete` | searches from home after a home prefix | after a fix | oc_searches_from_home_after_a_home_prefix |
+| `tui/test/prompt/autocomplete` | searches from parent prefixes | after a fix | oc_searches_from_parent_prefixes |
+| `tui/test/prompt/autocomplete` | keeps ordinary searches rooted at the current directory | after a fix | oc_keeps_ordinary_searches_rooted_at_the_current_directory |
+| `tui/test/prompt/autocomplete` | preserves explicit roots | after a fix | oc_preserves_explicit_roots |
+| `tui/test/prompt/autocomplete` | includes complete explicit roots | after a fix | oc_includes_complete_explicit_roots |
+| `tui/test/prompt/autocomplete` | omits incomplete and implicit roots | after a fix | oc_omits_incomplete_and_implicit_roots |
+| `tui/test/prompt/autocomplete` | hides dot directories for an empty component | after a fix | oc_hides_dot_directories_for_an_empty_component |
+| `tui/test/prompt/autocomplete` | shows dot directories when explicitly filtered | after a fix | oc_shows_dot_directories_when_explicitly_filtered |
+| `tui/test/prompt/autocomplete` | abbreviates home paths | after a fix | oc_abbreviates_home_paths (the popup's detail) |
+| `tui/test/prompt/autocomplete` | keeps paths outside home absolute | after a fix | oc_keeps_paths_outside_home_absolute |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -790,23 +804,9 @@ transport and its tool presentation.
 - `tui/test/ui/link` (1): e.g. "plain clicks on any row of a wrapped Markdown link resolve the full URL"
 - `tui/test/config-v2` (1): e.g. "validates terminal copy behavior"
 
-### tui: shell mode (!) (21)
+### tui: shell mode key capture and failures (4)
 
 - `tui/test/prompt-shell-failure`: a failed shell command in an existing session toasts and restores the composer
-- `tui/test/prompt/autocomplete`: lists parents and siblings without changing location
-- `tui/test/prompt/autocomplete`: resolves home and nested sibling completions against the current location
-- `tui/test/prompt/autocomplete`: starts %j after the command separator (4 cases)
-- `tui/test/prompt/autocomplete`: does not complete the command token
-- `tui/test/prompt/autocomplete`: searches from home after a home prefix
-- `tui/test/prompt/autocomplete`: searches from parent prefixes
-- `tui/test/prompt/autocomplete`: keeps ordinary searches rooted at the current directory
-- `tui/test/prompt/autocomplete`: preserves explicit roots
-- `tui/test/prompt/autocomplete`: includes complete explicit roots
-- `tui/test/prompt/autocomplete`: omits incomplete and implicit roots
-- `tui/test/prompt/autocomplete`: hides dot directories for an empty component
-- `tui/test/prompt/autocomplete`: shows dot directories when explicitly filtered
-- `tui/test/prompt/autocomplete`: abbreviates home paths
-- `tui/test/prompt/autocomplete`: keeps paths outside home absolute
 - `tui/test/prompt/traits`: normal mode without autocomplete only captures tab
 - `tui/test/prompt/traits`: normal mode with autocomplete captures navigation keys
 - `tui/test/prompt/traits`: shell mode disables capture and labels the prompt without suspending
