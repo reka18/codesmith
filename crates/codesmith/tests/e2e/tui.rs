@@ -539,10 +539,11 @@ async fn an_interrupt_does_not_resume_for_commands_already_finished() {
     m.assert_done();
 }
 
-// `/new` ends the current session: its background commands are stopped
-// (the UI shows and wakes one session only) and never reported.
+// With tabs off, `/new` ends the current session: its background
+// commands are stopped (the UI shows and wakes one session only) and never
+// reported.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_session_stops_the_old_ones_background_commands() {
+async fn without_tabs_a_new_session_stops_the_old_ones_background_commands() {
     let e = Env::new();
     let m = Model::start(
         Script::new()
@@ -562,7 +563,7 @@ async fn a_new_session_stops_the_old_ones_background_commands() {
             ),
     )
     .await;
-    e.config(&m.url, json!({}));
+    e.config(&m.url, json!({"tui": {"tabs": {"mode": "off"}}}));
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
@@ -741,4 +742,203 @@ async fn a_bang_prompt_runs_a_shell_command_without_the_model() {
     let h = e.history(&id);
     assert_eq!(h.len(), 1);
     assert!(h[0].to_string().contains("user-shell-output"));
+}
+
+/// Alt+Up and Alt+Shift+Down: the previous tab, and the next tab that is
+/// unread or waiting for its user.
+const PREVIOUS_TAB: &[u8] = b"\x1b[1;3A";
+const NEXT_UNREAD_TAB: &[u8] = b"\x1b[1;4B";
+
+// With tabs (on by default, as in OpenCode), `/new` opens a tab of its own
+// and the first session goes on in the background: its command finishes,
+// it resumes by itself, and its tab is marked unread. The tabs are kept
+// for the next start, where the first loads when it is shown.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_tab_keeps_its_commands_and_resumes_by_itself() {
+    let e = Env::new();
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3; touch ended", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools()
+                    .and(M::prompt("build it"))
+                    .and(M::step(1))
+                    .and(notified.clone().not()),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "resumed",
+                M::tools().and(notified),
+                Reply::text("The build finished fine."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
+        return;
+    };
+    ui.wait_for("tab agents").await;
+    ui.send(b"/new\r").await;
+    ui.wait_for("new session").await;
+    // The first tab resumes in the background and is marked unread.
+    ui.wait_for("\u{2022} Build").await;
+    assert!(e.project.join("ended").exists(), "the command was stopped");
+    assert_eq!(m.by("resumed").len(), 1);
+    ui.send(PREVIOUS_TAB).await;
+    ui.wait_for("The build finished fine.").await;
+    ui.quit().await;
+    let kept = std::fs::read_to_string(e.data.join("codesmith/tui-tabs.json")).unwrap();
+    assert!(kept.contains("\"title\": \"Build\""), "{kept}");
+
+    // Kept for the next start: the tab is in the strip, and its session
+    // loads when it is shown.
+    let Some(mut ui) = Ui::start(&e, "--auto") else {
+        return;
+    };
+    ui.wait_for("Build + New session").await;
+    ui.send(PREVIOUS_TAB).await;
+    ui.wait_for("The build finished fine.").await;
+    ui.quit().await;
+    m.assert_done();
+}
+
+// A permission request from a background tab: the tab is marked `!`, the
+// shown one says so, and the next-unread key goes to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_tabs_permission_request_is_surfaced() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Touch")
+            .then(
+                "wait",
+                M::tools().and(M::prompt("touch it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 2", "description": "wait"}),
+                ),
+            )
+            .then(
+                "touch",
+                M::tools().and(M::prompt("touch it")).and(M::step(1)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "touch done", "description": "touch"}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("touch it")).and(M::step(2)),
+                Reply::text("Touched it."),
+            ),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"permissions": [
+            {"action": "shell", "resource": "sleep *", "effect": "allow"},
+            {"action": "shell", "resource": "touch *", "effect": "ask"}
+        ]}),
+    );
+    let Some(mut ui) = Ui::start(&e, "--prompt 'touch it'") else {
+        return;
+    };
+    // `/new` while the turn runs: it goes on in its tab.
+    ui.wait_for("Running command").await;
+    ui.send(b"/new\r").await;
+    ui.wait_for("new session").await;
+    ui.wait_for("needs your permission").await;
+    // Titled when its turn ends.
+    ui.wait_for("! New session + New session").await;
+    assert!(!e.project.join("done").exists());
+    ui.send(NEXT_UNREAD_TAB).await;
+    ui.wait_for("Permission required").await;
+    ui.send(b"y").await;
+    ui.wait_for("Touched it.").await;
+    ui.quit().await;
+    assert!(e.project.join("done").exists());
+    m.assert_done();
+}
+
+/// The first row of the screen: the tab strip.
+fn strip(ui: &Ui) -> String {
+    let shown = ui.term.screen().contents();
+    let first = shown.lines().next().unwrap_or("");
+    first.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// OpenCode's "keeps each visited session open", "tracks a temporary new
+// session tab across close and creation" and "lists closed tabs newest
+// first and reopens" (adapted: keys rather than a route and a menu). Each
+// session gets a tab, the new session page becomes one once something is
+// sent, closing a tab shows the one before it and reopening puts it back
+// where it was; the tabs are kept for the next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_keeps_each_visited_session_open() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .always(
+                "title alpha",
+                M::title().and(M::last("alpha")),
+                Reply::text("Alpha chat"),
+            )
+            .always(
+                "title beta",
+                M::title().and(M::last("beta")),
+                Reply::text("Beta chat"),
+            )
+            .always(
+                "alpha",
+                M::tools().and(M::prompt("alpha")),
+                Reply::text("Answered alpha."),
+            )
+            .always(
+                "beta",
+                M::tools().and(M::prompt("beta")),
+                Reply::text("Answered beta."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'alpha'") else {
+        return;
+    };
+    ui.wait_for("Answered alpha.").await;
+    ui.wait_for("Alpha chat").await;
+    ui.send(b"/new\r").await;
+    ui.wait_for("Alpha chat + New session").await;
+    ui.send(b"beta\r").await;
+    ui.wait_for("Answered beta.").await;
+    ui.wait_for("Alpha chat Beta chat").await;
+    // Ctrl+X w closes the shown tab: the one shown before it comes back.
+    ui.send(b"\x18w").await;
+    ui.wait_for("Answered alpha.").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(strip(&ui), "Alpha chat");
+    // Ctrl+X Shift+T reopens it where it was.
+    ui.send(b"\x18T").await;
+    ui.wait_for("Answered beta.").await;
+    ui.wait_for("Alpha chat Beta chat").await;
+    // Ctrl+X 1 goes to the first tab.
+    ui.send(b"\x181").await;
+    ui.wait_for("Answered alpha.").await;
+    ui.quit().await;
+
+    let Some(mut ui) = Ui::start(&e, "--auto") else {
+        return;
+    };
+    ui.wait_for("Alpha chat Beta chat + New session").await;
+    ui.quit().await;
+    assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
 }
