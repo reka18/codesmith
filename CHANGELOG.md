@@ -87,6 +87,9 @@ replays of its recorded provider traffic.
   form: tabs per question, choices with a cursor, multi-select checkboxes,
   a "Type your own answer" row, text and number fields, links to
   acknowledge, and a review before submitting.
+- **Paste chips and prompt undo:** long pastes show as `[Pasted ~N
+  lines]` chips (`tui.prompt.paste`), and super+z / super+shift+z undo and
+  redo edits in the prompt.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

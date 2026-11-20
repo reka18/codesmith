@@ -47,6 +47,8 @@ mod parity_groups;
 #[cfg(test)]
 mod parity_keys;
 #[cfg(test)]
+mod parity_prompt;
+#[cfg(test)]
 mod parity_tabs;
 #[cfg(test)]
 mod parity_ui;
@@ -1019,7 +1021,7 @@ impl Runner {
                     self.install(s, true);
                 }
                 if let Some(t) = text {
-                    self.app.input.set(t);
+                    self.app.restore_prompt(&t);
                 }
                 self.app.notice("forked the session");
             }
@@ -1706,6 +1708,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     r.app.verbosity = tui.verbosity;
     r.app.grouping = tui.grouping;
     r.app.tps = tui.tps;
+    r.app.paste_full = tui.paste_full;
     r.app.turn_tokens = tui.turn_tokens;
     r.diffs = tui.diffs;
     r.app.diff_source = tui.diffs.source;

@@ -97,7 +97,16 @@ OpenCode's shape). A recalled prompt brings back the images and files it
 attached, when they are still there. Each tab keeps its own unsent prompt
 while another is shown.
 
-Pastes go in at the cursor. The external editor gets the terminal while
+Pastes go in at the cursor. A long paste (three lines or more, or over
+150 characters) shows as a `[Pasted ~N lines]` chip, as in OpenCode, and
+is sent in full while the chip is whole in the prompt; pasting the same
+text again right after its chip expands it. `tui.prompt.paste: "full"`
+(or `app.toggle.paste_summary`, unbound by default, from the command
+palette) pastes in whole. **super+z** or **ctrl+-** (`input.undo`) undoes
+an edit in the prompt and **super+shift+z** or **ctrl+.** (`input.redo`)
+redoes it; a run of typing is one step, and an undone chip or `@file`
+mention is sent as before. The same image pasted twice keeps its label
+and is attached once. The external editor gets the terminal while
 it runs (`$EDITOR` may carry arguments, as `code --wait`); what it saves
 comes back as the prompt, the one newline editors add after a single line
 dropped, and the UI takes the terminal back however the editor ended.
@@ -331,7 +340,7 @@ and `opencode` is used.
 |---|---|
 | `/new` | Start a new session, in a tab of its own. |
 | `/sessions` | Pick a session in this folder to continue; it opens in a tab (or its tab is shown). |
-| `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input. The fork opens in a tab of its own. See [sessions](sessions.md#forking). |
+| `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input (after anything typed there). The fork opens in a tab of its own. See [sessions](sessions.md#forking). |
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
 | `/agent [id]` | Switch agent, or pick one. |
 | `/model [provider/model]` | Switch model, or pick one. |

@@ -470,6 +470,11 @@ pub struct App {
     pub usage_log: super::usage::Log,
     /// Question forms that came while a picker or the help was open.
     pub held: Vec<Modal>,
+    /// Paste chips (`[Pasted ~4 lines]`) and what each stands for, sent
+    /// in their place while the chip is whole in the prompt.
+    pub pasted: Vec<(String, String)>,
+    /// `tui.prompt.paste: "full"`: pastes go in whole, not as chips.
+    pub paste_full: bool,
 }
 
 /// How a turn ended.
@@ -766,6 +771,7 @@ impl App {
         to.verbosity = self.verbosity;
         to.grouping = self.grouping;
         to.tps = self.tps;
+        to.paste_full = self.paste_full;
         to.turn_tokens = self.turn_tokens;
         to.reasoning_source = self.reasoning_source;
         to.diff_prefs = self.diff_prefs;
@@ -1283,12 +1289,13 @@ impl App {
                     for path in files {
                         let label = super::attach::label(&self.attachments, &path);
                         self.input.insert_str(&format!("{label} "));
-                        self.attachments
-                            .push(super::attach::Pending { label, path });
+                        if !self.attachments.iter().any(|a| a.path == path) {
+                            self.attachments
+                                .push(super::attach::Pending { label, path });
+                        }
                     }
                 } else {
-                    let text = strip_escapes(s).replace("\r\n", "\n").replace('\r', "\n");
-                    self.input.insert_str(&text);
+                    self.paste_text(s);
                 }
                 self.edited();
             }
@@ -1634,6 +1641,20 @@ impl App {
             "input.delete.to.line.end" => self.input.kill_to_end(),
             "input.delete.to.line.start" => self.input.kill_to_start(),
             "input.delete.line" => self.input.delete_line(),
+            "input.undo" => {
+                self.input.undo();
+            }
+            "input.redo" => {
+                self.input.redo();
+            }
+            "app.toggle.paste_summary" => {
+                self.paste_full = !self.paste_full;
+                self.notice(if self.paste_full {
+                    "Paste summary off: pastes go in whole"
+                } else {
+                    "Paste summary on: long pastes become a chip"
+                });
+            }
             _ => return None,
         }
         Some(None)
@@ -1802,7 +1823,7 @@ impl App {
             self.history_new.push(entry);
         }
         self.hist = None;
-        self.input.clear();
+        self.input.set("");
         self.scroll = 0;
         self.end_navigation();
         if text == ":q" || text == ":Q" {
@@ -1820,7 +1841,70 @@ impl App {
             self.input.set(text);
             return None;
         }
-        Some(Action::Submit(text))
+        let sent = self.expand_pasted(&text);
+        self.pasted.clear();
+        Some(Action::Submit(sent))
+    }
+
+    /// Bring a prompt back (one a fork was made before) after what is
+    /// typed, a blank line between, as OpenCode's `appendPrompt`; the
+    /// cursor goes to the end, and it can be undone.
+    pub fn restore_prompt(&mut self, text: &str) {
+        let now = self.input.text();
+        let joined = if now.is_empty() {
+            text.to_string()
+        } else {
+            format!("{now}\n\n{text}")
+        };
+        self.input.replace_all(joined);
+        self.edited();
+    }
+
+    /// `text` with each paste chip still whole in it replaced by what was
+    /// pasted (the first chip with a label by the first paste with it).
+    pub fn expand_pasted(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        let mut from = 0;
+        for (label, pasted) in &self.pasted {
+            if let Some(i) = out[from..].find(label.as_str()) {
+                let at = from + i;
+                out.replace_range(at..at + label.len(), pasted);
+                from = at + pasted.len();
+            }
+        }
+        out
+    }
+
+    /// Paste `text` into the prompt: a long paste (three lines or more,
+    /// or over 150 characters) becomes a `[Pasted ~N lines]` chip, as
+    /// OpenCode's paste summary, unless `tui.prompt.paste` is `full`.
+    /// Pasting the same text again right after its chip expands it.
+    fn paste_text(&mut self, raw: &str) {
+        let text = strip_escapes(raw).replace("\r\n", "\n").replace('\r', "\n");
+        let content = text.trim();
+        let lines = content.matches('\n').count() + 1;
+        if self.paste_full || (lines < 3 && content.chars().count() <= 150) {
+            self.input.insert_str(&text);
+            return;
+        }
+        let before = &self.input.text()[..self.input.cursor()];
+        let again = self.pasted.iter().rev().find(|(label, p)| {
+            p == content
+                && (before.ends_with(label.as_str()) || before.ends_with(&format!("{label} ")))
+        });
+        if let Some((label, p)) = again.cloned() {
+            let at = self.input.cursor();
+            if before.ends_with(label.as_str()) {
+                self.input.replace_before_cursor(at - label.len(), &p);
+            } else {
+                self.input
+                    .replace_before_cursor(at - label.len() - 1, &format!("{p} "));
+            }
+            return;
+        }
+        let label = format!("[Pasted ~{lines} lines]");
+        self.input.insert_str(&format!("{label} "));
+        self.pasted.push((label, content.to_string()));
     }
 
     fn modal_key(&mut self, k: KeyEvent, ctrl: bool) -> Option<Action> {

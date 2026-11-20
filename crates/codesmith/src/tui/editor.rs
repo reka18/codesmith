@@ -11,7 +11,17 @@ pub struct Editor {
     cursor: usize,
     /// Display column kept while moving up and down through shorter lines.
     goal: Option<usize>,
+    /// Earlier states (text and cursor), the latest last, for undo.
+    undo: Vec<(String, usize)>,
+    /// States undone, for redo.
+    redo: Vec<(String, usize)>,
+    /// Where the cursor was after the last typed character, while typing
+    /// goes on there (a run of typing is one undo step).
+    typed_at: Option<usize>,
 }
+
+/// Most undo steps kept.
+const UNDO_KEEP: usize = 200;
 
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -30,24 +40,87 @@ impl Editor {
         self.text.is_empty()
     }
 
-    /// Replace the whole text, cursor at the end.
+    /// Replace the whole text, cursor at the end, as a new buffer (no
+    /// undo history).
     pub fn set(&mut self, s: impl Into<String>) {
+        self.text = s.into();
+        self.cursor = self.text.len();
+        self.goal = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.typed_at = None;
+    }
+
+    /// Replace the whole text as an edit (it can be undone).
+    pub fn replace_all(&mut self, s: impl Into<String>) {
+        self.save(false);
         self.text = s.into();
         self.cursor = self.text.len();
         self.goal = None;
     }
 
+    /// Empty the text (it can be undone).
     pub fn clear(&mut self) {
-        self.set(String::new());
+        self.replace_all(String::new());
+    }
+
+    /// Keep the state before an edit. Typing word characters in a row is
+    /// one step.
+    fn save(&mut self, typing: bool) {
+        if typing && self.typed_at == Some(self.cursor) {
+            return;
+        }
+        if self.undo.last().is_some_and(|(t, _)| *t == self.text) {
+            self.typed_at = None;
+            self.redo.clear();
+            return;
+        }
+        self.undo.push((self.text.clone(), self.cursor));
+        if self.undo.len() > UNDO_KEEP {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.typed_at = None;
+    }
+
+    /// Back to the state before the last edit. False when there is none.
+    pub fn undo(&mut self) -> bool {
+        let Some((t, c)) = self.undo.pop() else {
+            return false;
+        };
+        let now = (std::mem::replace(&mut self.text, t), self.cursor);
+        self.redo.push(now);
+        self.cursor = c;
+        self.goal = None;
+        self.typed_at = None;
+        true
+    }
+
+    /// Redo the last undone edit. False when there is none.
+    pub fn redo(&mut self) -> bool {
+        let Some((t, c)) = self.redo.pop() else {
+            return false;
+        };
+        let now = (std::mem::replace(&mut self.text, t), self.cursor);
+        self.undo.push(now);
+        self.cursor = c;
+        self.goal = None;
+        self.typed_at = None;
+        true
     }
 
     pub fn insert(&mut self, c: char) {
+        self.save(is_word(c));
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         self.goal = None;
+        if is_word(c) {
+            self.typed_at = Some(self.cursor);
+        }
     }
 
     pub fn insert_str(&mut self, s: &str) {
+        self.save(false);
         self.text.insert_str(self.cursor, s);
         self.cursor += s.len();
         self.goal = None;
@@ -55,6 +128,7 @@ impl Editor {
 
     /// Replace the byte range `start..self.cursor` with `s` (completions).
     pub fn replace_before_cursor(&mut self, start: usize, s: &str) {
+        self.save(false);
         let start = start.min(self.cursor);
         self.text.replace_range(start..self.cursor, s);
         self.cursor = start + s.len();
@@ -78,6 +152,7 @@ impl Editor {
     }
 
     pub fn backspace(&mut self) {
+        self.save(false);
         if self.cursor > 0 {
             let p = self.prev_boundary(self.cursor);
             self.text.replace_range(p..self.cursor, "");
@@ -87,6 +162,7 @@ impl Editor {
     }
 
     pub fn delete(&mut self) {
+        self.save(false);
         if self.cursor < self.text.len() {
             let n = self.next_boundary(self.cursor);
             self.text.replace_range(self.cursor..n, "");
@@ -170,6 +246,7 @@ impl Editor {
 
     /// Delete back to the start of the previous word (Ctrl+W, Alt+Backspace).
     pub fn delete_word_back(&mut self) {
+        self.save(false);
         let p = self.word_left_pos();
         self.text.replace_range(p..self.cursor, "");
         self.cursor = p;
@@ -178,6 +255,7 @@ impl Editor {
 
     /// Delete to the end of the next word (Alt+D).
     pub fn delete_word_forward(&mut self) {
+        self.save(false);
         let p = self.word_right_pos();
         self.text.replace_range(self.cursor..p, "");
         self.goal = None;
@@ -186,6 +264,7 @@ impl Editor {
     /// Delete to the end of the line, or the newline itself when already
     /// there (Ctrl+K).
     pub fn kill_to_end(&mut self) {
+        self.save(false);
         let e = self.line_end();
         if e == self.cursor {
             self.delete();
@@ -198,6 +277,7 @@ impl Editor {
     /// Delete back to the start of the line, or the newline before it when
     /// already there (Ctrl+U).
     pub fn kill_to_start(&mut self) {
+        self.save(false);
         let s = self.line_start();
         if s == self.cursor {
             self.backspace();
@@ -210,6 +290,7 @@ impl Editor {
 
     /// Delete the whole line the cursor is on, with its newline.
     pub fn delete_line(&mut self) {
+        self.save(false);
         let (mut s, mut e) = (self.line_start(), self.line_end());
         if e < self.text.len() {
             e += 1;

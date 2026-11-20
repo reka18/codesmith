@@ -66,6 +66,9 @@ pub struct Settings {
     pub terminal_title: bool,
     /// `attention`: system notifications and sounds.
     pub attention: Attention,
+    /// `prompt.paste: "full"`: pastes go in whole rather than as
+    /// `[Pasted ~N lines]` chips (`"compact"`, the default).
+    pub paste_full: bool,
 }
 
 /// The attention sounds, as OpenCode names them.
@@ -138,6 +141,7 @@ impl Default for Settings {
             tps: true,
             turn_tokens: false,
             attention: Attention::default(),
+            paste_full: false,
         }
     }
 }
@@ -321,6 +325,12 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
             Some(b) => s.tps = b,
             None => errors.push("tui.session.tps: must be true or false".into()),
         },
+    }
+    match get(&v, &["prompt", "paste"]) {
+        None => {}
+        Some(Value::String(p)) if p == "full" => s.paste_full = true,
+        Some(Value::String(p)) if p == "compact" => s.paste_full = false,
+        Some(_) => errors.push("tui.prompt.paste: must be \"compact\" or \"full\"".into()),
     }
     match get(&v, &["terminal", "title"]) {
         None => {}

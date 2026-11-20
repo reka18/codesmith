@@ -92,6 +92,9 @@ Where the tests live:
   above its test module.
 - `src/tui/parity_form.rs`: the question form (`tui/test/util/form`,
   `cli/tui/form`); `src/tui/form.rs` is the form itself.
+- `src/tui/parity_prompt.rs`: paste chips, prompt undo, attachment labels
+  (`tui/test/prompt-paste`, `prompt/attachment`) and the prompt groups after
+  them.
 
 ## Summary
 
@@ -99,14 +102,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 417 | 148 | 657 | 13 |
+| tui: main UI | 1250 | 15 | 426 | 136 | 660 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **693** | **584** | **2357** | **259** |
+| **Total** | **4637** | **744** | **702** | **572** | **2360** | **259** |
 
 ## Fixes made while porting
 
@@ -250,6 +253,13 @@ Where the tests live:
   question that arrives while a picker or the help is open waits behind it.
   Differences: the form is the centred question dialog rather than the
   composer's place, and ctrl+v is the terminal's own paste.
+- **Paste chips and prompt undo** (`prompt-paste`, `prompt/attachment`):
+  long pastes went into the prompt whole, there was no undo in the
+  prompt, and the same image pasted twice became two attachments. Long
+  pastes (three lines, or over 150 characters) are now `[Pasted ~N lines]`
+  chips sent in full while whole (`tui.prompt.paste: "full"` and
+  `app.toggle.paste_summary` turn them off), `input.undo` and `input.redo`
+  undo and redo prompt edits, and an image pasted again keeps its label.
 
 ## Differences found but not fixed
 
@@ -721,6 +731,13 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/form` | arriving choice question keeps focus with an open rename dialog until it closes | after a fix | oc_arriving_choice_question_keeps_focus_with_an_open_dialog_until_it_closes (adapted: a filtered picker for the rename dialog, which CodeSmith lacks) |
 | `tui/test/cli/tui/form` | arriving text question does not steal editor focus from an open rename dialog | after a fix | oc_arriving_text_question_does_not_steal_editor_focus_from_an_open_dialog (adapted) |
 | `tui/test/cli/tui/form` | escape closes an open command palette instead of cancelling an arriving question | after a fix | oc_escape_closes_an_open_command_palette_instead_of_cancelling_an_arriving_question |
+| `tui/test/prompt-paste` | undo submits the restored %s paste chip (2 cases) | after a fix | oc_undo_submits_the_restored_paste_chip (adapted: the prompt is sent trimmed) |
+| `tui/test/prompt-paste` | a pasted image that reuses a wide label gets a chip as wide as the label | after a fix | oc_a_pasted_image_that_reuses_a_label_keeps_it (adapted: no OpenTUI cell widths; the label is reused) |
+| `tui/test/prompt-paste` | %s grows the prompt in the first frame that shows it (2 cases) | after a fix | oc_text_grows_the_prompt_in_the_first_frame_that_shows_it (adapted: no server route appends to the prompt; a restored prompt) |
+| `tui/test/prompt-paste` | undo submits the restored %s chip with its attachment (files) | after a fix | oc_undo_submits_the_restored_file_chip_with_its_attachment |
+| `tui/test/prompt/attachment` | deduplicates identical inline images while preserving other attachments | after a fix | oc_deduplicates_identical_inline_images_while_preserving_other_attachments (adapted: pasted paths) |
+| `tui/test/prompt/attachment` | reuses labels for identical image data | after a fix | oc_reuses_labels_for_identical_image_data (adapted: the same path) |
+| `tui/test/prompt/attachment` | does not reuse a label when attachment metadata differs | after a fix | oc_does_not_reuse_a_label_when_attachment_metadata_differs (adapted: another name) |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -890,19 +907,6 @@ transport and its tool presentation.
 - `tui/test/prompt/jsonl`: stash JSONL skips corruption and retains newest entries
 - `tui/test/prompt/jsonl`: frecency JSONL skips corruption, keeps latest path state, and limits entries
 
-### tui: paste chips and prompt undo (14)
-
-- `tui/test/prompt-paste`: undo submits the restored %s paste chip (2 cases)
-- `tui/test/prompt-paste`: a pasted image that reuses a wide label gets a chip as wide as the label
-- `tui/test/prompt-paste`: %s grows the prompt in the first frame that shows it (2 cases)
-- `tui/test/prompt-paste`: undo submits the restored %s chip with its attachment (3 cases)
-- `tui/test/prompt/attachment`: deduplicates identical inline images while preserving other attachments
-- `tui/test/prompt/attachment`: reuses labels for identical image data
-- `tui/test/prompt/attachment`: does not reuse a label when attachment metadata differs
-- `tui/test/prompt/attachment`: preserves mentionless attachments when tracked mentions are synchronized
-- `tui/test/prompt/attachment`: deduplicates visible inline image cards without dropping durable references
-- `tui/test/prompt/attachment`: deduplicates visible image cards the server sent as media refs by their ref
-
 ### tui: per-agent and per-session model selection (8)
 
 - `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents
@@ -990,9 +994,10 @@ transport and its tool presentation.
 
 - `tui/test/session-fork-pending`: choosing a row in /fork shows the pending view until the fork finishes
 
-### tui: @agent mentions (1)
+### tui: @agent and skill mentions (3)
 
 - `tui/test/prompt-offset`: an agent mention after a tab replaces only the mention
+- `tui/test/prompt-paste`: undo submits the restored %s chip with its attachment (agents, skills: 2 cases)
 
 ### tui: export dialog (1)
 
@@ -1031,7 +1036,7 @@ transport and its tool presentation.
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
 | tui: session tabs: mouse, motion and server sync | by design | 33 | 7 | no mouse: clicks, middle-click closing, drags, the tab menu and its recently closed list, opening a tab in the background, the compact rail reached by narrowing the column; no motion: width seeding, the completion reveal and running pulses; one UI running its sessions in-process: no server viewed times, terminal focus or acknowledgement retries, no other UI sharing the list, no session moves or per-tab locations and branches, no queued prompt pulses, new sessions start in the UI's folder; subagents have no transcript of their own; no home page footer |
 | tui: mini themes and permission prompt | by design | 32 | 2 | mini mode draws with the full UI's themes (its tests are ported there), not a separate mini theme resolver; its permission prompt is the full UI's dialog (y, a, n, typed feedback; `always` is for the session and asks no confirmation) |
-| tui: attachments | by design | 7 | 1 | attachments are read on send by path; SVG is not media; no remote server |
+| tui: attachments | by design | 10 | 2 | attachments are read on send by path; SVG is not media; no remote server; every attachment has its label in the prompt (no mentionless ones to keep), and the transcript shows a prompt's labels, not image cards to deduplicate |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |
 | tui: new designs experiment | by design | 6 | 3 | OpenCode's `opencode2` theme and its V1 migration exist only behind its `new-designs` experiment |
 | cli: stats | by design | 4 | 1 | statistics are computed locally (always with tool counts), no server request |

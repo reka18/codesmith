@@ -268,8 +268,13 @@ pub fn pasted_files(text: &str, cwd: &Path) -> Option<Vec<PathBuf>> {
 }
 
 /// The placeholder for the next attachment of `path`'s kind: `[Image N]`,
-/// `[PDF N]` or `[Video N]`, numbered after those already pending.
+/// `[PDF N]` or `[Video N]`, numbered after those already pending; a
+/// file already pending keeps its label.
 pub fn label(pending: &[Pending], path: &Path) -> String {
+    // The same file pasted again keeps its label (one attachment).
+    if let Some(p) = pending.iter().find(|p| p.path == path) {
+        return p.label.clone();
+    }
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -398,15 +403,17 @@ mod tests {
         assert_eq!(pasted_files("fix the bug", d.path()), None);
 
         let mut pending = Vec::new();
+        let mut labels = Vec::new();
         for f in ["my shot.png", "r.pdf", "my shot.png"] {
             let path = d.path().join(f);
-            pending.push(Pending {
-                label: label(&pending, &path),
-                path,
-            });
+            let l = label(&pending, &path);
+            labels.push(l.clone());
+            if !pending.iter().any(|p: &Pending| p.path == path) {
+                pending.push(Pending { label: l, path });
+            }
         }
-        let labels: Vec<&str> = pending.iter().map(|p| p.label.as_str()).collect();
-        assert_eq!(labels, ["[Image 1]", "[PDF 1]", "[Image 2]"]);
+        // The same file again keeps its label, as OpenCode's identical images.
+        assert_eq!(labels, ["[Image 1]", "[PDF 1]", "[Image 1]"]);
         let media = load(
             &pending,
             "compare [Image 1] with [PDF 1]",
