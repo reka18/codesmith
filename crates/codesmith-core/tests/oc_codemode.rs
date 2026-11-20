@@ -136,12 +136,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         BOUNDARY,
     ),
     (
-        "enumeration.test.ts",
-        r#"Object.keys over tool references > search is a global built-in function"#,
-        1,
-        BOUNDARY,
-    ),
-    (
         "errors.test.ts",
         r#"source syntax > rejects empty code"#,
         1,

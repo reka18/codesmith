@@ -46,12 +46,18 @@ Where the tests live:
   environment, XDG folders).
 - `codesmith-core/tests/oc_stats.rs`: the `stats` card (`cli/test/stats`).
 - `codesmith-core/tests/oc_codemode.rs` with
-  `tests/fixtures/oc_codemode.json`: 1126 assertions from
+  `tests/fixtures/oc_codemode.json`: 1137 assertions from
   `packages/codemode/test` (the programs and the values they expect,
   extracted as text from the test files; Test262-derived cases under the BSD
-  license in `fixtures/LICENSE.test262`), run through Code Mode on Boa. 974
-  pass; the other 152 are listed in the test with their reason, and the test
+  license in `fixtures/LICENSE.test262`, web-platform-tests-derived ones
+  under `fixtures/LICENSE.wpt`), run through Code Mode on Boa. 1026 pass;
+  the other 111 are listed in the test with their reason, and the test
   fails if any other case fails or a listed one starts passing.
+- `codesmith-core/src/codemode/signature.rs`: the JSON Schema cases of
+  `codemode/test/signature` (the Effect Schema ones have no counterpart);
+  `codemode/search.rs` and `codemode/web.rs`: catalog search, nested tool
+  paths and their errors (`tool-paths`, `enumeration`), and the web
+  globals beyond the extracted programs.
 - `src/acp.rs`: the `oc_acp_*` tests, with the ACP tests not ported listed
   above its test module.
 
@@ -64,11 +70,11 @@ Where the tests live:
 | tui: main UI | 1250 | 13 | 10 | 718 | 496 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
-| codemode | 1666 | 647 | 11 | 267 | 526 | 215 |
+| codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **30** | **1504** | **2102** | **259** |
+| **Total** | **4637** | **742** | **198** | **1276** | **2162** | **259** |
 
 ## Fixes made while porting
 
@@ -307,24 +313,6 @@ for larger ones).
 - `tui/test/session-backfill-disclosure` (1): e.g. "clicking a backfilled thought group toggles it"
 - `tui/test/session-mount-budget` (1): e.g. "an expanded group spends the mounting budget that older rows used"
 
-### codemode: rich tool signatures (JSDoc, constraints) (87)
-
-- `codemode/test/signature` (87): e.g. "(all 87)"
-
-### codemode: web globals (URL, URLSearchParams, Headers, TextEncoder/Decoder, structuredClone, crypto, atob, Buffer) (83)
-
-- `codemode/test/web-wpt` (40): e.g. "crypto.randomUUID WPT parity (WebCryptoAPI/randomUUID.https.any.js) > namespace format, ve"; "(39 more)"
-- `codemode/test/stdlib` (18): e.g. "Headers > constructs from records, pairs, Maps, and Headers; names fold to lowercase and v"; "Headers > iterates in sorted order everywhere iteration is allowed, and getSetCookie keeps"
-- `codemode/test/buffer` (7): e.g. "(7 more)"
-- `codemode/test/parity` (7): e.g. "coercion parity: unknown static members read as undefined > known statics still resolve an"; "destructuring assignment > supports array patterns over strings, Maps, Sets, and URLSearch"
-- `codemode/test/generator-test262` (5): e.g. "confined generators > accepts iterable URLSearchParams entry pairs"; "confined generators > coerces URLSearchParams pair elements like JS and closes both genera"
-- `codemode/test/callbacks` (1): e.g. "thisArg is accepted and ignored, like JS arrows > Map, Set, and URLSearchParams forEach ig"
-- `codemode/test/classes` (1): e.g. "showing and copying class values > JSON.stringify and structuredClone keep own enumerable "
-- `codemode/test/descriptors` (1): e.g. "reading descriptors and names > a built-in accessor copied to a plain object, and a mixed "
-- `codemode/test/for-await-test262` (1): e.g. "Test262 for-await-of adaptations > supports every existing collection iterable"
-- `codemode/test/json-callbacks-test262` (1): e.g. "Test262 JSON.stringify replacer adaptations > built-in toJSON conversion runs before the f"
-- `codemode/test/regexp-math-test262` (1): e.g. "Math.sumPrecise Test262 parity > rejects missing, non-iterable, sparse, and non-number inp"
-
 ### tui: session tabs (72)
 
 - `tui/test/context/session-tabs-model` (34): e.g. "appends the branch to the project detail"; "labels tabs by ordinal"
@@ -355,12 +343,6 @@ for larger ones).
 - `tui/test/cli/tui/dialog-prompt` (5): e.g. "dialog prompt submit wins when return is also input newline"; "alt return inserts a newline with default keybinds"
 - `tui/test/plugin-keymap` (4): e.g. "setup layers before and after await reach keyboard, palette, and slash across disable and "; "a component layer ends when its component unmounts while the plugin stays active"
 - `tui/test/cli/tui/reasoning-body` (1): e.g. "reasoning follows the markdown setting, also when it changes"
-
-### codemode: tool catalog search and nested namespaces (58)
-
-- `codemode/test/tool-paths` (44): e.g. "(44 using tools)"
-- `codemode/test/enumeration` (13): e.g. "(13 using tools)"
-- `codemode/test/new-expression` (1): e.g. "(1 using tools)"
 
 ### cli: self-update (upgrade command, update checks) (43)
 
@@ -663,6 +645,7 @@ for larger ones).
 | session-ui: review | by design | 144 | 13 | the web diff and review viewer |
 | plugins: JavaScript plugins | by design | 138 | 14 | plugins are native Rust, compiled in; server plugins |
 | server: hosted features and internals | by design | 83 | 34 | experimental, hosted, PTY, VCS, workerd or Effect server internals |
+| codemode: Effect tools and host diagnostics | by design | 60 | 6 | Effect Schema signatures and decoding (CodeSmith's tools are JSON Schema), diagnostic kinds and suggestion fields, extension globals, `Date` keys in UTC; object fields list in name order (CodeSmith's JSON keeps keys sorted) |
 | server: managed service | by design | 55 | 6 | QR codes for pairing; no CORS configuration; browsers are refused; no background server service, pairing or remote access |
 | tui: hosted catalog | by design | 54 | 11 | hosted plans and usage limits; integration accounts; integrations, favourites and the hosted model catalog; release highlights, hosted plans or onboarding |
 | cli: client/server frontends | by design | 48 | 7 | run and the UI drive the session in-process, not through a server; run reads the session in-process, not by reconciling server events; sessions are resolved locally, no server locations; subagents run inside the turn |
@@ -705,17 +688,17 @@ for larger ones).
 | cli: migrations | n/a | 1 | 1 | credential import from older versions |
 ### Code Mode on Boa
 
-Of the 1126 Code Mode assertions run, 152 fail on purpose, by reason (the
+Of the 1137 Code Mode assertions run, 111 fail on purpose, by reason (the
 test names each one):
 
 | Reason | Assertions | Bucket |
 |---|---:|---|
-| Web globals Boa does not provide (`URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`, `structuredClone`, `crypto`, `atob`, `Buffer`) | 39 | missing feature |
-| OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs) | 46 | by design |
-| Boa 0.22 departs from the specification or lacks a recent addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag, `substr`, `super` in arrows, some TDZ and property-order cases; one labeled `continue` loops forever) | 43 | by design (engine) |
+| OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs) | 43 | by design |
+| Boa 0.22 departs from the specification or lacks a recent addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag, `substr`, `super` in arrows, some TDZ and property-order cases; one labeled `continue` loops forever) | 41 | by design (engine) |
 | Strict-mode checks where Boa's strict mode still differs from OpenCode's (wording of frozen-write errors, an early `SyntaxError` for `delete` of a variable or a parameter named `arguments`, no `TypeError` writing a named function expression's name or in one frozen-array case) | 6 | by design |
 | Boa's error wording | 16 | by design |
 | CodeSmith's limits (400 nested calls where OpenCode allows 10000, 64 MiB buffers) | 4 | by design |
+| Depends on the time zone (passes in UTC, fails in local time), so either outcome is accepted | 1 | by design |
 
 Programs run in strict mode, as OpenCode applies strict-mode checks; one
 that repeats a parameter name, which OpenCode accepts and strict mode

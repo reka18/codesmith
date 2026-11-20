@@ -24,6 +24,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+mod search;
+pub mod signature;
 mod web;
 
 /// One tool available inside Code Mode.
@@ -54,106 +56,114 @@ const MEMORY_EXIT: i32 = 86;
 /// The argument that starts a program as the Code Mode helper.
 pub const CHILD_ARG: &str = "__codemode";
 
-fn is_ident(s: &str) -> bool {
-    let mut c = s.chars();
-    c.next()
-        .is_some_and(|f| f.is_ascii_alphabetic() || f == '_' || f == '$')
-        && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
-}
-
-/// `tools.ns.name` or `tools.ns["odd-name"]`.
+/// `tools.ns.name`, or `tools.ns["odd-name"]`; dots in the name nest it
+/// (`tools.ns.issues.list`), as in OpenCode.
 pub fn path(e: &Entry) -> String {
-    let part = |s: &str| {
-        if is_ident(s) {
-            format!(".{s}")
-        } else {
-            format!("[{}]", serde_json::to_string(s).unwrap())
-        }
+    search::expression(&search::canonical(e))
+}
+
+/// A JSON Schema as a compact TypeScript type (see [`signature`]).
+pub fn ts_type(s: &Value) -> String {
+    signature::typescript(s, false)
+}
+
+/// What the catalog shows for a tool, as OpenCode does: its call
+/// expression, its input with JSDoc for each field's description and
+/// constraints, and its result.
+pub fn signature(e: &Entry) -> String {
+    signature::signature(&path(e), &e.schema, None)
+}
+
+/// A catalog line's description: the first line, at most 500 characters.
+fn summary(description: &str) -> String {
+    let first = description.split('\n').next().unwrap_or("").trim();
+    if first.chars().count() > 500 {
+        format!("{}...", first.chars().take(497).collect::<String>())
+    } else {
+        first.to_string()
+    }
+}
+
+/// Tokens the inline catalog may take (four characters a token), as in
+/// OpenCode; past it the catalog is partial and points at `search(...)`.
+const INLINE_BUDGET: usize = 2_000;
+
+fn cost(text: &str) -> usize {
+    (text.chars().count() as f64 / 4.0).round() as usize
+}
+
+fn namespace_line(name: &str, total: usize, shown: usize) -> String {
+    let count = if total == 1 {
+        "1 tool".to_string()
+    } else {
+        format!("{total} tools")
     };
-    format!("tools{}{}", part(&e.namespace), part(&e.name))
+    let label = if shown == total {
+        count
+    } else if shown == 0 {
+        format!("{count}, none shown")
+    } else {
+        format!("{count}, {shown} shown")
+    };
+    format!("- {name} ({label})")
 }
 
-/// A TypeScript-like type for a JSON Schema, kept short.
-pub fn ts_type(s: &Value, depth: usize) -> String {
-    if depth > 3 {
-        return "any".into();
-    }
-    if let Some(e) = s["enum"].as_array() {
-        return e
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(" | ");
-    }
-    if let Some(any) = s["anyOf"].as_array().or(s["oneOf"].as_array()) {
-        return any
-            .iter()
-            .map(|v| ts_type(v, depth + 1))
-            .collect::<Vec<_>>()
-            .join(" | ");
-    }
-    match s["type"].as_str() {
-        Some("string") => "string".into(),
-        Some("integer") | Some("number") => "number".into(),
-        Some("boolean") => "boolean".into(),
-        Some("null") => "null".into(),
-        Some("array") => format!("{}[]", ts_type(&s["items"], depth + 1)),
-        Some("object") | None if s.get("properties").is_some() => {
-            let req: Vec<&str> = s["required"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            let props: Vec<String> = s["properties"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(k, v)| {
-                    let key = if is_ident(k) {
-                        k.clone()
-                    } else {
-                        serde_json::to_string(k).unwrap()
-                    };
-                    format!(
-                        "{key}{}: {}",
-                        if req.contains(&k.as_str()) { "" } else { "?" },
-                        ts_type(v, depth + 1)
-                    )
-                })
-                .collect();
-            if props.is_empty() {
-                "{}".into()
-            } else {
-                format!("{{ {} }}", props.join("; "))
-            }
-        }
-        Some("object") => "object".into(),
-        _ => "any".into(),
-    }
-}
-
-/// The catalog section of the system prompt.
+/// The catalog section of the system prompt, in OpenCode's form: each
+/// namespace with its tool count, then each tool's signature and summary.
+/// Every namespace is listed; tools are picked one per namespace per round,
+/// in path order, while they fit [`INLINE_BUDGET`], and a partial catalog
+/// tells the model to find the rest with `search(...)`.
 pub fn instructions(entries: &[Entry]) -> String {
-    let mut by_ns: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
-    for e in entries {
-        by_ns.entry(&e.namespace).or_default().push(e);
+    if entries.is_empty() {
+        return "No Code Mode tools are currently available. Later Code Mode catalog updates may add or remove tools. Do not call `execute` unless there is at least one available Code Mode tool.".into();
     }
-    let mut s = String::from("# Code Mode\n\nThe tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`. The catalog is complete. Do not guess tool names.\n\n## Code Mode tools (call only inside `execute`)\n");
-    for (ns, list) in by_ns {
-        s.push_str(&format!("\n### {ns}\n"));
-        for e in list {
-            let desc = e.description.lines().next().unwrap_or("").trim();
-            s.push_str(&format!(
-                "- `{}(input: {})`{}\n",
-                path(e),
-                ts_type(&e.schema, 0),
-                if desc.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {desc}")
-                }
-            ));
+    let mut by_ns: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for e in entries {
+        let canonical = search::canonical(e);
+        let top = canonical.split('.').next().unwrap_or("").to_string();
+        let desc = summary(&e.description);
+        let mut line = format!("  - {}", signature(e));
+        if !desc.is_empty() {
+            line.push_str(&format!(" // {desc}"));
+        }
+        by_ns.entry(top).or_default().push((canonical, line));
+    }
+    for list in by_ns.values_mut() {
+        list.sort();
+    }
+    let mut remaining = INLINE_BUDGET as i64
+        - by_ns
+            .iter()
+            .map(|(n, l)| cost(&namespace_line(n, l.len(), 0)) as i64)
+            .sum::<i64>();
+    let mut shown: Vec<usize> = vec![0; by_ns.len()];
+    let lists: Vec<&Vec<(String, String)>> = by_ns.values().collect();
+    let mut active: Vec<usize> = (0..lists.len()).collect();
+    while !active.is_empty() {
+        active.retain(|&i| {
+            let Some((_, line)) = lists[i].get(shown[i]) else {
+                return false;
+            };
+            if cost(line) as i64 > remaining {
+                return false;
+            }
+            remaining -= cost(line) as i64;
+            shown[i] += 1;
+            shown[i] < lists[i].len()
+        });
+    }
+    let complete = lists.iter().zip(&shown).all(|(l, n)| l.len() == *n);
+    let mut s = String::from("# Code Mode\n\n");
+    if complete {
+        s.push_str("The tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is complete. Do not guess tool names.");
+    } else {
+        s.push_str(&format!("The tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names. Each result's `path` is the complete call expression: write it out as code, for example `await tools.ns.tool_name({{ ... }})`. Do not use it as a key such as `tools[path]`.\n\n- {}", search::search_signature()));
+    }
+    s.push_str("\n\n## Code Mode tools (call only inside `execute`)\n");
+    for (i, (name, list)) in by_ns.iter().enumerate() {
+        s.push_str(&format!("\n{}", namespace_line(name, list.len(), shown[i])));
+        for (_, line) in &list[..shown[i]] {
+            s.push_str(&format!("\n{line}"));
         }
     }
     s
@@ -270,18 +280,7 @@ const CAPS: &str = r#"(() => {
 "#;
 
 fn prelude(entries: &[Entry]) -> String {
-    let mut ns: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
-    for e in entries {
-        ns.entry(&e.namespace).or_default().push(e);
-    }
-    let mut s = String::from("const tools = {};\n");
-    for (n, list) in ns {
-        let key = serde_json::to_string(n).unwrap();
-        s.push_str(&format!("tools[{key}] = {{}};\n"));
-        for e in list {
-            s.push_str(&format!("tools[{key}][{}] = async (input) => __call({}, input === undefined ? {{}} : input);\n", serde_json::to_string(&e.name).unwrap(), serde_json::to_string(&e.tool).unwrap()));
-        }
-    }
+    let mut s = search::prelude(entries);
     s.push_str(CAPS);
     s.push_str("const __logs = [];\nconst console = { log: (...a) => { __logs.push(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')); } };\nconsole.error = console.log; console.warn = console.log; console.info = console.log;\n");
     s
@@ -381,6 +380,9 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
     };
     if let Err(e) = ctx.register_global_callable(js_string!("__call"), 2, call) {
         return fail(e.to_string(), &count);
+    }
+    if let Err(e) = search::install(&mut ctx, &entries) {
+        return fail(format!("prelude: {e}"), &count);
     }
     if let Err(e) = ctx.eval(Source::from_bytes(prelude(&entries).as_bytes())) {
         return fail(format!("prelude: {e}"), &count);
@@ -915,19 +917,37 @@ mod tests {
     #[test]
     fn catalog_lines() {
         let s = instructions(&entries());
-        assert!(s.contains("- `tools.gh.issues(input: { repo: string; state?: \"open\" | \"closed\" })` — List issues"), "{s}");
         assert!(
-            s.contains("tools.gh[\"get-issue\"](input: { n?: number })"),
+            s.ends_with(
+                "## Code Mode tools (call only inside `execute`)\n\n- gh (2 tools)\n  - tools.gh[\"get-issue\"]({\n  /** @integer */\n  n?: number,\n}): Promise<unknown>\n  - tools.gh.issues({\n  repo: string,\n  state?: \"open\" | \"closed\",\n}): Promise<unknown> // List issues"
+            ),
             "{s}"
         );
-        assert_eq!(
-            ts_type(&json!({"type": "array", "items": {"type": "string"}}), 0),
-            "string[]"
+        assert!(s.contains("The catalog is complete."), "{s}");
+        assert!(instructions(&[]).starts_with("No Code Mode tools are currently available."));
+    }
+
+    #[test]
+    fn a_large_catalog_lists_every_namespace_and_points_at_search() {
+        let many: Vec<Entry> = (0..200)
+            .map(|i| Entry {
+                tool: format!("t{i}"),
+                namespace: if i < 100 { "big" } else { "other" }.into(),
+                name: format!("tool_{i:03}"),
+                description: "Does a thing with a fairly long description".into(),
+                schema: json!({"type": "object", "properties": {"q": {"type": "string", "description": "What to look for"}}}),
+            })
+            .collect();
+        let s = instructions(&many);
+        assert!(s.contains("The catalog is partial."), "{s}");
+        assert!(s.contains("\n- search(query: string | {\n  /** @integer @exclusiveMinimum 0 */\n  limit?: number,"), "{s}");
+        assert!(s.contains("\n- big (100 tools, "), "{s}");
+        assert!(s.contains("\n- other (100 tools, "), "{s}");
+        assert!(
+            s.contains("tools.big.tool_000({") && s.contains("tools.other.tool_100({"),
+            "{s}"
         );
-        assert_eq!(
-            ts_type(&json!({"type": "object", "properties": {}}), 0),
-            "{}"
-        );
+        assert!(!s.contains("tool_099"), "{s}");
     }
 
     #[test]
