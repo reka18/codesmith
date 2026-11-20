@@ -119,6 +119,7 @@ impl Sink for Collect {
 /// A stored session in a temporary project, against the fake model.
 pub struct H {
     pub s: Session,
+    pub mcp: Option<Arc<codesmith_core::mcp::Mcp>>,
     pub log: Arc<Mutex<Vec<Value>>>,
     pub loaded: Loaded,
     pub db: PathBuf,
@@ -154,6 +155,12 @@ impl H {
             root: root.clone(),
         };
         let db = outside.path().join("s.db");
+        let mcp = match extra.get("mcp") {
+            Some(_) => {
+                Some(codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await)
+            }
+            None => None,
+        };
         let s = Session::new(
             &loaded,
             root,
@@ -164,7 +171,7 @@ impl H {
                 title: Some("Parent".into()),
                 parent: None,
                 questioner: None,
-                mcp: None,
+                mcp: mcp.clone(),
             },
             Arc::new(Fixed(Reply::Always)),
             Some(Store::open(&db).unwrap()),
@@ -172,6 +179,7 @@ impl H {
         .unwrap();
         H {
             s,
+            mcp,
             log,
             loaded,
             db,
@@ -192,7 +200,7 @@ impl H {
                 title: Some("Parent".into()),
                 parent: None,
                 questioner: None,
-                mcp: None,
+                mcp: self.mcp.clone(),
             },
             Arc::new(Fixed(Reply::Always)),
             Some(self.store()),
@@ -224,7 +232,7 @@ impl H {
                 title: None,
                 parent: None,
                 questioner: None,
-                mcp: None,
+                mcp: self.mcp.clone(),
             },
             Arc::new(Fixed(Reply::Always)),
             Some(self.store()),

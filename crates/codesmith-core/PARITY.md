@@ -33,7 +33,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
-| Tool registry, schemas, placement | 100 | 4 | 0 | 22 | 53 | 21 | 0 |
+| Tool registry, schemas, placement | 100 | 23 | 0 | 5 | 53 | 19 | 0 |
 | Media tools | 39 | 0 | 0 | 24 | 9 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
 | Shell tool and runtime | 207 | 118 | 2 | 6 | 66 | 15 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1361** | **15** | **460** | **2355** | **1397** | **0** |
+| **Total** | **5588** | **1380** | **15** | **443** | **2355** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (460 cases in 50 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (443 cases in 49 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -91,7 +91,6 @@ Missing features, by how many OpenCode test cases each would unlock (460 cases i
 | [Local Model Discovery](#local-model-discovery) | 19 | discovering LM Studio models and context; discovering local Ollama models and metadata; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
-| [Tool Input Repair](#tool-input-repair) | 17 | repair before validation, other harnesses' tool names, Code Mode calls; schema-guided repair of nested containers, nulls, unions, tuples and dictionaries |
 | [MCP Elicitation](#mcp-elicitation) | 16 | forms behind elicitation and questions (conditional fields); elicitation forms and URL elicitations |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
@@ -422,28 +421,6 @@ Missing features, by how many OpenCode test cases each would unlock (460 cases i
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-
-### Tool Input Repair
-
-17 cases.
-
-- `plugin/tool-input-repair-integration.test.ts`: repairs tool input before validating its original schema
-- `plugin/tool-input-repair-integration.test.ts`: runs a call to another harness's tool name as the matching tool and says so
-- `plugin/tool-input-repair-integration.test.ts`: repairs namespaced inner tool input called from Code Mode
-- `plugin/tool-input-repair-integration.test.ts`: repairs nested Code Mode calls against the Code Mode input schema
-- `plugin/tool-input-repair.test.ts`: preserves valid input identity, nested containers, and unknown properties
-- `plugin/tool-input-repair.test.ts`: removes extras only from explicitly closed objects without mutating inputs
-- `plugin/tool-input-repair.test.ts`: preserves unknown keys when patterned ownership cannot be determined
-- `plugin/tool-input-repair.test.ts`: preserves properties that may belong to composed object schemas
-- `plugin/tool-input-repair.test.ts`: removes only optional nonnullable nulls and non-object empty placeholders
-- `plugin/tool-input-repair.test.ts`: preserves nulls whose validity is hidden inside compositions
-- `plugin/tool-input-repair.test.ts`: preserves optional-looking nulls when the parent composes requirements
-- `plugin/tool-input-repair.test.ts`: wraps compatible scalars after repairing array items
-- `plugin/tool-input-repair.test.ts`: repairs nested question-like inputs without mutating original containers
-- `plugin/tool-input-repair.test.ts`: repairs unique nullable alternatives while preserving accepted union values
-- `plugin/tool-input-repair.test.ts`: repairs tuple positions and rest items while preserving valid array identity
-- `plugin/tool-input-repair.test.ts`: repairs typed dictionaries and straightforward local references
-- `plugin/tool-input-repair.test.ts`: leaves ambiguous unions, compositions, and unsupported roots unchanged
 
 ### MCP Elicitation
 
@@ -828,7 +805,7 @@ Missing features, by how many OpenCode test cases each would unlock (460 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -1126,12 +1103,8 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 - todowrite summarizes the update (S) — `tool::todo`
   - `tool-todo.test.ts`: registers todowrite on the native tool list and summarizes the update
 
-### Tool registry, schemas, placement (21)
+### Tool registry, schemas, placement (19)
 
-- a stringified root object parsed (S) — `tool::repair`
-  - `plugin/tool-input-repair.test.ts`: parses root objects and repairs nested stringified containers
-- numeric and boolean strings coerced (S) — `tool::repair`
-  - `plugin/tool-input-repair.test.ts`: coerces numeric and boolean strings while preserving invalid and existing values
 - execute offered only with Code Mode; tools direct when execute is denied (S) — `tool registry + codemode`
   - `tool-registry.test.ts`: are not available without full_codemode
   - `tool-registry.test.ts`: are available with full_codemode
@@ -2521,8 +2494,33 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool registry, schemas, placement (57 of 100)</summary>
+<details><summary>Tool registry, schemas, placement (76 of 100)</summary>
 
+
+**`plugin/tool-input-repair-integration.test.ts`**
+
+- P repairs tool input before validating its original schema — `tests/oc_tool_input_repair.rs::oc_repair_repairs_tool_input_before_running_it` (adapted: an MCP tool's schema; schemas are not re-registered mid-session)
+- P runs a call to another harness's tool name as the matching tool and says so — `tests/oc_tool_input_repair.rs::oc_repair_runs_bash_as_shell_and_says_so` (the note follows the result text)
+- P repairs namespaced inner tool input called from Code Mode — `tests/oc_tool_input_repair.rs::oc_repair_repairs_inner_tool_input_called_from_code_mode`
+- P repairs nested Code Mode calls against the Code Mode input schema — `tests/oc_tool_input_repair.rs::oc_repair_repairs_code_mode_calls_against_the_tool_schema` (adapted: Code Mode calls use the tool's one schema)
+
+**`plugin/tool-input-repair.test.ts`**
+
+- P preserves valid input identity, nested containers, and unknown properties — `tests/oc_tool_input_repair.rs::oc_repair_preserves_valid_input_and_unknown_properties` (identity checked as equality)
+- P parses root objects and repairs nested stringified containers — `tests/oc_tool_input_repair.rs::oc_repair_parses_root_objects_and_nested_stringified_containers`
+- P removes extras only from explicitly closed objects without mutating inputs — `tests/oc_tool_input_repair.rs::oc_repair_removes_extras_only_from_closed_objects`
+- P preserves unknown keys when patterned ownership cannot be determined — `tests/oc_tool_input_repair.rs::oc_repair_preserves_unknown_keys_under_pattern_properties`
+- P preserves properties that may belong to composed object schemas — `tests/oc_tool_input_repair.rs::oc_repair_preserves_properties_of_composed_schemas`
+- P removes only optional nonnullable nulls and non-object empty placeholders — `tests/oc_tool_input_repair.rs::oc_repair_removes_only_optional_nulls_and_placeholders`
+- P preserves nulls whose validity is hidden inside compositions — `tests/oc_tool_input_repair.rs::oc_repair_preserves_nulls_hidden_inside_compositions`
+- P preserves optional-looking nulls when the parent composes requirements — `tests/oc_tool_input_repair.rs::oc_repair_preserves_nulls_when_the_parent_composes_requirements`
+- P coerces numeric and boolean strings while preserving invalid and existing values — `tests/oc_tool_input_repair.rs::oc_repair_coerces_numeric_and_boolean_strings`
+- P wraps compatible scalars after repairing array items — `tests/oc_tool_input_repair.rs::oc_repair_wraps_compatible_scalars_in_arrays`
+- P repairs nested question-like inputs without mutating original containers — `tests/oc_tool_input_repair.rs::oc_repair_repairs_nested_question_like_inputs`
+- P repairs unique nullable alternatives while preserving accepted union values — `tests/oc_tool_input_repair.rs::oc_repair_repairs_unique_nullable_alternatives`
+- P repairs tuple positions and rest items while preserving valid array identity — `tests/oc_tool_input_repair.rs::oc_repair_repairs_tuple_positions_and_rest_items`
+- P repairs typed dictionaries and straightforward local references — `tests/oc_tool_input_repair.rs::oc_repair_repairs_typed_dictionaries_and_local_references`
+- P leaves ambiguous unions, compositions, and unsupported roots unchanged — `tests/oc_tool_input_repair.rs::oc_repair_leaves_ambiguous_unions_compositions_and_other_roots_unchanged`
 
 **`tool-model-policy.test.ts`**
 

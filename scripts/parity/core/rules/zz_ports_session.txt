@@ -33,3 +33,24 @@
 127 :: ported :: tests/oc_session_skill_mention.rs::oc_session_materializes_mentioned_skills_on_their_prompt
 171 :: ported :: tests/oc_session_skill_mention.rs::oc_session_excludes_mentioned_skills_when_forking_before_their_prompt
 198 :: ported :: tests/oc_session_skill_mention.rs::oc_session_activates_a_skill_with_its_raw_content_without_the_model :: adapted: no caller-supplied ID or event
+@plugin/tool-input-repair.test.ts
+53 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_preserves_valid_input_and_unknown_properties :: identity checked as equality
+73 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_parses_root_objects_and_nested_stringified_containers
+94 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_removes_extras_only_from_closed_objects
+129 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_preserves_unknown_keys_under_pattern_properties
+144 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_preserves_properties_of_composed_schemas
+160 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_removes_only_optional_nulls_and_placeholders
+213 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_preserves_nulls_hidden_inside_compositions
+229 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_preserves_nulls_when_the_parent_composes_requirements
+240 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_coerces_numeric_and_boolean_strings
+274 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_wraps_compatible_scalars_in_arrays
+309 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_nested_question_like_inputs
+338 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_unique_nullable_alternatives
+366 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_tuple_positions_and_rest_items
+390 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_typed_dictionaries_and_local_references
+433 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_leaves_ambiguous_unions_compositions_and_other_roots_unchanged
+@plugin/tool-input-repair-integration.test.ts
+19 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_tool_input_before_running_it :: adapted: an MCP tool's schema; schemas are not re-registered mid-session
+86 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_runs_bash_as_shell_and_says_so :: the note follows the result text
+127 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_inner_tool_input_called_from_code_mode
+157 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_code_mode_calls_against_the_tool_schema :: adapted: Code Mode calls use the tool's one schema

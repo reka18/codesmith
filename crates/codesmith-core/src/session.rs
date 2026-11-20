@@ -340,6 +340,8 @@ struct Turn {
     stopped: Option<&'static str>,
     /// Tool names offered to the model in the latest request.
     offered: Vec<String>,
+    /// Their input schemas, for [`tool::input_repair`].
+    schemas: Vec<(String, serde_json::Value)>,
     /// Scales retry waits (tests shorten them).
     retry_scale: f64,
     /// Resumes for finished background commands that failed in a row
@@ -611,6 +613,7 @@ impl Session {
                 declined,
                 stopped: None,
                 offered: Vec::new(),
+                schemas: Vec::new(),
                 retry_scale: 1.0,
                 resume_failures: 0,
                 resume_due: None,
@@ -826,6 +829,32 @@ impl Session {
             .ok_or_else(|| crate::skill_mention::NotFound { skill: id.into() })?;
         let text = skill.content.clone();
         self.push(Message::user(text))
+    }
+
+    /// A call as it runs: the name called, the tool it runs as (another
+    /// harness's name for an offered tool, see [`tool::input_repair::alias`]),
+    /// and its input repaired against that tool's schema.
+    fn repair_call(
+        &self,
+        name: String,
+        input: serde_json::Value,
+    ) -> (String, String, serde_json::Value) {
+        let ran = tool::input_repair::alias(&name, &self.turn.offered)
+            .map_or_else(|| name.clone(), str::to_string);
+        // Code Mode's input is trivial; the calls it makes are repaired.
+        let schema = self
+            .turn
+            .schemas
+            .iter()
+            .find(|(n, _)| *n == ran && ran != crate::codemode::TOOL)
+            .map(|(_, s)| s);
+        let input = match schema {
+            Some(s) if runner::invalid_json(&input).is_none() => {
+                tool::input_repair::repair(&input, s)
+            }
+            _ => input,
+        };
+        (name, ran, input)
     }
 
     /// After a step's tool results: the instruction files its reads bring
@@ -1467,6 +1496,9 @@ impl Session {
                     });
                     continue;
                 }
+                // Repaired against the tool's schema, as OpenCode does
+                // before checking it; `bash` runs as `shell`.
+                let (called, name, input) = self.repair_call(name, input);
                 sink.tool_start(&id, &name, &input);
                 if !runner::read_only_tool(&name) {
                     self.agent_changed_files = true;
@@ -1588,6 +1620,10 @@ impl Session {
                     self.turn.stopped = Some("you declined a tool call");
                 }
                 plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
+                if called != name {
+                    content.push_str("\n\n");
+                    content.push_str(&tool::input_repair::alias_note(&called, &name));
+                }
                 let (media, notes) =
                     crate::media::fit_tool_media(media, &self.loaded.config.media.image);
                 for note in notes {
@@ -1629,7 +1665,7 @@ impl Session {
                 );
                 results.push(Part::ToolResult {
                     id,
-                    name,
+                    name: called,
                     content,
                     is_error,
                     media,
@@ -2420,7 +2456,7 @@ impl Session {
                 return (e.to_string(), true, vec![]);
             }
         }
-        let args = tool::repair(input);
+        let args = tool::repair(&tool::input_repair::repair(input, &t.schema));
         let title = format!("Run MCP tool {name}");
         if let Err(e) = self.allowed(name, "*", title) {
             return (e, true, vec![]);
@@ -2788,6 +2824,11 @@ impl Session {
         self.mcp.refresh().await;
         let mut req = self.request();
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
+        self.turn.schemas = req
+            .tools
+            .iter()
+            .map(|t| (t.name.clone(), t.parameters.clone()))
+            .collect();
         if final_step {
             req.messages.push(Message::system(runner::MAX_STEPS_PROMPT));
             // The tool definitions stay, so the cached prefix does too.

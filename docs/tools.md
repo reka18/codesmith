@@ -36,6 +36,15 @@ execution, when a model's `hostedTools` option turns them on
 ([config](configuration.md#hosted-tools)). Their calls show as tool rows but
 never run locally.
 
+Before a call runs, its input is repaired against the tool's input schema
+where the schema leaves no doubt, as OpenCode does: an object or array sent
+as a JSON string is parsed, `"20"` becomes `20` for a number and `"false"`
+`false` for a boolean, a lone value becomes a one-item array, an optional
+field sent as `null` is dropped, and extras are dropped from an object that
+allows none. MCP tools called from Code Mode are repaired the same way. A
+call to `bash` when no tool has that name runs as `shell`, and its result
+tells the model to call `shell` next time.
+
 Each agent has a step limit, 200 by default (`agents.<id>.steps`). On the
 last step, the model has to answer in text.
 

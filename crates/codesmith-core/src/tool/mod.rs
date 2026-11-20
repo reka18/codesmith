@@ -6,6 +6,7 @@ mod edit;
 mod glob;
 mod grep;
 pub mod html_markdown;
+pub mod input_repair;
 mod lsp;
 pub mod patch;
 pub(crate) mod read;
