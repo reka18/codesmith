@@ -21,7 +21,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
-| Model requests and transport | 68 | 14 | 0 | 8 | 40 | 6 | 0 |
+| Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
 | Sessions and their store | 308 | 60 | 0 | 15 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1549** | **16** | **251** | **2377** | **1395** | **0** |
+| **Total** | **5588** | **1555** | **16** | **245** | **2377** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -81,7 +81,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (251 cases in 23 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (245 cases in 22 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -94,7 +94,6 @@ Missing features, by how many OpenCode test cases each would unlock (251 cases i
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
-| [Responses Checkpoint Continuation](#responses-checkpoint-continuation) | 6 | WebSocket continuation checkpoints for compaction triggers; compaction across WebSocket recovery without stale response IDs |
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
@@ -358,15 +357,6 @@ Missing features, by how many OpenCode test cases each would unlock (251 cases i
 - `generate.test.ts`: sends a variant's reasoning setting and maps provider rejections
 - `generate.test.ts`: returns a typed error for an invalid request instead of crashing
 - `generate.test.ts`: rejects models of another type and unknown models
-
-### Responses Checkpoint Continuation
-
-6 cases.
-
-- `session-checkpoint-transport.test.ts`: trigger reuses the append baseline and clears it before the next generation
-- `session-checkpoint-transport.test.ts`: invalid trigger output does not retry or commit a continuation checkpoint
-- `session-checkpoint-transport.test.ts`: trigger recovers over SSE with complete input after the old socket closes and reconnect is rejected
-- `session-compaction-transport.test.ts`: compaction survives ${recovery} without stale response IDs (3 cases)
 
 ### Mid-session Effort Switch
 
@@ -1641,8 +1631,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (54 of 68)</summary>
+<details><summary>Model requests and transport (60 of 68)</summary>
 
+
+**`session-checkpoint-transport.test.ts`**
+
+- P trigger reuses the append baseline and clears it before the next generation — `../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_trigger_reuses_the_append_baseline_and_clears_it_before_the_next_generation`
+- P invalid trigger output does not retry or commit a continuation checkpoint — `../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_invalid_trigger_output_does_not_retry_or_commit_a_continuation_checkpoint`
+- P trigger recovers over SSE with complete input after the old socket closes and reconnect is rejected — `../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_trigger_recovers_over_sse_with_complete_input_after_the_socket_closes_and_reconnect_is_rejected`
+
+**`session-compaction-transport.test.ts`**
+
+- P compaction survives ${recovery} without stale response IDs ×3 — `../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_compaction_survives_reconnect_without_stale_response_ids` (with the http-fallback and ambiguous-send cases beside it)
 
 **`session-model-request-hooks.test.ts`**
 

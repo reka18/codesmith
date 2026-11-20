@@ -133,13 +133,60 @@ impl SessionTransport {
         req: &Request,
         route: Route,
     ) -> Result<EventStream, Error> {
+        self.stream_with(provider, client, req, route, false).await
+    }
+
+    /// Trigger compaction over the conversation's socket (OpenCode's
+    /// checkpoint transport): the trigger continues the latest response
+    /// when the request only appends to it, so only the trigger is sent
+    /// with `previous_response_id`; the checkpoint installs a new window,
+    /// so the next request goes in full. A response with anything but one
+    /// checkpoint is invalid, and is neither retried nor kept. When the
+    /// socket cannot carry it, the whole conversation and the trigger go
+    /// over HTTP.
+    pub async fn compact(
+        &self,
+        provider: &Provider,
+        client: &reqwest::Client,
+        req: &Request,
+        route: Route,
+    ) -> Result<crate::Compacted, Error> {
+        let stream = self.stream_with(provider, client, req, route, true).await?;
+        let r = crate::assemble(stream, |_| {}).await.map_err(|f| f.error)?;
+        crate::responses::trigger_window(r)
+    }
+
+    async fn stream_with(
+        &self,
+        provider: &Provider,
+        client: &reqwest::Client,
+        req: &Request,
+        route: Route,
+        trigger: bool,
+    ) -> Result<EventStream, Error> {
         let req = resolve(provider, req)?;
-        let prepared = prepare(provider, client, &req, route)?;
+        let mut prepared = prepare(provider, client, &req, route)?;
+        if trigger {
+            if let Some(input) = prepared
+                .channel
+                .as_mut()
+                .and_then(|c| c.message.get_mut("input"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                input.push(serde_json::json!({"type": "compaction_trigger"}));
+            }
+        }
         let fallback = {
             let (p, c, r) = (provider.clone(), client.clone(), req.clone());
             move || -> futures_util::future::BoxFuture<'static, Result<EventStream, Error>> {
                 let (p, c, r) = (p.clone(), c.clone(), r.clone());
-                Box::pin(async move { crate::responses::stream(&p, &c, &r).await })
+                Box::pin(async move {
+                    if trigger {
+                        crate::responses::stream_trigger(&p, &c, &r).await
+                    } else {
+                        crate::responses::stream(&p, &c, &r).await
+                    }
+                })
             }
         };
         let Some(channel) = prepared.channel else {

@@ -1196,7 +1196,13 @@ provider) instead of summaries:
 
 CodeSmith then sends the conversation, as a step would, with a compaction
 trigger, and keeps the newest of your own messages (within `keep.tokens`)
-followed by the provider's checkpoint. `"mechanism": "endpoint"` uses
+followed by the provider's checkpoint. When the session's steps go over the
+[Responses WebSocket](#responses-over-websocket), so does the trigger: it
+continues the latest response, sending only the trigger, and the next step
+then goes in full since the checkpoint starts a new window; if the socket
+can't carry it, the whole conversation goes over HTTP. A reply with
+anything but one checkpoint fails the compaction without a retry.
+`"mechanism": "endpoint"` uses
 `/responses/compact` instead, which returns the whole replacement window
 (Azure supports only this one); by default the trigger is used where it is
 available. Compaction otherwise works as usual (`/compact`, `auto`, an

@@ -1284,32 +1284,49 @@ pub(crate) async fn compact_trigger(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<crate::Compacted, Error> {
+    let stream = stream_trigger(p, client, req).await?;
+    let r = crate::assemble(stream, |_| {}).await.map_err(|f| f.error)?;
+    trigger_window(r)
+}
+
+/// The trigger request over HTTP, streamed.
+pub(crate) async fn stream_trigger(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> Result<EventStream, Error> {
     let mut body = body_for(req, &p.base_url);
     if let Some(input) = body["input"].as_array_mut() {
         input.push(json!({"type": "compaction_trigger"}));
     }
     let rb = p.json_post(client, "responses", crate::openai::headers(p, req), &body);
     let resp = crate::endpoint::send(p, rb).await?;
-    let r = crate::assemble(drive(resp, Decode::default()), |_| {})
-        .await
-        .map_err(|f| f.error)?;
+    Ok(drive(resp, Decode::default()))
+}
+
+/// A trigger's response as the window it installs: exactly one checkpoint
+/// (anything else is invalid output, never retried or kept).
+pub(crate) fn trigger_window(r: crate::Response) -> Result<crate::Compacted, Error> {
     let parts: Vec<Part> = r
         .parts
         .into_iter()
         .filter(|p| matches!(p, Part::Compaction(_)))
         .collect();
-    if parts.is_empty() {
-        return Err(Error::Decode(
+    match parts.len() {
+        0 => Err(Error::Decode(
             "the compaction response returned no checkpoint".into(),
-        ));
+        )),
+        1 => Ok(crate::Compacted {
+            window: vec![Message {
+                role: Role::Assistant,
+                parts,
+            }],
+            usage: r.usage,
+        }),
+        n => Err(Error::Decode(format!(
+            "the compaction response returned {n} checkpoints; expected one"
+        ))),
     }
-    Ok(crate::Compacted {
-        window: vec![Message {
-            role: Role::Assistant,
-            parts,
-        }],
-        usage: r.usage,
-    })
 }
 
 /// Endpoint compaction (OpenCode's `ResponsesCompaction`): `/compact` takes

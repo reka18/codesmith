@@ -72,3 +72,9 @@
 7424 :: ported :: tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_at_provider_eof :: adapted: an unfinished stream is retried as cut off first
 7451 :: ported :: tests/oc_hosted_session.rs::oc_hosted_fails_an_unresolved_hosted_tool_before_one_clean_step_end
 7469 :: design :: deliberate :: runner.rs: tool calls from a failed stream are never run; the hosted call alone is settled failed (tests/oc_hosted_session.rs)
+@session-checkpoint-transport.test.ts
+94 :: ported :: ../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_trigger_reuses_the_append_baseline_and_clears_it_before_the_next_generation
+130 :: ported :: ../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_invalid_trigger_output_does_not_retry_or_commit_a_continuation_checkpoint
+147 :: ported :: ../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_trigger_recovers_over_sse_with_complete_input_after_the_socket_closes_and_reconnect_is_rejected
+@session-compaction-transport.test.ts
+16 :: ported :: ../codesmith-ai/tests/oc_checkpoint_transport.rs::oc_compaction_survives_reconnect_without_stale_response_ids :: with the http-fallback and ambiguous-send cases beside it

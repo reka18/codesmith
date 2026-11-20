@@ -541,7 +541,15 @@ impl Session {
         req.max_tokens = self.model.max_output;
         let mut policy = retry::Policy::default();
         let compacted = loop {
-            match provider.compact(&self.client, &req, mechanism).await {
+            // A trigger rides the session's socket when its steps do, so
+            // it continues the latest response instead of resending all.
+            let attempt = match (mechanism, self.model.websocket) {
+                (Trigger, Some(route)) => {
+                    self.ws.compact(provider, &self.client, &req, route).await
+                }
+                _ => provider.compact(&self.client, &req, mechanism).await,
+            };
+            match attempt {
                 Ok(c) => break c,
                 Err(e) if retry::classify(&e) == retry::Class::ContextOverflow => {
                     return Err(anyhow!(
