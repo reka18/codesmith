@@ -76,6 +76,14 @@ permissions under that name with resource `*`:
 }
 ```
 
+Names keep only `[A-Za-z0-9_-]`, so two tools can end up with the same name
+(server `x` with tool `y_z`, and server `x_y` with tool `z`, are both
+`x_y_z`). Then neither gets it: each is named with a suffix from a hash of
+its server and tool, such as `x_y_z_1a2b3c4d`, stable across restarts, and
+its description says which server and tool it is. A rule written for the
+shared name matches neither; use the suffixed names (`codesmith mcp list`
+shows them) or rename a server.
+
 A tool denied for `*` is hidden from the model. In Code Mode, every call a
 program makes is checked the same way as a direct call.
 

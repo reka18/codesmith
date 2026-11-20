@@ -178,6 +178,50 @@ pub fn tool_name(server: &str, tool: &str) -> String {
     sanitize(&format!("{server}_{tool}"))
 }
 
+/// Tools with their final names, each with its index in `tools`. Names come
+/// from [`tool_name`], which can give two tools the same name (server `x`
+/// with tool `y_z` and server `x_y` with tool `z` are both `x_y_z`). Every
+/// tool sharing a name with a different tool gets a suffix made from a hash
+/// of its server and tool (`x_y_z_1a2b3c4d`), with a note in its
+/// description, so no call meant for one server reaches another and no
+/// rule written for the shared name applies to either. A tool a server
+/// lists twice is kept once.
+fn disambiguate(tools: Vec<McpTool>) -> Vec<(usize, McpTool)> {
+    use sha2::Digest;
+    let mut owners: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for t in &tools {
+        let o = owners.entry(t.name.clone()).or_default();
+        let key = (t.server.clone(), t.remote.clone());
+        if !o.contains(&key) {
+            o.push(key);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (i, mut t) in tools.into_iter().enumerate() {
+        if owners[&t.name].len() > 1 {
+            let h = sha2::Sha256::digest(format!("{}\0{}", t.server, t.remote).as_bytes());
+            let hex: String = h[..4].iter().map(|b| format!("{b:02x}")).collect();
+            let note = format!(
+                "(Named {}_{hex}: the name {} is shared with another MCP tool. This is tool {:?} on server {:?}.)",
+                t.name, t.name, t.remote, t.server
+            );
+            t.name = format!("{}_{hex}", t.name);
+            t.description = if t.description.is_empty() {
+                note
+            } else {
+                format!("{}\n\n{note}", t.description)
+            };
+        }
+        // A duplicate listing, or a suffixed name equal to another tool's:
+        // the first keeps it, so a name never stands for two tools.
+        if seen.insert(t.name.clone()) {
+            out.push((i, t));
+        }
+    }
+    out
+}
+
 /// A permission pattern matching every tool name a server's tools get
 /// (`<server>_*`, including names disambiguated after a collision).
 pub fn tools_pattern(server: &str) -> String {
@@ -1137,25 +1181,39 @@ impl Mcp {
         }
     }
 
+    /// Every server's tools (with whether the server is live), named by
+    /// [`disambiguate`] over all of them, exited servers included, so a
+    /// name means the same tool whichever servers are up.
+    fn named_tools(&self) -> Vec<(bool, McpTool)> {
+        let clients = self.clients.read().unwrap();
+        let mut live = Vec::new();
+        let mut all = Vec::new();
+        for c in clients.values() {
+            for t in c.tools.read().unwrap().iter() {
+                live.push(c.exited().is_none());
+                all.push(t.clone());
+            }
+        }
+        let named = disambiguate(all);
+        named.into_iter().map(|(i, t)| (live[i], t)).collect()
+    }
+
     /// Every connected server's tools, by server name.
     pub fn tools(&self) -> Vec<McpTool> {
-        self.live()
+        self.named_tools()
             .into_iter()
-            .flat_map(|(_, c)| c.tools.read().unwrap().clone())
+            .filter(|(live, _)| *live)
+            .map(|(_, t)| t)
             .collect()
     }
 
-    /// A tool by name, from any server that offered it (including one that
-    /// has since exited).
+    /// A tool by the name it was offered under, from any server that
+    /// offered it (including one that has since exited).
     pub fn tool(&self, name: &str) -> Option<McpTool> {
-        self.clients.read().unwrap().values().find_map(|c| {
-            c.tools
-                .read()
-                .unwrap()
-                .iter()
-                .find(|t| t.name == name)
-                .cloned()
-        })
+        self.named_tools()
+            .into_iter()
+            .map(|(_, t)| t)
+            .find(|t| t.name == name)
     }
 
     /// Every connected server's prompts, by server then name.
@@ -1595,6 +1653,56 @@ mod tests {
     }
 
     #[test]
+    fn colliding_tool_names_are_disambiguated() {
+        let t = |server: &str, remote: &str| McpTool {
+            name: tool_name(server, remote),
+            server: server.into(),
+            remote: remote.into(),
+            description: "d".into(),
+            schema: json!({}),
+            codemode: false,
+        };
+        // `x` + `y_z` and `x_y` + `z` are both `x_y_z`; neither keeps it.
+        let named = disambiguate(vec![
+            t("x", "y_z"),
+            t("x", "other"),
+            t("x_y", "z"),
+            t("x_y", "z"),
+        ]);
+        let names: Vec<(usize, &str, &str, &str)> = named
+            .iter()
+            .map(|(i, t)| (*i, t.name.as_str(), t.server.as_str(), t.remote.as_str()))
+            .collect();
+        assert_eq!(
+            names.len(),
+            3,
+            "the repeated listing is kept once: {names:?}"
+        );
+        assert_eq!(names[1], (1, "x_other", "x", "other"));
+        let (a, b) = (&named[0].1, &named[2].1);
+        assert_eq!((a.server.as_str(), b.server.as_str()), ("x", "x_y"));
+        assert_ne!(a.name, b.name);
+        for n in [&a.name, &b.name] {
+            assert!(
+                n.starts_with("x_y_z_") && n.len() == "x_y_z_".len() + 8,
+                "{n}"
+            );
+        }
+        assert!(
+            a.description.starts_with("d\n\n(Named x_y_z_"),
+            "{}",
+            a.description
+        );
+        assert!(a.description.contains("tool \"y_z\" on server \"x\""));
+        // The suffix depends only on the tool, so names are stable.
+        let again = disambiguate(vec![t("x_y", "z"), t("x", "y_z")]);
+        assert_eq!(again[0].1.name, b.name);
+        assert_eq!(again[1].1.name, a.name);
+        // No collision, no change.
+        assert_eq!(disambiguate(vec![t("x", "y")])[0].1.name, "x_y");
+    }
+
+    #[test]
     fn result_texts() {
         let r = json!({"content": [
             {"type": "text", "text": "a"},
@@ -1691,6 +1799,35 @@ mod tests {
 
     fn fixture(name: &str) -> String {
         format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[tokio::test]
+    async fn servers_whose_names_collide_keep_their_own_tools() {
+        let Some(py) = python() else { return };
+        // `my srv` and `my_srv` would both offer `my_srv_echo`.
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {
+            "my srv": {"type": "local", "command": [py, fixture("mcp_stdio.py")]},
+            "my_srv": {"type": "local", "command": [py, fixture("mcp_stdio.py")]},
+        }}))
+        .unwrap();
+        let mcp = Mcp::connect(&cfg, Path::new("/")).await;
+        let tools = mcp.tools();
+        assert_eq!(tools.len(), 4);
+        assert!(
+            mcp.tool("my_srv_echo").is_none(),
+            "the shared name routes nowhere"
+        );
+        assert!(mcp.call("my_srv_echo", json!({"text": "x"})).await.is_err());
+        let echoes: Vec<&McpTool> = tools.iter().filter(|t| t.remote == "echo").collect();
+        assert_eq!(echoes.len(), 2);
+        assert_ne!(echoes[0].name, echoes[1].name);
+        for t in echoes {
+            assert_eq!(mcp.tool(&t.name).unwrap().server, t.server);
+            assert_eq!(
+                mcp.call(&t.name, json!({"text": "hi"})).await.unwrap(),
+                ("echo: hi".into(), false)
+            );
+        }
     }
 
     #[tokio::test]
