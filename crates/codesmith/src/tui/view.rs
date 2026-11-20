@@ -1110,7 +1110,12 @@ fn entry_lines(app: &App, e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
             ));
             out.push(Line::default());
         }
-        Entry::Assistant(t) => out.extend(markdown_cached(t.trim_start_matches('\n'), w)),
+        Entry::Assistant(t) => {
+            let t = super::mention::link_sessions(t.trim_start_matches('\n'), &|id| {
+                app.session_label(id)
+            });
+            out.extend(markdown_cached(&t, w))
+        }
         Entry::Reasoning(t) if app.show_reasoning => {
             out.extend(reasoning_lines(t.trim(), app.reasoning_source, w));
         }

@@ -380,6 +380,9 @@ pub struct App {
     pub replaced: Option<usize>,
     /// The session tab strip, while tabs are on (set before each frame).
     pub tabs: Option<super::tabs::Strip>,
+    /// The titles of sessions the transcript mentions, by ID (`None` for
+    /// one that is archived or not in the store), which its links show.
+    pub session_labels: std::collections::HashMap<String, Option<String>>,
 }
 
 /// A running subagent, as the UI tracks it.
@@ -633,6 +636,7 @@ impl App {
         std::mem::swap(&mut self.history, &mut to.history);
         std::mem::swap(&mut self.diff_memory, &mut to.diff_memory);
         std::mem::swap(&mut self.tabs, &mut to.tabs);
+        std::mem::swap(&mut self.session_labels, &mut to.session_labels);
         to.show_reasoning = self.show_reasoning;
         to.expand_tools = self.expand_tools;
         to.verbosity = self.verbosity;
@@ -657,6 +661,33 @@ impl App {
 
     pub fn error(&mut self, s: impl Into<String>) {
         self.entries.push(Entry::Error(s.into()));
+    }
+
+    /// The title a mention of session `id` shows: none for this session
+    /// or one the store does not have (or has archived).
+    pub fn session_label(&self, id: &str) -> Option<String> {
+        if id == self.header.session {
+            return None;
+        }
+        let title = self.session_labels.get(id)?.as_deref()?;
+        Some(super::view::display_safe(title))
+    }
+
+    /// Mentioned sessions whose titles are not looked up yet.
+    pub fn unknown_mentions(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for e in &self.entries {
+            let Entry::Assistant(t) = e else { continue };
+            if !t.contains("ses_") {
+                continue;
+            }
+            for m in super::mention::session_mentions(t) {
+                if !self.session_labels.contains_key(m.id) && !out.iter().any(|o| o == m.id) {
+                    out.push(m.id.to_string());
+                }
+            }
+        }
+        out
     }
 
     /// The share of the context window in use, as a percentage.

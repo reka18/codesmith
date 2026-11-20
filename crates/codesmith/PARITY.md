@@ -66,7 +66,8 @@ Where the tests live:
   `tests/e2e/tui.rs` runs tabs in a pty (`oc_keeps_each_visited_session_open`,
   background tabs and their permission requests).
 - `src/tui/parity_ui.rs`: the UI's smaller features (reasoning titles,
-  `cli/tui/thinking`, and the groups listed with their tests below).
+  `cli/tui/thinking`, and the groups listed with their tests below);
+  `src/tui/mention.rs`: session mentions (`util/src/session-mention`).
 - `src/tui/parity_keys.rs`: key bindings and the UI's settings
   (`tui/test/config`, `config-v2`, `keymap`, `cli/tui/dialog-prompt`,
   `cli/tui/reasoning-body`, `cli/test/config`).
@@ -101,9 +102,9 @@ Where the tests live:
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
-| util | 140 | 2 | 0 | 17 | 111 | 10 |
+| util | 140 | 2 | 8 | 9 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **563** | **716** | **2357** | **259** |
+| **Total** | **4637** | **742** | **571** | **708** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -570,6 +571,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/thinking` | preserves markdown-significant indentation in the extracted body | after a fix | oc_preserves_markdown_significant_indentation_in_the_extracted_body |
 | `tui/test/cli/tui/thinking` | does not consume ordinary leading bold content | after a fix | oc_does_not_consume_ordinary_leading_bold_content |
 | `tui/test/cli/tui/thinking` | leaves content without a leading title in its body | after a fix | oc_leaves_content_without_a_leading_title_in_its_body |
+| `util/src/session-mention` | session tokens round-trip independently of the title | after a fix | oc_session_tokens_round_trip_independently_of_the_title (`tui/mention.rs`; adapted: CodeSmith's 17-character IDs are mentions too) |
+| `util/src/session-mention` | does not parse malformed or embedded IDs: %s (7 cases) | after a fix | oc_does_not_parse_malformed_or_embedded_ids |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -860,11 +863,6 @@ transport and its tool presentation.
 - `util/src/session-turn`: preserves missing-anchor fallbacks without including the absent assistant's tokens
 - `util/src/session-turn`: measures a marker-era turn from its first prompt across steers
 - `tui/test/config-v2`: shows the TPS default in session settings
-
-### tui: @session mentions (8)
-
-- `util/src/session-mention`: session tokens round-trip independently of the title
-- `util/src/session-mention`: does not parse malformed or embedded IDs: %s (7 cases)
 
 ### tui: jump between messages (8)
 

@@ -26,6 +26,7 @@ mod editor;
 mod group;
 pub(crate) mod keymap;
 mod markdown;
+mod mention;
 pub(crate) mod mini;
 #[cfg(test)]
 mod parity;
@@ -204,8 +205,32 @@ impl Runner {
         if replay {
             self.app.set_entries(app::replay(&s.messages));
         }
+        self.learn_mentions();
         self.session_id = s.id.clone();
         self.session = Some(s);
+    }
+
+    /// Look up the titles of the sessions the transcript mentions that
+    /// are not known yet.
+    fn learn_mentions(&mut self) {
+        let ids = self.app.unknown_mentions();
+        if ids.is_empty() {
+            return;
+        }
+        let db = open_store();
+        for id in ids {
+            let title = db.as_ref().and_then(|db| {
+                let info = db.get(&id).ok().flatten()?;
+                if db.archived(&id).ok().flatten().is_some() {
+                    return None;
+                }
+                Some(
+                    info.title
+                        .unwrap_or_else(|| tabs::NEW_SESSION_TITLE.to_string()),
+                )
+            });
+            self.app.session_labels.insert(id, title);
+        }
     }
 
     /// Reload the current session from the store (or start fresh if it was

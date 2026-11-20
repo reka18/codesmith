@@ -49,3 +49,34 @@ fn oc_does_not_consume_ordinary_leading_bold_content() {
 fn oc_leaves_content_without_a_leading_title_in_its_body() {
     assert_eq!(reasoning_summary("Details only."), (None, "Details only."));
 }
+
+// The transcript links a mentioned session by its title (session-link.ts
+// labels it; the current session and unknown ones stay plain IDs).
+#[test]
+fn mentioned_sessions_show_their_titles() {
+    use super::app::{App, Entry};
+    let mut a = App::new();
+    a.header.session = "ses_19a4b2c3d4e000000".into();
+    a.entries.push(Entry::Assistant(
+        "Continued from ses_19a4b2c3d4e123abc; this is ses_19a4b2c3d4e000000.".into(),
+    ));
+    assert_eq!(
+        a.unknown_mentions(),
+        vec!["ses_19a4b2c3d4e123abc", "ses_19a4b2c3d4e000000"]
+    );
+    a.session_labels.insert(
+        "ses_19a4b2c3d4e123abc".into(),
+        Some("Fix\x1b the build".into()),
+    );
+    a.session_labels
+        .insert("ses_19a4b2c3d4e000000".into(), Some("This one".into()));
+    let text: String = super::view::transcript(&a, 120)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(
+        text.contains("@Fix\\x1b the build (ses_19a4b2c3d4e123abc)"),
+        "{text}"
+    );
+    assert!(text.contains("this is ses_19a4b2c3d4e000000."), "{text}");
+}
