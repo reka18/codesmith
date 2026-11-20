@@ -4,6 +4,12 @@
 //! `bridge::Ev` messages; the UI owns the session between turns. Every
 //! message is already in the store, so an interrupted turn is recovered by
 //! reloading the session.
+//!
+//! A turn ends when the model answers, even while background commands it
+//! started still run. While the UI is idle it waits for one to finish and
+//! then resumes the session as a new turn (OpenCode wakes an idle session
+//! the same way), so the model acts on the result without a prompt. A
+//! prompt sent first reports the finished command itself.
 
 mod app;
 mod attach;
@@ -66,6 +72,9 @@ struct Runner {
     stopping: bool,
     /// `Done` messages of interrupted turns that finished anyway, to ignore.
     skip_done: usize,
+    /// Waits, while the UI is idle, for one of the session's background
+    /// commands to finish, then sends `Ev::Background`.
+    waiter: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -292,6 +301,61 @@ impl Runner {
         if let Err(e) = self.reload() {
             self.app.error(format!("{e:#}"));
         }
+    }
+
+    /// Keep the status line's background count current and, while idle,
+    /// resume the session when one of its background commands has
+    /// finished, or wait for one that still runs. Called before every
+    /// redraw; a turn in progress reports finished commands itself.
+    fn watch_background(&mut self) {
+        let Some(s) = &self.session else {
+            // The session is on a turn's task: keep the last count.
+            self.stop_waiting();
+            return;
+        };
+        self.app.background = s.background_running();
+        if self.app.busy || self.stopping {
+            self.stop_waiting();
+            return;
+        }
+        if s.background_finished() > 0 {
+            self.stop_waiting();
+            self.resume_background();
+        } else if self.app.background > 0 && self.waiter.as_ref().is_none_or(|w| w.is_finished()) {
+            let (reaper, tx) = (s.reaper(), self.tx.clone());
+            self.waiter = Some(tokio::spawn(async move {
+                reaper.wait_any().await;
+                let _ = tx.send(Ev::Background);
+            }));
+        }
+    }
+
+    fn stop_waiting(&mut self) {
+        if let Some(w) = self.waiter.take() {
+            w.abort();
+        }
+    }
+
+    /// Resume the idle session for its finished background commands, as a
+    /// turn of its own (Esc interrupts it like any other).
+    fn resume_background(&mut self) {
+        let Some(mut s) = self.session.take() else {
+            return;
+        };
+        self.app.busy = true;
+        let tx = self.tx.clone();
+        let cwd = s.cwd.clone();
+        self.task = Some(tokio::spawn(async move {
+            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let result = s
+                .resume_background(&mut sink)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Ev::Done {
+                result,
+                session: Box::new(s),
+            });
+        }));
     }
 
     fn idle_or_say(&mut self) -> bool {
@@ -601,6 +665,8 @@ impl Runner {
                 self.skip_done = self.skip_done.saturating_sub(1);
             }
             Ev::Stopped => self.stopped(),
+            // Acted on by `watch_background` before the next redraw.
+            Ev::Background => {}
             Ev::Done { result, session } => {
                 self.task = None;
                 self.app.busy = false;
@@ -734,6 +800,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         approvals: Approvals::default(),
         stopping: false,
         skip_done: 0,
+        waiter: None,
     };
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
         .into_iter()
@@ -768,6 +835,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     spawn_input(tx);
     let result: Result<()> = async {
         loop {
+            r.watch_background();
             terminal.draw(|f| view::draw(f, &r.app))?;
             let Some(ev) = rx.recv().await else { break };
             r.handle(ev).await;
@@ -782,6 +850,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         Ok(())
     }
     .await;
+    r.stop_waiting();
     if let Some(mut t) = r.task.take() {
         if let Some(p) = &r.prompter {
             p.set_stopping(true);

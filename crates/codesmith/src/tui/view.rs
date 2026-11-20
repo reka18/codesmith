@@ -580,6 +580,13 @@ pub fn status_text(app: &App, scrolled: usize) -> String {
         u.push_str(&format!(" · {} cached", tokens(app.usage.cache_read)));
     }
     parts.push(u);
+    if app.background > 0 {
+        parts.push(format!(
+            "{} background command{} running",
+            app.background,
+            if app.background == 1 { "" } else { "s" }
+        ));
+    }
     parts.push(app.header.session.clone());
     if scrolled > 0 {
         parts.push(format!("scrolled {scrolled} lines (Ctrl+End to follow)"));
@@ -1320,6 +1327,9 @@ mod tests {
         assert!(s[9].contains("ses_1"), "{}", s[9]);
         assert!(s[9].contains("50K tokens · 25% of 200K"), "{}", s[9]);
         assert!(s[9].contains("1.5K in"), "{}", s[9]);
+        a.background = 2;
+        let s = screen(&a, 100, 10);
+        assert!(s[9].contains("2 background commands running"), "{}", s[9]);
     }
 
     #[test]

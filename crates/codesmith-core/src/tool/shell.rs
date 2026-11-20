@@ -303,6 +303,21 @@ struct Shared {
 }
 
 impl Shared {
+    async fn wait_any(&self) {
+        loop {
+            let notified = self.wake.notified();
+            {
+                let jobs = self.jobs.lock().unwrap();
+                if jobs.iter().any(|j| j.ending.is_some() && !j.notified)
+                    || !jobs.iter().any(|j| j.ending.is_none())
+                {
+                    return;
+                }
+            }
+            notified.await;
+        }
+    }
+
     fn finish(&self, id: &str, ending: Ending) {
         if let Some(j) = self.jobs.lock().unwrap().iter_mut().find(|j| j.id == id) {
             j.ending = Some(ending);
@@ -337,6 +352,13 @@ impl Reaper {
         for g in self.0.groups() {
             signal_group(g, Signal::Kill);
         }
+    }
+
+    /// Wait until a job finishes (at once if one already has, or if none
+    /// are running), without keeping the commands alive: what a front end
+    /// waits on while the session is idle, to resume it.
+    pub async fn wait_any(&self) {
+        self.0.wait_any().await;
     }
 }
 
@@ -414,20 +436,21 @@ impl Jobs {
         out
     }
 
+    /// Finished jobs not yet reported, left unreported.
+    pub fn finished(&self) -> Vec<Job> {
+        self.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|j| j.ending.is_some() && !j.notified)
+            .cloned()
+            .collect()
+    }
+
     /// Wait until a job finishes (returns at once if one already has, or if none are running).
     pub async fn wait_any(&self) {
-        loop {
-            let notified = self.shared.wake.notified();
-            {
-                let jobs = self.shared.jobs.lock().unwrap();
-                if jobs.iter().any(|j| j.ending.is_some() && !j.notified)
-                    || !jobs.iter().any(|j| j.ending.is_none())
-                {
-                    return;
-                }
-            }
-            notified.await;
-        }
+        self.shared.wait_any().await;
     }
 
     /// Stop every command still running, background and foreground: SIGTERM

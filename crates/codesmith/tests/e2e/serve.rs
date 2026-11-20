@@ -104,6 +104,22 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Follow a session's events (`GET /sessions/{sid}/events`).
+    async fn watch(&self, sid: &str) -> Events {
+        let r = self
+            .req(reqwest::Method::GET, &format!("/sessions/{sid}/events"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        Events {
+            body: Box::pin(r.bytes_stream()),
+            buf: String::new(),
+        }
+    }
+}
+
 type ByteStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<axum::body::Bytes>> + Send>>;
 
@@ -655,4 +671,180 @@ async fn always_approvals_survive_an_abort() {
     }
     assert_eq!(all.last().unwrap().1["error"], Value::Null, "{all:?}");
     assert_eq!(m.by("done").len(), 1);
+}
+
+/// The model starts a background command and answers; the turn ends. When
+/// the command finishes, the idle session is resumed by itself (as in
+/// OpenCode) and the resumed turn streams to the session's watchers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_background_command_resumes_the_idle_session() {
+    let e = Env::new();
+    let ask = M::tools().and(M::prompt("build it"));
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                ask.clone().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 2; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                ask.clone().and(M::step(1)).and(notified.clone().not()),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "resumed",
+                M::tools().and(notified),
+                Reply::text("It finished."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut watch = s.watch(&sid).await;
+    let mut ev = s.turn(&sid, "build it").await;
+    let turn = ev.until("done").await;
+    assert_eq!(turn.last().unwrap().1["error"], Value::Null, "{turn:?}");
+    assert!(ev.next().await.is_none(), "the request's stream ends");
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["busy"], false);
+    assert_eq!(shown["background"], 1, "{shown}");
+
+    // The watcher sees the request's turn, then the resumed one.
+    let first = watch.until("done").await;
+    assert_eq!(first.last().unwrap().1["resumed"], Value::Null);
+    let resumed = watch.until("done").await;
+    let done = &resumed.last().unwrap().1;
+    assert_eq!(done["resumed"], true, "{resumed:?}");
+    assert_eq!(done["error"], Value::Null, "{resumed:?}");
+    let notice = resumed
+        .iter()
+        .find(|(n, _)| n == "notice")
+        .map(|(_, v)| v["message"].as_str().unwrap().to_string())
+        .unwrap_or_default();
+    assert!(
+        notice.starts_with("background command shell_1 finished"),
+        "{resumed:?}"
+    );
+    let text: String = resumed
+        .iter()
+        .filter(|(n, _)| n == "text")
+        .filter_map(|(_, v)| v["delta"].as_str())
+        .collect();
+    assert_eq!(text, "It finished.");
+    let last = crate::model::messages(&m.by("resumed")[0])
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(crate::model::content(&last).contains("built-ok"), "{last}");
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["background"], 0, "{shown}");
+    m.assert_done();
+}
+
+/// A prompt sent while the session waits for its background command takes
+/// over: the command is reported in that turn, once, and the session is
+/// not resumed for it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_during_the_wait_reports_the_command_once() {
+    let e = Env::new();
+    let shell = "<shell id=\"shell_1\"";
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "check",
+                M::tools().and(M::prompt("check on it")).and(M::step(0)),
+                Reply::call("shell", json!({"command": "sleep 4", "description": "wait"})),
+            )
+            .then(
+                "notified",
+                M::tools().and(M::last(shell)),
+                Reply::text("It built."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut watch = s.watch(&sid).await;
+    s.turn(&sid, "build it").await.until("done").await;
+    let mut ev = s.turn(&sid, "check on it").await;
+    let turn = ev.until("done").await;
+    assert_eq!(turn.last().unwrap().1["error"], Value::Null, "{turn:?}");
+    // Nothing is resumed afterwards.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["busy"], false);
+    watch.until("done").await;
+    watch.until("done").await;
+    let dones = m.by("notified");
+    assert_eq!(dones.len(), 1);
+    let reported = crate::model::messages(&dones[0])
+        .iter()
+        .filter(|m| crate::model::content(m).contains(shell))
+        .count();
+    assert_eq!(reported, 1, "{:#}", dones[0]);
+    assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
+    m.assert_done();
+}
+
+/// Aborting an idle session stops its background commands and the wait to
+/// resume for them.
+#[tokio::test(flavor = "multi_thread")]
+async fn aborting_an_idle_session_stops_its_background_commands() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Server")
+            .then(
+                "start",
+                M::tools().and(M::prompt("serve it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 60", "description": "server", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("serve it")).and(M::step(1)),
+                Reply::text("Serving."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    s.turn(&sid, "serve it").await.until("done").await;
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["background"], 1, "{shown}");
+    let (code, r) = s.post(&format!("/sessions/{sid}/abort"), json!({})).await;
+    assert_eq!(code, 200);
+    assert_eq!(r, json!({"aborted": false, "background_stopped": 1}));
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["background"], 0, "{shown}");
+    assert_eq!(shown["busy"], false);
+    m.assert_done();
 }

@@ -22,6 +22,9 @@
 //!   each `{data: base64, mime?, name?}` or `{path}`; the bytes decide the
 //!   type. A path is read as the `read` tool would, so it is asked about
 //!   (`external_directory`, `read`) over the stream before the turn starts.
+//! - `GET    /sessions/{id}/events` → SSE: every turn's events from now
+//!   on, including the turns the server starts itself when a background
+//!   command of an idle session finishes (their `done` has `resumed: true`)
 //! - `POST   /sessions/{id}/abort`
 //! - `POST   /sessions/{id}/permissions/{rid} {reply: once|always|reject, message?}`
 //! - `POST   /sessions/{id}/questions/{qid} {answers: [[...]]}` or `{dismiss: true}`
@@ -60,11 +63,16 @@ enum Pending {
     Question(oneshot::Sender<Option<Vec<Vec<String>>>>),
 }
 
-/// Routes a session's permission requests and questions to whichever client
-/// is streaming its current turn.
+/// Clients following a session's events (`GET /sessions/{id}/events`),
+/// kept across reloads.
+type Watchers = Arc<Mutex<Vec<Tx>>>;
+
+/// Routes a session's events, permission requests and questions to the
+/// client streaming its current turn and to every watcher.
 #[derive(Default)]
 struct Prompter {
     events: Mutex<Option<Tx>>,
+    watchers: Watchers,
     pending: Mutex<HashMap<String, Pending>>,
 }
 
@@ -72,12 +80,21 @@ impl Prompter {
     fn set(&self, tx: Option<Tx>) {
         *self.events.lock().unwrap() = tx;
     }
+    /// Send to the turn's client and the watchers; false when none got it.
     fn send(&self, v: Value) -> bool {
-        self.events
+        let sent = self
+            .events
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|tx| tx.send(v).is_ok())
+            .is_some_and(|tx| tx.send(v.clone()).is_ok());
+        self.watch(v) || sent
+    }
+    /// Send to the watchers only (dropping those gone); false when none are left.
+    fn watch(&self, v: Value) -> bool {
+        let mut w = self.watchers.lock().unwrap();
+        w.retain(|tx| tx.send(v.clone()).is_ok());
+        !w.is_empty()
     }
     /// Drop every open prompt (each is then rejected or dismissed).
     fn clear(&self) {
@@ -122,41 +139,41 @@ impl Questioner for Prompter {
     }
 }
 
-struct JsonSink(Tx);
+struct JsonSink(Arc<Prompter>);
+
+impl JsonSink {
+    fn send(&self, v: Value) {
+        self.0.send(v);
+    }
+}
 
 impl Sink for JsonSink {
     fn text(&mut self, delta: &str) {
-        let _ = self.0.send(json!({"type": "text", "delta": delta}));
+        self.send(json!({"type": "text", "delta": delta}));
     }
     fn reasoning(&mut self, delta: &str) {
-        let _ = self.0.send(json!({"type": "reasoning", "delta": delta}));
+        self.send(json!({"type": "reasoning", "delta": delta}));
     }
     fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
-        let _ = self
-            .0
-            .send(json!({"type": "tool_start", "id": id, "name": name, "input": input}));
+        self.send(json!({"type": "tool_start", "id": id, "name": name, "input": input}));
     }
     fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
-        let _ = self.0.send(json!({"type": "tool_end", "id": id, "name": name, "output": output, "error": is_error}));
+        self.send(json!({"type": "tool_end", "id": id, "name": name, "output": output, "error": is_error}));
     }
     fn step_end(&mut self, reason: &str, usage: &Usage) {
-        let _ = self
-            .0
-            .send(json!({"type": "step_end", "reason": reason, "usage": usage}));
+        self.send(json!({"type": "step_end", "reason": reason, "usage": usage}));
     }
     fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
-        let _ = self.0.send(json!({"type": "retry", "attempt": attempt, "error": error, "wait_ms": wait.as_millis() as u64}));
+        self.send(json!({"type": "retry", "attempt": attempt, "error": error, "wait_ms": wait.as_millis() as u64}));
     }
     fn compacted(&mut self, before: u64, after: u64) {
-        let _ = self
-            .0
-            .send(json!({"type": "compacted", "before": before, "after": after}));
+        self.send(json!({"type": "compacted", "before": before, "after": after}));
     }
     fn todos(&mut self, todos: &[Todo]) {
-        let _ = self.0.send(json!({"type": "todos", "todos": todos}));
+        self.send(json!({"type": "todos", "todos": todos}));
     }
     fn notice(&mut self, message: &str) {
-        let _ = self.0.send(json!({"type": "notice", "message": message}));
+        self.send(json!({"type": "notice", "message": message}));
     }
 }
 
@@ -164,6 +181,9 @@ impl Sink for JsonSink {
 struct Live {
     session: Option<Session>,
     task: Option<tokio::task::JoinHandle<()>>,
+    /// Waits, while the session is idle, for one of its background
+    /// commands to finish, to resume it (see [`wake`]).
+    waiter: Option<tokio::task::JoinHandle<()>>,
     prompter: Arc<Prompter>,
     /// The "always" approvals given in this session, kept across reloads.
     approvals: Approvals,
@@ -252,7 +272,20 @@ impl Server {
         agent: Option<String>,
         model: Option<String>,
     ) -> Result<Live> {
-        let prompter = Arc::new(Prompter::default());
+        self.make_with(resume, agent, model, Watchers::default())
+    }
+
+    fn make_with(
+        &self,
+        resume: Option<String>,
+        agent: Option<String>,
+        model: Option<String>,
+        watchers: Watchers,
+    ) -> Result<Live> {
+        let prompter = Arc::new(Prompter {
+            watchers,
+            ..Default::default()
+        });
         let (asker, questioner): (Arc<dyn Asker>, Option<Arc<dyn Questioner>>) = if self.auto {
             (Arc::new(Fixed(Reply::Once)), None)
         } else {
@@ -278,20 +311,26 @@ impl Server {
             selection: (s.agent.id.clone(), s.model_spec.clone()),
             session: Some(s),
             task: None,
+            waiter: None,
             prompter,
         })
     }
 
     /// Rebuild `g`'s session `id` from the store, where every message of
     /// a stopped turn already is. One never stored starts empty under the
-    /// same id and selection. "Always" approvals carry over.
+    /// same id and selection. "Always" approvals and watchers carry over;
+    /// the old session's background commands are stopped with it.
     fn reload(&self, g: &mut Live, id: &str) -> Result<()> {
+        if let Some(w) = g.waiter.take() {
+            w.abort();
+        }
         let stored = self.store()?.get(id)?.is_some();
+        let watchers = g.prompter.watchers.clone();
         let fresh = if stored {
-            self.make(Some(id.to_string()), None, None)?
+            self.make_with(Some(id.to_string()), None, None, watchers)?
         } else {
             let (agent, model) = g.selection.clone();
-            self.make(None, Some(agent), Some(model))?
+            self.make_with(None, Some(agent), Some(model), watchers)?
         };
         let mut s = fresh.session.expect("a made session");
         s.id = id.to_string();
@@ -437,6 +476,7 @@ pub fn router(st: St) -> Router {
         .route("/sessions", get(list).post(create))
         .route("/sessions/{id}", get(show).delete(remove))
         .route("/sessions/{id}/messages", post(message))
+        .route("/sessions/{id}/events", get(events))
         .route("/sessions/{id}/abort", post(abort))
         .route("/sessions/{id}/permissions/{rid}", post(answer_permission))
         .route("/sessions/{id}/questions/{qid}", post(answer_question))
@@ -483,6 +523,7 @@ async fn show(State(st): State<St>, UrlPath(id): UrlPath<String>) -> Result<Json
             v["messages"] = json!(transcript(&s.messages));
             v["todos"] = json!(s.todos);
             v["busy"] = json!(false);
+            v["background"] = json!(s.background_running());
             Ok(Json(v))
         }
         None => {
@@ -504,6 +545,9 @@ async fn remove(
     let gone = st.live.lock().await.remove(&id);
     if let Some(l) = gone {
         let mut g = l.lock().await;
+        if let Some(w) = g.waiter.take() {
+            w.abort();
+        }
         if let Some(mut t) = g.task.take() {
             t.abort();
             g.prompter.set(None);
@@ -511,6 +555,11 @@ async fn remove(
             // Let it stop before deleting, so it cannot write afterwards.
             let _ = tokio::time::timeout(STOP_WAIT, &mut t).await;
         }
+        // Its background commands go with it; watchers' streams end.
+        if let Some(s) = g.session.take() {
+            s.stop_background().await;
+        }
+        g.prompter.watchers.lock().unwrap().clear();
     }
     let deleted = st.store()?.delete(&id)?;
     Ok(Json(json!({"deleted": deleted})))
@@ -530,11 +579,15 @@ async fn message(
     let live = st.live(&id).await?;
     let mut g = live.lock().await;
     let mut s = g.session.take().ok_or_else(busy)?;
-    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+    // The prompt reports any background command that finished meanwhile.
+    if let Some(w) = g.waiter.take() {
+        w.abort();
+    }
+    let (tx, rx) = mpsc::unbounded_channel::<Value>();
     g.prompter.set(Some(tx.clone()));
     let (live2, prompter) = (live.clone(), g.prompter.clone());
     g.task = Some(tokio::spawn(async move {
-        let mut sink = JsonSink(tx.clone());
+        let mut sink = JsonSink(prompter.clone());
         // Paths are checked now, so their permission requests reach this
         // stream.
         let mut media = Vec::new();
@@ -564,17 +617,86 @@ async fn message(
         g.session = Some(s);
         g.task = None;
         prompter.set(None);
+        prompter.watch(done.clone());
+        wake(&live2, &mut g);
         drop(g);
         let _ = tx.send(done);
     }));
     drop(g);
+    Ok(sse(rx))
+}
+
+fn sse(
+    mut rx: mpsc::UnboundedReceiver<Value>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = async_stream::stream! {
         while let Some(v) = rx.recv().await {
             let kind = v["type"].as_str().unwrap_or("message").to_string();
             yield Ok(Event::default().event(kind).data(v.to_string()));
         }
     };
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Follow a session: the events of every turn from now on, whoever started
+/// it, as `POST /messages` streams them. The turns the server starts itself
+/// (a background command finished while the session was idle) are only
+/// seen here, and their permission requests and questions only reach
+/// watchers. The stream stays open until the client goes or the session is
+/// deleted.
+async fn events(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let live = st.live(&id).await?;
+    let g = live.lock().await;
+    let (tx, rx) = mpsc::unbounded_channel::<Value>();
+    g.prompter.watchers.lock().unwrap().push(tx);
+    Ok(sse(rx))
+}
+
+/// `g`'s session is idle: if a background command of it finished, resume
+/// it as a turn of its own (OpenCode wakes an idle session with the
+/// command's notice); if one still runs, wait for it and come back here.
+/// A prompt sent meanwhile cancels the wait and reports the command itself.
+fn wake(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
+    if let Some(w) = g.waiter.take() {
+        w.abort();
+    }
+    let Some(s) = g.session.as_ref().filter(|_| g.task.is_none()) else {
+        return;
+    };
+    if s.background_finished() > 0 {
+        resume(live, g);
+    } else if s.background_running() > 0 {
+        let (reaper, live) = (s.reaper(), live.clone());
+        g.waiter = Some(tokio::spawn(async move {
+            reaper.wait_any().await;
+            let mut g = live.lock().await;
+            // This task: drop its handle without aborting it.
+            g.waiter.take();
+            wake(&live, &mut g);
+        }));
+    }
+}
+
+/// Run the turn that reports `g`'s finished background commands. Its
+/// events go to the watchers; it is aborted like any turn.
+fn resume(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
+    let Some(mut s) = g.session.take() else {
+        return;
+    };
+    let (live2, prompter) = (live.clone(), g.prompter.clone());
+    g.task = Some(tokio::spawn(async move {
+        let mut sink = JsonSink(prompter.clone());
+        let r = s.resume_background(&mut sink).await;
+        let done = json!({"type": "done", "resumed": true, "error": r.err().map(|e| format!("{e:#}")), "usage": s.usage, "title": s.title});
+        let mut g = live2.lock().await;
+        g.session = Some(s);
+        g.task = None;
+        prompter.watch(done);
+        wake(&live2, &mut g);
+    }));
 }
 
 /// A prompt attachment: inline media, or a path checked when the turn starts.
@@ -638,6 +760,19 @@ async fn abort(
     let live = st.live(&id).await?;
     let mut g = live.lock().await;
     let Some(mut t) = g.task.take() else {
+        // Idle: stop its background commands (and the wait to resume for
+        // them); reloading drops the stopped ones unreported.
+        let waiting = g.waiter.take().inspect(|w| w.abort()).is_some();
+        let running = g.session.as_ref().map_or(0, |s| s.background_running());
+        if waiting || running > 0 {
+            if let Some(s) = &g.session {
+                s.stop_background().await;
+            }
+            st.reload(&mut g, &id)?;
+            return Ok(Json(
+                json!({"aborted": false, "background_stopped": running}),
+            ));
+        }
         return Ok(Json(json!({"aborted": false})));
     };
     t.abort();
@@ -653,6 +788,8 @@ async fn abort(
     if let Some(tx) = events {
         let _ = tx.send(json!({"type": "done", "error": "aborted"}));
     }
+    g.prompter
+        .watch(json!({"type": "done", "error": "aborted"}));
     if !stopped {
         // Still inside a blocking call: reload when it returns. The
         // session stays busy until then.

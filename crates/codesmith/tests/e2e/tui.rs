@@ -267,3 +267,108 @@ async fn a_switched_agent_is_kept_for_resuming() {
     assert_eq!(list[0].agent, "plan");
     assert_eq!(list[0].model, "fake/other");
 }
+
+// The model starts a background command and answers, so the turn ends;
+// when the command finishes the idle UI resumes the session by itself (as OpenCode does) with its result.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_background_command_resumes_the_idle_ui() {
+    let e = Env::new();
+    let ask = M::tools().and(M::prompt("build it"));
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                ask.clone().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                ask.clone().and(M::step(1)).and(notified.clone().not()),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "resumed",
+                M::tools().and(notified),
+                Reply::text("The build finished fine."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
+        return;
+    };
+    // The turn is over (the idle prompt's title is back) before the
+    // command finishes; the status line's count is checked by the view's
+    // own tests, as only changed cells are redrawn here.
+    ui.wait_for("Tab agents").await;
+    ui.wait_for("background command shell_1 finished").await;
+    ui.wait_for("The build finished fine.").await;
+    ui.quit().await;
+    let last = crate::model::messages(&m.by("resumed")[0])
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(crate::model::content(&last).contains("built-ok"), "{last}");
+    m.assert_done();
+}
+
+// A prompt sent while the UI waits for a background command runs at once
+// and reports the command itself; the session is not resumed for it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_while_the_ui_waits_reports_the_command_once() {
+    let e = Env::new();
+    let shell = "<shell id=\"shell_1\"";
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "check",
+                M::tools().and(M::prompt("check on it")).and(M::step(0)),
+                Reply::call("shell", json!({"command": "sleep 4", "description": "wait"})),
+            )
+            .then(
+                "notified",
+                M::tools().and(M::last(shell)),
+                Reply::text("It built after all."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
+        return;
+    };
+    // The turn is over once the idle prompt's title is back.
+    ui.wait_for("Tab agents").await;
+    ui.send(b"check on it\r").await;
+    ui.wait_for("It built after all.").await;
+    // Nothing is resumed afterwards.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    ui.quit().await;
+    let dones = m.by("notified");
+    assert_eq!(dones.len(), 1);
+    let reported = crate::model::messages(&dones[0])
+        .iter()
+        .filter(|m| crate::model::content(m).contains(shell))
+        .count();
+    assert_eq!(reported, 1, "{:#}", dones[0]);
+    assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
+    m.assert_done();
+}

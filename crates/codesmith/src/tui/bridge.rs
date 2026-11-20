@@ -49,6 +49,8 @@ pub enum Ev {
     },
     /// An interrupted turn that outlasted the wait for it has now stopped.
     Stopped,
+    /// A background command of the idle session finished (or none runs any more).
+    Background,
 }
 
 pub struct ChanSink {

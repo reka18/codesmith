@@ -38,6 +38,30 @@ Set `"snapshots": false` to turn snapshots off; undo then has nothing to
 restore. Snapshots are never taken when the project root is your home folder
 or `/`.
 
+## Background commands
+
+A shell command started with `background: true` (or one that outlives its
+timeout) keeps running after the model answers, and the turn ends there, as
+in OpenCode. When the command finishes, its output is reported to the model
+once:
+
+- **An idle session wakes up.** In the [UI](interactive-ui.md#background-commands)
+  and the [server](local-server.md#background-commands), the session is
+  resumed as a new turn of its own: a `background command shell_1 finished`
+  notice, then the model acting on the result. No prompt is needed.
+- **A prompt sent first reports it.** If you send a message before the
+  command finishes, or while it finishes, that turn carries the result, and
+  the session is not woken for it again.
+- **One-shot runs wait.** `codesmith run`, subagents and automations wait for
+  their commands and resume the model with each result before they end. A
+  command that never exits (a dev server) keeps them waiting until they are
+  interrupted.
+
+A session's commands stop with it: when the program exits, when a turn is
+interrupted or aborted (the session reloads), and when you switch session,
+agent or model, or undo, in the UI. A command's output file stays, and is
+named in the result.
+
 ## Export, import and delete
 
 ```sh

@@ -23,7 +23,8 @@ See [CLI](cli.md#codesmith) for every flag.
 - **Header.** The agent, model, session id and title.
 - **Status line.** Context in use (the last call's tokens, and the share of
   the model's `limit.context` when it is configured), the session's cost when
-  the model has a `cost`, and token totals.
+  the model has a `cost`, token totals, and how many
+  [background commands](#background-commands) are running.
 
 ## Keys
 
@@ -106,6 +107,22 @@ pastes its path). The path is replaced by an `[Image 1]` or `[PDF 1]`
 placeholder, and the file is attached when you send the prompt. Delete the
 placeholder to drop it. See [images and PDFs](tools.md#images-and-pdfs) for
 the formats and limits.
+
+## Background commands
+
+A turn ends when the model answers, even while shell commands it started
+with `background: true` still run; the status line shows `1 background
+command running`. When one finishes while the UI is idle, the session wakes
+up by itself: a `background command shell_1 finished (…)` notice appears and
+the model carries on with the result as a new turn, which **Esc** interrupts
+like any other.
+
+A prompt you send before that goes first: the wait is cancelled and your
+turn reports the finished command (or the next one does, if it is still
+running), so each result reaches the model once. Interrupting a turn,
+`/new`, `/sessions`, `/agent`, `/model`, `/variant`, `/undo` and `/redo`
+reload the session, which stops its background commands, and so does
+quitting. See [background commands](sessions.md#background-commands).
 
 ## Permission and question dialogs
 

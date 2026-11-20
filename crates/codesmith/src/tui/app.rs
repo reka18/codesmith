@@ -187,6 +187,8 @@ pub struct App {
     pub attachments: Vec<super::attach::Pending>,
     /// Where pasted relative paths resolve.
     pub cwd: std::path::PathBuf,
+    /// The session's background commands still running.
+    pub background: usize,
 }
 
 pub const HELP: &str = "Enter send · Shift/Alt+Enter or Ctrl+J newline · ↑/↓ lines, then history
@@ -375,7 +377,8 @@ impl App {
             | Ev::Resize
             | Ev::Files(_)
             | Ev::Done { .. }
-            | Ev::Stopped => {}
+            | Ev::Stopped
+            | Ev::Background => {}
         }
     }
 

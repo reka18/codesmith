@@ -1064,7 +1064,8 @@ impl Session {
         self.jobs.wait_any().await;
     }
 
-    /// Kills this session's commands from a signal handler (see [`tool::shell::Reaper`]).
+    /// Kills this session's commands from a signal handler, or waits for
+    /// one to finish while the session is idle (see [`tool::shell::Reaper`]).
     pub fn reaper(&self) -> tool::shell::Reaper {
         self.jobs.reaper()
     }
@@ -1086,8 +1087,16 @@ impl Session {
     }
 
     async fn resume_inner(&mut self, sink: &mut dyn Sink) -> Result<()> {
-        if self.jobs_pending() == 0 {
+        let finished = self.jobs.finished();
+        if finished.is_empty() {
             return Ok(());
+        }
+        for j in &finished {
+            sink.notice(&format!(
+                "background command {} finished ({})",
+                j.id,
+                short_command(&j.command)
+            ));
         }
         if let Some(results) = runner::unsettled(&self.messages) {
             self.push(results)?;
