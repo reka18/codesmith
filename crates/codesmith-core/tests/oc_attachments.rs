@@ -1,6 +1,6 @@
 //! Ports of OpenCode's attachment lowering tests
 //! (`session-runner-message.test.ts`): local source paths announced next
-//! to provider media.
+//! to provider media, and duplicate labeled images sent once.
 
 use codesmith_ai::{Media, Part};
 use codesmith_core::attachment::{self, Attached};
@@ -75,4 +75,30 @@ fn oc_runner_message_does_not_add_attachment_location_text_for_non_local_provide
     )]);
     assert_eq!(parts.len(), 1);
     assert_eq!(media(&parts), 1);
+}
+
+#[test]
+fn oc_runner_message_deduplicates_provider_media_while_preserving_durable_attachment_references() {
+    let described = Attached {
+        description: Some("alternate use".into()),
+        ..Attached::inline(png("image.png")).labeled("[Image 2]")
+    };
+    let parts = attachment::parts(vec![
+        Attached::inline(png("image.png")).labeled("[Image 1]"),
+        Attached::inline(png("image.png")).labeled("[Image 1]"),
+        described,
+    ]);
+    assert_eq!(media(&parts), 2);
+    assert!(texts(&parts).is_empty());
+}
+
+#[test]
+fn oc_runner_message_preserves_provider_media_with_distinct_labels_or_uri_sources() {
+    let parts = attachment::parts(vec![
+        Attached::inline(png("image.png")).labeled("[Image 1]"),
+        Attached::inline(png("image.png")).labeled("[Image 2]"),
+        with_source(png("image.png"), "file:///project/image.png").labeled("[Image 1]"),
+        Attached::inline(png("image.png")),
+    ]);
+    assert_eq!(media(&parts), 4);
 }

@@ -1,7 +1,8 @@
 //! Files attached to a prompt, as the user message carries them (after
 //! OpenCode's `session/runner/to-llm-message.ts`): an image or PDF taken
 //! from a local file is announced by its path (`Attached file: <path>`)
-//! just before its media, so the model can refer to the file itself.
+//! just before its media, so the model can refer to the file itself, and
+//! an inline image attached twice under the same label is sent once.
 
 use codesmith_ai::{Media, MediaKind, Part};
 
@@ -67,10 +68,23 @@ fn announced(a: &Attached) -> bool {
 }
 
 /// The parts that follow the prompt's text: each attachment's media, a
-/// local image or PDF preceded by `Attached file: <path>`.
+/// local image or PDF preceded by `Attached file: <path>`. When two or more
+/// inline images carry labels, one with the same type, name, description,
+/// label and data as an earlier one is left out.
 pub fn parts(files: Vec<Attached>) -> Vec<Part> {
+    let dedupe = files.iter().filter(|f| eligible(f)).take(2).count() >= 2;
+    let mut seen: Vec<(String, String)> = Vec::new();
     let mut out = Vec::new();
     for f in files {
+        if dedupe && eligible(&f) {
+            let key = serde_json::json!([f.media.mime, f.media.filename, f.description, f.label])
+                .to_string();
+            let data = f.media.inline().unwrap_or_default().to_string();
+            if seen.iter().any(|(k, d)| *k == key && *d == data) {
+                continue;
+            }
+            seen.push((key, data));
+        }
         if announced(&f) {
             if let Some(p) = f.source.as_deref().and_then(local_path) {
                 out.push(Part::text(format!("Attached file: {p}")));
@@ -79,4 +93,11 @@ pub fn parts(files: Vec<Attached>) -> Vec<Part> {
         out.push(Part::Media(f.media));
     }
     out
+}
+
+fn eligible(f: &Attached) -> bool {
+    f.media.kind() == MediaKind::Image
+        && f.source.is_none()
+        && f.media.inline().is_some()
+        && f.label.as_deref().is_some_and(|l| !l.is_empty())
 }

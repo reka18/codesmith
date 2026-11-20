@@ -1125,7 +1125,7 @@ async fn message(
         let mut failed = None;
         for a in attachments {
             match a {
-                Attachment::Media(m) => media.push(codesmith_core::attachment::Attached::inline(m)),
+                Attachment::Media(m) => media.push(m),
                 Attachment::Path(p) => match s.attach_local(&p) {
                     Ok(Some(m)) => media.push(m),
                     Ok(None) => {
@@ -1314,7 +1314,7 @@ fn resume(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
 
 /// A prompt attachment: inline media, or a path checked when the turn starts.
 enum Attachment {
-    Media(codesmith_ai::Media),
+    Media(codesmith_core::attachment::Attached),
     Path(String),
 }
 
@@ -1348,9 +1348,14 @@ fn attachments(
                         Err(e) => return Err(bad(e.message(&name, limits))),
                     }
                 }
-                out.push(Attachment::Media(match a["name"].as_str() {
+                let m = match a["name"].as_str() {
                     Some(n) => m.named(n),
                     None => m,
+                };
+                out.push(Attachment::Media(codesmith_core::attachment::Attached {
+                    label: a["label"].as_str().map(str::to_string),
+                    description: a["description"].as_str().map(str::to_string),
+                    ..codesmith_core::attachment::Attached::inline(m)
                 }));
             }
             (None, Some(path)) if !path.trim().is_empty() => {

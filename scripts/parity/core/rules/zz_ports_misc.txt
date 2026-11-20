@@ -59,3 +59,5 @@
 528 :: ported :: tests/oc_attachments.rs::oc_runner_message_exposes_admitted_local_image_source_paths_before_provider_media :: adapted: the announcement is part of the stored user message (`Session::prompt_attached`; the server's path attachments)
 558 :: ported :: tests/oc_attachments.rs::oc_runner_message_falls_back_to_attachment_names_for_invalid_local_source_paths :: adapted: the media part keeps its name; directory attachments are a separate group
 596 :: ported :: tests/oc_attachments.rs::oc_runner_message_does_not_add_attachment_location_text_for_non_local_provider_media
+624 :: ported :: tests/oc_attachments.rs::oc_runner_message_deduplicates_provider_media_while_preserving_durable_attachment_references :: adapted: the duplicate is left out of the stored user message
+673 :: ported :: tests/oc_attachments.rs::oc_runner_message_preserves_provider_media_with_distinct_labels_or_uri_sources

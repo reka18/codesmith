@@ -409,4 +409,7 @@ stream, or settled by your permission rules. A refusal ends the turn with an
 error before anything is sent to the model. An image or PDF attached by path
 reaches the model announced by its absolute path (`Attached file:
 /project/screenshots/shot.png`) just before it, as in OpenCode, so the model
-can refer to the file; inline data is not announced.
+can refer to the file; inline data is not announced. An inline attachment
+may carry the `label` your prompt names it by (`"[Image 1]"`) and a
+`description`: when two or more inline images have labels, one identical to
+an earlier one (type, name, description, label and data) is sent once.
