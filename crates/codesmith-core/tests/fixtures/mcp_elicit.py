@@ -6,7 +6,9 @@ client's answer as JSON text:
 - `form`: a form asking for a name (required) and a confirmation
 - `url`: a URL elicitation with an elicitationId; with `{"complete": true}`
   the server also announces it complete
-- `modern`: a URL elicitation without an elicitationId
+- `modern`: a URL elicitation without an elicitationId (to `{"url"}`
+  when given)
+- `flood`: `{"n"}` form elicitations at once, answering the list of results
 - `giveup`: a URL elicitation the server cancels after 0.2 s, failing the call
 """
 import json, sys, time
@@ -21,7 +23,7 @@ def wait_for(rid):
             return m.get("result")
     sys.exit(0)
 
-TOOLS = [{"name": n, "inputSchema": {"type": "object"}} for n in ["empty", "form", "url", "modern", "giveup"]]
+TOOLS = [{"name": n, "inputSchema": {"type": "object"}} for n in ["empty", "form", "url", "modern", "giveup", "flood"]]
 URL = "https://example.com/authorize"
 
 for line in sys.stdin:
@@ -37,6 +39,20 @@ for line in sys.stdin:
         name = m["params"]["name"]
         args = m["params"].get("arguments") or {}
         rid = "elicit-" + str(mid)
+        if name == "flood":
+            rids = [rid + "-" + str(i) for i in range(args.get("n", 1))]
+            for r in rids:
+                send({"jsonrpc": "2.0", "id": r, "method": "elicitation/create", "params": {"mode": "form", "message": "Again?", "requestedSchema": {"type": "object", "properties": {"ok": {"type": "boolean", "title": "OK"}}}}})
+            got = {}
+            for line in sys.stdin:
+                a = json.loads(line)
+                if a.get("id") in rids and "method" not in a:
+                    got[a["id"]] = a.get("result")
+                    if len(got) == len(rids):
+                        break
+            result = {"results": [got.get(r) for r in rids]}
+            send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}], "structuredContent": result}})
+            continue
         if name == "empty":
             params = {"mode": "form", "message": "Confirm", "requestedSchema": {"type": "object", "properties": {}}}
         elif name == "form":
@@ -46,7 +62,7 @@ for line in sys.stdin:
         elif name in ("url", "giveup"):
             params = {"mode": "url", "message": "Authorize access", "url": URL, "elicitationId": "elicitation-test"}
         else:
-            params = {"mode": "url", "message": "Authorize", "url": URL}
+            params = {"mode": "url", "message": "Authorize", "url": args.get("url", URL)}
         send({"jsonrpc": "2.0", "id": rid, "method": "elicitation/create", "params": params})
         if name == "giveup":
             time.sleep(0.2)

@@ -636,3 +636,52 @@ async fn form_elicitations_are_answered_through_the_question_ui() {
     assert_eq!(structured(&r), json!({"action": "cancel"}));
     let _ = McpConfig::default();
 }
+
+/// Not in OpenCode: a server may keep only a few elicitations open at
+/// once; the rest are declined without asking.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_flooding_elicitations_is_declined_past_the_cap() {
+    use codesmith_core::mcp::elicit::MAX_PENDING;
+    let Some(mcp) = connect("elicit-flood").await else {
+        return;
+    };
+    let seen = forms_of("elicit-flood");
+    let n = MAX_PENDING + 2;
+    // The asker holds each form a while, so the first ones stay open.
+    let r = mcp
+        .call_raw_asking("elicit-flood_flood", json!({"n": n}), Some(asker(None)))
+        .await
+        .unwrap();
+    let results = structured(&r)["results"].as_array().unwrap().clone();
+    assert_eq!(results.len(), n, "{r}");
+    let declined = results
+        .iter()
+        .filter(|v| **v == json!({"action": "decline"}))
+        .count();
+    assert_eq!(declined, 2, "{results:?}");
+    assert_eq!(seen.lock().unwrap().len(), MAX_PENDING);
+}
+
+/// Not in OpenCode: a URL elicitation to anything but https is declined
+/// without a form.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_url_elicitation_must_be_https() {
+    let Some(mcp) = connect("elicit-scheme").await else {
+        return;
+    };
+    let seen = forms_of("elicit-scheme");
+    for url in [
+        "http://example.com/authorize",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+    ] {
+        let a = asker(Some(vec![vec!["Done"]]));
+        let r = mcp
+            .call_raw_asking("elicit-scheme_modern", json!({"url": url}), Some(a.clone()))
+            .await
+            .unwrap();
+        assert_eq!(structured(&r), json!({"action": "decline"}), "{url}");
+        assert!(a.asked.lock().unwrap().is_empty());
+    }
+    assert!(seen.lock().unwrap().is_empty());
+}

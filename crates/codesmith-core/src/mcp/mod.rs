@@ -632,6 +632,8 @@ struct Shared {
     elicitations: Mutex<HashMap<String, String>>,
     /// Pending elicitations' forms, by the server's request id.
     elicit_requests: Mutex<HashMap<String, String>>,
+    /// How many more elicitations the server may start.
+    elicit_budget: Arc<elicit::Budget>,
 }
 
 /// What [`Shared::dispatch`] answers a server request with.
@@ -751,6 +753,14 @@ impl Shared {
             return json!({"action": "accept", "content": {}});
         };
         let url = params["mode"] == "url";
+        // A URL to open that is not https, or a server asking too often:
+        // declined without asking.
+        if url && elicit::shown_url(params).is_none() {
+            return json!({"action": "decline"});
+        }
+        let Some(_permit) = self.elicit_budget.start(std::time::Instant::now()) else {
+            return json!({"action": "decline"});
+        };
         let forms = crate::form::global().clone();
         let Ok(form) = forms.create(create) else {
             return json!({"action": "cancel"});

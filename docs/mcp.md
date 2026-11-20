@@ -207,9 +207,12 @@ requests.
 - A form request asks each field: free text, a number, Yes or No, a choice
   or several. A field that depends on another's answer is asked once it
   applies. An empty form is accepted without asking.
-- A URL request asks you to open the URL and confirm with Done. A server
-  that announces the request complete (`notifications/elicitation/complete`)
-  settles it without you.
+- A URL request asks you to open the URL and confirm with Done; CodeSmith
+  shows the URL and never opens it. Only `https` URLs are shown; any other
+  is declined without asking. A server that announces the request complete
+  (`notifications/elicitation/complete`) settles it without you.
+- A server may have 4 requests waiting on you at once and start 10 a
+  minute; more are declined without asking.
 - Dismissing the question declines it, and so does the server giving up
   (`notifications/cancelled`). Where nobody can answer (`codesmith run
   --auto`, automations), the request is declined at once.
