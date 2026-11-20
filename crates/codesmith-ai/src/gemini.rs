@@ -902,7 +902,11 @@ fn post_body(
     model: &str,
     body: &Value,
 ) -> reqwest::RequestBuilder {
-    let path = format!("models/{model}:streamGenerateContent?alt=sse");
+    // Tuned Vertex models are deployed as `endpoints/<id>`.
+    let path = match model.starts_with("endpoints/") {
+        true => format!("{model}:streamGenerateContent?alt=sse"),
+        false => format!("models/{model}:streamGenerateContent?alt=sse"),
+    };
     p.json_post(client, &path, p.headers.clone(), body)
 }
 

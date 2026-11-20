@@ -1381,7 +1381,7 @@ impl Config {
             catalog_url: r.catalog_url,
             model_id: r.model_id,
             api_key: provider_key(r.pid, r.p),
-            stored: crate::auth::entry(r.pid),
+            stored: crate::auth::entry(crate::providers::login_id(r.pid)),
             env: codesmith_ai::aws::process_env(),
         })
     }

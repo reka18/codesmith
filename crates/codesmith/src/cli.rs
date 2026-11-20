@@ -500,6 +500,12 @@ enum AuthCmd {
         /// github-copilot: log in to this GitHub Enterprise host (company.ghe.com).
         #[arg(long)]
         enterprise: Option<String>,
+        /// google-vertex: use Application Default Credentials in this project.
+        #[arg(long)]
+        project: Option<String>,
+        /// google-vertex: the location with --project (default global).
+        #[arg(long)]
+        location: Option<String>,
     },
     /// List providers with saved keys and where each provider's key comes from.
     List,
@@ -1003,7 +1009,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Some(Command::Auth { what }) => auth_cmd(&cwd, what),
+        Some(Command::Auth { what }) => auth_cmd(&cwd, what).await,
         Some(Command::Acp) => acp::run().await,
         Some(Command::Automation { what }) => automation_cmd(&cwd, what).await,
         Some(Command::Stats {
@@ -1422,13 +1428,50 @@ fn read_secret(prompt: &str) -> Result<String> {
 
 /// Logins that are not an API key: an AWS profile for Bedrock, GitHub's
 /// device flow for Copilot. `None` for a provider that takes a key.
-fn plugin_login(
-    file: &std::path::Path,
-    provider: &str,
+struct PluginLogin {
     profile: Option<String>,
     enterprise: Option<String>,
+    project: Option<String>,
+    location: Option<String>,
+}
+
+async fn plugin_login(
+    file: &std::path::Path,
+    provider: &str,
+    login: PluginLogin,
 ) -> Result<Option<String>> {
     use codesmith_core::providers;
+    let PluginLogin {
+        profile,
+        enterprise,
+        project,
+        location,
+    } = login;
+    if location.is_some() && project.is_none() {
+        return Err(anyhow!("--location goes with --project"));
+    }
+    if let Some(project) = project {
+        if providers::login_id(provider) != providers::vertex::ID {
+            return Err(anyhow!("--project is for google-vertex"));
+        }
+        providers::vertex::save_login(file, &project, location.as_deref())?;
+        let env = providers::process_env();
+        let creds = match codesmith_ai::google::adc_file(&env) {
+            Some(f) => format!("Application Default Credentials from {}", f.display()),
+            None => "the metadata server (no ADC file found; run `gcloud auth application-default login`)".into(),
+        };
+        return Ok(Some(format!(
+            "Saved Google Vertex project {project} in {} for google-vertex, using {creds}",
+            location.as_deref().unwrap_or("global")
+        )));
+    }
+    if providers::login_id(provider) == providers::vertex::ID {
+        let found = providers::vertex::suggested_projects(&providers::process_env());
+        return Err(anyhow!(
+            "google-vertex uses Application Default Credentials: run `codesmith auth login google-vertex --project <id> [--location <loc>]`{}; or set GOOGLE_VERTEX_API_KEY for Express Mode",
+            if found.is_empty() { String::new() } else { format!(" (gcloud projects: {})", found.join(", ")) }
+        ));
+    }
     if let Some(profile) = profile {
         if provider != providers::bedrock::ID {
             return Err(anyhow!("--profile is for amazon-bedrock"));
@@ -1456,7 +1499,7 @@ fn plugin_login(
     Ok(None)
 }
 
-fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
+async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
     use codesmith_core::auth;
     let file = paths::auth_file();
     match what {
@@ -1464,8 +1507,16 @@ fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             provider,
             profile,
             enterprise,
+            project,
+            location,
         } => {
-            if let Some(done) = plugin_login(&file, &provider, profile, enterprise)? {
+            let login = PluginLogin {
+                profile,
+                enterprise,
+                project,
+                location,
+            };
+            if let Some(done) = plugin_login(&file, &provider, login).await? {
                 println!("{done}");
                 return Ok(());
             }

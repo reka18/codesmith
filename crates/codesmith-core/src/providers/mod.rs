@@ -6,6 +6,7 @@
 //! the API that serves it.
 
 pub mod bedrock;
+pub mod vertex;
 
 use codesmith_ai::{Auth, Protocol};
 use serde::Deserialize;
@@ -73,11 +74,25 @@ pub struct Route {
 }
 
 /// The providers here, with their names and key variables.
-pub const PROVIDERS: &[(&str, &str, &[&str])] = &[(
-    "amazon-bedrock",
-    "Amazon Bedrock",
-    &["AWS_BEARER_TOKEN_BEDROCK"],
-)];
+pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
+    (
+        "amazon-bedrock",
+        "Amazon Bedrock",
+        &["AWS_BEARER_TOKEN_BEDROCK"],
+    ),
+    // The Express Mode key is Vertex's only key variable; project,
+    // location and the ADC file configure Google credentials.
+    (
+        "google-vertex",
+        "Google Vertex AI",
+        &["GOOGLE_VERTEX_API_KEY"],
+    ),
+    (
+        "google-vertex-anthropic",
+        "Google Vertex AI (Anthropic)",
+        &[],
+    ),
+];
 
 /// The provider config a plugin provider starts from.
 pub fn builtin(id: &str) -> Option<crate::config::ProviderConfig> {
@@ -94,6 +109,9 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
     if bedrock::owns(input) {
         return bedrock::route(input).map(Some);
     }
+    if vertex::owns(input) {
+        return vertex::route(input).map(Some);
+    }
     Ok(None)
 }
 
@@ -102,7 +120,19 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
 pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
     match id {
         "amazon-bedrock" => bedrock::available(settings, crate::auth::entry(id).as_ref(), env),
+        vertex::ID | vertex::ANTHROPIC_ID => {
+            vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
+        }
         _ => false,
+    }
+}
+
+/// The provider whose saved login a provider uses (Claude on Vertex shares
+/// Vertex's).
+pub fn login_id(id: &str) -> &str {
+    match id {
+        vertex::ANTHROPIC_ID => vertex::ID,
+        id => id,
     }
 }
 
@@ -125,6 +155,20 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
             } else {
                 None
             }
+        }
+        vertex::ID | vertex::ANTHROPIC_ID => {
+            let env = process_env();
+            let project = vertex::project(settings, stored, &env)?;
+            let location = vertex::location(settings, stored, &env);
+            let creds = if set(&settings.access_token).is_some() {
+                "an access token".to_string()
+            } else {
+                match codesmith_ai::google::adc_file(&env) {
+                    Some(f) => format!("ADC {}", f.display()),
+                    None => "ADC (metadata server)".to_string(),
+                }
+            };
+            Some(format!("project {project} in {location}, {creds}"))
         }
         _ => None,
     }

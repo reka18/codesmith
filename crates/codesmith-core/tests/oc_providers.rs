@@ -327,3 +327,234 @@ fn bedrock_catalog_models_resolve_with_their_metadata() {
         "https://bedrock-mantle.eu-west-1.api.aws/openai/v1"
     );
 }
+
+// plugin/provider-google-vertex.test.ts
+
+use codesmith_core::providers::vertex;
+
+const VERTEX_CHAT: &str = "@opencode/ai/providers/google-vertex/chat";
+const VERTEX_TEMPLATE: &str =
+    "https://${GOOGLE_VERTEX_ENDPOINT}/v1/projects/${GOOGLE_VERTEX_PROJECT}/locations/${GOOGLE_VERTEX_LOCATION}";
+
+#[test]
+fn oc_vertex_ignores_openai_compatible_providers_that_are_not_google_vertex() {
+    let mut c = Case::new("opencode", json!({"baseURL": "https://opencode.ai/zen/v1"}));
+    c.package = Some("@opencode/ai/providers/openai-compatible");
+    assert!(c.route().unwrap().is_none());
+}
+
+#[test]
+fn oc_vertex_resolves_project_and_location_from_env_using_legacy_precedence() {
+    let mut c = Case::new("google-vertex", json!({}));
+    c.package = Some(VERTEX_CHAT);
+    c.catalog_url = Some(VERTEX_TEMPLATE);
+    c.env = env(&[
+        ("GOOGLE_CLOUD_PROJECT", "google-cloud-project"),
+        ("GCP_PROJECT", "gcp-project"),
+        ("GCLOUD_PROJECT", "gcloud-project"),
+        ("GOOGLE_VERTEX_LOCATION", "google-vertex-location"),
+        ("GOOGLE_CLOUD_LOCATION", "google-cloud-location"),
+        ("VERTEX_LOCATION", "vertex-location"),
+    ]);
+    let r = c.ok();
+    assert_eq!(r.protocol, Protocol::OpenaiChat);
+    assert_eq!(
+        r.base_url,
+        "https://google-vertex-location-aiplatform.googleapis.com/v1/projects/google-cloud-project/locations/google-vertex-location"
+    );
+}
+
+#[test]
+fn oc_vertex_enables_the_provider_when_a_project_resolves_and_leaves_it_automatic_otherwise() {
+    let s = Settings::default();
+    assert!(!vertex::available(&s, None, &env(&[])));
+    let mut c = Case::new("google-vertex", json!({}));
+    c.package = Some("@opencode/ai/providers/google-vertex");
+    let e = c.route().unwrap_err().to_string();
+    assert!(e.contains("Google Vertex requires a project"), "{e}");
+}
+
+#[test]
+fn oc_vertex_enables_the_provider_when_a_project_resolves_from_env() {
+    assert!(vertex::available(
+        &Settings::default(),
+        None,
+        &env(&[("GOOGLE_CLOUD_PROJECT", "adc-project")])
+    ));
+    let login = json!({"type": "external", "method": "google-adc", "metadata": {"project": "saved", "location": "eu"}});
+    assert!(vertex::available(
+        &Settings::default(),
+        Some(&login),
+        &env(&[])
+    ));
+}
+
+#[test]
+fn oc_vertex_resolves_the_advertised_google_vertex_project_env() {
+    let mut c = Case::new("google-vertex", json!({}));
+    c.package = Some(VERTEX_CHAT);
+    c.catalog_url = Some(VERTEX_TEMPLATE);
+    c.env = env(&[
+        ("GOOGLE_VERTEX_PROJECT", "vertex-project"),
+        ("GOOGLE_VERTEX_LOCATION", "europe-west4"),
+    ]);
+    assert_eq!(
+        c.ok().base_url,
+        "https://europe-west4-aiplatform.googleapis.com/v1/projects/vertex-project/locations/europe-west4"
+    );
+}
+
+#[test]
+fn oc_vertex_keeps_configured_project_and_location_over_env_and_uses_global_endpoint() {
+    let mut c = Case::new(
+        "google-vertex",
+        json!({"project": "config-project", "location": "global"}),
+    );
+    c.package = Some(VERTEX_CHAT);
+    c.catalog_url = Some(VERTEX_TEMPLATE);
+    c.env = env(&[
+        ("GOOGLE_CLOUD_PROJECT", "env-project"),
+        ("GOOGLE_VERTEX_LOCATION", "env-location"),
+    ]);
+    assert_eq!(
+        c.ok().base_url,
+        "https://aiplatform.googleapis.com/v1/projects/config-project/locations/global"
+    );
+}
+
+#[test]
+fn oc_vertex_expands_endpoint_templates_to_the_multi_region_host() {
+    for location in ["eu", "us"] {
+        let mut c = Case::new(
+            "google-vertex",
+            json!({"project": "config-project", "location": location}),
+        );
+        c.package = Some(VERTEX_CHAT);
+        c.catalog_url = Some(VERTEX_TEMPLATE);
+        assert_eq!(
+            c.ok().base_url,
+            format!("https://aiplatform.{location}.rep.googleapis.com/v1/projects/config-project/locations/{location}")
+        );
+    }
+}
+
+#[test]
+fn oc_vertex_expands_endpoint_templates_on_vertex_chat_models() {
+    let mut c = Case::new(
+        "google-vertex",
+        json!({"project": "config-project", "location": "eu"}),
+    );
+    c.model = "meta/llama-maas";
+    c.package = Some(VERTEX_CHAT);
+    c.catalog_url = Some("https://${GOOGLE_VERTEX_ENDPOINT}/v1/projects/${GOOGLE_VERTEX_PROJECT}/locations/${GOOGLE_VERTEX_LOCATION}/endpoints/openapi");
+    assert_eq!(
+        c.ok().base_url,
+        "https://aiplatform.eu.rep.googleapis.com/v1/projects/config-project/locations/eu/endpoints/openapi"
+    );
+}
+
+#[test]
+fn oc_vertex_defaults_location_to_global_when_only_project_is_configured() {
+    let mut c = Case::new("google-vertex", json!({"project": "config-project"}));
+    c.model = "gemini-3-pro";
+    let r = c.ok();
+    assert_eq!(r.protocol, Protocol::GoogleGemini);
+    assert_eq!(
+        r.base_url,
+        "https://aiplatform.googleapis.com/v1beta1/projects/config-project/locations/global/publishers/google"
+    );
+    assert!(matches!(r.auth, Auth::Dynamic(_)));
+}
+
+#[test]
+fn oc_resolver_routes_vertex_anthropic_catalog_models_through_native_messages() {
+    let mut c = Case::new(
+        "google-vertex",
+        json!({"project": "vertex-project", "location": "eu", "accessToken": "vertex-token"}),
+    );
+    c.model = "claude-sonnet-4-6";
+    c.package = Some("@opencode/ai/providers/google-vertex/messages");
+    let r = c.ok();
+    assert_eq!(r.protocol, Protocol::AnthropicMessages);
+    assert_eq!(
+        r.base_url,
+        "https://aiplatform.eu.rep.googleapis.com/v1/projects/vertex-project/locations/eu/publishers/anthropic/models"
+    );
+    assert_eq!(
+        (r.auth, r.api_key.as_deref()),
+        (Auth::Bearer, Some("vertex-token"))
+    );
+}
+
+#[test]
+fn vertex_express_mode_keys_and_the_saved_login() {
+    // An Express Mode key serves Gemini without a project.
+    let mut c = Case::new("google-vertex", json!({}));
+    c.model = "gemini-3-pro";
+    c.key = Some("express-key");
+    let r = c.ok();
+    assert_eq!(
+        r.base_url,
+        "https://aiplatform.googleapis.com/v1/publishers/google"
+    );
+    assert_eq!(
+        (r.auth, r.api_key.as_deref()),
+        (Auth::Default, Some("express-key"))
+    );
+    // A configured project selects Google credentials over the ambient key.
+    c.settings = settings(json!({"project": "p"}));
+    assert!(matches!(c.ok().auth, Auth::Dynamic(_)));
+    // A saved login gives the project and location; Claude on the older id.
+    let mut c = Case::new("google-vertex-anthropic", json!({}));
+    c.model = "claude-opus-4-7@default";
+    c.stored = Some(
+        json!({"type": "external", "method": "google-adc", "metadata": {"project": "saved", "location": "us-east5"}}),
+    );
+    let r = c.ok();
+    assert_eq!(r.protocol, Protocol::AnthropicMessages);
+    assert_eq!(
+        r.base_url,
+        "https://us-east5-aiplatform.googleapis.com/v1/projects/saved/locations/us-east5/publishers/anthropic/models"
+    );
+}
+
+#[test]
+fn vertex_catalog_models_send_vertex_requests() {
+    let c = bundled(
+        json!({"providers": {"google-vertex": {"settings": {"project": "proj", "location": "us-east5", "accessToken": "tok"}}}}),
+    );
+    let m = c
+        .resolve_model("google-vertex/claude-opus-4-7@default")
+        .unwrap();
+    assert_eq!(m.provider.protocol, Protocol::AnthropicMessages);
+    let req = codesmith_ai::Request {
+        model: m.model_id.clone(),
+        messages: vec![codesmith_ai::Message::user("hi")],
+        ..Default::default()
+    };
+    let http = m.provider.prepare(&reqwest::Client::new(), &req).unwrap();
+    assert_eq!(
+        http.url().as_str(),
+        "https://us-east5-aiplatform.googleapis.com/v1/projects/proj/locations/us-east5/publishers/anthropic/models/claude-opus-4-7@default:streamRawPredict"
+    );
+    assert_eq!(http.headers()["authorization"], "Bearer tok");
+    assert!(http.headers().get("x-api-key").is_none());
+    let body: Value = serde_json::from_slice(http.body().unwrap().as_bytes().unwrap()).unwrap();
+    assert!(body.get("model").is_none());
+    assert_eq!(body["anthropic_version"], "vertex-2023-10-16");
+    let g = c
+        .resolve_model("google-vertex/gemini-robotics-er-2-preview")
+        .unwrap();
+    assert_eq!(g.provider.protocol, Protocol::GoogleGemini);
+    let req = codesmith_ai::Request {
+        model: g.model_id.clone(),
+        messages: vec![codesmith_ai::Message::user("hi")],
+        ..Default::default()
+    };
+    let http = g.provider.prepare(&reqwest::Client::new(), &req).unwrap();
+    assert_eq!(
+        http.url().as_str(),
+        "https://us-east5-aiplatform.googleapis.com/v1beta1/projects/proj/locations/us-east5/publishers/google/models/gemini-robotics-er-2-preview:streamGenerateContent?alt=sse"
+    );
+    assert_eq!(http.headers()["authorization"], "Bearer tok");
+}

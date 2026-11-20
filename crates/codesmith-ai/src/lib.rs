@@ -8,6 +8,7 @@ mod billing;
 mod cache;
 mod endpoint;
 mod gemini;
+pub mod google;
 mod hosted;
 mod openai;
 mod options;

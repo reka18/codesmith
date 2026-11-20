@@ -1303,10 +1303,28 @@ pub(crate) fn request(
     client: &reqwest::Client,
     req: &Request,
 ) -> reqwest::RequestBuilder {
-    let body = body_with(req, p);
+    let mut body = body_with(req, p);
     let mut h = vec![("anthropic-version".to_string(), VERSION.to_string())];
     h.extend(headers(p, &body));
+    if vertex(p) {
+        // Vertex takes the model in the path and its own API version in
+        // the body.
+        if let Some(b) = body.as_object_mut() {
+            b.remove("model");
+            b.insert("anthropic_version".into(), json!(VERTEX_VERSION));
+        }
+        return p.json_post(client, &format!("{}:streamRawPredict", req.model), h, &body);
+    }
     p.json_post(client, "messages", h, &body)
+}
+
+/// Claude on Vertex AI's `anthropic_version`.
+const VERTEX_VERSION: &str = "vertex-2023-10-16";
+
+/// Whether `p` is Claude on Vertex AI (its models live under
+/// `publishers/anthropic`).
+pub(crate) fn vertex(p: &Provider) -> bool {
+    p.name == "google-vertex-anthropic" || p.base_url.contains("/publishers/anthropic/")
 }
 
 #[cfg(test)]
