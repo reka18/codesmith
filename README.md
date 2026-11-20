@@ -264,6 +264,28 @@ json]`) and point CodeSmith at it:
 config. Any OpenAI-compatible server (oMLX, vLLM, llama.cpp, Ollama, LM Studio,
 OpenRouter, …) works as a provider with `"protocol": "openai-chat"`.
 
+**Reasoning effort and other provider options** go in a provider's or
+model's `options` (OpenCode's provider options, camelCase or snake_case):
+`reasoningEffort`, `reasoningSummary`, `textVerbosity`, `serviceTier`,
+`include` (Responses), `thinking` and `effort` (Anthropic), `thinkingConfig`
+(Gemini), `reasoning` (OpenRouter) and more; each protocol sends the ones it
+knows. Named `variants` are picked with `provider/model#name` in `-m`, config,
+`/model` or ACP, and `/variant` cycles them in the TUI. Common models also
+have built-in variants (`anthropic/claude-sonnet-4-5#high`,
+`openai/gpt-5#low`, `google/gemini-3-pro-preview#high`):
+
+```jsonc
+"models": { "gpt-5": {
+  "options": { "textVerbosity": "low" },
+  "variants": { "deep": { "reasoningEffort": "high" }, "fast": { "serviceTier": "priority" } }
+} }
+```
+
+Reasoning is replayed with what the provider needs to accept it back
+(Anthropic thinking signatures and redacted thinking, Responses encrypted
+reasoning, Gemini thought signatures), so thinking models keep their
+reasoning across tool calls.
+
 **Permissions** are an ordered list of `{action, resource, effect}`; the last
 matching rule wins and anything unmatched asks. Actions are tool names, with
 `write` and `edit` sharing `edit`, plus `external_directory` for paths outside
