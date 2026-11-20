@@ -49,7 +49,9 @@ pub struct Config {
     pub permissions: Vec<Rule>,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub agents: BTreeMap<String, AgentConfig>,
-    /// Extra instruction files (paths or globs, relative to the project root).
+    /// Extra instruction files: paths or globs, `~/` for the home folder; a
+    /// relative one is looked for from the working directory up to the
+    /// project root.
     pub instructions: Vec<String>,
     pub tool_output: ToolOutputConfig,
     /// Snapshot files at each turn so turns can be undone (default true).
