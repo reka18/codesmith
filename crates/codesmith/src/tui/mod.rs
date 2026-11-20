@@ -668,6 +668,15 @@ impl Runner {
                         self.interrupt().await;
                         Ok(())
                     }
+                    Some(Action::Background) => {
+                        let moved = self.jobs.background_all();
+                        self.app.notice(match moved.len() {
+                            0 => "Nothing is running in the foreground.".to_string(),
+                            1 => format!("Moved {} to the background.", moved[0].id),
+                            n => format!("Moved {n} commands to the background."),
+                        });
+                        Ok(())
+                    }
                     Some(Action::Picked(kind, id)) => self.picked(kind, id),
                     Some(Action::CycleAgent(d)) => self.cycle_agent(d),
                     Some(Action::Quit) | None => Ok(()),

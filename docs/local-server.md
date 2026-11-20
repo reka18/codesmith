@@ -56,6 +56,10 @@ permission and question ids are random.
 | `POST /sessions/{id}/permissions/{rid} {reply, message?}` | Answer a permission request: `once`, `always` or `reject` (with optional feedback). |
 | `POST /sessions/{id}/questions/{qid} {answers}` or `{dismiss: true}` | Answer the agent's questions. `answers` is one list of strings per question. |
 | `POST /sessions/{id}/undo`, `POST /sessions/{id}/redo` | Undo or redo the latest turn's file changes. |
+| `GET /sessions/{id}/jobs` | The session's running shell commands: `id`, `command`, `pid`, `background`, and `output` (the file their output streams to) for background ones. |
+| `POST /sessions/{id}/background` | Move the running turn's foreground commands to the background ([details](#stopping-and-backgrounding-commands)). |
+| `POST /sessions/{id}/jobs/{jid}/cancel` | Stop one running command ([details](#stopping-and-backgrounding-commands)). |
+| `GET /sessions/{id}/environment`, `PUT /sessions/{id}/environment {variables}` | The environment the session's shell commands run in ([details](#session-environment)). |
 
 ## Turn events
 
@@ -66,6 +70,8 @@ Each Server-Sent Event is a JSON object with a `type`:
 | `text` | `delta` |
 | `reasoning` | `delta` |
 | `tool_start` | `id`, `name`, `input` |
+| `tool_progress` | `id`, `metadata`: `{"shellID": "shell_1"}` once a `shell` call's command starts |
+| `tool_output` | `id`, `delta`: output a foreground command printed, a few times a second while its call waits (under a flood, only the latest 64 KiB of each interval) |
 | `tool_end` | `id`, `name`, `output`, `error` |
 | `step_end` | `reason` (`stop`, `length`, `tool-calls`, `content-filter`, `error` or `unknown`), `finish` (`normalized`, the providers `raw` reason and, for a content filter, its `category` and `explanation`), `usage` |
 | `retry` | `attempt`, `error`, `wait_ms` |
@@ -110,6 +116,36 @@ abort stops it. Follow the events stream to know when it is idle again.
 those started with `POST /messages` (their `done` comes on both streams),
 until the client disconnects or the session is deleted. The followers stay
 attached across aborts and undo.
+
+## Stopping and backgrounding commands
+
+`POST /sessions/{id}/background` is OpenCode's "move to background": every
+shell command the running turn is waiting on keeps running in the
+background, its call returns at once (`Command moved to the background
+…`), and before its next step the model is told the user moved the work, so
+it carries on instead of waiting. The command no longer has a timeout and
+is reported when it finishes, like any background command. The response
+lists what moved: `{"backgrounded": [{"id": "shell_1", "type": "shell",
+"title": "<command>"}]}`.
+
+`POST /sessions/{id}/jobs/{jid}/cancel` stops one command (SIGTERM to its
+process group, then SIGKILL after 3 seconds) and answers `{"cancelled":
+true}`, or `false` when no such command is running. A background command is
+reported to the model as `<shell id="…" state="cancelled" …>Cancelled</shell>`
+and its output file is kept; a foreground command's call fails with
+`Command cancelled`.
+
+## Session environment
+
+`PUT /sessions/{id}/environment {"variables": {"NAME": "value", …}}` sets
+the environment the session's shell commands run in, as OpenCode's route of
+the same name does: a command then gets exactly these variables (plus
+CodeSmith's markers, `AGENT`, `CODESMITH`, `AI_AGENT` and
+`CODESMITH_SESSION_ID`) instead of the server's own. A client on another
+terminal can send its own environment, so commands see its `PATH` and
+toolchains. `{"variables": null}` goes back to the server's environment.
+It applies to commands started afterwards, lasts while the server holds the
+session (across aborts, undo and redo), and goes with `DELETE`.
 
 ## Aborting
 

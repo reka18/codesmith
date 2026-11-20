@@ -138,6 +138,8 @@ pub enum Action {
         args: String,
     },
     Interrupt,
+    /// Move the running turn's foreground commands to the background.
+    Background,
     Quit,
     Picked(Pick, String),
     /// Switch to the next (+1) or previous (-1) primary agent.
@@ -198,7 +200,7 @@ pub struct App {
 pub const HELP: &str = "Enter send · Shift/Alt+Enter or Ctrl+J newline · ↑/↓ lines, then history
 ←/→ Home/End, Ctrl/Alt+←/→ words · Ctrl+A/E line start/end · Ctrl+W/K/U delete
 Tab next agent (Shift+Tab previous) · Ctrl+O expand tool output · Ctrl+T reasoning
-Ctrl+X then m models · a agents · l sessions · n new session
+Ctrl+X then m models · a agents · l sessions · n new session · b background commands
 / commands and @ files complete as you type (Tab or Enter to accept)
 Esc or Ctrl+C interrupt a running turn · Ctrl+C on an empty prompt quits
 PgUp/PgDn scroll · Ctrl+End follow
@@ -544,6 +546,9 @@ impl App {
 
     fn leader_key(&mut self, k: &KeyEvent) -> Option<Action> {
         self.leader = false;
+        if k.code == KeyCode::Char('b') {
+            return Some(Action::Background);
+        }
         let cmd = match k.code {
             KeyCode::Char('m') => "model",
             KeyCode::Char('a') => "agent",
@@ -922,6 +927,15 @@ mod tests {
                 args: "HEAD~1".into()
             })
         );
+    }
+
+    #[test]
+    fn leader_b_moves_running_commands_to_the_background() {
+        let mut a = App::new();
+        a.busy = true;
+        a.on_key(ctrl('x'));
+        assert_eq!(a.on_key(key(KeyCode::Char('b'))), Some(Action::Background));
+        assert!(!a.leader);
     }
 
     #[test]

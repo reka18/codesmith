@@ -46,6 +46,19 @@ last step, the model has to answer in text.
   finishes.
 - Large output is shown from its end, and the full output is saved to a file
   the model can read ([tool output](configuration.md#tool-output)).
+- While a command runs, front ends see its shell ID and its output as it
+  comes (the server's `tool_progress` and `tool_output`
+  [events](local-server.md#turn-events)).
+- You can move the commands a turn is waiting on to the background
+  (**Ctrl+X b** in the [UI](interactive-ui.md#keys), or the server's
+  [`background`](local-server.md#stopping-and-backgrounding-commands)
+  route): each call returns at once, the model is told you moved the work,
+  and the command is reported when it finishes. The server can also cancel
+  one command. A background command's timeout stops it; a foreground
+  command's moves it to the background instead.
+- A session can have its own environment for its commands
+  ([server](local-server.md#session-environment)); otherwise they inherit
+  CodeSmith's.
 
 ## Files and paths
 

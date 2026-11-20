@@ -258,19 +258,30 @@ async fn sessions_over_http_with_a_permission_an_abort_and_undo() {
     assert_eq!(code, 200);
     let rest = ev.until("done").await;
     let all: Vec<&str> = names(&before).into_iter().chain(names(&rest)).collect();
-    let all: Vec<&str> = all.into_iter().filter(|n| *n != "todos").collect();
+    // The output streams in as many pieces as it takes.
+    let all: Vec<&str> = all
+        .into_iter()
+        .filter(|n| *n != "todos" && *n != "tool_output")
+        .collect();
     assert_eq!(
         all,
         [
             "step_end",
             "tool_start",
             "permission",
+            "tool_progress",
             "tool_end",
             "text",
             "step_end",
             "done"
         ]
     );
+    let streamed: String = rest
+        .iter()
+        .filter(|e| e.0 == "tool_output")
+        .map(|e| e.1["delta"].as_str().unwrap())
+        .collect();
+    assert!(streamed.contains("PASS"), "{streamed}");
     let tool_end = &rest.iter().find(|e| e.0 == "tool_end").unwrap().1;
     assert!(tool_end["output"].as_str().unwrap().contains("PASS"));
     assert_eq!(tool_end["error"], false);

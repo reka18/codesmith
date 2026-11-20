@@ -58,7 +58,7 @@ Pastes go in at the cursor.
 | **Ctrl+T** | Show or hide the model's reasoning. |
 | **PgUp/PgDn** | Scroll the transcript. |
 | **Ctrl+End** | Follow the bottom again. |
-| **Ctrl+X**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session, **c** compact, **u** undo, **r** redo, **h** help. |
+| **Ctrl+X**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session, **c** compact, **u** undo, **r** redo, **h** help, **b** move the running commands to the background. |
 
 ## Slash commands
 

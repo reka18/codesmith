@@ -249,6 +249,12 @@ impl Sink for JsonSink {
     fn notice(&mut self, message: &str) {
         self.send(json!({"type": "notice", "message": message}));
     }
+    fn tool_progress(&mut self, id: &str, metadata: &Value) {
+        self.send(json!({"type": "tool_progress", "id": id, "metadata": metadata}));
+    }
+    fn tool_output(&mut self, id: &str, delta: &str) {
+        self.send(json!({"type": "tool_output", "id": id, "delta": delta}));
+    }
 }
 
 /// A session held in memory. `session` is `None` while a turn runs.
@@ -555,6 +561,13 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/abort", post(abort))
         .route("/sessions/{id}/permissions/{rid}", post(answer_permission))
         .route("/sessions/{id}/questions/{qid}", post(answer_question))
+        .route(
+            "/sessions/{id}/environment",
+            get(environment).put(set_environment),
+        )
+        .route("/sessions/{id}/background", post(background))
+        .route("/sessions/{id}/jobs", get(jobs))
+        .route("/sessions/{id}/jobs/{jid}/cancel", post(cancel_job))
         .route("/sessions/{id}/undo", post(undo))
         .route("/sessions/{id}/redo", post(redo))
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -843,7 +856,10 @@ async fn abort(
         if waiting || running > 0 {
             g.jobs.stop_all().await;
             // A fresh registry: the stopped ones are dropped unreported.
+            // The session's environment stays.
+            let environment = g.jobs.environment();
             g.jobs = Jobs::default();
+            g.jobs.set_environment(environment);
             st.reload(&mut g, &id)?;
             return Ok(Json(
                 json!({"aborted": false, "background_stopped": running}),
@@ -892,6 +908,87 @@ async fn abort(
     // for them again. An abort of the idle session stops them.
     wake(&live, &mut g);
     Ok(Json(json!({"aborted": true})))
+}
+
+/// The environment the session's shell commands run in, when one was set.
+async fn environment(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let live = st.live(&id).await?;
+    let g = live.lock().await;
+    Ok(Json(json!({"variables": g.jobs.environment()})))
+}
+
+/// Replace the environment the session's shell commands run in, as
+/// OpenCode's `PUT /api/session/:id/environment` does: `{"variables":
+/// {...}}` replaces this server's own for its commands; `null` goes back
+/// to it.
+async fn set_environment(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let variables = match b.get("variables") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone())
+                .map_err(|_| {
+                    ApiError(
+                        StatusCode::BAD_REQUEST,
+                        "variables must map names to strings".into(),
+                    )
+                })?,
+        ),
+    };
+    let live = st.live(&id).await?;
+    let g = live.lock().await;
+    g.jobs.set_environment(variables);
+    Ok(Json(json!({"variables": g.jobs.environment()})))
+}
+
+/// Move the running turn's foreground commands to the background (OpenCode's
+/// `POST /api/session/:id/background`); the model is told and carries on.
+async fn background(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let live = st.live(&id).await?;
+    let g = live.lock().await;
+    let moved: Vec<Value> = g
+        .jobs
+        .background_all()
+        .iter()
+        .map(|r| json!({"id": r.id, "type": "shell", "title": r.command}))
+        .collect();
+    Ok(Json(json!({"backgrounded": moved})))
+}
+
+/// The session's running commands, foreground and background.
+async fn jobs(State(st): State<St>, UrlPath(id): UrlPath<String>) -> Result<Json<Value>, ApiError> {
+    let live = st.live(&id).await?;
+    let g = live.lock().await;
+    let mut data: Vec<Value> = g
+        .jobs
+        .foreground()
+        .iter()
+        .map(|r| json!({"id": r.id, "command": r.command, "pid": r.pid, "background": false}))
+        .collect();
+    data.extend(g.jobs.running_jobs().iter().map(|j| {
+        json!({"id": j.id, "command": j.command, "pid": j.pid, "background": true, "output": j.file})
+    }));
+    Ok(Json(json!({"data": data})))
+}
+
+/// Stop one running command (OpenCode's job cancel). Cancelling one that
+/// already finished does nothing.
+async fn cancel_job(
+    State(st): State<St>,
+    UrlPath((id, jid)): UrlPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let live = st.live(&id).await?;
+    let g = live.lock().await;
+    Ok(Json(json!({"cancelled": g.jobs.cancel(&jid)})))
 }
 
 async fn answer_permission(
@@ -1725,6 +1822,82 @@ mod tests {
     }
 
     const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    /// The session environment, the jobs list, backgrounding and cancelling,
+    /// and the shell ID a running command reports.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_environment_and_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), TOKEN).await;
+        let c = client();
+        let id = new_session(&c, &base).await;
+        let url = |p: &str| format!("{base}/sessions/{id}/{p}");
+        let get = |u: String| {
+            let c = c.clone();
+            async move {
+                c.get(u)
+                    .send()
+                    .await
+                    .unwrap()
+                    .json::<Value>()
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(get(url("environment")).await, json!({"variables": null}));
+        let r = c
+            .put(url("environment"))
+            .json(&json!({"variables": {"TOOLCHAIN": "session"}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.json::<Value>().await.unwrap(),
+            json!({"variables": {"TOOLCHAIN": "session"}})
+        );
+        assert_eq!(
+            get(url("environment")).await,
+            json!({"variables": {"TOOLCHAIN": "session"}})
+        );
+        let r = c
+            .put(url("environment"))
+            .json(&json!({"variables": {"N": 1}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400);
+        assert_eq!(get(url("jobs")).await, json!({"data": []}));
+        let r: Value = c
+            .post(url("background"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(r, json!({"backgrounded": []}));
+        let r: Value = c
+            .post(url("jobs/shell_9/cancel"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(r, json!({"cancelled": false}));
+
+        let ev = turn(&c, &base, &id, "go", json!({"reply": "once"})).await;
+        let progress: Vec<&Value> = ev.iter().filter(|e| e["type"] == "tool_progress").collect();
+        assert_eq!(progress.len(), 1, "{ev:?}");
+        assert_eq!(progress[0]["metadata"], json!({"shellID": "shell_1"}));
+        // Unknown sessions are not found.
+        let r = c
+            .get(format!("{base}/sessions/nope/jobs"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+    }
 
     async fn new_session(c: &reqwest::Client, base: &str) -> String {
         let s: Value = c
