@@ -108,7 +108,7 @@ impl std::fmt::Display for WsError {
 
 impl From<WsError> for Error {
     fn from(e: WsError) -> Self {
-        Error::Transport(format!("WebSocket: {}", e.message))
+        Error::Transport(crate::redact_urls(&format!("WebSocket: {}", e.message)))
     }
 }
 

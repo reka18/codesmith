@@ -228,7 +228,7 @@ pub(crate) async fn send(rb: reqwest::RequestBuilder) -> Result<reqwest::Respons
         let text = resp.text().await.unwrap_or_default();
         return Err(Error::Status {
             status: status.as_u16(),
-            body: text.chars().take(2000).collect(),
+            body: crate::redact_urls(&text.chars().take(2000).collect::<String>()),
         });
     }
     Ok(resp)

@@ -968,9 +968,48 @@ impl Error {
 }
 
 impl From<reqwest::Error> for Error {
+    /// Without the request URL, which carries any configured query
+    /// parameters (an API key in `queryParams`): the message reaches the
+    /// screen, logs, events and, from a subagent, the parent model.
     fn from(e: reqwest::Error) -> Self {
-        Error::Transport(e.to_string())
+        let e = e.without_url();
+        let mut message = e.to_string();
+        let mut source = std::error::Error::source(&e);
+        while let Some(s) = source {
+            let text = s.to_string();
+            if !message.contains(&text) {
+                message.push_str(": ");
+                message.push_str(&text);
+            }
+            source = s.source();
+        }
+        Error::Transport(redact_urls(&message))
     }
+}
+
+/// `text` with the query string of every URL in it replaced by `?…`, so a
+/// key passed as a query parameter is not shown.
+pub fn redact_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ']'))
+            .unwrap_or(tail.len());
+        let url = &tail[..end];
+        match url.find(['?', '#']) {
+            Some(q) => {
+                out.push_str(&url[..q]);
+                out.push_str("?…");
+            }
+            None => out.push_str(url),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 pub type EventStream = BoxStream<'static, Result<Event, Error>>;
