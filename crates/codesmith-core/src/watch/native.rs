@@ -152,7 +152,7 @@ enum Filter {
         ignore: Arc<Ignore>,
         /// Directories this route watches (per-directory mode), or just
         /// the root (recursive mode).
-        dirs: Vec<PathBuf>,
+        dirs: HashSet<PathBuf>,
     },
 }
 
@@ -217,8 +217,8 @@ impl Shared {
         let mut filter = if target.kind == TargetKind::Directory {
             let ignore = Arc::new(Ignore::new(&root, &target.ignore));
             let dirs = match this.mode {
-                Mode::Recursive => vec![root.clone()],
-                Mode::PerDirectory => tree_dirs(&root, &ignore),
+                Mode::Recursive => HashSet::from([root.clone()]),
+                Mode::PerDirectory => tree_dirs(&root, &ignore).into_iter().collect(),
             };
             Filter::Tree { ignore, dirs }
         } else {
@@ -239,28 +239,22 @@ impl Shared {
         s.next += 1;
         let failed = match &mut filter {
             Filter::Names(_) => this.watch_dir(&mut s, &root, false).err(),
+            Filter::Tree { .. } if this.mode == Mode::Recursive => {
+                this.watch_dir(&mut s, &root, true).err()
+            }
             Filter::Tree { dirs, .. } => {
-                let recursive = this.mode == Mode::Recursive;
-                let mut kept = Vec::with_capacity(dirs.len());
-                let mut failed = None;
-                for d in dirs.iter() {
-                    match this.watch_dir(&mut s, d, recursive) {
-                        Ok(()) => kept.push(d.clone()),
-                        // The root must be watched; past the limit the rest are skipped.
-                        Err(e) if d == &root => {
-                            failed = Some(e);
-                            break;
-                        }
-                        Err(_) => {}
-                    }
-                }
-                if failed.is_some() {
+                let list: Vec<PathBuf> = dirs.drain().collect();
+                let kept = this.watch_many(&mut s, &list);
+                // The root must be watched; past the limit the rest are skipped.
+                if kept.contains(&root) {
+                    dirs.extend(kept);
+                    None
+                } else {
                     for d in &kept {
-                        this.unwatch_dir(&mut s, d, recursive);
+                        this.unwatch_dir(&mut s, d, false);
                     }
+                    Some(notify::Error::generic("the root could not be watched"))
                 }
-                *dirs = kept;
-                failed
             }
         };
         if let Some(e) = failed {
@@ -292,20 +286,40 @@ impl Shared {
         let Some(route) = s.routes.remove(&id) else {
             return;
         };
-        match &route.filter {
-            Filter::Names(_) => self.unwatch_dir(&mut s, &route.root, false),
-            Filter::Tree { dirs, .. } => {
-                let recursive = self.mode == Mode::Recursive;
-                for d in dirs {
-                    self.unwatch_dir(&mut s, d, recursive);
-                }
-            }
-        }
         if s.routes.is_empty() {
             // Nothing left: stop the platform watcher and its threads.
             s.watcher = None;
             s.dirs.clear();
             s.full = false;
+            return;
+        }
+        match route.filter {
+            Filter::Names(_) => self.unwatch_dir(&mut s, &route.root, false),
+            Filter::Tree { dirs, .. } if self.mode == Mode::Recursive => {
+                for d in &dirs {
+                    self.unwatch_dir(&mut s, d, true);
+                }
+            }
+            Filter::Tree { dirs, .. } => {
+                // Batched, as in `watch_many`.
+                let mut gone = Vec::new();
+                for d in dirs {
+                    if let Some(n) = s.dirs.get_mut(&d) {
+                        n.0 = n.0.saturating_sub(1);
+                        if *n == (0, 0) {
+                            s.dirs.remove(&d);
+                            gone.push(d);
+                        }
+                    }
+                }
+                if let Some(w) = s.watcher.as_mut() {
+                    let mut paths = w.paths_mut();
+                    for d in &gone {
+                        let _ = paths.remove(d);
+                    }
+                    let _ = paths.commit();
+                }
+            }
         }
     }
 
@@ -359,6 +373,68 @@ impl Shared {
         }
         s.dirs.insert(dir.to_path_buf(), after);
         Ok(())
+    }
+
+    /// Watch each of `dirs` non-recursively, the new ones in one batch (a
+    /// FSEvents stream restarts on every change, so one at a time is
+    /// quadratic); returns those now watched.
+    fn watch_many(&self, s: &mut State, dirs: &[PathBuf]) -> Vec<PathBuf> {
+        let mut kept = Vec::with_capacity(dirs.len());
+        let mut fresh = Vec::new();
+        for d in dirs {
+            match s.dirs.get_mut(d) {
+                Some(n) => {
+                    n.0 += 1;
+                    kept.push(d.clone());
+                }
+                None => fresh.push(d.clone()),
+            }
+        }
+        let room = self.limit.saturating_sub(s.dirs.len());
+        if fresh.len() > room && !s.full {
+            s.full = true;
+            (self.log)(&format!(
+                "watching at most {} directories; {} under {} are not watched",
+                self.limit,
+                fresh.len() - room,
+                dirs.first()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default()
+            ));
+        }
+        fresh.truncate(room);
+        let Some(w) = s.watcher.as_mut() else {
+            return kept;
+        };
+        let mut paths = w.paths_mut();
+        let mut added = Vec::with_capacity(fresh.len());
+        let mut limit_hit = false;
+        for d in fresh {
+            match paths.add(&d, RecursiveMode::NonRecursive) {
+                Ok(()) => added.push(d),
+                Err(e) => {
+                    if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) {
+                        limit_hit = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if let Err(e) = paths.commit() {
+            (self.log)(&format!("failed to watch directories: {e}"));
+            return kept;
+        }
+        if limit_hit && !s.full {
+            s.full = true;
+            (self.log)(
+                "the inotify watch limit (fs.inotify.max_user_watches) is reached; later directories are not watched",
+            );
+        }
+        for d in added {
+            s.dirs.insert(d.clone(), (1, 0));
+            kept.push(d);
+        }
+        kept
     }
 
     fn unwatch_dir(&self, s: &mut State, dir: &Path, recursive: bool) {
@@ -459,19 +535,13 @@ impl Shared {
         };
         let found = tree_dirs(dir, &ignore);
         let mut s = self.state.lock().unwrap();
-        let mut added = Vec::new();
-        for d in found {
-            let known = match s.routes.get(&id).map(|r| &r.filter) {
-                Some(Filter::Tree { dirs, .. }) => dirs.contains(&d),
-                _ => return,
-            };
-            if known {
-                continue;
+        let fresh: Vec<PathBuf> = match s.routes.get(&id).map(|r| &r.filter) {
+            Some(Filter::Tree { dirs, .. }) => {
+                found.into_iter().filter(|d| !dirs.contains(d)).collect()
             }
-            if self.watch_dir(&mut s, &d, false).is_ok() {
-                added.push(d);
-            }
-        }
+            _ => return,
+        };
+        let added = self.watch_many(&mut s, &fresh);
         if let Some(Route {
             filter: Filter::Tree { dirs, .. },
             ..
