@@ -7,7 +7,7 @@ use crate::options::{claude_version, field, fit_budget, number};
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
     stream_error, system_text, unsupported_media, wrap_system_update, Decoder, Error, Event,
-    EventStream, FinishReason, Media, MediaKind, Message, Part, Protocol, Provider, Reason,
+    EventStream, FinishReason, Hosted, Media, MediaKind, Message, Part, Protocol, Provider, Reason,
     ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
@@ -265,17 +265,25 @@ fn lower_options(req: &Request) -> Result<Map<String, Value>, Error> {
 /// The `anthropic-beta` values a body needs (after OpenCode's
 /// `requiredBetas`): interleaved thinking always, compaction, fast mode and
 /// thinking block binding when used.
-pub fn betas(body: &Value) -> Vec<&'static str> {
-    let mut out = vec![INTERLEAVED_BETA];
+pub fn betas(body: &Value) -> Vec<String> {
+    let mut out = vec![INTERLEAVED_BETA.to_string()];
     if body.get("context_management").is_some() {
-        out.push(COMPACT_BETA);
+        out.push(COMPACT_BETA.into());
     }
     if body.get("speed").is_some() {
-        out.push(FAST_BETA);
+        out.push(FAST_BETA.into());
     }
     let t = &body["thinking"];
     if t.is_object() && !thinking_off(t) && t.get("block_binding").is_some() {
-        out.push(BINDING_BETA);
+        out.push(BINDING_BETA.into());
+    }
+    // Server tools still in beta.
+    for t in body["tools"].as_array().into_iter().flatten() {
+        if let Some(b) = t["type"].as_str().and_then(crate::hosted::anthropic_beta) {
+            if !out.contains(&b) {
+                out.push(b);
+            }
+        }
     }
     out
 }
@@ -297,8 +305,8 @@ pub fn headers(p: &Provider, body: &Value) -> Vec<(String, String)> {
         }
     }
     for b in betas(body) {
-        if !beta.iter().any(|x| x == b) {
-            beta.push(b.to_string());
+        if !beta.contains(&b) {
+            beta.push(b);
         }
     }
     out.push(("anthropic-beta".into(), beta.join(",")));
@@ -363,6 +371,8 @@ fn is_http(u: &str) -> bool {
 /// and remote media other than http(s) images and PDFs.
 pub fn check(req: &Request) -> Result<(), Error> {
     lower_options(req)?;
+    crate::hosted::declared(req, Protocol::AnthropicMessages)?;
+    crate::hosted::anthropic_check(req)?;
     for m in all_media(req) {
         let remote_ok = m.remote().is_some_and(|u| {
             is_http(u.trim()) && matches!(m.kind(), MediaKind::Image | MediaKind::Pdf)
@@ -444,6 +454,28 @@ fn release(messages: &mut Vec<Value>, held: &mut Vec<&Message>) {
     }
 }
 
+/// A hosted part from this API as its `server_tool_use` and result blocks.
+/// Hosted parts from other protocols are left out, and so is a call whose
+/// result never came (Anthropic rejects a server tool use without one).
+fn hosted_blocks(h: &crate::Hosted) -> Vec<Value> {
+    if h.protocol != Protocol::AnthropicMessages || h.result.is_none() {
+        return vec![];
+    }
+    let input = if h.input.is_object() {
+        h.input.clone()
+    } else {
+        json!({})
+    };
+    // `check` rejects results of unknown server tools.
+    match (&h.result, crate::hosted::anthropic_result_type(&h.name)) {
+        (Some(r), Some(kind)) => vec![
+            json!({"type": "server_tool_use", "id": tool_id(&h.id), "name": h.name, "input": input}),
+            json!({"type": kind, "tool_use_id": tool_id(&h.id), "content": r.value}),
+        ],
+        _ => vec![],
+    }
+}
+
 /// The request body for a server at `base_url`.
 pub fn body_for(req: &Request, base_url: &str) -> Value {
     let require_signature = require_signature(base_url, &req.model);
@@ -472,6 +504,8 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
             .parts
             .iter()
             .filter_map(|p| match p {
+                // Several blocks, flattened below.
+                Part::Hosted(h) if m.role == Role::Assistant => Some(Value::Array(hosted_blocks(h))),
                 // Whitespace-only text blocks are rejected.
                 Part::Text(t) if !t.trim().is_empty() => Some(json!({"type": "text", "text": t})),
                 Part::ToolCall { id, name, input } => Some(json!({"type": "tool_use", "id": tool_id(id), "name": name, "input": input})),
@@ -492,6 +526,10 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
                     Some(b)
                 }
                 _ => None,
+            })
+            .flat_map(|b| match b {
+                Value::Array(blocks) => blocks,
+                b => vec![b],
             })
             .collect();
         if content.is_empty() {
@@ -525,12 +563,15 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
     if !req.system.is_empty() {
         body["system"] = json!(req.system);
     }
-    if !req.tools.is_empty() {
+    // Malformed server tools are rejected by `check` before anything is sent.
+    let hosted = crate::hosted::declared(req, Protocol::AnthropicMessages).unwrap_or_default();
+    if !req.tools.is_empty() || !hosted.is_empty() {
         let sanitizer = schema::for_model(&req.model);
         body["tools"] = req
             .tools
             .iter()
             .map(|t| json!({"name": t.name, "description": t.description, "input_schema": schema::project(&t.parameters, sanitizer)}))
+            .chain(hosted)
             .collect();
         // Anthropic rejects `tool_choice` without tools.
         if let Some(c) = tool_choice(req) {
@@ -580,11 +621,11 @@ fn block_id(kind: &str, i: usize) -> String {
 }
 
 /// Events for a block's end: its text end, tool call or reasoning state.
-fn close_block(b: &mut Block, i: usize) -> Vec<Event> {
+fn close_block(b: &mut Block, i: usize) -> Result<Vec<Event>, Error> {
     if b.stopped {
-        return vec![];
+        return Ok(vec![]);
     }
-    match b.kind.as_str() {
+    Ok(match b.kind.as_str() {
         "text" => {
             b.stopped = true;
             vec![Event::TextEnd(block_id("text", i))]
@@ -593,12 +634,18 @@ fn close_block(b: &mut Block, i: usize) -> Vec<Event> {
             b.stopped = true;
             vec![Event::ToolInputEnd { id: b.id.clone() }, tool_call(b)]
         }
+        // A call the server ran: its input is final, so malformed input
+        // ends the stream (no local tool can report it back).
+        "server_tool_use" => {
+            b.stopped = true;
+            vec![Event::HostedCall(server_tool_call(b)?)]
+        }
         "thinking" | "redacted_thinking" => {
             b.stopped = true;
             vec![reasoning_end(b)]
         }
         _ => vec![],
-    }
+    })
 }
 
 #[derive(Debug, Default)]
@@ -632,6 +679,29 @@ fn tool_call(b: &Block) -> Event {
         name: b.name.clone(),
         input,
     }
+}
+
+/// A `server_tool_use` block as a hosted call.
+fn server_tool_call(b: &Block) -> Result<Hosted, Error> {
+    let input = if b.json.trim().is_empty() {
+        b.input
+            .clone()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}))
+    } else {
+        serde_json::from_str(&b.json).map_err(|_| {
+            Error::Decode(format!(
+                "Invalid JSON input for {ROUTE} tool call {}",
+                b.name
+            ))
+        })?
+    };
+    Ok(Hosted::call(
+        Protocol::AnthropicMessages,
+        b.id.clone(),
+        &b.name,
+        input,
+    ))
 }
 
 /// The error inside an `error` event (`{type, message}`).
@@ -715,7 +785,18 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
                     id: b["id"].as_str().unwrap_or("").to_string(),
                     name: b["name"].as_str().unwrap_or("").to_string(),
                 }),
-                _ => {}
+                // Server tool results arrive whole, for an earlier
+                // `server_tool_use`.
+                k => {
+                    if let Some(name) = crate::hosted::anthropic_result_tool(k) {
+                        let id = b["tool_use_id"].as_str().unwrap_or("").to_string();
+                        let result = crate::hosted::anthropic_result(&b["content"]);
+                        out.push(Event::HostedResult(
+                            Hosted::call(Protocol::AnthropicMessages, id, name, json!({}))
+                                .with(result),
+                        ));
+                    }
+                }
             }
             state.blocks[i] = Some(Block {
                 id: b["id"].as_str().unwrap_or("").to_string(),
@@ -763,7 +844,7 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
         "content_block_stop" => {
             let i = v["index"].as_u64().unwrap_or(0) as usize;
             if let Some(Some(b)) = state.blocks.get_mut(i) {
-                out.extend(close_block(b, i));
+                out.extend(close_block(b, i)?);
             }
         }
         "message_delta" => {
@@ -793,7 +874,7 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
             // Blocks whose stop never came settle here.
             for (i, b) in state.blocks.iter_mut().enumerate() {
                 if let Some(b) = b {
-                    out.extend(close_block(b, i));
+                    out.extend(close_block(b, i)?);
                 }
             }
             state.done = true;

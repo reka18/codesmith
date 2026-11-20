@@ -36,6 +36,9 @@ mod stream;
 #[path = "parity_endpoint.rs"]
 mod endpoint;
 
+#[path = "parity_hosted.rs"]
+mod hosted;
+
 /// Run named cases, reporting every failing name rather than the first.
 fn run(cases: &[(&str, fn())]) {
     let failed: Vec<&str> = cases
@@ -2402,6 +2405,14 @@ fn tool_history() {
                 normalize_tool_history(&[calls.clone(), answered.clone()]),
                 vec![calls, answered, results(vec![missing("unanswered")])]
             );
+            let hosted = asst(vec![Part::Hosted(crate::Hosted {
+                id: "hosted".into(),
+                name: "web_search".into(),
+                input: json!({}),
+                protocol: Protocol::AnthropicMessages,
+                result: None,
+            })]);
+            assert_eq!(normalize_tool_history(std::slice::from_ref(&hosted)), vec![hosted]);
         }),
         ("tool-history :: normalizes empty results without changing whitespace or media", || {
             let png = Media::base64("image/png", "AQID");
@@ -2423,9 +2434,17 @@ fn tool_history() {
                 ]
             );
         }),
-        ("tool-history :: leaves unmatched history unchanged", || {
+        ("tool-history :: leaves unmatched and provider-executed history unchanged", || {
             let orphan = results(vec![result("orphan", "orphan", "ignored")]);
-            assert_eq!(normalize_tool_history(std::slice::from_ref(&orphan)), vec![orphan]);
+            let hosted = asst(vec![Part::Hosted(crate::Hosted {
+                id: "hosted".into(),
+                name: "web_search".into(),
+                input: json!({}),
+                protocol: Protocol::AnthropicMessages,
+                result: Some(crate::HostedResult { is_error: false, value: json!(""), media: vec![] }),
+            })]);
+            let history = [orphan, hosted];
+            assert_eq!(normalize_tool_history(&history), history.to_vec());
         }),
         ("tool-history :: uses a matching call as the complete tool identity", || {
             let got = normalize_tool_history(&[

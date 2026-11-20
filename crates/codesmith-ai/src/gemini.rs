@@ -6,9 +6,9 @@
 
 use crate::{
     all_media, drive_resuming, inline_required, merge_body, normalize_tool_history, schema, sse,
-    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, FinishReason, Media,
-    MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta, Reopen, Request, Role,
-    ToolChoice, Usage,
+    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, FinishReason, Hosted,
+    HostedResult, Media, MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta,
+    Reopen, Request, Role, ToolChoice, Usage,
 };
 use futures_util::FutureExt;
 use serde_json::{json, Map, Value};
@@ -67,6 +67,7 @@ fn media_part(m: &Media) -> Option<Value> {
 
 /// Media generateContent cannot carry: URLs other than http(s) video.
 pub fn check(req: &Request) -> Result<(), Error> {
+    crate::hosted::declared(req, Protocol::GoogleGemini)?;
     if all_media(req).any(|m| media_part(m).is_none()) {
         return Err(inline_required("Gemini"));
     }
@@ -94,6 +95,9 @@ fn parts(m: &Message, omit_ids: bool, legacy: bool, pending: &mut Vec<Value>) ->
                 }
             }
             Part::Media(media) => out.extend(media_part(media)),
+            Part::Hosted(h) if m.role == Role::Assistant => {
+                out.extend(crate::hosted::gemini_replay(h))
+            }
             Part::ToolCall { id, name, input } => {
                 let (base, sig) = split_id(id);
                 let mut call = json!({"name": name, "args": if input.is_object() { input.clone() } else { json!({}) }});
@@ -200,9 +204,16 @@ pub fn body(req: &Request) -> Value {
     if !req.system.is_empty() {
         body["systemInstruction"] = json!({"parts": [{"text": req.system}]});
     }
+    // Malformed hosted tools are rejected by `check` before anything is sent.
+    let hosted = crate::hosted::declared(req, Protocol::GoogleGemini).unwrap_or_default();
+    if !hosted.is_empty() {
+        body["tools"] = json!(hosted);
+    }
     if !req.tools.is_empty() {
         let decls: Vec<Value> = req.tools.iter().map(|t| json!({"name": t.name, "description": t.description, "parametersJsonSchema": schema::project(&t.parameters, Some(schema::Sanitizer::Gemini))})).collect();
-        body["tools"] = json!([{"functionDeclarations": decls}]);
+        body["tools"] = std::iter::once(json!({"functionDeclarations": decls}))
+            .chain(hosted)
+            .collect();
         if let Some(c) = &req.tool_choice {
             let config = match c {
                 ToolChoice::Auto => json!({"mode": "AUTO"}),
@@ -346,6 +357,10 @@ pub struct State {
     raw_finish: Option<String>,
     /// Why the prompt was blocked, when it was.
     blocked: Option<String>,
+    /// The code execution call awaiting its result.
+    executing: Option<String>,
+    /// The latest search grounding, reported once the response ends.
+    grounding: Option<Value>,
 }
 
 /// The sum of two billed costs, either of which may be unreported.
@@ -504,7 +519,38 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     if let Some(f) = finish {
         state.raw_finish = Some(f.to_string());
     }
+    if let Some(g) = c.get("groundingMetadata").filter(|g| g.is_object()) {
+        state.grounding = Some(g.clone());
+    }
     for p in c["content"]["parts"].as_array().into_iter().flatten() {
+        // Code the server ran, and what it printed.
+        if let Some(code) = p.get("executableCode") {
+            state.end_thinking(&mut out);
+            state.end_text(&mut out);
+            let id = crate::fresh_id();
+            state.executing = Some(id.clone());
+            out.push(Event::HostedCall(Hosted::call(
+                Protocol::GoogleGemini,
+                id,
+                "code_execution",
+                code.clone(),
+            )));
+            continue;
+        }
+        if let Some(r) = p.get("codeExecutionResult") {
+            state.end_thinking(&mut out);
+            state.end_text(&mut out);
+            let id = state.executing.take().unwrap_or_else(crate::fresh_id);
+            let result = HostedResult {
+                is_error: r["outcome"].as_str().is_some_and(|o| o != "OUTCOME_OK"),
+                value: r.clone(),
+                media: vec![],
+            };
+            out.push(Event::HostedResult(
+                Hosted::call(Protocol::GoogleGemini, id, "code_execution", json!({})).with(result),
+            ));
+            continue;
+        }
         if p["thought"].as_bool() == Some(true) && p.get("functionCall").is_none() {
             let text = p["text"].as_str().filter(|t| !t.is_empty());
             if text.is_some() {
@@ -605,6 +651,24 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
     state.end_thinking(&mut out);
     state.end_text(&mut out);
+    // Searches the model grounded its answer in, with the sources found.
+    if let Some(g) = state.grounding.take() {
+        let queries = g["webSearchQueries"].as_array().filter(|q| !q.is_empty());
+        if let Some(queries) = queries {
+            let call = Hosted::call(
+                Protocol::GoogleGemini,
+                crate::fresh_id(),
+                "google_search",
+                json!({"queries": queries}),
+            );
+            out.push(Event::HostedCall(call.clone()));
+            out.push(Event::HostedResult(call.with(HostedResult {
+                is_error: false,
+                value: g.get("groundingChunks").cloned().unwrap_or(json!([])),
+                media: vec![],
+            })));
+        }
+    }
     // Gemini finishes a turn of calls with `STOP`.
     let mut reason = state.finish.take().unwrap_or_default();
     if !state.ids.is_empty() && matches!(reason.normalized, Reason::Stop) {

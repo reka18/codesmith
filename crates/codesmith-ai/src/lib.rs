@@ -6,6 +6,7 @@ mod billing;
 mod cache;
 mod endpoint;
 mod gemini;
+mod hosted;
 mod openai;
 mod options;
 #[cfg(test)]
@@ -19,6 +20,7 @@ mod sse;
 
 pub use cache::{Cache, Messages as CacheMessages, Placement as CachePlacement};
 pub use endpoint::{azure_endpoint, azure_resource_url, Auth, Compatibility, Encoding};
+pub use hosted::{Hosted, HostedResult};
 pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
 
 use futures_util::stream::BoxStream;
@@ -66,6 +68,9 @@ pub enum Part {
     },
     /// An image, PDF or other file attached to a user message.
     Media(Media),
+    /// A tool the provider ran itself (web search, code execution, …),
+    /// with its result: shown, stored and replayed, never run locally.
+    Hosted(Hosted),
 }
 
 /// Model reasoning: the text shown to the user, and what the provider needs
@@ -616,6 +621,11 @@ pub enum Event {
         name: String,
         input: Value,
     },
+    /// A tool the provider runs itself was called (its `result` is
+    /// `None`). It is never run locally.
+    HostedCall(Hosted),
+    /// A hosted tool's result (`result` is set), for the call with its id.
+    HostedResult(Hosted),
     Finish {
         reason: FinishReason,
         usage: Usage,
@@ -852,6 +862,23 @@ impl Collector {
                 }
             }
             Event::ToolInputEnd { id } => self.forming.retain(|f| f.0 != *id),
+            Event::HostedCall(h) => {
+                self.close();
+                self.parts.push(Part::Hosted(h.clone()));
+            }
+            Event::HostedResult(h) => {
+                let call = self.parts.iter_mut().rev().find_map(|p| match p {
+                    Part::Hosted(c) if c.id == h.id && c.result.is_none() => Some(c),
+                    _ => None,
+                });
+                match call {
+                    Some(c) => c.result = h.result.clone(),
+                    None => {
+                        self.close();
+                        self.parts.push(Part::Hosted(h.clone()));
+                    }
+                }
+            }
             Event::ToolCall { id, name, input } => {
                 self.close();
                 self.parts.push(Part::ToolCall {
@@ -1050,7 +1077,7 @@ pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
     match protocol {
         Protocol::OpenaiChat => openai::check(req),
         Protocol::AnthropicMessages => anthropic::check(req),
-        Protocol::OpenaiResponses => Ok(()),
+        Protocol::OpenaiResponses => responses::check(req),
         Protocol::GoogleGemini => gemini::check(req),
     }
 }

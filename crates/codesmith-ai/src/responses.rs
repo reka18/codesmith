@@ -5,8 +5,8 @@ use crate::cache;
 use crate::gemini::split_id;
 use crate::{
     drive, merge_body, normalize_tool_history, schema, sse, stream_error, system_text, Decoder,
-    Error, Event, EventStream, FinishReason, Media, MediaKind, Message, Part, Protocol, Provider,
-    Reason, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    Error, Event, EventStream, FinishReason, Hosted, Media, MediaKind, Message, Part, Protocol,
+    Provider, Reason, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -113,15 +113,17 @@ fn assistant_items(m: &Message, input: &mut Vec<Value>) {
     let has_output = |from: usize| {
         m.parts[from..].iter().any(|p| match p {
             Part::Text(t) => !t.trim().is_empty(),
-            Part::ToolCall { .. } => true,
+            Part::ToolCall { .. } | Part::Hosted(_) => true,
             _ => false,
         })
     };
     let mut items: Vec<(String, usize)> = Vec::new();
+    let mut hosted = Vec::new();
     for (i, p) in m.parts.iter().enumerate() {
         match p {
             Part::Text(t) if !t.trim().is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
             Part::ToolCall { id, name, input: args } => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
+            Part::Hosted(h) => input.extend(crate::hosted::responses_replay(h, &mut hosted, lower_media)),
             Part::Reasoning(r) => {
                 let Some(meta) = r.meta_for(Protocol::OpenaiResponses) else {
                     continue;
@@ -231,16 +233,20 @@ pub fn body(req: &Request) -> Value {
         );
     }
     let mut body = json!({"model": req.model, "input": input, "stream": true, "store": false});
-    if !req.tools.is_empty() {
+    // Malformed hosted tools are rejected by `check` before anything is sent.
+    let hosted = crate::hosted::declared(req, Protocol::OpenaiResponses).unwrap_or_default();
+    if !req.tools.is_empty() || !hosted.is_empty() {
         let sanitizer = schema::for_model(&req.model);
-        body["tools"] = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false})).collect();
+        let functions = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false}));
+        body["tools"] = functions.chain(hosted.iter().cloned()).collect();
         // An `allowedTools` option (in `lower_options`) wins.
         if let Some(c) = &req.tool_choice {
             body["tool_choice"] = match c {
                 ToolChoice::Auto => json!("auto"),
                 ToolChoice::None => json!("none"),
                 ToolChoice::Required => json!("required"),
-                ToolChoice::Tool(name) => json!({"type": "function", "name": name}),
+                ToolChoice::Tool(name) => crate::hosted::responses_choice(req, &hosted)
+                    .unwrap_or_else(|| json!({"type": "function", "name": name})),
             };
         }
     }
@@ -263,6 +269,11 @@ pub fn body(req: &Request) -> Value {
     merge_body(&mut body, &lower_options(req));
     merge_body(&mut body, &req.body);
     body
+}
+
+/// Reject malformed hosted tool declarations before anything is sent.
+pub fn check(req: &Request) -> Result<(), Error> {
+    crate::hosted::declared(req, Protocol::OpenaiResponses).map(drop)
 }
 
 /// A `function_call_output`; with media its output is a content array.
@@ -631,6 +642,17 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 item_str(it, "name"),
                 item_str(it, "arguments"),
             ));
+        }
+        // A hosted tool item is a call the provider ran, with its result.
+        "response.output_item.done" => {
+            if let Some(h) = crate::hosted::responses_item(&v["item"])? {
+                state.end_text(&mut out);
+                out.push(Event::HostedCall(Hosted {
+                    result: None,
+                    ..h.clone()
+                }));
+                out.push(Event::HostedResult(h));
+            }
         }
         "response.completed" | "response.incomplete" => {
             // Reasoning never completed by an output item ends with what

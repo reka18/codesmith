@@ -193,6 +193,17 @@ fn estimate_one(m: &Message) -> u64 {
                 content.len() + media.iter().map(media_chars).sum::<usize>()
             }
             Part::Media(m) => media_chars(m),
+            Part::Hosted(h) => {
+                let result = h.result.iter();
+                h.name.len()
+                    + h.input.to_string().len()
+                    + result
+                        .map(|r| {
+                            r.value.to_string().len()
+                                + r.media.iter().map(media_chars).sum::<usize>()
+                        })
+                        .sum::<usize>()
+            }
         })
         .sum();
     (chars as u64).div_ceil(4)
