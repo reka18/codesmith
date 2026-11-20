@@ -616,6 +616,8 @@ dependencies = [
  "codesmith-ai",
  "codesmith-core",
  "futures-util",
+ "hyper",
+ "hyper-util",
  "ignore",
  "libc",
  "nucleo-matcher",
@@ -629,6 +631,7 @@ dependencies = [
  "tempfile",
  "textwrap",
  "tokio",
+ "tokio-tungstenite",
  "unicode-segmentation",
  "unicode-width",
 ]

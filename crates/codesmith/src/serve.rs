@@ -37,6 +37,9 @@
 //!   of the directory for 24 hours (watching it again renews that), as
 //!   OpenCode's `fs.watch`; 404 when it is not an existing file inside the
 //!   directory, 503 when file watching is off
+//! - terminals: `/pty`, `/pty/{pty}`, `/pty/{pty}/connect-token`, the
+//!   `/pty/{pty}/connect` WebSocket and `/sessions/{id}/terminals`; see
+//!   [`pty`]
 
 use anyhow::Result;
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request as HttpRequest, State};
@@ -65,6 +68,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+
+#[cfg(unix)]
+mod pty;
 
 type Tx = mpsc::UnboundedSender<Value>;
 
@@ -384,6 +390,12 @@ pub struct Server {
     /// File watching, started when the server starts listening (or on
     /// first use).
     watching: OnceLock<Watching>,
+    /// Terminals, stopped with the server.
+    #[cfg(unix)]
+    ptys: codesmith_core::pty::Ptys,
+    /// Tickets for opening a terminal's WebSocket.
+    #[cfg(unix)]
+    tickets: codesmith_core::pty::ticket::Tickets,
 }
 
 /// The server's file watches and where their changes go.
@@ -461,7 +473,21 @@ impl Server {
         token: String,
         mcp: Arc<codesmith_core::mcp::Mcp>,
     ) -> Arc<Server> {
+        #[cfg(unix)]
+        let ptys = {
+            let shell = loaded
+                .config
+                .shell
+                .clone()
+                .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| "/bin/sh".into());
+            codesmith_core::pty::Ptys::new(cwd.clone(), shell)
+        };
         Arc::new(Server {
+            #[cfg(unix)]
+            ptys,
+            #[cfg(unix)]
+            tickets: Default::default(),
             loaded,
             cwd,
             db,
@@ -660,6 +686,10 @@ async fn guard(State(st): State<St>, req: HttpRequest, next: Next) -> Response {
     let ok = text(header::AUTHORIZATION)
         .and_then(|v| v.strip_prefix("Bearer "))
         .is_some_and(|v| constant_eq(v.as_bytes(), st.token.as_bytes()));
+    // A terminal's WebSocket may carry a ticket instead, which its handler
+    // checks (a browser cannot set the header).
+    #[cfg(unix)]
+    let ok = ok || pty::ticketed(&req);
     if !ok {
         return ApiError(
             StatusCode::UNAUTHORIZED,
@@ -691,7 +721,10 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 pub fn router(st: St) -> Router {
-    Router::new()
+    let routes = Router::new();
+    #[cfg(unix)]
+    let routes = routes.merge(pty::routes());
+    routes
         .route("/health", get(health))
         .route("/sessions", get(list).post(create))
         .route("/sessions/{id}", get(show).delete(remove))
@@ -772,6 +805,9 @@ async fn remove(
     if !st.store()?.get(&id)?.is_some_and(|i| st.ours(&i)) {
         return Err(not_found(&id));
     }
+    // Its terminals go with it.
+    #[cfg(unix)]
+    st.ptys.remove_session(&id);
     let gone = st.live.lock().await.remove(&id);
     if let Some(l) = gone {
         let mut g = l.lock().await;

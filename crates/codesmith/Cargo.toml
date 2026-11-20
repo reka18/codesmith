@@ -40,6 +40,9 @@ similar.workspace = true
 nucleo-matcher.workspace = true
 syntect.workspace = true
 libc.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 base64.workspace = true

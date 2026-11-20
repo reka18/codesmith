@@ -27,6 +27,7 @@
 //! - `delegation`: the explore subagent, skills, custom commands, `review`.
 //! - `acp`: `codesmith acp` over stdin/stdout, through replay.
 //! - `serve`: `codesmith serve` over HTTP and SSE.
+//! - `pty`: `codesmith serve` terminals over HTTP and WebSockets.
 //! - `mcp`: stdio MCP servers with and without Code Mode, MCP prompts.
 //! - `automation`: `automation add`/`run-due`/`log`.
 //! - `worktree`: `run -w`.
@@ -45,6 +46,7 @@ mod delegation;
 mod limits;
 mod mcp;
 mod oc_cli;
+mod pty;
 mod run_cli;
 mod serve;
 mod tui;
