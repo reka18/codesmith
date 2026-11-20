@@ -52,6 +52,7 @@ pub fn is_engine_message(text: &str) -> bool {
         || t == MAX_STEPS_PROMPT.trim()
         || t == crate::fork::NOTICE
         || crate::nearby::paths_of(t).is_some()
+        || crate::skill_mention::is_content(t)
 }
 
 /// Whether a stored message is the engine's, not the user's: a system update

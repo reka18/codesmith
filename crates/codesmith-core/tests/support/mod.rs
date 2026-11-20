@@ -180,6 +180,26 @@ impl H {
         }
     }
 
+    /// Start over with a new session (one that sees files written since).
+    pub fn renew(&mut self) {
+        self.s = Session::new(
+            &self.loaded,
+            self.loaded.root.clone(),
+            Options {
+                agent: None,
+                model: None,
+                resume: None,
+                title: Some("Parent".into()),
+                parent: None,
+                questioner: None,
+                mcp: None,
+            },
+            Arc::new(Fixed(Reply::Always)),
+            Some(self.store()),
+        )
+        .unwrap();
+    }
+
     pub fn root(&self) -> PathBuf {
         self.loaded.root.clone()
     }

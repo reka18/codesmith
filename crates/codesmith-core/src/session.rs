@@ -789,6 +789,45 @@ impl Session {
         Ok(us::ran(&run, text))
     }
 
+    /// The content of the skills `text` mentions (see
+    /// [`crate::skill_mention`]); fails for one the rules deny.
+    fn mentioned_skills(&self, text: &str) -> Result<Vec<String>> {
+        use crate::skill_mention as sm;
+        let mentioned = sm::mentions(text, &self.skills, &self.cwd);
+        for m in &mentioned {
+            if self
+                .gate
+                .assert_not_denied("skill", std::slice::from_ref(&m.skill))
+                .is_err()
+            {
+                return Err(sm::NotFound {
+                    skill: m.skill.clone(),
+                }
+                .into());
+            }
+        }
+        Ok(sm::contents(&mentioned, &self.skills))
+    }
+
+    /// Activate skill `id` on its own (OpenCode's `Session.skill`): its raw
+    /// content joins the session for the model's next step, without a model
+    /// call. Fails with [`crate::skill_mention::NotFound`] for a skill that
+    /// is not available or that the rules deny, writing nothing.
+    pub fn activate_skill(&mut self, id: &str) -> Result<()> {
+        let skill = self
+            .skills
+            .iter()
+            .find(|s| s.id == id)
+            .filter(|_| {
+                self.gate
+                    .assert_not_denied("skill", &[id.to_string()])
+                    .is_ok()
+            })
+            .ok_or_else(|| crate::skill_mention::NotFound { skill: id.into() })?;
+        let text = skill.content.clone();
+        self.push(Message::user(text))
+    }
+
     /// After a step's tool results: the instruction files its reads bring
     /// in (see [`crate::nearby`]).
     fn give_nearby_instructions(&mut self) -> Result<()> {
@@ -1151,6 +1190,8 @@ impl Session {
         media: Vec<codesmith_ai::Media>,
         sink: &mut dyn Sink,
     ) -> Result<()> {
+        // A denied skill mention refuses the prompt before anything is written.
+        let skills = self.mentioned_skills(text)?;
         let _lease = self.take_turn(sink).await?;
         // What changed since the last turn comes before the new prompt; a
         // baseline that cannot be made yet leaves the prompt unsent.
@@ -1196,7 +1237,15 @@ impl Session {
         {
             self.push(Message::user(crate::fork::NOTICE))?;
         }
-        let mut user = Message::user(text);
+        // Mentioned skills' content comes before the prompt's text.
+        let mut user = Message {
+            role: Role::User,
+            parts: skills
+                .into_iter()
+                .map(Part::text)
+                .chain([Part::text(text)])
+                .collect(),
+        };
         user.parts.extend(media.into_iter().map(Part::Media));
         self.push(user)?;
         let plugins = crate::plugin::active();

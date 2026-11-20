@@ -36,6 +36,15 @@ changed or removed mid-session is announced to the model in a short update
 it was, so the cached prompt prefix does too; see [instructions that
 change](configuration.md#when-instructions-change).
 
+### Mentioning a skill
+
+`@id` in a prompt (at its start or after a space) loads skill `id` with
+that prompt, as OpenCode's skill mentions do: the skill's content goes to the
+model in the prompt's message, before your text, once however often you
+mention it. A word that is also a file or folder in the working directory is
+a [file mention](interactive-ui.md#autocomplete-and--mentions) instead. A
+skill the `skill` rules deny refuses the prompt: nothing is sent or saved.
+
 ### Downloaded skills
 
 An `http://` or `https://` entry in `skills` names a catalog. CodeSmith

@@ -17,13 +17,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 85 | 7 | 44 | 190 | 67 | 0 |
+| Session runner | 393 | 89 | 7 | 40 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 6 | 0 | 16 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 27 | 0 | 58 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 29 | 0 | 56 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1355** | **15** | **466** | **2355** | **1397** | **0** |
+| **Total** | **5588** | **1361** | **15** | **460** | **2355** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (466 cases in 51 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (460 cases in 50 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -103,7 +103,6 @@ Missing features, by how many OpenCode test cases each would unlock (466 cases i
 | [Tool-use Policies](#tool-use-policies) | 6 | a deny-only policy layer over permissions (an allow never grants) |
 | [Mercurial VCS](#mercurial-vcs) | 6 | Mercurial project markers; Mercurial support |
 | [Responses Checkpoint Continuation](#responses-checkpoint-continuation) | 6 | WebSocket continuation checkpoints for compaction triggers; compaction across WebSocket recovery without stale response IDs |
-| [Skill Mentions](#skill-mentions) | 6 | prepared skills attached to a prompt; skill mentions materialized on their prompt |
 | [Shell Resolution Rules](#shell-resolution-rules) | 6 | shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh) |
 | [Code Mode Tool Placement Policy](#code-mode-tool-placement-policy) | 5 | per-model direct vs Code Mode tool placement under full_codemode |
 | [HTTP Request Hooks](#http-request-hooks) | 4 | plugin hooks on raw HTTP requests/responses |
@@ -602,17 +601,6 @@ Missing features, by how many OpenCode test cases each would unlock (466 cases i
 - `session-checkpoint-transport.test.ts`: invalid trigger output does not retry or commit a continuation checkpoint
 - `session-checkpoint-transport.test.ts`: trigger recovers over SSE with complete input after the old socket closes and reconnect is rejected
 - `session-compaction-transport.test.ts`: compaction survives ${recovery} without stale response IDs (3 cases)
-
-### Skill Mentions
-
-6 cases.
-
-- `session-runner-message.test.ts`: lowers each prepared skill once before the prompt
-- `session-runner-message.test.ts`: does not inject skill content for reference-only attachments
-- `session-skill.test.ts`: refuses blocked skill mentions and standalone activation without writing their content
-- `session-skill.test.ts`: materializes mentioned skills on their owning prompt
-- `session-skill.test.ts`: excludes mentioned skills when forking before their prompt
-- `session-skill.test.ts`: publishes raw standalone content under the caller-supplied ID without inbox admission
 
 ### Shell Resolution Rules
 
@@ -1706,7 +1694,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (282 of 393)</summary>
+<details><summary>Session runner (286 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1845,6 +1833,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D names the session, a truncated command and the exit on shell spans outside any turn — effect-internal: tracing spans
 - P admits a spawn failure without waking the model before failing the caller — `tests/oc_session_shell.rs::oc_session_shell_records_a_spawn_failure_before_failing`
 - P keeps the shell and completion alive when the waiting caller is interrupted — `tests/oc_session_shell.rs::oc_session_shell_outlives_an_interrupted_caller`
+
+**`session-skill.test.ts`**
+
+- P refuses blocked skill mentions and standalone activation without writing their content — `tests/oc_session_skill_mention.rs::oc_session_refuses_blocked_skill_mentions_and_activation`
+- P materializes mentioned skills on their owning prompt — `tests/oc_session_skill_mention.rs::oc_session_materializes_mentioned_skills_on_their_prompt`
+- P excludes mentioned skills when forking before their prompt — `tests/oc_session_skill_mention.rs::oc_session_excludes_mentioned_skills_when_forking_before_their_prompt`
+- P publishes raw standalone content under the caller-supplied ID without inbox admission — `tests/oc_session_skill_mention.rs::oc_session_activates_a_skill_with_its_raw_content_without_the_model` (adapted: no caller-supplied ID or event)
 
 **`session-step.test.ts`**
 
@@ -2020,7 +2015,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (196 of 308)</summary>
+<details><summary>Sessions and their store (198 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -2104,6 +2099,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P omits empty assistant turns — `src/runner.rs::oc_session_message_omits_empty_assistant_turns`
 - D maps every top-level Session message type — storage-model: maps OpenCode's stored message types
 - D leaves out the recent context of a checkpoint that kept none — deliberate: compaction.rs: the kept tail stays as real messages
+- P lowers each prepared skill once before the prompt — `tests/oc_session_skill_mention.rs::oc_session_lowers_each_mentioned_skill_once_before_the_prompt`
+- P does not inject skill content for reference-only attachments — `tests/oc_session_skill_mention.rs::oc_session_does_not_inject_skill_content_for_mere_references` (adapted: a reference is an @word that is not a mention)
 - D replays flat state under an OpenCode hosted model's route key — cloud: OpenCode hosted model route key
 - D retries a failed stream from its last local call that ran — deliberate: runner.rs: tools run after the stream ends, a failed stream is retried from the prompt
 - P omits unfinished reasoning from an interrupted assistant message — `src/runner.rs::oc_session_message_omits_reasoning_only_assistant_turns`

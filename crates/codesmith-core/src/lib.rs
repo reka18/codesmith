@@ -36,6 +36,7 @@ pub mod review;
 pub mod runner;
 pub mod session;
 pub mod skill;
+pub mod skill_mention;
 pub mod skill_remote;
 pub mod snapshot;
 pub mod stats;

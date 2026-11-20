@@ -25,3 +25,11 @@
 251 :: ported :: tests/oc_session_nearby.rs::oc_session_discovers_agents_files_on_a_directory_listing
 287 :: ported :: tests/oc_session_nearby.rs::oc_session_reinjects_nested_instructions_dropped_by_compaction
 318 :: ported :: tests/oc_session_nearby.rs::oc_session_listing_the_working_directory_injects_nothing
+@session-runner-message.test.ts
+306 :: ported :: tests/oc_session_skill_mention.rs::oc_session_lowers_each_mentioned_skill_once_before_the_prompt
+343 :: ported :: tests/oc_session_skill_mention.rs::oc_session_does_not_inject_skill_content_for_mere_references :: adapted: a reference is an @word that is not a mention
+@session-skill.test.ts
+105 :: ported :: tests/oc_session_skill_mention.rs::oc_session_refuses_blocked_skill_mentions_and_activation
+127 :: ported :: tests/oc_session_skill_mention.rs::oc_session_materializes_mentioned_skills_on_their_prompt
+171 :: ported :: tests/oc_session_skill_mention.rs::oc_session_excludes_mentioned_skills_when_forking_before_their_prompt
+198 :: ported :: tests/oc_session_skill_mention.rs::oc_session_activates_a_skill_with_its_raw_content_without_the_model :: adapted: no caller-supplied ID or event
