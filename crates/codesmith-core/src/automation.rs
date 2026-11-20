@@ -640,12 +640,13 @@ pub fn unattended_rules(config: &crate::config::Config) -> Vec<crate::permission
         .collect()
 }
 
-/// `loaded` with the unattended rules applied to every agent (config-wide
-/// rules come last when agents are resolved, so these take precedence).
+/// `loaded` with the unattended rules applied to every agent: they go in
+/// [`Config::overrides`](crate::config::Config::overrides), which come after
+/// every agent's built-in and configured rules, so they take precedence.
 fn unattended(loaded: &Loaded) -> Loaded {
     let mut l = loaded.clone();
     let extra = unattended_rules(&l.config);
-    l.config.permissions.extend(extra);
+    l.config.overrides.extend(extra);
     l
 }
 
@@ -1633,5 +1634,45 @@ mod tests {
             crate::permission::evaluate("edit", "a.rs", &r),
             Effect::Deny
         );
+    }
+
+    #[test]
+    fn unattended_denies_beat_every_agent_rule() {
+        use crate::permission::{evaluate, Effect};
+        let config: crate::config::Config = serde_json::from_value(json!({
+            "permissions": [{"action": "shell", "resource": "*", "effect": "allow"}],
+            "agents": {
+                "build": {"permissions": [
+                    {"action": "shell", "resource": "*", "effect": "allow"},
+                    {"action": "edit", "resource": "*", "effect": "allow"}
+                ]},
+                "explore": {"permissions": [{"action": "webfetch", "resource": "*", "effect": "allow"}]}
+            },
+            "automation": {"permissions": [{"action": "shell", "resource": "cargo test*", "effect": "allow"}]}
+        }))
+        .unwrap();
+        let loaded = Loaded {
+            config,
+            files: vec![],
+            root: std::path::PathBuf::from("/p"),
+        };
+        let l = unattended(&loaded);
+        let b = crate::agent::resolve(&l.config, "build").unwrap();
+        assert_eq!(evaluate("shell", "rm -rf x", &b.permissions), Effect::Deny);
+        assert_eq!(evaluate("edit", "a.rs", &b.permissions), Effect::Deny);
+        assert_eq!(
+            evaluate("shell", "cargo test -q", &b.permissions),
+            Effect::Allow,
+            "opt-ins come after the unattended denies"
+        );
+        let e = crate::agent::resolve(&l.config, "explore").unwrap();
+        assert_eq!(
+            evaluate("webfetch", "https://x", &e.permissions),
+            Effect::Deny
+        );
+        assert_eq!(evaluate("shell", "git log", &e.permissions), Effect::Deny);
+        // Interactive sessions keep the configured agent rules.
+        let b = crate::agent::resolve(&loaded.config, "build").unwrap();
+        assert_eq!(evaluate("shell", "rm -rf x", &b.permissions), Effect::Allow);
     }
 }

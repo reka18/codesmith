@@ -1,6 +1,12 @@
 //! Permission rules: an ordered list of `{action, resource, effect}`. The last
 //! rule matching both the action and the resource decides; with no match the
 //! user is asked. Ported from OpenCode's `Permission.evaluate`.
+//!
+//! One addition: a built-in agent's own rules (plan's edit deny, the
+//! explore/review allowlists) are marked [`Rule::builtin`] and can only
+//! restrict. The list is evaluated with and without them and the stricter
+//! effect wins, so a config-wide allow cannot widen a read-only agent and a
+//! config-wide deny or ask still reaches it.
 
 use crate::wildcard;
 use serde::{Deserialize, Serialize};
@@ -19,6 +25,11 @@ pub struct Rule {
     pub action: String,
     pub resource: String,
     pub effect: Effect,
+    /// One of a built-in agent's own rules: it can tighten what the other
+    /// rules allow but never loosen it (see the module docs). Not read from
+    /// or written to config.
+    #[serde(skip)]
+    pub builtin: bool,
 }
 
 impl Rule {
@@ -27,7 +38,22 @@ impl Rule {
             action: action.into(),
             resource: resource.into(),
             effect,
+            builtin: false,
         }
+    }
+
+    /// This rule marked as a built-in agent rule ([`Rule::builtin`]).
+    pub fn into_builtin(mut self) -> Self {
+        self.builtin = true;
+        self
+    }
+}
+
+fn strictness(e: Effect) -> u8 {
+    match e {
+        Effect::Allow => 0,
+        Effect::Ask => 1,
+        Effect::Deny => 2,
     }
 }
 
@@ -39,18 +65,35 @@ fn ignores_case(action: &str) -> bool {
     cfg!(target_os = "macos") && PATH_ACTIONS.contains(&action)
 }
 
-/// The effect of the last rule matching `action` and `resource`; `Ask` if none.
+/// The effect of the last rule matching `action` and `resource`; `Ask` if
+/// none. When built-in agent rules are present, the stricter of that and the
+/// same evaluation without them.
 pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
     let ic = ignores_case(action);
-    rules
+    let hit = |r: &&Rule| {
+        wildcard::matches(action, &r.action, false) && wildcard::matches(resource, &r.resource, ic)
+    };
+    let all = rules
         .iter()
         .rev()
-        .find(|r| {
-            wildcard::matches(action, &r.action, false)
-                && wildcard::matches(resource, &r.resource, ic)
-        })
+        .find(hit)
         .map(|r| r.effect)
-        .unwrap_or(Effect::Ask)
+        .unwrap_or(Effect::Ask);
+    if !rules.iter().any(|r| r.builtin) {
+        return all;
+    }
+    let others = rules
+        .iter()
+        .rev()
+        .filter(|r| !r.builtin)
+        .find(hit)
+        .map(|r| r.effect)
+        .unwrap_or(Effect::Ask);
+    if strictness(others) > strictness(all) {
+        others
+    } else {
+        all
+    }
 }
 
 /// Combined effect for a request over several resources: any deny denies,

@@ -47,6 +47,12 @@ pub struct Config {
     /// Shell for the `shell` tool; defaults to `$SHELL`, then `/bin/sh`.
     pub shell: Option<String>,
     pub permissions: Vec<Rule>,
+    /// Rules applied after every agent's own rules, so they beat both the
+    /// built-in and the configured agent rules. Set by the process, never
+    /// read from config files: unattended automation runs put their denies
+    /// and `automation.permissions` opt-ins here.
+    #[serde(skip)]
+    pub overrides: Vec<Rule>,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub agents: BTreeMap<String, AgentConfig>,
     /// Extra instruction files: paths or globs, `~/` for the home folder; a

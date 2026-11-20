@@ -73,8 +73,8 @@ A rule written in either form matches.
 A tool is hidden from the model only when its action is denied for every
 resource. `{"action": "webfetch", "resource": "*", "effect": "deny"}` removes
 `webfetch` entirely. A rule like `{"action": "edit", "resource": "docs/*",
-"effect": "allow"}` keeps `edit` visible even for an agent that denies it
-elsewhere.
+"effect": "allow"}` that takes effect (under `agents.plan.permissions`, say)
+keeps `edit` visible even for an agent that denies it elsewhere.
 
 ## Defaults
 
@@ -195,19 +195,28 @@ To make an approval permanent, add the rule to your config.
 
 An agent's rules are assembled in this order, and the last match wins:
 
-1. the [defaults](#defaults) and the built-in agent's own rules
-2. `agents.<id>.permissions` from config
-3. top-level `permissions` from config, from every config file in
+1. the [defaults](#defaults)
+2. top-level `permissions` from config, from every config file in
    [load order](configuration.md#files-and-precedence): global first, then
    project files
-4. approvals saved with "always" during the session
+3. the built-in agent's own rules (see the [table above](#defaults))
+4. `agents.<id>.permissions` from config
+5. for [unattended runs](#unattended-runs) only, the unattended denies and
+   then `automation.permissions`
+6. approvals saved with "always" during the session
 
-Two consequences follow:
+Consequences:
 
-- Top-level rules override per-agent rules, the built-in ones included. A
-  top-level `{"action": "edit", "resource": "*", "effect": "allow"}` lets
-  `plan` (and the read-only `review` agent) edit. Prefer narrow top-level
-  allows, and put agent-specific allows under `agents.<id>.permissions`.
+- **A built-in agent's own rules only restrict.** CodeSmith evaluates the
+  list with and without them and keeps the stricter answer. A top-level
+  `{"action": "edit", "resource": "*", "effect": "allow"}` doesn't let `plan`,
+  `review` or `explore` edit, and a top-level allow doesn't add commands to
+  the read-only agents' shell lists. A top-level `deny` or `ask` still
+  reaches them: `{"action": "read", "resource": "secrets/*", "effect":
+  "deny"}` applies to `explore` and `review` as well as `build`.
+- **Rules for an agent override everything above them.** To let `plan` edit
+  docs, add `{"action": "edit", "resource": "docs/*", "effect": "allow"}`
+  under `agents.plan.permissions`, not at the top level.
 - A project's `codesmith.json` comes after your global config, so **its rules
   override yours**. This is the main reason to read a repository's config
   before you run CodeSmith in it (see the warning in
@@ -221,10 +230,11 @@ never for ones they deny.
 ## Unattended runs
 
 [Automations](automations.md) run with nobody at the keyboard. Anything that
-would ask is refused, and on top of your rules, `shell`, `edit` (which
-covers `write`), `webfetch` and `external_directory` are denied. Rules under
-`automation.permissions` apply only to unattended runs and come after those
-denies, so they opt back in:
+would ask is refused, and after all of your rules, the agents' included,
+`shell`, `edit` (which covers `write`), `webfetch` and `external_directory`
+are denied, so even an agent configured to allow them can't use them
+unattended. Rules under `automation.permissions` apply only to unattended
+runs and come after those denies, so they opt back in:
 
 ```jsonc
 {

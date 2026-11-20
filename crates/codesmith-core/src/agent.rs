@@ -141,7 +141,8 @@ fn builtin(id: &str) -> Option<Agent> {
         system: None,
         model: None,
         steps: None,
-        permissions: base_rules(),
+        // Only the agent's own rules; `resolve` adds the base and config.
+        permissions: Vec::new(),
     };
     match id {
         "build" => {
@@ -222,9 +223,15 @@ pub fn subagents(config: &Config) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Resolve an agent: built-in definition (if any) overlaid by config. Config
-/// rules come after the built-in ones and project-wide rules after those, so
-/// they take precedence.
+/// Resolve an agent: built-in definition (if any) overlaid by config.
+///
+/// Rules, in order (the last match decides): the base defaults, config-wide
+/// `permissions`, the built-in agent's own rules, the agent's configured
+/// `agents.<id>.permissions`, then [`Config::overrides`] (unattended
+/// automation runs). Built-in agent rules are marked [`Rule::builtin`], so
+/// they only restrict: a config-wide allow never widens plan, explore or
+/// review, while a config-wide deny or ask still applies to them. Rules
+/// configured for the agent itself override both.
 pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
     let cfg = config.agents.get(id);
     if cfg.map(|c| c.disabled).unwrap_or(false) {
@@ -240,10 +247,16 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
             system: None,
             model: None,
             steps: None,
-            permissions: base_rules(),
+            permissions: Vec::new(),
         },
         (None, None) => return None,
     };
+    let own = std::mem::take(&mut agent.permissions);
+    agent.permissions = base_rules();
+    agent.permissions.extend(config.permissions.iter().cloned());
+    agent
+        .permissions
+        .extend(own.into_iter().map(Rule::into_builtin));
     if let Some(c) = cfg {
         if let Some(d) = &c.description {
             agent.description = d.clone();
@@ -256,7 +269,7 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
         agent.steps = c.steps.or(agent.steps);
         agent.permissions.extend(c.permissions.iter().cloned());
     }
-    agent.permissions.extend(config.permissions.iter().cloned());
+    agent.permissions.extend(config.overrides.iter().cloned());
     Some(agent)
 }
 
@@ -279,11 +292,13 @@ pub fn tools(agent: &Agent) -> Vec<Tool> {
         .filter(|t| {
             let action = t.action();
             let blanket_deny = evaluate(action, "*", &agent.permissions) == Effect::Deny;
+            // A narrower rule that allows (or asks) and is not overridden.
             let any_allowed = agent.permissions.iter().any(|r| {
                 r.effect != Effect::Deny
                     && r.action != "*"
                     && crate::wildcard::matches(action, &r.action, false)
                     && r.resource != "*"
+                    && evaluate(action, &r.resource, &agent.permissions) != Effect::Deny
             });
             !blanket_deny || any_allowed
         })
@@ -471,5 +486,126 @@ mod tests {
             list(&c),
             vec!["build", "general", "explore", "review", "reviewer"]
         );
+    }
+
+    #[test]
+    fn config_wide_rules_do_not_widen_built_in_agents() {
+        let c = cfg(json!({"permissions": [
+            {"action": "edit", "resource": "*", "effect": "allow"},
+            {"action": "shell", "resource": "*", "effect": "allow"},
+            {"action": "*", "resource": "*", "effect": "allow"}
+        ]}));
+        for id in ["plan", "review", "explore"] {
+            let a = resolve(&c, id).unwrap();
+            assert_eq!(
+                evaluate("edit", "src/a.rs", &a.permissions),
+                Effect::Deny,
+                "{id} edit"
+            );
+        }
+        for id in ["review", "explore"] {
+            let a = resolve(&c, id).unwrap();
+            for cmd in ["rm -rf x", "git push origin main", "find . -delete"] {
+                assert_eq!(
+                    evaluate("shell", cmd, &a.permissions),
+                    Effect::Deny,
+                    "{id} {cmd}"
+                );
+            }
+            assert_eq!(evaluate("shell", "git log", &a.permissions), Effect::Allow);
+            assert_eq!(evaluate("webfetch", "https://x", &a.permissions), {
+                if id == "explore" {
+                    Effect::Allow
+                } else {
+                    Effect::Deny
+                }
+            });
+        }
+        let names = |a: &Agent| tools(a).iter().map(|t| t.name()).collect::<Vec<_>>();
+        assert!(!names(&resolve(&c, "plan").unwrap()).contains(&"edit"));
+        let narrow = cfg(json!({"permissions": [
+            {"action": "edit", "resource": "docs/*", "effect": "allow"}
+        ]}));
+        let plan = resolve(&narrow, "plan").unwrap();
+        assert_eq!(
+            evaluate("edit", "docs/a.md", &plan.permissions),
+            Effect::Deny
+        );
+        assert!(
+            !names(&plan).contains(&"edit"),
+            "a global allow the built-in deny overrides does not show the tool"
+        );
+        // The build agent is unrestricted, so global rules still decide.
+        let b = resolve(&c, "build").unwrap();
+        assert_eq!(evaluate("read", ".env", &b.permissions), Effect::Allow);
+    }
+
+    #[test]
+    fn config_wide_restrictions_still_reach_built_in_agents() {
+        let c = cfg(json!({"permissions": [
+            {"action": "read", "resource": "secrets/*", "effect": "deny"},
+            {"action": "shell", "resource": "git log*", "effect": "ask"},
+            {"action": "question", "resource": "*", "effect": "deny"},
+            {"action": "shell", "resource": "*", "effect": "deny"},
+            {"action": "shell", "resource": "git status*", "effect": "allow"}
+        ]}));
+        let ex = resolve(&c, "explore").unwrap();
+        assert_eq!(
+            evaluate("read", "secrets/key", &ex.permissions),
+            Effect::Deny
+        );
+        assert_eq!(evaluate("read", "src/a.rs", &ex.permissions), Effect::Allow);
+        assert_eq!(evaluate("shell", "git log", &ex.permissions), Effect::Deny);
+        assert_eq!(
+            evaluate("shell", "git status", &ex.permissions),
+            Effect::Allow,
+            "a later global allow still lifts a global deny"
+        );
+        let rv = resolve(&c, "review").unwrap();
+        assert_eq!(
+            evaluate("read", "secrets/key", &rv.permissions),
+            Effect::Deny
+        );
+        let b = resolve(&c, "build").unwrap();
+        assert_eq!(evaluate("question", "*", &b.permissions), Effect::Deny);
+    }
+
+    #[test]
+    fn agent_configured_rules_override_global_and_built_in_ones() {
+        let c = cfg(json!({
+            "permissions": [
+                {"action": "edit", "resource": "*", "effect": "deny"},
+                {"action": "read", "resource": "secrets/*", "effect": "deny"}
+            ],
+            "agents": {
+                "plan": {"permissions": [{"action": "edit", "resource": "docs/*", "effect": "allow"}]},
+                "explore": {"permissions": [
+                    {"action": "read", "resource": "secrets/public/*", "effect": "allow"},
+                    {"action": "shell", "resource": "cargo tree*", "effect": "allow"}
+                ]},
+                "build": {"permissions": [{"action": "edit", "resource": "*", "effect": "allow"}]}
+            }
+        }));
+        let plan = resolve(&c, "plan").unwrap();
+        assert_eq!(
+            evaluate("edit", "docs/a.md", &plan.permissions),
+            Effect::Allow
+        );
+        assert_eq!(
+            evaluate("edit", "src/a.rs", &plan.permissions),
+            Effect::Deny
+        );
+        let ex = resolve(&c, "explore").unwrap();
+        assert_eq!(
+            evaluate("read", "secrets/public/a", &ex.permissions),
+            Effect::Allow
+        );
+        assert_eq!(evaluate("read", "secrets/a", &ex.permissions), Effect::Deny);
+        assert_eq!(
+            evaluate("shell", "cargo tree", &ex.permissions),
+            Effect::Allow
+        );
+        let b = resolve(&c, "build").unwrap();
+        assert_eq!(evaluate("edit", "src/a.rs", &b.permissions), Effect::Allow);
     }
 }

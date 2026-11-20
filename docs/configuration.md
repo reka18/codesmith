@@ -75,7 +75,7 @@ is parsed:
 | `shell` | `$SHELL`, else `/bin/sh` | Shell the `shell` tool runs commands with (`<shell> -c`). |
 | `providers` | built-ins | Providers and their models. See [Providers and models](#providers-and-models). |
 | `agents` | built-ins | Add or override agents. See [agents](agents-and-subagents.md#configuring-agents). |
-| `permissions` | see [defaults](permissions.md#defaults) | Ordered rules applied to every agent. See [permissions](permissions.md). |
+| `permissions` | see [defaults](permissions.md#defaults) | Ordered rules applied to every agent. They can't widen a built-in agent's own restrictions, and `agents.<id>.permissions` override them. See [where rules come from](permissions.md#where-rules-come-from). |
 | `instructions` | `[]` | Extra instruction files or globs. See [Instructions](#instructions). |
 | `skills` | `[]` | Extra folders of skills (relative to the project root). See [skills](skills-and-commands.md#skills). |
 | `commands` | `{}` | Inline commands: `{"name": {"template": "...", "description", "agent", "model"}}`. See [commands](skills-and-commands.md#commands). |
