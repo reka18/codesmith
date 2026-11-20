@@ -7,6 +7,8 @@
 
 mod app;
 mod attach;
+#[cfg(test)]
+mod bench;
 mod bridge;
 mod complete;
 mod diff;

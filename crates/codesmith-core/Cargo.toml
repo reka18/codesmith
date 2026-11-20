@@ -41,3 +41,7 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[bench]]
+name = "perf"
+harness = false
