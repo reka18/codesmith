@@ -116,6 +116,27 @@ pub fn checkpoint_text(summary: &str) -> String {
     )
 }
 
+/// Switch to write-ahead logging. SQLite answers "database is locked" at
+/// once, without waiting out the busy timeout, when another connection
+/// holds the new database while the mode changes (the UI and its automation
+/// scheduler open it together on first run), so retry for a while.
+fn wal(conn: &Connection) -> rusqlite::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(
+                    e.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            r => return r,
+        }
+    }
+}
+
 impl Store {
     /// Open (or create) the database at `path`. Sessions hold code and
     /// possibly secrets, so the file is owner-only (0600) — an existing one
@@ -162,9 +183,9 @@ impl Store {
     fn init(conn: Connection) -> Result<Store> {
         // The busy timeout comes first so a second process opening a new
         // database waits for the first instead of failing.
-        conn.execute_batch(
-            "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
-        )?;
+        conn.execute_batch("PRAGMA busy_timeout=5000;")?;
+        wal(&conn)?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(anyhow!("database schema {version} is newer than this codesmith understands ({SCHEMA_VERSION}); upgrade codesmith"));
