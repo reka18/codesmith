@@ -45,8 +45,9 @@ timeout) keeps running after the model answers, and the turn ends there, as
 in OpenCode. When the command finishes, its output is reported to the model
 once:
 
-- **An idle session wakes up.** In the [UI](interactive-ui.md#background-commands)
-  and the [server](local-server.md#background-commands), the session is
+- **An idle session wakes up.** In the [UI](interactive-ui.md#background-commands),
+  the [server](local-server.md#background-commands) and
+  [editors over ACP](editors-acp.md#background-commands), the session is
   resumed as a new turn of its own: a `background command shell_1 finished`
   notice, then the model acting on the result. No prompt is needed.
 - **A prompt sent first reports it.** If you send a message before the
