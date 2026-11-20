@@ -1505,3 +1505,37 @@ env --P ../bin rm F
 exec -a fo  rm] F
 %%
 eco x ''> ~+;/./out
+%% ---- third mutation round
+trap --'rmm
+ rm F' 0 1
+%%
+""cd'' sub; echo  x > out
+%%
+'cd' sub; echo x > out
+%%
+(( (rm F) ; ((touchG) )))
+%%
+env -	-P ../bin rm F
+%%
+env - rm F
+%%
+eco hi >\ >(rm F)
+%%
+echo x > ""~+/ou
+%%
+echo x > ''~+/ou
+%%
+r\
+=m F
+%%
+r\
+=m rm F
+%%
+echo}\
+ rm F
+%%
+=env 'BASH_FUNC_ls%%=() { rm F; }' bash -c ls
+%%
+env --iP ../binn =rm F
+%%
+env --unset X rm F

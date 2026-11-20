@@ -198,6 +198,8 @@ struct Scanner<'a> {
     /// Inside double quotes, where `'` in `${x:-'...'}` is an ordinary
     /// character: `"${x:-'$(cmd)'}"` runs `cmd`.
     in_dquote: usize,
+    /// Reading as Dash, which has no `((` command.
+    dash: bool,
 }
 
 /// Variables a shell evaluates as code or expands as prompts when they are
@@ -355,6 +357,7 @@ impl<'a> Scanner<'a> {
             peeked: None,
             flags: Flags::default(),
             in_dquote: 0,
+            dash: false,
         }
     }
 
@@ -719,6 +722,10 @@ impl<'a> Scanner<'a> {
         }
         while let Some(c) = self.at(self.pos) {
             match c {
+                '<' | '>' if !raw.is_empty() && self.at(self.pos + 1) == Some('(') => {
+                    // `x>(cmd)`: Bash in POSIX mode keeps it in the word.
+                    return Err("process-substitution");
+                }
                 ' ' | '\t' | '\n' | ';' | '&' | '|' | '(' | ')' | '<' | '>' => {
                     if c == '(' && assignment && raw.ends_with('=') {
                         // Array assignment: `x=(a b)`. Its elements are
@@ -739,6 +746,10 @@ impl<'a> Scanner<'a> {
                         let mut j = self.pos + 2;
                         while self.at(j) == Some('\\') && self.at(j + 1) == Some('\n') {
                             j += 2;
+                        }
+                        if raw.ends_with('}') {
+                            // Zsh ends the command at `word}\<newline>`.
+                            return Err("line-continuation");
                         }
                         let after = self.at(j);
                         if after.is_none_or(|c| " \t\n;&|()<>".contains(c)) {
@@ -787,7 +798,10 @@ impl<'a> Scanner<'a> {
                     self.expansion(&mut raw, &mut value, &mut nested)?;
                 }
                 '=' if name_ok && !assignment && !raw.is_empty() && !quoted => {
-                    let name = raw.trim_end_matches('+');
+                    // A continuation is removed before the word is read:
+                    // `r\<newline>=m` is the assignment `r=m`.
+                    let joined = raw.replace("\\\n", "");
+                    let name = joined.trim_end_matches('+');
                     let base = name.split('[').next().unwrap_or("");
                     let positional = !base.is_empty()
                         && base.len() == name.len()
@@ -1507,7 +1521,7 @@ impl<'a> Scanner<'a> {
                 // `(\<newline>(` may be the arithmetic command `((`.
                 return Err("line-continuation");
             }
-            if self.at(p + 1) == Some('(') && self.pos == p + 1 {
+            if self.at(p + 1) == Some('(') && self.pos == p + 1 && !self.dash {
                 return self.arithmetic_command(p);
             }
             self.compound += 1;
@@ -1770,6 +1784,7 @@ impl<'a> Scanner<'a> {
             }
         }
         let mut sub = Scanner::new(&chars, self.depth + 1);
+        sub.dash = true;
         if !matches!(sub.list(), Ok((_, Stop::Eof))) || !sub.heredocs.is_empty() {
             return; // A syntax error in Dash too.
         }
@@ -1898,6 +1913,9 @@ impl<'a> Scanner<'a> {
         let Some(name) = words.get(i).map(|w| w.value.as_str()) else {
             return;
         };
+        // `=env` (Zsh) and `/usr/bin/env` are `env`.
+        let name = name.rsplit('/').next().unwrap_or(name);
+        let name = name.strip_prefix('=').unwrap_or(name);
         let args = &words[i + 1..];
         let option = |c: &[char]| {
             args.iter().any(|w| {
@@ -2326,7 +2344,7 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
                 raw: raw.clone(),
                 // A glob in a redirect target is expanded when it matches one file.
                 path: static_command_name(raw)
-                    .then(|| expand_known_directory(value, cwd, raw.starts_with('~')))
+                    .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
                     .flatten(),
             });
         }
@@ -2373,11 +2391,13 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
             Some(n) => item.raw_words[..n].to_vec(),
             None => item.raw_words.clone(),
         };
-        if let Some(index) = directory_command(&item.raw_words) {
+        if let Some(index) = directory_command(&item.words) {
             let (dirs, complete) =
                 directory_args(&item.raw_words[index..], &item.words[index..], cwd);
             out.directories.extend(dirs);
-            if index == 0 && complete {
+            // A quoted spelling (`'cd' /tmp`) still changes directory, but
+            // stays a command checked by the shell rules, as in OpenCode.
+            if index == 0 && complete && item.raw_words[0] == item.words[0] {
                 continue;
             }
         }
@@ -2606,7 +2626,14 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
             }
             match cooked.get(i).map(String::as_str) {
                 None | Some("-") => None,
-                Some(w) if w.starts_with('-') => None,
+                // Zsh runs an unknown `-word` as the code: `trap --'rm x' 0`.
+                Some(w)
+                    if w.starts_with('-')
+                        && w.len() > 1
+                        && w[1..].chars().all(|c| "lpP".contains(c)) =>
+                {
+                    None
+                }
                 Some(_) if cooked.len() == i + 1 => None, // `trap SIG` resets
                 Some(_) => Some(is_static_word(&raw[i]).then(|| cooked[i].clone())),
             }
@@ -2785,24 +2812,33 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         if base == "command" && w.starts_with('-') && w[1..].contains(['v', 'V']) {
             return None; // `command -v x` looks a name up.
         }
-        if base == "env" && env_assignment(w) {
+        if base == "env" && (env_assignment(w) || w == "-") {
+            // A lone `-` is `-i`.
             i += 1;
             continue;
         }
         if w.starts_with('-') && w.len() > 1 {
-            let takes_next = if w.starts_with("--") && w.len() != 3 {
-                with_arg.contains(&w)
-            } else if let Some(c) = w.strip_prefix("--") {
-                // BSD getopt reads `--P` as `-P`.
-                with_arg.contains(&w) || with_arg.contains(&format!("-{c}").as_str())
-            } else {
-                // In a cluster (`-iP dir`), the first option taking an
-                // argument takes the rest of the word, or the next word.
-                let letters: Vec<char> = w[1..].chars().collect();
+            // In a cluster (`-iP dir`), the first option taking an argument
+            // takes the rest of the word, or the next word.
+            let cluster = |letters: &str| {
+                let letters: Vec<char> = letters.chars().collect();
                 letters
                     .iter()
                     .position(|c| with_arg.contains(&format!("-{c}").as_str()))
                     .is_some_and(|k| k == letters.len() - 1)
+            };
+            let takes_next = match w.strip_prefix("--") {
+                Some(long) if !long.contains('=') => {
+                    // GNU reads a long option, BSD getopt a cluster (`--iP`
+                    // is `-i -P`): when they disagree, the command is unknown.
+                    let gnu = with_arg.contains(&w);
+                    if gnu != cluster(long) {
+                        return Some(None);
+                    }
+                    gnu
+                }
+                Some(_) => false,
+                None => cluster(&w[1..]),
             };
             i += if takes_next { 2 } else { 1 };
             continue;
@@ -2846,6 +2882,7 @@ fn assignment_word(w: &str) -> bool {
 }
 
 /// Where `cd`/`pushd`/... sits in `raw` (after `builtin`/`command` wrappers).
+/// `words` have their quotes removed: `""cd'' x` is a `cd`.
 fn directory_command(raw: &[String]) -> Option<usize> {
     let head = raw.first()?;
     if CWD.contains(&head.as_str()) {
@@ -2880,7 +2917,7 @@ fn regex_lite_cv(flag: &str) -> bool {
 }
 
 fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>, bool) {
-    if raw[0] == "popd" {
+    if values[0] == "popd" {
         return (Vec::new(), false);
     }
     let mut end_of_options = false;
@@ -2907,7 +2944,7 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
             if v.as_str() == "-" || !is_static_word(r) {
                 None
             } else {
-                expand_known_directory(v, cwd, r.starts_with('~'))
+                expand_known_directory(v, cwd, tilde_prefix(r, v))
             }
         })
         .collect();
@@ -2917,6 +2954,16 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
 
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_default()
+}
+
+/// Whether a word's leading `~` is expanded: unquoted, or after quotes that
+/// remove to nothing, which Zsh removes first (`""~/x` is `$HOME/x` there).
+fn tilde_prefix(raw: &str, value: &str) -> bool {
+    let mut r = raw;
+    while let Some(rest) = r.strip_prefix("''").or_else(|| r.strip_prefix("\"\"")) {
+        r = rest;
+    }
+    r.starts_with('~') && value.starts_with('~')
 }
 
 fn expand_known_directory(value: &str, cwd: &Path, unquoted_tilde: bool) -> Option<String> {
@@ -3903,7 +3950,15 @@ mod tests {
             let p = parse(src);
             assert_eq!(p.commands.len(), 1, "{src:?}");
             assert_eq!(p.commands[0].0, src);
-            assert!(p.directories.is_empty());
+            // Deliberate difference: OpenCode collects no directory for
+            // these; the shell still changes to it, and a relative write
+            // after it lands there, so CodeSmith checks it too.
+            let expected: &[&str] = if src.starts_with("c\"") {
+                &[]
+            } else {
+                &["/tmp"]
+            };
+            assert_eq!(p.directories, expected, "{src:?}");
         }
     }
 
@@ -4346,6 +4401,14 @@ mod tests {
             "env =sh -c 'rm F'",
             "env -iP ../binn =rm F",
             "4='$(rm F)' rm F",
+            "trap --'\nrm F' 0",
+            "(( (rm F) ; ((touchG) )))",
+            "env - rm F",
+            "r\\\n=m rm F",
+            "echo}\\\n rm F",
+            "=env 'BASH_FUNC_ls%%=() { rm F; }' bash -c ls",
+            "env --iP ../binn =rm F",
+            "eco hi >\\ >(rm F)",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
@@ -4404,5 +4467,11 @@ mod tests {
             full("echo x > ~+//out").writes[0].path.as_deref(),
             Some("/workspace/out")
         );
+        // Zsh drops empty quotes before expanding `~`.
+        assert_eq!(
+            full("echo x > \"\"~/f").writes[0].path,
+            Some(home().join("f").display().to_string())
+        );
+        assert_eq!(full("'cd' /tmp; echo x > f").directories, ["/tmp"]);
     }
 }
