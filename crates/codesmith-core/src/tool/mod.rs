@@ -55,8 +55,19 @@ impl Ctx<'_> {
             return String::new();
         };
         match std::fs::read_to_string(path) {
-            Ok(now) if now != written => format!("\n\nThe file was reformatted by {name}, so it now differs from what you wrote; read it again before editing it."),
-            _ => String::new(),
+            Ok(mut now) => {
+                // Keep a UTF-8 BOM the formatter dropped, as OpenCode's `syncTextBom` does.
+                if written.starts_with('\u{feff}') && !now.starts_with('\u{feff}') {
+                    now.insert(0, '\u{feff}');
+                    let _ = std::fs::write(path, &now);
+                }
+                if now != written {
+                    format!("\n\nThe file was reformatted by {name}, so it now differs from what you wrote; read it again before editing it.")
+                } else {
+                    String::new()
+                }
+            }
+            Err(_) => String::new(),
         }
     }
 
@@ -483,6 +494,57 @@ pub(crate) mod testing {
         pub gate: Gate,
     }
 
+    /// Records every permission request that reaches the asker, and
+    /// declines those matching `deny_action` or `deny_resource`.
+    #[derive(Default)]
+    pub struct Recorder {
+        pub asked: std::sync::Mutex<Vec<Request>>,
+        pub deny_action: std::sync::Mutex<Option<String>>,
+        pub deny_resource: std::sync::Mutex<Option<String>>,
+    }
+
+    impl Recorder {
+        /// The actions asked so far, in order.
+        pub fn actions(&self) -> Vec<String> {
+            self.asked
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.action.clone())
+                .collect()
+        }
+        /// (action, resources) pairs asked so far, in order.
+        pub fn requests(&self) -> Vec<(String, Vec<String>)> {
+            self.asked
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| (r.action.clone(), r.resources.clone()))
+                .collect()
+        }
+        pub fn deny_action(&self, action: &str) {
+            *self.deny_action.lock().unwrap() = Some(action.into());
+        }
+        pub fn deny_resource(&self, resource: &str) {
+            *self.deny_resource.lock().unwrap() = Some(resource.into());
+        }
+    }
+
+    impl crate::permission::Asker for Recorder {
+        fn ask(&self, req: &Request) -> Reply {
+            self.asked.lock().unwrap().push(req.clone());
+            let action = self.deny_action.lock().unwrap().clone();
+            let resource = self.deny_resource.lock().unwrap().clone();
+            if action.as_deref() == Some(req.action.as_str())
+                || resource.is_some_and(|r| req.resources.contains(&r))
+            {
+                Reply::Reject(None)
+            } else {
+                Reply::Once
+            }
+        }
+    }
+
     impl Env {
         pub fn new() -> Self {
             Env {
@@ -495,6 +557,15 @@ pub(crate) mod testing {
                 dir: tempfile::tempdir().unwrap(),
                 gate: Gate::new(vec![], Arc::new(Fixed(reply))),
             }
+        }
+        /// Every request not settled by `rules` goes to a `Recorder`.
+        pub fn recording(rules: Vec<crate::permission::Rule>) -> (Self, Arc<Recorder>) {
+            let rec = Arc::new(Recorder::default());
+            let env = Env {
+                dir: tempfile::tempdir().unwrap(),
+                gate: Gate::new(rules, rec.clone()),
+            };
+            (env, rec)
         }
         pub fn root(&self) -> PathBuf {
             self.dir.path().canonicalize().unwrap()
