@@ -2,6 +2,7 @@
 //! session loop. Ported from OpenCode (MIT); see LICENSE.
 
 pub mod agent;
+pub mod approvals;
 pub mod auth;
 pub mod automation;
 pub mod catalog;

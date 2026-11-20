@@ -592,7 +592,18 @@ impl Session {
         };
         let mut rules = agent.permissions.clone();
         crate::permission::scope_tool_output(&mut rules, &id);
-        let gate = Gate::new(rules, watch(asker.clone(), &declined));
+        let mut gate = Gate::new(rules, watch(asker.clone(), &declined));
+        // "Always" answers are kept for the project beside its sessions.
+        if let Some(book) = store
+            .as_ref()
+            .and_then(|s| s.path())
+            .and_then(|p| crate::approvals::Book::open(&p).ok())
+        {
+            gate.set_durable(
+                std::sync::Arc::new(book),
+                crate::approvals::project_key(&loaded.root),
+            );
+        }
         Ok(Session {
             id,
             cwd,

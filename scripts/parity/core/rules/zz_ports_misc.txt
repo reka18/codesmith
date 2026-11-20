@@ -44,3 +44,6 @@
 180 :: ported :: tests/oc_policy.rs::oc_policy_turns_an_ask_into_a_deny_but_never_grants
 189 :: ported :: tests/oc_policy.rs::oc_policy_lets_a_later_allow_lift_an_earlier_broad_deny
 198 :: ported :: tests/oc_policy.rs::oc_policy_denies_every_permission_with_a_bare_wildcard
+@permission.test.ts
+422 :: ported :: tests/oc_saved_approvals.rs::oc_permission_stores_and_removes_saved_resources_for_a_project :: adapted: kept in the session database per project; `codesmith permissions` and `/permissions/saved` list and remove them
+454 :: ported :: tests/oc_saved_approvals.rs::oc_permission_edits_saved_approvals_and_enforces_the_edited_rule

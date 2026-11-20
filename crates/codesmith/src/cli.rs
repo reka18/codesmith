@@ -156,10 +156,45 @@ enum Command {
         #[command(subcommand)]
         what: SessionCmd,
     },
+    /// List, edit or remove the approvals "always" answers saved.
+    Permissions {
+        #[command(subcommand)]
+        what: Option<PermissionsCmd>,
+    },
     /// Inspect configuration and internals.
     Debug {
         #[command(subcommand)]
         what: Debug,
+    },
+}
+
+#[derive(Subcommand)]
+enum PermissionsCmd {
+    /// List this project's saved approvals (the default).
+    List {
+        /// Include every project's.
+        #[arg(long)]
+        all: bool,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change a saved approval's resource pattern or action.
+    Edit {
+        /// Saved approval id (see `permissions list`).
+        id: String,
+        /// The new resource pattern.
+        #[arg(long)]
+        resource: Option<String>,
+        /// The new action.
+        #[arg(long)]
+        action: Option<String>,
+    },
+    /// Remove saved approvals.
+    Remove {
+        /// Saved approval ids (see `permissions list`).
+        #[arg(required = true)]
+        ids: Vec<String>,
     },
 }
 
@@ -1365,6 +1400,13 @@ async fn run(cli: Cli) -> Result<()> {
             serve::run(st, &host, port).await
         }
         Some(Command::Session { what }) => session_cmd(cwd, what),
+        Some(Command::Permissions { what }) => permissions_cmd(
+            &cwd,
+            what.unwrap_or(PermissionsCmd::List {
+                all: false,
+                json: false,
+            }),
+        ),
         Some(Command::Debug { what }) => debug(cwd, what),
     }
 }
@@ -2148,6 +2190,62 @@ pub(crate) fn take_server_token() {
 fn open_store() -> Result<Store> {
     let path = store::default_path();
     Store::open(&path).with_context(|| format!("session store {}", path.display()))
+}
+
+fn permissions_cmd(cwd: &std::path::Path, what: PermissionsCmd) -> Result<()> {
+    use codesmith_core::approvals;
+    let path = store::default_path();
+    // Opening the store creates it owner-only, as sessions do.
+    drop(open_store()?);
+    let book = approvals::Book::open(&path)?;
+    let project = approvals::project_key(&config::project_root(cwd));
+    match what {
+        PermissionsCmd::List { all, json } => {
+            let list = book.list(if all { None } else { Some(&project) })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else if list.is_empty() {
+                eprintln!(
+                    "No saved approvals{}.",
+                    if all { "" } else { " for this project" }
+                );
+            }
+            if !json {
+                for s in list {
+                    let p = if all {
+                        format!("  {}", s.project)
+                    } else {
+                        String::new()
+                    };
+                    println!("{}  {:<18} {}{p}", s.id, s.action, s.resource);
+                }
+            }
+            Ok(())
+        }
+        PermissionsCmd::Edit {
+            id,
+            resource,
+            action,
+        } => {
+            if resource.is_none() && action.is_none() {
+                return Err(anyhow!("give --resource or --action"));
+            }
+            let s = book
+                .update(&id, action.as_deref(), resource.as_deref())?
+                .map_err(|e| anyhow!("{e}"))?;
+            println!("{}  {:<18} {}", s.id, s.action, s.resource);
+            Ok(())
+        }
+        PermissionsCmd::Remove { ids } => {
+            for id in ids {
+                if !book.remove(&id)? {
+                    return Err(anyhow!("no saved approval {id}"));
+                }
+                eprintln!("Removed {id}.");
+            }
+            Ok(())
+        }
+    }
 }
 
 fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {

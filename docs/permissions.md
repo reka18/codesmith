@@ -194,7 +194,7 @@ permission request opens a dialog. Edits and writes preview their diff.
 | Key | Answer |
 |---|---|
 | **y** | Allow once. |
-| **a** | Always allow: allow, and save a rule for the rest of the session. |
+| **a** | Always allow: allow, and save a rule for the project ([saved approvals](#saved-approvals)). |
 | **n**, **Esc** or **Enter** | Reject. |
 | type text, then **Enter** | Reject and send what you typed to the model as feedback. |
 
@@ -209,7 +209,8 @@ and `v` prints a request in full if it was shortened (requests over 2,000
 characters are). `--auto` approves every request that no rule denies, and
 `serve --auto` does the same for the local server.
 
-"Always" saves rules only for the current session:
+"Always" saves rules for the project, so later sessions of it are not
+asked again either (see [saved approvals](#saved-approvals)):
 
 - For a shell command, it saves the command's leading words plus `*`:
   `git status *`, `npm run build *`, `cargo test *`. CodeSmith knows how many
@@ -218,9 +219,24 @@ characters are). `--auto` approves every request that no rule denies, and
 - For `external_directory`, it saves the folder (`<dir>/*`). If the folder is
   `/`, your home folder or above it, only that file is saved: approving
   `~/.zshrc` doesn't approve all of `$HOME`.
-- A saved approval never overrides a configured `deny`.
+- A saved approval never overrides a configured `deny`, a built-in agent's
+  own rules or a [policy](#policies).
 
-To make an approval permanent, add the rule to your config.
+### Saved approvals
+
+"Always" answers are kept in the session database (OpenCode keeps them per
+project too). A Git or Mercurial project's approvals are shared by its
+clones and worktrees (the project is named by its first commit); a folder
+outside version control has its own. A session without the database (an
+in-memory one) keeps them for itself only.
+
+`codesmith permissions` lists them with their ids, `codesmith permissions
+edit ID --resource PATTERN` narrows or changes one, and `codesmith
+permissions remove ID` drops it; the local server has the same under
+[`/permissions/saved`](local-server.md#routes). Running sessions read the
+saved approvals at every request, so a change applies at once. To make an
+approval part of the project's config instead, add the rule to
+`codesmith.json`.
 
 ## Where rules come from
 
@@ -234,7 +250,7 @@ An agent's rules are assembled in this order, and the last match wins:
 4. `agents.<id>.permissions` from config
 5. for [unattended runs](#unattended-runs) only, the unattended denies and
    then `automation.permissions`
-6. approvals saved with "always" during the session
+6. approvals saved with "always" for the project
 
 Consequences:
 

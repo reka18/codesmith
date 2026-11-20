@@ -71,6 +71,8 @@ permission and question ids are random.
 | `POST /sessions/{id}/background` | Move the running turn's foreground commands to the background ([details](#stopping-and-backgrounding-commands)). |
 | `POST /sessions/{id}/jobs/{jid}/cancel` | Stop one running command ([details](#stopping-and-backgrounding-commands)). |
 | `GET /sessions/{id}/environment`, `PUT /sessions/{id}/environment {variables}` | The environment the session's shell commands run in ([details](#session-environment)). |
+| `GET /permissions/saved[?all=true]` | The project's [saved approvals](permissions.md#saved-approvals) (`id`, `project`, `action`, `resource`, `time`), or every project's. |
+| `PATCH /permissions/saved/{id} {resource?, action?}`, `DELETE /permissions/saved/{id}` | Edit (409 when the project already has the edited approval) or remove a saved approval. |
 | `GET /events` | `filesystem.changed` events for the server's directory, as Server-Sent Events ([details](#file-watching)). |
 | `POST /fs/watch {path}`, `POST /fs/unwatch {path}` | Watch, or stop watching, one file of the directory ([details](#file-watching)). |
 | `GET /pty`, `POST /pty {command?, args?, cwd?, title?, env?, size?}` | List or create [terminals](#terminals). |

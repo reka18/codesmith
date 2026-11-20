@@ -4143,6 +4143,8 @@ mod tests {
         );
 
         // A rejected or cancelled permission fails the call, with its error.
+        // (In another project: this one's "always" is saved for it.)
+        let (_d2, cwd, _) = tmp().await;
         let mut c = start(&cwd, &base);
         let sid = c.new_session(&cwd).await;
         for outcome in [
@@ -4340,12 +4342,24 @@ mod tests {
             let (done, _) = c.until(id, unasked).await;
             assert_eq!(done["result"]["stopReason"], "end_turn");
         }
-        // A new session starts without them.
+        // A new session of the project keeps them: they are saved for it.
         let other = c.new_session(&cwd).await;
         let id = c
             .call(
                 "session/prompt",
                 json!({"sessionId": other, "prompt": [{"type": "text", "text": "run it"}]}),
+            )
+            .await;
+        let (done, _) = c.until(id, unasked).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn");
+        // A session of another project starts without them.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let elsewhere = elsewhere.path().canonicalize().unwrap();
+        let third = c.new_session(&elsewhere).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": third, "prompt": [{"type": "text", "text": "run it"}]}),
             )
             .await;
         let (_, seen) = c.until(id, always).await;

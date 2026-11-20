@@ -105,6 +105,18 @@ codesmith session redo  [ID]              # bring it back
 `messages`, `fork`, `diff`, `undo` and `redo` default to the latest session in this folder. See
 [sessions](sessions.md).
 
+## `codesmith permissions`
+
+```sh
+codesmith permissions [list] [--all] [--json]   # this project's saved approvals (--all: every project's)
+codesmith permissions edit ID --resource 'git diff *' [--action shell]
+codesmith permissions remove ID [ID...]
+```
+
+What "always" answers saved for the project (see
+[saved approvals](permissions.md#saved-approvals)). An edit or removal
+applies to running sessions at their next request.
+
 ## `codesmith models`
 
 `codesmith models` lists the built-in and configured providers with their

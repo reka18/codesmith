@@ -432,7 +432,7 @@ has none. With no mouse, there are no clicks, drags or tab menus.
 
 Permission requests and the agent's questions open as dialogs:
 
-- **Permission:** **y** allows once, **a** always allows (for this session),
+- **Permission:** **y** allows once, **a** always allows (saved for the project),
   and **n**, **Esc** or **Enter** reject. Type first, and Enter rejects with
   your text as feedback to the model. Edits and writes show a diff preview.
   See [answering a request](permissions.md#answering-a-request).

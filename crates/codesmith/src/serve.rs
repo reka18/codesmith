@@ -843,6 +843,11 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/redo", post(redo))
         .route("/shell-daemon/handoff", post(daemon_handoff))
         .route("/shell-daemon/shutdown", post(daemon_shutdown))
+        .route("/permissions/saved", get(saved_list))
+        .route(
+            "/permissions/saved/{id}",
+            axum::routing::patch(saved_edit).delete(saved_remove),
+        )
         .route("/events", get(fs_events))
         .route("/fs/watch", post(fs_watch))
         .route("/fs/unwatch", post(fs_unwatch))
@@ -963,6 +968,63 @@ async fn update(
         }
     }
     Ok(Json(json!({"id": id, "archived": db.archived(&id)?})))
+}
+
+impl Server {
+    /// The session database's saved approvals, and this project's key.
+    fn book(&self) -> Result<(codesmith_core::approvals::Book, String), ApiError> {
+        drop(self.store()?);
+        let book = codesmith_core::approvals::Book::open(&self.db)?;
+        Ok((
+            book,
+            codesmith_core::approvals::project_key(&self.loaded.root),
+        ))
+    }
+}
+
+/// `GET /permissions/saved[?all=true]`: the project's saved approvals (or
+/// every project's).
+async fn saved_list(
+    State(st): State<St>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    let (book, project) = st.book()?;
+    let all = q.get("all").is_some_and(|v| v == "true" || v == "1");
+    Ok(Json(json!(book.list(if all {
+        None
+    } else {
+        Some(&project)
+    })?)))
+}
+
+/// `PATCH /permissions/saved/{id}` with `{"resource"?, "action"?}`.
+async fn saved_edit(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let (book, _) = st.book()?;
+    use codesmith_core::approvals::EditError;
+    match book.update(&id, b["action"].as_str(), b["resource"].as_str())? {
+        Ok(s) => Ok(Json(json!(s))),
+        Err(e @ EditError::NotFound { .. }) => Err(ApiError(StatusCode::NOT_FOUND, e.to_string())),
+        Err(e @ EditError::Conflict { .. }) => Err(ApiError(StatusCode::CONFLICT, e.to_string())),
+    }
+}
+
+/// `DELETE /permissions/saved/{id}`.
+async fn saved_remove(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (book, _) = st.book()?;
+    if !book.remove(&id)? {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("no saved approval {id}"),
+        ));
+    }
+    Ok(Json(json!({"deleted": true})))
 }
 
 async fn create(State(st): State<St>, body: Option<Json<Value>>) -> Result<Json<Value>, ApiError> {
@@ -2203,6 +2265,65 @@ mod tests {
             shown["messages"][0]["parts"][0]["data"], "run it",
             "reloaded from the store"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saved_approvals_are_listed_edited_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), "t").await;
+        let book = codesmith_core::approvals::Book::open(&dir.path().join("sessions.db")).unwrap();
+        let project = codesmith_core::approvals::project_key(dir.path());
+        let added = book
+            .add(&project, "shell", &["git status *".into(), "ls *".into()])
+            .unwrap();
+        book.add("other-project", "read", &["x".into()]).unwrap();
+        let c = reqwest::Client::new();
+        let list = |all: bool| {
+            let c = c.clone();
+            let url = format!(
+                "{base}/permissions/saved{}",
+                if all { "?all=true" } else { "" }
+            );
+            async move {
+                c.get(url)
+                    .bearer_auth("t")
+                    .send()
+                    .await
+                    .unwrap()
+                    .json::<Value>()
+                    .await
+                    .unwrap()
+            }
+        };
+        let mine = list(false).await;
+        assert_eq!(mine.as_array().unwrap().len(), 2, "{mine}");
+        assert_eq!(mine[0]["resource"], "git status *");
+        assert_eq!(list(true).await.as_array().unwrap().len(), 3);
+        let url = format!("{base}/permissions/saved/{}", added[0].id);
+        let edited: Value = c
+            .patch(&url)
+            .bearer_auth("t")
+            .json(&json!({"resource": "git diff *"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(edited["resource"], "git diff *");
+        let conflict = c
+            .patch(&url)
+            .bearer_auth("t")
+            .json(&json!({"resource": "ls *"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), 409);
+        let gone = c.delete(&url).bearer_auth("t").send().await.unwrap();
+        assert_eq!(gone.status(), 200);
+        let again = c.delete(&url).bearer_auth("t").send().await.unwrap();
+        assert_eq!(again.status(), 404);
+        assert_eq!(list(false).await.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

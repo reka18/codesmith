@@ -279,6 +279,8 @@ pub struct Gate {
     rules: Vec<Rule>,
     saved: Approvals,
     asker: Arc<dyn Asker>,
+    /// Where "always" answers are kept for the project, and its key.
+    durable: Option<(Arc<crate::approvals::Book>, String)>,
 }
 
 impl Gate {
@@ -287,6 +289,22 @@ impl Gate {
             rules,
             saved: Approvals::default(),
             asker,
+            durable: None,
+        }
+    }
+
+    /// Keep "always" answers in `book` for the project `project`, and judge
+    /// requests with the approvals saved there (read afresh each time, so
+    /// an edit or removal applies at the next request).
+    pub fn set_durable(&mut self, book: Arc<crate::approvals::Book>, project: String) {
+        self.durable = Some((book, project));
+    }
+
+    /// The project's saved approvals, as rules.
+    fn durable_rules(&self) -> Vec<Rule> {
+        match &self.durable {
+            Some((b, p)) => b.rules(p),
+            None => vec![],
         }
     }
 
@@ -329,6 +347,7 @@ impl Gate {
     pub fn rules(&self) -> Vec<Rule> {
         let mut all = self.rules.clone();
         all.extend(self.saved.lock().unwrap().iter().cloned());
+        all.extend(self.durable_rules());
         all
     }
 
@@ -345,7 +364,9 @@ impl Gate {
 
     /// The approvals saved by "always" answers.
     pub fn saved(&self) -> Vec<Rule> {
-        self.saved.lock().unwrap().clone()
+        let mut all = self.saved.lock().unwrap().clone();
+        all.extend(self.durable_rules());
+        all
     }
 
     /// Allowed by rules alone, without asking. A configured deny wins over
@@ -360,8 +381,9 @@ impl Gate {
         {
             return false;
         }
+        let durable = self.durable_rules();
         let saved = self.saved.lock().unwrap();
-        evaluate_all_layers(action, resources, &[&self.rules, &saved]) == Effect::Allow
+        evaluate_all_layers(action, resources, &[&self.rules, &saved, &durable]) == Effect::Allow
     }
 
     /// Refuse only when a configured rule denies the request; never asks.
@@ -408,9 +430,19 @@ impl Gate {
             {
                 Reply::Once => Ok(()),
                 Reply::Always => {
-                    let mut saved = self.saved.lock().unwrap();
-                    for s in safe_saves(req) {
-                        saved.push(Rule::new(&req.action, &s, Effect::Allow));
+                    let saves = safe_saves(req);
+                    // Kept for the project when there is a database; else
+                    // for this session. A failed write keeps it for the
+                    // session.
+                    let kept = match &self.durable {
+                        Some((b, p)) => b.add(p, &req.action, &saves).is_ok(),
+                        None => false,
+                    };
+                    if !kept {
+                        let mut saved = self.saved.lock().unwrap();
+                        for s in saves {
+                            saved.push(Rule::new(&req.action, &s, Effect::Allow));
+                        }
                     }
                     Ok(())
                 }
@@ -853,8 +885,9 @@ mod tests {
     //   request queue, request IDs, bus events, metadata or nested-call rows,
     //   so the cases about listing, sibling rejection, pending auto-approval
     //   and JSON encoding of pending requests have no counterpart.
-    // - "Always" approvals are kept for the session (`Gate`), not stored per
-    //   project in a database, and cannot be edited.
+    // - "Always" approvals are kept per project in the session database
+    //   (`crate::approvals`), as in OpenCode; a gate without one keeps them
+    //   for the session (`tests/oc_saved_approvals.rs`).
     // - Custom agents start from the base rules (`* allow`, `.env` asks),
     //   not from an empty rule set; a session without an agent uses `build`
     //   (resolved in the CLI, not here).
