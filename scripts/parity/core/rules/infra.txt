@@ -80,7 +80,7 @@
 @project-icon.test.ts
 * :: design :: client-server :: project icons for the desktop/web app
 @workspace.test.ts
-* :: feature :: Workspaces :: OpenCode workspaces (remote/sandboxed environments)
+* :: design :: client-server :: workspaces: remote or sandboxed environments a provider driver provisions, wakes from idle suspension and routes spawns and file operations through (OpenCode's Environment layer); CodeSmith runs tools on the local machine, with git worktrees for isolation
 @environment.test.ts
 * :: design :: client-server :: Location environments (memory/local/GNU exec)
 @artifact.test.ts

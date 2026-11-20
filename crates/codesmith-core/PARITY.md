@@ -47,12 +47,12 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Code Mode | 67 | 28 | 0 | 1 | 19 | 19 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
-| Worktrees, VCS and projects | 158 | 6 | 0 | 21 | 88 | 43 | 0 |
+| Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
 | Providers, models and credentials | 796 | 272 | 0 | 147 | 341 | 36 | 0 |
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1555** | **16** | **245** | **2377** | **1395** | **0** |
+| **Total** | **5588** | **1555** | **16** | **224** | **2398** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -81,13 +81,12 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (245 cases in 22 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (224 cases in 21 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
-| [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
@@ -226,32 +225,6 @@ Missing features, by how many OpenCode test cases each would unlock (245 cases i
 - `plugin/provider-openai.test.ts`: reloads providers on a switch only when the ChatGPT login changes
 - `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
 - `session-error.test.ts`: types the ChatGPT workspace usage limit
-
-### Workspaces
-
-21 cases.
-
-- `workspace.test.ts`: rejects unregistered workspace providers
-- `workspace.test.ts`: creates and persists an ID without provisioning
-- `workspace.test.ts`: creates a workspace with a caller-supplied ID
-- `workspace.test.ts`: reuses a caller-supplied ID with the same provider
-- `workspace.test.ts`: rejects a caller-supplied ID already assigned to another provider
-- `workspace.test.ts`: resolves an existing caller-supplied ID before provider lookup
-- `workspace.test.ts`: destroys an unprovisioned workspace through the driver with a null binding
-- `workspace.test.ts`: succeeds without calling the driver when the workspace does not exist
-- `workspace.test.ts`: reports whether destroy removed an existing workspace
-- `workspace.test.ts`: starts eager provisioning in the background and lets callers join it
-- `workspace.test.ts`: starts lazy provisioning on the first spawn
-- `workspace.test.ts`: shares provisioning between concurrent first spawns
-- `workspace.test.ts`: keeps shared provisioning alive when a waiter is interrupted
-- `workspace.test.ts`: interrupts in-flight provisioning on destroy and fails waiters with NotFound
-- `workspace.test.ts`: shares a failed attempt and retries the same workspace ID
-- `workspace.test.ts`: persists the workspace lifecycle and reconnects after idle suspension
-- `workspace.test.ts`: surfaces wake failures through the spawn error channel
-- `workspace.test.ts`: routes file overrides through the workspace connection without spawning processes
-- `workspace.test.ts`: falls back to execDefaults over the connection spawner for unprovided overrides
-- `workspace.test.ts`: tracks active operations and lastActivity across file overrides
-- `workspace.test.ts`: surfaces wake failures during file overrides as Environment.Failed
 
 ### OAuth Provider Logins
 
@@ -1309,7 +1282,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 552 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 339 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 232 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
@@ -3156,7 +3129,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Worktrees, VCS and projects (94 of 158)</summary>
+<details><summary>Worktrees, VCS and projects (115 of 158)</summary>
 
 
 **`git.test.ts`**
@@ -3192,6 +3165,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`vcs.test.ts`**
 
 - D routes initialization through the requested provider before a repository exists · returns empty results outside version control · serves scoped providers and restores the fallback after disposal · automatically selects a provider matching the resolved repository · reads batched providers without refreshing intermediate selections · passes location scope and bounded diff options to providers · validates provider results and bounds oversized patches · preserves provider interruption · stops in-flight and queued VCS reloads when its layer closes · keeps watching HEAD changes after a transform replay failure · serializes filesystem and config refreshes while reading the latest desired provider · keeps branch streams current when listeners change the selected provider · batches untracked files without spawning Git per file or touching the index · lists an untracked folder as one entry and its entries from inside it when asked for folders · stops listing an untracked folder after its scan budget and says more were not checked · caches branch info and publishes HEAD changes · reports provider failures and validates optional base metadata — client-server: OpenCode's VCS provider service, streams and branch watching
+
+**`workspace.test.ts`**
+
+- D rejects unregistered workspace providers · creates and persists an ID without provisioning · creates a workspace with a caller-supplied ID · reuses a caller-supplied ID with the same provider · rejects a caller-supplied ID already assigned to another provider · resolves an existing caller-supplied ID before provider lookup · destroys an unprovisioned workspace through the driver with a null binding · succeeds without calling the driver when the workspace does not exist · reports whether destroy removed an existing workspace · starts eager provisioning in the background and lets callers join it · starts lazy provisioning on the first spawn · shares provisioning between concurrent first spawns · keeps shared provisioning alive when a waiter is interrupted · interrupts in-flight provisioning on destroy and fails waiters with NotFound · shares a failed attempt and retries the same workspace ID · persists the workspace lifecycle and reconnects after idle suspension · surfaces wake failures through the spawn error channel · routes file overrides through the workspace connection without spawning processes · falls back to execDefaults over the connection spawner for unprovided overrides · tracks active operations and lastActivity across file overrides · surfaces wake failures during file overrides as Environment.Failed — client-server: workspaces: remote or sandboxed environments a provider driver provisions, wakes from idle suspension and routes spawns and file operations through (OpenCode's Environment layer); CodeSmith runs tools on the local machine, with git worktrees for isolation
 
 **`worktree.test.ts`**
 
