@@ -93,23 +93,8 @@ fn read_all(path: &Path) -> BTreeMap<String, Entry> {
 }
 
 fn write_all(path: &Path, all: &BTreeMap<String, Entry>) -> Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    {
-        let mut o = std::fs::OpenOptions::new();
-        o.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.mode(0o600);
-        }
-        let mut f = o.open(&tmp)?;
-        std::io::Write::write_all(&mut f, serde_json::to_string_pretty(all)?.as_bytes())?;
-    }
-    std::fs::rename(tmp, path)?;
-    Ok(())
+    crate::paths::write_private(path, serde_json::to_string_pretty(all)?.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The saved entry for a server, if it was issued for this URL.
@@ -467,6 +452,7 @@ pub async fn login(
     let state: String = pkce().0[..32].to_string();
     let scope = cfg.scope.clone().unwrap_or_else(|| ep.scopes.join(" "));
     let mut auth = Url::parse(&ep.authorization).context("invalid authorization endpoint")?;
+    check_browser_url(&auth)?;
     {
         let mut q = auth.query_pairs_mut();
         q.append_pair("response_type", "code")
@@ -522,8 +508,36 @@ pub async fn login(
     Ok(e)
 }
 
-/// Open a URL in the default browser (best effort).
+/// Only web URLs may be handed to the browser: `https`, or plain `http` to a
+/// loopback host. The authorization endpoint comes from server metadata, and
+/// `open`/`xdg-open` would happily launch `file:` or custom-scheme URLs.
+pub fn check_browser_url(u: &Url) -> Result<()> {
+    let host = u.host_str().unwrap_or("");
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    match u.scheme() {
+        "https" if !host.is_empty() => Ok(()),
+        "http" if loopback => Ok(()),
+        s => Err(anyhow!(
+            "refusing to open authorization URL {u}: only https (or http to localhost) is allowed, not {s}"
+        )),
+    }
+}
+
+/// Open a URL in the default browser (best effort). URLs that fail
+/// [`check_browser_url`] are not opened.
 pub fn open_browser(url: &str) {
+    if Url::parse(url)
+        .map_err(anyhow::Error::from)
+        .and_then(|u| check_browser_url(&u))
+        .is_err()
+    {
+        return;
+    }
     let cmd = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(windows) {
@@ -541,6 +555,23 @@ pub fn open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_web_urls_are_opened() {
+        let ok = |u: &str| check_browser_url(&Url::parse(u).unwrap()).is_ok();
+        assert!(ok("https://auth.example/authorize?x=1"));
+        assert!(ok("http://127.0.0.1:9000/authorize"));
+        assert!(ok("http://localhost/authorize"));
+        assert!(ok("http://[::1]:8080/a"));
+        assert!(
+            !ok("http://auth.example/authorize"),
+            "plain http off loopback"
+        );
+        assert!(!ok("file:///etc/passwd"));
+        assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("x-custom-app://run?cmd=1"));
+        assert!(!ok("smb://share/x"));
+    }
 
     #[test]
     fn settings() {

@@ -15,25 +15,8 @@ fn read(path: &Path) -> Map<String, Value> {
 }
 
 fn write(path: &Path, map: &Map<String, Value>) -> Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts
-            .open(&tmp)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        std::io::Write::write_all(&mut f, serde_json::to_string_pretty(map)?.as_bytes())?;
-    }
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    crate::paths::write_private(path, serde_json::to_string_pretty(map)?.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn key_in(path: &Path, provider: &str) -> Option<String> {

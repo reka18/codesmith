@@ -33,6 +33,9 @@ const DEFAULT_CATALOG_MS: u64 = 30_000;
 const DEFAULT_EXECUTION_MS: u64 = 5 * 60_000;
 /// Stop following `nextCursor` after this many pages.
 const MAX_PAGES: usize = 100;
+/// The largest single message (an SSE event or a JSON reply) accepted from an
+/// HTTP MCP server; a server that sends more fails the request.
+const MAX_MESSAGE: usize = 16 << 20;
 
 /// The tool that lists MCP resources (also its permission action).
 pub const LIST_RESOURCES: &str = "list_mcp_resources";
@@ -423,11 +426,7 @@ impl Shared {
             .as_str()
             .map(|l| format!("{l}: "))
             .unwrap_or_default();
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
+        if let Ok(mut f) = crate::paths::open_private_append(path) {
             let _ = writeln!(
                 f,
                 "[{}] {logger}{data}",
@@ -604,23 +603,35 @@ impl Client {
             .unwrap_or("")
             .to_string();
         if content_type.contains("text/event-stream") {
-            let mut buf: Vec<u8> = Vec::new();
+            let mut frames = SseFrames::new(MAX_MESSAGE);
             while let Some(chunk) = resp
                 .chunk()
                 .await
                 .context("reading the MCP server's stream")?
             {
-                buf.extend(chunk.iter().filter(|b| **b != b'\r'));
-                while let Some(end) = buf.windows(2).position(|w| w == b"\n\n") {
-                    let block: Vec<u8> = buf.drain(..end + 2).collect();
-                    self.sse_event(&String::from_utf8_lossy(&block)).await;
+                for block in frames.push(&chunk)? {
+                    self.sse_event(&block).await;
                 }
             }
-            if !buf.is_empty() {
-                self.sse_event(&String::from_utf8_lossy(&buf)).await;
+            if let Some(block) = frames.finish() {
+                self.sse_event(&block).await;
             }
         } else {
-            let body = resp.text().await?;
+            let mut raw: Vec<u8> = Vec::new();
+            while let Some(chunk) = resp
+                .chunk()
+                .await
+                .context("reading the MCP server's reply")?
+            {
+                if raw.len() + chunk.len() > MAX_MESSAGE {
+                    return Err(anyhow!(
+                        "the MCP server's reply is larger than {} MiB",
+                        MAX_MESSAGE >> 20
+                    ));
+                }
+                raw.extend_from_slice(&chunk);
+            }
+            let body = String::from_utf8_lossy(&raw);
             if body.trim().is_empty() {
                 return Ok(());
             }
@@ -1207,8 +1218,9 @@ async fn connect(
                     }
                 })
                 .unwrap_or_else(|| root.to_path_buf());
-            std::fs::create_dir_all(&log_dir)?;
-            let stderr = std::fs::File::create(&log)?;
+            crate::paths::ensure_parent(&log_dir)?;
+            crate::paths::private_dir(&log_dir)?;
+            let stderr = crate::paths::create_private(&log)?;
             let mut child = tokio::process::Command::new(prog)
                 .args(args)
                 .current_dir(dir)
@@ -1270,9 +1282,78 @@ async fn connect(
     Ok(client)
 }
 
+/// Splits a Server-Sent Events byte stream into event blocks, refusing to
+/// buffer more than `max` bytes of a single unfinished event.
+struct SseFrames {
+    buf: Vec<u8>,
+    max: usize,
+}
+
+impl SseFrames {
+    fn new(max: usize) -> Self {
+        SseFrames {
+            buf: Vec::new(),
+            max,
+        }
+    }
+
+    /// Add a chunk and return the events it completes.
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>> {
+        // Only the unfinished tail can hold a separator split across chunks.
+        let from = self.buf.len().saturating_sub(1);
+        self.buf.extend(chunk.iter().filter(|b| **b != b'\r'));
+        let mut out = Vec::new();
+        let mut start = 0;
+        let mut i = from;
+        while let Some(off) = self.buf[i..].windows(2).position(|w| w == b"\n\n") {
+            let end = i + off + 2;
+            out.push(String::from_utf8_lossy(&self.buf[start..end]).into_owned());
+            start = end;
+            i = end;
+        }
+        self.buf.drain(..start);
+        if self.buf.len() > self.max {
+            self.buf = Vec::new();
+            return Err(anyhow!(
+                "the MCP server sent an event larger than {} MiB",
+                self.max >> 20
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Whatever is left when the stream ends.
+    fn finish(self) -> Option<String> {
+        (!self.buf.is_empty()).then(|| String::from_utf8_lossy(&self.buf).into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sse_frames_split_and_cap() {
+        let mut f = SseFrames::new(64);
+        assert!(f.push(b"data: 1\r\n").unwrap().is_empty());
+        assert_eq!(
+            f.push(b"\r\ndata: 2\n\nda").unwrap(),
+            ["data: 1\n\n", "data: 2\n\n"]
+        );
+        assert_eq!(f.push(b"ta: 3\n").unwrap(), Vec::<String>::new());
+        assert_eq!(f.push(b"\n").unwrap(), ["data: 3\n\n"]);
+        assert!(f.push(b"data: tail").unwrap().is_empty());
+        assert_eq!(f.finish().as_deref(), Some("data: tail"));
+
+        // Many small complete events are fine; one oversized event is not.
+        let mut f = SseFrames::new(64);
+        for _ in 0..100 {
+            assert_eq!(f.push(b"data: 0123456789\n\n").unwrap().len(), 1);
+        }
+        assert!(f.push(&[b'x'; 40]).unwrap().is_empty());
+        let e = f.push(&[b'x'; 40]).unwrap_err();
+        assert!(e.to_string().contains("larger than"), "{e}");
+    }
 
     #[test]
     fn tool_names() {

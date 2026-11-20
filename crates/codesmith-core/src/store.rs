@@ -117,12 +117,26 @@ pub fn checkpoint_text(summary: &str) -> String {
 }
 
 impl Store {
+    /// Open (or create) the database at `path`. Sessions hold code and
+    /// possibly secrets, so the file is owner-only (0600) — an existing one
+    /// that others can read is tightened — and so is the data directory
+    /// when the database lives there.
     pub fn open(path: &Path) -> Result<Store> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        crate::paths::ensure_parent(path)
+            .with_context(|| format!("creating {}", path.parent().unwrap_or(path).display()))?;
+        if !path.exists() {
+            let _ = crate::paths::create_private(path);
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        Self::init(conn)
+        let store = Self::init(conn)?;
+        let name = path.as_os_str().to_owned();
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut p = name.clone();
+            p.push(suffix);
+            crate::paths::tighten(Path::new(&p))
+                .with_context(|| format!("restricting {}", Path::new(&p).display()))?;
+        }
+        Ok(store)
     }
 
     /// Run `f` with the connection (for other tables kept in the same database).
@@ -771,6 +785,29 @@ mod tests {
         }
         let s = Store::open(&path).unwrap();
         assert_eq!(s.history("a").unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("codesmith.db");
+        {
+            let s = Store::open(&path).unwrap();
+            s.create(&info("a", "/p", 1)).unwrap();
+            assert_eq!(mode(&path), 0o600, "a new database is created 0600");
+            let wal = d.path().join("codesmith.db-wal");
+            if wal.exists() {
+                assert_eq!(mode(&wal), 0o600);
+            }
+        }
+        // An existing world-readable database is tightened on open.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let s = Store::open(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(s.history("a").unwrap().len(), 0);
     }
 
     #[test]
