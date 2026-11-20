@@ -638,3 +638,75 @@ fn the_palette_runs_commands() {
         })
     );
 }
+
+mod footer {
+    use super::super::view::{prompt_footer, status_text, Footer};
+
+    fn keys(id: &str) -> String {
+        match id {
+            "session.child.first" => "ctrl+j".into(),
+            "command.palette.show" => "ctrl+p".into(),
+            "agent.cycle" => "shift+tab".into(),
+            _ => String::new(),
+        }
+    }
+
+    // prompt-footer.test.tsx: "prompt footer separates simultaneous
+    // subagent, shell, and usage status" (adapted: no clicks)
+    #[test]
+    fn oc_prompt_footer_separates_subagent_shell_and_usage_status() {
+        let mut f = Footer {
+            subagents: 1,
+            shells: 1,
+            usage: vec!["$1.00".into()],
+            session: true,
+            show_details: true,
+        };
+        let (left, right) = prompt_footer(&f, &keys);
+        assert_eq!(left, "ctrl+j 1 subagent · 1 shell · $1.00");
+        assert_eq!(right, "ctrl+p commands");
+        f.subagents = 0;
+        assert_eq!(prompt_footer(&f, &keys).0, "ctrl+j 1 shell · $1.00");
+    }
+
+    // prompt-footer.test.tsx: "prompt footer can hide details"
+    #[test]
+    fn oc_prompt_footer_can_hide_details() {
+        let mut f = Footer {
+            subagents: 0,
+            shells: 0,
+            usage: vec!["1K (10%)".into(), "$1.00".into()],
+            session: true,
+            show_details: true,
+        };
+        let (left, right) = prompt_footer(&f, &keys);
+        assert_eq!(
+            (left.as_str(), right.as_str()),
+            ("1K (10%) · $1.00", "ctrl+p commands")
+        );
+        f.show_details = false;
+        assert_eq!(prompt_footer(&f, &keys), (String::new(), String::new()));
+        f.session = false;
+        f.show_details = true;
+        assert_eq!(prompt_footer(&f, &keys), (String::new(), String::new()));
+    }
+
+    // sidebar-context.test.tsx: "sidebar omits context before usage is
+    // available" and "sidebar shows available context usage" (adapted: the
+    // status line, CodeSmith's place for the context)
+    #[test]
+    fn oc_the_context_shows_once_usage_is_available() {
+        let mut a = super::super::app::App::new();
+        assert!(
+            !status_text(&a, 0).contains("tokens ·"),
+            "{}",
+            status_text(&a, 0)
+        );
+        a.context = 1234;
+        assert!(
+            status_text(&a, 0).contains("1.2K tokens"),
+            "{}",
+            status_text(&a, 0)
+        );
+    }
+}

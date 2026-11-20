@@ -59,10 +59,12 @@ terminal's own scrollback.
 - **Tabs.** The open [session tabs](#session-tabs) along the top: each
   one's title, its status, and `+ New session` for a new one.
 - **Header.** The agent, model, session id and title.
-- **Status line.** Context in use (the last call's tokens, and the share of
+- **Status line.** As OpenCode's prompt footer, first what runs beside
+  the turn (`1 subagent · 2 shells`: a running subagent and the
+  [background commands](#background-commands)), then context in use (the last call's tokens, and the share of
   the model's `limit.context` when it is configured), the session's cost when
-  the model has a `cost`, token totals, and how many
-  [background commands](#background-commands) are running.
+  the model has a `cost`, and token totals. The input box's title names
+  the agent and the keys for agents and the command palette.
 
 ## Keys
 

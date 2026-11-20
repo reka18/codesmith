@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 364 | 203 | 657 | 13 |
+| tui: main UI | 1250 | 15 | 366 | 199 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **640** | **639** | **2357** | **259** |
+| **Total** | **4637** | **744** | **642** | **635** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -639,6 +639,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/context/local-selection` | cycles all recent models in a stable order in both directions | after a fix | oc_cycles_all_recent_models_in_a_stable_order_in_both_directions (adapted: the cycle over the recents) |
 | `tui/test/context/local` | moves a model to the front, deduplicates, and limits recents | after a fix | oc_moves_a_model_to_the_front_deduplicates_and_limits_recents |
 | `tui/test/copy-session-id` | Copy session ID from Ctrl+P (%s) (3 cases) | after a fix | oc_copy_session_id_from_ctrl_p (adapted: `OSC 52` reports no failure, and a UI with no session stands for home) |
+| `tui/test/feature-plugins/prompt-footer` | prompt footer separates simultaneous subagent, shell, and usage status | after a fix | oc_prompt_footer_separates_subagent_shell_and_usage_status (adapted: no clicks; the status line leads with it) |
+| `tui/test/feature-plugins/prompt-footer` | prompt footer can hide details | after a fix | oc_prompt_footer_can_hide_details |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -717,6 +719,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/local-attachment` | falls back to plain text for unsupported or incomplete drops | already passing | oc_unbounded_and_malformed_drops_are_text, oc_unsupported_or_incomplete_drops_are_plain_text |
 | `util/test/global-roots` | uses XDG overrides | already passing | oc_paths_use_xdg_overrides |
 | `util/test/global-roots` | empty XDG overrides use home directory defaults | already passing | oc_empty_xdg_overrides_use_the_home_defaults |
+| `tui/test/feature-plugins/sidebar-context` | sidebar omits context before usage is available | already passing | oc_the_context_shows_once_usage_is_available (adapted: the status line holds the context) |
+| `tui/test/feature-plugins/sidebar-context` | sidebar shows available context usage | already passing | oc_the_context_shows_once_usage_is_available (adapted) |
 ## Roadmap
 
 Missing features, largest first, with the OpenCode tests that would come
@@ -893,13 +897,9 @@ transport and its tool presentation.
 - `tui/test/cli/tui/composer-keymap`: ctrl+c closes the active composer
 - `tui/test/cli/tui/composer-keymap`: shell output respects a configured binding with a focused textarea
 
-### tui: sidebar and footer status (5)
+### tui: goal in the prompt footer (1)
 
-- `tui/test/feature-plugins/prompt-footer`: prompt footer separates simultaneous subagent, shell, and usage status
-- `tui/test/feature-plugins/prompt-footer`: prompt footer can hide details
 - `tui/test/feature-plugins/prompt-footer`: prompt footer shows the session's goal without its objective and opens it on click
-- `tui/test/feature-plugins/sidebar-context`: sidebar omits context before usage is available
-- `tui/test/feature-plugins/sidebar-context`: sidebar shows available context usage
 
 ### tui: MCP dialog (status, OAuth) (4)
 

@@ -1278,6 +1278,20 @@ pub fn tokens(n: u64) -> String {
 /// The status line's text.
 pub fn status_text(app: &App, scrolled: usize) -> String {
     let mut parts = Vec::new();
+    // What runs beside the turn first, as OpenCode's prompt footer has it.
+    let (live, _) = prompt_footer(
+        &Footer {
+            subagents: app.running_children(),
+            shells: app.background,
+            usage: Vec::new(),
+            session: true,
+            show_details: false,
+        },
+        &|id| app.keymap.hint(id),
+    );
+    if !live.is_empty() {
+        parts.push(live);
+    }
     if app.context > 0 {
         let mut s = format!("{} tokens", tokens(app.context));
         if let (Some(p), Some(l)) = (app.context_percent(), app.header.context_limit) {
@@ -1297,13 +1311,6 @@ pub fn status_text(app: &App, scrolled: usize) -> String {
         u.push_str(&format!(" · {} cached", tokens(app.usage.cache_read)));
     }
     parts.push(u);
-    if app.background > 0 {
-        parts.push(format!(
-            "{} background command{} running",
-            app.background,
-            if app.background == 1 { "" } else { "s" }
-        ));
-    }
     parts.push(app.header.session.clone());
     if scrolled > 0 {
         let key = app.keymap.hint("session.last");
@@ -1472,6 +1479,59 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// What OpenCode's prompt footer shows.
+pub struct Footer {
+    /// Subagents running and background commands.
+    pub subagents: usize,
+    pub shells: usize,
+    /// The context in use and the cost, formatted.
+    pub usage: Vec<String>,
+    /// A session is open (the home page has none).
+    pub session: bool,
+    /// Room for the details: usage and the command palette's key.
+    pub show_details: bool,
+}
+
+/// OpenCode's prompt footer: on the left what runs beside the turn
+/// (`ctrl+j 1 subagent · 1 shell`, with the key that goes to them) and,
+/// with details, the usage; on the right the palette's key (`ctrl+p
+/// commands`), with details.
+pub fn prompt_footer(f: &Footer, hint: &dyn Fn(&str) -> String) -> (String, String) {
+    if !f.session {
+        return (String::new(), String::new());
+    }
+    let plural = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+    let mut live = Vec::new();
+    if f.subagents > 0 {
+        live.push(plural(f.subagents, "subagent"));
+    }
+    if f.shells > 0 {
+        live.push(plural(f.shells, "shell"));
+    }
+    let mut left = String::new();
+    if !live.is_empty() {
+        let key = hint("session.child.first");
+        if !key.is_empty() {
+            left.push_str(&key);
+            left.push(' ');
+        }
+        left.push_str(&live.join(" · "));
+    }
+    if f.show_details && !f.usage.is_empty() {
+        if !left.is_empty() {
+            left.push_str(" · ");
+        }
+        left.push_str(&f.usage.join(" · "));
+    }
+    let palette = hint("command.palette.show");
+    let right = if f.show_details && !palette.is_empty() {
+        format!("{palette} commands")
+    } else {
+        String::new()
+    };
+    (left, right)
+}
+
 /// The input box's title: the agent and how to switch it, or how to stop
 /// a running turn, or the keys typed so far of a binding.
 fn input_hint(app: &App) -> String {
@@ -1490,6 +1550,10 @@ fn input_hint(app: &App) -> String {
     let cycle = k.hint("agent.cycle");
     if !cycle.is_empty() {
         parts.push(format!("{cycle} agents"));
+    }
+    let palette = k.hint("command.palette.show");
+    if !palette.is_empty() {
+        parts.push(format!("{palette} commands"));
     }
     parts.push("/help".into());
     format!(" {} ", parts.join(" · "))
@@ -2664,7 +2728,7 @@ mod tests {
         assert!(s[9].contains("1.5K in"), "{}", s[9]);
         a.background = 2;
         let s = screen(&a, 100, 10);
-        assert!(s[9].contains("2 background commands running"), "{}", s[9]);
+        assert!(s[9].contains("2 shells"), "{}", s[9]);
     }
 
     #[test]

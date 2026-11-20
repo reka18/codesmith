@@ -831,6 +831,11 @@ impl App {
         }));
     }
 
+    /// The subagents running now (the outermost ones' count).
+    pub fn running_children(&self) -> usize {
+        usize::from(!self.children.is_empty())
+    }
+
     /// A subagent of this tab's session still runs.
     pub fn running_child(&self) -> bool {
         !self.children.is_empty()
