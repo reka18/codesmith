@@ -76,6 +76,14 @@ Each Server-Sent Event is a JSON object with a `type`:
 | `question` | `id`, `prompts`. Answer it with the questions route. |
 | `done` | `error` (set if the turn failed or was aborted), `usage`, `title`; `resumed: true` on a turn the server started for a finished background command |
 
+An open permission request or question is shown again to every client that
+starts following the session (`GET /sessions/{id}/events`) while it is
+open, so a client that lost the turn's stream can reconnect and answer it.
+When no client can see it any more (the turn's stream closed and no one
+follows) for 30 seconds, a permission request is refused ("No client is
+connected to approve this.") and a question is dismissed, so the turn does
+not wait forever.
+
 `GET /sessions/{id}` returns the session's info, `messages` and `todos`,
 `busy` (a turn is running) and, while idle, `background`: how many
 background commands are still running.

@@ -64,6 +64,15 @@ enum Pending {
     Question(oneshot::Sender<Option<Vec<Vec<String>>>>),
 }
 
+/// How long an open permission request or question waits while no client
+/// can see it (the turn's client went and no one follows the session),
+/// before it is refused. A follower connecting meanwhile is shown it.
+const UNSEEN_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(1500)
+} else {
+    Duration::from_secs(30)
+};
+
 /// Clients following a session's events (`GET /sessions/{id}/events`),
 /// kept across reloads.
 type Watchers = Arc<Mutex<Vec<Tx>>>;
@@ -74,7 +83,9 @@ type Watchers = Arc<Mutex<Vec<Tx>>>;
 struct Prompter {
     events: Mutex<Option<Tx>>,
     watchers: Watchers,
-    pending: Mutex<HashMap<String, Pending>>,
+    /// Open prompts by id, with the event that showed them (replayed to
+    /// followers that connect while they are open).
+    pending: Mutex<HashMap<String, (Pending, Value)>>,
 }
 
 impl Prompter {
@@ -105,22 +116,88 @@ impl Prompter {
     fn id(&self, prefix: &str) -> String {
         format!("{prefix}_{}", codesmith_core::paths::random_token(16))
     }
+    /// Whether some client still receives this session's events.
+    fn seen(&self) -> bool {
+        self.events
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|tx| !tx.is_closed())
+            || self
+                .watchers
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|tx| !tx.is_closed())
+    }
+    /// Show a prompt and wait (on a blocking thread) for its answer.
+    fn open<T>(
+        &self,
+        id: String,
+        ev: Value,
+        pending: Pending,
+        mut rx: oneshot::Receiver<T>,
+    ) -> Shown<T> {
+        {
+            // Shown and recorded at once, so a follower connecting
+            // meanwhile gets it exactly once (see `follow`).
+            let mut open = self.pending.lock().unwrap();
+            if !self.send(ev.clone()) {
+                return Shown::Unseen;
+            }
+            open.insert(id.clone(), (pending, ev));
+        }
+        let mut unseen = Duration::ZERO;
+        let tick = Duration::from_millis(100);
+        loop {
+            match rx.try_recv() {
+                Ok(v) => return Shown::Answered(v),
+                Err(oneshot::error::TryRecvError::Closed) => return Shown::Dropped,
+                Err(oneshot::error::TryRecvError::Empty) => {}
+            }
+            unseen = if self.seen() {
+                Duration::ZERO
+            } else {
+                unseen + tick
+            };
+            if unseen >= UNSEEN_WAIT {
+                self.pending.lock().unwrap().remove(&id);
+                // Answered just before it was withdrawn.
+                return rx.try_recv().map_or(Shown::Unseen, Shown::Answered);
+            }
+            std::thread::sleep(tick);
+        }
+    }
+    /// Add a follower, first showing it the open prompts.
+    fn follow(&self, tx: Tx) {
+        let open = self.pending.lock().unwrap();
+        for (_, ev) in open.values() {
+            let _ = tx.send(ev.clone());
+        }
+        self.watchers.lock().unwrap().push(tx);
+    }
+}
+
+/// How an open prompt ended.
+enum Shown<T> {
+    Answered(T),
+    /// No client got it, or none could see it for [`UNSEEN_WAIT`] (its
+    /// client went without answering and no follower came).
+    Unseen,
+    /// Dropped unanswered (the turn was aborted).
+    Dropped,
 }
 
 impl Asker for Prompter {
     fn ask(&self, req: &Request) -> Reply {
         let (tx, rx) = oneshot::channel();
         let id = self.id("perm");
-        self.pending
-            .lock()
-            .unwrap()
-            .insert(id.clone(), Pending::Permission(tx));
         let ev = json!({"type": "permission", "id": id, "action": req.action, "resources": req.resources, "save": req.save, "title": req.title});
-        if !self.send(ev) {
-            self.pending.lock().unwrap().remove(&id);
-            return Reply::Reject(Some("No client is connected to approve this.".into()));
+        match self.open(id, ev, Pending::Permission(tx), rx) {
+            Shown::Answered(r) => r,
+            Shown::Unseen => Reply::Reject(Some("No client is connected to approve this.".into())),
+            Shown::Dropped => Reply::Reject(None),
         }
-        rx.blocking_recv().unwrap_or(Reply::Reject(None))
     }
 }
 
@@ -128,15 +205,11 @@ impl Questioner for Prompter {
     fn ask(&self, prompts: &[Prompt]) -> Option<Vec<Vec<String>>> {
         let (tx, rx) = oneshot::channel();
         let id = self.id("q");
-        self.pending
-            .lock()
-            .unwrap()
-            .insert(id.clone(), Pending::Question(tx));
-        if !self.send(json!({"type": "question", "id": id, "prompts": prompts})) {
-            self.pending.lock().unwrap().remove(&id);
-            return None;
+        let ev = json!({"type": "question", "id": id, "prompts": prompts});
+        match self.open(id, ev, Pending::Question(tx), rx) {
+            Shown::Answered(a) => a,
+            Shown::Unseen | Shown::Dropped => None,
         }
-        rx.blocking_recv().ok().flatten()
     }
 }
 
@@ -657,7 +730,9 @@ async fn events(
     let live = st.live(&id).await?;
     let g = live.lock().await;
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
-    g.prompter.watchers.lock().unwrap().push(tx);
+    // A prompt shown before it connected (to a client since gone) can
+    // still be answered from here.
+    g.prompter.follow(tx);
     Ok(sse(rx))
 }
 
@@ -844,7 +919,7 @@ async fn answer_permission(
     let p = live.lock().await.prompter.clone();
     let pending = p.pending.lock().unwrap().remove(&rid);
     match pending {
-        Some(Pending::Permission(tx)) => {
+        Some((Pending::Permission(tx), _)) => {
             let _ = tx.send(reply);
             Ok(Json(json!({"ok": true})))
         }
@@ -874,7 +949,7 @@ async fn answer_question(
     let p = live.lock().await.prompter.clone();
     let pending = p.pending.lock().unwrap().remove(&qid);
     match pending {
-        Some(Pending::Question(tx)) => {
+        Some((Pending::Question(tx), _)) => {
             let _ = tx.send(answers);
             Ok(Json(json!({"ok": true})))
         }
@@ -1226,6 +1301,125 @@ mod tests {
                 .unwrap()
                 .status(),
             404
+        );
+    }
+
+    /// The next `data:` event of an SSE stream.
+    async fn next_event(
+        stream: &mut (impl futures_util::Stream<Item = reqwest::Result<axum::body::Bytes>> + Unpin),
+        buf: &mut String,
+    ) -> Option<Value> {
+        loop {
+            if let Some(i) = buf.find("\n\n") {
+                let block: String = buf.drain(..i + 2).collect();
+                match block.lines().find_map(|l| l.strip_prefix("data: ")) {
+                    Some(data) => return Some(serde_json::from_str(data).unwrap()),
+                    None => continue,
+                }
+            }
+            let chunk = tokio::time::timeout(Duration::from_secs(30), stream.next())
+                .await
+                .expect("timed out waiting for an event")?;
+            buf.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
+        }
+    }
+
+    /// Start a turn and read its stream up to the permission request, then
+    /// drop the stream (the client went without answering).
+    async fn ask_and_leave(c: &reqwest::Client, base: &str, id: &str) -> Value {
+        let resp = c
+            .post(format!("{base}/sessions/{id}/messages"))
+            .json(&json!({"text": "run it"}))
+            .send()
+            .await
+            .unwrap();
+        let (mut stream, mut buf) = (resp.bytes_stream(), String::new());
+        loop {
+            let v = next_event(&mut stream, &mut buf).await.unwrap();
+            if v["type"] == "permission" {
+                return v;
+            }
+        }
+    }
+
+    /// Fixed: a permission request shown to a client that went (or one
+    /// asked before a follower connected) was never shown again, so the
+    /// turn waited forever. A follower connecting while it is open is
+    /// shown it, and can answer it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_follower_is_shown_the_open_permission_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), TOKEN).await;
+        let c = client();
+        let id = new_session(&c, &base).await;
+        let asked = ask_and_leave(&c, &base, &id).await;
+        let resp = c
+            .get(format!("{base}/sessions/{id}/events"))
+            .send()
+            .await
+            .unwrap();
+        let (mut stream, mut buf) = (resp.bytes_stream(), String::new());
+        let shown = next_event(&mut stream, &mut buf).await.unwrap();
+        assert_eq!(shown, asked);
+        let r = c
+            .post(format!(
+                "{base}/sessions/{id}/permissions/{}",
+                asked["id"].as_str().unwrap()
+            ))
+            .json(&json!({"reply": "once"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let mut seen = vec![];
+        loop {
+            let v = next_event(&mut stream, &mut buf).await.unwrap();
+            if v["type"] == "done" {
+                assert!(v["error"].is_null(), "{v}");
+                break;
+            }
+            seen.push(v);
+        }
+        let end = seen.iter().find(|e| e["type"] == "tool_end").unwrap();
+        assert_eq!(end["error"], false, "{seen:?}");
+        assert!(
+            seen.iter().all(|e| e["type"] != "permission"),
+            "shown once: {seen:?}"
+        );
+    }
+
+    /// Fixed: with its client gone and no follower, a permission request
+    /// kept the turn (and the session) busy until an abort. It is refused
+    /// once no client could see it for a while.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unseen_permission_request_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), TOKEN).await;
+        let c = client();
+        let id = new_session(&c, &base).await;
+        ask_and_leave(&c, &base, &id).await;
+        let shown = tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let shown: Value = c
+                    .get(format!("{base}/sessions/{id}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                if shown["busy"] == false {
+                    return shown;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("the turn still waits for an answer");
+        let text = shown["messages"].to_string();
+        assert!(
+            text.contains("No client is connected to approve this."),
+            "{text}"
         );
     }
 
