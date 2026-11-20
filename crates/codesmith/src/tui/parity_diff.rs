@@ -1873,6 +1873,8 @@ fn oc_single_file_review_advances_but_reopening_and_the_last_file_stay_put_at_16
 // (adapted) CodeSmith has no session tabs to steal the keys.
 fn alt_arrows(after_tab: bool) {
     let mut t = T::new(many(40), 160, 24);
+    // Session tabs are on (alt+arrows cycle them outside the viewer).
+    t.app.tabs = Some(Default::default());
     if after_tab {
         t.code(KeyCode::Tab);
     }

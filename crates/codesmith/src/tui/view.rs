@@ -1215,13 +1215,16 @@ pub fn status_text(app: &App, scrolled: usize) -> String {
 pub fn draw(f: &mut Frame, app: &App) {
     let full = f.area();
     let Some(v) = &app.diff else {
-        draw_main(f, app, full);
+        let main = tab_strip(f, app, full);
+        draw_main(f, app, main);
         return;
     };
-    // The diff viewer: docked on the right of the session, or over it.
+    // The diff viewer: docked on the right of the session, or over it
+    // (hiding the tab strip, as OpenCode's full-screen panel does).
     let g = v.geom(full.width, full.height);
     if g.docked {
-        draw_main(f, app, Rect { width: g.x, ..full });
+        let main = tab_strip(f, app, Rect { width: g.x, ..full });
+        draw_main(f, app, main);
     }
     super::diff_draw::draw(f.buffer_mut(), full, v, &app.diff_memory, &app.keymap);
     match &app.modal {
@@ -1252,6 +1255,35 @@ pub fn draw(f: &mut Frame, app: &App) {
             );
         }
         _ => {}
+    }
+}
+
+/// The session tab strip on `area`'s first row, while tabs are on and
+/// there is room; the rest of `area`.
+fn tab_strip(f: &mut Frame, app: &App, area: Rect) -> Rect {
+    match &app.tabs {
+        // A column on the left where the session keeps its preferred width
+        // beside it (not beside the diff viewer).
+        Some(strip)
+            if strip.vertical && app.diff.is_none() && super::tabs::fits_vertically(area.width) =>
+        {
+            let w = super::tabs::COLUMN_WIDTH;
+            super::tabs::draw_vertical(f.buffer_mut(), Rect { width: w, ..area }, strip);
+            Rect {
+                x: area.x + w,
+                width: area.width - w,
+                ..area
+            }
+        }
+        Some(strip) if area.height > 6 => {
+            super::tabs::draw(f.buffer_mut(), area, strip);
+            Rect {
+                y: area.y + 1,
+                height: area.height - 1,
+                ..area
+            }
+        }
+        _ => area,
     }
 }
 

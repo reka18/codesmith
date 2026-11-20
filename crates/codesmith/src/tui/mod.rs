@@ -35,7 +35,11 @@ mod parity_diff;
 mod parity_groups;
 #[cfg(test)]
 mod parity_keys;
+#[cfg(test)]
+mod parity_tabs;
 pub(crate) mod settings;
+mod tabs;
+mod tabs_host;
 pub(crate) mod theme;
 mod view;
 
@@ -45,7 +49,7 @@ use anyhow::{anyhow, Result};
 use app::{Action, App, Entry, Modal, Pick, PickItem, Picker};
 use bridge::{ChanPrompter, ChanSink, Ev};
 use codesmith_core::config::{self, Loaded};
-use codesmith_core::permission::{Approvals, Asker, Fixed, Reply};
+use codesmith_core::permission::{Approvals, Asker};
 use codesmith_core::question::Questioner;
 use codesmith_core::session::{self, Options, Session};
 use codesmith_core::snapshot::Snapshots;
@@ -113,8 +117,9 @@ struct Runner {
     resume_held: Option<usize>,
     /// The current session's background commands, given to every rebuild
     /// of it (interrupt, undo, an agent or model switch), so they outlive
-    /// the session object a turn's task dropped. Stopped when the TUI
-    /// moves to another session (`/new`, `/sessions`) or exits.
+    /// the session object a turn's task dropped. Stopped when its tab is
+    /// closed, when the TUI exits, or, with tabs off, when it moves to
+    /// another session (`/new`, `/sessions`).
     jobs: Jobs,
     /// The theme selection.
     themes: theme::Themes,
@@ -131,6 +136,9 @@ struct Runner {
     clear: bool,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
     diffs: settings::Diffs,
+    /// The open session tabs; the fields above from `app` to `jobs` are
+    /// the shown tab's (see `tabs_host`).
+    tabs: tabs_host::Host,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -168,9 +176,9 @@ impl Runner {
         self.approvals = Approvals::default();
     }
 
-    /// Leaving the current session for another: stop its background
-    /// commands (the TUI shows and wakes one session only, so nothing
-    /// would report them) and start the next one with none.
+    /// With tabs off, leaving the current session for another: stop its
+    /// background commands (the TUI then shows and wakes one session only,
+    /// so nothing would report them) and start the next one with none.
     fn end_jobs(&mut self) {
         self.stop_waiting();
         self.resume_held = None;
@@ -575,6 +583,7 @@ impl Runner {
                 self.app
                     .notice(format!("verbosity: {}", self.app.verbosity.key()));
             }
+            "new" if self.tabs.on() => self.new_tab(),
             "new" if self.idle_or_say() => {
                 self.forget_approvals();
                 self.end_jobs();
@@ -583,7 +592,7 @@ impl Runner {
                 self.install(s, false);
                 self.app.notice("new session");
             }
-            "sessions" if self.idle_or_say() => {
+            "sessions" if self.tabs.on() || self.idle_or_say() => {
                 // Archived sessions stay out, as in OpenCode's session list.
                 let list = open_store()
                     .map(|db| {
@@ -596,7 +605,7 @@ impl Runner {
                     .map(|i| PickItem {
                         current: i.id == self.session_id,
                         label: i.title.clone().unwrap_or_else(|| "(untitled)".into()),
-                        detail: format!("{} · {}", ago(i.updated), i.id),
+                        detail: format!("{} · {}{}", ago(i.updated), i.id, self.tab_note(&i.id)),
                         id: i.id,
                     })
                     .collect();
@@ -831,6 +840,7 @@ impl Runner {
         match kind {
             // Not while a turn (a resumed one may start while the picker
             // is open) holds the session and its commands.
+            Pick::Session if self.tabs.on() => self.open_session_tab(id)?,
             Pick::Session if self.idle_or_say() => {
                 if id != self.session_id {
                     self.forget_approvals();
@@ -851,10 +861,15 @@ impl Runner {
                     let i = s.seqs().iter().position(|q| *q == Some(b))?;
                     prompt_text(&s.messages[i])
                 });
-                self.forget_approvals();
-                self.end_jobs();
-                let s = self.make(Some(to))?;
-                self.install(s, true);
+                if self.tabs.on() {
+                    // The fork opens in a tab of its own; this one goes on.
+                    self.open_session_tab(to)?;
+                } else {
+                    self.forget_approvals();
+                    self.end_jobs();
+                    let s = self.make(Some(to))?;
+                    self.install(s, true);
+                }
                 if let Some(t) = text {
                     self.app.input.set(t);
                 }
@@ -965,6 +980,7 @@ impl Runner {
             }
             "terminal.suspend" => self.suspend = true,
             "app.clear" => self.clear = true,
+            id if id.starts_with("session.tab.") => self.tab_command(id),
             _ => {}
         }
     }
@@ -1204,17 +1220,12 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         custom,
     );
     let (tx, mut rx): (UnboundedSender<Ev>, UnboundedReceiver<Ev>) = unbounded_channel();
-    let prompter = Arc::new(ChanPrompter::new(tx.clone()));
-    let asker: Arc<dyn Asker> = if opts.auto {
-        Arc::new(Fixed(Reply::Once))
-    } else {
-        prompter.clone()
-    };
-    let questioner: Option<Arc<dyn Questioner>> = if opts.auto {
-        None
-    } else {
-        Some(prompter.clone())
-    };
+    // Mini mode has no tabs, as in OpenCode.
+    let mut tab_settings = tui.tabs;
+    tab_settings.enabled &= opts.mini.is_none();
+    let mut tabs = tabs_host::Host::new(tx.clone(), opts.auto, cwd.clone(), tab_settings);
+    // Each tab's session talks on a channel of its own.
+    let (first_tab, parts) = tabs.parts();
     codesmith_core::automation::spawn_scheduler(&loaded);
     let mcp = crate::connect_mcp(&loaded, false).await;
     let mcp_failures: Vec<String> = mcp
@@ -1234,16 +1245,16 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         app: App::new(),
         loaded,
         cwd,
-        tx: tx.clone(),
-        asker,
-        questioner,
+        tx: parts.tx,
+        asker: parts.asker,
+        questioner: parts.questioner,
         mcp,
         agent: opts.agent,
         model: opts.model,
         session: None,
         session_id: String::new(),
         task: None,
-        prompter: (!opts.auto).then_some(prompter),
+        prompter: parts.prompter,
         approvals: Approvals::default(),
         stopping: false,
         skip_done: 0,
@@ -1257,6 +1268,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         suspend: false,
         clear: false,
         diffs: settings::Diffs::default(),
+        tabs,
     };
     let keymap = keymap::Keymap::new(&tui.keybinds, tui.leader_timeout, cfg!(unix));
     for w in tui_warnings
@@ -1293,6 +1305,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     }
     let first = r.make(opts.resume.clone())?;
     r.install(first, opts.resume.is_some());
+    r.start_tabs(first_tab, opts.resume.is_some());
     // Mini mode's entry banner says as much.
     if r.app.entries.is_empty() && opts.mini.is_none() {
         r.app.notice(format!(
@@ -1338,7 +1351,8 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     spawn_input(tx);
     let result: Result<()> = async {
         loop {
-            r.watch_background();
+            r.watch_all();
+            r.sync_tabs();
             let tick = match &mut screen {
                 Screen::Full(t) => {
                     t.draw(|f| view::draw(f, &r.app))?;
@@ -1358,10 +1372,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
                 None => rx.recv().await,
             };
             let Some(ev) = ev else { break };
-            r.handle(ev).await;
+            r.dispatch(ev).await;
             // Apply everything already queued (streamed text arrives in bursts) before redrawing.
             while let Ok(ev) = rx.try_recv() {
-                r.handle(ev).await;
+                r.dispatch(ev).await;
             }
             r.pump_diff();
             if r.app.quit {
@@ -1382,6 +1396,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         Ok(())
     }
     .await;
+    r.close_tabs().await;
     r.stop_waiting();
     if let Some(mut t) = r.task.take() {
         if let Some(p) = &r.prompter {

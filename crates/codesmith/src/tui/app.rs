@@ -365,6 +365,8 @@ pub struct App {
     /// `entries` was replaced (not appended to) since the last frame; the
     /// first this many came with the replacement.
     pub replaced: Option<usize>,
+    /// The session tab strip, while tabs are on (set before each frame).
+    pub tabs: Option<super::tabs::Strip>,
 }
 
 /// A running subagent, as the UI tracks it.
@@ -436,6 +438,16 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("variant.cycle", "next model variant"),
     ("session.list", "pick a session"),
     ("session.new", "new session"),
+    ("session.tab.next", "next session tab"),
+    ("session.tab.previous", "previous session tab"),
+    (
+        "session.tab.next_unread",
+        "next tab that is unread or waiting for you",
+    ),
+    ("session.tab.close", "close the session tab"),
+    ("session.tab.reopen", "reopen the last closed tab"),
+    ("session.tab.move.left", "move the tab left"),
+    ("session.tab.move.right", "move the tab right"),
     ("session.compact", "compact the session"),
     ("session.undo", "undo the latest turn's file changes"),
     ("session.redo", "redo them"),
@@ -595,6 +607,28 @@ impl App {
             }
         }
         self.commands = cmds;
+    }
+
+    /// Hand what all session tabs share (key bindings, completions, the
+    /// prompt history, display settings, the diff viewer's memory) to
+    /// `to`, the tab about to be shown. Done in pairs, so the shared state
+    /// comes back with the shown tab.
+    pub fn hand_over(&mut self, to: &mut App) {
+        to.keymap = self.keymap.clone();
+        std::mem::swap(&mut self.commands, &mut to.commands);
+        std::mem::swap(&mut self.files, &mut to.files);
+        std::mem::swap(&mut self.history, &mut to.history);
+        std::mem::swap(&mut self.diff_memory, &mut to.diff_memory);
+        std::mem::swap(&mut self.tabs, &mut to.tabs);
+        to.show_reasoning = self.show_reasoning;
+        to.expand_tools = self.expand_tools;
+        to.verbosity = self.verbosity;
+        to.grouping = self.grouping;
+        to.reasoning_source = self.reasoning_source;
+        to.diff_prefs = self.diff_prefs;
+        to.diff_source = self.diff_source;
+        to.mini = self.mini.clone();
+        to.cwd = self.cwd.clone();
     }
 
     pub fn notice(&mut self, s: impl Into<String>) {
@@ -901,7 +935,8 @@ impl App {
             | Ev::Files(_)
             | Ev::Done { .. }
             | Ev::Stopped
-            | Ev::Background => {}
+            | Ev::Background
+            | Ev::Tab(..) => {}
         }
     }
 
@@ -1075,6 +1110,11 @@ impl App {
                 return Some(Some(Action::Quit));
             }
             "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
+            // Tab commands while tabs are on, as OpenCode enables them.
+            id if id.starts_with("session.tab.") => {
+                self.tabs.as_ref()?;
+                return Some(Some(Action::Run(super::keymap::static_id(id)?)));
+            }
             "app.clear" if self.mini.is_some() => return Some(Some(Action::Run("app.clear"))),
             "agent.cycle" => return Some(Some(Action::CycleAgent(1))),
             "agent.cycle.reverse" => return Some(Some(Action::CycleAgent(-1))),

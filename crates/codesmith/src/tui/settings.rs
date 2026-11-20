@@ -56,6 +56,8 @@ pub struct Settings {
     pub diffs: Diffs,
     /// `mini`: mini mode's settings.
     pub mini: super::mini::Settings,
+    /// `tabs`: the session tabs.
+    pub tabs: super::tabs::Settings,
 }
 
 /// `tui.diffs`, as OpenCode's `diffs` settings: the source the diff viewer
@@ -88,6 +90,7 @@ impl Default for Settings {
             grouping: Grouping::Auto,
             diffs: Diffs::default(),
             mini: super::mini::Settings::default(),
+            tabs: super::tabs::Settings::default(),
         }
     }
 }
@@ -261,5 +264,8 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
     let (mini, mini_errors) = super::mini::settings::load(&v);
     s.mini = mini;
     errors.extend(mini_errors);
+    let (tabs, tab_errors) = super::tabs::load(&v, |k| std::env::var(k).ok());
+    s.tabs = tabs;
+    errors.extend(tab_errors);
     (s, errors)
 }

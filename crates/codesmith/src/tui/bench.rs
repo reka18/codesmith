@@ -78,6 +78,36 @@ fn bench_transcript() {
     });
     report("tui frame scrolled 500 lines", t, "");
     a.scroll = 0;
+    // Eight session tabs: the strip above the transcript, then the column.
+    let strip = |vertical: bool| super::tabs::Strip {
+        items: (0..8)
+            .map(|i| super::tabs::Item {
+                title: format!("Session number {i} with a long title"),
+                status: super::tabs::Status {
+                    busy: i % 3 == 0,
+                    ..Default::default()
+                },
+                new: false,
+            })
+            .collect(),
+        active: Some(3),
+        vertical,
+        detail: "codesmith ⎇ par/tui-tabs".into(),
+        ..Default::default()
+    };
+    a.tabs = Some(strip(false));
+    let t = time(50, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame with 8 tabs", t, "");
+    a.tabs = Some(strip(true));
+    let mut wide = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    wide.draw(|f| view::draw(f, &a)).unwrap();
+    let t = time(50, || {
+        wide.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame with 8 vertical tabs", t, "160 columns");
+    a.tabs = None;
     // Streaming: the last answer grows every frame.
     a.entries.push(Entry::Assistant(String::new()));
     let t = time(50, || {

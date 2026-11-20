@@ -761,6 +761,16 @@ pub const DEFINITIONS: &[Def] = &[
     ),
     // CodeSmith's own commands.
     d(
+        "session.tab.move.left",
+        "<leader>shift+left",
+        "Move the session tab left",
+    ),
+    d(
+        "session.tab.move.right",
+        "<leader>shift+right",
+        "Move the session tab right",
+    ),
+    d(
         "session.toggle.tool_output",
         "ctrl+o",
         "Expand or collapse tool output",
@@ -780,9 +790,11 @@ pub const DEFINITIONS: &[Def] = &[
 
 /// Where CodeSmith's default differs from OpenCode's, to keep its own keys:
 /// Tab and Shift+Tab cycle agents both ways, Ctrl+X h opens the help, Ctrl+X
-/// b backgrounds commands, Ctrl+End follows the transcript and Tab moves
-/// down a picker.
+/// b backgrounds commands, Ctrl+End follows the transcript, Tab moves
+/// down a picker, and Ctrl+X Shift+T reopens a tab (terminals without the
+/// kitty keyboard protocol send Ctrl+Shift+T as Ctrl+T).
 pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
+    ("session.tab.reopen", "ctrl+shift+t,<leader>shift+t"),
     ("agent.cycle", "tab"),
     ("agent.cycle.reverse", "shift+tab"),
     ("help.show", "<leader>h"),
@@ -978,6 +990,11 @@ pub fn canonical(name: &str) -> &str {
 
 pub fn def(id: &str) -> Option<&'static Def> {
     DEFINITIONS.iter().find(|d| d.id == id)
+}
+
+/// A command id with the program's lifetime.
+pub fn static_id(id: &str) -> Option<&'static str> {
+    def(id).map(|d| d.id)
 }
 
 /// The default binding as configured (CodeSmith's where it has its own):
@@ -1515,6 +1532,24 @@ pub mod scope {
         "variant.cycle",
         "session.list",
         "session.new",
+        "session.tab.next",
+        "session.tab.previous",
+        "session.tab.next_unread",
+        "session.tab.previous_unread",
+        "session.tab.close",
+        "session.tab.reopen",
+        "session.tab.move.left",
+        "session.tab.move.right",
+        "session.tab.select.1",
+        "session.tab.select.2",
+        "session.tab.select.3",
+        "session.tab.select.4",
+        "session.tab.select.5",
+        "session.tab.select.6",
+        "session.tab.select.7",
+        "session.tab.select.8",
+        "session.tab.select.9",
+        "session.tab.select.10",
         "session.compact",
         "session.undo",
         "session.redo",

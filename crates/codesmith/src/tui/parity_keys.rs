@@ -50,9 +50,9 @@ fn app_with(tui: Value) -> App {
 
 // ----- tui/test/config-v2 ---------------------------------------------------
 
-// (adapted) The leader key, its timeout and the cursor defaults; the
-// scroll, diffs, debug, tabs and session halves are settings CodeSmith
-// does not have.
+// (adapted) The leader key, its timeout, the cursor and tab defaults; the
+// scroll, diffs, debug and session halves are settings CodeSmith does not
+// have.
 #[test]
 fn oc_resolves_nested_config_and_keybind_defaults() {
     let (s, errors) = settings::load(&json!({
@@ -89,6 +89,18 @@ fn oc_resolves_nested_config_and_keybind_defaults() {
             blinking: false
         }
     );
+    use super::tabs::{Indicators, Mode, Orientation, Scope};
+    let t = super::tabs::load(&json!({}), |_| None).0;
+    assert_eq!(
+        (t.mode, t.enabled, t.scope, t.layout, t.indicators),
+        (
+            Mode::Auto,
+            true,
+            Scope::Cwd,
+            Orientation::Horizontal,
+            Indicators::Status
+        )
+    );
 }
 
 #[test]
@@ -114,7 +126,9 @@ fn oc_preserves_current_navigation_defaults() {
         ("session.tab.previous", "ctrl+shift+tab,alt+up"),
         ("session.tab.next_unread", "alt+shift+down"),
         ("session.tab.previous_unread", "alt+shift+up"),
-        ("session.tab.reopen", "ctrl+shift+t"),
+        // (adapted) CodeSmith adds ctrl+x shift+t, which terminals
+        // without the kitty keyboard protocol can send.
+        ("session.tab.reopen", "ctrl+shift+t,<leader>shift+t"),
         ("session.tab.select.10", "<leader>0,ctrl+0"),
         ("prompt.images.view", "<leader>i"),
     ] {

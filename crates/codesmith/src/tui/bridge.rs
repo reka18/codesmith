@@ -91,6 +91,8 @@ pub enum Ev {
     Stopped,
     /// A background command of the idle session finished (or none runs any more).
     Background,
+    /// An event of the session in this tab (see `tabs_host`).
+    Tab(u64, Box<Ev>),
 }
 
 pub struct ChanSink {
