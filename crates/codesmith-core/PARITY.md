@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 51 | 7 | 85 | 183 | 67 | 0 |
+| Session runner | 393 | 70 | 7 | 59 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 9 | 0 | 29 | 12 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -40,11 +40,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 90 | 0 | 11 | 50 | 26 | 0 |
 | Agents | 65 | 4 | 0 | 42 | 11 | 8 | 0 |
-| Skills and commands | 59 | 11 | 0 | 10 | 25 | 13 | 0 |
-| Instructions and references | 78 | 6 | 0 | 53 | 16 | 3 | 0 |
+| Skills and commands | 59 | 13 | 0 | 8 | 25 | 13 | 0 |
+| Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 13 | 0 | 18 | 127 | 6 | 0 |
-| MCP | 212 | 0 | 0 | 30 | 61 | 121 | 0 |
-| Code Mode | 67 | 0 | 0 | 15 | 18 | 34 | 0 |
+| MCP | 212 | 1 | 0 | 29 | 61 | 121 | 0 |
+| Code Mode | 67 | 26 | 0 | 3 | 19 | 19 | 0 |
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 0 | 0 | 27 | 211 | 4 | 0 |
-| **Total** | **5588** | **753** | **15** | **1079** | **2321** | **1420** | **0** |
+| **Total** | **5588** | **858** | **15** | **985** | **2326** | **1404** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,16 +78,14 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (1079 cases in 68 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (985 cases in 67 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 232 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
-| [Instruction State Tracking](#instruction-state-tracking) | 61 | Code Mode catalog deltas; Code Mode catalog snapshots and deltas; … |
 | [PTY Sessions](#pty-sessions) | 38 | persistent PTY daemon; persistent terminals; … |
-| [References](#references) | 35 | reference sources listed in instructions; reference sources (Git repositories); … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [File Watching](#file-watching) | 24 | watching files for changes |
 | [Shell Daemon](#shell-daemon) | 23 | commands that outlive the server process in a daemon; foreground calls settled across a server restart; … |
@@ -101,7 +99,7 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Tool Input Repair](#tool-input-repair) | 17 | repair before validation, other harnesses' tool names, Code Mode calls; schema-guided repair of nested containers, nulls, unions, tuples and dictionaries |
 | [MCP Elicitation](#mcp-elicitation) | 16 | forms behind elicitation and questions (conditional fields); elicitation forms and URL elicitations |
-| [Native Provider Compaction](#native-provider-compaction) | 15 | routes that cannot compact natively; provider-native compaction endpoints; … |
+| [Native Provider Compaction](#native-provider-compaction) | 16 | routes that cannot compact natively; provider-native compaction endpoints; … |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
 | [Compaction Prompt-cache Prefix](#compaction-prompt-cache-prefix) | 14 | summary requests reuse the session's cache prefix and measured input; summary request keeps the session request prefix |
 | [Background Compaction Summaries](#background-compaction-summaries) | 14 | precomputed summaries swapped in at compaction |
@@ -149,6 +147,7 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 | [Per-session Permission Rules](#per-session-permission-rules) | 1 | stored per-session rules inherited by children and forks |
 | [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
+| [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 | [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
 
 ### Provider Plugins
@@ -537,71 +536,6 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 - `plugin/provider/claude-agent/tools/tools.test.ts`: execution failures and denied permissions stay errors, and JSON stays intact
 - `plugin/provider/claude-agent/tools/tools.test.ts`: tool media remains content blocks and does not consume a newly queued user message
 
-### Instruction State Tracking
-
-61 cases.
-
-- `codemode/catalog.test.ts`: renders additions, changes, and removals as a compact semantic delta
-- `codemode/catalog.test.ts`: names removed tools with exact callable expressions including bracket notation
-- `codemode/catalog.test.ts`: restates a namespace whose description changed
-- `codemode/catalog.test.ts`: says nothing when only which tools are shown changes
-- `codemode/catalog.test.ts`: shows a new tool's signature even when the catalog would not
-- `codemode/catalog.test.ts`: counts new tools past the update budget
-- `codemode/catalog.test.ts`: shows a changed signature the model was shown even when the tool is no longer shown
-- `codemode/catalog.test.ts`: shows every new tool, without pointing to search, while the catalog lists every tool
-- `codemode/catalog.test.ts`: introduces search once, when the catalog stops listing every tool
-- `codemode/catalog.test.ts`: falls back to full replacement when the delta is larger than the catalog
-- `codemode/instructions.test.ts`: renders the initial catalog, semantic deltas, and removal
-- `codemode/instructions.test.ts`: stores a canonical sorted snapshot so registration order does not churn history
-- `instruction-discovery.test.ts`: stores ordered values with last-write-wins precedence
-- `instruction-discovery.test.ts`: preserves admitted values while the source is unavailable
-- `instruction-discovery.test.ts`: renders granular instruction updates
-- `instructions/builtins.test.ts`: updates the date without repeating unchanged environment instructions
-- `instructions/builtins.test.ts`: does not update again within the same local calendar day
-- `instructions/index.test.ts`: reads each source once and derives the initial delta and text
-- `instructions/index.test.ts`: derives no delta when the encoded value is unchanged
-- `instructions/index.test.ts`: renders a changed value from stored values
-- `instructions/index.test.ts`: admits and renders an observed removal
-- `instructions/index.test.ts`: treats JSON null as a value rather than a removal
-- `instructions/index.test.ts`: blocks the initial delta while any source is unavailable
-- `instructions/index.test.ts`: keeps the stored value while a source is unavailable mid-session
-- `instructions/index.test.ts`: does not infer removal when a source is absent from the current version
-- `instructions/index.test.ts`: renders a newly added source with its initial renderer
-- `instructions/index.test.ts`: hashes objects independently of key order
-- `instructions/index.test.ts`: renders sources in composition order
-- `instructions/index.test.ts`: rejects duplicate source keys
-- `instructions/index.test.ts`: rejects empty model-visible renderings while allowing silent updates
-- `instructions/index.test.ts`: diffs list values by key
-- `mcp-instructions.test.ts`: renders additions, changes, and removal
-- `session-runner.test.ts`: marks the initial instruction sync as baseline metadata
-- `session-runner.test.ts`: retries the first request after system context becomes available
-- `session-runner.test.ts`: preserves instruction state and interrupts the source Location runner after a Session moves
-- `session-runner.test.ts`: settles compaction and delivers a move while initial instructions are unavailable
-- `session-runner.test.ts`: delivers a queued move atomically at the idle boundary
-- `session-runner.test.ts`: preserves a tool continuation and step allowance across chained moves (${delivery}) (2 cases)
-- `session-runner.test.ts`: keeps queued input parked across a mid-turn move
-- `session-runner.test.ts`: runs a queued control on Location entry before a carried continuation
-- `session-runner.test.ts`: restores installed native context with auto disabled and preserves it across fork and revert
-- `session-runner.test.ts`: seeds a fork with the parent's newest instruction values
-- `session-runner.test.ts`: keeps nested forks self-contained
-- `session-runner.test.ts`: re-establishes a fresh baseline when instruction state is missing
-- `session-runner.test.ts`: keeps the initial instructions stable and derives a chronological update from values
-- `session-runner.test.ts`: keeps the system prompt stable across a committed revert
-- `session-runner.test.ts`: resyncs the instruction state when a committed revert removes an update
-- `session-runner.test.ts`: hides an update a revert left behind once the source is removed
-- `session-runner.test.ts`: admits removed context as a chronological System message
-- `session-runner.test.ts`: renders API context entries through add, change, and removal
-- `session-runner.test.ts`: retains JSON null API entries as values
-- `session-runner.test.ts`: accepts API instruction entries up to 256 KiB
-- `session-runner.test.ts`: rejects API instruction entries larger than 256 KiB
-- `session-runner.test.ts`: keeps initial instructions and chronological updates after a model switch
-- `session-runner.test.ts`: preserves instruction values while a source is temporarily unavailable
-- `session-runner.test.ts`: narrates only the Code Mode tools that change, through compaction and fork
-- `session-runner.test.ts`: moves the epoch at compaction and narrates later changes
-- `session-runner.test.ts`: uses epoch values after compaction while a source is unavailable
-- `skill/instructions.test.ts`: announces added and removed skills as deltas without restating the list
-- `skill/instructions.test.ts`: renders only the changed skill when a description changes
-
 ### PTY Sessions
 
 38 cases.
@@ -644,40 +578,6 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 - `pty/ticket.test.ts`: rejects tickets after the TTL elapses
 - `pty/ticket.test.ts`: rejects tickets scoped to a different workspace
 - `pty/ticket.test.ts`: keeps PTY and client MCP targets apart
-
-### References
-
-35 cases.
-
-- `reference-instructions.test.ts`: lists available references in the instructions
-- `reference-instructions.test.ts`: omits instructions when no references are available
-- `reference-instructions.test.ts`: omits references without descriptions
-- `reference-instructions.test.ts`: announces added and removed references as deltas
-- `reference-instructions.test.ts`: announces added, changed, and removed references in one delta
-- `reference.test.ts`: reads the current editor source by name
-- `reference.test.ts`: reads batched references before cache work and update events
-- `reference.test.ts`: lets update listeners replace references and refetch current info
-- `reference.test.ts`: registers normalized sources for the owning scope
-- `reference.test.ts`: derives Git paths without exposing cache operations
-- `reference.test.ts`: preserves configured Git descriptions
-- `repository-cache.test.ts`: persists the daily throttle across cache recreation and serializes competing refreshes
-- `repository-cache.test.ts`: honors legacy attempt records while allowing forced refreshes
-- `repository-cache.test.ts`: throttles failed refresh attempts until the next interval
-- `repository-cache.test.ts`: refreshes existing untracked checkouts and keeps branch freshness independent
-- `repository-cache.test.ts`: replaces a stale cache directory before cloning
-- `repository-cache.test.ts`: serializes concurrent materialization for the same checkout
-- `repository-cache.test.ts`: replaces an existing checkout whose origin does not match
-- `repository-cache.test.ts`: keeps branch checkouts isolated from branchless refreshes
-- `repository-cache.test.ts`: does not mistake an enclosing repository for the cache checkout
-- `repository-cache.test.ts`: returns typed branch validation and clone failures
-- `repository.test.ts`: parses github shorthand and builds an explicit-root cache path
-- `repository.test.ts`: parses host path and scp remote references
-- `repository.test.ts`: caches a host with a port under a directory per host part
-- `repository.test.ts`: keeps local file repositories distinct from remote repositories
-- `repository.test.ts`: rejects unsafe remote references and branches with typed errors
-- `repository.test.ts`: rejects %s because its host contains a relative path segment (7 cases)
-- `repository.test.ts`: compares cache identity independent of input spelling
-- `session-runner-message.test.ts`: exposes admitted reference directory source paths in model context
 
 ### ChatGPT Subscription Login
 
@@ -996,7 +896,7 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 
 ### Native Provider Compaction
 
-15 cases.
+16 cases.
 
 - `session-compaction.test.ts`: native compaction fails without a model call on a route that cannot compact
 - `session-native-compaction.test.ts`: manual trigger persists and continues, retains earlier users repeatedly, and preserves context on failure/cancellation
@@ -1011,6 +911,7 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 - `session-native.test.ts`: advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches
 - `session-native.test.ts`: falls back to an earlier compatible native or local checkpoint
 - `session-native.test.ts`: skips a malformed native window and replays the history before it
+- `session-runner.test.ts`: restores installed native context with auto disabled and preserves it across fork and revert
 - `session-runner.test.ts`: automatically persists native windows, retains earlier users, and waits for fresh usage
 - `session-runner.test.ts`: recovers an overflowing native window with another native compaction
 
@@ -1479,6 +1380,12 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 
 - `session-model-request.test.ts`: replaces images xAI cannot decode and keeps png, jpeg and webp
 
+### Directory Attachments
+
+1 cases.
+
+- `session-runner-message.test.ts`: exposes admitted reference directory source paths in model context
+
 ### Session Title Search
 
 1 cases.
@@ -1487,7 +1394,7 @@ Missing features, by how many OpenCode test cases each would unlock (1079 cases 
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1420 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1404 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -2019,14 +1926,12 @@ Tests for behaviour CodeSmith already has but no test pins (1420 cases), by area
   - `skill/instructions.test.ts`: retains specifically allowed skills after a global denial
   - `skill/instructions.test.ts`: omits instructions when a specifically allowed skill is denied again
 
-### Instructions and references (3)
+### Instructions and references (2)
 
 - one failing source does not fail the rest (S) — `instructions::load`
   - `instruction-discovery.test.ts`: isolates source failure without failing activation
 - canonical boundaries and project opt-out (S) — `instructions::load`
   - `instruction-discovery.test.ts`: canonicalizes boundaries and honors project opt-out
-- environment and date instructions (S) — `prompt::system`
-  - `instructions/builtins.test.ts`: loads location-scoped environment and host-local date instructions
 
 ### Config (6)
 
@@ -2163,27 +2068,10 @@ Tests for behaviour CodeSmith already has but no test pins (1420 cases), by area
   - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
   - `tool-mcp-events.test.ts`: fails for a server that sends no events
 
-### Code Mode (34)
+### Code Mode (19)
 
 - a nested call's stop does not replace the execute result (S) — `codemode::execute`
   - `codemode.test.ts`: never hands a stop to a nested call, so its error cannot replace the execute call's result
-- inline budget, pinned tools, description limits, path order, search guidance, round-robin namespaces, empty catalog notice (M) — `codemode catalog`
-  - `codemode/catalog.test.ts`: retains namespace inventory without retaining tools outside the inline budget
-  - `codemode/catalog.test.ts`: retains every namespace when no full tool listing fits
-  - `codemode/catalog.test.ts`: always retains pinned tools beyond the inline budget
-  - `codemode/catalog.test.ts`: spends the budget remaining after pinned tools on unpinned tools
-  - `codemode/catalog.test.ts`: retains only the rendered portion of inline descriptions
-  - `codemode/catalog.test.ts`: limits inline descriptions to 500 characters
-  - `codemode/catalog.test.ts`: always retains namespace descriptions and charges them before tool listings
-  - `codemode/catalog.test.ts`: selects tools in path order, whatever their cost
-  - `codemode/catalog.test.ts`: renders only the signatures it selects, and the next one it tries
-  - `codemode/catalog.test.ts`: inlines complete catalogs without search guidance
-  - `codemode/catalog.test.ts`: adds search guidance when the catalog exceeds the budget
-  - `codemode/catalog.test.ts`: budgets signatures round-robin so every namespace remains visible
-  - `codemode/catalog.test.ts`: charges inline JSDoc in signatures against the catalog token budget
-  - `codemode/catalog.test.ts`: renders only the no-tools notice for an empty catalog
-- no execute while the catalog is empty (S) — `codemode instructions`
-  - `codemode/instructions.test.ts`: instructs the model not to call execute while the catalog is empty
 - Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, fetch through webfetch rules, namespaces, nested call IDs (M) — `codemode::execute`
   - `tool-execute.test.ts`: execute describes invariant Code Mode behavior
   - `tool-execute.test.ts`: canonical execution distinguishes declared, model-only, and raw schema outputs
@@ -2374,18 +2262,18 @@ Tests for behaviour CodeSmith already has but no test pins (1420 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 544 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 317 |
-| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 310 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 213 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 531 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
+| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 312 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 93 |
+| Other (each says why) | 94 |
 
 ## Per-test inventory
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (241 of 393)</summary>
+<details><summary>Session runner (267 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -2419,8 +2307,27 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D executes the tool advertised before a registry reload — client-server: Location tool registry / registry reload
 - D starts a real runner step after default prompt recording · runs a follow-up when synthetic input arrives during an active continuation — storage-model: default prompt recording / synthetic input
 - D streams one request with registry definitions from chronological user history — client-server: Location tool registry / registry reload
+- P marks the initial instruction sync as baseline metadata — `tests/oc_instruction_state.rs::oc_session_marks_the_initial_instruction_sync_as_the_baseline`
+- P retries the first request after system context becomes available — `tests/oc_instruction_state.rs::oc_session_retries_the_first_request_once_context_is_readable` (adapted: the prompt fails before anything is recorded and is sent again)
+- D preserves instruction state and interrupts the source Location runner after a Session moves · settles compaction and delivers a move while initial instructions are unavailable · delivers a queued move atomically at the idle boundary · preserves a tool continuation and step allowance across chained moves (${delivery}) ×2 · keeps queued input parked across a mid-turn move · runs a queued control on Location entry before a carried continuation — client-server: a Session moving between Locations
+- P seeds a fork with the parent's newest instruction values — `tests/oc_instruction_state.rs::oc_session_seeds_a_fork_with_the_newest_values` (adapted: Store::fork copies the whole session)
+- P keeps nested forks self-contained — `tests/oc_instruction_state.rs::oc_session_keeps_nested_forks_self_contained`
+- P re-establishes a fresh baseline when instruction state is missing — `tests/oc_instruction_state.rs::oc_session_makes_a_fresh_baseline_when_the_state_is_missing` (adapted: a log without instruction records)
+- P keeps the initial instructions stable and derives a chronological update from values — `tests/oc_instruction_state.rs::oc_session_keeps_the_baseline_stable_and_narrates_an_update`
+- P keeps the system prompt stable across a committed revert — `tests/oc_instruction_state.rs::oc_session_keeps_the_system_prompt_across_an_undo` (adapted: undo of the newest turn)
+- P resyncs the instruction state when a committed revert removes an update — `tests/oc_instruction_state.rs::oc_session_resyncs_when_an_undo_removes_an_update` (adapted: two undos)
+- P hides an update a revert left behind once the source is removed — `tests/oc_instruction_state.rs::oc_session_hides_an_update_an_undo_left_behind_once_the_source_is_gone` (adapted: two undos)
 - P fails before the model request when the selected agent is unavailable — `tests/oc_runner.rs::oc_session_fails_before_the_model_request_when_the_agent_is_unavailable`
 - D keeps the sampled agent when selection changes during observation · keeps the sampled model when selection changes during model resolution — effect-internal: selection sampled once during observation
+- P admits removed context as a chronological System message — `tests/oc_instruction_state.rs::oc_session_admits_removed_context_as_a_system_message`
+- P renders API context entries through add, change, and removal — `tests/oc_instruction_state.rs::oc_session_renders_context_entries_through_add_change_and_removal` (adapted: Store::put_context, no per-source request metadata)
+- P retains JSON null API entries as values — `tests/oc_instruction_state.rs::oc_session_retains_null_context_entries_as_values`
+- P accepts API instruction entries up to 256 KiB — `tests/oc_instruction_state.rs::oc_store_accepts_context_entries_up_to_256_kib`
+- P rejects API instruction entries larger than 256 KiB — `tests/oc_instruction_state.rs::oc_store_rejects_context_entries_over_256_kib`
+- P keeps initial instructions and chronological updates after a model switch — `tests/oc_instruction_state.rs::oc_session_keeps_instructions_and_updates_after_a_model_switch` (adapted: the session reopened on another model)
+- P preserves instruction values while a source is temporarily unavailable — `tests/oc_instruction_state.rs::oc_session_keeps_values_while_a_source_is_unreadable`
+- P narrates only the Code Mode tools that change, through compaction and fork — `tests/oc_instruction_state.rs::oc_session_narrates_only_the_code_mode_tools_that_change` (adapted: an MCP server that grows a tool when one is called)
+- P moves the epoch at compaction and narrates later changes — `tests/oc_instruction_state.rs::oc_session_moves_the_epoch_at_compaction_and_narrates_later_changes`
 - D prioritizes manual compaction admitted ${order} two steers at the safe boundary ×3 · waits for active tools before prioritizing compaction over pending steers · rechecks compaction admitted during boundary context preparation · preserves both earlier steers when prioritized compaction is ${outcome} ×2 · keeps steers durable across interrupted priority compaction and replay · does not pull compaction across an earlier move · runs steers before queued compaction and later queued input · releases queued prompts when durable compaction fails — deliberate: session.rs: no steers or queues, so no compaction priority against them
 - P explains when manual compaction has no history — `tests/parity.rs::oc_compaction_nothing_to_compact_in_an_empty_session`
 - D delivers steered manual compaction when the model has no context limit · runs manual compaction at the next step boundary before queued prompts · runs manual compaction before the continuation of an active tool turn — deliberate: session.rs: manual compaction runs between turns, not at a step boundary
@@ -2439,6 +2346,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P persists a second context overflow after one recovery — `tests/oc_compaction.rs::oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn`
 - P recovers once from a raw context overflow failure — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
 - F publishes the original overflow when recovery summarization fails — `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails` (the failed summary's error was reported instead of the overflow)
+- P uses epoch values after compaction while a source is unavailable — `tests/oc_instruction_state.rs::oc_session_uses_the_epoch_values_after_compaction_while_unreadable`
 - D projects reasoning and tool events without executing or continuing tools — storage-model: projection-only replay of events
 - D joins concurrent resume calls into one active provider run — effect-internal: concurrent resume joining / run fan-out
 - D steers an active step with newly recorded prompts · promotes queued input after continuation ends · keeps queued input parked when a steer is cancelled during preparation · dispatches a queued move when a steer is cancelled during preparation · preserves durable queued input for a later wake after interruption · preserves durable steering input for a later resume after interruption · promotes queued inputs one at a time in FIFO order · stops a steer-scoped drain before queued input · a steer-scoped drain runs a queued manual compaction next in line · a steer-scoped drain leaves a compaction parked behind a queued prompt · promotes queued input after steering continuation ends · promotes steers before the next queued input · coalesces multiple active steering prompts into one continuation step · runs steering input accepted while the active step fails — deliberate: session.rs: no steers, queues or inbox
@@ -3320,7 +3228,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Skills and commands (36 of 59)</summary>
+<details><summary>Skills and commands (38 of 59)</summary>
 
 
 **`config/command-subagent.test.ts`**
@@ -3355,13 +3263,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D reads the current editor entry by ID · registers values with last-write-wins precedence · updates and removes registered values · restores earlier values when an updating transform is disposed · publishes updates after committed values are visible — effect-internal: skill registry transforms and events
 - P stores virtual skill files, notifies when they change, and prepares skill:// output without disk scans — `src/tool/read.rs::oc_read_virtual_skill_paths`
 
+**`skill/instructions.test.ts`**
+
+- P announces added and removed skills as deltas without restating the list — `tests/oc_instruction_state.rs::oc_skills_announce_added_and_removed_skills_as_deltas`
+- P renders only the changed skill when a description changes — `tests/oc_instruction_state.rs::oc_skills_render_only_the_changed_skill`
+
 </details>
 
-<details><summary>Instructions and references (22 of 78)</summary>
+<details><summary>Instructions and references (76 of 78)</summary>
 
 
 **`instruction-discovery.test.ts`**
 
+- P stores ordered values with last-write-wins precedence — `tests/oc_instruction_state.rs::oc_instruction_files_store_ordered_values_with_the_latest_content` (adapted: discovery lists each file once at its first position, with the content it has when read)
+- P preserves admitted values while the source is unavailable — `tests/oc_instruction_state.rs::oc_instruction_files_keep_admitted_values_while_unreadable` (adapted: an unreadable file)
+- P renders granular instruction updates — `tests/oc_instruction_state.rs::oc_instruction_files_render_granular_updates`
 - P loads global and upward project files and rescans them on change — `src/instructions.rs::oc_instructions_loads_global_and_upward_project_files`
 - P loads configured files, globs, home paths, and URLs alongside AGENTS.md — `src/instructions.rs::oc_instructions_loads_configured_files_globs_and_home_paths`
 - D reloads configured sources on config updates and keeps the last fetched URL — deliberate: instructions.rs: configured URLs are not fetched
@@ -3370,12 +3286,81 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P discovers a newly created instruction file above the project root — `src/instructions.rs::oc_instructions_finds_a_file_above_the_project_root_inside_home`
 - P stops instruction candidates at the project root outside home — `src/instructions.rs::oc_instructions_stop_at_the_project_root_outside_home`
 - D stops at the project root when the location drive letter differs in case — platform: Windows drive letters
-- D marks a discovered file that disappears before read as unavailable — deliberate: instructions.rs: files read once per session
+- P marks a discovered file that disappears before read as unavailable — `tests/oc_instruction_state.rs::oc_instruction_files_that_vanish_before_the_read_are_unavailable`
 - D skips discovered files a sandbox denies and keeps the rest available — client-server: sandbox-denied files
 
 **`instruction-state.test.ts`**
 
-- D observes each source once without publishing events or inserting blobs · commits initial metadata and changed and removed deltas without rereading sources · records reordered instructions without emitting update text · keeps no-op observations free of events and blobs · treats a missing state row as a fresh baseline without repairing it · trusts the projected state without consulting durable events · previews changed and removed instructions from observed blobs · persists chronological updates as system messages · assembles initial instructions without persisting a baseline · retains a committed value when fresh instructions are unavailable · blocks an unavailable initial instruction without persisting a baseline · keeps prepare equivalent to observe followed by commit — deliberate: instructions.rs: files read once per session, no change or removal notices
+- D observes each source once without publishing events or inserting blobs · commits initial metadata and changed and removed deltas without rereading sources · records reordered instructions without emitting update text · keeps no-op observations free of events and blobs — storage-model: instruction_state.rs: the state is folded from the session's record log, not projected rows, events and blobs
+- P treats a missing state row as a fresh baseline without repairing it — `tests/oc_instruction_state.rs::oc_session_makes_a_fresh_baseline_when_the_state_is_missing` (adapted: a log without instruction records)
+- D trusts the projected state without consulting durable events · previews changed and removed instructions from observed blobs — storage-model: instruction_state.rs: the state is folded from the session's record log, not projected rows, events and blobs
+- P persists chronological updates as system messages — `tests/oc_instruction_state.rs::oc_session_keeps_the_baseline_stable_and_narrates_an_update` (adapted: through a session; the update is a record the history shows as a system message)
+- D assembles initial instructions without persisting a baseline — storage-model: instruction_state.rs: the state is folded from the session's record log, not projected rows, events and blobs
+- P retains a committed value when fresh instructions are unavailable — `tests/oc_instruction_state.rs::oc_session_keeps_values_while_a_source_is_unreadable` (adapted: through a session)
+- P blocks an unavailable initial instruction without persisting a baseline — `tests/oc_instruction_state.rs::oc_session_retries_the_first_request_once_context_is_readable` (adapted: through a session)
+- D keeps prepare equivalent to observe followed by commit — storage-model: instruction_state.rs: the state is folded from the session's record log, not projected rows, events and blobs
+
+**`instructions/builtins.test.ts`**
+
+- P loads location-scoped environment and host-local date instructions — `tests/oc_instruction_state.rs::oc_builtins_load_the_environment_and_date`
+- P updates the date without repeating unchanged environment instructions — `tests/oc_instruction_state.rs::oc_builtins_update_the_date_without_repeating_the_environment`
+- P does not update again within the same local calendar day — `tests/oc_instruction_state.rs::oc_builtins_do_not_update_again_the_same_day`
+
+**`instructions/index.test.ts`**
+
+- P reads each source once and derives the initial delta and text — `tests/oc_instruction_state.rs::oc_instructions_reads_each_source_once_and_derives_the_initial_delta_and_text`
+- P derives no delta when the encoded value is unchanged — `tests/oc_instruction_state.rs::oc_instructions_derives_no_delta_when_the_value_is_unchanged`
+- P renders a changed value from stored values — `tests/oc_instruction_state.rs::oc_instructions_renders_a_changed_value_from_stored_values`
+- P admits and renders an observed removal — `tests/oc_instruction_state.rs::oc_instructions_admits_and_renders_an_observed_removal`
+- P treats JSON null as a value rather than a removal — `tests/oc_instruction_state.rs::oc_instructions_treats_json_null_as_a_value`
+- P blocks the initial delta while any source is unavailable — `tests/oc_instruction_state.rs::oc_instructions_blocks_the_initial_delta_while_a_source_is_unavailable`
+- P keeps the stored value while a source is unavailable mid-session — `tests/oc_instruction_state.rs::oc_instructions_keeps_the_stored_value_while_unavailable_mid_session`
+- P does not infer removal when a source is absent from the current version — `tests/oc_instruction_state.rs::oc_instructions_does_not_infer_removal_for_an_absent_source`
+- P renders a newly added source with its initial renderer — `tests/oc_instruction_state.rs::oc_instructions_renders_a_new_source_with_its_initial_renderer`
+- P hashes objects independently of key order — `tests/oc_instruction_state.rs::oc_instructions_hashes_objects_independently_of_key_order`
+- P renders sources in composition order — `tests/oc_instruction_state.rs::oc_instructions_renders_sources_in_composition_order`
+- P rejects duplicate source keys — `tests/oc_instruction_state.rs::oc_instructions_rejects_duplicate_source_keys`
+- P rejects empty model-visible renderings while allowing silent updates — `tests/oc_instruction_state.rs::oc_instructions_rejects_empty_renderings_while_allowing_silent_updates`
+- P diffs list values by key — `tests/oc_instruction_state.rs::oc_instructions_diffs_list_values_by_key`
+
+**`reference-instructions.test.ts`**
+
+- P lists available references in the instructions — `tests/oc_references.rs::oc_reference_instructions_list_available_references`
+- P omits instructions when no references are available — `tests/oc_references.rs::oc_reference_instructions_are_omitted_without_references`
+- P omits references without descriptions — `tests/oc_references.rs::oc_reference_instructions_omit_references_without_descriptions`
+- P announces added and removed references as deltas — `tests/oc_references.rs::oc_reference_instructions_announce_added_and_removed_references`
+- P announces added, changed, and removed references in one delta — `tests/oc_references.rs::oc_reference_instructions_announce_one_delta_for_several_changes`
+
+**`reference.test.ts`**
+
+- P reads the current editor source by name — `tests/oc_references.rs::oc_reference_reads_each_configured_source_by_name` (adapted: config names each source; there is no editor)
+- D reads batched references before cache work and update events · lets update listeners replace references and refetch current info — effect-internal: batched state transforms and update listeners
+- P registers normalized sources for the owning scope — `tests/oc_references.rs::oc_reference_lists_normalized_sources` (adapted: no owning scope)
+- P derives Git paths without exposing cache operations — `tests/oc_references.rs::oc_reference_derives_git_paths_without_cache_work`
+- P preserves configured Git descriptions — `tests/oc_references.rs::oc_reference_preserves_configured_git_descriptions`
+
+**`repository-cache.test.ts`**
+
+- P persists the daily throttle across cache recreation and serializes competing refreshes — `tests/oc_references.rs::oc_repository_cache_persists_the_daily_throttle_and_serializes_refreshes`
+- P honors legacy attempt records while allowing forced refreshes — `tests/oc_references.rs::oc_repository_cache_honors_older_attempt_records_and_forced_refreshes`
+- P throttles failed refresh attempts until the next interval — `tests/oc_references.rs::oc_repository_cache_throttles_failed_refreshes`
+- P refreshes existing untracked checkouts and keeps branch freshness independent — `tests/oc_references.rs::oc_repository_cache_refreshes_untracked_checkouts_per_branch`
+- P replaces a stale cache directory before cloning — `tests/oc_references.rs::oc_repository_cache_replaces_a_stale_directory_before_cloning`
+- P serializes concurrent materialization for the same checkout — `tests/oc_references.rs::oc_repository_cache_serializes_concurrent_clones`
+- P replaces an existing checkout whose origin does not match — `tests/oc_references.rs::oc_repository_cache_replaces_a_checkout_with_another_origin`
+- P keeps branch checkouts isolated from branchless refreshes — `tests/oc_references.rs::oc_repository_cache_keeps_branch_checkouts_apart`
+- P does not mistake an enclosing repository for the cache checkout — `tests/oc_references.rs::oc_repository_cache_does_not_take_an_enclosing_repository_for_the_checkout`
+- P returns typed branch validation and clone failures — `tests/oc_references.rs::oc_repository_cache_returns_typed_branch_and_clone_failures`
+
+**`repository.test.ts`**
+
+- P parses github shorthand and builds an explicit-root cache path — `tests/oc_references.rs::oc_repository_parses_github_shorthand_and_builds_a_cache_path`
+- P parses host path and scp remote references — `tests/oc_references.rs::oc_repository_parses_host_path_and_scp_references`
+- P caches a host with a port under a directory per host part — `tests/oc_references.rs::oc_repository_caches_a_host_with_a_port_per_host_part`
+- P keeps local file repositories distinct from remote repositories — `tests/oc_references.rs::oc_repository_keeps_local_file_repositories_apart`
+- P rejects unsafe remote references and branches with typed errors — `tests/oc_references.rs::oc_repository_rejects_unsafe_references_and_branches`
+- P rejects %s because its host contains a relative path segment ×7 — `tests/oc_references.rs::oc_repository_rejects_hosts_with_relative_path_segments`
+- P compares cache identity independent of input spelling — `tests/oc_references.rs::oc_repository_compares_identity_independent_of_spelling`
 
 </details>
 
@@ -3458,12 +3443,16 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (61 of 212)</summary>
+<details><summary>MCP (62 of 212)</summary>
 
 
 **`mcp-import-boundary.test.ts`**
 
 - D loads the MCP SDK only when connecting or authorizing — effect-internal: lazy SDK import
+
+**`mcp-instructions.test.ts`**
+
+- P renders additions, changes, and removal — `tests/oc_instruction_state.rs::oc_mcp_instructions_render_additions_changes_and_removal` (adapted: from the session's (server, instructions, Code Mode) list)
 
 **`mcp-socket-client.test.ts`**
 
@@ -3483,13 +3472,46 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (18 of 67)</summary>
+<details><summary>Code Mode (45 of 67)</summary>
 
 
 **`codemode.test.ts`**
 
 - D owns registrations, execute, and catalog materialization — effect-internal: registration ownership
 - D renders Effect numbers in built-in tool signatures as number — effect-internal: Effect number rendering
+
+**`codemode/catalog.test.ts`**
+
+- P retains namespace inventory without retaining tools outside the inline budget — `tests/oc_instruction_state.rs::oc_codemode_catalog_keeps_the_inventory_without_listing_past_the_budget`
+- P retains every namespace when no full tool listing fits — `tests/oc_instruction_state.rs::oc_codemode_catalog_keeps_every_namespace_when_nothing_fits`
+- P always retains pinned tools beyond the inline budget — `tests/oc_instruction_state.rs::oc_codemode_catalog_always_lists_pinned_tools`
+- P spends the budget remaining after pinned tools on unpinned tools — `tests/oc_instruction_state.rs::oc_codemode_catalog_spends_what_pinned_tools_leave`
+- P retains only the rendered portion of inline descriptions — `tests/oc_instruction_state.rs::oc_codemode_catalog_keeps_only_the_first_description_line`
+- P limits inline descriptions to 500 characters — `tests/oc_instruction_state.rs::oc_codemode_catalog_limits_descriptions_to_500_characters`
+- P always retains namespace descriptions and charges them before tool listings — `tests/oc_instruction_state.rs::oc_codemode_catalog_charges_namespace_descriptions_first`
+- P selects tools in path order, whatever their cost — `tests/oc_instruction_state.rs::oc_codemode_catalog_selects_tools_in_path_order`
+- D renders only the signatures it selects, and the next one it tries — other: codemode_catalog.rs: signatures are strings built from the schema up front, not rendered lazily
+- P inlines complete catalogs without search guidance — `tests/oc_instruction_state.rs::oc_codemode_catalog_inlines_a_complete_catalog_without_search`
+- P adds search guidance when the catalog exceeds the budget — `tests/oc_instruction_state.rs::oc_codemode_catalog_adds_search_guidance_past_the_budget` (the budgeted form only; sessions list the whole catalog, since CodeSmith's Code Mode has no `search`)
+- P budgets signatures round-robin so every namespace remains visible — `tests/oc_instruction_state.rs::oc_codemode_catalog_budgets_round_robin_across_namespaces`
+- P charges inline JSDoc in signatures against the catalog token budget — `tests/oc_instruction_state.rs::oc_codemode_catalog_charges_jsdoc_against_the_budget`
+- P renders only the no-tools notice for an empty catalog — `tests/oc_instruction_state.rs::oc_codemode_catalog_renders_only_the_notice_when_empty`
+- P renders additions, changes, and removals as a compact semantic delta — `tests/oc_instruction_state.rs::oc_codemode_catalog_renders_a_compact_semantic_delta`
+- P names removed tools with exact callable expressions including bracket notation — `tests/oc_instruction_state.rs::oc_codemode_catalog_names_removed_tools_with_callable_expressions`
+- P restates a namespace whose description changed — `tests/oc_instruction_state.rs::oc_codemode_catalog_restates_a_namespace_whose_description_changed`
+- P says nothing when only which tools are shown changes — `tests/oc_instruction_state.rs::oc_codemode_catalog_says_nothing_when_only_the_shown_tools_change`
+- P shows a new tool's signature even when the catalog would not — `tests/oc_instruction_state.rs::oc_codemode_catalog_shows_a_new_signature_the_catalog_would_not`
+- P counts new tools past the update budget — `tests/oc_instruction_state.rs::oc_codemode_catalog_counts_new_tools_past_the_update_budget`
+- P shows a changed signature the model was shown even when the tool is no longer shown — `tests/oc_instruction_state.rs::oc_codemode_catalog_shows_a_changed_signature_no_longer_shown`
+- P shows every new tool, without pointing to search, while the catalog lists every tool — `tests/oc_instruction_state.rs::oc_codemode_catalog_shows_every_new_tool_while_complete`
+- P introduces search once, when the catalog stops listing every tool — `tests/oc_instruction_state.rs::oc_codemode_catalog_introduces_search_once` (the budgeted form only (see 164))
+- P falls back to full replacement when the delta is larger than the catalog — `tests/oc_instruction_state.rs::oc_codemode_catalog_falls_back_to_full_replacement`
+
+**`codemode/instructions.test.ts`**
+
+- P instructs the model not to call execute while the catalog is empty — `tests/oc_instruction_state.rs::oc_codemode_instructions_say_not_to_call_execute_while_empty` (sessions with no Code Mode tools leave the catalog out instead)
+- P renders the initial catalog, semantic deltas, and removal — `tests/oc_instruction_state.rs::oc_codemode_instructions_render_the_catalog_deltas_and_removal`
+- P stores a canonical sorted snapshot so registration order does not churn history — `tests/oc_instruction_state.rs::oc_codemode_instructions_store_a_canonical_sorted_snapshot`
 
 **`tool-execute.test.ts`**
 

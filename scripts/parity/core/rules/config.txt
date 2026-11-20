@@ -90,12 +90,11 @@
 388 :: design :: deliberate :: instructions.rs: configured URLs are not fetched
 601 :: design :: platform :: Windows drive letters
 646 :: portable :: instructions::load :: one failing source does not fail the rest (S)
-676 :: design :: deliberate :: instructions.rs: files read once per session
 711 :: design :: client-server :: sandbox-denied files
 743 :: portable :: instructions::load :: canonical boundaries and project opt-out (S)
 
 @instruction-state.test.ts
-* :: design :: deliberate :: instructions.rs: files read once per session, no change or removal notices
+* :: design :: storage-model :: instruction_state.rs: the state is folded from the session's record log, not projected rows, events and blobs
 
 @instructions/builtins.test.ts
 37 :: portable :: prompt::system :: environment and date instructions (S)

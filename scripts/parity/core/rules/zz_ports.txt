@@ -82,3 +82,123 @@
 3197 :: fixed :: tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider :: a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category)
 3265 :: fixed :: tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it :: the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history
 4072 :: fixed :: tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails :: the failed summary's error was reported instead of the overflow
+
+# Instruction state tracking and references (tests/oc_instruction_state.rs, tests/oc_references.rs).
+@instructions/index.test.ts
+26 :: ported :: tests/oc_instruction_state.rs::oc_instructions_reads_each_source_once_and_derives_the_initial_delta_and_text
+56 :: ported :: tests/oc_instruction_state.rs::oc_instructions_derives_no_delta_when_the_value_is_unchanged
+67 :: ported :: tests/oc_instruction_state.rs::oc_instructions_renders_a_changed_value_from_stored_values
+89 :: ported :: tests/oc_instruction_state.rs::oc_instructions_admits_and_renders_an_observed_removal
+107 :: ported :: tests/oc_instruction_state.rs::oc_instructions_treats_json_null_as_a_value
+133 :: ported :: tests/oc_instruction_state.rs::oc_instructions_blocks_the_initial_delta_while_a_source_is_unavailable
+146 :: ported :: tests/oc_instruction_state.rs::oc_instructions_keeps_the_stored_value_while_unavailable_mid_session
+156 :: ported :: tests/oc_instruction_state.rs::oc_instructions_does_not_infer_removal_for_an_absent_source
+168 :: ported :: tests/oc_instruction_state.rs::oc_instructions_renders_a_new_source_with_its_initial_renderer
+182 :: ported :: tests/oc_instruction_state.rs::oc_instructions_hashes_objects_independently_of_key_order
+188 :: ported :: tests/oc_instruction_state.rs::oc_instructions_renders_sources_in_composition_order
+199 :: ported :: tests/oc_instruction_state.rs::oc_instructions_rejects_duplicate_source_keys
+205 :: ported :: tests/oc_instruction_state.rs::oc_instructions_rejects_empty_renderings_while_allowing_silent_updates
+220 :: ported :: tests/oc_instruction_state.rs::oc_instructions_diffs_list_values_by_key
+@instructions/builtins.test.ts
+37 :: ported :: tests/oc_instruction_state.rs::oc_builtins_load_the_environment_and_date
+60 :: ported :: tests/oc_instruction_state.rs::oc_builtins_update_the_date_without_repeating_the_environment
+73 :: ported :: tests/oc_instruction_state.rs::oc_builtins_do_not_update_again_the_same_day
+@instruction-discovery.test.ts
+124 :: ported :: tests/oc_instruction_state.rs::oc_instruction_files_store_ordered_values_with_the_latest_content :: adapted: discovery lists each file once at its first position, with the content it has when read
+145 :: ported :: tests/oc_instruction_state.rs::oc_instruction_files_keep_admitted_values_while_unreadable :: adapted: an unreadable file
+158 :: ported :: tests/oc_instruction_state.rs::oc_instruction_files_render_granular_updates
+676 :: ported :: tests/oc_instruction_state.rs::oc_instruction_files_that_vanish_before_the_read_are_unavailable
+@instruction-state.test.ts
+280 :: ported :: tests/oc_instruction_state.rs::oc_session_makes_a_fresh_baseline_when_the_state_is_missing :: adapted: a log without instruction records
+383 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_the_baseline_stable_and_narrates_an_update :: adapted: through a session; the update is a record the history shows as a system message
+434 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_values_while_a_source_is_unreadable :: adapted: through a session
+459 :: ported :: tests/oc_instruction_state.rs::oc_session_retries_the_first_request_once_context_is_readable :: adapted: through a session
+@skill/instructions.test.ts
+83 :: ported :: tests/oc_instruction_state.rs::oc_skills_announce_added_and_removed_skills_as_deltas
+120 :: ported :: tests/oc_instruction_state.rs::oc_skills_render_only_the_changed_skill
+@mcp-instructions.test.ts
+175 :: ported :: tests/oc_instruction_state.rs::oc_mcp_instructions_render_additions_changes_and_removal :: adapted: from the session's (server, instructions, Code Mode) list
+@codemode/catalog.test.ts
+37 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_keeps_the_inventory_without_listing_past_the_budget
+48 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_keeps_every_namespace_when_nothing_fits
+57 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_always_lists_pinned_tools
+71 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_spends_what_pinned_tools_leave
+96 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_keeps_only_the_first_description_line
+103 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_limits_descriptions_to_500_characters
+110 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_charges_namespace_descriptions_first
+126 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_selects_tools_in_path_order
+132 :: design :: other :: codemode_catalog.rs: signatures are strings built from the schema up front, not rendered lazily
+152 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_inlines_a_complete_catalog_without_search
+164 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_adds_search_guidance_past_the_budget :: the budgeted form only; sessions list the whole catalog, since CodeSmith's Code Mode has no `search`
+180 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_budgets_round_robin_across_namespaces
+203 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_charges_jsdoc_against_the_budget
+214 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_renders_only_the_notice_when_empty
+224 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_renders_a_compact_semantic_delta
+239 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_names_removed_tools_with_callable_expressions
+247 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_restates_a_namespace_whose_description_changed
+256 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_says_nothing_when_only_the_shown_tools_change
+264 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_shows_a_new_signature_the_catalog_would_not
+271 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_counts_new_tools_past_the_update_budget
+276 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_shows_a_changed_signature_no_longer_shown
+290 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_shows_every_new_tool_while_complete
+302 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_introduces_search_once :: the budgeted form only (see 164)
+312 :: ported :: tests/oc_instruction_state.rs::oc_codemode_catalog_falls_back_to_full_replacement
+@codemode/instructions.test.ts
+27 :: ported :: tests/oc_instruction_state.rs::oc_codemode_instructions_say_not_to_call_execute_while_empty :: sessions with no Code Mode tools leave the catalog out instead
+47 :: ported :: tests/oc_instruction_state.rs::oc_codemode_instructions_render_the_catalog_deltas_and_removal
+74 :: ported :: tests/oc_instruction_state.rs::oc_codemode_instructions_store_a_canonical_sorted_snapshot
+@session-runner.test.ts
+1552 :: ported :: tests/oc_instruction_state.rs::oc_session_marks_the_initial_instruction_sync_as_the_baseline
+1569 :: ported :: tests/oc_instruction_state.rs::oc_session_retries_the_first_request_once_context_is_readable :: adapted: the prompt fails before anything is recorded and is sent again
+1597,1625,1664,1697,1743,1776 :: design :: client-server :: a Session moving between Locations
+1820 :: feature :: Native Provider Compaction :: installed native context across fork and revert
+1890 :: ported :: tests/oc_instruction_state.rs::oc_session_seeds_a_fork_with_the_newest_values :: adapted: Store::fork copies the whole session
+1937 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_nested_forks_self_contained
+1961 :: ported :: tests/oc_instruction_state.rs::oc_session_makes_a_fresh_baseline_when_the_state_is_missing :: adapted: a log without instruction records
+1987 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_the_baseline_stable_and_narrates_an_update
+2045 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_the_system_prompt_across_an_undo :: adapted: undo of the newest turn
+2059 :: ported :: tests/oc_instruction_state.rs::oc_session_resyncs_when_an_undo_removes_an_update :: adapted: two undos
+2076 :: ported :: tests/oc_instruction_state.rs::oc_session_hides_an_update_an_undo_left_behind_once_the_source_is_gone :: adapted: two undos
+2291 :: ported :: tests/oc_instruction_state.rs::oc_session_admits_removed_context_as_a_system_message
+2303 :: ported :: tests/oc_instruction_state.rs::oc_session_renders_context_entries_through_add_change_and_removal :: adapted: Store::put_context, no per-source request metadata
+2354 :: ported :: tests/oc_instruction_state.rs::oc_session_retains_null_context_entries_as_values
+2375 :: ported :: tests/oc_instruction_state.rs::oc_store_accepts_context_entries_up_to_256_kib
+2384 :: ported :: tests/oc_instruction_state.rs::oc_store_rejects_context_entries_over_256_kib
+2396 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_instructions_and_updates_after_a_model_switch :: adapted: the session reopened on another model
+2459 :: ported :: tests/oc_instruction_state.rs::oc_session_keeps_values_while_a_source_is_unreadable
+2478 :: ported :: tests/oc_instruction_state.rs::oc_session_narrates_only_the_code_mode_tools_that_change :: adapted: an MCP server that grows a tool when one is called
+2547 :: ported :: tests/oc_instruction_state.rs::oc_session_moves_the_epoch_at_compaction_and_narrates_later_changes
+4126 :: ported :: tests/oc_instruction_state.rs::oc_session_uses_the_epoch_values_after_compaction_while_unreadable
+@reference-instructions.test.ts
+14 :: ported :: tests/oc_references.rs::oc_reference_instructions_list_available_references
+46 :: ported :: tests/oc_references.rs::oc_reference_instructions_are_omitted_without_references
+54 :: ported :: tests/oc_references.rs::oc_reference_instructions_omit_references_without_descriptions
+77 :: ported :: tests/oc_references.rs::oc_reference_instructions_announce_added_and_removed_references
+112 :: ported :: tests/oc_references.rs::oc_reference_instructions_announce_one_delta_for_several_changes
+@reference.test.ts
+22 :: ported :: tests/oc_references.rs::oc_reference_reads_each_configured_source_by_name :: adapted: config names each source; there is no editor
+42,133 :: design :: effect-internal :: batched state transforms and update listeners
+171 :: ported :: tests/oc_references.rs::oc_reference_lists_normalized_sources :: adapted: no owning scope
+193 :: ported :: tests/oc_references.rs::oc_reference_derives_git_paths_without_cache_work
+210 :: ported :: tests/oc_references.rs::oc_reference_preserves_configured_git_descriptions
+@repository.test.ts
+7 :: ported :: tests/oc_references.rs::oc_repository_parses_github_shorthand_and_builds_a_cache_path
+29 :: ported :: tests/oc_references.rs::oc_repository_parses_host_path_and_scp_references
+44 :: ported :: tests/oc_references.rs::oc_repository_caches_a_host_with_a_port_per_host_part
+50 :: ported :: tests/oc_references.rs::oc_repository_keeps_local_file_repositories_apart
+62 :: ported :: tests/oc_references.rs::oc_repository_rejects_unsafe_references_and_branches
+71:7 :: ported :: tests/oc_references.rs::oc_repository_rejects_hosts_with_relative_path_segments
+83 :: ported :: tests/oc_references.rs::oc_repository_compares_identity_independent_of_spelling
+@repository-cache.test.ts
+22 :: ported :: tests/oc_references.rs::oc_repository_cache_persists_the_daily_throttle_and_serializes_refreshes
+64 :: ported :: tests/oc_references.rs::oc_repository_cache_honors_older_attempt_records_and_forced_refreshes
+87 :: ported :: tests/oc_references.rs::oc_repository_cache_throttles_failed_refreshes
+116 :: ported :: tests/oc_references.rs::oc_repository_cache_refreshes_untracked_checkouts_per_branch
+137 :: ported :: tests/oc_references.rs::oc_repository_cache_replaces_a_stale_directory_before_cloning
+156 :: ported :: tests/oc_references.rs::oc_repository_cache_serializes_concurrent_clones
+171 :: ported :: tests/oc_references.rs::oc_repository_cache_replaces_a_checkout_with_another_origin
+189 :: ported :: tests/oc_references.rs::oc_repository_cache_keeps_branch_checkouts_apart
+211 :: ported :: tests/oc_references.rs::oc_repository_cache_does_not_take_an_enclosing_repository_for_the_checkout
+225 :: ported :: tests/oc_references.rs::oc_repository_cache_returns_typed_branch_and_clone_failures
+@session-runner-message.test.ts
+399 :: feature :: Directory Attachments :: a directory attached to a prompt, listed in model context

@@ -114,6 +114,10 @@ return issues.filter(i => i.labels.some(l => l.name === "bug")).map(i => i.title
 ```
 
 The tools are listed in the system prompt with TypeScript-style signatures.
+When a server's tools come, go or change mid-session, the model is told what
+changed in a short update at that point in the conversation (new and removed
+tools, changed signatures), and the system prompt stays as it was; see
+[instructions that change](configuration.md#when-instructions-change).
 
 Programs run in [Boa](https://boajs.dev), a JavaScript engine written in
 Rust. They have no filesystem, network, process or timer access of their
@@ -195,7 +199,8 @@ that contains spaces:
 
 - A server's `instructions` (from its `initialize` reply) join the system
   prompt in an `<mcp_instructions>` block, but only while the session can
-  reach at least one of its tools.
+  reach at least one of its tools. Instructions that change, appear or go
+  away later reach the model as an update.
 - `tools/list_changed` and `prompts/list_changed` notifications refresh the
   lists before the next model request. `notifications/message` log lines go
   to the server's log file. Over HTTP, notifications and server requests

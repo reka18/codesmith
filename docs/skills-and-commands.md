@@ -29,6 +29,12 @@ Set `$CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` (or `$CODESMITH_DISABLE_CLAUDE_CODE`
 to skip the `.claude/skills` folders. Loading a skill is checked with the
 `skill` action and the skill's id.
 
+The folders are read again before each model request. A skill added,
+changed or removed mid-session is announced to the model in a short update
+(only the skills that changed), and the list in the system prompt stays as
+it was, so the cached prompt prefix does too; see [instructions that
+change](configuration.md#when-instructions-change).
+
 ## Commands
 
 Commands are prompt templates. Run them as `/name args` in the

@@ -9,6 +9,7 @@ This page covers where config lives, how files combine, and every key.
 - [Key reference](#key-reference)
 - [Providers and models](#providers-and-models)
 - [Instructions](#instructions)
+- [References](#references)
 - [Media limits](#media-limits)
 - [Compaction](#compaction)
 - [Tool output](#tool-output)
@@ -78,6 +79,7 @@ is parsed:
 | `agents` | built-ins | Add or override agents. See [agents](agents-and-subagents.md#configuring-agents). |
 | `permissions` | see [defaults](permissions.md#defaults) | Ordered rules applied to every agent. They can't widen a built-in agent's own restrictions, and `agents.<id>.permissions` override them. See [where rules come from](permissions.md#where-rules-come-from). |
 | `instructions` | `[]` | Extra instruction files or globs. See [Instructions](#instructions). |
+| `references` | `{}` | Other folders or Git repositories the agent may consult, by name. See [References](#references). |
 | `skills` | `[]` | Extra folders of skills (relative to the project root). See [skills](skills-and-commands.md#skills). |
 | `commands` | `{}` | Inline commands: `{"name": {"template": "...", "description", "agent", "model"}}`. See [commands](skills-and-commands.md#commands). |
 | `snapshots` | `true` | Snapshot files at each turn so turns can be undone. See [undo](sessions.md#undo-and-redo). |
@@ -444,7 +446,8 @@ contain signed reasoning or these ids can't be opened by CodeSmith builds
 older than these features.
 
 CodeSmith's own instructions to the model in the middle of a conversation
-(carry on after a compaction, answer in text on the last allowed step) are
+(carry on after a compaction, answer in text on the last allowed step, and
+[instructions that changed](#when-instructions-change)) are
 system updates, sent as OpenCode does: native `system` messages on Claude
 Opus 4.8, Claude 5 and later on Anthropic Messages, `developer` messages on
 Responses, and `<system-update>` text in a user message elsewhere. Set
@@ -566,6 +569,80 @@ Set `$CODESMITH_DISABLE_CLAUDE_CODE` to stop reading `CLAUDE.md` files and
 `codesmith debug prompt` prints the full system prompt the build agent (or
 the one named with `--agent`) would get in the current folder.
 
+### When instructions change
+
+The system prompt is built from instruction sources: the [Code
+Mode](mcp.md#code-mode) catalog, MCP server instructions,
+[references](#references), [skills](skills-and-commands.md#skills), the
+instruction files above, then today's date and the environment. They are
+read again before each model request, as in OpenCode.
+
+The first request of a session records what they said, and the system prompt
+is rendered from that baseline. When something changes later (you edit
+`AGENTS.md`, a skill or an MCP tool appears, the date rolls over), the change
+is recorded in the session and the model sees a short update at that point in
+the conversation, as a system update (see [Providers and models](#providers-and-models)): a diff of an
+edited file when that is shorter than the new text, the skills or tools that
+came or went. The system prompt stays the same, so the provider's prompt
+cache keeps working.
+
+- A file that cannot be read for now keeps the last value it was read with.
+  On a session's first request it stops the request with an error instead,
+  so the session never starts from instructions it could not read.
+- [Compaction](#compaction) starts a new baseline from the newest values,
+  and the updates before it are folded into the system prompt.
+- [Undo](sessions.md#undo-and-redo) that removes an update starts a fresh
+  baseline at the next request, from what the sources say then.
+- A forked session starts from its source's newest values.
+- Sessions recorded before CodeSmith tracked instructions start a baseline
+  the next time they run.
+
+## References
+
+References name other folders the agent may consult: documentation, a
+library's source, a sibling repository. Each is a local path or a Git
+repository:
+
+```jsonc
+"references": {
+  "docs": "../product-docs",
+  "sdk": "owner/repo",
+  "api": { "repository": "gitlab.com/team/api", "branch": "v2", "description": "Use for the API server's code" },
+  "notes": { "path": "~/notes", "description": "Use for my notes on this project" }
+}
+```
+
+- A string that starts with `.`, `/` or `~` is a local path; any other
+  string is a repository. A relative path is relative to the project root
+  (OpenCode resolves it against the folder of the config file that names
+  it), and `~/` is your home folder.
+- A repository is GitHub `owner/repo` (or `github:owner/repo`), `host/path`
+  (`gitlab.com/group/repo`), scp-style `git@host:path`, or an `https://` or
+  `ssh://` URL. Local `file://` repositories are not supported; name the
+  folder as a path instead. `branch` tracks that branch instead of the
+  remote's default one.
+- Names may not contain `/`, `,`, `` ` `` or whitespace; an invalid entry is
+  skipped.
+- References **with a `description`** are listed to the model, with their
+  folder and description, so it knows when to look there. The others are
+  still configured but not mentioned. `hidden` is accepted for OpenCode
+  configs; CodeSmith does not use it.
+
+CodeSmith keeps a checkout of each repository under the data folder, in
+`repos/<host>/<path>` (`repos/<host>/<path>@<branch>` for a branch), and the
+reference's folder is that checkout. When a session starts, a background
+`git clone` (shallow) fetches a checkout that is missing; one that exists is
+refreshed with `git fetch` and a hard reset to the tracked branch at most once
+a day, failed attempts included. Only `git` reaches the network, each command
+for at most two minutes and without prompting for credentials, so private
+repositories need credentials `git` finds on its own (an SSH agent or a
+credential helper). A checkout whose remote no longer matches is cloned
+again. `$CODESMITH_REPO_CLONE_GITHUB_BASE_URL` replaces `https://github.com/`
+for GitHub repositories (a mirror, say).
+
+Reading files in a reference outside the project asks for
+[`external_directory`](permissions.md) like any other outside folder.
+
 ## Media limits
 
 Images are fitted to these limits before they reach the model:
@@ -676,6 +753,7 @@ until `theme.name` itself changes.
 | `CODESMITH_DISABLE_CLAUDE_CODE` | Don't read `CLAUDE.md` or `.claude/` skills and commands. |
 | `CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` | Don't read `.claude/skills` only. |
 | `CODESMITH_DB` | The session database (default `<data>/codesmith.db`). |
+| `CODESMITH_REPO_CLONE_GITHUB_BASE_URL` | Clone GitHub [references](#references) from this base URL instead of `https://github.com/`. |
 | `XDG_DATA_HOME` | The data folder is `$XDG_DATA_HOME/codesmith`, else `~/.local/share/codesmith`. |
 | `XDG_CACHE_HOME` | The cache folder (the models.dev catalog) is `$XDG_CACHE_HOME/codesmith`, else `~/.cache/codesmith`. |
 | `CODESMITH_MODELS_FETCH` | `1`: fetch the [model catalog](#the-model-catalog-modelsdev) in the background (off by default). |
