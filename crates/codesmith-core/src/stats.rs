@@ -3,10 +3,11 @@
 //! Computed from the session store; nothing leaves the machine.
 
 use crate::config::Cost;
-use crate::store::{Info, Record, Store};
+use crate::store::{Info, Store};
+use anyhow::Context;
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone};
-use codesmith_ai::{Part, Role, Usage};
+use codesmith_ai::{Role, Usage};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -111,6 +112,117 @@ fn streak(days: &BTreeSet<NaiveDate>) -> u64 {
     best
 }
 
+/// What `compute` needs of a log record. Messages are read only for their
+/// role, typed text and tool results, so stored tool output, file contents
+/// and media are skipped rather than copied.
+enum Lite {
+    Message { role: Role, parts: Vec<LitePart> },
+    Step { model: String, usage: Usage },
+    Tool { name: String, ms: u64, error: bool },
+    Other,
+}
+
+enum LitePart {
+    Text(String),
+    ToolResult { name: String, is_error: bool },
+    Other,
+}
+
+/// A record body, as `store::Record` writes it, with only the fields used here.
+#[derive(serde::Deserialize)]
+struct Body<'a> {
+    #[serde(borrow)]
+    kind: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    message: Option<LiteMessage<'a>>,
+    model: Option<String>,
+    usage: Option<Usage>,
+    name: Option<String>,
+    ms: Option<u64>,
+    error: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct LiteMessage<'a> {
+    role: Role,
+    #[serde(borrow)]
+    parts: Vec<RawPart<'a>>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawPart<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    data: Option<&'a serde_json::value::RawValue>,
+}
+
+#[derive(serde::Deserialize)]
+struct ToolResultData {
+    name: String,
+    is_error: bool,
+}
+
+fn lite(body: &str) -> Result<Lite> {
+    let b: Body = serde_json::from_str(body)?;
+    let missing = |f: &str| anyhow::anyhow!("missing field `{f}`");
+    Ok(match b.kind.as_ref() {
+        "message" => {
+            let m = b.message.ok_or_else(|| missing("message"))?;
+            let mut parts = Vec::with_capacity(m.parts.len());
+            for p in m.parts {
+                let data = p.data.map(|d| d.get()).unwrap_or("null");
+                parts.push(match p.kind.as_ref() {
+                    "text" => LitePart::Text(serde_json::from_str(data)?),
+                    "tool_result" => {
+                        let r: ToolResultData = serde_json::from_str(data)?;
+                        LitePart::ToolResult {
+                            name: r.name,
+                            is_error: r.is_error,
+                        }
+                    }
+                    _ => LitePart::Other,
+                });
+            }
+            Lite::Message {
+                role: m.role,
+                parts,
+            }
+        }
+        "step" => Lite::Step {
+            model: b.model.ok_or_else(|| missing("model"))?,
+            usage: b.usage.ok_or_else(|| missing("usage"))?,
+        },
+        "tool" => Lite::Tool {
+            name: b.name.ok_or_else(|| missing("name"))?,
+            ms: b.ms.ok_or_else(|| missing("ms"))?,
+            error: b.error.ok_or_else(|| missing("error"))?,
+        },
+        _ => Lite::Other,
+    })
+}
+
+/// A session's records as (created, record), in order.
+fn lite_entries(db: &Store, id: &str) -> Result<Vec<(i64, Lite)>> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare_cached(
+            "SELECT seq, created, body FROM record WHERE session_id = ?1 ORDER BY seq",
+        )?;
+        let mut rows = stmt.query([id])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            let seq: i64 = r.get(0)?;
+            let created: i64 = r.get(1)?;
+            let body = r.get_ref(2)?.as_str()?;
+            out.push((
+                created,
+                lite(body).with_context(|| format!("record {seq} of {id}"))?,
+            ));
+        }
+        Ok(out)
+    })
+}
+
 pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Result<Stats> {
     let mut s = Stats {
         to: q.to,
@@ -128,27 +240,23 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
                     .starts_with(&format!("{}/", d.trim_end_matches('/')))
         })
     }) {
-        let entries = db.entries(&info.id)?;
-        let has_steps = entries
-            .iter()
-            .any(|e| matches!(e.record, Record::Step { .. }));
-        let has_tools = entries
-            .iter()
-            .any(|e| matches!(e.record, Record::Tool { .. }));
+        let entries = lite_entries(db, &info.id)?;
+        let has_steps = entries.iter().any(|e| matches!(e.1, Lite::Step { .. }));
+        let has_tools = entries.iter().any(|e| matches!(e.1, Lite::Tool { .. }));
         let mut active = false;
-        for e in entries.iter().filter(|e| in_range(e.created)) {
+        for (created, record) in entries.iter().filter(|e| in_range(e.0)) {
             let mut tick = 0;
-            match &e.record {
-                Record::Message { message } => {
-                    for p in &message.parts {
-                        match (&message.role, p) {
-                            (Role::User, Part::Text(t))
+            match record {
+                Lite::Message { role, parts } => {
+                    for p in parts {
+                        match (role, p) {
+                            (Role::User, LitePart::Text(t))
                                 if is_prompt(t) && info.parent_id.is_none() =>
                             {
                                 s.prompts += 1;
                                 tick += 1;
                             }
-                            (Role::User, Part::ToolResult { name, is_error, .. }) if !has_tools => {
+                            (Role::User, LitePart::ToolResult { name, is_error }) if !has_tools => {
                                 let t = &mut tools
                                     .entry(name.clone())
                                     .or_insert_with(|| {
@@ -171,7 +279,7 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
                             _ => {}
                         }
                     }
-                    if message.role == Role::Assistant && !has_steps {
+                    if *role == Role::Assistant && !has_steps {
                         s.steps += 1;
                         tick += 1;
                         models
@@ -183,7 +291,7 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
                             .steps += 1;
                     }
                 }
-                Record::Step { model, usage } => {
+                Lite::Step { model, usage } => {
                     s.steps += 1;
                     tick += 1;
                     add(&mut s.tokens, usage);
@@ -194,7 +302,7 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
                     m.steps += 1;
                     add(&mut m.tokens, usage);
                 }
-                Record::Tool { name, ms, error } => {
+                Lite::Tool { name, ms, error } => {
                     let (t, d) = tools.entry(name.clone()).or_insert_with(|| {
                         (
                             ToolStat {
@@ -212,12 +320,12 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
                     }
                     d.push(*ms);
                 }
-                _ => {}
+                Lite::Other => {}
             }
             active = true;
-            earliest = earliest.min(e.created);
+            earliest = earliest.min(*created);
             if tick > 0 {
-                *s.activity.entry(date(e.created)).or_default() += tick;
+                *s.activity.entry(date(*created)).or_default() += tick;
             }
         }
         // Sessions from before per-step records: use the session's totals.
@@ -626,7 +734,8 @@ pub fn range(days: Option<u32>, year: Option<i32>, all: bool) -> (Option<i64>, i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codesmith_ai::Message;
+    use crate::store::Record;
+    use codesmith_ai::{Message, Part};
     use serde_json::json;
 
     fn info(id: &str, dir: &str, parent: Option<&str>, created: i64) -> Info {
@@ -859,6 +968,80 @@ mod tests {
         assert_eq!(s.active_days, 3);
         assert_eq!(s.streak, 2, "the 10th and 11th");
         assert_eq!(s.from, day(10, 9));
+    }
+
+    #[test]
+    fn records_are_read_only_as_far_as_needed() {
+        let db = Store::memory().unwrap();
+        db.create(&info("x", "/p", None, day(10, 9))).unwrap();
+        let big = "x".repeat(100_000);
+        for r in [
+            Record::Message {
+                message: Message {
+                    role: Role::User,
+                    parts: vec![
+                        Part::Text("quoted \"prompt\" \u{1F600}".into()),
+                        Part::Media(codesmith_ai::Media {
+                            mime: "image/png".into(),
+                            source: codesmith_ai::Source::Base64(big.clone()),
+                            filename: None,
+                        }),
+                    ],
+                },
+            },
+            Record::Message {
+                message: Message {
+                    role: Role::Assistant,
+                    parts: vec![
+                        Part::Reasoning(big.clone()),
+                        Part::ToolCall {
+                            id: "1".into(),
+                            name: "read".into(),
+                            input: json!({"path": big}),
+                        },
+                    ],
+                },
+            },
+            Record::Message {
+                message: Message {
+                    role: Role::User,
+                    parts: vec![Part::ToolResult {
+                        id: "1".into(),
+                        name: "read".into(),
+                        content: big.clone(),
+                        is_error: true,
+                        media: vec![],
+                    }],
+                },
+            },
+            Record::Checkpoint {
+                summary: big.clone(),
+                keep_from: 1,
+            },
+            Record::Snapshot { tree: "t".into() },
+        ] {
+            db.append_at("x", &r, day(10, 10)).unwrap();
+        }
+        let q = Query {
+            from: None,
+            to: day(20, 0),
+            directory: None,
+        };
+        let s = compute(&db, &q, &|_| None).unwrap();
+        assert_eq!((s.prompts, s.steps), (1, 1));
+        assert_eq!(s.tools.len(), 1);
+        assert_eq!((s.tools[0].calls, s.tools[0].failed), (1, 1));
+        // A damaged record is reported, as loading the session would.
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO record (session_id, seq, created, body) VALUES ('x', 99, 0, '{\"kind\":\"message\",\"message\":{\"role\":\"user\"}}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let e = compute(&db, &q, &|_| None).unwrap_err();
+        assert!(format!("{e:#}").contains("record 99 of x"), "{e:#}");
     }
 
     #[test]
