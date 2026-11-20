@@ -22,6 +22,7 @@ mod editor;
 mod markdown;
 #[cfg(test)]
 mod parity;
+pub(crate) mod theme;
 mod view;
 
 pub(crate) use view::display_safe;

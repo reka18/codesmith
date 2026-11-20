@@ -617,6 +617,7 @@ dependencies = [
  "codesmith-core",
  "futures-util",
  "ignore",
+ "libc",
  "nucleo-matcher",
  "pulldown-cmark",
  "ratatui",
