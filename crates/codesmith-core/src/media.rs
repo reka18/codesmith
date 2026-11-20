@@ -70,6 +70,11 @@ pub fn base64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// Base64 (standard alphabet, padded) decoded, or `None` when it is not.
+pub fn unbase64(data: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(data).ok()
+}
+
 /// Why an image could not be sent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImageError {

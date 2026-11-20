@@ -41,6 +41,8 @@ pub trait Sink: Send {
     fn reasoning(&mut self, _delta: &str) {}
     fn tool_start(&mut self, _id: &str, _name: &str, _input: &serde_json::Value) {}
     fn tool_end(&mut self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
+    /// Images and PDFs a call returned, sent just before its `tool_end`.
+    fn tool_media(&mut self, _id: &str, _media: &[codesmith_ai::Media]) {}
     fn step_end(&mut self, _reason: &str, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     fn compacted(&mut self, _before: u64, _after: u64) {}
@@ -64,6 +66,9 @@ impl Sink for ChildSink<'_> {
     fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
         self.parent
             .tool_end(id, &format!("{} › {name}", self.label), output, is_error);
+    }
+    fn tool_media(&mut self, id: &str, media: &[codesmith_ai::Media]) {
+        self.parent.tool_media(id, media);
     }
     fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
         self.parent.retry(attempt, error, wait);
@@ -805,7 +810,9 @@ impl Session {
                         self.run_automation(&input).await
                     }
                     _ if self.mcp_tools().iter().any(|t| t.name == name) => {
-                        self.run_mcp(&name, &input).await
+                        let (content, is_error, m) = self.run_mcp(&name, &input).await;
+                        media = m;
+                        (content, is_error)
                     }
                     _ if self.resource_tools().iter().any(|t| t.name == name) => {
                         self.run_resource_tool(&name, &input).await
@@ -854,6 +861,9 @@ impl Session {
                     ms: started.elapsed().as_millis() as u64,
                     error: is_error,
                 })?;
+                if !media.is_empty() {
+                    sink.tool_media(&id, &media);
+                }
                 sink.tool_end(&id, &name, &content, is_error);
                 plugins.event(
                     &self.loaded.config,
@@ -1257,9 +1267,14 @@ impl Session {
             crate::codemode::MAX_TOOL_CALLS,
             crate::codemode::TIMEOUT,
             |tool, args| async move {
-                match self.run_mcp(&tool, &args).await {
-                    (text, false) => Ok(text),
-                    (text, true) => Err(text),
+                // Code Mode hands results to code as JSON, so images and
+                // PDFs are noted rather than passed on.
+                let (text, failed, media) = self.run_mcp(&tool, &args).await;
+                let text = crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+                if failed {
+                    Err(text)
+                } else {
+                    Ok(text)
                 }
             },
         )
@@ -1271,25 +1286,55 @@ impl Session {
         )
     }
 
-    async fn run_mcp(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+    /// Run an MCP tool: its text, whether it failed, and the images and
+    /// PDFs it returned (fitted to the image limits by the caller).
+    async fn run_mcp(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> (String, bool, Vec<codesmith_ai::Media>) {
         if !self.permitted_mcp().iter().any(|t| t.name == name) {
             return (
                 format!("The {name} tool is not available to this agent."),
                 true,
+                vec![],
             );
         }
         let args = tool::repair(input);
         let title = format!("Run MCP tool {name}");
         if let Err(e) = self.allowed(name, "*", title) {
-            return (e, true);
+            return (e, true, vec![]);
         }
-        match self.mcp.call(name, args).await {
-            Ok((text, is_error)) => (
+        match self.mcp.call_media(name, args).await {
+            Ok((text, is_error, media)) => (
                 tool::truncate(&text, self.limits, &paths::tool_output_dir()),
                 is_error,
+                media,
             ),
-            Err(e) => (format!("MCP tool {name} failed: {e:#}"), true),
+            Err(e) => (format!("MCP tool {name} failed: {e:#}"), true, vec![]),
         }
+    }
+
+    /// A file attached to a prompt by path, as `read` would see it: the path
+    /// is checked with the same `external_directory` and `read` permission
+    /// requests, then taken as media when it is an image or PDF (`Ok(None)`
+    /// for anything else).
+    pub fn attach(&self, path: &str) -> std::result::Result<Option<codesmith_ai::Media>, String> {
+        let ctx = Ctx {
+            cwd: self.cwd.clone(),
+            root: self.root.clone(),
+            gate: &self.gate,
+            shell: self.shell.clone(),
+            session_id: self.id.clone(),
+            limits: self.limits,
+            client: self.client.clone(),
+            jobs: None,
+            websearch: None,
+            format: None,
+            lsp: None,
+        };
+        let target = crate::tool::read::authorize(&ctx, path)?;
+        crate::media::attachment(&target, path, &self.loaded.config.media.image)
     }
 
     fn run_question(&mut self, input: &serde_json::Value) -> (String, bool) {

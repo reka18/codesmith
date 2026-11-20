@@ -16,9 +16,12 @@
 //! - `GET    /health`
 //! - `GET    /sessions` · `POST /sessions {agent?, model?}`
 //! - `GET    /sessions/{id}` (info and messages) · `DELETE /sessions/{id}`
-//! - `POST   /sessions/{id}/messages {text}` → SSE: text, reasoning,
-//!   tool_start, tool_end, step_end, retry, compacted, todos, notice,
-//!   permission, question, done
+//! - `POST   /sessions/{id}/messages {text, attachments?}` → SSE: text,
+//!   reasoning, tool_start, tool_end, step_end, retry, compacted, todos,
+//!   notice, permission, question, done. `attachments` are images or PDFs,
+//!   each `{data: base64, mime?, name?}` or `{path}`; the bytes decide the
+//!   type. A path is read as the `read` tool would, so it is asked about
+//!   (`external_directory`, `read`) over the stream before the turn starts.
 //! - `POST   /sessions/{id}/abort`
 //! - `POST   /sessions/{id}/permissions/{rid} {reply: once|always|reject, message?}`
 //! - `POST   /sessions/{id}/questions/{qid} {answers: [[...]]}` or `{dismiss: true}`
@@ -469,10 +472,11 @@ async fn message(
     UrlPath(id): UrlPath<String>,
     Json(b): Json<Value>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let attachments = attachments(&b, &st.loaded.config.media.image)?;
     let text = b["text"]
         .as_str()
         .map(str::to_string)
-        .filter(|t| !t.trim().is_empty())
+        .filter(|t| !t.trim().is_empty() || !attachments.is_empty())
         .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "\"text\" is required".into()))?;
     let live = st.live(&id).await?;
     let mut g = live.lock().await;
@@ -482,7 +486,30 @@ async fn message(
     let (live2, prompter) = (live.clone(), g.prompter.clone());
     g.task = Some(tokio::spawn(async move {
         let mut sink = JsonSink(tx.clone());
-        let r = s.prompt(&text, &mut sink).await;
+        // Paths are checked now, so their permission requests reach this
+        // stream.
+        let mut media = Vec::new();
+        let mut failed = None;
+        for a in attachments {
+            match a {
+                Attachment::Media(m) => media.push(m),
+                Attachment::Path(p) => match s.attach(&p) {
+                    Ok(Some(m)) => media.push(m),
+                    Ok(None) => {
+                        failed = Some(format!("attachment {p} is not an image or PDF"));
+                        break;
+                    }
+                    Err(e) => {
+                        failed = Some(format!("attachment {p}: {e}"));
+                        break;
+                    }
+                },
+            }
+        }
+        let r = match failed {
+            Some(e) => Err(anyhow::anyhow!(e)),
+            None => s.prompt_with(&text, media, &mut sink).await,
+        };
         let done = json!({"type": "done", "error": r.err().map(|e| format!("{e:#}")), "usage": s.usage, "title": s.title});
         let mut g = live2.lock().await;
         g.session = Some(s);
@@ -499,6 +526,60 @@ async fn message(
         }
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// A prompt attachment: inline media, or a path checked when the turn starts.
+enum Attachment {
+    Media(codesmith_ai::Media),
+    Path(String),
+}
+
+/// The `attachments` of a message body. Inline data must be an image or
+/// PDF; images are fitted to the configured limits.
+fn attachments(
+    b: &Value,
+    limits: &codesmith_core::media::ImageLimits,
+) -> Result<Vec<Attachment>, ApiError> {
+    use codesmith_core::media;
+    let bad = |why: String| ApiError(StatusCode::BAD_REQUEST, why);
+    let list = match &b["attachments"] {
+        Value::Null => return Ok(vec![]),
+        Value::Array(list) => list,
+        _ => return Err(bad("\"attachments\" must be a list".into())),
+    };
+    let mut out = Vec::new();
+    for (i, a) in list.iter().enumerate() {
+        match (a["data"].as_str(), a["path"].as_str()) {
+            (Some(data), None) => {
+                let name = a["name"].as_str().unwrap_or("attachment").to_string();
+                let bytes = media::unbase64(data.trim())
+                    .ok_or_else(|| bad(format!("attachment {i}: \"data\" is not base64")))?;
+                let mime = media::detect(&bytes)
+                    .ok_or_else(|| bad(format!("attachment {i}: not an image or PDF")))?;
+                let mut m = codesmith_ai::Media::base64(mime, data.trim());
+                if mime.starts_with("image/") {
+                    match media::normalize(mime, data.trim(), limits) {
+                        Ok(None) => {}
+                        Ok(Some((mime, data))) => m = codesmith_ai::Media::base64(mime, data),
+                        Err(e) => return Err(bad(e.message(&name, limits))),
+                    }
+                }
+                out.push(Attachment::Media(match a["name"].as_str() {
+                    Some(n) => m.named(n),
+                    None => m,
+                }));
+            }
+            (None, Some(path)) if !path.trim().is_empty() => {
+                out.push(Attachment::Path(path.to_string()))
+            }
+            _ => {
+                return Err(bad(format!(
+                    "attachment {i}: give one of \"data\" (base64) or \"path\""
+                )))
+            }
+        }
+    }
+    Ok(out)
 }
 
 async fn abort(
@@ -671,7 +752,13 @@ mod tests {
     async fn fake_model() -> String {
         async fn chat(Json(b): Json<Value>) -> Response {
             let last = b["messages"].as_array().unwrap().last().unwrap().clone();
-            let chunks: Vec<Value> = if b.get("tools").is_none() {
+            let chunks: Vec<Value> = if last["content"].is_array() {
+                // A prompt with attachments: say what came, run nothing.
+                let parts = last["content"].clone();
+                vec![
+                    json!({"choices": [{"delta": {"content": format!("got: {parts}")}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3, "completion_tokens": 2}}),
+                ]
+            } else if b.get("tools").is_none() {
                 vec![
                     json!({"choices": [{"delta": {"content": "A title"}, "finish_reason": "stop"}]}),
                 ]
@@ -714,12 +801,19 @@ mod tests {
     }
 
     async fn start(dir: &std::path::Path, token: &str) -> String {
+        start_with(dir, token, json!([])).await
+    }
+
+    /// A server whose config adds `permissions` to asking for shell commands.
+    async fn start_with(dir: &std::path::Path, token: &str, permissions: Value) -> String {
         let base = fake_model().await;
+        let mut rules = vec![json!({"action": "shell", "resource": "*", "effect": "ask"})];
+        rules.extend(permissions.as_array().cloned().unwrap_or_default());
         let config = serde_json::from_value(json!({
             "model": "fake/m",
             "snapshots": false,
             "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
-            "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]
+            "permissions": rules
         }))
         .unwrap();
         let loaded = Loaded {
@@ -749,9 +843,20 @@ mod tests {
         text: &str,
         reply: Value,
     ) -> Vec<Value> {
+        turn_with(c, base, id, json!({"text": text}), reply).await
+    }
+
+    /// `turn` with a whole message body.
+    async fn turn_with(
+        c: &reqwest::Client,
+        base: &str,
+        id: &str,
+        body: Value,
+        reply: Value,
+    ) -> Vec<Value> {
         let resp = c
             .post(format!("{base}/sessions/{id}/messages"))
-            .json(&json!({"text": text}))
+            .json(&body)
             .send()
             .await
             .unwrap();
@@ -1208,5 +1313,160 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 404);
         assert!(db.get(id).unwrap().is_some(), "not deleted");
+    }
+
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    async fn new_session(c: &reqwest::Client, base: &str) -> String {
+        let s: Value = c
+            .post(format!("{base}/sessions"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        s["id"].as_str().unwrap().to_string()
+    }
+
+    fn said(ev: &[Value]) -> String {
+        ev.iter()
+            .filter(|e| e["type"] == "text")
+            .filter_map(|e| e["delta"].as_str())
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attachments_inline_and_by_path() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(PIXEL)
+            .unwrap();
+        std::fs::write(root.join("shot.png"), &png).unwrap();
+        std::fs::write(root.join("notes.txt"), "text").unwrap();
+        std::fs::write(root.join("secret.png"), &png).unwrap();
+        // Outside the project (and the temp dir, which is allowed).
+        let far = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let base = start_with(
+            &root,
+            TOKEN,
+            json!([
+                {"action": "read", "resource": "*.png", "effect": "ask"},
+                {"action": "external_directory", "resource": "*", "effect": "ask"},
+                {"action": "read", "resource": "secret*", "effect": "deny"}
+            ]),
+        )
+        .await;
+        let c = client();
+        let id = new_session(&c, &base).await;
+        let url = format!("data:image/png;base64,{PIXEL}");
+
+        // Inline data needs no permission.
+        let ev = turn_with(
+            &c,
+            &base,
+            &id,
+            json!({"text": "look", "attachments": [{"mime": "image/png", "data": PIXEL, "name": "a.png"}]}),
+            json!({"reply": "reject"}),
+        )
+        .await;
+        assert!(!ev.iter().any(|e| e["type"] == "permission"), "{ev:?}");
+        assert!(said(&ev).contains(&url), "{ev:?}");
+        assert!(ev.last().unwrap()["error"].is_null());
+
+        // A path is asked about as `read` would ask; a refusal stops the turn.
+        let ev = turn_with(
+            &c,
+            &base,
+            &id,
+            json!({"text": "look", "attachments": [{"path": "shot.png"}]}),
+            json!({"reply": "reject"}),
+        )
+        .await;
+        let asked = ev.iter().find(|e| e["type"] == "permission").unwrap();
+        assert_eq!(asked["action"], "read");
+        assert_eq!(asked["resources"], json!(["shot.png"]));
+        let done = ev.last().unwrap();
+        assert!(
+            done["error"]
+                .as_str()
+                .unwrap()
+                .contains("attachment shot.png"),
+            "{done}"
+        );
+        assert!(!ev.iter().any(|e| e["type"] == "text"));
+
+        // Approved, it reaches the model.
+        let ev = turn_with(
+            &c,
+            &base,
+            &id,
+            json!({"text": "look", "attachments": [{"path": "shot.png"}]}),
+            json!({"reply": "once"}),
+        )
+        .await;
+        assert!(said(&ev).contains(&url), "{ev:?}");
+
+        // A denied path is refused without asking.
+        let ev = turn_with(
+            &c,
+            &base,
+            &id,
+            json!({"text": "look", "attachments": [{"path": "secret.png"}]}),
+            json!({"reply": "once"}),
+        )
+        .await;
+        assert!(!ev.iter().any(|e| e["type"] == "permission"), "{ev:?}");
+        assert!(ev.last().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("attachment secret.png"));
+
+        // Outside the project, external_directory is asked first.
+        let ev = turn_with(
+            &c,
+            &base,
+            &id,
+            json!({"text": "look", "attachments": [{"path": far}]}),
+            json!({"reply": "reject"}),
+        )
+        .await;
+        let asked: Vec<&Value> = ev.iter().filter(|e| e["type"] == "permission").collect();
+        assert_eq!(asked.len(), 1, "{ev:?}");
+        assert_eq!(asked[0]["action"], "external_directory");
+        assert!(ev.last().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("attachment"));
+
+        // Text files are not attachments; bad bodies are refused up front.
+        let ev = turn_with(
+            &c,
+            &base,
+            &id,
+            json!({"text": "look", "attachments": [{"path": "notes.txt"}]}),
+            json!({"reply": "once"}),
+        )
+        .await;
+        assert!(ev.last().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("not an image or PDF"));
+        for body in [
+            json!({"text": "x", "attachments": [{"data": "bm90IGFuIGltYWdl"}]}),
+            json!({"text": "x", "attachments": [{"data": "%%%"}]}),
+            json!({"text": "x", "attachments": [{}]}),
+            json!({"text": "x", "attachments": "shot.png"}),
+        ] {
+            let r = c
+                .post(format!("{base}/sessions/{id}/messages"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 400, "{body}");
+        }
     }
 }

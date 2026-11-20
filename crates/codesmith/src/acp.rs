@@ -7,9 +7,10 @@
 //! edit diffs, replay, config options and elicitation.
 
 use anyhow::{anyhow, Result};
-use codesmith_ai::{Message, Part, Role, Usage};
+use codesmith_ai::{Media, Message, Part, Role, Usage};
 use codesmith_core::config::Loaded;
 use codesmith_core::mcp::{Mcp, ServerConfig};
+use codesmith_core::media::{self, ImageLimits};
 use codesmith_core::permission::{Asker, Effect, Reply, Request, Rule};
 use codesmith_core::question::{Prompt as Question, Questioner};
 use codesmith_core::session::{Options, Session, Sink};
@@ -227,7 +228,10 @@ fn result_update(
     input: &Value,
     output: &str,
     failed: bool,
+    media: &[Media],
 ) -> Value {
+    let mut content = vec![text_content(output)];
+    content.extend(tool_media_content(media));
     if failed {
         json!({
             "sessionUpdate": "tool_call_update",
@@ -237,7 +241,7 @@ fn result_update(
             "title": tool_title(name, input),
             "locations": locations(cwd, name, input),
             "rawInput": raw_input(cwd, name, input),
-            "content": [text_content(output)],
+            "content": content,
             "rawOutput": {"error": clip(output, 20_000)},
         })
     } else {
@@ -246,7 +250,7 @@ fn result_update(
             "toolCallId": id,
             "status": "completed",
             "locations": locations(cwd, name, input),
-            "content": [text_content(output)],
+            "content": content,
         })
     }
 }
@@ -370,6 +374,8 @@ struct AcpSink {
     in_reasoning: bool,
     /// Calls in flight: name, input and, for edits, the file before.
     tools: HashMap<String, (String, Value, Option<Before>)>,
+    /// Media of the call about to end, from `tool_media`.
+    media: HashMap<String, Vec<Media>>,
     retrying: bool,
 }
 
@@ -386,6 +392,7 @@ impl AcpSink {
             reasoning: 0,
             in_reasoning: false,
             tools: HashMap::new(),
+            media: HashMap::new(),
             retrying: false,
         }
     }
@@ -447,7 +454,8 @@ impl Sink for AcpSink {
             .tools
             .remove(id)
             .unwrap_or_else(|| (name.to_string(), json!({}), None));
-        let mut update = result_update(&self.cwd, id, &name, &input, output, is_error);
+        let media = self.media.remove(id).unwrap_or_default();
+        let mut update = result_update(&self.cwd, id, &name, &input, output, is_error, &media);
         if let (false, Some((path, old))) = (is_error, before) {
             if let Ok(new) = std::fs::read_to_string(&path) {
                 if old.as_deref() != Some(new.as_str()) {
@@ -459,6 +467,9 @@ impl Sink for AcpSink {
             }
         }
         self.conn.update(&self.session, update);
+    }
+    fn tool_media(&mut self, id: &str, media: &[Media]) {
+        self.media.insert(id.to_string(), media.to_vec());
     }
     fn todos(&mut self, todos: &[Todo]) {
         self.conn.update(&self.session, plan(todos));
@@ -843,33 +854,163 @@ pub fn grants(dirs: &[PathBuf]) -> Vec<Rule> {
         .collect()
 }
 
-/// Prompt content blocks as one message.
-pub fn prompt_text(blocks: &Value) -> String {
+/// The file name at the end of a URI, when it has one.
+fn uri_name(uri: &str) -> Option<String> {
+    if uri.starts_with("data:") {
+        return None;
+    }
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
+    path.rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+}
+
+/// Base64 prompt data as media when its bytes are an image or PDF, fitted
+/// to `limits`; `Ok(None)` for other data. Bad base64 or an image that
+/// cannot be fitted is an invalid prompt.
+fn prompt_media(
+    data: &str,
+    uri: Option<&str>,
+    limits: &ImageLimits,
+) -> Result<Option<Media>, RpcError> {
+    let data = data.trim();
+    let bytes = media::unbase64(data).ok_or_else(|| {
+        invalid(
+            "prompt content is not valid base64",
+            json!({"field": "prompt"}),
+        )
+    })?;
+    let Some(mime) = media::detect(&bytes) else {
+        return Ok(None);
+    };
+    let name = uri.and_then(uri_name);
+    let mut m = Media::base64(mime, data);
+    if mime.starts_with("image/") {
+        let shown = name.as_deref().unwrap_or("image");
+        match media::normalize(mime, data, limits) {
+            Ok(None) => {}
+            Ok(Some((mime, data))) => m = Media::base64(mime, data),
+            Err(e) => {
+                return Err(invalid(
+                    e.message(shown, limits),
+                    json!({"field": "prompt"}),
+                ))
+            }
+        }
+    }
+    Ok(Some(match name {
+        Some(n) => m.named(n),
+        None => m,
+    }))
+}
+
+/// A link the model can follow: a file path to read, or a URL.
+fn reference(name: &str, uri: &str) -> String {
+    match uri.strip_prefix("file://") {
+        Some(path) => format!("Referenced: {name} ({path})"),
+        None => format!("[{name}]({uri})"),
+    }
+}
+
+/// Prompt content blocks as one message and its attachments: text and
+/// embedded text resources join the message, images and binary resources
+/// that are images or PDFs become media (fitted to `limits`), images given
+/// only by URI and resource links are referenced in the text.
+pub fn prompt_content(
+    blocks: &Value,
+    limits: &ImageLimits,
+) -> Result<(String, Vec<Media>), RpcError> {
     let mut parts = Vec::new();
+    let mut attached = Vec::new();
     for b in blocks.as_array().into_iter().flatten() {
         match b["type"].as_str() {
             Some("text") => parts.push(b["text"].as_str().unwrap_or("").to_string()),
+            Some("image") => {
+                let data = b["data"].as_str().filter(|d| !d.is_empty());
+                let uri = b["uri"].as_str().filter(|u| !u.is_empty());
+                match (data, uri) {
+                    (Some(d), _) => match prompt_media(d, uri, limits)? {
+                        Some(m) => attached.push(m),
+                        None => parts.push("[image content omitted: not a supported image]".into()),
+                    },
+                    (None, Some(u)) if u.starts_with("data:") => {
+                        match Media::from_data_url(u).and_then(|m| m.inline().map(str::to_string)) {
+                            Some(d) => match prompt_media(&d, None, limits)? {
+                                Some(m) => attached.push(m),
+                                None => parts
+                                    .push("[image content omitted: not a supported image]".into()),
+                            },
+                            None => {
+                                return Err(invalid(
+                                    "image content has an invalid data URI",
+                                    json!({"field": "prompt"}),
+                                ))
+                            }
+                        }
+                    }
+                    (None, Some(u)) => {
+                        let name = uri_name(u).unwrap_or_else(|| "image".into());
+                        parts.push(reference(&name, u));
+                    }
+                    (None, None) => {
+                        return Err(invalid(
+                            "image content has no data or uri",
+                            json!({"field": "prompt"}),
+                        ))
+                    }
+                }
+            }
             Some("resource") => {
                 let r = &b["resource"];
                 let uri = r["uri"].as_str().unwrap_or("");
-                match r["text"].as_str() {
-                    Some(t) => parts.push(format!("<file uri=\"{uri}\">\n{t}\n</file>")),
-                    None => parts.push(format!("[attached resource {uri} omitted: binary]")),
+                match (r["text"].as_str(), r["blob"].as_str()) {
+                    (Some(t), _) => parts.push(format!("<file uri=\"{uri}\">\n{t}\n</file>")),
+                    (None, Some(blob)) => match prompt_media(blob, Some(uri), limits)? {
+                        Some(m) => attached.push(m),
+                        None => parts.push(format!("[attached resource {uri} omitted: binary]")),
+                    },
+                    (None, None) => {
+                        parts.push(format!("[attached resource {uri} omitted: binary]"))
+                    }
                 }
             }
-            Some("resource_link") => parts.push(format!(
-                "Referenced: {} ({})",
+            Some("resource_link") => parts.push(reference(
                 b["name"].as_str().unwrap_or(""),
-                b["uri"]
-                    .as_str()
-                    .unwrap_or("")
-                    .trim_start_matches("file://")
+                b["uri"].as_str().unwrap_or(""),
             )),
             Some(other) => parts.push(format!("[{other} content omitted: not supported]")),
             None => {}
         }
     }
-    parts.join("\n\n")
+    Ok((parts.join("\n\n"), attached))
+}
+
+/// Media as ACP content: images as `image`, anything else as an embedded
+/// binary resource. Remote media is skipped.
+fn media_content(m: &Media) -> Option<Value> {
+    let data = m.inline()?;
+    let uri = m.filename.as_ref().map(|n| format!("file:///{n}"));
+    Some(if m.kind() == codesmith_ai::MediaKind::Image {
+        let mut v = json!({"type": "image", "mimeType": m.mime, "data": data});
+        if let Some(u) = uri {
+            v["uri"] = json!(u);
+        }
+        v
+    } else {
+        json!({"type": "resource", "resource": {"uri": uri.unwrap_or_else(|| "file:///file".into()), "mimeType": m.mime, "blob": data}})
+    })
+}
+
+/// A tool result's images as `tool_call_update` content (ACP tool content
+/// carries images, not other binary media).
+fn tool_media_content(media: &[Media]) -> Vec<Value> {
+    media
+        .iter()
+        .filter(|m| m.kind() == codesmith_ai::MediaKind::Image)
+        .filter_map(media_content)
+        .map(|c| json!({"type": "content", "content": c}))
+        .collect()
 }
 
 fn primary_agents(config: &config::Config) -> Vec<agent::Agent> {
@@ -1101,7 +1242,7 @@ impl Agent {
         };
         // Each call's result is the first one with its id after it (ids can
         // repeat across turns).
-        let results: Vec<(usize, &str, &str, bool)> = items
+        let results: Vec<(usize, &str, &str, bool, &[Media])> = items
             .iter()
             .enumerate()
             .filter_map(|(i, item)| match item {
@@ -1114,8 +1255,15 @@ impl Agent {
                     id,
                     content,
                     is_error,
+                    media,
                     ..
-                } => Some((i, id.as_str(), content.as_str(), *is_error)),
+                } => Some((
+                    i,
+                    id.as_str(),
+                    content.as_str(),
+                    *is_error,
+                    media.as_slice(),
+                )),
                 _ => None,
             })
             .collect();
@@ -1139,6 +1287,14 @@ impl Agent {
                     (Role::User, Part::Text(t)) if is_prompt(t) => {
                         self.conn.update(id, chunk("user_message_chunk", mid, t))
                     }
+                    (Role::User, Part::Media(media)) => {
+                        if let Some(content) = media_content(media) {
+                            self.conn.update(
+                                id,
+                                json!({"sessionUpdate": "user_message_chunk", "messageId": mid, "content": content}),
+                            )
+                        }
+                    }
                     (Role::Assistant, Part::Text(t)) => {
                         self.conn.update(id, chunk("agent_message_chunk", mid, t))
                     }
@@ -1159,10 +1315,10 @@ impl Agent {
                         call["sessionUpdate"] = json!("tool_call");
                         self.conn.update(id, call);
                         let result = results.iter().find(|(i, rid, ..)| *i > index && rid == cid);
-                        if let Some((_, _, output, failed)) = result {
+                        if let Some((_, _, output, failed, media)) = result {
                             self.conn.update(
                                 id,
-                                result_update(&s.cwd, cid, name, input, output, *failed),
+                                result_update(&s.cwd, cid, name, input, output, *failed, media),
                             );
                         }
                     }
@@ -1180,7 +1336,7 @@ impl Agent {
                     "protocolVersion": PROTOCOL_VERSION,
                     "agentCapabilities": {
                         "loadSession": true,
-                        "promptCapabilities": {"image": false, "audio": false, "embeddedContext": true},
+                        "promptCapabilities": {"image": true, "audio": false, "embeddedContext": true},
                         "mcpCapabilities": {"http": true, "sse": false},
                         "sessionCapabilities": {"additionalDirectories": {}, "close": {}, "delete": {}, "fork": {}, "list": {}, "resume": {}},
                     },
@@ -1409,6 +1565,7 @@ impl Agent {
     async fn prompt(self: &Arc<Self>, rpc: Value, p: &Value) -> Result<(), RpcError> {
         let sid = p["sessionId"].as_str().unwrap_or("").to_string();
         let slot = self.slot(&sid).await?;
+        let (text, attached) = prompt_content(&p["prompt"], &slot.loaded.config.media.image)?;
         let mut s = slot.session.lock().await.take().ok_or_else(|| {
             internal(
                 format!("Session already has an active ACP prompt: {sid}"),
@@ -1417,13 +1574,14 @@ impl Agent {
         })?;
         *slot.prompt.lock().unwrap() = Some(rpc.clone());
         *slot.stats.lock().unwrap() = TurnStats::default();
-        let text = prompt_text(&p["prompt"]);
         let compaction = self.client_has("/session/compaction");
         let (me, slot2) = (self.clone(), slot.clone());
         let task = tokio::spawn(async move {
             let mut sink = AcpSink::new(me.conn.clone(), &sid, &slot2, compaction);
             let title_before = s.title.clone();
-            let result = me.run_turn(&mut s, &slot2, &text, &mut sink).await;
+            let result = me
+                .run_turn(&mut s, &slot2, &text, attached, &mut sink)
+                .await;
             // A cancel took the request: it answers, and reloads the session.
             let Some(rpc) = slot2.prompt.lock().unwrap().take() else {
                 return;
@@ -1513,6 +1671,7 @@ impl Agent {
         s: &mut Session,
         slot: &Slot,
         text: &str,
+        attached: Vec<Media>,
         sink: &mut AcpSink,
     ) -> Result<()> {
         if let Some((name, args)) = command::parse_invocation(text) {
@@ -1540,7 +1699,7 @@ impl Agent {
                     return s.append_exchange(text, &report, &usage);
                 }
                 let text = s.expand_command(c, &args).await?;
-                return s.prompt(&text, sink).await;
+                return s.prompt_with(&text, attached, sink).await;
             }
             if name == "compact" {
                 if let Err(e) = s.compact(sink).await {
@@ -1549,7 +1708,7 @@ impl Agent {
                 return Ok(());
             }
         }
-        s.prompt(text, sink).await
+        s.prompt_with(text, attached, sink).await
     }
 
     /// Stop a running turn and answer its prompt with `cancelled`. The
@@ -1569,7 +1728,7 @@ impl Agent {
         if let Some((id, name, input)) = slot.current.lock().unwrap().take() {
             self.conn.update(
                 sid,
-                result_update(&slot.cwd, &id, &name, &input, "Cancelled", true),
+                result_update(&slot.cwd, &id, &name, &input, "Cancelled", true, &[]),
             );
         }
         let stats = std::mem::take(&mut *slot.stats.lock().unwrap());
@@ -1708,9 +1867,11 @@ pub async fn run() -> Result<()> {
 /// JSON-RPC test client.
 ///
 /// Not ported, because CodeSmith lacks or deliberately omits the feature:
-/// - image and audio prompt content (CodeSmith prompts are text), and
-///   OpenCode's readable-file attachment of `resource_link`s (CodeSmith
-///   references them in the text);
+/// - audio prompt content, and OpenCode's readable-file attachment of
+///   `resource_link`s and `file://` images without data (CodeSmith
+///   references them in the text, for `read` and its permission checks);
+/// - non-image media in tool results (ACP tool content carries images;
+///   a PDF a tool returned reaches the model but not the client);
 /// - effort variants (`effort` config option) and `parseModelSelection`'s
 ///   variant suffixes: CodeSmith models have no variants;
 /// - child-session updates (`opencode/child-session-updates`), background
@@ -1756,6 +1917,8 @@ mod tests {
     }
 
     static FLAKY: AtomicUsize = AtomicUsize::new(0);
+    /// Requests whose prompt carried attachments.
+    static MEDIA_REQUESTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
     /// A scripted model: the latest user message picks the script, and the
     /// tool results since it pick the step.
@@ -1770,23 +1933,40 @@ mod tests {
                     reply("A title")
                 });
             }
-            // The engine's continuation nudge continues the same prompt.
+            // The engine's continuation nudge continues the same prompt, as
+            // do the images a tool returned (a user message of images only).
             let at = msgs
                 .iter()
                 .rposition(|m| {
                     m["role"] == "user"
                         && m["content"].as_str()
                             != Some(codesmith_core::runner::CONTINUE_AFTER_OUTPUT_LIMIT)
+                        && !m["content"]
+                            .as_array()
+                            .is_some_and(|parts| parts.iter().all(|p| p["type"] == "image_url"))
                 })
                 .unwrap();
-            let prompt = msgs[at]["content"].as_str().unwrap_or("").to_string();
+            // A prompt with attachments is a list of parts: its text picks.
+            let prompt = match &msgs[at]["content"] {
+                Value::Array(parts) => {
+                    MEDIA_REQUESTS.lock().unwrap().push(b.clone());
+                    parts
+                        .iter()
+                        .filter_map(|p| p["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+                c => c.as_str().unwrap_or("").to_string(),
+            };
             let done = msgs[at..].iter().filter(|m| m["role"] == "tool").count();
             let last = msgs.last().unwrap()["content"]
                 .as_str()
                 .unwrap_or("")
                 .to_string();
             let after = format!("done: {last}");
-            let chunks = if prompt.contains("think") {
+            let chunks = if prompt.contains("describe") {
+                reply("described")
+            } else if prompt.contains("think") {
                 vec![
                     json!({"choices": [{"delta": {"reasoning_content": "think-1"}}]}),
                     json!({"choices": [{"delta": {"reasoning_content": " continued"}}]}),
@@ -2242,6 +2422,122 @@ mod tests {
                 json!({"sessionId": sid, "cwd": elsewhere})
             );
         }
+    }
+
+    // prompt-content.subprocess.test.ts: "accepts ... inline ... image";
+    // replay.test.ts: images replay as image content.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn image_prompts_reach_the_model_and_replay() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let init = c
+            .request(
+                "initialize",
+                json!({"protocolVersion": 1, "clientCapabilities": {}}),
+            )
+            .await;
+        assert_eq!(
+            init["result"]["agentCapabilities"]["promptCapabilities"],
+            json!({"image": true, "audio": false, "embeddedContext": true})
+        );
+        let sid = c.new_session(&cwd).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image", "mimeType": "image/png", "data": PIXEL, "uri": "file:///tmp/shot.png"},
+                ]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+        let text: String = updates(&seen, "agent_message_chunk")
+            .iter()
+            .map(|u| u["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(text, "described");
+        let url = format!("data:image/png;base64,{PIXEL}");
+        let reached = MEDIA_REQUESTS.lock().unwrap().iter().any(|b| {
+            b["messages"].as_array().unwrap().iter().any(|m| {
+                m["role"] == "user"
+                    && m["content"]
+                        == json!([
+                            {"type": "text", "text": "describe this"},
+                            {"type": "image_url", "image_url": {"url": url}},
+                        ])
+            })
+        });
+        assert!(reached, "the image reached the model as an image part");
+
+        // An image without data or uri is refused.
+        let r = c
+            .request(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "image", "mimeType": "image/png", "data": ""}]}),
+            )
+            .await;
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+
+        let mut c2 = start(&cwd, &base);
+        let id = c2
+            .call(
+                "session/load",
+                json!({"cwd": cwd, "sessionId": sid, "mcpServers": []}),
+            )
+            .await;
+        let (_, seen) = c2.until(id, |_| None).await;
+        let users = updates(&seen, "user_message_chunk");
+        assert_eq!(users.len(), 2, "{users:?}");
+        assert_eq!(
+            users[0]["content"],
+            json!({"type": "text", "text": "describe this"})
+        );
+        assert_eq!(
+            users[1]["content"],
+            json!({"type": "image", "mimeType": "image/png", "data": PIXEL, "uri": "file:///shot.png"})
+        );
+        assert_eq!(users[0]["messageId"], users[1]["messageId"]);
+    }
+
+    // replay.test.ts: tool results with images carry them as image content.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_result_images_are_image_content() {
+        let (_d, cwd, base) = tmp().await;
+        use base64::Engine;
+        std::fs::write(
+            cwd.join("pixel.png"),
+            base64::engine::general_purpose::STANDARD
+                .decode(PIXEL)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "read pixel.png"}]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, allow_once).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+        let image = json!({"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": PIXEL, "uri": "file:///pixel.png"}});
+        let upd = updates(&seen, "tool_call_update");
+        let last = upd.last().unwrap();
+        assert_eq!(last["status"], "completed");
+        assert_eq!(last["content"][1], image, "{last}");
+
+        let mut c2 = start(&cwd, &base);
+        let id = c2
+            .call(
+                "session/load",
+                json!({"cwd": cwd, "sessionId": sid, "mcpServers": []}),
+            )
+            .await;
+        let (_, seen) = c2.until(id, |_| None).await;
+        let upd = updates(&seen, "tool_call_update");
+        assert_eq!(upd[0]["content"][1], image, "replayed too");
     }
 
     // session.test.ts: "close removes a new session that was never prompted
@@ -3078,15 +3374,73 @@ mod tests {
         assert!(retries[1].is_null());
     }
 
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
     #[test]
     fn content_and_servers() {
-        let t = prompt_text(&json!([
-            {"type": "text", "text": "look"},
-            {"type": "resource", "resource": {"uri": "file:///p/a.rs", "text": "fn a() {}"}},
-            {"type": "resource_link", "name": "b.rs", "uri": "file:///p/b.rs"},
-            {"type": "image", "data": "..."}
-        ]));
-        assert_eq!(t, "look\n\n<file uri=\"file:///p/a.rs\">\nfn a() {}\n</file>\n\nReferenced: b.rs (/p/b.rs)\n\n[image content omitted: not supported]");
+        let limits = ImageLimits::default();
+        let (t, m) = prompt_content(
+            &json!([
+                {"type": "text", "text": "look"},
+                {"type": "resource", "resource": {"uri": "file:///p/a.rs", "text": "fn a() {}"}},
+                {"type": "resource_link", "name": "b.rs", "uri": "file:///p/b.rs"},
+                {"type": "audio", "data": "AAEC", "mimeType": "audio/wav"}
+            ]),
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(t, "look\n\n<file uri=\"file:///p/a.rs\">\nfn a() {}\n</file>\n\nReferenced: b.rs (/p/b.rs)\n\n[audio content omitted: not supported]");
+        assert!(m.is_empty());
+        // prompt-content.subprocess.test.ts and prompt.test.ts: inline and
+        // remote images, blob resources, and an image with neither.
+        let (t, m) = prompt_content(
+            &json!([
+                {"type": "text", "text": "compare"},
+                {"type": "image", "mimeType": "image/png", "data": PIXEL, "uri": "file:///p/shot.png"},
+                {"type": "image", "mimeType": "image/png", "data": "", "uri": "https://example.com/remote.png"},
+                {"type": "image", "mimeType": "image/png", "data": "", "uri": "file:///p/local.png"},
+                {"type": "resource", "resource": {"uri": "file:///p/doc.pdf", "mimeType": "application/pdf", "blob": "JVBERi0xLjQ="}},
+                {"type": "resource", "resource": {"uri": "file:///p/a.bin", "mimeType": "application/octet-stream", "blob": "AAEC"}},
+            ]),
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(t, "compare\n\n[remote.png](https://example.com/remote.png)\n\nReferenced: local.png (/p/local.png)\n\n[attached resource file:///p/a.bin omitted: binary]");
+        assert_eq!(
+            m,
+            vec![
+                Media::base64("image/png", PIXEL).named("shot.png"),
+                Media::base64("application/pdf", "JVBERi0xLjQ=").named("doc.pdf"),
+            ]
+        );
+        let no_source = prompt_content(
+            &json!([{"type": "image", "mimeType": "image/png", "data": ""}]),
+            &limits,
+        )
+        .unwrap_err();
+        assert_eq!(no_source.0, -32602);
+        assert!(no_source.1.contains("image content has no data or uri"));
+        // An image too large to fit when resizing is off is refused.
+        let tight = ImageLimits {
+            auto_resize: false,
+            max_width: 0,
+            ..ImageLimits::default()
+        };
+        let big = prompt_content(
+            &json!([{"type": "image", "mimeType": "image/png", "data": PIXEL}]),
+            &tight,
+        )
+        .unwrap_err();
+        assert!(big.1.contains("exceeding configured limits"), "{}", big.1);
+        assert_eq!(
+            tool_media_content(&[
+                Media::base64("image/png", PIXEL),
+                Media::base64("application/pdf", "JVBERi0=")
+            ]),
+            vec![
+                json!({"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": PIXEL}})
+            ]
+        );
         // session.test.ts: "converts MCP configs"
         let s = mcp_servers(&json!([
             {"name": "fs", "command": "npx", "args": ["-y", "srv"], "env": [{"name": "K", "value": "v"}]},

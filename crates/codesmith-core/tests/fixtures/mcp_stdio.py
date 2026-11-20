@@ -1,6 +1,9 @@
 """A minimal stdio MCP server for tests: two pages of tools, an echo tool,
-a failing tool, and a ping to the client in the middle of a call."""
+a failing tool, and a ping to the client in the middle of a call. Echoing
+"pixel" also returns a 1x1 PNG as image content."""
 import json, sys
+
+PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 def send(m):
     sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
@@ -27,7 +30,11 @@ while True:
         assert pong and pong.get("id") == "srv-1" and "result" in pong, pong
         name = m["params"]["name"]
         if name == "echo":
-            send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "echo: " + m["params"]["arguments"]["text"]}]}})
+            text = m["params"]["arguments"]["text"]
+            content = [{"type": "text", "text": "echo: " + text}]
+            if text == "pixel":
+                content.append({"type": "image", "data": PIXEL, "mimeType": "image/png"})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"content": content}})
         else:
             send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "boom"}], "isError": True}})
     elif mid is not None:

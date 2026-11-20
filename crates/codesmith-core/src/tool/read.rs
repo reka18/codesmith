@@ -72,6 +72,20 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     Err(missing(ctx, path, &target.absolute))
 }
 
+/// The checks `read` makes before reading a file, for files read on the
+/// user's behalf (prompt attachments by path): `external_directory` when it
+/// is outside the project, then `read`. Returns the file's absolute path.
+pub fn authorize(ctx: &Ctx, path: &str) -> Result<std::path::PathBuf, String> {
+    let target = ctx.resolve(path);
+    let is_dir = target.absolute.is_dir();
+    ctx.authorize_external(&target, is_dir)?;
+    ask_read(ctx, &target)?;
+    if is_dir {
+        return Err(format!("Cannot attach a directory: {}", target.resource));
+    }
+    Ok(target.absolute)
+}
+
 fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> {
     ctx.ask(Request {
         action: "read".into(),

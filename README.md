@@ -475,7 +475,10 @@ Local servers run over stdio (their stderr goes to the data dir's
 `execution`, in milliseconds). Calls go through permissions like any other
 tool, keyed by the tool's name: `{"action": "github_*", "resource": "*", "effect": "deny"}` hides a
 server's tools from the model.
-`codesmith mcp list` shows each server's status and tools.
+`codesmith mcp list` shows each server's status and tools. Images a tool
+returns (and embedded image or PDF resources) reach the model as images, as
+`read`'s do, fitted to the same limits; in Code Mode, whose results are
+JSON for the program, they are replaced by a note.
 
 **Code Mode.** As in OpenCode, MCP tools are offered through Code Mode by
 default: instead of calling them one by one, the model writes a short
@@ -621,6 +624,15 @@ supports form elicitation, the agent can ask questions with the `question`
 tool. MCP servers the editor passes in are added to the session (stdio and
 HTTP). Sessions are the same ones the terminal UI and `codesmith run` use.
 
+Prompts can carry images (the agent advertises `promptCapabilities.image`)
+and embedded resources: text resources join the message, and image or PDF
+blobs (recognized by their bytes) are sent to the model as attachments,
+fitted to the `media` limits; an image that cannot be fitted refuses the
+prompt. Images given only by URI and resource links are referenced in the
+message for the agent to `read`. Images a tool returns appear in its
+`tool_call_update` content, and a loaded session replays the prompt's
+images too.
+
 ## Local server
 
 `codesmith serve` exposes sessions to other programs on this machine (an
@@ -649,7 +661,7 @@ client.
 | `GET /health` | version, directory, model |
 | `GET /sessions` · `POST /sessions {agent?, model?}` | list, create |
 | `GET /sessions/{id}` · `DELETE /sessions/{id}` | info and messages, delete |
-| `POST /sessions/{id}/messages {text}` | run a turn; streams Server-Sent Events |
+| `POST /sessions/{id}/messages {text, attachments?}` | run a turn; streams Server-Sent Events |
 | `POST /sessions/{id}/abort` | stop the running turn |
 | `POST /sessions/{id}/permissions/{rid} {reply, message?}` | answer `once`, `always` or `reject` |
 | `POST /sessions/{id}/questions/{qid} {answers}` or `{dismiss: true}` | answer the agent's questions |
@@ -658,6 +670,14 @@ client.
 A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
 `retry`, `compacted`, `todos`, `notice`, `permission`, `question` and finally
 `done` (with `error` set if the turn failed or was aborted).
+
+`attachments` sends images or PDFs with the message, each either inline,
+`{"data": "<base64>", "mime": "image/png", "name": "shot.png"}`, or by path,
+`{"path": "screenshots/shot.png"}`. The bytes decide the type (anything else
+is refused), and images are fitted to the `media` limits. A path goes through
+the same checks as the `read` tool: `external_directory` outside the project,
+then `read`, asked over the turn's stream (or settled by your permission
+rules), and a refusal ends the turn with an error before anything is sent.
 
 ## Roadmap
 

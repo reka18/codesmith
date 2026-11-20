@@ -183,18 +183,33 @@ pub fn command_name(server: &str, prompt: &str) -> String {
     format!("{}:{}", sanitize(server), sanitize(prompt))
 }
 
-/// The text of a `tools/call` result: text parts joined, other content noted.
-pub fn result_text(result: &Value) -> (String, bool) {
+/// A `tools/call` result as the model gets it: text parts joined, images
+/// (and embedded image or PDF resources) as media, other content noted.
+/// Image data is sniffed when the server names no or an odd media type; data
+/// that is not an image or PDF is noted instead.
+pub fn result_content(result: &Value) -> (String, bool, Vec<codesmith_ai::Media>) {
     let is_error = result["isError"].as_bool().unwrap_or(false);
     let mut parts = Vec::new();
+    let mut media = Vec::new();
     for c in result["content"].as_array().into_iter().flatten() {
         match c["type"].as_str() {
             Some("text") => parts.push(c["text"].as_str().unwrap_or("").to_string()),
+            Some("image") => match result_media(c["data"].as_str(), c["mimeType"].as_str(), None) {
+                Some(m) => media.push(m),
+                None => parts.push("[image content omitted: not a supported image]".into()),
+            },
             Some("resource") => {
                 let r = &c["resource"];
-                match r["text"].as_str() {
-                    Some(t) => parts.push(t.to_string()),
-                    None => parts.push(format!("[resource {}]", r["uri"].as_str().unwrap_or("?"))),
+                let uri = r["uri"].as_str().unwrap_or("?");
+                match (r["text"].as_str(), r["blob"].as_str()) {
+                    (Some(t), _) => parts.push(t.to_string()),
+                    (None, Some(blob)) => {
+                        match result_media(Some(blob), r["mimeType"].as_str(), Some(uri)) {
+                            Some(m) => media.push(m),
+                            None => parts.push(format!("[resource {uri}]")),
+                        }
+                    }
+                    _ => parts.push(format!("[resource {uri}]")),
                 }
             }
             Some("resource_link") => {
@@ -204,12 +219,64 @@ pub fn result_text(result: &Value) -> (String, bool) {
             None => {}
         }
     }
-    if parts.is_empty() {
+    if parts.is_empty() && media.is_empty() {
         if let Some(s) = result.get("structuredContent") {
             parts.push(s.to_string());
         }
     }
-    (parts.join("\n"), is_error)
+    (parts.join("\n"), is_error, media)
+}
+
+/// Base64 data from a result as media, when its bytes are an image or PDF.
+fn result_media(
+    data: Option<&str>,
+    mime: Option<&str>,
+    uri: Option<&str>,
+) -> Option<codesmith_ai::Media> {
+    let data = data?.trim();
+    let bytes = crate::media::unbase64(data)?;
+    let detected = crate::media::detect(&bytes)?;
+    // The bytes decide; a server's `image/jpg` or missing type is common.
+    let mime = mime.filter(|m| *m == detected).unwrap_or(detected);
+    let m = codesmith_ai::Media::base64(mime, data);
+    let name = uri
+        .and_then(|u| u.rsplit('/').next())
+        .filter(|n| !n.is_empty());
+    Some(match name {
+        Some(n) => m.named(n),
+        None => m,
+    })
+}
+
+/// The text of a `tools/call` result, for callers that cannot pass media on
+/// (Code Mode, automations): media is noted in the text instead.
+pub fn result_text(result: &Value) -> (String, bool) {
+    let (text, is_error, media) = result_content(result);
+    (with_media_note(text, &media, "returned as text"), is_error)
+}
+
+/// `text` with a note that `media` was left out, and why.
+pub fn with_media_note(mut text: String, media: &[codesmith_ai::Media], why: &str) -> String {
+    if media.is_empty() {
+        return text;
+    }
+    let n = media.len();
+    let what = if media
+        .iter()
+        .all(|m| m.kind() == codesmith_ai::MediaKind::Image)
+    {
+        "image"
+    } else {
+        "attachment"
+    };
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "[{n} {what}{} omitted: {why}]",
+        if n == 1 { "" } else { "s" }
+    ));
+    text
 }
 
 /// The text of a `resources/read` result: each part's text, binary parts noted.
@@ -812,14 +879,17 @@ impl Client {
     }
 
     pub async fn call(&self, tool: &str, args: Value) -> Result<(String, bool)> {
-        let r = self
-            .request(
-                "tools/call",
-                json!({"name": tool, "arguments": args}),
-                self.timeouts.1,
-            )
-            .await?;
-        Ok(result_text(&r))
+        Ok(result_text(&self.call_raw(tool, args).await?))
+    }
+
+    /// The raw `tools/call` result.
+    pub async fn call_raw(&self, tool: &str, args: Value) -> Result<Value> {
+        self.request(
+            "tools/call",
+            json!({"name": tool, "arguments": args}),
+            self.timeouts.1,
+        )
+        .await
     }
 
     /// Every event type the server offers (`events/list`).
@@ -1002,7 +1072,21 @@ impl Mcp {
         }
     }
 
+    /// Call a tool: its text (media noted) and whether it failed.
     pub async fn call(&self, name: &str, args: Value) -> Result<(String, bool)> {
+        Ok(result_text(&self.call_raw(name, args).await?))
+    }
+
+    /// Call a tool: its text, whether it failed, and its images and PDFs.
+    pub async fn call_media(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<(String, bool, Vec<codesmith_ai::Media>)> {
+        Ok(result_content(&self.call_raw(name, args).await?))
+    }
+
+    async fn call_raw(&self, name: &str, args: Value) -> Result<Value> {
         let t = self
             .tool(name)
             .ok_or_else(|| anyhow!("no MCP tool {name}"))?;
@@ -1010,7 +1094,7 @@ impl Mcp {
             .clients
             .get(&t.server)
             .ok_or_else(|| anyhow!("MCP server {} is not connected", t.server))?;
-        c.call(&t.remote, args).await
+        c.call_raw(&t.remote, args).await
     }
 
     fn connected(&self, server: &str) -> Result<&Arc<Client>> {
@@ -1375,13 +1459,44 @@ mod tests {
         assert_eq!(
             result_text(&r),
             (
-                "a\n[image content omitted]\ninline\n[resource file:///y]".into(),
+                "a\n[image content omitted: not a supported image]\ninline\n[resource file:///y]"
+                    .into(),
                 true
             )
         );
         assert_eq!(
             result_text(&json!({"content": [], "structuredContent": {"n": 1}})),
             ("{\"n\":1}".into(), false)
+        );
+    }
+
+    #[test]
+    fn result_images_become_media() {
+        const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let r = json!({"content": [
+            {"type": "text", "text": "shot"},
+            {"type": "image", "data": PIXEL, "mimeType": "image/jpg"},
+            {"type": "resource", "resource": {"uri": "file:///r/doc.pdf", "mimeType": "application/pdf", "blob": "JVBERi0xLjQ="}},
+            {"type": "resource", "resource": {"uri": "file:///r/a.bin", "blob": "AAEC"}},
+            {"type": "audio", "data": "AAEC", "mimeType": "audio/wav"}
+        ]});
+        let (text, is_error, media) = result_content(&r);
+        assert_eq!(
+            text,
+            "shot\n[resource file:///r/a.bin]\n[audio content omitted]"
+        );
+        assert!(!is_error);
+        assert_eq!(
+            media,
+            vec![
+                codesmith_ai::Media::base64("image/png", PIXEL),
+                codesmith_ai::Media::base64("application/pdf", "JVBERi0xLjQ=").named("doc.pdf"),
+            ]
+        );
+        // Without a way to pass media on, it is noted.
+        assert_eq!(
+            result_text(&r).0,
+            "shot\n[resource file:///r/a.bin]\n[audio content omitted]\n[2 attachments omitted: returned as text]"
         );
     }
 

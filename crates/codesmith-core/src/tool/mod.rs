@@ -6,7 +6,7 @@ mod glob;
 mod grep;
 pub mod html_markdown;
 mod lsp;
-mod read;
+pub(crate) mod read;
 pub mod shell;
 pub mod shell_scan;
 pub mod subagent;
