@@ -6,7 +6,7 @@
 
 use chrono::{Local, NaiveDate, TimeZone};
 use codesmith_ai::Usage;
-use codesmith_core::stats::{render, Render, Stats, ToolStat};
+use codesmith_core::stats::{render, ModelStat, Render, Stats, ToolStat};
 
 fn ms(y: i32, m: u32, d: u32) -> i64 {
     let day = NaiveDate::from_ymd_opt(y, m, d).unwrap();
@@ -199,4 +199,39 @@ fn oc_stats_labels_only_the_months_a_partial_range_shows() {
     assert!(!out.contains("Apr"), "{out}");
     let we = out.lines().find(|l| l.starts_with("We ")).unwrap();
     assert!(we.contains('\u{2588}'), "{out}");
+}
+
+// "uses compact layouts in narrow terminals" (adapted: CodeSmith's output
+// tokens include the reasoning ones, which OpenCode counts apart).
+#[test]
+fn oc_stats_uses_compact_layouts_in_narrow_terminals() {
+    let mut s = stats();
+    let mut tokens = s.tokens;
+    tokens.output += tokens.reasoning;
+    s.models = vec![ModelStat::new("anthropic/sonnet", 6, tokens, 12.34)];
+    let out = render(
+        &s,
+        &Render {
+            models: true,
+            width: 48,
+            ..options()
+        },
+    );
+    assert!(out.contains("anthropic/sonnet"), "{out}");
+    assert!(out.contains("18.5k tokens · 6 steps · $12.34"), "{out}");
+    assert!(out.lines().all(|l| l.chars().count() <= 48), "{out}");
+    // Tools too.
+    let out = render(
+        &s,
+        &Render {
+            tools: true,
+            width: 48,
+            ..options()
+        },
+    );
+    assert!(
+        out.contains("  10 calls · 20.0% error · 250ms p50"),
+        "{out}"
+    );
+    assert!(out.lines().all(|l| l.chars().count() <= 48), "{out}");
 }

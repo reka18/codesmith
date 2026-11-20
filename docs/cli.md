@@ -204,6 +204,9 @@ streak.
 | `--limit N` | Rows per table (default 10). |
 | `--json` | Print the numbers as JSON. |
 
+In a terminal narrower than 68 columns the model and tool tables put each
+row on two lines (the name, then its numbers), so nothing is cut off.
+
 Cost needs prices, since nothing is fetched from a catalog: give each model a
 [`cost`](configuration.md#adding-or-overriding-a-provider).
 

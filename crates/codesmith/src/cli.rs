@@ -1334,9 +1334,17 @@ async fn run(cli: Cli) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else {
+                // `COLUMNS`, else the terminal's width, else 80.
                 let width = std::env::var("COLUMNS")
                     .ok()
                     .and_then(|c| c.parse().ok())
+                    .or_else(|| {
+                        std::io::stdout()
+                            .is_terminal()
+                            .then(|| ratatui::crossterm::terminal::size().ok())
+                            .flatten()
+                            .map(|(w, _)| w as usize)
+                    })
                     .unwrap_or(80);
                 let color =
                     std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();

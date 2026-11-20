@@ -103,7 +103,7 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 40 | 15 | 49 | 165 | 0 |
+| cli | 269 | 40 | 16 | 48 | 165 | 0 |
 | cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 |
 | tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
@@ -112,7 +112,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **763** | **744** | **495** | **2376** | **259** |
+| **Total** | **4637** | **763** | **745** | **494** | **2376** | **259** |
 
 ## Fixes made while porting
 
@@ -315,6 +315,10 @@ Where the tests live:
 - **A replayed compaction with no summary** (`cli/test/acp/translate`): a
   provider's native compaction replayed with an empty summary text; it now
   clears the client's summary (`summary: null`), as a live one does.
+- **Stats tables in a narrow terminal** (`cli/test/stats`): the model and
+  tool tables kept their 68-column rows; below 68 columns each row is now
+  two lines, the name and then its numbers, as in OpenCode. The width is
+  the terminal's when `COLUMNS` is not set.
 
 ## Differences found but not fixed
 
@@ -835,6 +839,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/stats` | uses the OpenCode palette in color mode | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders a concise empty state | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | labels activity when terminal width truncates the requested range | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
+| `cli/test/stats` | uses compact layouts in narrow terminals | after a fix | oc_stats_uses_compact_layouts_in_narrow_terminals (codesmith-core/tests/oc_stats.rs; adapted: output tokens include reasoning) |
 | `cli/test/run/noninteractive` | waits for a background shell and streams the reply it wakes | already passing | run_cli.rs run_waits_for_background_commands_and_resumes_the_model |
 | `cli/test/run/noninteractive` | cancelling while waiting on background work stops the Session and this prompt's jobs | already passing | run_cli.rs interrupting_a_run_stops_its_background_server (adapted) |
 | `cli/test/acp/additional-directories.subprocess` | tools read files in an additional directory without an external directory ask | already passing | oc_acp_additional_directories |
@@ -986,10 +991,6 @@ transport and its tool presentation.
 
 - `cli/test/mcp-auth-choices`: offers only OAuth-capable MCP servers by their server identity
 - `cli/test/mcp-auth-choices`: mcp auth accepts an optional server name and rejects no-name noninteractive calls before connecting
-
-### cli: stats narrow layout (1)
-
-- `cli/test/stats`: uses compact layouts in narrow terminals
 
 ### sessions: archiving (1)
 

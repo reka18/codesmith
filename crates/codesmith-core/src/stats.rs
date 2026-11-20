@@ -32,6 +32,19 @@ pub struct ModelStat {
     spend: Spend,
 }
 
+impl ModelStat {
+    /// A model's row as it is shown, with its cost already priced.
+    pub fn new(model: &str, steps: u64, tokens: Usage, cost: f64) -> ModelStat {
+        ModelStat {
+            model: model.into(),
+            steps,
+            tokens,
+            cost,
+            ..Default::default()
+        }
+    }
+}
+
 /// Spending over steps: the cost providers reported billing, and the tokens
 /// of the steps without one (OpenCode uses a step's billed cost when the
 /// endpoint reports it, and prices its tokens otherwise).
@@ -603,6 +616,22 @@ fn calendar(s: &Stats, color: bool, width: usize) -> Vec<String> {
     out
 }
 
+/// Below this width the model and tool tables take two lines per row.
+const NARROW: usize = 68;
+
+/// `value` cut to `width` characters, with an ellipsis when cut.
+fn truncate(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        value.to_string()
+    } else {
+        value
+            .chars()
+            .take(width.saturating_sub(1))
+            .chain(['…'])
+            .collect()
+    }
+}
+
 fn row4(a: &str, b: &str, c: &str, d: &str) -> String {
     let a: String = if a.chars().count() > 34 {
         a.chars().take(33).chain(['…']).collect()
@@ -702,8 +731,21 @@ pub fn render(s: &Stats, o: &Render) -> String {
         if s.models.is_empty() {
             lines.push("  no model usage".into());
         } else {
-            lines.push(row4("model", "tokens", "steps", "cost"));
-            for m in s.models.iter().take(o.limit) {
+            if o.width < NARROW {
+                // One model per two lines in a narrow terminal.
+                for m in s.models.iter().take(o.limit) {
+                    lines.push(truncate(&m.model, o.width));
+                    lines.push(format!(
+                        "  {} tokens · {} steps · ${:.2}",
+                        number(total(&m.tokens)),
+                        number(m.steps),
+                        m.cost
+                    ));
+                }
+            } else {
+                lines.push(row4("model", "tokens", "steps", "cost"));
+            }
+            for m in s.models.iter().take(o.limit).filter(|_| o.width >= NARROW) {
                 lines.push(row4(
                     &m.model,
                     &number(total(&m.tokens)),
@@ -726,8 +768,25 @@ pub fn render(s: &Stats, o: &Render) -> String {
         if s.tools.is_empty() {
             lines.push("  no tool calls".into());
         } else {
-            lines.push(row4("tool", "calls", "error", "p50"));
-            for t in s.tools.iter().take(o.limit) {
+            if o.width < NARROW {
+                for t in s.tools.iter().take(o.limit) {
+                    let fin = t.succeeded + t.failed;
+                    lines.push(truncate(&t.name, o.width));
+                    lines.push(format!(
+                        "  {} calls · {} error · {} p50",
+                        number(t.calls),
+                        if fin == 0 {
+                            "-".into()
+                        } else {
+                            percent(t.failed as f64 * 100.0 / fin as f64)
+                        },
+                        t.p50_ms.map(duration).unwrap_or_else(|| "-".into())
+                    ));
+                }
+            } else {
+                lines.push(row4("tool", "calls", "error", "p50"));
+            }
+            for t in s.tools.iter().take(o.limit).filter(|_| o.width >= NARROW) {
                 let fin = t.succeeded + t.failed;
                 lines.push(row4(
                     &t.name,
