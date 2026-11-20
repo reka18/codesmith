@@ -1813,3 +1813,9 @@ rm ]F)	 ; (touc=h G) ))
 (("" ] |; <<(X=1 rm F) ))
 %%
 arch --arch arm64 touch G
+%% an unset variable leaves the next word as the command
+(( ] ; $rm F  ))
+%%
+(( $unset rm F ))
+%%
+sed -i.bak 's//y/' f1

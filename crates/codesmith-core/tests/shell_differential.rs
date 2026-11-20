@@ -740,6 +740,21 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
                 // Bash 3.2's here-document temp file, left after a syntax error.
                 continue;
             }
+            // BSD `sed -i`'s copy of a file it edits (`.!123!f1`), left
+            // when the script fails: a write to the file itself.
+            let sed_copy = f.rsplit('/').next().and_then(|n| {
+                let rest = n.strip_prefix(".!")?;
+                let (pid, name) = rest.split_once('!')?;
+                pid.chars().all(|c| c.is_ascii_digit()).then_some(name)
+            });
+            if sed_copy.is_some_and(|name| {
+                writes
+                    .iter()
+                    .flatten()
+                    .any(|w| w.rsplit('/').next() == Some(name))
+            }) {
+                continue;
+            }
             let abs = work.join(f);
             let named = writes.iter().flatten().any(|w| {
                 bases.iter().any(|b| {

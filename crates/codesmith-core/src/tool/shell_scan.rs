@@ -2868,31 +2868,30 @@ fn analyze_into(
             if item.words.is_empty() {
                 continue;
             }
-            if !static_command_name(&item.raw_words[0]) {
-                // Dash runs `(( $x ))` as the command `$x`.
-                if dash_name_matters(&item.raw_words[0], shared) {
+            // Dash runs `(( $x ))` as the command `$x`. A variable the
+            // script leaves unset expands to nothing, and the next word
+            // is the command: `(( $x rm F ))` runs `rm F`.
+            let mut first = 0;
+            while first < item.words.len() && !static_command_name(&item.raw_words[first]) {
+                if dash_name_matters(&item.raw_words[first], shared) {
                     mark_dynamic(out, "dynamic-command-name");
                 }
+                first += 1;
+            }
+            if first == item.words.len() {
                 continue;
             }
+            let (raw_words, words) = (&item.raw_words[first..], &item.words[first..]);
             // Collected apart, then moved to `deny_only`.
             let mut alt = Analysis::default();
-            let entry = (
-                item.resource.clone(),
-                save_pattern(&item.words, &item.resource),
-            );
-            alt.delegated.push(entry);
-            let cooked = item.words.join(" ");
+            if first == 0 {
+                let entry = (item.resource.clone(), save_pattern(words, &item.resource));
+                alt.delegated.push(entry);
+            }
+            let cooked = words.join(" ");
             alt.delegated
-                .push((cooked.clone(), save_pattern(&item.words, &cooked)));
-            delegate(
-                &item.raw_words,
-                &item.words,
-                cwd,
-                shared,
-                depth + 1,
-                &mut alt,
-            )?;
+                .push((cooked.clone(), save_pattern(words, &cooked)));
+            delegate(raw_words, words, cwd, shared, depth + 1, &mut alt)?;
             out.deny_only.extend(alt.commands);
             out.deny_only.extend(alt.delegated);
             out.deny_only.extend(alt.deny_only);
