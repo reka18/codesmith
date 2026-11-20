@@ -246,12 +246,19 @@ fn bench_snapshot(root: &Path, base: &Path, filter: &str) {
     report("snapshot first capture", t, "");
     let (t, _) = time(5, || s.capture().unwrap());
     report("snapshot capture (unchanged)", t, "");
-    let touched = root.join("pkg00/mod00/sub000/f0.rs");
-    let orig = std::fs::read_to_string(&touched).unwrap_or_default();
+    let touched = ignore::WalkBuilder::new(root)
+        .build()
+        .flatten()
+        .find(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .expect("a file to edit")
+        .into_path();
+    let orig = std::fs::read(&touched).unwrap();
     let mut i = 0;
     let (t, _) = time(5, || {
         i += 1;
-        std::fs::write(&touched, format!("{orig}// edit {i}\n")).unwrap();
+        let mut edited = orig.clone();
+        edited.extend_from_slice(format!("\n// edit {i}\n").as_bytes());
+        std::fs::write(&touched, edited).unwrap();
         s.capture().unwrap()
     });
     std::fs::write(&touched, orig).unwrap();
