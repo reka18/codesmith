@@ -793,7 +793,8 @@ fn daemon_hands_its_processes_over_to_a_successor() {
 /// no one claims in time.
 #[test]
 fn daemon_stops_when_unclaimed() {
-    let mut d = real_with(|o| o.handoff_ttl = Duration::from_millis(100));
+    // Long enough that a slow CI machine still checks inside the window.
+    let mut d = real_with(|o| o.handoff_ttl = Duration::from_secs(2));
     let p = created(
         d.client
             .request(&pipe(&d.root, &d.root.join("o"), "sleep", &["5"]), true)
