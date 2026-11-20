@@ -9,6 +9,7 @@
 //! these calls can be billed per attempt.
 
 use crate::config::Config;
+use codesmith_ai::decision::{self, DecisionApi};
 use codesmith_ai::generation::{self, ImageApi, Output, VideoApi};
 use codesmith_ai::{Media, Message, Provider};
 use serde_json::{Map, Value};
@@ -36,6 +37,9 @@ pub struct MediaModel {
     /// Release time (ms), for "newest first".
     pub released: i64,
     pub provider: Provider,
+    /// Where a decision host reads media (catalog `media_input`, or the
+    /// model config's `compatibility.mediaInput`).
+    pub media_input: Option<String>,
 }
 
 impl MediaModel {
@@ -56,10 +60,16 @@ impl MediaModel {
     pub fn video_api(&self) -> Option<VideoApi> {
         generation::video_api(&self.package)
     }
+
+    pub fn decision_api(&self) -> Option<DecisionApi> {
+        decision::decision_api(&self.package)
+    }
 }
 
-/// The image (`kind` `image`) or video (`video`) models with a supported
-/// API and a key, newest first.
+/// The image (`kind` `image`), video (`video`) or decision (`decision`)
+/// models with a supported API and a key, newest first. A provider the
+/// config gives a base URL but no key (a local host like LM Studio) is
+/// called without auth, as OpenCode does.
 pub fn models(config: &Config, kind: &str) -> Vec<MediaModel> {
     let Some(catalog) = config.models_dev.as_ref().map(|c| c.catalog()) else {
         return Vec::new();
@@ -78,6 +88,7 @@ pub fn models(config: &Config, kind: &str) -> Vec<MediaModel> {
                 .iter()
                 .any(|v| std::env::var_os(v).is_some_and(|k| !k.is_empty()))
             || saved.iter().any(|p| p == id)
+            || keyless(config, id)
     };
     let ids: Vec<String> = catalog
         .ids()
@@ -93,6 +104,7 @@ pub fn models(config: &Config, kind: &str) -> Vec<MediaModel> {
                 && match kind {
                     "image" => generation::image_api(package).is_some(),
                     "video" => generation::video_api(package).is_some(),
+                    "decision" => decision::decision_api(package).is_some(),
                     _ => false,
                 }
         };
@@ -104,15 +116,17 @@ pub fn models(config: &Config, kind: &str) -> Vec<MediaModel> {
         let Some(p) = config.provider(pid) else {
             continue;
         };
-        let Some(key) = config.provider_key(pid, &p) else {
+        let key = config.provider_key(pid, &p);
+        if key.is_none() && !keyless(config, pid) {
             continue;
-        };
+        }
         for m in snap.models.iter().filter(|m| supported(m)) {
             let package = m
                 .package
                 .clone()
                 .unwrap_or_else(|| snap.info.package.clone());
-            let Some(provider) = media_provider(config, pid, &p, &key, m, &snap.info, &package)
+            let Some(provider) =
+                media_provider(config, pid, &p, key.as_deref(), m, &snap.info, &package)
             else {
                 continue;
             };
@@ -135,6 +149,13 @@ pub fn models(config: &Config, kind: &str) -> Vec<MediaModel> {
                     }
                 }
             }
+            let media_input = config
+                .providers
+                .get(pid)
+                .and_then(|p| p.models.get(&m.id))
+                .and_then(|mc| mc.compatibility.get("mediaInput"))
+                .and_then(|v| v.as_str().map(str::to_string))
+                .or_else(|| m.compatibility.as_ref()?.media_input.clone());
             out.push(MediaModel {
                 provider_id: pid.to_string(),
                 id: m.id.clone(),
@@ -146,6 +167,7 @@ pub fn models(config: &Config, kind: &str) -> Vec<MediaModel> {
                 variants,
                 released: m.time.released,
                 provider,
+                media_input,
             });
         }
     }
@@ -160,7 +182,7 @@ fn media_provider(
     config: &Config,
     pid: &str,
     p: &crate::config::ProviderConfig,
-    key: &str,
+    key: Option<&str>,
     m: &crate::catalog::Model,
     info: &crate::catalog::ProviderInfo,
     package: &str,
@@ -188,13 +210,25 @@ fn media_provider(
         protocol,
         name: pid.to_string(),
         base_url,
-        api_key: Some(key.to_string()),
+        api_key: key.map(str::to_string),
         headers: p.headers.clone().into_iter().collect(),
         query: p.settings.query_params.clone().into_iter().collect(),
         auth,
         encoding: codesmith_ai::Encoding::None,
         compat: Default::default(),
         hooks: None,
+    })
+}
+
+/// Whether the config points `pid` at a host of its own without a key
+/// (OpenCode's keyless rule: an enabled provider with no credential).
+fn keyless(config: &Config, pid: &str) -> bool {
+    config.providers.get(pid).is_some_and(|u| {
+        u.settings
+            .base_url
+            .as_deref()
+            .is_some_and(|b| !b.is_empty())
+            && u.settings.api_key.as_deref().is_none_or(str::is_empty)
     })
 }
 
@@ -276,10 +310,11 @@ pub fn provider_error(provider: &str, e: &codesmith_ai::Error) -> GenerateError 
         Class::Authentication => Failure::Authentication,
         Class::RateLimit | Class::Quota => Failure::RateLimit,
         Class::ContentPolicy => Failure::ContentFilter,
+        // The provider refused the request it got: a provider failure with
+        // its status, as OpenCode reports it (a request CodeSmith refuses
+        // before sending is `InvalidRequest`, above).
         Class::InvalidRequest | Class::ContextOverflow | Class::PayloadTooLarge => {
-            return GenerateError::InvalidRequest {
-                message: message_of(e),
-            }
+            Failure::InvalidRequest
         }
         Class::ProviderInternal if matches!(status, Some(503 | 529)) => Failure::Overloaded,
         _ if e.to_string().contains("content_filter") => Failure::ContentFilter,
@@ -551,6 +586,23 @@ pub async fn text(
         if kind.as_deref().is_some_and(|k| k != "chat") {
             return Err(missing(config, pid, mid, "chat"));
         }
+        // A model the catalog's provider does not list, and the config does
+        // not add, is unknown (a live-listed local provider has no catalog
+        // entry, so it is left to resolve).
+        let listed = config
+            .models_dev
+            .as_ref()
+            .is_some_and(|c| c.catalog().provider(pid).is_some());
+        let configured = config
+            .providers
+            .get(pid)
+            .is_some_and(|p| p.models.contains_key(mid));
+        if listed && kind.is_none() && !configured {
+            return Err(GenerateError::ModelNotFound {
+                provider: pid.into(),
+                model: mid.into(),
+            });
+        }
     }
     let m = config.resolve_model(&spec).map_err(|e| {
         let (pid, mid, _) = parse_ref(&spec).unwrap_or(("", "", None));
@@ -597,6 +649,60 @@ pub async fn text(
         })
         .collect::<String>();
     Ok((text, response.usage))
+}
+
+/// A decision request (OpenCode's `Generate.decisions`): the model as
+/// `provider/model[#variant]`.
+#[derive(Debug, Clone, Default)]
+pub struct DecisionInput {
+    pub model: String,
+    pub input: Vec<decision::Part>,
+    pub questions: Vec<decision::Question>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DecisionResult {
+    /// One per question, in question order.
+    pub answers: Vec<decision::Answer>,
+    /// USD the provider reported.
+    pub cost: Option<f64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+/// Ask a decision model `input`'s questions.
+pub async fn decisions(
+    config: &Config,
+    client: &reqwest::Client,
+    input: &DecisionInput,
+    opts: Options,
+) -> Result<DecisionResult, GenerateError> {
+    let (model, fields) = resolve(config, "decision", &input.model)?;
+    let api = model
+        .decision_api()
+        .ok_or_else(|| missing(config, &model.provider_id, &model.id, "decision"))?;
+    let req = decision::DecisionRequest {
+        model: model.model_id.clone(),
+        input: input.input.clone(),
+        questions: input.questions.clone(),
+        options: fields,
+    };
+    let media = model
+        .media_input
+        .as_deref()
+        .and_then(decision::MediaInput::parse);
+    let p = &model.provider;
+    let response = retry_one_shot(opts, || {
+        decision::decide(p, client, api, &model.package, media, &req)
+    })
+    .await
+    .map_err(|e| provider_error(&model.provider_id, &e))?;
+    Ok(DecisionResult {
+        answers: response.answers,
+        cost: response.cost,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+    })
 }
 
 /// How long an image may take before it is given up.

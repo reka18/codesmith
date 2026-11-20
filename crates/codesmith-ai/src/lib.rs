@@ -10,6 +10,7 @@ pub mod claude_agent;
 #[cfg(test)]
 mod compaction_tests;
 pub mod copilot;
+pub mod decision;
 mod endpoint;
 mod gemini;
 pub mod generation;

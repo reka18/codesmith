@@ -93,7 +93,22 @@ terminal. See [answering a request](permissions.md#answering-a-request). The
 codesmith generate [-m provider/model] PROMPT          # text from a chat model; nothing is stored
 codesmith generate --session ID PROMPT                 # from that session's context; only its usage is added
 codesmith generate -m provider/model --image out.png PROMPT   # an image, saved with its real extension
+codesmith generate -m provider/model --questions q.json PROMPT # a decision model's answers, as JSON
 ```
+
+A decision (classifier) model, models.dev `type: decision`, answers named
+questions about the prompt with probabilities rather than text. The
+questions file is a JSON array of `{"type": "predicate", "name",
+"instructions", "criteria": {"true", "false"}}`, `{"type": "choice",
+"name", "instructions", "choices": [{"value", "description"}]}` and
+`{"type": "score", "name", "instructions", "levels": [{"label",
+"description"}]}`; the answers come back in question order (a predicate's
+`probability`, a choice's `choice` and per-value `probabilities`, a
+score's probability-weighted `score`), with the cost the provider
+reported. System One hosts (TypeSafe, OpenRouter, OpenCode Zen,
+llama.cpp-compatible servers) and Google's decisions API are supported.
+A provider configured with a `baseURL` and no key, such as LM Studio, is
+called without auth.
 
 A call is retried only when the provider never ran it (a refused
 connection, a throttle, an overloaded server, at most three times), since

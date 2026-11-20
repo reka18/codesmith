@@ -1,0 +1,8 @@
+@generate.test.ts
+494 :: ported :: tests/oc_decisions.rs::oc_generate_sends_keyless_local_decisions_without_auth_with_images_at_the_body_root
+518 :: ported :: tests/oc_decisions.rs::oc_generate_answers_decision_questions_and_reports_the_providers_cost
+598 :: ported :: tests/oc_decisions.rs::oc_generate_places_decision_media_where_the_catalogs_media_input_says
+617 :: ported :: tests/oc_decisions.rs::oc_generate_routes_a_gemini_decisions_catalog_entry_to_the_google_decisions_entrypoint
+645 :: fixed :: tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections :: a provider's 400 was reported as a local invalid request, without its status
+657 :: ported :: tests/oc_decisions.rs::oc_generate_returns_a_typed_error_for_an_invalid_request_instead_of_crashing
+668 :: fixed :: tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models :: text from an unknown model of a catalog provider was sent to the provider instead of failing as not found

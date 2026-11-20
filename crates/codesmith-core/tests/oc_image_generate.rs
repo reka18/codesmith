@@ -887,6 +887,7 @@ fn info(provider: &str, id: &str, input: &[&str], released: i64) -> generate::Me
             compat: Default::default(),
             hooks: None,
         },
+        media_input: None,
     }
 }
 

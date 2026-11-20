@@ -72,6 +72,8 @@ pub fn default_base_url(package: &str) -> Option<&'static str> {
         "xai" => "https://api.x.ai/v1",
         "google" => "https://generativelanguage.googleapis.com/v1beta",
         "openrouter" => "https://openrouter.ai/api/v1",
+        "typesafe-ai" => "https://api.typesafe.ai/v1",
+        "opencode" => "https://opencode.ai/inference/systemone/v1",
         _ => return None,
     })
 }
@@ -211,7 +213,7 @@ fn multipart(
 }
 
 /// The JSON response of a 2xx reply.
-async fn json_of(resp: reqwest::Response, what: &str) -> Result<Value, Error> {
+pub(crate) async fn json_of(resp: reqwest::Response, what: &str) -> Result<Value, Error> {
     let text = resp.text().await?;
     serde_json::from_str(&text).map_err(|e| {
         Error::Decode(format!(
@@ -221,7 +223,7 @@ async fn json_of(resp: reqwest::Response, what: &str) -> Result<Value, Error> {
     })
 }
 
-async fn post_json(
+pub(crate) async fn post_json(
     p: &Provider,
     client: &reqwest::Client,
     path: &str,

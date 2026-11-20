@@ -69,6 +69,11 @@ enum Command {
         /// the one given).
         #[arg(long)]
         image: Option<PathBuf>,
+        /// Ask a decision model the questions in this JSON file (an array
+        /// of `predicate`, `choice` and `score` questions) about the
+        /// prompt; prints the answers as JSON.
+        #[arg(long, conflicts_with_all = ["image", "session"])]
+        questions: Option<PathBuf>,
     },
     /// List providers and their models, or ask one provider for its models.
     Models {
@@ -1282,7 +1287,8 @@ async fn run(cli: Cli) -> Result<()> {
             model,
             session,
             image,
-        }) => generate_cmd(&cwd, prompt.join(" "), model, session, image).await,
+            questions,
+        }) => generate_cmd(&cwd, prompt.join(" "), model, session, image, questions).await,
         Some(Command::Automation { what }) => automation_cmd(&cwd, what).await,
         Some(Command::Stats {
             days,
@@ -2245,6 +2251,7 @@ async fn generate_cmd(
     model: Option<String>,
     session_id: Option<String>,
     image: Option<PathBuf>,
+    questions: Option<PathBuf>,
 ) -> Result<()> {
     use codesmith_core::generate;
     if prompt.trim().is_empty() {
@@ -2252,6 +2259,30 @@ async fn generate_cmd(
     }
     let loaded = config::load(cwd)?;
     let client = reqwest::Client::new();
+    if let Some(file) = questions {
+        let model = model.ok_or_else(|| anyhow!("--questions needs --model provider/model"))?;
+        let text = std::fs::read_to_string(&file)
+            .with_context(|| format!("reading {}", file.display()))?;
+        let questions = serde_json::from_str(&text)
+            .with_context(|| format!("{} is not a list of decision questions", file.display()))?;
+        let result = generate::decisions(
+            &loaded.config,
+            &client,
+            &generate::DecisionInput {
+                model,
+                input: vec![codesmith_ai::decision::Part::Text(prompt)],
+                questions,
+            },
+            Default::default(),
+        )
+        .await?;
+        let mut out = serde_json::json!({ "answers": result.answers });
+        if let Some(c) = result.cost {
+            out["cost"] = serde_json::json!(c);
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
     if let Some(out) = image {
         let model = model.ok_or_else(|| anyhow!("--image needs --model provider/model"))?;
         let result = generate::image(

@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 116 | 7 | 10 | 193 | 67 | 0 |
+| Session runner | 393 | 121 | 9 | 3 | 193 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -52,13 +52,15 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1635** | **16** | **142** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1640** | **18** | **135** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
 - `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
+- `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
+- `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
 - `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
 - `session-runner.test.ts`: "rejects compaction ${response} without retrying or committing its draft" (2 cases): the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history. Pinned by `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it`.
@@ -81,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (142 cases in 20 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (135 cases in 19 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -91,7 +93,6 @@ Missing features, by how many OpenCode test cases each would unlock (142 cases i
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
-| [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
@@ -231,18 +232,6 @@ Missing features, by how many OpenCode test cases each would unlock (142 cases i
 - `plugin/plan.test.ts`: allows external directories without asking
 - `plugin/plan.test.ts`: rewrites blocked mutation failures with the Plan directory
 - `plugin/plan.test.ts`: preserves mutation failures unrelated to permissions
-
-### Decision Models
-
-7 cases.
-
-- `generate.test.ts`: sends keyless local decisions without auth, with images at the body root
-- `generate.test.ts`: answers decision questions and reports the provider's cost
-- `generate.test.ts`: places decision media where the catalog's media_input says
-- `generate.test.ts`: routes a gemini-decisions catalog entry to the Google decisions entrypoint
-- `generate.test.ts`: sends a variant's reasoning setting and maps provider rejections
-- `generate.test.ts`: returns a typed error for an invalid request instead of crashing
-- `generate.test.ts`: rejects models of another type and unknown models
 
 ### Mid-session Effort Switch
 
@@ -1204,7 +1193,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (316 of 393)</summary>
+<details><summary>Session runner (323 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1220,6 +1209,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P generates images through the model's image entrypoint with the provider key — `tests/oc_image_generate.rs::oc_generate_generates_images_through_the_models_image_entrypoint_with_the_provider_key`
 - P keeps credential metadata out of image requests — `tests/oc_image_generate.rs::oc_generate_keeps_credential_metadata_out_of_image_requests` (adapted: a catalog provider's key, no Console token)
 - P downloads URL images and detects their type from the bytes — `tests/oc_image_generate.rs::oc_generate_downloads_url_images_and_detects_their_type_from_the_bytes`
+- P sends keyless local decisions without auth, with images at the body root — `tests/oc_decisions.rs::oc_generate_sends_keyless_local_decisions_without_auth_with_images_at_the_body_root`
+- P answers decision questions and reports the provider's cost — `tests/oc_decisions.rs::oc_generate_answers_decision_questions_and_reports_the_providers_cost`
+- P places decision media where the catalog's media_input says — `tests/oc_decisions.rs::oc_generate_places_decision_media_where_the_catalogs_media_input_says`
+- P routes a gemini-decisions catalog entry to the Google decisions entrypoint — `tests/oc_decisions.rs::oc_generate_routes_a_gemini_decisions_catalog_entry_to_the_google_decisions_entrypoint`
+- F sends a variant's reasoning setting and maps provider rejections — `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections` (a provider's 400 was reported as a local invalid request, without its status)
+- P returns a typed error for an invalid request instead of crashing — `tests/oc_decisions.rs::oc_generate_returns_a_typed_error_for_an_invalid_request_instead_of_crashing`
+- F rejects models of another type and unknown models — `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models` (text from an unknown model of a catalog provider was sent to the provider instead of failing as not found)
 
 **`session-error.test.ts`**
 

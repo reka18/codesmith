@@ -57,6 +57,7 @@ fn copy(e: &Error) -> Error {
             body: body.clone(),
         },
         Error::Transport(m) => Error::Transport(m.clone()),
+        Error::Invalid(m) => Error::Invalid(m.clone()),
         other => Error::Decode(other.to_string()),
     }
 }
@@ -113,8 +114,10 @@ async fn oc_generate_does_not_retry_stateless_authentication_quota_or_invalid_re
             Some(Failure::RateLimit),
             "No quota",
         ),
+        // A request refused before it is sent (OpenCode's
+        // `InvalidRequestError`).
         (
-            status(400, r#"{"error": {"message": "Invalid prompt"}}"#),
+            Error::Invalid("Invalid prompt".into()),
             None,
             "Invalid prompt",
         ),
