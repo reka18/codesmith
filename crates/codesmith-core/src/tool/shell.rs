@@ -2,7 +2,11 @@
 //! OpenCode's shell tool, including background commands: a command started
 //! with `background: true`, or a foreground command that outlives its
 //! timeout, keeps running with its output streaming to a file, and the
-//! session is told when it finishes.
+//! session is told when it finishes. While a command runs, a front end can
+//! move it to the background, cancel it or change its timeout through the
+//! session's [`Jobs`], and sees its shell ID and output as they come
+//! ([`super::Progress`]). A session can set the environment its commands
+//! run in ([`Jobs::set_environment`]).
 //!
 //! Before anything runs, the command is split into the commands it would
 //! run (`shell_scan`), and each is checked against the `shell` rules; `cd`
@@ -18,6 +22,7 @@ use super::{opt_bool, opt_str, opt_u64, shell_scan, str_arg, Ctx, Outcome, Outpu
 use crate::config::ToolOutputConfig;
 use crate::permission::{Denied, Effect, Reply, Request, Rule};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -277,10 +282,35 @@ pub struct Job {
     pub timeout_ms: u64,
     pub ending: Option<Ending>,
     pub notified: bool,
+    /// Stopped by [`Jobs::cancel`] rather than ending on its own.
+    pub cancelled: bool,
 }
 
-/// The commands of one session: its background jobs, and the process groups
-/// of foreground commands while they run.
+/// A foreground command while its call waits on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    pub id: String,
+    pub command: String,
+    pub pid: Option<u32>,
+}
+
+/// What a front end (through [`Jobs`]) asks of a running command.
+#[derive(Debug, Clone, Copy)]
+enum Control {
+    /// Move a foreground command to the background; nothing for one
+    /// already there.
+    Background,
+    /// Stop it (SIGTERM, then SIGKILL after [`KILL_GRACE`]) as cancelled.
+    Cancel,
+    /// Replace its stop timeout, counted from now; 0 clears it.
+    Timeout(u64),
+}
+
+type ControlTx = tokio::sync::mpsc::UnboundedSender<Control>;
+type ControlRx = tokio::sync::mpsc::UnboundedReceiver<Control>;
+
+/// The commands of one session: its background jobs, the foreground
+/// commands while they run, and the environment they run in.
 ///
 /// Handles are cheap clones. A front end that rebuilds a session (after an
 /// interrupt, undo, or a mode or model switch) keeps a handle and gives it
@@ -289,6 +319,11 @@ pub struct Job {
 /// still running is stopped: its process group gets SIGTERM, then SIGKILL
 /// after [`KILL_GRACE`]. The watcher tasks hold only the shared state, so
 /// they do not keep the commands alive.
+///
+/// While a turn runs, the front end can [`Jobs::background_all`] the
+/// foreground commands, [`Jobs::cancel`] one command, or change its
+/// timeout ([`Jobs::set_timeout`]), as OpenCode's `Session.background`,
+/// `Job.cancel` and `Shell.timeout` do.
 #[derive(Clone)]
 pub struct Jobs {
     shared: Arc<Shared>,
@@ -300,8 +335,16 @@ pub struct Jobs {
 struct Shared {
     jobs: Mutex<Vec<Job>>,
     wake: tokio::sync::Notify,
-    /// Process groups of the foreground commands now running.
-    foreground: Mutex<Vec<u32>>,
+    /// The foreground commands now running.
+    foreground: Mutex<Vec<Running>>,
+    /// How to reach each running command, background or foreground.
+    controls: Mutex<HashMap<String, ControlTx>>,
+    /// Foreground commands the user moved to the background, not yet told
+    /// to the model.
+    moved: Mutex<Vec<Running>>,
+    /// The session's environment (OpenCode's `SessionEnvironment`): when
+    /// set, commands run with these variables instead of the process's.
+    environment: Mutex<Option<BTreeMap<String, String>>>,
 }
 
 impl Shared {
@@ -320,11 +363,21 @@ impl Shared {
         }
     }
 
-    fn finish(&self, id: &str, ending: Ending) {
+    fn finish(&self, id: &str, ending: Ending, cancelled: bool) {
+        self.controls.lock().unwrap().remove(id);
         if let Some(j) = self.jobs.lock().unwrap().iter_mut().find(|j| j.id == id) {
             j.ending = Some(ending);
+            j.cancelled = cancelled;
         }
         self.wake.notify_waiters();
+    }
+
+    fn control(&self, id: &str, c: Control) -> bool {
+        self.controls
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|tx| tx.send(c).is_ok())
     }
 
     /// Process groups of every command still running.
@@ -337,7 +390,7 @@ impl Shared {
             .filter(|j| j.ending.is_none())
             .filter_map(|j| j.pid)
             .collect();
-        groups.extend(self.foreground.lock().unwrap().iter().copied());
+        groups.extend(self.foreground.lock().unwrap().iter().filter_map(|r| r.pid));
         groups
     }
 }
@@ -384,6 +437,27 @@ impl Default for Jobs {
     }
 }
 
+/// What the model is told when the user moves its running commands to the
+/// background (OpenCode's `Session.background` message).
+pub fn moved_note(moved: &[Running]) -> String {
+    let mut lines = vec![
+        "User requested that active blocking work be moved to the background.".to_string(),
+        String::new(),
+        "Backgrounded work:".into(),
+    ];
+    for r in moved {
+        let title = if r.command.is_empty() {
+            &r.id
+        } else {
+            &r.command
+        };
+        lines.push(format!("- shell: {title}"));
+    }
+    lines.push(String::new());
+    lines.push("The backgrounded work is still unfinished. Move on to other work if you can. If there is nothing else useful to do, finish your response. Do not wait, sleep, poll, or report the backgrounded work as complete until a later completion notification is added to the conversation.".into());
+    lines.join("\n")
+}
+
 impl Jobs {
     fn next_id(&self) -> String {
         format!("shell_{}", self.next.fetch_add(1, Ordering::SeqCst) + 1)
@@ -426,6 +500,11 @@ impl Jobs {
             .collect()
     }
 
+    /// The foreground commands whose calls are waiting on them.
+    pub fn foreground(&self) -> Vec<Running> {
+        self.shared.foreground.lock().unwrap().clone()
+    }
+
     /// Finished jobs not yet reported, marked as reported.
     pub fn take_finished(&self) -> Vec<Job> {
         let mut out = Vec::new();
@@ -453,6 +532,73 @@ impl Jobs {
     /// Wait until a job finishes (returns at once if one already has, or if none are running).
     pub async fn wait_any(&self) {
         self.shared.wait_any().await;
+    }
+
+    /// Move every foreground command to the background, as OpenCode's
+    /// `Session.background` (`Job.backgroundAll`) does for the user: each
+    /// call returns at once, saying its command moved to the background,
+    /// the command keeps running without a timeout, and the session is
+    /// told when it finishes. The model is also told, before its next step,
+    /// that the user moved the work ([`moved_note`]). Returns the commands
+    /// asked to move; one that finishes first returns its result as usual.
+    pub fn background_all(&self) -> Vec<Running> {
+        let running = self.foreground();
+        running
+            .into_iter()
+            .filter(|r| self.shared.control(&r.id, Control::Background))
+            .collect()
+    }
+
+    /// The foreground commands the user moved to the background since the
+    /// last call, for the session to tell the model.
+    pub fn take_moved(&self) -> Vec<Running> {
+        std::mem::take(&mut *self.shared.moved.lock().unwrap())
+    }
+
+    /// Stop a running command, background or foreground, as OpenCode's
+    /// `Job.cancel` does: SIGTERM to its process group, then SIGKILL after
+    /// [`KILL_GRACE`]. Its output file is kept. A background command is
+    /// reported to the session as cancelled; a foreground call fails with
+    /// "Command cancelled". False when no such command is running
+    /// (cancelling one that already finished does nothing).
+    pub fn cancel(&self, id: &str) -> bool {
+        self.shared.control(id, Control::Cancel)
+    }
+
+    /// Replace a running command's timeout, counted from now; 0 clears it
+    /// (OpenCode's `Shell.timeout`). When it expires the command is stopped
+    /// as timed out, foreground or background. A foreground command still
+    /// moves to the background at its call's own timeout, and loses this
+    /// one when it does, as in OpenCode. False when no such command is
+    /// running.
+    pub fn set_timeout(&self, id: &str, ms: u64) -> bool {
+        if !self.shared.control(id, Control::Timeout(ms)) {
+            return false;
+        }
+        if let Some(j) = self
+            .shared
+            .jobs
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|j| j.id == id && j.ending.is_none())
+        {
+            j.timeout_ms = ms;
+        }
+        true
+    }
+
+    /// The session's environment, when set (see [`Jobs::set_environment`]).
+    pub fn environment(&self) -> Option<BTreeMap<String, String>> {
+        self.shared.environment.lock().unwrap().clone()
+    }
+
+    /// Replace the environment the session's commands run in (OpenCode's
+    /// `Session.environment`): with `Some`, a command gets exactly these
+    /// variables (plus the agent markers) instead of this process's; `None`
+    /// goes back to the process's own. Commands already running keep theirs.
+    pub fn set_environment(&self, variables: Option<BTreeMap<String, String>>) {
+        *self.shared.environment.lock().unwrap() = variables;
     }
 
     /// Stop every command still running, background and foreground: SIGTERM
@@ -487,38 +633,73 @@ impl Jobs {
         Reaper(self.shared.clone())
     }
 
-    /// Watch a spawned child until it exits (or `stop_after` passes).
-    fn watch(&self, id: String, mut child: tokio::process::Child, stop_after: Option<Duration>) {
+    /// Watch a spawned background child until it exits, is cancelled, or
+    /// its stop timeout (`stop_after`, changed by [`Jobs::set_timeout`])
+    /// passes.
+    fn watch(
+        &self,
+        id: String,
+        mut child: tokio::process::Child,
+        stop_after: Option<Duration>,
+        (tx, mut rx): (ControlTx, ControlRx),
+    ) {
+        self.shared.controls.lock().unwrap().insert(id.clone(), tx);
         // Only the shared state: a watcher must not keep the owner alive.
         let shared = self.shared.clone();
         tokio::spawn(async move {
-            let ending = match stop_after {
-                Some(d) => match tokio::time::timeout(d, child.wait()).await {
-                    Ok(Ok(status)) => ending_of(status),
-                    Ok(Err(_)) => Ending::Exited(-1),
-                    Err(_) => Ending::TimedOut(stop(&mut child).await.map(Box::new)),
-                },
-                None => child
-                    .wait()
-                    .await
-                    .map(ending_of)
-                    .unwrap_or(Ending::Exited(-1)),
+            let mut stop_at = stop_after.map(|d| tokio::time::Instant::now() + d);
+            let mut cancelled = false;
+            let ending = loop {
+                tokio::select! {
+                    status = child.wait() => {
+                        break status.map(ending_of).unwrap_or(Ending::Exited(-1));
+                    }
+                    _ = sleep_until(stop_at) => {
+                        break Ending::TimedOut(stop(&mut child).await.map(Box::new));
+                    }
+                    Some(c) = rx.recv() => match c {
+                        Control::Cancel => {
+                            cancelled = true;
+                            break stop(&mut child).await.unwrap_or(Ending::Exited(-1));
+                        }
+                        Control::Timeout(ms) => stop_at = deadline(ms),
+                        Control::Background => {}
+                    },
+                }
             };
-            shared.finish(&id, ending);
+            shared.finish(&id, ending, cancelled);
         });
     }
 
-    /// Track a foreground command's process group until the guard is
-    /// disarmed; a guard dropped while armed (the call was interrupted)
-    /// stops the whole group.
-    fn guard(&self, pid: Option<u32>) -> GroupGuard {
-        if let Some(p) = pid {
-            self.shared.foreground.lock().unwrap().push(p);
-        }
+    /// Track a foreground command until the guard is disarmed; a guard
+    /// dropped while armed (the call was interrupted) stops its whole
+    /// process group.
+    fn guard(&self, running: Running, tx: ControlTx) -> GroupGuard {
+        self.shared
+            .controls
+            .lock()
+            .unwrap()
+            .insert(running.id.clone(), tx);
+        let (id, pgid) = (running.id.clone(), running.pid);
+        self.shared.foreground.lock().unwrap().push(running);
         GroupGuard {
-            pgid: pid,
+            id: Some(id),
+            pgid,
             shared: self.shared.clone(),
         }
+    }
+}
+
+/// A deadline `ms` from now, or none for 0.
+fn deadline(ms: u64) -> Option<tokio::time::Instant> {
+    (ms > 0).then(|| tokio::time::Instant::now() + Duration::from_millis(ms))
+}
+
+/// Sleep until `at`, or forever without one.
+async fn sleep_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(t) => tokio::time::sleep_until(t).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -526,6 +707,7 @@ impl Jobs {
 /// before the command ends. `kill_on_drop` alone kills only the shell, not
 /// what it started.
 struct GroupGuard {
+    id: Option<String>,
     pgid: Option<u32>,
     shared: Arc<Shared>,
 }
@@ -537,9 +719,14 @@ impl GroupGuard {
     }
 
     fn untrack(&mut self) -> Option<u32> {
-        let p = self.pgid.take()?;
-        self.shared.foreground.lock().unwrap().retain(|g| *g != p);
-        Some(p)
+        let id = self.id.take()?;
+        self.shared.controls.lock().unwrap().remove(&id);
+        self.shared
+            .foreground
+            .lock()
+            .unwrap()
+            .retain(|r| r.id != id);
+        self.pgid.take()
     }
 }
 
@@ -549,6 +736,71 @@ impl Drop for GroupGuard {
             terminate_groups(vec![p]);
         }
     }
+}
+
+/// Reads what a foreground command appends to its output file, for
+/// [`Progress::Output`].
+struct Tail {
+    file: std::fs::File,
+    /// The start of a UTF-8 character cut off by the last read.
+    partial: Vec<u8>,
+}
+
+/// The most output one progress report carries; under a flood the rest is
+/// skipped, so front ends see the latest output.
+const PROGRESS_CHUNK: u64 = 64 * 1024;
+/// How often a foreground command's new output is reported.
+const PROGRESS_EVERY: Duration = Duration::from_millis(200);
+
+impl Tail {
+    fn open(path: &Path) -> Option<Tail> {
+        Some(Tail {
+            file: std::fs::File::open(path).ok()?,
+            partial: Vec::new(),
+        })
+    }
+
+    /// The output appended since the last read, as text.
+    fn read(&mut self) -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let size = self.file.metadata().ok()?.len();
+        let pos = self.file.stream_position().ok()?;
+        if size <= pos {
+            return None;
+        }
+        if size - pos > PROGRESS_CHUNK {
+            self.file
+                .seek(SeekFrom::Start(size - PROGRESS_CHUNK))
+                .ok()?;
+            self.partial.clear();
+        }
+        let mut buf = std::mem::take(&mut self.partial);
+        self.file.read_to_end(&mut buf).ok()?;
+        if buf.is_empty() {
+            return None;
+        }
+        // Keep an incomplete character at the end for the next read.
+        let cut = match std::str::from_utf8(&buf) {
+            Ok(_) => buf.len(),
+            Err(e) if e.error_len().is_none() => e.valid_up_to(),
+            Err(_) => buf.len(),
+        };
+        self.partial = buf.split_off(cut);
+        if buf.is_empty() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    }
+}
+
+/// How a foreground command's wait ended.
+enum Wait {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    /// Its call's timeout passed (true) or the user moved it (false).
+    Background(bool),
+    /// Its stop timeout ([`Jobs::set_timeout`]) passed, after this many ms.
+    TimedOut(u64),
+    Cancelled,
 }
 
 #[derive(Clone, Copy)]
@@ -608,10 +860,17 @@ fn terminate_groups(groups: Vec<u32>) {
 /// `<shell` / `</shell` tag in it is escaped. The command is an attribute
 /// value and is escaped as one.
 pub fn notification(job: &Job, limits: ToolOutputConfig) -> String {
-    let ending = job.ending.clone().unwrap_or(Ending::Exited(-1));
-    let (text, _) = result_text(&job.file, &ending, job.timeout_ms, limits);
+    let (state, text) = if job.cancelled {
+        ("cancelled", "Cancelled".to_string())
+    } else {
+        let ending = job.ending.clone().unwrap_or(Ending::Exited(-1));
+        (
+            "completed",
+            result_text(&job.file, &ending, job.timeout_ms, limits).0,
+        )
+    };
     format!(
-        "<shell id=\"{}\" state=\"completed\" command=\"{}\">\n{}\n</shell>",
+        "<shell id=\"{}\" state=\"{state}\" command=\"{}\">\n{}\n</shell>",
         job.id,
         attribute(&job.command),
         neutralize_frame(&text)
@@ -988,7 +1247,8 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         ctx.session_id,
         super::unique_id()
     ));
-    let mut child = spawn(&ctx.shell, &sc, &file)?;
+    let environment = jobs.environment();
+    let mut child = spawn(&ctx.shell, &sc, &file, environment.as_ref())?;
     let mut job = Job {
         id: id.clone(),
         command: command.to_string(),
@@ -997,38 +1257,106 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         timeout_ms: timeout.unwrap_or(0),
         ending: None,
         notified: false,
+        cancelled: false,
     };
+    let control = tokio::sync::mpsc::unbounded_channel();
+    if let Some(p) = &ctx.progress {
+        let _ = p.send(super::Progress::Metadata(json!({"shellID": id})));
+    }
     if background {
         jobs.add(job.clone());
         // A background timeout of 0 (or none) never stops the command.
         let stop_after = timeout.filter(|t| *t > 0).map(Duration::from_millis);
-        jobs.watch(id, child, stop_after);
+        jobs.watch(id, child, stop_after, control);
         return Ok(Output::bounded(background_text(&job, None)));
     }
+    let (tx, mut rx) = control;
     // Declared after `child`, so it drops first: an interrupted call stops
     // the command's whole process group while the shell is still unreaped.
-    let guard = jobs.guard(child.id());
+    let guard = jobs.guard(
+        Running {
+            id: id.clone(),
+            command: command.to_string(),
+            pid: child.id(),
+        },
+        tx.clone(),
+    );
     // A foreground timeout of 0 falls back to the default, so a call can't
     // block until the command exits.
     let limit = timeout.filter(|t| *t > 0).unwrap_or(DEFAULT_TIMEOUT_MS);
-    let ending = match tokio::time::timeout(Duration::from_millis(limit), child.wait()).await {
-        Ok(status) => {
-            guard.disarm();
-            status
-                .map(ending_of)
-                .map_err(|e| format!("Command failed: {e}"))?
+    let move_at = tokio::time::Instant::now() + Duration::from_millis(limit);
+    let mut stop_at: Option<(tokio::time::Instant, u64)> = None;
+    let mut tail = ctx.progress.as_ref().and_then(|_| Tail::open(&file));
+    let mut tick = tokio::time::interval(PROGRESS_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let report = |tail: &mut Option<Tail>| {
+        if let (Some(t), Some(p)) = (tail.as_mut(), &ctx.progress) {
+            if let Some(text) = t.read() {
+                let _ = p.send(super::Progress::Output(text));
+            }
         }
-        Err(_) if ctx.jobs.is_some() => {
+    };
+    let wait = loop {
+        let stop = stop_at.map(|(t, _)| t);
+        tokio::select! {
+            status = child.wait() => break Wait::Exited(status),
+            _ = tokio::time::sleep_until(move_at) => break Wait::Background(true),
+            _ = sleep_until(stop) => break Wait::TimedOut(stop_at.map_or(0, |(_, ms)| ms)),
+            Some(c) = rx.recv() => match c {
+                Control::Background => break Wait::Background(false),
+                Control::Cancel => break Wait::Cancelled,
+                Control::Timeout(ms) => stop_at = deadline(ms).map(|t| (t, ms)),
+            },
+            _ = tick.tick(), if tail.is_some() => report(&mut tail),
+        }
+    };
+    report(&mut tail);
+    let (ending, limit) = match wait {
+        Wait::Exited(status) => {
             guard.disarm();
-            job.timeout_ms = limit;
+            (
+                status
+                    .map(ending_of)
+                    .map_err(|e| format!("Command failed: {e}"))?,
+                limit,
+            )
+        }
+        Wait::Background(timed_out) if ctx.jobs.is_some() => {
+            guard.disarm();
+            if timed_out {
+                job.timeout_ms = limit;
+            } else {
+                job.timeout_ms = 0;
+                jobs.shared.moved.lock().unwrap().push(Running {
+                    id: id.clone(),
+                    command: command.to_string(),
+                    pid: job.pid,
+                });
+            }
             jobs.add(job.clone());
-            jobs.watch(id, child, None);
-            return Ok(Output::bounded(background_text(&job, Some(limit))));
+            // In the background it runs until it ends: moving it clears
+            // any stop timeout, as OpenCode's `shell.timeout(id, 0)` does.
+            jobs.watch(id, child, None, (tx, rx));
+            return Ok(Output::bounded(background_text(
+                &job,
+                timed_out.then_some(limit),
+            )));
         }
-        Err(_) => {
+        Wait::Background(_) => {
             let ending = Ending::TimedOut(stop(&mut child).await.map(Box::new));
             guard.disarm();
-            ending
+            (ending, limit)
+        }
+        Wait::TimedOut(ms) => {
+            let ending = Ending::TimedOut(stop(&mut child).await.map(Box::new));
+            guard.disarm();
+            (ending, ms)
+        }
+        Wait::Cancelled => {
+            // The output file is kept, as OpenCode keeps a cancelled command's.
+            let _ = stop(&mut child).await;
+            guard.disarm();
+            return Err("Command cancelled".into());
         }
     };
     let (text, truncated) = result_text(&file, &ending, limit, ctx.limits);
@@ -1038,23 +1366,47 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     Ok(Output::bounded(text))
 }
 
-/// Start the command under `shell -c` with stdout and stderr appended to `file`.
+/// `shell` as a path to run: a bare name is looked up on this process's
+/// `PATH`, since a session environment may not have one.
+fn program(shell: &str) -> PathBuf {
+    if shell.contains('/') {
+        return PathBuf::from(shell);
+    }
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|d| d.join(shell))
+                .find(|p| p.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from(shell))
+}
+
+/// Start the command under `shell -c` with stdout and stderr appended to
+/// `file`, in `environment` when the session has one (else this process's).
 fn spawn(
     shell: &str,
     sc: &crate::plugin::ShellCommand,
     file: &Path,
+    environment: Option<&BTreeMap<String, String>>,
 ) -> Result<tokio::process::Child, String> {
     let out = std::fs::File::create(file)
         .map_err(|e| format!("Unable to create {}: {e}", file.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut cmd = tokio::process::Command::new(shell);
+    let mut cmd = tokio::process::Command::new(program(shell));
     // Mark the command as run by an agent, as OpenCode does (AGENT,
-    // OPENCODE, AI_AGENT), keeping an outer AI_AGENT marker.
-    let ai_agent = std::env::var("AI_AGENT")
-        .ok()
+    // OPENCODE, AI_AGENT), keeping an outer AI_AGENT marker: the session
+    // environment's (or this process's), else a plugin's.
+    let outer = match environment {
+        Some(vars) => vars.get("AI_AGENT").cloned(),
+        None => std::env::var("AI_AGENT").ok(),
+    };
+    let ai_agent = outer
         .filter(|v| !v.is_empty())
         .or_else(|| sc.env.get("AI_AGENT").filter(|v| !v.is_empty()).cloned())
         .unwrap_or_else(|| "codesmith".into());
+    if let Some(vars) = environment {
+        cmd.env_clear().envs(vars);
+    }
     cmd.arg("-c")
         .arg(&sc.command)
         .current_dir(&sc.cwd)
@@ -1452,14 +1804,24 @@ mod tests {
     //   CodeSmith's scanner; OpenCode's scanner accepts them.
     // - The environment markers are `AGENT=1`, `CODESMITH=1`,
     //   `AI_AGENT=codesmith` (kept when already set) and
-    //   `CODESMITH_SESSION_ID`. There is no per-session environment store,
-    //   so the session-environment cases are not ported.
-    // - No Code Mode, no PowerShell, no persistent process daemon, no
-    //   tracing spans, no progress events, no job cancel/backgroundAll and
-    //   no `shell.timeout` update API: those cases are not ported. A user's
-    //   stop drops the running call, whose guard stops the command's whole
-    //   process group (SIGTERM, then SIGKILL after the grace period), so
-    //   the "stopped" suite has no counterpart; see
+    //   `CODESMITH_SESSION_ID`. The session environment (OpenCode's
+    //   `SessionEnvironment`) lives on the session's `Jobs` handle, which
+    //   rebuilt sessions adopt, rather than in a global map by session ID;
+    //   its store case is ported as two handles.
+    // - Job cancel, `Job.backgroundAll` (through `Session.background`) and
+    //   `Shell.timeout` are `Jobs::cancel`, `Jobs::background_all` and
+    //   `Jobs::set_timeout`, called with a shell ID. Only shell commands
+    //   move to the background: subagents are not jobs here. A cancelled
+    //   foreground call fails with "Command cancelled" without its output.
+    // - Progress is `Progress::Metadata({"shellID"})`, sent once, as in
+    //   OpenCode; CodeSmith also streams a foreground command's output as
+    //   `Progress::Output`, which OpenCode front ends read from the shell
+    //   service instead.
+    // - No Code Mode, no PowerShell, no persistent process daemon and no
+    //   tracing spans: those cases are not ported. A user's stop drops the
+    //   running call, whose guard stops the command's whole process group
+    //   (SIGTERM, then SIGKILL after the grace period), so the "stopped"
+    //   suite has no counterpart; see
     //   `a_dropped_foreground_call_stops_its_process_group`.
     // - Saved ("always") approvals and configured rules are both `Gate`
     //   rules; a test's pre-saved approvals are configured allow rules.
@@ -1960,6 +2322,88 @@ mod tests {
         assert_eq!(out, format!("1|1|{ai}|test"));
     }
 
+    /// Ported from OpenCode's packages/core/test/session-environment.test.ts.
+    #[test]
+    fn oc_session_environment_stores_replacement_snapshots_by_session() {
+        let vars = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let (first, second) = (Jobs::default(), Jobs::default());
+        first.set_environment(Some(vars(&[
+            ("TOOLCHAIN", "first"),
+            ("PATH", "/first/bin"),
+        ])));
+        second.set_environment(Some(vars(&[("TOOLCHAIN", "second")])));
+        first.set_environment(Some(vars(&[("TOOLCHAIN", "updated")])));
+        assert_eq!(first.environment(), Some(vars(&[("TOOLCHAIN", "updated")])));
+        assert_eq!(second.environment(), Some(vars(&[("TOOLCHAIN", "second")])));
+        first.set_environment(None);
+        assert_eq!(first.environment(), None);
+        assert_eq!(second.environment(), Some(vars(&[("TOOLCHAIN", "second")])));
+        // A clone is the same session's handle.
+        assert_eq!(second.clone().environment(), second.environment());
+    }
+
+    fn with_environment(ctx: &Ctx<'_>, pairs: &[(&str, &str)]) {
+        ctx.jobs.as_ref().unwrap().set_environment(Some(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_uses_the_session_environment_instead_of_the_process_one() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        with_environment(&ctx, &[("CODESMITH_SESSION_ENV_TEST", "from-session")]);
+        let out = sh(
+            &ctx,
+            r#"printf %s "$CODESMITH_SESSION_ENV_TEST|${HOME-unset}""#,
+        )
+        .await
+        .unwrap()
+        .content;
+        // Replaced, not merged: this process's HOME is not passed on.
+        assert_eq!(out, "from-session|unset");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_identifies_agent_commands_without_a_stale_session_id() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        with_environment(
+            &ctx,
+            &[
+                ("AGENT", "0"),
+                ("CODESMITH", "0"),
+                ("AI_AGENT", ""),
+                ("CODESMITH_SESSION_ID", "stale"),
+            ],
+        );
+        let out = sh(
+            &ctx,
+            r#"printf %s "$AGENT|$CODESMITH|$AI_AGENT|$CODESMITH_SESSION_ID""#,
+        )
+        .await
+        .unwrap()
+        .content;
+        assert_eq!(out, "1|1|codesmith|test");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_preserves_an_outer_ai_agent_marker() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        with_environment(&ctx, &[("AI_AGENT", "outer-agent")]);
+        let out = sh(&ctx, r#"printf %s "$AI_AGENT""#).await.unwrap().content;
+        assert_eq!(out, "outer-agent");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn oc_shell_resolves_a_relative_workdir() {
         let env = Env::new();
@@ -2290,6 +2734,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_still_cancels_a_timeout_promoted_command_through_its_job() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(
+            &ctx,
+            &json!({"command": "printf partial; sleep 60", "timeout": 10}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(jobs.running(), 1);
+        assert!(jobs.cancel("shell_1"));
+        jobs.wait_any().await;
+        let job = jobs.take_finished().remove(0);
+        assert!(job.cancelled);
+        assert_eq!(job.ending, Some(Ending::Signaled(15)));
+        // Cancelling stops the command and keeps its output file.
+        assert_eq!(std::fs::read_to_string(&job.file).unwrap(), "partial");
+        assert_eq!(
+            notification(&job, ToolOutputConfig::default()),
+            "<shell id=\"shell_1\" state=\"cancelled\" command=\"printf partial; sleep 60\">\nCancelled\n</shell>"
+        );
+        // Cancelling what already finished does nothing.
+        assert!(!jobs.cancel("shell_1"));
+        assert!(!jobs.cancel("shell_9"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelling_a_foreground_command_fails_its_call() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let input = json!({"command": "printf partial; sleep 60"});
+        let call = run(&ctx, &input);
+        let cancel = async {
+            while jobs.foreground().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert!(jobs.cancel(&jobs.foreground()[0].id));
+        };
+        let started = std::time::Instant::now();
+        let (out, ()) = tokio::join!(call, cancel);
+        assert_eq!(out.unwrap_err(), "Command cancelled");
+        assert!(started.elapsed() < KILL_GRACE, "SIGTERM was enough");
+        assert!(jobs.foreground().is_empty());
+        assert_eq!(jobs.running_or_unreported(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn oc_shell_stops_a_background_command_at_its_timeout() {
         let env = Env::new();
         let ctx = env.ctx();
@@ -2401,6 +2894,98 @@ mod tests {
         assert!(out.contains("line 2500\n\n[showing lines 501-2500 of 2500; full output saved to "));
     }
 
+    /// Runs `input` while `on` sees each progress report as it comes.
+    async fn with_progress(
+        ctx: &mut Ctx<'_>,
+        input: Value,
+        mut on: impl FnMut(&super::super::Progress),
+    ) -> (Outcome, Vec<super::super::Progress>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.progress = Some(tx);
+        let mut seen = Vec::new();
+        let out = {
+            let call = run(ctx, &input);
+            tokio::pin!(call);
+            loop {
+                tokio::select! {
+                    out = &mut call => break out,
+                    Some(p) = rx.recv() => {
+                        on(&p);
+                        seen.push(p);
+                    }
+                }
+            }
+        };
+        ctx.progress = None;
+        while let Ok(p) = rx.try_recv() {
+            on(&p);
+            seen.push(p);
+        }
+        (out, seen)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_reports_the_shell_id_for_a_running_command() {
+        let env = Env::new();
+        let mut ctx = env.ctx();
+        let release = env.root().join("shell-progress-release");
+        let command = format!(
+            "{}; while [ ! -e '{}' ]; do sleep 0.05; done",
+            overflow(50 * 1024 + 1024),
+            release.display()
+        );
+        let (out, seen) = with_progress(&mut ctx, json!({"command": command}), |p| {
+            if let super::super::Progress::Metadata(m) = p {
+                assert!(m["shellID"].as_str().unwrap().starts_with("shell_"));
+                std::fs::write(&release, "").unwrap();
+            }
+        })
+        .await;
+        assert!(out.unwrap().content.contains("output-end"));
+        assert!(matches!(&seen[0], super::super::Progress::Metadata(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_reports_shell_id_progress_once() {
+        let env = Env::new();
+        let mut ctx = env.ctx();
+        let (_, seen) = with_progress(&mut ctx, json!({"command": "printf hello"}), |_| {}).await;
+        let ids: Vec<_> = seen
+            .iter()
+            .filter_map(|p| match p {
+                super::super::Progress::Metadata(m) => Some(m.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, [json!({"shellID": "shell_1"})]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn foreground_output_streams_as_progress() {
+        let env = Env::new();
+        let mut ctx = env.ctx();
+        let release = env.root().join("release");
+        // A character split across writes still arrives whole.
+        let command = format!(
+            "printf 'one\\n\\342'; while [ ! -e '{}' ]; do sleep 0.05; done; printf '\\202\\254 two'",
+            release.display()
+        );
+        let mut streamed = String::new();
+        let (out, _) = with_progress(&mut ctx, json!({"command": command}), |p| {
+            if let super::super::Progress::Output(o) = p {
+                streamed.push_str(o);
+                if streamed == "one\n" {
+                    std::fs::write(&release, "").unwrap();
+                }
+            }
+        })
+        .await;
+        assert_eq!(out.unwrap().content, "one\n\u{20ac} two");
+        assert_eq!(streamed, "one\n\u{20ac} two");
+        // Nobody listening: no reports, the same result.
+        assert_eq!(sh(&ctx, "printf quiet").await.unwrap().content, "quiet");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn oc_shell_returns_the_shell_id_and_pid_for_a_background_command() {
         let env = Env::new();
@@ -2465,6 +3050,57 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_updates_and_clears_a_running_timeout() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(&ctx, &json!({"command": "sleep 60", "background": true}))
+            .await
+            .unwrap();
+        assert!(jobs.set_timeout("shell_1", 50));
+        jobs.wait_any().await;
+        let job = jobs.take_finished().remove(0);
+        assert!(matches!(job.ending, Some(Ending::TimedOut(_))));
+        assert!(notification(&job, ToolOutputConfig::default())
+            .contains("Command timed out after 0.05 seconds."));
+
+        run(
+            &ctx,
+            &json!({"command": "sleep 60", "background": true, "timeout": 50}),
+        )
+        .await
+        .unwrap();
+        assert!(jobs.set_timeout("shell_2", 0));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(jobs.running(), 1);
+        assert!(jobs.cancel("shell_2"));
+        jobs.wait_any().await;
+        // A finished command's timeout cannot change.
+        assert!(!jobs.set_timeout("shell_2", 10));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_foreground_command_stops_at_an_updated_timeout() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let input = json!({"command": "printf partial; sleep 60"});
+        let call = run(&ctx, &input);
+        let set = async {
+            while jobs.foreground().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert!(jobs.set_timeout("shell_1", 50));
+        };
+        let (out, ()) = tokio::join!(call, set);
+        assert_eq!(
+            out.unwrap().content,
+            "partial\n\nCommand timed out after 0.05 seconds. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: 143 (SIGTERM)"
+        );
+        assert_eq!(jobs.running_or_unreported(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn oc_shell_escalates_a_timeout_when_sigterm_is_ignored() {
         let env = Env::new();
         let ctx = env.ctx();
@@ -2474,15 +3110,16 @@ mod tests {
             "trap '' TERM; : > '{}'; while :; do sleep 60; done",
             ready.display()
         );
-        run(
-            &ctx,
-            &json!({"command": command, "background": true, "timeout": 300}),
-        )
-        .await
-        .unwrap();
+        run(&ctx, &json!({"command": command, "background": true}))
+            .await
+            .unwrap();
+        // Arm the timeout only once the command ignores SIGTERM.
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(jobs.set_timeout("shell_1", 1));
         jobs.wait_any().await;
         let job = jobs.take_finished().remove(0);
-        assert!(ready.exists());
         assert_eq!(
             job.ending,
             Some(Ending::TimedOut(Some(Box::new(Ending::Signaled(9)))))
@@ -2540,6 +3177,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(jobs.take_finished()[0].ending, Some(Ending::Signaled(15)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_backgrounds_a_foreground_command_when_the_session_is_signaled() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let input = json!({"command": "sleep 60", "timeout": 60_000});
+        let call = run(&ctx, &input);
+        let signal = async {
+            loop {
+                let moved = jobs.background_all();
+                if !moved.is_empty() {
+                    break moved;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        let (out, moved) = tokio::join!(call, signal);
+        let out = out.unwrap().content;
+        assert_eq!(moved.len(), 1);
+        assert_eq!(
+            (moved[0].id.as_str(), moved[0].command.as_str()),
+            ("shell_1", "sleep 60")
+        );
+        let job = jobs.running_jobs().remove(0);
+        assert_eq!(
+            out,
+            format!(
+                "Command moved to the background (shell ID: shell_1).\nPID: {}\nOutput is streaming to: {}\n\n{BACKGROUND_INSTRUCTION}",
+                job.pid.unwrap(),
+                job.file.display()
+            )
+        );
+        // It keeps running past the call's timeout, without one of its own.
+        assert_eq!(job.timeout_ms, 0);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(jobs.running(), 1);
+        assert!(jobs.foreground().is_empty());
+        let told = jobs.take_moved();
+        assert_eq!(told, moved);
+        assert!(jobs.take_moved().is_empty());
+        assert_eq!(
+            moved_note(&told),
+            "User requested that active blocking work be moved to the background.\n\nBackgrounded work:\n- shell: sleep 60\n\nThe backgrounded work is still unfinished. Move on to other work if you can. If there is nothing else useful to do, finish your response. Do not wait, sleep, poll, or report the backgrounded work as complete until a later completion notification is added to the conversation."
+        );
+        // Nothing left in the foreground: nothing to move.
+        assert!(jobs.background_all().is_empty());
+        jobs.stop_all().await;
     }
 
     // ---------------------------------------------------------------------

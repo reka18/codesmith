@@ -32,6 +32,7 @@ fn ctx<'a>(root: &Path, gate: &'a Gate, lsp: Arc<Lsp>) -> Ctx<'a> {
         websearch: None,
         format: None,
         lsp: Some(lsp),
+        progress: None,
     }
 }
 

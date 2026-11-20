@@ -24,6 +24,20 @@ use std::path::{Component, Path, PathBuf};
 
 pub use edit::apply_edit;
 
+/// What a running call reports before its result (OpenCode's
+/// `context.progress`), for front ends to show while it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Progress {
+    /// Metadata about the call, such as the `shellID` of the command a
+    /// `shell` call started (sent once, as soon as it runs).
+    Metadata(Value),
+    /// Output a foreground command printed since the last report.
+    Output(String),
+}
+
+/// Where a call sends its [`Progress`].
+pub type ProgressTx = tokio::sync::mpsc::UnboundedSender<Progress>;
+
 /// Everything a tool call can see.
 pub struct Ctx<'a> {
     /// Working directory; relative paths resolve against it.
@@ -43,6 +57,8 @@ pub struct Ctx<'a> {
     /// Language servers for diagnostics after `write` and `edit` and for the
     /// `lsp` tool; `None` when they are off.
     pub lsp: Option<std::sync::Arc<crate::lsp::Lsp>>,
+    /// Where the call reports progress; `None` when nobody listens.
+    pub progress: Option<ProgressTx>,
 }
 
 impl Ctx<'_> {
@@ -906,6 +922,7 @@ pub(crate) mod testing {
                 websearch: None,
                 format: None,
                 lsp: None,
+                progress: None,
             }
         }
         pub fn write(&self, rel: &str, content: &str) -> PathBuf {

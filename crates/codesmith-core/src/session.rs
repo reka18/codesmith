@@ -59,12 +59,26 @@ pub trait Sink: Send {
     fn tool_end(&mut self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
     /// Images and PDFs a call returned, sent just before its `tool_end`.
     fn tool_media(&mut self, _id: &str, _media: &[codesmith_ai::Media]) {}
+    /// A running call's metadata (OpenCode's tool progress), such as the
+    /// `shellID` of the command a `shell` call started, sent once it runs.
+    fn tool_progress(&mut self, _id: &str, _metadata: &serde_json::Value) {}
+    /// Output a running foreground command printed since the last report,
+    /// a few times a second, until its call ends or moves it to the
+    /// background. Under a flood only the latest output is sent.
+    fn tool_output(&mut self, _id: &str, _delta: &str) {}
     fn step_end(&mut self, _reason: &FinishReason, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     fn compacted(&mut self, _before: u64, _after: u64) {}
     fn todos(&mut self, _todos: &[Todo]) {}
     /// Something worth telling the user that is not part of the answer.
     fn notice(&mut self, _message: &str) {}
+}
+
+fn forward_progress(sink: &mut dyn Sink, id: &str, p: tool::Progress) {
+    match p {
+        tool::Progress::Metadata(m) => sink.tool_progress(id, &m),
+        tool::Progress::Output(o) => sink.tool_output(id, &o),
+    }
 }
 
 /// Relays a subagent's tool activity to the parent's sink under a label.
@@ -85,6 +99,12 @@ impl Sink for ChildSink<'_> {
     }
     fn tool_media(&mut self, id: &str, media: &[codesmith_ai::Media]) {
         self.parent.tool_media(id, media);
+    }
+    fn tool_progress(&mut self, id: &str, metadata: &serde_json::Value) {
+        self.parent.tool_progress(id, metadata);
+    }
+    fn tool_output(&mut self, id: &str, delta: &str) {
+        self.parent.tool_output(id, delta);
     }
     fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
         self.parent.retry(attempt, error, wait);
@@ -978,6 +998,7 @@ impl Session {
                     Some(Tool::Skill) => self.run_skill(&input),
                     Some(Tool::Question) => self.run_question(&input),
                     _ => {
+                        let (progress, mut updates) = tokio::sync::mpsc::unbounded_channel();
                         let ctx = Ctx {
                             cwd: self.cwd.clone(),
                             root: self.root.clone(),
@@ -990,8 +1011,22 @@ impl Session {
                             websearch: Some(self.loaded.config.websearch.clone()),
                             format: self.format.clone(),
                             lsp: self.lsp.clone(),
+                            progress: Some(progress),
                         };
-                        let r = tool::run(&ctx, &name, &input).await;
+                        let r = {
+                            let run = tool::run(&ctx, &name, &input);
+                            tokio::pin!(run);
+                            let r = loop {
+                                tokio::select! {
+                                    r = &mut run => break r,
+                                    Some(p) = updates.recv() => forward_progress(sink, &id, p),
+                                }
+                            };
+                            while let Ok(p) = updates.try_recv() {
+                                forward_progress(sink, &id, p);
+                            }
+                            r
+                        };
                         media = r.media;
                         (r.content, r.is_error)
                     }
@@ -1100,6 +1135,19 @@ impl Session {
         self.jobs = jobs;
     }
 
+    /// Replace the environment this session's shell commands run in
+    /// (OpenCode's `Session.environment`); see
+    /// [`tool::shell::Jobs::set_environment`]. It goes with the jobs handle,
+    /// so a rebuilt session that adopts them keeps it.
+    pub fn set_environment(&self, variables: Option<std::collections::BTreeMap<String, String>>) {
+        self.jobs.set_environment(variables);
+    }
+
+    /// The environment set with [`Session::set_environment`], if any.
+    pub fn environment(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        self.jobs.environment()
+    }
+
     /// Kills this session's commands from a signal handler, or waits for
     /// one to finish while the session is idle (see [`tool::shell::Reaper`]).
     pub fn reaper(&self) -> tool::shell::Reaper {
@@ -1196,14 +1244,21 @@ impl Session {
     }
 
     /// Tell the model about background commands that finished since its last step.
+    /// Also tells it about commands the user moved to the background
+    /// ([`tool::shell::Jobs::background_all`]), first.
     fn report_finished_jobs(&mut self) -> Result<()> {
+        let moved = self.jobs.take_moved();
         let done = self.jobs.take_finished();
-        if done.is_empty() {
+        if done.is_empty() && moved.is_empty() {
             return Ok(());
         }
-        let parts = done
-            .iter()
-            .map(|j| Part::text(tool::shell::notification(j, self.limits)))
+        let note = (!moved.is_empty()).then(|| Part::text(tool::shell::moved_note(&moved)));
+        let parts = note
+            .into_iter()
+            .chain(
+                done.iter()
+                    .map(|j| Part::text(tool::shell::notification(j, self.limits))),
+            )
             .collect();
         self.push(Message {
             role: Role::User,
@@ -1690,6 +1745,7 @@ impl Session {
             websearch: None,
             format: None,
             lsp: None,
+            progress: None,
         };
         let target = crate::tool::read::authorize(&ctx, path)?;
         crate::media::attachment(&target, path, &self.loaded.config.media.image)

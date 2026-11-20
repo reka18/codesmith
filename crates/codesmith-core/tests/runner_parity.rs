@@ -127,6 +127,8 @@ struct Seen {
     /// Tool lifecycle: `input id name`, `formed id call`, `dropped id`,
     /// `start id`.
     lifecycle: Vec<String>,
+    /// `tool_progress` and `tool_output` reports: (call id, what).
+    progress: Vec<(String, String)>,
 }
 
 struct Rec(Arc<Mutex<Seen>>);
@@ -161,6 +163,14 @@ impl Sink for Rec {
             .unwrap()
             .tools
             .push((name.into(), output.into(), is_error));
+    }
+    fn tool_progress(&mut self, id: &str, metadata: &Value) {
+        let mut s = self.0.lock().unwrap();
+        s.progress.push((id.into(), metadata.to_string()));
+    }
+    fn tool_output(&mut self, id: &str, delta: &str) {
+        let mut s = self.0.lock().unwrap();
+        s.progress.push((id.into(), delta.into()));
     }
 }
 
@@ -1406,6 +1416,58 @@ async fn a_turn_ends_while_its_background_command_runs_and_resumes_when_it_finis
     );
     assert_eq!(texts(&t.s), ["Started it.", "It printed bg-finished."]);
     assert_eq!(t.s.background_finished(), 0);
+}
+
+/// The user moves a running foreground command to the background (as
+/// OpenCode's `Session.background` does): the call returns at once, the
+/// model is told before its next step, and the call's shell ID reached the
+/// sink while it ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreground_command_the_user_backgrounds_is_told_to_the_model() {
+    let mut t = plain().await;
+    t.push([
+        call(
+            "c1",
+            "shell",
+            json!({"command": "echo started; sleep 30", "description": "slow"}),
+        ),
+        text("Moved on."),
+    ]);
+    let jobs = t.s.jobs();
+    let mover = tokio::spawn(async move {
+        loop {
+            if !jobs.background_all().is_empty() {
+                return jobs;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    });
+    let started = std::time::Instant::now();
+    t.prompt("run it").await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the call waited"
+    );
+    let jobs = mover.await.unwrap();
+    assert_eq!(t.s.background_running(), 1);
+    let reqs = t.requests();
+    let msgs = reqs[1]["messages"].as_array().unwrap();
+    let n = msgs.len();
+    assert!(
+        msgs[n - 2]["content"]
+            .to_string()
+            .contains("Command moved to the background (shell ID: shell_1)."),
+        "{msgs:?}"
+    );
+    let note = msgs[n - 1]["content"].to_string();
+    assert!(
+        note.contains("User requested that active blocking work be moved to the background.")
+            && note.contains("- shell: echo started; sleep 30"),
+        "{note}"
+    );
+    let first = t.seen.lock().unwrap().progress[0].clone();
+    assert_eq!(first, ("c1".into(), r#"{"shellID":"shell_1"}"#.into()));
+    jobs.stop_all().await;
 }
 
 /// Fixed: rebuilding a session (a cancel, undo, or a mode or model switch)

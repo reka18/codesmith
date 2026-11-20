@@ -152,6 +152,7 @@ fn ctx<'a>(root: &Path, gate: &'a Gate) -> Ctx<'a> {
         websearch: None,
         format: None,
         lsp: None,
+        progress: None,
     }
 }
 
