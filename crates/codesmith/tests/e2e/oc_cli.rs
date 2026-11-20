@@ -227,3 +227,76 @@ async fn oc_shell_commands_do_not_see_the_server_token() {
         "{results:?}"
     );
 }
+
+/// `debug paths` with this world's environment, `set` on top and `unset`
+/// removed.
+async fn paths_with(e: &Env, set: &[(&str, String)], unset: &[&str]) -> Vec<(String, String)> {
+    let mut c = e.command(&["debug", "paths"]);
+    for (k, v) in set {
+        c.env(k, v);
+    }
+    for k in unset {
+        c.env_remove(k);
+    }
+    let o = c.output().await.unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(char::is_whitespace)?;
+            Some((k.to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
+// util global-roots.test.ts: "uses XDG overrides" (CodeSmith keeps its
+// temporary files in the data folder).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_paths_use_xdg_overrides() {
+    let e = Env::new();
+    let root = e.root.join("xdg");
+    let p = |s: &str| root.join(s).display().to_string();
+    let got = paths_with(
+        &e,
+        &[
+            ("XDG_CONFIG_HOME", p("config")),
+            ("XDG_DATA_HOME", p("data")),
+        ],
+        &["CODESMITH_CONFIG_DIR"],
+    )
+    .await;
+    let want = [
+        ("config", p("config/codesmith")),
+        ("data", p("data/codesmith")),
+        ("output", p("data/codesmith/tool-output")),
+        ("tmp", p("data/codesmith/tmp")),
+    ];
+    for (k, v) in want {
+        assert!(got.contains(&(k.to_string(), v.clone())), "{k}: {got:?}");
+    }
+}
+
+// util global-roots.test.ts: "empty XDG overrides use home directory
+// defaults".
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_empty_xdg_overrides_use_the_home_defaults() {
+    let e = Env::new();
+    let got = paths_with(
+        &e,
+        &[
+            ("XDG_CONFIG_HOME", String::new()),
+            ("XDG_DATA_HOME", String::new()),
+        ],
+        &["CODESMITH_CONFIG_DIR"],
+    )
+    .await;
+    let home = |s: &str| e.home.join(s).display().to_string();
+    assert!(
+        got.contains(&("config".into(), home(".config/codesmith"))),
+        "{got:?}"
+    );
+    assert!(
+        got.contains(&("data".into(), home(".local/share/codesmith"))),
+        "{got:?}"
+    );
+}
