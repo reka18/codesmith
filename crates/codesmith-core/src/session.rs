@@ -1630,10 +1630,6 @@ impl Session {
             },
         );
         let result = self.run_steps(sink).await;
-        // Going idle leaves a background summary time to finish.
-        if result.is_ok() {
-            self.precompute();
-        }
         // The end tree tells undo which files this turn changed.
         if let Some(snaps) = snapshots {
             if let Ok(tree) = tokio::task::block_in_place(|| snaps.capture()) {
@@ -1652,6 +1648,11 @@ impl Session {
         // usage (a deferred one starts now if no response came).
         self.start_pending_title();
         self.finish_title().await;
+        // Going idle leaves a background summary time to finish (after the
+        // title, which a local server would otherwise also be busy with).
+        if result.is_ok() {
+            self.precompute_idle();
+        }
         if let Some(s) = &self.store {
             if self.stored {
                 self.save_usage(s);
@@ -1691,7 +1692,7 @@ impl Session {
                     ));
                 }
             } else if !compacted_this_step {
-                self.precompute();
+                self.precompute_between_steps();
             }
             // Each step sees the instructions as they are now.
             if !std::mem::take(&mut self.turn.observed) {
@@ -1702,6 +1703,8 @@ impl Session {
             // The last allowed step must answer in text (OpenCode's MAX_STEPS).
             let final_step = steps + 1 >= max_steps;
             let before = self.messages.len();
+            // A background summary never runs beside a local server's step.
+            self.postpone_held();
             let stepped = self.step(sink, final_step).await;
             self.warm_end();
             // The turn's first response is in: a deferred title may run.
@@ -2238,7 +2241,7 @@ impl Session {
         let result = self.run_steps(sink).await;
         // Going idle leaves a background summary time to finish.
         if result.is_ok() {
-            self.precompute();
+            self.precompute_idle();
         }
         // Another end tree for the same turn: undo then covers these changes too.
         if self.parent.is_none() && self.stored && self.loaded.config.snapshots.unwrap_or(true) {

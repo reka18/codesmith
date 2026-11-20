@@ -367,6 +367,13 @@ prompt (prefill). CodeSmith is built to keep that cost down:
   session's next request, so it never slows the reply you are waiting for.
   It is capped at 64 tokens and asks for no thinking (see
   [Session titles](#session-titles)).
+- **Background summaries wait for idle time.** As a session nears
+  [compaction](#compaction), its summary is normally written in the
+  background, beside the turn. On a local server it starts only once the
+  turn is over (and its title written), and when you send the next
+  message before it is done, it is stopped before the first step goes
+  out; the next idle time starts it again. A compaction that is due still
+  waits for a summary being written rather than starting another.
 - **The prompt prefix stays the same.** The system prompt, the tool
   definitions and everything before your first message are byte for byte
   the same on every step and every turn of a session, and across sessions
@@ -1273,7 +1280,7 @@ tokens of the newest turns are kept beside the summary.
 | `auto` | `true` | `false` leaves compaction to `/compact`, even when the provider rejects a prompt as too long. |
 | `buffer` | 15% (min 16,000) | Room kept free below the window: a number of tokens, or a share such as `"20%"`. |
 | `keep.tokens` | `15000` | Tokens of recent history kept verbatim. |
-| `background` | `true` | Write the summary in the background as the session nears automatic compaction, so compaction swaps it in instead of waiting for one. A summary that is never used still costs tokens. Needs `auto`. |
+| `background` | `true` | Write the summary in the background as the session nears automatic compaction, so compaction swaps it in instead of waiting for one. A summary that is never used still costs tokens. Needs `auto`. On a [local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama) it is written only while the session is idle. |
 
 The prompt size is the provider's token count for the latest response, plus
 an estimate (four characters per token) of what came after it; before the

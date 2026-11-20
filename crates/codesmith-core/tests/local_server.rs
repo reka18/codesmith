@@ -1,7 +1,8 @@
 //! A local, single-request server (oMLX, LM Studio, llama.cpp, Ollama):
 //! the session title never competes with the turn, is capped and asks for
 //! no thinking; `small_model` and the title switches choose how titles are
-//! made. And the request prefix (system prompt, tools, everything before
+//! made. A background compaction summary runs only while the session is
+//! idle, and is stopped when a turn starts. And the request prefix (system prompt, tools, everything before
 //! the first user message) stays byte-identical across steps, turns and
 //! sessions of one project, so the server's prefix cache keeps it.
 
@@ -304,6 +305,215 @@ async fn titles_can_be_turned_off() {
             "{extra}"
         );
     }
+}
+
+// --- Background summaries ---
+
+/// A request a summary server saw: when it arrived and (once `done`)
+/// ended, and whether the client hung up before the answer.
+#[derive(Clone, Debug)]
+struct Call {
+    summary: bool,
+    start: Instant,
+    end: Instant,
+    done: bool,
+    cancelled: bool,
+}
+
+type Calls = Arc<Mutex<Vec<Call>>>;
+
+fn is_summary(body: &Value) -> bool {
+    body["messages"].as_array().unwrap().iter().any(|m| {
+        m["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("Summarize only what the user and the assistant said"))
+    })
+}
+
+/// A fake server whose turns take two steps of `DELAY` each, reporting a
+/// small prompt on the first request and one near the compaction ceiling
+/// (of a 100k window) after, so a background summary starts. A summary is
+/// answered after `summary_delay`, unless the client hangs up first.
+async fn summary_server(calls: Calls, summary_delay: Duration) -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else {
+                return;
+            };
+            let (calls, served) = (calls.clone(), served.clone());
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 8192];
+                let body = loop {
+                    let n = s.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(i) = text.find("\r\n\r\n") {
+                        let len: usize = text[..i]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= i + 4 + len {
+                            break serde_json::from_slice::<Value>(&buf[i + 4..i + 4 + len])
+                                .unwrap();
+                        }
+                    }
+                };
+                let start = Instant::now();
+                let summary = is_summary(&body);
+                let delay = if summary { summary_delay } else { DELAY };
+                // Seen as it arrives; its end is filled in after.
+                let at = {
+                    let mut c = calls.lock().unwrap();
+                    c.push(Call {
+                        summary,
+                        start,
+                        end: start,
+                        done: false,
+                        cancelled: false,
+                    });
+                    c.len() - 1
+                };
+                // The client hanging up ends the wait.
+                let cancelled = tokio::select! {
+                    _ = tokio::time::sleep(delay) => false,
+                    n = s.read(&mut tmp) => n.unwrap_or(0) == 0,
+                };
+                {
+                    let mut c = calls.lock().unwrap();
+                    c[at].end = Instant::now();
+                    c[at].done = true;
+                    c[at].cancelled = cancelled;
+                }
+                if cancelled {
+                    return;
+                }
+                let content = if summary {
+                    json!({"choices": [{"delta": {"content": "## Objective\n- Fix it"}, "finish_reason": "stop"}]})
+                } else if body["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" {
+                    json!({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+                } else {
+                    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": format!("c{}", served.load(std::sync::atomic::Ordering::SeqCst)), "type": "function", "function": {"name": "no_such_tool", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]})
+                };
+                let n = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let prompt = if n == 0 { 1_000 } else { 60_000 };
+                let usage = json!({"choices": [], "usage": {"prompt_tokens": prompt, "completion_tokens": 10}});
+                let sse = format!("data: {content}\n\ndata: {usage}\n\ndata: [DONE]\n\n");
+                let _ = s
+                    .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}", sse.len()).as_bytes())
+                    .await;
+            });
+        }
+    });
+    format!("http://{addr}/v1")
+}
+
+fn summary_session(dir: &std::path::Path, base: &str, local: bool) -> Session {
+    let extra = json!({
+        "title": false,
+        "providers": {"main": {"local": local, "models": {"qwen": {"limit": {"context": 100_000}}}}},
+    });
+    session(dir, base, "qwen", extra)
+}
+
+fn calls(c: &Calls) -> (Vec<Call>, Vec<Call>) {
+    c.lock().unwrap().iter().cloned().partition(|c| c.summary)
+}
+
+/// Wait (at most five seconds) until the server saw `n` summary requests
+/// arrive.
+async fn summaries(c: &Calls, n: usize) -> Vec<Call> {
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        while calls(c).0.len() < n {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    calls(c).0
+}
+
+/// Wait (at most five seconds) until every request the server saw ended.
+async fn settled(c: &Calls) -> (Vec<Call>, Vec<Call>) {
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        while c.lock().unwrap().iter().any(|c| !c.done) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    calls(c)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_background_summary_runs_only_while_the_session_is_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = Calls::default();
+    let base = summary_server(log.clone(), Duration::from_millis(1_500)).await;
+    let mut s = summary_session(dir.path(), &base, true);
+    s.prompt("Fix the flaky login test", &mut Quiet)
+        .await
+        .unwrap();
+    // The prompt neared the ceiling on the turn's second step: the summary
+    // starts once the turn is over, not beside it.
+    let first = summaries(&log, 1).await;
+    let turn1 = calls(&log).1;
+    assert_eq!(turn1.len(), 2);
+    assert_eq!(first.len(), 1, "one background summary");
+    assert!(first[0].start >= turn1[1].end, "it waited for the turn");
+    assert!(!first[0].done, "still being written");
+    // The next turn starts while it is being written: it is stopped before
+    // the step goes out.
+    s.prompt("Now the logout test", &mut Quiet).await.unwrap();
+    let main = calls(&log).1;
+    assert_eq!(main.len(), 4);
+    let first = settled(&log).await.0[0].clone();
+    assert!(first.cancelled, "the summary was stopped for the turn");
+    assert!(
+        first.end <= main[2].start + Duration::from_millis(100),
+        "it was stopped as the step started"
+    );
+    // Idle again: a new one starts after the turn.
+    let all = summaries(&log, 2).await;
+    assert_eq!(all.len(), 2, "the summary was started again");
+    assert!(all[1].start >= main[3].end);
+    let (all, main) = settled(&log).await;
+    assert!(!all[1].cancelled, "written while idle");
+    for m in &main {
+        for c in all.iter().filter(|c| !c.cancelled) {
+            assert!(
+                c.end <= m.start || c.start >= m.end,
+                "no overlap: {c:?} {m:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosted_background_summary_still_runs_beside_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = Calls::default();
+    let base = summary_server(log.clone(), Duration::from_millis(1_500)).await;
+    let mut s = summary_session(dir.path(), &base, false);
+    s.prompt("Fix the flaky login test", &mut Quiet)
+        .await
+        .unwrap();
+    s.prompt("Now the logout test", &mut Quiet).await.unwrap();
+    let (first, main) = settled(&log).await;
+    assert_eq!(main.len(), 4);
+    assert!(!first[0].cancelled, "nothing stopped it");
+    assert!(
+        first[0].start < main[2].end && first[0].end > main[2].start,
+        "it ran while the next turn did"
+    );
 }
 
 // --- A stable prefix ---

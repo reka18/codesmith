@@ -19,6 +19,14 @@
 //! it verbatim, instead of waiting for a summary, as long as that tail is
 //! short. OpenCode's `SessionCompaction.precompute`.
 //!
+//! On a local server (the session's model is
+//! [`local`](crate::config::ModelRef::local); the summary goes to the same
+//! server, as it uses the session's model) a background summary never runs
+//! beside a step: it starts only once the session is idle (the turn over,
+//! its title written) and is stopped when the next turn's step starts,
+//! unless it finished by then; the next idle time starts it again. A
+//! compaction that is due still waits for it, as that is no step.
+//!
 //! Native compaction (`compaction: {"type": "native"}` on a model): the
 //! provider compacts the conversation itself (OpenAI Responses), and its
 //! window replaces the history; see [`Session::compact_natively`].
@@ -63,6 +71,9 @@ pub(super) struct State {
     pings: Arc<Mutex<Vec<Usage>>>,
     /// How many messages at the start of the history are a native window.
     native_len: usize,
+    /// Failed background summaries before one that was stopped for a turn
+    /// (see [`Session::postpone_held`]), carried to the next one.
+    postponed_failures: u32,
 }
 
 /// What a summary request came to: the summary, and the usage of each call.
@@ -282,6 +293,49 @@ impl Session {
         }
     }
 
+    /// Whether background summaries wait for the session to be idle: on a
+    /// local server, which one request at a time keeps busy.
+    pub(super) fn summary_waits_for_idle(&self) -> bool {
+        self.model.local
+    }
+
+    /// Between steps: start a background summary, except on a local
+    /// server, where it waits for the session to be idle.
+    pub(super) fn precompute_between_steps(&mut self) {
+        if !self.summary_waits_for_idle() {
+            self.precompute();
+        }
+    }
+
+    /// The session went idle: start a background summary. A subagent on a
+    /// local server is never idle for that server (its parent's turn goes
+    /// on), so its summaries are left to compaction.
+    pub(super) fn precompute_idle(&mut self) {
+        if self.summary_waits_for_idle() && self.parent.is_some() {
+            return;
+        }
+        self.precompute();
+    }
+
+    /// A step is about to be sent: on a local server, stop a background
+    /// summary still being written, so it never runs beside the step. The
+    /// next idle time starts one again; one already written is kept.
+    pub(super) fn postpone_held(&mut self) {
+        if !self.summary_waits_for_idle() {
+            return;
+        }
+        let running = self
+            .compact
+            .held
+            .as_ref()
+            .is_some_and(|h| h.outcome.lock().unwrap().is_none());
+        if running {
+            let failures = self.compact.held.as_ref().map_or(0, |h| h.failures);
+            self.discard_held();
+            self.compact.postponed_failures = failures;
+        }
+    }
+
     /// Start a background summary when the prompt nears the ceiling (see the
     /// module notes). Never waits for it. One is held at a time; it is
     /// replaced from a newer response when it failed or fell too far behind.
@@ -305,7 +359,7 @@ impl Session {
         if anchor.index == 0 || anchor.index >= self.messages.len() {
             return;
         }
-        let mut failures = 0;
+        let mut failures = self.compact.postponed_failures;
         if let Some(held) = &self.compact.held {
             let failed = held.failed();
             failures = held.failures + u32::from(failed);
@@ -348,6 +402,7 @@ impl Session {
             let r = deliver(&client, &model, plan, &mut |_: &str| {}).await;
             *slot.lock().unwrap() = Some(r);
         });
+        self.compact.postponed_failures = 0;
         self.compact.held = Some(Held {
             keep: anchor.index,
             fingerprint: fingerprint(&self.messages[..anchor.index]),
@@ -612,6 +667,7 @@ impl Session {
         self.compact.cycle_start = None;
         *self.compact.snapshot.lock().unwrap() = None;
         self.discard_held();
+        self.compact.postponed_failures = 0;
     }
 
     /// The size a summary request aims for.

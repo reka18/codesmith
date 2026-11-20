@@ -306,9 +306,12 @@ pub fn loaded(
     output: u32,
     extra: Value,
 ) -> Loaded {
+    // The scripted model stands in for a hosted provider, as in OpenCode's
+    // tests, though it listens on loopback; a local server's timing is
+    // tested in `local_server.rs`.
     let mut v = json!({
         "model": format!("fake/{id}"), "snapshots": false,
-        "providers": {"fake": {"protocol": protocol,
+        "providers": {"fake": {"protocol": protocol, "local": false,
             "settings": {"baseURL": base, "apiKey": "x"},
             "models": {id: {"limit": {"context": context, "output": output}}}}},
     });
