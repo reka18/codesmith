@@ -40,6 +40,9 @@ pub struct Config {
     pub snapshots: Option<bool>,
     /// Extra folders containing `<id>/SKILL.md` skills.
     pub skills: Vec<String>,
+    /// Format files after edits: `true` for the built-in formatters, or an
+    /// object of per-formatter overrides. Off when unset.
+    pub formatter: Option<crate::format::Setting>,
     /// Code review settings for `/review` and `/calibrate`.
     pub review: crate::review::ReviewConfig,
     /// Model Context Protocol servers whose tools the agent can use.

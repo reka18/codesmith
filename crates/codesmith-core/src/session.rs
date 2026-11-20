@@ -113,6 +113,7 @@ pub struct Session {
     jobs: tool::shell::Jobs,
     questioner: Option<Arc<dyn crate::question::Questioner>>,
     mcp: Arc<crate::mcp::Mcp>,
+    format: Option<Arc<crate::format::Formatter>>,
 }
 
 impl Session {
@@ -266,6 +267,14 @@ impl Session {
             jobs: tool::shell::Jobs::default(),
             questioner: opts.questioner,
             mcp: opts.mcp.unwrap_or_else(crate::mcp::Mcp::empty),
+            format: {
+                let f = crate::format::Formatter::new(
+                    config.formatter.as_ref(),
+                    loaded.root.clone(),
+                    loaded.root.clone(),
+                );
+                f.enabled().then(|| Arc::new(f))
+            },
         })
     }
 
@@ -490,6 +499,7 @@ impl Session {
                             client: self.client.clone(),
                             jobs: Some(self.jobs.clone()),
                             websearch: Some(self.loaded.config.websearch.clone()),
+                            format: self.format.clone(),
                         };
                         tool::execute(&ctx, &name, &input).await
                     }

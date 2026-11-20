@@ -6,6 +6,7 @@ pub mod auth;
 pub mod command;
 pub mod compaction;
 pub mod config;
+pub mod format;
 pub mod instructions;
 pub mod mcp;
 pub mod paths;

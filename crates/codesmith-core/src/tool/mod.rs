@@ -35,6 +35,26 @@ pub struct Ctx<'a> {
     /// Background command registry; `None` where background commands are unavailable.
     pub jobs: Option<shell::Jobs>,
     pub websearch: Option<websearch::WebSearchConfig>,
+    /// Formats files after `write` and `edit`; `None` when formatting is off.
+    pub format: Option<std::sync::Arc<crate::format::Formatter>>,
+}
+
+impl Ctx<'_> {
+    /// Run the formatter on a file just written. Returns a note for the
+    /// model when the file changed, so it re-reads before editing again.
+    pub fn format(&self, path: &std::path::Path, written: &str) -> String {
+        let Some(f) = &self.format else {
+            return String::new();
+        };
+        let handle = tokio::runtime::Handle::current();
+        let Some(name) = tokio::task::block_in_place(|| handle.block_on(f.file(path))) else {
+            return String::new();
+        };
+        match std::fs::read_to_string(path) {
+            Ok(now) if now != written => format!("\n\nThe file was reformatted by {name}, so it now differs from what you wrote; read it again before editing it."),
+            _ => String::new(),
+        }
+    }
 }
 
 /// What a tool returns to the model. `Err` is shown to the model as a failed call.
@@ -469,6 +489,7 @@ pub(crate) mod testing {
                 client: reqwest::Client::new(),
                 jobs: Some(shell::Jobs::default()),
                 websearch: None,
+                format: None,
             }
         }
         pub fn write(&self, rel: &str, content: &str) -> PathBuf {

@@ -468,9 +468,11 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         save: vec!["*".into()],
         title: format!("Edit {} (-{removed} +{added} lines)", target.resource),
     })?;
-    std::fs::write(&target.absolute, updated).map_err(|e| format!("Unable to edit {path}: {e}"))?;
+    std::fs::write(&target.absolute, &updated)
+        .map_err(|e| format!("Unable to edit {path}: {e}"))?;
+    let note = ctx.format(&target.absolute, &updated);
     Ok(Output::text(format!(
-        "Edited {} ({n} replacement{})",
+        "Edited {} ({n} replacement{}){note}",
         target.resource,
         if n == 1 { "" } else { "s" }
     )))

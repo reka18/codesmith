@@ -177,6 +177,28 @@ reading `.env` files, which asks.
 directory (with `CLAUDE.md` as a fallback), plus
 `~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
+## Formatters
+
+With `"formatter": true`, files the agent writes or edits are formatted
+afterwards, as in OpenCode. The 26 built-in formatters each turn on only when
+the project uses them: `gofmt`, `rustfmt`, `zig`, `shfmt`, `terraform` and
+the like when installed; `prettier`, `biome` and `oxfmt` when the nearest
+`package.json` (or `biome.json`) asks for them and they are installed in
+`node_modules`; `ruff` when the Python config mentions it; `clang-format` and
+`ocamlformat` when their config file exists. Detection starts at the edited
+file's folder, so each package of a monorepo uses its own setup. When a
+formatter changes the file, the tool result tells the model to re-read it.
+
+```jsonc
+"formatter": {
+  "rustfmt": { "disabled": true },
+  "prettier": { "environment": { "NODE_OPTIONS": "--max-old-space-size=4096" } },
+  "sqlfmt": { "command": ["sqlfmt", "$FILE"], "extensions": [".sql"] }
+}
+```
+
+`"formatter": false` (or leaving it out) turns formatting off.
+
 ## Code review
 
 Reviews are tuned to the codebase in two steps.
@@ -290,7 +312,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
-4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys~~ and logins, formatters, worktrees, stats
+4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters~~ and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
 
 ## License

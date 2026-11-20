@@ -43,8 +43,9 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     }
     std::fs::write(&target.absolute, content)
         .map_err(|e| format!("Unable to write {path}: {e}"))?;
+    let note = ctx.format(&target.absolute, content);
     Ok(Output::text(format!(
-        "{} file successfully: {}",
+        "{} file successfully: {}{note}",
         if existed { "Wrote" } else { "Created" },
         target.resource
     )))
