@@ -135,7 +135,7 @@ impl Index {
                 words(&params.iter().map(String::as_str).collect::<Vec<_>>()),
             ]);
             items.push(Item {
-                signature: signature::signature(&expression(&path), &e.schema, None),
+                signature: super::signature(e),
                 description: e.description.clone(),
                 name_length: split_words(name).len(),
                 path,
@@ -154,18 +154,19 @@ impl Index {
             .collect();
         let mut postings: HashMap<String, Vec<(usize, f64)>> = HashMap::new();
         for (position, entry) in fields.iter().enumerate() {
-            let mut weights: Vec<(String, f64)> = vec![];
+            // A map, not a list: a long description must not make this quadratic.
+            let mut weights: HashMap<&str, f64> = HashMap::new();
             for (f, (_, weight)) in FIELDS.iter().enumerate() {
                 let w = weight / (1.0 - B + B * entry[f].len() as f64 / average[f]);
                 for word in &entry[f] {
-                    match weights.iter_mut().find(|(k, _)| k == word) {
-                        Some((_, v)) => *v += w,
-                        None => weights.push((word.clone(), w)),
-                    }
+                    *weights.entry(word.as_str()).or_default() += w;
                 }
             }
             for (word, w) in weights {
-                postings.entry(word).or_default().push((position, w));
+                postings
+                    .entry(word.to_string())
+                    .or_default()
+                    .push((position, w));
             }
         }
         let mut words: Vec<String> = postings.keys().cloned().collect();
@@ -491,6 +492,16 @@ mod tests {
             .iter()
             .map(|i| i["path"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_long_description_indexes_in_linear_time() {
+        // Distinct words; a list of weights made this quadratic.
+        let words: Vec<String> = (0..60_000).map(|i| format!("w{i}x")).collect();
+        let start = std::time::Instant::now();
+        let index = Index::new(&[entry("ns", "tool", &words.join(" "))]);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(index.rank(&[0], "w59999x"), vec![0]);
     }
 
     #[test]

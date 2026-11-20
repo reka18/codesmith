@@ -70,8 +70,32 @@ pub fn ts_type(s: &Value) -> String {
 /// What the catalog shows for a tool, as OpenCode does: its call
 /// expression, its input with JSDoc for each field's description and
 /// constraints, and its result.
+///
+/// Rendering a schema is costly and the catalog is rebuilt every step, so
+/// signatures are kept, keyed by the call expression and the schema.
 pub fn signature(e: &Entry) -> String {
-    signature::signature(&path(e), &e.schema, None)
+    use std::collections::HashMap;
+    use std::hash::{BuildHasher, Hash, Hasher, RandomState};
+    use std::sync::{LazyLock, Mutex};
+    const KEEP: usize = 4096;
+    static HASHER: LazyLock<RandomState> = LazyLock::new(RandomState::new);
+    static MEMO: LazyLock<Mutex<HashMap<u64, String>>> = LazyLock::new(Default::default);
+    let path = path(e);
+    let mut h = HASHER.build_hasher();
+    path.hash(&mut h);
+    e.schema.to_string().hash(&mut h);
+    let key = h.finish();
+    if let Some(s) = MEMO.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        return s;
+    }
+    let s = signature::signature(&path, &e.schema, None);
+    if let Ok(mut m) = MEMO.lock() {
+        if m.len() >= KEEP {
+            m.clear();
+        }
+        m.insert(key, s.clone());
+    }
+    s
 }
 
 /// The signature of the global `search(...)` a partial catalog points at.

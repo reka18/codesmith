@@ -161,6 +161,21 @@ pub enum Status {
 }
 
 /// Replace anything outside `[A-Za-z0-9_-]` with `_`.
+/// The largest tool input schema taken from a server, serialized. Schemas
+/// are rendered into the system prompt and sent with every request; past
+/// this a tool keeps an open object schema.
+pub const MAX_INPUT_SCHEMA: usize = 256 * 1024;
+
+/// A tool's `inputSchema`: an object no larger than [`MAX_INPUT_SCHEMA`],
+/// otherwise an open object schema.
+fn input_schema(schema: Option<&Value>) -> Value {
+    schema
+        .filter(|s| s.is_object())
+        .filter(|s| serde_json::to_vec(s).is_ok_and(|b| b.len() <= MAX_INPUT_SCHEMA))
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}))
+}
+
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -1000,11 +1015,7 @@ impl Client {
                     server: self.server.clone(),
                     remote: remote.to_string(),
                     description: t["description"].as_str().unwrap_or("").to_string(),
-                    schema: t
-                        .get("inputSchema")
-                        .cloned()
-                        .filter(Value::is_object)
-                        .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+                    schema: input_schema(t.get("inputSchema")),
                 })
             })
             .collect())
@@ -1768,6 +1779,17 @@ impl SseFrames {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_input_schemas_are_replaced_with_an_open_object() {
+        let open = json!({"type": "object", "properties": {}});
+        let small = json!({"type": "object", "properties": {"a": {"type": "string"}}});
+        assert_eq!(input_schema(Some(&small)), small);
+        assert_eq!(input_schema(None), open);
+        assert_eq!(input_schema(Some(&json!("x"))), open);
+        let big = json!({"type": "object", "description": "x".repeat(MAX_INPUT_SCHEMA)});
+        assert_eq!(input_schema(Some(&big)), open);
+    }
 
     #[test]
     fn sse_frames_split_and_cap() {

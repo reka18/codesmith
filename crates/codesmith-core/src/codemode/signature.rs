@@ -5,9 +5,19 @@
 //! (`@default`, `@format`, `@minimum`, `@pattern`, `@minItems`, ...).
 
 use serde_json::{Map, Value};
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 const MAX_RENDER_DEPTH: usize = 8;
+/// `$ref` hops along one path, counted apart from nesting so references
+/// keep their indentation.
+const MAX_REF_HOPS: usize = 8;
+/// Nodes one type may render or check (see `Budget`).
+const MAX_RENDER_NODES: usize = 20_000;
+/// Characters the pieces of one type may add up to while rendering.
+const MAX_RENDER_OUTPUT: usize = 4 * 1024 * 1024;
+/// The longest type a signature shows; past it the type is `unknown`.
+pub const MAX_TYPE_LEN: usize = 64 * 1024;
 const ANNOTATIONS: &[&str] = &[
     "title",
     "description",
@@ -72,8 +82,6 @@ fn literal(v: &Value) -> String {
     }
 }
 
-type Defs = Map<String, Value>;
-
 /// `#/$defs/Name` or `#/definitions/Name`: the name.
 fn definition_name(r: &str) -> Option<String> {
     let rest = r.strip_prefix('#')?;
@@ -119,21 +127,6 @@ fn type_is(s: &Value, t: &str) -> bool {
     get(s, "type").and_then(Value::as_str) == Some(t)
 }
 
-/// `schema` without the given keys.
-fn without(s: &Value, keys: &[&str]) -> Value {
-    let mut o = obj(s).cloned().unwrap_or_default();
-    for k in keys {
-        o.remove(*k);
-    }
-    Value::Object(o)
-}
-
-fn with(s: &Value, k: &str, v: Value) -> Value {
-    let mut o = obj(s).cloned().unwrap_or_default();
-    o.insert(k.into(), v);
-    Value::Object(o)
-}
-
 /// Effect's `number | "Infinity" | "-Infinity" | "NaN"` sentinel member.
 fn number_sentinel(s: &Value) -> bool {
     type_is(s, "string")
@@ -142,18 +135,6 @@ fn number_sentinel(s: &Value) -> bool {
                 && e.iter()
                     .all(|v| matches!(v.as_str(), Some("NaN" | "Infinity" | "-Infinity")))
         })
-}
-
-/// `{ not: { type: "null" } }` with nothing but annotations beside it.
-fn empty_struct(s: &Value) -> bool {
-    let Some(o) = obj(s) else { return false };
-    let Some(not) = o.get("not").and_then(Value::as_object) else {
-        return false;
-    };
-    not.get("type").and_then(Value::as_str) == Some("null")
-        && not.len() == 1
-        && o.keys()
-            .all(|k| k == "not" || ANNOTATIONS.contains(&k.as_str()))
 }
 
 fn intersection(members: &[String]) -> String {
@@ -180,10 +161,15 @@ fn unresolved(
     defs: &Defs,
     seen: &BTreeSet<String>,
     visited: &mut Vec<*const Value>,
+    budget: &Budget,
 ) -> bool {
     let p = s as *const Value;
     if visited.contains(&p) || visited.len() > 64 {
         return false;
+    }
+    // Out of budget: say unresolved, so the caller renders `unknown`.
+    if !budget.take() {
+        return true;
     }
     visited.push(p);
     let out = (|| {
@@ -191,7 +177,7 @@ fn unresolved(
             let Some(name) = definition_name(r) else {
                 return true;
             };
-            let Some(def) = defs.get(&name) else {
+            let Some(def) = lookup(defs, &name) else {
                 return true;
             };
             if seen.contains(&name) {
@@ -199,7 +185,7 @@ fn unresolved(
             }
             let mut seen = seen.clone();
             seen.insert(name);
-            if unresolved(def, defs, &seen, visited) {
+            if unresolved(def, defs, &seen, visited, budget) {
                 return true;
             }
         }
@@ -220,7 +206,7 @@ fn unresolved(
         }
         items
             .into_iter()
-            .any(|i| unresolved(i, defs, seen, visited))
+            .any(|i| unresolved(i, defs, seen, visited, budget))
     })();
     visited.pop();
     out
@@ -377,55 +363,197 @@ fn jsdoc(s: &Value, pad: &str) -> String {
     format!("{pad}/**\n{body}\n{pad} */\n")
 }
 
-struct Ctx {
-    defs: Defs,
-    pretty: bool,
+/// The definitions in scope: the outermost first, so a nested `$defs`
+/// shadows an inherited one (looked up from the end).
+type Defs<'a> = Vec<&'a Map<String, Value>>;
+
+fn lookup<'a>(defs: &Defs<'a>, name: &str) -> Option<&'a Value> {
+    defs.iter().rev().find_map(|m| m.get(name))
 }
 
-fn render(s: &Value, ctx: &Ctx, depth: usize, seen: &BTreeSet<String>) -> String {
-    if depth > MAX_RENDER_DEPTH {
+/// What one type may spend, so a hostile schema (tool schemas come from MCP
+/// servers) cannot make rendering explode: every node rendered or checked
+/// counts against `nodes`, every rendered piece's length against `output`.
+/// Once either runs out, the rest renders as `unknown`.
+struct Budget {
+    nodes: Cell<usize>,
+    output: Cell<usize>,
+}
+
+impl Budget {
+    fn new() -> Budget {
+        Budget {
+            nodes: Cell::new(MAX_RENDER_NODES),
+            output: Cell::new(MAX_RENDER_OUTPUT),
+        }
+    }
+
+    /// Spend one node; false once the budget is gone.
+    fn take(&self) -> bool {
+        let n = self.nodes.get();
+        if n == 0 || self.output.get() == 0 {
+            self.nodes.set(0);
+            return false;
+        }
+        self.nodes.set(n - 1);
+        true
+    }
+
+    fn spend_output(&self, len: usize) {
+        self.output.set(self.output.get().saturating_sub(len));
+    }
+}
+
+const SKIP_REF: u8 = 1;
+const SKIP_UNION: u8 = 2;
+const SKIP_ALL: u8 = 4;
+
+/// A schema with some of its keys hidden or its `type` replaced, without
+/// copying it.
+#[derive(Clone, Copy)]
+struct View<'a> {
+    s: &'a Value,
+    skip: u8,
+    ty: Option<&'a Value>,
+}
+
+impl<'a> View<'a> {
+    fn of(s: &'a Value) -> View<'a> {
+        View {
+            s,
+            skip: 0,
+            ty: None,
+        }
+    }
+
+    fn hidden(&self, k: &str) -> bool {
+        match k {
+            "$ref" => self.skip & SKIP_REF != 0,
+            "anyOf" | "oneOf" => self.skip & SKIP_UNION != 0,
+            "allOf" => self.skip & SKIP_ALL != 0,
+            _ => false,
+        }
+    }
+
+    fn get(&self, k: &str) -> Option<&'a Value> {
+        if k == "type" && self.ty.is_some() {
+            return self.ty;
+        }
+        if self.hidden(k) {
+            return None;
+        }
+        get(self.s, k)
+    }
+
+    fn type_is(&self, t: &str) -> bool {
+        self.get("type").and_then(Value::as_str) == Some(t)
+    }
+
+    fn without(&self, skip: u8) -> View<'a> {
+        View {
+            skip: self.skip | skip,
+            ..*self
+        }
+    }
+
+    fn with_type(&self, t: &'a Value) -> View<'a> {
+        View {
+            ty: Some(t),
+            ..*self
+        }
+    }
+
+    /// `{ not: { type: "null" } }` with nothing but annotations beside it.
+    fn empty_struct(&self) -> bool {
+        if self.ty.is_some() {
+            return false;
+        }
+        let Some(o) = obj(self.s) else { return false };
+        let Some(not) = o.get("not").and_then(Value::as_object) else {
+            return false;
+        };
+        not.get("type").and_then(Value::as_str) == Some("null")
+            && not.len() == 1
+            && o.keys()
+                .all(|k| self.hidden(k) || k == "not" || ANNOTATIONS.contains(&k.as_str()))
+    }
+}
+
+struct Ctx<'a, 'b> {
+    defs: Defs<'a>,
+    pretty: bool,
+    budget: &'b Budget,
+}
+
+fn render<'a>(
+    v: View<'a>,
+    ctx: &Ctx<'a, '_>,
+    depth: usize,
+    hops: usize,
+    seen: &BTreeSet<String>,
+) -> String {
+    if depth > MAX_RENDER_DEPTH || !ctx.budget.take() {
         return "unknown".into();
     }
+    let out = render_node(v, ctx, depth, hops, seen);
+    ctx.budget.spend_output(out.len());
+    out
+}
+
+fn render_node<'a>(
+    v: View<'a>,
+    ctx: &Ctx<'a, '_>,
+    depth: usize,
+    hops: usize,
+    seen: &BTreeSet<String>,
+) -> String {
     let local = ["definitions", "$defs"]
         .iter()
-        .filter_map(|k| get(s, k).and_then(Value::as_object))
+        .filter_map(|k| v.get(k).and_then(Value::as_object))
         .collect::<Vec<_>>();
     let merged;
     let ctx = if local.is_empty() {
         ctx
     } else {
         let mut defs = ctx.defs.clone();
-        for d in local {
-            defs.extend(d.clone());
-        }
+        defs.extend(local);
         merged = Ctx {
             defs,
             pretty: ctx.pretty,
+            budget: ctx.budget,
         };
         &merged
     };
-    if let Some(r) = get(s, "$ref").filter(|r| !r.is_null()) {
+    if let Some(r) = v.get("$ref").filter(|r| !r.is_null()) {
         let name = r.as_str().and_then(definition_name);
-        let Some(name) = name.filter(|n| ctx.defs.contains_key(n) && !seen.contains(n)) else {
+        let Some((name, def)) = name
+            .filter(|n| !seen.contains(n))
+            .and_then(|n| lookup(&ctx.defs, &n).map(|d| (n, d)))
+        else {
             return "unknown".into();
         };
+        // A reference counts toward its own depth limit, so a chain of
+        // them cannot recurse without bound.
+        if hops >= MAX_REF_HOPS {
+            return "unknown".into();
+        }
         let mut inner = seen.clone();
-        inner.insert(name.clone());
-        let def = ctx.defs[&name].clone();
+        inner.insert(name);
         return intersection(&[
-            render(&def, ctx, depth, &inner),
-            render(&without(s, &["$ref"]), ctx, depth + 1, seen),
+            render(View::of(def), ctx, depth, hops + 1, &inner),
+            render(v.without(SKIP_REF), ctx, depth + 1, hops, seen),
         ]);
     }
-    if let Some(c) = get(s, "const") {
+    if let Some(c) = v.get("const") {
         return literal(c);
     }
-    if let Some(e) = get(s, "enum").and_then(Value::as_array) {
+    if let Some(e) = v.get("enum").and_then(Value::as_array) {
         return e.iter().map(literal).collect::<Vec<_>>().join(" | ");
     }
-    let listed = get(s, "anyOf")
+    let listed = v
+        .get("anyOf")
         .and_then(Value::as_array)
-        .or_else(|| get(s, "oneOf").and_then(Value::as_array));
+        .or_else(|| v.get("oneOf").and_then(Value::as_array));
     if let Some(listed) = listed {
         let alternatives: Vec<&Value> = if listed.iter().any(|i| type_is(i, "number")) {
             listed.iter().filter(|i| !number_sentinel(i)).collect()
@@ -447,73 +575,82 @@ fn render(s: &Value, ctx: &Ctx, depth: usize, seen: &BTreeSet<String>) -> String
         {
             return "{}".into();
         }
-        let members: Vec<String> = alternatives
-            .iter()
-            .map(|i| render(i, ctx, depth + 1, seen))
-            .collect();
-        if members.iter().any(|m| m == "unknown") {
-            return "unknown".into();
+        let mut members = Vec::with_capacity(alternatives.len());
+        for i in alternatives {
+            let m = render(View::of(i), ctx, depth + 1, hops, seen);
+            if m == "unknown" {
+                return "unknown".into();
+            }
+            members.push(m);
         }
         return intersection(&[
             members.join(" | "),
-            render(&without(s, &["anyOf", "oneOf"]), ctx, depth + 1, seen),
+            render(v.without(SKIP_UNION), ctx, depth + 1, hops, seen),
         ]);
     }
-    if let Some(all) = get(s, "allOf").and_then(Value::as_array) {
+    if let Some(all) = v.get("allOf").and_then(Value::as_array) {
         if all
             .iter()
-            .any(|i| unresolved(i, &ctx.defs, &BTreeSet::new(), &mut vec![]))
+            .any(|i| unresolved(i, &ctx.defs, &BTreeSet::new(), &mut vec![], ctx.budget))
         {
             return "unknown".into();
         }
-        let mut members = vec![render(&without(s, &["allOf"]), ctx, depth + 1, seen)];
-        members.extend(all.iter().map(|i| render(i, ctx, depth + 1, seen)));
+        let mut members = vec![render(v.without(SKIP_ALL), ctx, depth + 1, hops, seen)];
+        members.extend(
+            all.iter()
+                .map(|i| render(View::of(i), ctx, depth + 1, hops, seen)),
+        );
         return intersection(&members);
     }
-    if let Some(types) = get(s, "type").and_then(Value::as_array) {
+    if let Some(types) = v.get("type").and_then(Value::as_array) {
         return types
             .iter()
-            .map(|t| render(&with(s, "type", t.clone()), ctx, depth + 1, seen))
+            .map(|t| render(v.with_type(t), ctx, depth + 1, hops, seen))
             .collect::<Vec<_>>()
             .join(" | ");
     }
-    match get(s, "type").and_then(Value::as_str) {
+    match v.get("type").and_then(Value::as_str) {
         Some("string") => return "string".into(),
         Some("number") | Some("integer") => return "number".into(),
         Some("boolean") => return "boolean".into(),
         Some("null") => return "null".into(),
         Some("array") => {
-            let items = get(s, "items")
-                .cloned()
-                .unwrap_or(Value::Object(Map::new()));
-            return format!("Array<{}>", render(&items, ctx, depth + 1, seen));
+            let empty = Value::Object(Map::new());
+            let items = v.get("items").unwrap_or(&empty);
+            return format!(
+                "Array<{}>",
+                render(View::of(items), ctx, depth + 1, hops, seen)
+            );
         }
         _ => {}
     }
-    if type_is(s, "object") || get(s, "properties").is_some() {
-        let required: Vec<&str> = get(s, "required")
+    if v.type_is("object") || v.get("properties").is_some() {
+        let required: Vec<&str> = v
+            .get("required")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .collect();
         let empty = Map::new();
-        let properties = get(s, "properties")
+        let properties = v
+            .get("properties")
             .and_then(Value::as_object)
             .unwrap_or(&empty);
-        let index = get(s, "additionalProperties")
+        let index = v
+            .get("additionalProperties")
             .filter(|a| a.is_object())
-            .map(|a| render(a, ctx, depth + 1, seen));
-        let field = |name: &str, v: &Value| {
+            .map(|a| render(View::of(a), ctx, depth + 1, hops, seen));
+        let field = |name: &str, f: &Value| {
             format!(
                 "{}{}: {}",
                 key(name),
                 if required.contains(&name) { "" } else { "?" },
-                render(v, ctx, depth + 1, seen)
+                render(View::of(f), ctx, depth + 1, hops, seen)
             )
         };
         if !ctx.pretty {
-            let mut fields: Vec<String> = properties.iter().map(|(k, v)| field(k, v)).collect();
+            let mut fields: Vec<String> = properties.iter().map(|(k, f)| field(k, f)).collect();
             if let Some(i) = &index {
                 fields.push(format!("[key: string]: {i}"));
             }
@@ -529,27 +666,35 @@ fn render(s: &Value, ctx: &Ctx, depth: usize, seen: &BTreeSet<String>) -> String
         let pad = "  ".repeat(depth + 1);
         let mut lines: Vec<String> = properties
             .iter()
-            .map(|(k, v)| format!("{}{pad}{},", jsdoc(v, &pad), field(k, v)))
+            .map(|(k, f)| format!("{}{pad}{},", jsdoc(f, &pad), field(k, f)))
             .collect();
         if let Some(i) = &index {
             lines.push(format!("{pad}[key: string]: {i},"));
         }
         return format!("{{\n{}\n{}}}", lines.join("\n"), "  ".repeat(depth));
     }
-    if empty_struct(s) {
+    if v.empty_struct() {
         return "{}".into();
     }
     "unknown".into()
 }
 
 /// A JSON Schema as a TypeScript type, `pretty` with JSDoc on its fields
-/// (OpenCode's `jsonSchemaToTypeScript`).
+/// (OpenCode's `jsonSchemaToTypeScript`). A schema too large or too
+/// tangled to render within [`MAX_RENDER_NODES`] and [`MAX_TYPE_LEN`] comes
+/// out partly or wholly `unknown`.
 pub fn typescript(schema: &Value, pretty: bool) -> String {
+    let budget = Budget::new();
     let ctx = Ctx {
-        defs: Map::new(),
+        defs: Vec::new(),
         pretty,
+        budget: &budget,
     };
-    render(schema, &ctx, 0, &BTreeSet::new())
+    let out = render(View::of(schema), &ctx, 0, 0, &BTreeSet::new());
+    if out.len() > MAX_TYPE_LEN {
+        return "unknown".into();
+    }
+    out
 }
 
 /// The parameter list of a call: `()` for an empty input, otherwise
@@ -1353,5 +1498,77 @@ mod tests {
             signature(r#"tools.context7["resolve-library-id"]"#, &s, Some(&json!({}))),
             "tools.context7[\"resolve-library-id\"]({\n  libraryName: string,\n  query: string,\n}): Promise<unknown>"
         );
+    }
+
+    /// `levels` definitions, each an `anyOf` of `k` references to the next.
+    fn fan(k: usize, levels: usize) -> Value {
+        let mut defs = Map::new();
+        for l in 0..levels {
+            let refs: Vec<_> = (0..k)
+                .map(|_| json!({"$ref": format!("#/$defs/D{}", l + 1)}))
+                .collect();
+            defs.insert(format!("D{l}"), json!({"anyOf": refs}));
+        }
+        defs.insert(format!("D{levels}"), json!({"type": "string"}));
+        json!({"type": "object", "properties": {"a": {"$ref": "#/$defs/D0"}}, "$defs": defs})
+    }
+
+    fn chain(n: usize) -> Value {
+        let mut defs = Map::new();
+        for i in 0..n {
+            defs.insert(
+                format!("D{i}"),
+                json!({"$ref": format!("#/$defs/D{}", i + 1)}),
+            );
+        }
+        defs.insert(format!("D{n}"), json!({"type": "string"}));
+        json!({"$ref": "#/$defs/D0", "$defs": defs})
+    }
+
+    #[test]
+    fn a_long_reference_chain_renders_on_a_small_stack() {
+        // Unbounded, this recursed once per link and overflowed the stack.
+        let s = chain(5_000);
+        let out = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || (typescript(&s, false), typescript(&s, true)))
+            .unwrap()
+            .join()
+            .expect("rendering must not overflow");
+        assert_eq!(out, ("unknown".to_string(), "unknown".to_string()));
+        // Short chains still resolve.
+        assert_eq!(ts(chain(3)), "string");
+    }
+
+    #[test]
+    fn reference_fan_out_is_bounded() {
+        for p in [false, true] {
+            let start = std::time::Instant::now();
+            let out = typescript(&fan(9, 8), p);
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+            assert!(out.len() <= MAX_TYPE_LEN, "{}", out.len());
+        }
+        // A small fan-out renders fully.
+        assert_eq!(ts(fan(2, 2)), "{ a?: string | string | string | string }");
+    }
+
+    #[test]
+    fn all_of_reference_checks_share_the_budget() {
+        let mut s = fan(9, 8);
+        s["properties"]["a"] = json!({"allOf": [{"$ref": "#/$defs/D0"}]});
+        let start = std::time::Instant::now();
+        let _ = typescript(&s, true);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn an_oversized_type_is_unknown() {
+        let big = "x".repeat(MAX_TYPE_LEN);
+        assert_eq!(ts(json!({"const": big})), "unknown");
+        let props: Map<String, Value> = (0..20_000)
+            .map(|i| (format!("p{i}"), json!({"type": "string"})))
+            .collect();
+        let out = ts(json!({"type": "object", "properties": props}));
+        assert!(out.len() <= MAX_TYPE_LEN);
     }
 }
