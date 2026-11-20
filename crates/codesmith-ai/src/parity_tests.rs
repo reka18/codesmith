@@ -19,6 +19,9 @@ use crate::{
 };
 use serde_json::{json, Value};
 
+#[path = "parity_options.rs"]
+mod options;
+
 /// Run named cases, reporting every failing name rather than the first.
 fn run(cases: &[(&str, fn())]) {
     let failed: Vec<&str> = cases
@@ -556,15 +559,24 @@ fn openai_chat_streams() {
             ])));
             assert_eq!(o.text, "No. Alternative. Still no.");
         }),
-        ("openai-chat :: parses and replays OpenAI-compatible reasoning fields (parse)", || {
+        ("openai-chat :: parses and replays OpenAI-compatible reasoning fields", || {
             for field in ["reasoning_content", "reasoning", "reasoning_text"] {
-                let o = out(chat(&sse_done(&[
+                let events = chat(&sse_done(&[
                     delta(json!({ field: "thinking" })),
                     delta(json!({"content": "Hello"})),
                     delta_finish(json!({}), "stop"),
-                ])));
+                ]))
+                .unwrap();
+                let o = out(Ok(events.clone()));
                 assert_eq!(o.reasoning, "thinking", "{field}");
                 assert_eq!(o.text, "Hello");
+                // The reasoning goes back under the field it came in.
+                let replay = openai::body(&req("m", vec![asst(crate::collect(&events))]));
+                assert_eq!(
+                    replay["messages"],
+                    json!([{"role": "assistant", "content": "Hello", field: "thinking"}]),
+                    "{field}"
+                );
             }
         }),
         ("openai-chat :: reads top-level reasoning tokens whether or not completion tokens include them", || {

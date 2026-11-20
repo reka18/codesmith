@@ -3,9 +3,11 @@
 CodeSmith's provider protocols (`src/openai.rs`, `src/responses.rs`,
 `src/anthropic.rs`, `src/gemini.rs`) are pinned to OpenCode's by porting
 OpenCode's provider unit tests (`packages/ai/test`, MIT) as table-driven Rust
-tests in [`src/parity_tests.rs`](src/parity_tests.rs). Response parsing is also
-checked against OpenCode's recorded traffic in `src/replay_tests.rs`; this
-matrix covers the unit tests, which are mostly about how requests are built.
+tests in [`src/parity_tests.rs`](src/parity_tests.rs) (provider options and
+reasoning replay in [`src/parity_options.rs`](src/parity_options.rs)).
+Response parsing is also checked against OpenCode's recorded traffic in
+`src/replay_tests.rs`; this matrix covers the unit tests, which are mostly
+about how requests are built.
 
 Every OpenCode test in these files was examined and put in one bucket:
 
@@ -26,15 +28,15 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 40 | 60 |
-| OpenAI Responses | 159 | 20 | 34 | 105 |
-| Anthropic Messages | 95 | 9 | 19 | 67 |
-| Gemini | 61 | 12 | 22 | 27 |
+| OpenAI Chat | 115 | 15 | 62 | 38 |
+| OpenAI Responses | 159 | 20 | 59 | 80 |
+| Anthropic Messages | 95 | 9 | 49 | 37 |
+| Gemini | 61 | 12 | 26 | 23 |
 | Shared | 56 | 10 | 10 | 36 |
-| **Total** | **486** | **66** | **125** | **295** |
+| **Total** | **486** | **66** | **206** | **214** |
 
-Of the gaps, 268 are missing provider features (the roadmap) and
-27 are by design or not applicable.
+Of the gaps, 185 are missing provider features (the roadmap) and
+29 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
 or a configuration knob it has no equivalent for), the case says so in its
@@ -48,8 +50,8 @@ OpenAI Chat (`openai.rs`)
 - Empty system prompts are no longer sent as an empty system message.
 - Assistant messages with no text (or whitespace only), no tool calls and no
   reasoning are dropped instead of sent as `content: null` without tool calls.
-- Reasoning is replayed as `reasoning_content` (reasoning-only turns as
-  `content: ""`); DeepSeek endpoints/models get it on every assistant message.
+- Reasoning is replayed as `reasoning_content`, or under the field it
+  streamed in (reasoning-only turns as `content: ""`); DeepSeek endpoints/models get it on every assistant message.
 - OpenAI and Azure endpoints get `max_completion_tokens` (reasoning models
   reject `max_tokens`) and an explicit `store: false`; other servers keep
   `max_tokens` and get no `store`.
@@ -144,6 +146,67 @@ Media (`lib.rs` and every protocol; the 34 cases in the `*_media` tests)
   sent, so a session fails fast and never retries them.
 - `normalize_tool_history` keeps a media-only result's empty text.
 
+Provider options (`options.rs`, every protocol; `src/parity_options.rs`)
+- `Request.options` carries OpenCode's provider options as a flat object
+  (camelCase keys, snake_case accepted), set from the provider's and model's
+  `options` (alias `settings`) and the selected variant. Each protocol lowers
+  what it knows and ignores the rest.
+- OpenAI Chat: `reasoningEffort` → `reasoning_effort`, `textVerbosity` →
+  `verbosity`, `serviceTier`, `metadata`, `safetyIdentifier`,
+  `parallelToolCalls` (with tools), `store` (OpenAI/Azure), generation knobs,
+  and the compatible switches `reasoning` (OpenRouter; `max_tokens` fitted
+  under the output limit), `thinking`, `enableThinking`, `thinkingBudget`,
+  `includeReasoning`; Z.ai GLM models after 4.5 get `tool_stream` with tools.
+  Malformed options are dropped one by one.
+- OpenAI Responses: `reasoning: {effort, summary, mode, context}`,
+  `text.verbosity`, `service_tier`, `include` (an empty list sends none),
+  `store`, `metadata`, `safety_identifier`, `stream_options`,
+  `top_logprobs` (0-20), `truncation`, `max_tool_calls`,
+  `parallel_tool_calls`, `allowedTools` as an `allowed_tools` tool choice,
+  penalties and `top_p`. On OpenAI's own endpoint `include:
+  ["reasoning.encrypted_content"]` is the default, and GPT-5 reasoning models
+  default to medium effort with `summary: auto`.
+- Anthropic: `thinking` (`enabled` needs `budgetTokens`/`budget_tokens`,
+  fitted to half of `max_tokens` but at least 1024; `adaptive`; `disabled`,
+  `between_tools`), `effort` / `output_config`, `service_tier`, `speed`,
+  `metadata`, `container`, `inference_geo`, `cache_control`,
+  `contextManagement`, `top_p`, `top_k`, `stop_sequences`. Malformed known
+  options are an `Error::Invalid` from `check`. Claude 5.1+ default to
+  adaptive thinking with block binding; `anthropic-beta` always carries
+  interleaved thinking, plus compaction, fast mode and thinking binding when
+  used, appended to any configured betas.
+- Gemini: `generationConfig.thinkingConfig` (`includeThoughts` defaults to
+  true, `thinkingBudget` fitted to half the output, minimum 512, malformed
+  fields dropped), `cachedContent`, `safetySettings`, `serviceTier`, and the
+  generation knobs.
+- Model variants (`provider/model#name`, OpenCode's syntax) layer options,
+  body fields and headers over the model's: built-in reasoning variants per
+  protocol and model family (after OpenCode's `Variant.resolve` with effort
+  support), overridden or extended by a model's `variants` in config.
+
+Reasoning replay (`lib.rs` and every protocol)
+- `Part::Reasoning` holds a `Reasoning { text, meta }`; `meta` is the
+  producing protocol's replay state and is read back only by that protocol.
+  Reasoning without state is still stored as a plain string, so sessions from
+  before load unchanged. `Event::ReasoningEnd` closes a reasoning block with
+  its state, and `Collector` builds a message's parts in stream order (Chat
+  reasoning stays one part around text, as before).
+- Anthropic: thinking signatures (from `content_block_start` or
+  `signature_delta`, also when `message_stop` closes the block) and
+  `redacted_thinking` data are kept and sent back as `thinking` /
+  `redacted_thinking` blocks; unsigned reasoning is dropped for Anthropic and
+  sent with an empty signature to Kimi, MiMo, Qwen and MiniMax endpoints.
+- Responses: reasoning items keep their id and `encrypted_content`; finals
+  that streamed no deltas supply the text once; an item never completed ends
+  with what its start said. Replay merges parts of one item.
+- Gemini: thought signatures on thought parts are kept and replayed as
+  `{text, thought: true, thoughtSignature}`.
+- Chat: `reasoning_details` (OpenRouter and Kimi dialects; consecutive text
+  and summary deltas merged; unknown entries dropped; Kimi's stream index
+  stripped on replay), the latest `reasoning_opaque`, and the field reasoning
+  streamed under (replayed under that field; fully structured reasoning gets
+  no scalar field; Kimi details keep `reasoning_content`).
+
 Shared (`lib.rs`, `schema.rs`)
 - `normalize_tool_history` runs before every request: a call without a result
   gets an error result (`Tool result missing`) before the next assistant turn,
@@ -162,9 +225,6 @@ Shared (`lib.rs`, `schema.rs`)
 
 ## Partially ported
 
-- `openai-chat` "parses and replays OpenAI-compatible reasoning fields": parsing
-  only; the replay field is always `reasoning_content` (see structured
-  reasoning replay).
 - `openai-compatible-chat` "matches AI SDK compatible tool request body
   fixture": no `tool_choice` or `strict`.
 - `openai-compatible-chat` "bridges tool results for Mistral-family models …"
@@ -173,8 +233,7 @@ Shared (`lib.rs`, `schema.rs`)
 - `openai-responses` "preserves standard refusal content …": text only, no
   item id/phase replay.
 - `anthropic-messages` "prepares Anthropic Messages target": without the
-  system cache hint; "filters whitespace-only text …": without the signed
-  empty thinking block.
+  system cache hint.
 - `gemini` "merges parallel tool results into one function-response turn":
   CodeSmith's function response payload is `{"output": …}` / `{"error": …}`
   (Google's documented keys) where OpenCode sends `{name, content}`.
@@ -182,6 +241,18 @@ Shared (`lib.rs`, `schema.rs`)
   "selects tool schema handling from the model name …": the explicit
   `sanitizer` override cases are omitted.
 - `tool-history` cases: provider-executed parts are omitted.
+- Provider options and reasoning replay (`src/parity_options.rs`):
+  "maps OpenAI provider options to Responses options" without the prompt
+  cache key (see prompt caching); "forwards standard Gemini generation
+  options" passes the knobs as options (CodeSmith's request has only
+  `max_tokens` and `temperature` as fields); "infers empty-signature
+  compatibility across Kimi providers" by endpoint and model id, without the
+  provider-id-only case; the Responses replay cases send no `status` on
+  assistant messages, and "reconciles reasoning summaries that arrive only
+  as finals" and "joins streamed summary blocks …" add the answer that
+  follows the reasoning (see deliberate differences); "replays the latest
+  reasoning_opaque …" and "accepts empty IDs …" check the stored part, not
+  OpenCode's lifecycle events.
 - Media: "continues a conversation with user media content" checks the
   request only; the Gemini cases send `{"output": …}` (as above); "bridges
   image tool results …" uses a Mistral model where OpenCode sets an explicit
@@ -191,94 +262,15 @@ Shared (`lib.rs`, `schema.rs`)
 ## Deliberate differences
 
 - Responses: the system prompt goes in `instructions`, not a leading
-  `developer` message (`prepares OpenAI Responses target`, also the encrypted
-  reasoning gap).
+  `developer` message (`prepares OpenAI Responses target`).
+- Responses: a reasoning item is replayed only with encrypted content and
+  only when output follows it in the message (CodeSmith never stores
+  responses server-side).
 - Finish reasons are raw provider strings; see "Normalized finish reasons".
 - Streams are decoded leniently; see "Strict stream validation".
 - Gemini prompt blocks without candidates are an error naming the block reason.
 
 ## Roadmap: provider features CodeSmith lacks
-
-
-### Provider options (reasoning effort, thinking, service tier, verbosity, generation options) (41 tests)
-
-Typed per-provider request options. Arbitrary top-level fields already pass through `Request.body` (e.g. `reasoning_effort`), but nothing is typed, validated or lowered per protocol (Anthropic thinking budgets fitted to `max_tokens`, Gemini `thinkingConfig`, Responses `reasoning` object, beta headers).
-
-_OpenAI Chat 5, OpenAI Responses 11, Anthropic Messages 21, Gemini 3, Shared 1._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — maps OpenAI provider options to Chat options
-- `openai-chat` — keeps valid Chat options when a sibling option is malformed
-- `openai-chat` — maps shared OpenAI options to Chat fields
-- `openai-chat` — passes through custom OpenAI-compatible reasoning effort strings
-- `openai-compatible-chat` — enables ZAI tool streaming except for GLM 4.5 models
-- `openai-responses` — lowers semantic service tier options
-- `openai-responses` — passes through custom OpenAI reasoning effort strings
-- `openai-responses` — lowers reasoning mode and context into the reasoning object
-- `openai-responses` — passes through custom OpenAI text verbosity strings
-- `openai-responses` — passes through provider-defined and future service tiers
-- `openai-responses` — maps OpenAI provider options to Responses options
-- `openai-responses` — drops a malformed provider option without discarding its siblings
-- `openai-responses` — accepts the full ResponseIncludable union
-- `openai-responses` — passes forward-compatible includable values through
-- `openai-responses` — treats an explicit empty include as no include at all
-- `openai-responses` — passes an unknown includable value through
-- `anthropic-messages` — lowers adaptive thinking settings with effort
-- `anthropic-messages` — normalizes enabled and disabled thinking settings
-- `anthropic-messages` — fits the thinking budget to half the output limit
-- `anthropic-messages` — rejects enabled thinking without a budget
-- `anthropic-messages` — lowers passthrough provider options and accepts either key spelling
-- `anthropic-messages` — sends fast mode speed with its beta header
-- `anthropic-messages` — forwards unknown values for pass-through string enums
-- `anthropic-messages` — ignores unknown provider options and rejects malformed known ones
-- `anthropic-thinking-binding` — thinking-binding defaults for ${id} (×12)
-- `anthropic-thinking-binding` — preserves explicit thinking settings and combines required beta headers
-- `gemini` — normalizes Gemini thinking options
-- `gemini` — fits the thinking budget to half the output limit
-- `gemini` — forwards standard Gemini generation options
-- `tool-history` — moves effort updates after the results of pending calls
-
-</details>
-
-
-### Structured reasoning replay on Chat (`reasoning_details`, `reasoning_opaque`, per-field memory) (27 tests)
-
-CodeSmith keeps reasoning as plain text and replays it as `reasoning_content`. OpenRouter/Kimi `reasoning_details`, Copilot `reasoning_opaque` and the field a model streamed reasoning under are not stored, so they cannot be replayed verbatim.
-
-_OpenAI Chat 27._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — writes reasoning to a configured custom field on every assistant message
-- `openai-chat` — preserves observed reasoning fields when reasoning is required
-- `openai-chat` — omits empty configured reasoning fields when reasoning is explicitly optional
-- `openai-chat` — rejects reasoning fields that conflict with assistant message fields
-- `openai-chat` — orders metadata-only reasoning before refusal output
-- `openai-chat` — does not replay reasoning details when the model declares another reasoning field
-- `openai-chat` — keeps replayed reasoning details when the model declares reasoning_details
-- `openai-chat` — keeps replayed reasoning details when the model declares no reasoning field
-- `openai-chat` — parses and replays a configured custom reasoning field
-- `openai-chat` — preserves and replays reasoning details alongside scalar reasoning
-- `openai-chat` — uses reasoning details as display fallback without inventing a scalar replay field
-- `openai-chat` — drops unknown reasoning details while using scalar display text
-- `openai-chat` — merges Kimi summary deltas by index and replays details without the streaming index
-- `openai-chat` — displays Kimi summaries and replays reasoning_content when no scalar reasoning streams
-- `openai-chat` — strips the streaming index from previously stored Kimi details
-- `openai-chat` — merges consecutive OpenRouter summary deltas and replays them unmodified
-- `openai-chat` — uses scalar display text for signature-only reasoning details
-- `openai-chat` — preserves scalar reasoning after content starts in one lifecycle
-- `openai-chat` — keeps one reasoning lifecycle across many content chunks
-- `openai-chat` — preserves an explicitly empty reasoning details array
-- `openai-chat` — attaches signature-only details that arrive after content
-- `openai-chat` — preserves metadata-only reasoning arriving after the finish reason
-- `openai-chat` — flushes details-only display reasoning when the stream ends
-- `openai-chat` — replays details from multiple reasoning parts in order
-- `openai-chat` — retains scalar replay for mixed structured reasoning parts
-- `openai-compatible-chat` — replays the latest reasoning_opaque with the concatenated reasoning text
-- `openai-compatible-chat` — keeps a reasoning_opaque that arrives without reasoning text
-
-</details>
 
 
 ### Responses WebSocket transport and incremental continuation (26 tests)
@@ -352,38 +344,6 @@ _OpenAI Responses 16, Anthropic Messages 5._
 </details>
 
 
-### Responses encrypted reasoning and output-item replay (20 tests)
-
-No `include: ["reasoning.encrypted_content"]`, no reasoning items, item ids or message `phase` replayed. Stateless reasoning models therefore lose their reasoning between turns. System prompt goes in `instructions` (see deliberate differences).
-
-_OpenAI Responses 20._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — prepares OpenAI Responses target
-- `openai-responses` — requests encrypted reasoning by default
-- `openai-responses` — requests encrypted reasoning by default for GPT-5 reasoning models
-- `openai-responses` — lets callers opt out of the GPT-5 default include
-- `openai-responses` — preserves and replays assistant message phases
-- `openai-responses` — accepts empty IDs for native reasoning text deltas
-- `openai-responses` — preserves encrypted reasoning metadata for continuation
-- `openai-responses` — ignores terminal reasoning output when item completion is missing
-- `openai-responses` — does not repeat reasoning already finalized by an output item
-- `openai-responses` — recovers pending function calls without reconciling terminal reasoning
-- `openai-responses` — reconciles reasoning summaries that arrive only as finals
-- `openai-responses` — does not duplicate reasoning finals after streamed deltas
-- `openai-responses` — preserves final reasoning metadata when storage is enabled
-- `openai-responses` — continues a stateless reasoning conversation
-- `openai-responses` — preserves assistant content order around reasoning items
-- `openai-responses` — replays complete reasoning items when storage is enabled
-- `openai-responses` — preserves provider-issued item ids and removes malformed ids without dropping items
-- `openai-responses` — joins streamed summary blocks into one continuation reasoning item
-- `openai-responses` — replays stateless reasoning without encrypted state
-- `openai-responses` — drops empty reasoning items without summary or encrypted content
-
-</details>
-
-
 ### Mid-conversation system messages (16 tests)
 
 CodeSmith has no system role inside the history; reminders are user text (`<system-reminder>`). OpenCode lowers chronological system updates natively (Anthropic) or as wrapped user/developer text.
@@ -408,33 +368,6 @@ _OpenAI Chat 3, OpenAI Responses 1, Anthropic Messages 10, Gemini 2._
 - `anthropic-messages` — keeps an ordinary terminal Vertex system update native
 - `gemini` — lowers chronological system updates to wrapped user text in order
 - `gemini` — flushes pending media before system update text
-
-</details>
-
-
-### Reasoning signatures and redacted thinking (15 tests)
-
-Anthropic `thinking`/`redacted_thinking` blocks with signatures, and Gemini signatures on text/reasoning parts, are not stored or replayed (Gemini tool-call signatures are, via the `id~signature` convention). Needed for extended thinking with tool use on Anthropic.
-
-_Anthropic Messages 12, Gemini 3._
-
-<details><summary>Tests</summary>
-
-- `anthropic-messages` — prepares the composed native continuation request
-- `anthropic-messages` — lowers preserved Anthropic reasoning signature metadata
-- `anthropic-messages` — drops unsigned reasoning when signatures are required
-- `anthropic-messages` — infers empty-signature compatibility across Kimi providers
-- `anthropic-messages` — lets an explicit signature requirement override inference
-- `anthropic-messages` — round-trips redacted thinking as redacted_thinking blocks
-- `anthropic-messages` — round-trips compatible provider metadata in its own namespace
-- `anthropic-messages` — preserves a reasoning signature when message_stop closes the block
-- `anthropic-messages` — round-trips omitted thinking carried only by a signature delta
-- `anthropic-messages` — retains a thinking signature supplied in content_block_start
-- `anthropic-messages` — parses redacted thinking into empty reasoning with redactedData metadata
-- `anthropic-messages` — round-trips streamed redacted thinking with tool use into a continuation request
-- `gemini` — preserves thoughtSignature for reasoning and tool-call continuation
-- `gemini` — preserves thoughtSignature on visible text parts
-- `gemini` — flushes a trailing empty signed text part at block close
 
 </details>
 
@@ -556,6 +489,28 @@ _Gemini 11._
 </details>
 
 
+### Configured Chat reasoning fields and reasoning lifecycle (10 tests)
+
+Reasoning details, `reasoning_opaque` and the field a model streamed reasoning under are stored and replayed, but a model cannot declare its reasoning field (`compatibility.reasoningField`, `requireReasoning`), and CodeSmith has no reasoning start/end lifecycle events to order against content.
+
+_OpenAI Chat 10._
+
+<details><summary>Tests</summary>
+
+- `openai-chat` — writes reasoning to a configured custom field on every assistant message
+- `openai-chat` — preserves observed reasoning fields when reasoning is required
+- `openai-chat` — omits empty configured reasoning fields when reasoning is explicitly optional
+- `openai-chat` — rejects reasoning fields that conflict with assistant message fields
+- `openai-chat` — orders metadata-only reasoning before refusal output
+- `openai-chat` — does not replay reasoning details when the model declares another reasoning field
+- `openai-chat` — keeps replayed reasoning details when the model declares reasoning_details
+- `openai-chat` — parses and replays a configured custom reasoning field
+- `openai-chat` — preserves scalar reasoning after content starts in one lifecycle
+- `openai-chat` — keeps one reasoning lifecycle across many content chunks
+
+</details>
+
+
 ### Image, PDF and video parts (7 tests)
 
 Media in user messages and tool results is supported (see "Fixes made while
@@ -634,6 +589,39 @@ _OpenAI Chat 3, Anthropic Messages 3._
 </details>
 
 
+### Signed text and signature overrides (5 tests)
+
+Anthropic thinking signatures, redacted thinking and Gemini thought signatures are stored and replayed, but plain text parts carry no provider state (Gemini signs visible text too), there is no per-model `requireSignature` override, and composed continuations and server-tool metadata are not modelled.
+
+_Anthropic Messages 3, Gemini 2._
+
+<details><summary>Tests</summary>
+
+- `anthropic-messages` — prepares the composed native continuation request
+- `anthropic-messages` — lets an explicit signature requirement override inference
+- `anthropic-messages` — round-trips compatible provider metadata in its own namespace
+- `gemini` — preserves thoughtSignature on visible text parts
+- `gemini` — flushes a trailing empty signed text part at block close
+
+</details>
+
+
+### Responses message item ids and phases (4 tests)
+
+Reasoning items replay with their ids and encrypted content, but assistant text keeps no item id or `phase`, a reasoning item is one stored part (OpenCode keeps one per summary part), and the system prompt goes in `instructions` (see deliberate differences).
+
+_OpenAI Responses 4._
+
+<details><summary>Tests</summary>
+
+- `openai-responses` — prepares OpenAI Responses target
+- `openai-responses` — preserves and replays assistant message phases
+- `openai-responses` — preserves final reasoning metadata when storage is enabled
+- `openai-responses` — preserves provider-issued item ids and removes malformed ids without dropping items
+
+</details>
+
+
 ### Tool namespaces (4 tests)
 
 Responses tool namespaces (grouped tools) are not used.
@@ -692,6 +680,20 @@ _Shared 2._
 
 </details>
 
+
+### Per-message effort updates (1 test)
+
+OpenCode can change the reasoning effort mid-conversation (an effort update message lowered natively or as a configuration item). CodeSmith's effort is a request option for the whole request; switching variants applies from the next request.
+
+_Shared 1._
+
+<details><summary>Tests</summary>
+
+- `tool-history` — moves effort updates after the results of pending calls
+
+</details>
+
+
 ## By design or not applicable
 
 
@@ -739,14 +741,16 @@ _Shared 7._
 </details>
 
 
-### Deliberate differences (2 tests)
+### Deliberate differences (4 tests)
 
-Gemini prompt-safety blocks (`promptFeedback.blockReason` without candidates) are an error in CodeSmith (the user sees why), not a content-filter finish; `OpenResponses.lowerConversation` is an OpenCode compaction helper with no counterpart.
+Gemini prompt-safety blocks (`promptFeedback.blockReason` without candidates) are an error in CodeSmith (the user sees why), not a content-filter finish; `OpenResponses.lowerConversation` is an OpenCode compaction helper with no counterpart. CodeSmith's Responses requests are always stateless, so a reasoning item goes back only with its encrypted content (an id alone cannot be resolved with `store: false`) and only before the output item that follows it (the API rejects a reasoning item without its following item).
 
-_Gemini 1, Shared 1._
+_OpenAI Responses 2, Gemini 1, Shared 1._
 
 <details><summary>Tests</summary>
 
+- `openai-responses` — replays complete reasoning items when storage is enabled
+- `openai-responses` — replays stateless reasoning without encrypted state
 - `gemini` — preserves candidate-less prompt safety blocks as content-filter outcomes
 - `conversation-lowering` — conversation lowering excludes generation settings and tool definitions
 
