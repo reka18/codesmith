@@ -1975,6 +1975,37 @@ fn anthropic_messages_errors() {
             let r = anth(&sse(&[json!({"type": "error", "error": {"type": "overloaded_error", "message": ""}})]));
             assert_eq!(provider_err(r), ("overloaded_error".into(), true));
         }),
+        ("anthropic-messages :: rejects malformed recognized content block variants", || {
+            let m = invalid_output(anth(&sse(&[start(5), block_start(0, json!({"type": "text", "text": 42}))])));
+            assert!(m.contains("Invalid anthropic/anthropic-messages stream event"), "{m}");
+        }),
+        ("anthropic-messages :: rejects malformed recognized content delta variants", || {
+            let m = invalid_output(anth(&sse(&[
+                start(5),
+                block_start(0, json!({"type": "text", "text": ""})),
+                block_delta(0, json!({"type": "text_delta", "text": 42})),
+            ])));
+            assert!(m.contains("Invalid anthropic/anthropic-messages stream event"), "{m}");
+        }),
+        ("anthropic-messages :: rejects malformed payloads on unrelated stream events", || {
+            for e in [
+                json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}, "delta": 42}),
+                json!({"type": "content_block_start", "index": 0}),
+                json!({"type": "content_block_delta", "index": 0}),
+                json!({"type": "content_block_stop", "index": 0, "content_block": {"type": "text", "text": 42}}),
+                json!({"type": "message_delta"}),
+                json!({"type": "message_delta", "delta": {"stop_reason": 42}}),
+                json!({"type": "message_stop", "delta": {"text": 42}}),
+                json!({"type": "error", "error": {"type": "overloaded_error", "message": "busy"}, "content_block": 42}),
+            ] {
+                let m = invalid_output(anth(&sse(std::slice::from_ref(&e))));
+                assert!(m.contains("Invalid anthropic/anthropic-messages stream event"), "{e}: {m}");
+            }
+        }),
+        ("anthropic-messages :: rejects malformed recognized SSE events", || {
+            let m = invalid_output(anth("event: message_start\ndata: [DONE]\n\n"));
+            assert!(m.contains("Invalid anthropic/anthropic-messages stream event"), "{m}");
+        }),
         ("anthropic-messages :: falls back to a stable default when error payload is absent", || {
             let r = anth(&sse(&[json!({"type": "error"})]));
             assert_eq!(provider_err(r), ("Anthropic Messages stream error".into(), false));
@@ -2234,6 +2265,15 @@ fn candidate(parts: Value, finish: Option<&str>) -> Value {
 #[test]
 fn gemini_streams() {
     run(&[
+        (
+            "gemini :: rejects malformed recognized response parts",
+            || {
+                let m = invalid_output(gem(&sse(&[
+                    json!({"candidates": [{"content": {"role": "model", "parts": [{"text": 42}]}}]}),
+                ])));
+                assert!(m.contains("Invalid google/gemini stream event"), "{m}");
+            },
+        ),
         (
             "gemini :: parses text, reasoning, and usage stream fixtures",
             || {

@@ -15,6 +15,16 @@ pub(crate) fn field(v: &Value, k: &str, null: bool, ok: impl Fn(&Value) -> bool)
     }
 }
 
+/// Absent or a string (`Schema.optional(Schema.String)`).
+pub(crate) fn opt_str(v: &Value, k: &str) -> bool {
+    field(v, k, false, Value::is_string)
+}
+
+/// Absent or a number.
+pub(crate) fn opt_num(v: &Value, k: &str) -> bool {
+    field(v, k, false, Value::is_number)
+}
+
 /// Absent, `null` or a string (`optionalNull(Schema.String)`).
 pub(crate) fn null_str(v: &Value, k: &str) -> bool {
     field(v, k, true, Value::is_string)

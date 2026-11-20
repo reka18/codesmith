@@ -912,8 +912,161 @@ impl State {
     }
 }
 
+const STREAM_ROUTE: &str = "anthropic/anthropic-messages";
+
+/// Events whose payload OpenCode checks.
+const CHECKED: [&str; 9] = [
+    "message",
+    "message_start",
+    "message_delta",
+    "message_stop",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "ping",
+    "error",
+];
+
+/// Content blocks and deltas CodeSmith reads (others are skipped unchecked).
+const BLOCKS: [&str; 6] = [
+    "compaction",
+    "text",
+    "thinking",
+    "redacted_thinking",
+    "tool_use",
+    "server_tool_use",
+];
+const DELTAS: [&str; 5] = [
+    "compaction_delta",
+    "text_delta",
+    "thinking_delta",
+    "signature_delta",
+    "input_json_delta",
+];
+
+fn usage_ok(u: &Value) -> bool {
+    use crate::shape::{array_of, field, null_num, opt_num};
+    let counts = |u: &Value| {
+        u.is_object()
+            && null_num(u, "input_tokens")
+            && opt_num(u, "output_tokens")
+            && null_num(u, "cache_creation_input_tokens")
+            && null_num(u, "cache_read_input_tokens")
+            && field(u, "server_tool_use", true, |s| {
+                s.is_object() && opt_num(s, "web_search_requests")
+            })
+            && field(u, "output_tokens_details", true, |d| {
+                d.is_object() && opt_num(d, "thinking_tokens")
+            })
+    };
+    counts(u) && array_of(u, "iterations", false, counts)
+}
+
+/// A content block as OpenCode's stream schema reads it.
+fn block_ok(b: &Value) -> bool {
+    b.is_object()
+        && b["type"].is_string()
+        && crate::shape::all(
+            b,
+            &[
+                "id",
+                "name",
+                "text",
+                "thinking",
+                "signature",
+                "data",
+                "tool_use_id",
+            ],
+            crate::shape::opt_str,
+        )
+}
+
+/// A content or message delta as OpenCode's stream schema reads it.
+fn delta_ok(d: &Value) -> bool {
+    use crate::shape::{all, field, null_str, opt_str};
+    d.is_object()
+        && null_str(d, "content")
+        && all(
+            d,
+            &["type", "text", "thinking", "partial_json", "signature"],
+            opt_str,
+        )
+        && all(d, &["stop_reason", "stop_sequence"], null_str)
+        && field(d, "stop_details", true, |s| {
+            s.is_object() && all(s, &["category", "explanation"], null_str)
+        })
+}
+
+/// OpenCode's checks of a recognized event: its own fields, any block or
+/// delta it carries, and what its type requires. `Ok(false)` skips an
+/// unknown content block or delta type.
+fn validate(kind: &str, v: &Value) -> Result<bool, Error> {
+    use crate::shape::{all, field, opt_num, opt_str};
+    if !CHECKED.contains(&kind) {
+        return Ok(true);
+    }
+    let invalid = || Err(crate::shape::invalid(STREAM_ROUTE, v));
+    let event_ok = opt_num(v, "index")
+        && field(v, "message", false, |m| {
+            m.is_object() && field(m, "usage", false, usage_ok)
+        })
+        && field(v, "usage", false, usage_ok)
+        && field(v, "error", false, |e| {
+            e.is_object() && all(e, &["type", "message"], opt_str)
+        });
+    if !event_ok
+        || (kind != "content_block_start" && !field(v, "content_block", false, block_ok))
+        || (kind != "content_block_delta" && !field(v, "delta", false, delta_ok))
+    {
+        return invalid();
+    }
+    match kind {
+        "content_block_start" => {
+            let b = &v["content_block"];
+            let Some(t) = b["type"].as_str().filter(|_| b.is_object()) else {
+                return invalid();
+            };
+            if !BLOCKS.contains(&t) && !t.ends_with("_tool_result") {
+                return Ok(true);
+            }
+            if !block_ok(b) {
+                return invalid();
+            }
+            if t == "tool_use" || t == "server_tool_use" {
+                let Some(i) = v["index"].as_u64() else {
+                    return Err(Error::Decode(format!("Anthropic {t} missing index")));
+                };
+                if b["id"].as_str().is_none_or(str::is_empty) {
+                    return Err(Error::Decode(format!(
+                        "Anthropic tool_use missing id at index {i}"
+                    )));
+                }
+            }
+            Ok(true)
+        }
+        "content_block_delta" => {
+            let d = &v["delta"];
+            if !d.is_object() {
+                return invalid();
+            }
+            if d["type"].as_str().is_some_and(|t| !DELTAS.contains(&t)) {
+                return Ok(false);
+            }
+            match delta_ok(d) {
+                true => Ok(true),
+                false => invalid(),
+            }
+        }
+        "message_delta" if !v.get("delta").is_some_and(delta_ok) => invalid(),
+        _ => Ok(true),
+    }
+}
+
 pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
+    if !validate(event, v)? {
+        return Ok(out);
+    }
     match event {
         "message_start" => {
             let u = &v["message"]["usage"];
@@ -1087,7 +1240,12 @@ impl Decoder for Decode {
             Err(_) if f.event.as_deref().is_some_and(|e| !EVENTS.contains(&e)) => {
                 return Ok(vec![])
             }
-            Err(e) => return Err(Error::Decode(format!("{e}: {}", f.data))),
+            Err(_) => {
+                return Err(Error::Decode(format!(
+                    "Invalid {STREAM_ROUTE} stream event: {}",
+                    f.data
+                )))
+            }
         };
         let kind = f
             .event

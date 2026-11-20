@@ -497,6 +497,65 @@ const FAILED: [&str; 6] = [
     "MISSING_THOUGHT_SIGNATURE",
 ];
 
+const STREAM_ROUTE: &str = "google/gemini";
+
+/// A response part OpenCode's schema accepts: one of the part kinds it
+/// reads, well typed. Parts of other kinds pass unchecked.
+fn part_ok(p: &Value) -> bool {
+    use crate::shape::{array_of, field, null_str, opt_str};
+    let Some(o) = p.as_object() else {
+        return false;
+    };
+    if !["text", "inlineData", "functionCall", "functionResponse"]
+        .iter()
+        .any(|k| o.contains_key(*k))
+    {
+        return true;
+    }
+    let strings = |v: &Value, keys: &[&str]| v.is_object() && keys.iter().all(|k| v[k].is_string());
+    let inline = |p: &Value| {
+        strings(&p["inlineData"], &["mimeType", "data"]) && null_str(p, "thoughtSignature")
+    };
+    let text = p["text"].is_string()
+        && field(p, "thought", true, Value::is_boolean)
+        && null_str(p, "thoughtSignature");
+    let file = strings(&p["fileData"], &["mimeType", "fileUri"]);
+    let f = &p["functionCall"];
+    let call = strings(f, &["name"]) && null_str(f, "id") && null_str(p, "thoughtSignature");
+    let r = &p["functionResponse"];
+    let response = strings(r, &["name"]) && opt_str(r, "id") && array_of(r, "parts", false, inline);
+    text || inline(p) || file || call || response
+}
+
+/// Whether an event's candidates and usage have the types OpenCode's
+/// schema requires.
+fn event_ok(v: &Value) -> bool {
+    use crate::shape::{all, array_of, field, null_num, null_str};
+    let candidate = |c: &Value| {
+        c.is_object()
+            && null_str(c, "finishReason")
+            && field(c, "content", true, |content| {
+                content.is_object() && array_of(content, "parts", true, part_ok)
+            })
+    };
+    let usage = |u: &Value| {
+        u.is_object()
+            && all(
+                u,
+                &[
+                    "cachedContentTokenCount",
+                    "thoughtsTokenCount",
+                    "promptTokenCount",
+                    "toolUsePromptTokenCount",
+                    "candidatesTokenCount",
+                    "totalTokenCount",
+                ],
+                null_num,
+            )
+    };
+    array_of(v, "candidates", true, candidate) && field(v, "usageMetadata", true, usage)
+}
+
 pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
         let code = e["status"]
@@ -513,6 +572,9 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
                 (err, _) => err,
             },
         );
+    }
+    if !event_ok(v) {
+        return Err(crate::shape::invalid(STREAM_ROUTE, v));
     }
     let mut out = Vec::new();
     if let Some(u) = v.get("usageMetadata").filter(|u| u.is_object()) {
