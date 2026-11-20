@@ -13,10 +13,51 @@
 //! opaque and the command is refused rather than run unchecked.
 //!
 //! Known gaps against OpenCode's scanner (these become opaque, so they are
-//! refused rather than let through): zsh-only short loop forms such as
-//! `for x (a b) cmd`, `time`/`coproc` before a compound command, and C-style
-//! `for ((...))` headers containing substitutions. `&>` is accepted in every
-//! dialect (OpenCode treats it as `&` then `>` under plain `sh`).
+//! refused rather than let through): `time`/`coproc` before a compound
+//! command, and C-style `for ((...))` headers containing substitutions.
+//! `&>` is accepted in every dialect (OpenCode treats it as `&` then `>`
+//! under plain `sh`). Zsh's short loops (`for x (a b) cmd`, `for x in a b;
+//! cmd`, `for k v (...)`) are read as Zsh reads them; Bash and Dash refuse
+//! them, so that reading only adds commands.
+//!
+//! Beyond OpenCode, what a command runs on its behalf is checked too (see
+//! [`Analysis::delegated`]):
+//!
+//! - Wrappers, by each one's option grammar: `env`, `sudo`, `doas`, `su
+//!   -c`, `runuser`, `pkexec`, `nice`, `timeout`/`gtimeout`, `stdbuf`,
+//!   `ionice`, `chrt`, `taskset`, `setsid`, `flock`/`lockf`, `chroot`,
+//!   `script`, `unbuffer`, `caffeinate`, `arch`, `watch` (a shell string),
+//!   `parallel`, `xargs`, `find -exec`, `strace`... A wrapper that runs a
+//!   shell reading its input (`sudo -s`, `chroot DIR`, `su user`, `at`), or
+//!   whose options the scan cannot read, is dynamic. Lock files and
+//!   typescripts they create are writes.
+//! - Shell code other programs run: `git -c core.pager=...`/`alias.x=!...`,
+//!   `git rebase -x`, `GIT_SSH_COMMAND=...` and other [`COMMAND_VARS`],
+//!   `ssh -o ProxyCommand=...`, `rsync -e`, `awk`'s `system("...")` and
+//!   pipes, `sed`'s `e cmd`. Static code is scanned like `sh -c '...'`;
+//!   code only known at run time is dynamic, like `sh -c "$x"`.
+//! - `ssh host cmd`: the remote command's commands are checked as if local
+//!   (a rule denying `rm *` denies `ssh host rm x`), but its `cd`s and
+//!   files are the other machine's. With no command, the remote shell runs
+//!   what it reads: dynamic.
+//! - Code in another language (`python -c`, `perl -e`, `node -e`, a
+//!   heredoc piped to `python3`, an awk program calling `system($0)`, a sed
+//!   `s///e`, a program built from variables): the scanner cannot read it,
+//!   and such code can do anything a command can without running one, so
+//!   command rules could not hold it anyway. It is checked as the resource
+//!   `code:NAME CODE`, which a rule allowing `python *` does not match: with
+//!   an allow-list it asks once and "always" saves `code:python *`; a rule
+//!   denying `code:*` refuses it. A script file (`python x.py`), a module
+//!   (`-m`) and an ordinary awk/sed program are no marker.
+//! - Files programs write by name: `awk '{print > "f"}'`, `sed 'w f'`,
+//!   `find -fprint f`.
+//!
+//! Left open: what a program does from its own config or a file it reads
+//! (`git` hooks and config-file aliases, `make`, `npm run`, `python x.py`);
+//! project runners that run a command in an environment (`uv run`,
+//! `poetry run`, `bundle exec`, `npx`), checked as the runner's own
+//! command; and commands that run in a container (`docker run`/`exec`,
+//! `kubectl exec`), checked as the `docker`/`kubectl` command.
 //!
 //! `tests/shell_differential.rs` checks this scanner against what Bash,
 //! Zsh, `/bin/sh`, Dash and macOS's Bash 3.2 actually run, and its corpus
@@ -24,13 +65,9 @@
 //! found. Where the shells disagree, the reading that runs more is checked:
 //! Zsh's (`=cmd`, `$~x`, `""~`, `4=x`, tables like `commands[ls]=`), Bash
 //! 3.2's `$(` matching, and Dash's `((` (checked against deny rules only,
-//! see [`Command::alternate`]). Left open: wrappers this scanner does not
-//! know (`taskset`, `flock`, `chroot`, `script -c`... run as their own
-//! command names), interpreters given code (`python -c`, `awk`), and
-//! programs that run commands from their environment or config (`git`
-//! aliases, `GIT_SSH_COMMAND`, `PAGER`): those are the command's own
-//! business, like running a script. Under Dash, `(( $x ))` runs `$x`
-//! unchecked.
+//! see [`Command::alternate`]). Dash runs `(( $x ))` as the command `$x`:
+//! that is dynamic only when `$x` can name a command (see
+//! [`dash_name_matters`]), so `(( $i < 3 ))` on a counter asks nothing.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -60,6 +97,13 @@ struct Shared {
     /// reach the same text both as arithmetic and as Dash's subshells, so
     /// reading each once keeps the work polynomial.
     dash: RefCell<HashMap<DashKey, Vec<Command>>>,
+    /// Variables the script may give text rather than a number (assigned,
+    /// read, looped over): Dash runs `(( $x ))` as the command `$x`, which
+    /// matters only when `x` can name one. See [`dash_name_matters`].
+    text_vars: RefCell<std::collections::HashSet<String>>,
+    /// Assignments to variables that hold a command line other programs
+    /// run (`GIT_SSH_COMMAND=...`), as `(raw, value)`; see [`COMMAND_VARS`].
+    command_vars: RefCell<Vec<(String, String)>>,
 }
 
 /// Roughly the work of copying `cmd`, in characters.
@@ -72,6 +116,28 @@ impl Shared {
     fn exhausted(&self) -> bool {
         self.steps.get() > MAX_STEPS
     }
+
+    /// Counts `n` steps of work done outside the scanner (reading a
+    /// program given to `awk` or `sed`).
+    fn charge(&self, n: usize) {
+        self.steps.set(self.steps.get().saturating_add(n));
+    }
+}
+
+/// `-12`, `7`: a word that is a plain integer.
+fn integer_literal(raw: &str) -> bool {
+    let digits = raw.strip_prefix(['-', '+']).unwrap_or(raw);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// `$((i + 1))`: a word that is one arithmetic expansion, so a number.
+fn arithmetic_only(raw: &str) -> bool {
+    raw.starts_with("$((")
+        && raw.ends_with("))")
+        && !raw.contains(['`', '\'', '"', '\\'])
+        && raw
+            .match_indices("$(")
+            .all(|(i, _)| raw[i + 2..].starts_with('('))
 }
 
 /// One command the shell would run.
@@ -97,6 +163,10 @@ pub struct Command {
     /// subshells running `rm x` there. Checked as another name for what
     /// runs (see [`Analysis::delegated`]), not as a command of its own.
     pub alternate: bool,
+    /// An arithmetic command `((...))`: its one word is the expression,
+    /// which names no command (substitutions in it are commands of their
+    /// own, and text it evaluates is flagged as [`Scanned::dynamic`]).
+    pub arithmetic: bool,
 }
 
 /// What `scan_all` found: the commands, and whether the input can run code
@@ -1463,6 +1533,11 @@ impl<'a> Scanner<'a> {
                     if parameter_evaluates(&text) {
                         self.flags.sink = true;
                     }
+                    let name_end = text.find(|c: char| !is_name_char(c)).unwrap_or(text.len());
+                    if text[name_end..].starts_with(":=") || text[name_end..].starts_with('=') {
+                        // `${x:=text}` assigns.
+                        self.bind_text(&text[..name_end]);
+                    }
                     let unquoted = text.replace(['\'', '"', '\\'], "");
                     if ["$(", "`", "$["]
                         .iter()
@@ -1782,25 +1857,56 @@ impl<'a> Scanner<'a> {
             self.out.extend(inner);
             self.pos = end;
         } else {
+            let mut names = Vec::new();
             match self.next()? {
-                Tok::Word(w) if !w.quoted && w.raw.chars().all(is_name_char) => {}
+                Tok::Word(w) if !w.quoted && w.raw.chars().all(is_name_char) => names.push(w.raw),
                 _ => return Err("compound-command"),
             }
-            self.skip_newlines()?;
-            if self.peek_keyword()?.as_deref() == Some("in") {
+            // Zsh takes several names: `for k v in a 1 b 2`.
+            while let Tok::Word(w) = self.peek()? {
+                if w.quoted
+                    || w.raw.is_empty()
+                    || !w.raw.chars().all(is_name_char)
+                    || ["in", "do"].contains(&w.raw.as_str())
+                {
+                    break;
+                }
+                let Tok::Word(w) = self.next()? else {
+                    unreachable!()
+                };
+                names.push(w.raw);
+            }
+            let mut numeric = true;
+            if let Tok::Op(Op::LParen, _) = self.peek()? {
+                // Zsh's `for x (a b) ...`: the words, then the body.
                 self.next()?;
                 loop {
                     match self.next()? {
-                        Tok::Word(w) => {
-                            if !w.quoted && w.raw.contains(['*', '?', '[']) {
-                                // File names, which a repository chooses.
-                                self.flags.payload = true;
-                            }
-                            self.out.extend(w.nested)
-                        }
-                        Tok::Op(Op::Semi, _) | Tok::Newline => break,
+                        Tok::Word(w) => self.loop_word(w, &mut numeric),
+                        Tok::Newline => {}
+                        Tok::Op(Op::RParen, _) => break,
                         _ => return Err("compound-command"),
                     }
+                }
+            } else {
+                self.skip_newlines()?;
+                if self.peek_keyword()?.as_deref() == Some("in") {
+                    self.next()?;
+                    loop {
+                        match self.next()? {
+                            Tok::Word(w) => self.loop_word(w, &mut numeric),
+                            Tok::Op(Op::Semi, _) | Tok::Newline => break,
+                            _ => return Err("compound-command"),
+                        }
+                    }
+                } else {
+                    // The positional parameters.
+                    numeric = false;
+                }
+            }
+            if !numeric {
+                for n in names {
+                    self.bind_text(&n);
                 }
             }
         }
@@ -1817,7 +1923,57 @@ impl<'a> Scanner<'a> {
                 self.next()?;
                 self.block("}")
             }
-            _ => Err("compound-command"),
+            // Zsh's short form: one pipeline list is the body
+            // (`for x (a b) rm $x`, `for x in a b; rm $x`). Bash and Dash
+            // refuse it, so reading it as Zsh does only adds commands.
+            _ => {
+                self.compound += 1;
+                let r = self.and_or();
+                self.compound -= 1;
+                r
+            }
+        }
+    }
+
+    /// A word a `for` loop binds its name to.
+    fn loop_word(&mut self, w: Word, numeric: &mut bool) {
+        if !w.quoted && w.raw.contains(['*', '?', '[']) {
+            // File names, which a repository chooses.
+            self.flags.payload = true;
+        }
+        *numeric &= integer_literal(&w.raw);
+        self.out.extend(w.nested)
+    }
+
+    /// Records that the script may give variable `name` text (not just a
+    /// number): see [`Shared::text_vars`].
+    fn bind_text(&self, name: &str) {
+        let name = name.split(['[', '+', '=']).next().unwrap_or(name);
+        if !name.is_empty() && !self.shared.text_vars.borrow().contains(name) {
+            self.shared.text_vars.borrow_mut().insert(name.to_string());
+        }
+    }
+
+    /// An assignment `raw` (`value` with quotes removed) to a variable in
+    /// [`COMMAND_VARS`], kept for [`command_var`].
+    fn note_command_var(&self, raw: &str, value: &str) {
+        let name = raw.split(['=', '[']).next().unwrap_or(raw);
+        let name = name.trim_end_matches('+');
+        if COMMAND_VARS.contains(&name) || name.starts_with("GIT_CONFIG_") {
+            self.shared
+                .command_vars
+                .borrow_mut()
+                .push((raw.to_string(), value.to_string()));
+        }
+    }
+
+    /// An assignment word `name=value` (raw): its name holds text unless
+    /// the value is a number or an arithmetic expansion.
+    fn bind_assignment(&self, raw: &str) {
+        if let Some((name, value)) = raw.split_once('=') {
+            if !integer_literal(value) && !arithmetic_only(value) {
+                self.bind_text(name);
+            }
         }
     }
 
@@ -1897,6 +2053,7 @@ impl<'a> Scanner<'a> {
             cmd: Command {
                 words: vec![text.clone()],
                 raw_words: vec![text],
+                arithmetic: true,
                 ..Default::default()
             },
             span: Some((p, end)),
@@ -2123,6 +2280,30 @@ impl<'a> Scanner<'a> {
         let name = name.rsplit('/').next().unwrap_or(name);
         let name = name.strip_prefix('=').unwrap_or(name);
         let args = &words[i + 1..];
+        match name {
+            "declare" | "typeset" | "local" | "export" | "readonly" | "integer" | "float"
+            | "env" => {
+                for w in args.iter().filter(|w| !w.value.starts_with(['-', '+'])) {
+                    if w.value.contains('=') {
+                        self.bind_assignment(&w.raw);
+                        self.note_command_var(&w.raw, &w.value);
+                    }
+                }
+            }
+            // Every operand may be a name these bind to text (options and
+            // their arguments too: binding more names only flags more).
+            "printf" | "print" | "wait"
+                if !args
+                    .iter()
+                    .any(|w| w.value.starts_with('-') && w.value[1..].contains(['v', 'p'])) => {}
+            "read" | "mapfile" | "readarray" | "getopts" | "vared" | "printf" | "print"
+            | "wait" | "select" => {
+                for w in args {
+                    self.bind_text(&w.value);
+                }
+            }
+            _ => {}
+        }
         let option = |c: &[char]| {
             args.iter().any(|w| {
                 w.value.starts_with('-') && !w.value.starts_with("--") && w.value.contains(c)
@@ -2268,6 +2449,8 @@ impl<'a> Scanner<'a> {
                     nested.append(&mut w.nested);
                     if words.is_empty() && w.assignment {
                         self.assignment_flags(&w.raw);
+                        self.bind_assignment(&w.raw);
+                        self.note_command_var(&w.raw, &w.value);
                         assignments += 1;
                         continue;
                     }
@@ -2355,6 +2538,7 @@ impl<'a> Scanner<'a> {
             redirect_prefix_end: None,
             writes,
             alternate: false,
+            arithmetic: false,
         };
         self.push(cmd, start, end, heredoc);
         self.out.extend(nested);
@@ -2665,31 +2849,26 @@ fn analyze_into(
         out.dynamic.get_or_insert_with(|| reason.to_string());
     }
     out.unknown_cwd |= scanned.cd_context;
+    let vars = std::mem::take(&mut *shared.command_vars.borrow_mut());
+    for (raw, value) in &vars {
+        command_var(raw, value, cwd, shared, depth, out)?;
+    }
     for item in scanned.commands {
         for (raw, value) in &item.writes {
-            // Dash has no `$'...'`: such a target is another name there.
-            let path = (static_command_name(raw) && !raw.contains("$'") && !raw.contains("$\""))
-                .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
-                .flatten();
-            let differs = path.as_deref() != Some(value.as_str());
-            out.writes.push(Write {
-                raw: raw.clone(),
-                // A glob in a redirect target is expanded when it matches one file.
-                path,
-            });
-            if value.starts_with('~') && !plain_tilde(raw) && differs {
-                // `""~/x`: `$HOME/x` in Zsh, `./~/x` in Bash.
-                out.writes.push(Write {
-                    raw: raw.clone(),
-                    path: static_command_name(raw).then(|| value.clone()),
-                });
-            }
+            push_write(out, raw, value, cwd);
         }
         if item.declaration {
             continue;
         }
         if item.alternate {
-            if item.words.is_empty() || !static_command_name(&item.raw_words[0]) {
+            if item.words.is_empty() {
+                continue;
+            }
+            if !static_command_name(&item.raw_words[0]) {
+                // Dash runs `(( $x ))` as the command `$x`.
+                if dash_name_matters(&item.raw_words[0], shared) {
+                    mark_dynamic(out, "dynamic-command-name");
+                }
                 continue;
             }
             // Collected apart, then moved to `deny_only`.
@@ -2757,7 +2936,9 @@ fn analyze_into(
             out.delegated
                 .push((cooked.clone(), save_pattern(&item.words, &cooked)));
         }
-        delegate(&item.raw_words, &item.words, cwd, shared, depth, out)?;
+        if !item.arithmetic {
+            delegate(&item.raw_words, &item.words, cwd, shared, depth, out)?;
+        }
     }
     Ok(())
 }
@@ -2776,6 +2957,38 @@ fn save_pattern(words: &[String], resource: &str) -> String {
 
 fn mark_dynamic(out: &mut Analysis, reason: &str) {
     out.dynamic.get_or_insert_with(|| reason.to_string());
+}
+
+/// A file a redirect (or a program such as `flock`) writes: `raw` as
+/// written, `value` with quotes removed.
+fn push_write(out: &mut Analysis, raw: &str, value: &str, cwd: &Path) {
+    // Dash has no `$'...'`: such a target is another name there.
+    let path = (static_command_name(raw) && !raw.contains("$'") && !raw.contains("$\""))
+        .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
+        .flatten();
+    let differs = path.as_deref() != Some(value);
+    out.writes.push(Write {
+        raw: raw.to_string(),
+        // A glob in a redirect target is expanded when it matches one file.
+        path,
+    });
+    if value.starts_with('~') && !plain_tilde(raw) && differs {
+        // `""~/x`: `$HOME/x` in Zsh, `./~/x` in Bash.
+        out.writes.push(Write {
+            raw: raw.to_string(),
+            path: static_command_name(raw).then(|| value.to_string()),
+        });
+    }
+}
+
+/// A file named inside a program's own text (`sed 'w out'`, `awk '{print >
+/// "out"}'`): no shell expansion applies, so the name is the path; `None`
+/// when the program computes it.
+fn push_literal_write(out: &mut Analysis, name: Option<&str>, program: &str) {
+    out.writes.push(Write {
+        raw: name.unwrap_or(program).to_string(),
+        path: name.map(str::to_string),
+    });
 }
 
 /// What a command runs besides itself: a wrapped command, `find -exec`
@@ -2812,7 +3025,14 @@ fn delegate(
         out.delegated
             .push((resource.clone(), save_pattern(&words, &resource)));
     }
+    let kind = canonical_name(base);
     let push_wrapped = |at: usize, out: &mut Analysis| -> Result<(), Opaque> {
+        for j in 1..at.min(cooked.len()) {
+            // `sudo GIT_SSH_COMMAND=... git fetch`.
+            if assignment_word(&cooked[j]) {
+                command_var(&raw[j], &cooked[j], cwd, shared, depth, out)?;
+            }
+        }
         if at >= cooked.len() {
             return Ok(());
         }
@@ -2847,9 +3067,32 @@ fn delegate(
             }
         };
     }
-    if base == "find" {
+    if let Some(code) = inline_code(kind, raw, cooked) {
+        // Code in a language other than the shell's.
+        push_code_marker(name, &code, out);
+        return Ok(());
+    }
+    match kind {
+        "awk" | "gawk" | "mawk" | "nawk" => {
+            return program_effects("awk", raw, cooked, cwd, shared, depth, out)
+        }
+        "sed" => return program_effects("sed", raw, cooked, cwd, shared, depth, out),
+        "git" => return git_effects(raw, cooked, cwd, shared, depth, out),
+        "ssh" | "scp" | "sftp" | "rsync" => {
+            return remote_effects(kind, raw, cooked, cwd, shared, depth, out)
+        }
+        _ => {}
+    }
+    if kind == "find" {
         let mut i = 1;
         while i < cooked.len() {
+            if ["-fprint", "-fprint0", "-fprintf", "-fls"].contains(&cooked[i].as_str()) {
+                if let Some(file) = cooked.get(i + 1) {
+                    push_write(out, &raw[i + 1], file, cwd);
+                }
+                i += 2;
+                continue;
+            }
             if ["-exec", "-execdir", "-ok", "-okdir"].contains(&cooked[i].as_str()) {
                 let start = i + 1;
                 let mut end = start;
@@ -2874,8 +3117,8 @@ fn delegate(
         }
         return Ok(());
     }
-    if base == "xargs" {
-        if let Some(Some(at)) = wrapped_command(base, cooked) {
+    if kind == "xargs" {
+        if let Some(Wrapped::At(at)) = wrapped_command(base, cooked) {
             let repl = xargs_replace(&cooked[..at.min(cooked.len())]);
             let words = cooked.get(at..).unwrap_or_default();
             if runs_input(
@@ -2889,13 +3132,69 @@ fn delegate(
             }
         }
     }
-    if let Some(at) = wrapped_command(base, cooked) {
-        match at {
-            Some(at) => push_wrapped(at, out)?,
-            None => mark_dynamic(out, "dynamic-execution"),
+    let Some(wrapped) = wrapped_command(base, cooked) else {
+        return Ok(());
+    };
+    // Files the wrapper itself writes: a lock file, a typescript.
+    match (kind, wrapped) {
+        ("flock", Wrapped::At(k)) | ("lockf", Wrapped::At(k)) => {
+            push_write(out, &raw[k - 1], &cooked[k - 1], cwd)
         }
+        ("flock", Wrapped::Script(k)) => push_write(out, &raw[k - 2], &cooked[k - 2], cwd),
+        ("script", w) if w != Wrapped::Nothing => match script_file(cooked) {
+            Some(k) => push_write(out, &raw[k], &cooked[k], cwd),
+            None => push_write(out, "typescript", "typescript", cwd),
+        },
+        _ => {}
+    }
+    let joined = |a: usize, b: usize| {
+        raw[a..b]
+            .iter()
+            .all(|w| is_static_word(w))
+            .then(|| cooked[a..b].join(" "))
+    };
+    match wrapped {
+        Wrapped::At(at) => push_wrapped(at, out)?,
+        Wrapped::Script(k) => {
+            shell_code(static_text(&raw[k], &cooked[k]), cwd, shared, depth, out)?
+        }
+        Wrapped::Joined(a, b) => shell_code(joined(a, b).as_deref(), cwd, shared, depth, out)?,
+        Wrapped::Unknown => mark_dynamic(out, "dynamic-execution"),
+        Wrapped::Nothing => {}
     }
     Ok(())
+}
+
+/// The typescript file `script` writes, by its index in `cooked`, or
+/// `None` for the default `typescript`.
+fn script_file(cooked: &[String]) -> Option<usize> {
+    let mut i = 1;
+    while i < cooked.len() {
+        let w = cooked[i].as_str();
+        if [
+            "-c",
+            "--command",
+            "-t",
+            "-T",
+            "-E",
+            "-I",
+            "-O",
+            "-B",
+            "-m",
+            "-o",
+        ]
+        .contains(&w)
+        {
+            i += 2;
+        } else if w.starts_with('-') && !w.starts_with("--") && w.ends_with('c') && w.len() > 1 {
+            i += 2; // `-qc CODE`
+        } else if w.starts_with('-') && w != "-" {
+            i += 1;
+        } else {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// Words that start a compound command where a command name is expected.
@@ -2972,16 +3271,6 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
             raw.get(i)
                 .is_some_and(|r| computed_source(r, &cooked[i]))
                 .then_some(None)
-        }
-        "watch" => {
-            let mut i = 1;
-            while i < cooked.len() && cooked[i].starts_with('-') {
-                if ["-n", "-d", "--interval", "--differences"].contains(&cooked[i].as_str()) {
-                    i += 1;
-                }
-                i += 1;
-            }
-            Some(static_join(i))
         }
         "trap" => {
             let mut i = 1;
@@ -3067,10 +3356,18 @@ fn runs_input(raw: &[String], cooked: &[String], repl: Option<&str>, appends: bo
         // A script file named by the input.
         return appends && cooked.len() == 1;
     }
+    let has_repl = |text: &str| repl.is_some_and(|r| !r.is_empty() && text.contains(r));
     match wrapped_command(base, cooked) {
-        Some(Some(at)) if at < cooked.len() => runs_input(&raw[at..], &cooked[at..], repl, appends),
-        Some(_) => appends,
-        None => false,
+        Some(Wrapped::At(at)) if at < cooked.len() => {
+            runs_input(&raw[at..], &cooked[at..], repl, appends)
+        }
+        Some(Wrapped::At(_) | Wrapped::Unknown) => appends,
+        Some(Wrapped::Script(k)) => has_repl(&cooked[k]),
+        // Input appended to the words joins the code.
+        Some(Wrapped::Joined(a, b)) => {
+            (appends && b == cooked.len()) || has_repl(&cooked[a..b].join(" "))
+        }
+        Some(Wrapped::Nothing) | None => false,
     }
 }
 
@@ -3112,49 +3409,305 @@ fn shell_options(cooked: &[String], mut i: usize) -> (usize, bool) {
     (i, c)
 }
 
-/// Where the command a wrapper runs starts: `Some(Some(i))`, `Some(None)`
-/// when it cannot be told, `None` when `base` is not a wrapper.
-fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
-    // Options that take a separate argument, per wrapper.
-    let with_arg: &[&str] = match base {
+/// What a wrapper runs, in its words.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wrapped {
+    /// The command starting at this word (`nice rm x`).
+    At(usize),
+    /// The shell code in this word (`flock f -c 'rm x'`, `su -c 'rm x'`).
+    Script(usize),
+    /// The shell code these words make joined with spaces (`watch rm x`).
+    Joined(usize, usize),
+    /// A command the words do not show (an interactive shell, `env -S`).
+    Unknown,
+    /// No command (`taskset -p 1`, `command -v x`).
+    Nothing,
+}
+
+/// Commands that Homebrew installs under a `g` prefix (`gtimeout`), and
+/// spellings of one program, by the name the scanner knows.
+fn canonical_name(base: &str) -> &str {
+    match base {
+        "gtimeout" | "gnice" | "gnohup" | "genv" | "gstdbuf" | "gchroot" | "gxargs" | "gtime"
+        | "gfind" | "gsed" => &base[1..],
+        "proxychains4" => "proxychains",
+        "sem" => "parallel",
+        "sudoedit" => "sudo",
+        "nodejs" => "node",
+        _ => base,
+    }
+}
+
+/// Whether option `short` (in a cluster) or `long` (alone or `--long=x`)
+/// is among `opts`.
+fn has_option(opts: &[String], short: char, long: &str) -> bool {
+    opts.iter().any(|w| {
+        (!long.is_empty()
+            && (w == long || w.strip_prefix(long).is_some_and(|r| r.starts_with('='))))
+            || (w.len() > 1 && w.starts_with('-') && !w.starts_with("--") && w[1..].contains(short))
+    })
+}
+
+/// Wrappers whose GNU and BSD builds parse options differently (`--iP`).
+const DUAL_GETOPT: &[&str] = &[
+    "env", "xargs", "nice", "time", "timeout", "stdbuf", "nohup", "chroot",
+];
+
+/// What wrapper `base` runs in `cooked`, or `None` when it is no wrapper.
+fn wrapped_command(base: &str, cooked: &[String]) -> Option<Wrapped> {
+    let base = canonical_name(base);
+    // Options that take an argument (the next word, or the rest of a
+    // cluster), and short options whose argument is optional and attached
+    // (`watch -d[x]`), which end a cluster.
+    let (with_arg, attached): (&[&str], &str) = match base {
         // `-P altpath` is BSD's.
-        "env" => &["-u", "--unset", "-C", "--chdir", "-P"],
-        "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "caffeinate" | "noglob"
-        | "nocorrect" | "repeat" | "coproc" | "-" => &[],
-        "exec" => &["-a"],
-        "stdbuf" => &["-i", "-o", "-e"],
-        "time" => &["-f", "-o", "--format", "--output"],
-        "nice" => &["-n", "--adjustment"],
-        "ionice" => &["-c", "-n", "-p", "--class", "--classdata"],
-        "timeout" => &["-s", "-k", "--signal", "--kill-after"],
-        "sudo" => &[
-            "-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "--user", "--group",
-            "--chdir", "--prompt", "--host",
-        ],
-        "doas" => &["-u", "-C"],
+        "env" => (&["-u", "--unset", "-C", "--chdir", "-P"], ""),
+        "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "noglob" | "nocorrect"
+        | "repeat" | "coproc" | "-" | "catchsegv" | "valgrind" | "dbus-run-session" | "taskset"
+        | "entr" | "faketime" => (&[], ""),
+        "caffeinate" => (&["-t", "-w"], ""),
+        "exec" => (&["-a"], ""),
+        "stdbuf" => (&["-i", "-o", "-e", "--input", "--output", "--error"], ""),
+        "time" => (&["-f", "-o", "--format", "--output"], ""),
+        "nice" => (&["-n", "--adjustment"], ""),
+        "ionice" => (
+            &[
+                "-c",
+                "-n",
+                "-p",
+                "-P",
+                "-u",
+                "--class",
+                "--classdata",
+                "--pid",
+                "--pgid",
+                "--uid",
+            ],
+            "",
+        ),
+        "timeout" => (&["-s", "-k", "--signal", "--kill-after"], ""),
+        // `-h` alone is help; `-hhost` names a host.
+        "sudo" => (
+            &[
+                "-a",
+                "-c",
+                "-C",
+                "-D",
+                "-g",
+                "-p",
+                "-r",
+                "-R",
+                "-t",
+                "-T",
+                "-U",
+                "-u",
+                "--auth-type",
+                "--login-class",
+                "--close-from",
+                "--chdir",
+                "--group",
+                "--prompt",
+                "--chroot",
+                "--role",
+                "--type",
+                "--command-timeout",
+                "--other-user",
+                "--user",
+            ],
+            "h",
+        ),
+        "doas" => (&["-a", "-C", "-u"], ""),
+        "pkexec" => (&["--user"], ""),
+        "chrt" => (
+            &[
+                "-T",
+                "-P",
+                "-D",
+                "--sched-runtime",
+                "--sched-period",
+                "--sched-deadline",
+            ],
+            "",
+        ),
+        "flock" => (
+            &["-w", "-E", "--timeout", "--wait", "--conflict-exit-code"],
+            "",
+        ),
+        "lockf" => (&["-t"], ""),
+        "chroot" => (&["-u", "-g", "-G", "--userspec", "--groups"], ""),
+        "watch" => (&["-n", "-q", "--interval", "--equexit"], "d"),
+        "strace" => (
+            &[
+                "-a",
+                "-b",
+                "-e",
+                "-E",
+                "-I",
+                "-o",
+                "-O",
+                "-p",
+                "-P",
+                "-s",
+                "-S",
+                "-u",
+                "-X",
+                "--attach",
+                "--output",
+                "--user",
+                "--env",
+                "--trace-path",
+            ],
+            "",
+        ),
+        "ltrace" => (
+            &[
+                "-a",
+                "-A",
+                "-D",
+                "-e",
+                "-F",
+                "-l",
+                "-n",
+                "-o",
+                "-p",
+                "-s",
+                "-u",
+                "-w",
+                "-x",
+                "--align",
+                "--output",
+                "--library",
+                "--indent",
+            ],
+            "",
+        ),
+        "dtruss" => (&["-t", "-p", "-n"], ""),
+        "arch" => (&["-arch", "-d", "-e"], ""),
+        "sandbox-exec" => (&["-f", "-n", "-p", "-D"], ""),
+        "unshare" => (
+            &[
+                "-S",
+                "-G",
+                "-R",
+                "-w",
+                "-l",
+                "--setuid",
+                "--setgid",
+                "--root",
+                "--wd",
+                "--map-user",
+                "--map-group",
+                "--map-users",
+                "--map-groups",
+                "--propagation",
+                "--setgroups",
+                "--load-interp",
+            ],
+            "muinpUCT",
+        ),
+        "nsenter" => (
+            &["-t", "-S", "-G", "--target", "--setuid", "--setgid"],
+            "muinpUCTrw",
+        ),
+        "setpriv" => (
+            &[
+                "--reuid",
+                "--regid",
+                "--ruid",
+                "--euid",
+                "--rgid",
+                "--egid",
+                "--groups",
+                "--securebits",
+                "--pdeathsig",
+                "--inh-caps",
+                "--ambient-caps",
+                "--bounding-set",
+                "--selinux-label",
+                "--apparmor-profile",
+                "--landlock-access",
+                "--landlock-rule",
+                "--seccomp-filter",
+            ],
+            "",
+        ),
+        "numactl" => (
+            &[
+                "-i",
+                "-N",
+                "-m",
+                "-p",
+                "-C",
+                "-w",
+                "--interleave",
+                "--cpunodebind",
+                "--membind",
+                "--preferred",
+                "--physcpubind",
+                "--weighted-interleave",
+            ],
+            "",
+        ),
+        "prlimit" => (&["-p", "-o", "--pid", "--output"], "cdefilmnqrstuvxy"),
+        "cgexec" => (&["-g"], ""),
+        "xvfb-run" => (
+            &[
+                "-e",
+                "-f",
+                "-n",
+                "-p",
+                "-s",
+                "-w",
+                "--error-file",
+                "--auth-file",
+                "--server-num",
+                "--xauth-protocol",
+                "--server-args",
+                "--wait",
+            ],
+            "",
+        ),
+        "fakeroot" => (&["-l", "-i", "-s", "-b", "--lib", "--faked"], ""),
+        "proxychains" => (&["-f"], ""),
+        "torsocks" => (
+            &[
+                "-u",
+                "-p",
+                "-a",
+                "-P",
+                "--user",
+                "--pass",
+                "--address",
+                "--port",
+            ],
+            "",
+        ),
         // `-J`, `-R`, `-S` are BSD's.
-        "xargs" => &[
-            "-I",
-            "-J",
-            "-R",
-            "-S",
-            "-L",
-            "-n",
-            "-P",
-            "-s",
-            "-d",
-            "-E",
-            "-a",
-            "--max-args",
-            "--max-procs",
-            "--max-lines",
-            "--max-chars",
-            "--delimiter",
-            "--arg-file",
-            "--eof",
-            "--process-slot-var",
-        ],
-        _ => return None,
+        "xargs" => (
+            &[
+                "-I",
+                "-J",
+                "-R",
+                "-S",
+                "-L",
+                "-n",
+                "-P",
+                "-s",
+                "-d",
+                "-E",
+                "-a",
+                "--max-args",
+                "--max-procs",
+                "--max-lines",
+                "--max-chars",
+                "--delimiter",
+                "--arg-file",
+                "--eof",
+                "--process-slot-var",
+            ],
+            "",
+        ),
+        _ => return special_wrapper(base, cooked),
     };
     let mut i = 1;
     while i < cooked.len() {
@@ -3175,10 +3728,10 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
                 || (w.starts_with('-') && !w.starts_with("--") && w.contains('S')))
         {
             // `-S` splits a string into a command line, also in a cluster (`-vS'rm x'`).
-            return Some(None);
+            return Some(Wrapped::Unknown);
         }
         if base == "command" && w.starts_with('-') && w[1..].contains(['v', 'V']) {
-            return None; // `command -v x` looks a name up.
+            return Some(Wrapped::Nothing); // `command -v x` looks a name up.
         }
         if base == "env" && (env_assignment(w) || w == "-") {
             // A lone `-` is `-i`.
@@ -3186,22 +3739,30 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
             continue;
         }
         if w.starts_with('-') && w.len() > 1 {
+            if with_arg.contains(&w) {
+                // `-u root`, `--user root`, `arch -arch x86_64`.
+                i += 2;
+                continue;
+            }
             // In a cluster (`-iP dir`), the first option taking an argument
-            // takes the rest of the word, or the next word.
+            // takes the rest of the word, or the next word; an optional
+            // attached argument (`-dx`) takes the rest.
             let cluster = |letters: &str| {
                 let letters: Vec<char> = letters.chars().collect();
                 letters
                     .iter()
-                    .position(|c| with_arg.contains(&format!("-{c}").as_str()))
-                    .is_some_and(|k| k == letters.len() - 1)
+                    .position(|c| {
+                        attached.contains(*c) || with_arg.contains(&format!("-{c}").as_str())
+                    })
+                    .is_some_and(|k| k == letters.len() - 1 && !attached.contains(letters[k]))
             };
             let takes_next = match w.strip_prefix("--") {
-                Some(long) if !long.contains('=') => {
+                Some(long) if !long.contains('=') && DUAL_GETOPT.contains(&base) => {
                     // GNU reads a long option, BSD getopt a cluster (`--iP`
                     // is `-i -P`): when they disagree, the command is unknown.
                     let gnu = with_arg.contains(&w);
                     if gnu != cluster(long) {
-                        return Some(None);
+                        return Some(Wrapped::Unknown);
                     }
                     gnu
                 }
@@ -3213,17 +3774,113 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         }
         break;
     }
-    if base == "env" {
-        // `env -- X=1 rm x`: assignments may follow `--`.
-        while cooked.get(i).is_some_and(|w| env_assignment(w)) {
-            i += 1;
+    let opts = &cooked[1..i.min(cooked.len())];
+    let rest = cooked.len().saturating_sub(i);
+    match base {
+        "env" => {
+            // `env -- X=1 rm x`: assignments may follow `--`.
+            while cooked.get(i).is_some_and(|w| env_assignment(w)) {
+                i += 1;
+            }
         }
-    }
-    if base == "timeout" || base == "repeat" {
-        i += 1; // the duration, the count
-    }
-    if base == "nice" && cooked.get(i).is_some_and(|w| w.starts_with('-')) {
-        i += 1;
+        "timeout" | "repeat" | "faketime" => i += 1, // the duration, count, time
+        "nice" if cooked.get(i).is_some_and(|w| w.starts_with('-')) => i += 1,
+        // `taskset -p [mask] pid`, `chrt -p [prio] pid`, `chrt -m`.
+        "taskset" if has_option(opts, 'p', "--pid") || has_option(opts, 'h', "--help") => {
+            return Some(Wrapped::Nothing)
+        }
+        "chrt" if has_option(opts, 'p', "--pid") || has_option(opts, 'm', "--max") => {
+            return Some(Wrapped::Nothing)
+        }
+        "taskset" | "chrt" => i += 1, // the mask, the priority
+        "ionice"
+            if has_option(opts, 'p', "--pid")
+                || has_option(opts, 'P', "--pgid")
+                || has_option(opts, 'u', "--uid") =>
+        {
+            return Some(Wrapped::Nothing)
+        }
+        "numactl" if has_option(opts, 's', "--show") || has_option(opts, 'H', "--hardware") => {
+            return Some(Wrapped::Nothing)
+        }
+        "dtruss" if has_option(opts, 'p', "") || has_option(opts, 'n', "") => {
+            return Some(Wrapped::Nothing)
+        }
+        "sudo" => {
+            if has_option(opts, 'e', "--edit")
+                || has_option(opts, 'V', "--version")
+                || has_option(opts, 'l', "--list")
+                || opts.iter().any(|w| w == "-h" || w == "--help")
+                || cooked[0].ends_with("sudoedit")
+            {
+                return Some(Wrapped::Nothing);
+            }
+            if rest == 0 && (has_option(opts, 's', "--shell") || has_option(opts, 'i', "--login")) {
+                // An interactive shell, reading its input.
+                return Some(Wrapped::Unknown);
+            }
+        }
+        "doas" => {
+            if has_option(opts, 'L', "") || has_option(opts, 'C', "") {
+                return Some(Wrapped::Nothing);
+            }
+            if rest == 0 && has_option(opts, 's', "") {
+                return Some(Wrapped::Unknown);
+            }
+        }
+        // With no command these run a shell, which reads its input.
+        "pkexec" | "fakeroot" | "unshare" | "nsenter" if rest == 0 => {
+            return Some(Wrapped::Unknown)
+        }
+        "flock" => {
+            if has_option(opts, 'c', "--command") {
+                // `-c` before the file: builds disagree on what it means.
+                return Some(Wrapped::Unknown);
+            }
+            // `flock FILE -c CODE`, `flock FILE CMD...`, `flock FD`.
+            return Some(match cooked.get(i + 1).map(String::as_str) {
+                None => Wrapped::Nothing,
+                Some("-c" | "--command") if cooked.len() == i + 3 => Wrapped::Script(i + 2),
+                Some("-c" | "--command") => Wrapped::Nothing,
+                Some(_) => Wrapped::At(i + 1),
+            });
+        }
+        "lockf" => {
+            return Some(if rest < 2 {
+                Wrapped::Nothing
+            } else {
+                Wrapped::At(i + 1)
+            })
+        }
+        "chroot" => {
+            // `chroot DIR` runs an interactive shell.
+            return Some(if rest < 2 {
+                Wrapped::Unknown
+            } else {
+                Wrapped::At(i + 1)
+            });
+        }
+        "watch" => {
+            // `sh -c` of the joined words, unless `-x`.
+            if has_option(opts, 'x', "--exec") {
+                return Some(Wrapped::At(i));
+            }
+            return Some(if rest == 0 {
+                Wrapped::Nothing
+            } else {
+                Wrapped::Joined(i, cooked.len())
+            });
+        }
+        "entr" if has_option(opts, 's', "") => {
+            return Some(if rest == 0 {
+                Wrapped::Nothing
+            } else {
+                Wrapped::Script(i)
+            })
+        }
+        "torsocks" if has_option(opts, 'i', "--shell") => return Some(Wrapped::Unknown),
+        "arch" | "setpriv" | "prlimit" | "torsocks" if rest == 0 => return Some(Wrapped::Nothing),
+        _ => {}
     }
     // Reserved words and Zsh's precommand modifiers parse assignments
     // after them (`time X=1 rm x`, `repeat 1 X=1 rm x`); for other wrappers
@@ -3231,7 +3888,1821 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     while cooked.get(i).is_some_and(|w| assignment_word(w)) {
         i += 1;
     }
-    Some(Some(i))
+    Some(Wrapped::At(i))
+}
+
+/// Wrappers with a grammar of their own; see [`wrapped_command`].
+fn special_wrapper(base: &str, cooked: &[String]) -> Option<Wrapped> {
+    let n = cooked.len();
+    match base {
+        // `busybox rm x` runs the applet `rm`.
+        "busybox" | "toybox" => Some(match cooked.get(1) {
+            Some(w) if !w.starts_with('-') => Wrapped::At(1),
+            _ => Wrapped::Nothing,
+        }),
+        // `su [opts] [-] [user [args]]`: arguments after the user go to
+        // its shell, so `-c CODE` anywhere is code; without it the shell
+        // reads its input. `runuser -u user cmd` runs `cmd`.
+        "su" | "runuser" => {
+            let mut i = 1;
+            while i < n {
+                let w = cooked[i].as_str();
+                match w {
+                    "-c" | "--command" | "--session-command" => {
+                        return Some(if i + 1 < n {
+                            Wrapped::Script(i + 1)
+                        } else {
+                            Wrapped::Nothing
+                        })
+                    }
+                    // A program of the caller's choosing runs as the shell.
+                    "-s" | "--shell" => return Some(Wrapped::Unknown),
+                    "-u" | "--user" if base == "runuser" => {
+                        let mut at = i + 2;
+                        while at < n && cooked[at].starts_with('-') && cooked[at] != "--" {
+                            at += 1;
+                        }
+                        if cooked.get(at).is_some_and(|w| w == "--") {
+                            at += 1;
+                        }
+                        return Some(if at < n {
+                            Wrapped::At(at)
+                        } else {
+                            Wrapped::Unknown
+                        });
+                    }
+                    "-g" | "-G" | "-w" | "--group" | "--supp-group" | "--whitelist-environment" => {
+                        i += 2;
+                        continue;
+                    }
+                    _ if ["--command=", "--session-command=", "--shell="]
+                        .iter()
+                        .any(|p| w.starts_with(p)) =>
+                    {
+                        return Some(Wrapped::Unknown)
+                    }
+                    _ if w.len() > 1 && w.starts_with('-') && !w.starts_with("--") => {
+                        let letters = &w[1..];
+                        if letters.ends_with('c') {
+                            return Some(if i + 1 < n {
+                                Wrapped::Script(i + 1)
+                            } else {
+                                Wrapped::Nothing
+                            });
+                        }
+                        if letters.contains(['c', 's']) {
+                            return Some(Wrapped::Unknown);
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            // A shell reading its input, or given a script.
+            Some(Wrapped::Unknown)
+        }
+        // GNU `script [opts] [file]` with `-c CODE`; BSD `script [opts]
+        // [file [cmd...]]`. With neither, an interactive shell.
+        "script" => {
+            for (i, w) in cooked.iter().enumerate().skip(1) {
+                if w == "-c" || w == "--command" {
+                    return Some(if i + 1 < n {
+                        Wrapped::Script(i + 1)
+                    } else {
+                        Wrapped::Nothing
+                    });
+                }
+                if w.starts_with("--command=") || (w.starts_with("-c") && w.len() > 2) {
+                    return Some(Wrapped::Unknown);
+                }
+                if w.starts_with('-') && !w.starts_with("--") && w[1..].ends_with('c') {
+                    return Some(if i + 1 < n {
+                        Wrapped::Script(i + 1)
+                    } else {
+                        Wrapped::Nothing
+                    });
+                }
+                if w.starts_with('-') && !w.starts_with("--") && w[1..].contains('p') {
+                    return Some(Wrapped::Nothing); // playback
+                }
+            }
+            let mut i = 1;
+            while i < n && cooked[i].starts_with('-') && cooked[i] != "-" {
+                let w = &cooked[i];
+                i += 1;
+                if w == "--" {
+                    break;
+                }
+                if ["-t", "-T", "-E", "-I", "-O", "-B", "-m", "-o"].contains(&w.as_str()) {
+                    i += 1;
+                }
+            }
+            Some(if i + 1 < n {
+                Wrapped::At(i + 1)
+            } else {
+                Wrapped::Unknown
+            })
+        }
+        // GNU parallel: `parallel [opts] cmd... ::: args`, the command run
+        // by a shell; with no command, each input line is one.
+        "parallel" => {
+            const ARG: &[&str] = &[
+                "-j",
+                "--jobs",
+                "-P",
+                "--max-procs",
+                "-S",
+                "--sshlogin",
+                "--sshloginfile",
+                "--slf",
+                "-a",
+                "--arg-file",
+                "-d",
+                "--delimiter",
+                "-E",
+                "--eof",
+                "-I",
+                "-n",
+                "--max-args",
+                "-N",
+                "-L",
+                "--max-lines",
+                "-l",
+                "-s",
+                "--max-chars",
+                "--colsep",
+                "-C",
+                "--tmpdir",
+                "--results",
+                "--res",
+                "--joblog",
+                "--timeout",
+                "--delay",
+                "--retries",
+                "--memfree",
+                "--load",
+                "--env",
+                "--basefile",
+                "--bf",
+                "--transfer-file",
+                "--tf",
+                "--return",
+                "--workdir",
+                "--wd",
+                "--tagstring",
+                "--header",
+                "--halt",
+                "--termseq",
+                "--block",
+                "--recstart",
+                "--recend",
+                "--nice",
+                "--ssh",
+                "--rpl",
+                "--shebang-wrap",
+                "--limit",
+                "--sqlmaster",
+                "--sqlworker",
+                "--sqlandworker",
+                "--fg",
+                "--id",
+                "--semaphorename",
+                "--semaphoretimeout",
+                "--st",
+                "--profile",
+                "-J",
+                "--retry-failed",
+                "--rsync-path",
+                "--resume-failed",
+            ];
+            const FLAG: &[&str] = &[
+                "-k",
+                "--keep-order",
+                "-u",
+                "--ungroup",
+                "-v",
+                "--verbose",
+                "-q",
+                "--quote",
+                "-X",
+                "-m",
+                "--xargs",
+                "--dry-run",
+                "--dryrun",
+                "--bar",
+                "--progress",
+                "--eta",
+                "--line-buffer",
+                "--lb",
+                "--null",
+                "-0",
+                "--trim",
+                "--group",
+                "--tag",
+                "--pipe",
+                "--spreadstdin",
+                "--plus",
+                "--will-cite",
+                "--citation",
+                "--no-notice",
+                "--silent",
+                "--halt-on-error",
+                "--ungroup",
+                "--lb",
+                "--files",
+                "--keep-order",
+                "--shuf",
+                "--semaphore",
+                "--bg",
+                "--wait",
+                "--compress",
+                "--cleanup",
+                "--transfer",
+                "--trc",
+                "--onall",
+                "--nonall",
+                "--controlmaster",
+                "-M",
+                "--round-robin",
+                "--round",
+                "--group-by",
+                "--linebuffer",
+                "--number-of-cpus",
+                "--number-of-cores",
+                "--csv",
+                "--tty",
+                "-T",
+                "--noswap",
+                "--joblog-append",
+                "--colour",
+                "--color",
+                "--ctag",
+                "--ctagstring",
+            ];
+            let mut i = 1;
+            while i < n {
+                let w = cooked[i].as_str();
+                if w == "--" {
+                    i += 1;
+                    break;
+                }
+                if !w.starts_with('-') || w == "-" || w.starts_with(":::") || w.starts_with("::::")
+                {
+                    break;
+                }
+                if ARG.contains(&w) {
+                    i += 2;
+                    continue;
+                }
+                let attached = |opts: &[&str]| {
+                    opts.iter().any(|o| {
+                        w.len() > o.len()
+                            && w.starts_with(o)
+                            && (!o.starts_with("--") || w[o.len()..].starts_with('='))
+                    })
+                };
+                if FLAG.contains(&w) || attached(ARG) || w.starts_with("--replace") {
+                    i += 1;
+                    continue;
+                }
+                // An option this scanner does not know may take the next word.
+                return Some(Wrapped::Unknown);
+            }
+            let end = (i..n)
+                .find(|&k| [":::", "::::", ":::+", "::::+"].contains(&cooked[k].as_str()))
+                .unwrap_or(n);
+            Some(if i >= end {
+                Wrapped::Unknown
+            } else if cooked[i]
+                .split_whitespace()
+                .next()
+                .is_some_and(|w| w.contains('{'))
+            {
+                // The input names the command.
+                Wrapped::Unknown
+            } else {
+                Wrapped::Joined(i, end)
+            })
+        }
+        // `nix-shell --run CODE`, `nix develop -c cmd...`; otherwise an
+        // interactive shell.
+        "nix-shell" => {
+            let k = (1..n).find(|&k| cooked[k] == "--run" || cooked[k] == "--command");
+            Some(match k {
+                Some(k) if k + 1 < n => Wrapped::Script(k + 1),
+                _ => Wrapped::Unknown,
+            })
+        }
+        "nix" if matches!(cooked.get(1).map(String::as_str), Some("develop" | "shell")) => {
+            let k = (2..n).find(|&k| cooked[k] == "-c" || cooked[k] == "--command");
+            Some(match k {
+                Some(k) if k + 1 < n => Wrapped::At(k + 1),
+                _ if cooked[1] == "develop" => Wrapped::Unknown,
+                _ => Wrapped::Nothing,
+            })
+        }
+        // `at`/`batch` read commands to run later; `-l`, `-r`... only list
+        // or remove jobs.
+        "at" | "batch" => Some(
+            if cooked[1..]
+                .iter()
+                .any(|w| w.starts_with('-') && w[1..].contains(['l', 'r', 'd', 'c']))
+            {
+                Wrapped::Nothing
+            } else {
+                Wrapped::Unknown
+            },
+        ),
+        // `crontab -` or `crontab` alone install jobs read from input.
+        "crontab" => Some(
+            if cooked.len() == 1 || cooked[1..].iter().any(|w| w == "-") {
+                Wrapped::Unknown
+            } else {
+                Wrapped::Nothing
+            },
+        ),
+        // Commands tmux or screen start, or keys they type into a shell.
+        "tmux" => Some(
+            if cooked[1..].iter().any(|w| {
+                [
+                    "new-session",
+                    "new",
+                    "new-window",
+                    "neww",
+                    "split-window",
+                    "splitw",
+                    "respawn-pane",
+                    "respawnp",
+                    "respawn-window",
+                    "respawnw",
+                    "run-shell",
+                    "run",
+                    "display-popup",
+                    "popup",
+                    "pipe-pane",
+                    "pipep",
+                    "if-shell",
+                    "if",
+                    "send-keys",
+                    "send",
+                    "source-file",
+                    "source",
+                    "set-hook",
+                    "bind-key",
+                    "bind",
+                    "command-prompt",
+                    "confirm-before",
+                    "set-option",
+                    "set",
+                ]
+                .contains(&w.as_str())
+            }) || cooked.len() == 1
+            {
+                Wrapped::Unknown
+            } else {
+                Wrapped::Nothing
+            },
+        ),
+        "screen" => Some(
+            if cooked[1..]
+                .iter()
+                .any(|w| !w.starts_with('-') || w == "-X" || w.starts_with("-dm") || w == "-c")
+                || cooked.len() == 1
+            {
+                Wrapped::Unknown
+            } else {
+                Wrapped::Nothing
+            },
+        ),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Code that programs run: variables, interpreters, awk, sed, git, ssh
+// ---------------------------------------------------------------------------
+
+/// Variables holding a command line that programs run (through a shell, or
+/// as a program and its arguments): `GIT_SSH_COMMAND='rm x' git fetch`
+/// runs `rm x`. Their static values are checked as shell code.
+const COMMAND_VARS: &[&str] = &[
+    "GIT_SSH_COMMAND",
+    "GIT_SSH",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_ASKPASS",
+    "GIT_PROXY_COMMAND",
+    "SSH_ASKPASS",
+    "SUDO_ASKPASS",
+    "PAGER",
+    "MANPAGER",
+    "SYSTEMD_PAGER",
+    "GH_PAGER",
+    "GH_EDITOR",
+    "BAT_PAGER",
+    "DELTA_PAGER",
+    "PSQL_PAGER",
+    "EDITOR",
+    "VISUAL",
+    "KUBE_EDITOR",
+    "BROWSER",
+    "RSYNC_RSH",
+    "CVS_RSH",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "FZF_DEFAULT_COMMAND",
+];
+
+/// Values of a command variable or git setting that only page or do
+/// nothing: not checked, so `GIT_PAGER=cat git log` asks nothing new.
+const BENIGN_COMMANDS: &[&str] = &["", "cat", "true", "false", ":", "less", "more", "less -R"];
+
+/// Shell code a program runs: checked as commands when static (`Some`),
+/// otherwise the input is dynamic.
+fn shell_code(
+    code: Option<&str>,
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    match code {
+        Some(code) if BENIGN_COMMANDS.contains(&code.trim()) => Ok(()),
+        Some(code) => run_string(code, cwd, shared, depth, out),
+        None => {
+            mark_dynamic(out, "dynamic-execution");
+            Ok(())
+        }
+    }
+}
+
+/// `cooked` as code when `raw` spells it statically.
+fn static_text<'a>(raw: &str, cooked: &'a str) -> Option<&'a str> {
+    is_static_word(raw).then_some(cooked)
+}
+
+/// An assignment to a [`COMMAND_VARS`] variable (or Git's config
+/// variables), `raw` as written and `value` with quotes removed.
+fn command_var(
+    raw: &str,
+    value: &str,
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let Some((name, raw_value)) = raw.split_once('=') else {
+        return Ok(());
+    };
+    let name = name.trim_end_matches('+');
+    if name.starts_with("GIT_CONFIG_") {
+        // `GIT_CONFIG_KEY_0=core.pager`: settings Git reads like `-c`;
+        // `GIT_CONFIG_GLOBAL=file` names a file of them.
+        mark_dynamic(out, "dynamic-execution");
+        return Ok(());
+    }
+    if !COMMAND_VARS.contains(&name) {
+        return Ok(());
+    }
+    let code = value.split_once('=').map_or("", |(_, v)| v);
+    let code = if name.starts_with("LESS") {
+        // `LESSOPEN='|cmd %s'`.
+        code.trim_start_matches(['|', '-'])
+    } else {
+        code
+    };
+    shell_code(
+        is_static_word(raw_value).then_some(code),
+        cwd,
+        shared,
+        depth,
+        out,
+    )
+}
+
+/// Whether Dash running the command name `raw` (from `(( $x ))`, which it
+/// reads as subshells) can run a command the scan does not see: a
+/// substitution, a glob, a positional parameter, or a variable the script
+/// gives text. A variable the script never sets comes from the environment
+/// CodeSmith runs it in, and one it sets only to numbers names no command.
+fn dash_name_matters(raw: &str, shared: &Shared) -> bool {
+    if !raw.contains(['$', '`']) {
+        // Not static for a glob or a brace expansion, which may name a file.
+        return true;
+    }
+    let c: Vec<char> = raw.chars().collect();
+    let text_var = |name: &str| shared.text_vars.borrow().contains(name);
+    let mut i = 0;
+    while i < c.len() {
+        match c[i] {
+            '\\' => i += 1,
+            '`' => return true,
+            '$' => match c.get(i + 1) {
+                Some('(') if c.get(i + 2) == Some(&'(') => i += 2,
+                Some('(') | Some('\'') | Some('"') | Some('[') => return true,
+                Some('{') => {
+                    let close = match c[i + 2..].iter().position(|&x| x == '}') {
+                        Some(k) => i + 2 + k,
+                        None => return true,
+                    };
+                    let body: String = c[i + 2..close].iter().collect();
+                    let name = body.strip_prefix('#').unwrap_or(&body);
+                    let numeric = body.starts_with('#') || ["?", "$", "!"].contains(&name);
+                    if !numeric
+                        && (name.is_empty()
+                            || !name.chars().all(is_name_char)
+                            || name.starts_with(|ch: char| ch.is_ascii_digit())
+                            || text_var(name))
+                    {
+                        return true;
+                    }
+                    i = close;
+                }
+                Some('_') if !c.get(i + 2).is_some_and(|&ch| is_name_char(ch)) => return true,
+                Some(&ch) if is_name_start(ch) => {
+                    let end = (i + 1..c.len())
+                        .find(|&k| !is_name_char(c[k]))
+                        .unwrap_or(c.len());
+                    let name: String = c[i + 1..end].iter().collect();
+                    if text_var(&name) {
+                        return true;
+                    }
+                    i = end - 1;
+                }
+                Some(&ch) if ch.is_ascii_digit() || "@*_-0".contains(ch) => return true,
+                _ => {}
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// How an interpreter takes code on its command line.
+struct Interpreter {
+    /// Short options whose argument is code (`-c`, `-e`), in a cluster too.
+    code: &'static str,
+    /// Words whose next word (or `=` value) is code (`--eval`, node's `-pe`).
+    code_words: &'static [&'static str],
+    /// Short options taking an argument: the rest of the word, or the next.
+    arg: &'static str,
+    /// Short options taking an optional attached argument (the rest).
+    attached: &'static str,
+    /// Short options taking attached digits (`perl -l0`), the cluster going on.
+    digits: &'static str,
+    /// Options taking the next word as argument (`--require mod`).
+    long_arg: &'static [&'static str],
+    /// Short options naming what runs instead of code (`python -m mod`).
+    module: &'static str,
+    /// Options that run no code (`--version`).
+    info: &'static [&'static str],
+    /// Reads code from its input when given no script.
+    stdin: bool,
+}
+
+const fn interp(code: &'static str, arg: &'static str, stdin: bool) -> Interpreter {
+    Interpreter {
+        code,
+        code_words: &[],
+        arg,
+        attached: "",
+        digits: "",
+        long_arg: &[],
+        module: "",
+        info: &["--version", "-h", "--help"],
+        stdin,
+    }
+}
+
+/// The interpreter `base` names (`python3.12` is `python`).
+fn interpreter(base: &str) -> Option<Interpreter> {
+    let family = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    Some(match family {
+        "python" | "pypy" => Interpreter {
+            module: "m",
+            long_arg: &["--check-hash-based-pycs"],
+            info: &["-V", "-VV", "--version", "-h", "--help"],
+            ..interp("c", "WXQ", true)
+        },
+        "perl" => Interpreter {
+            attached: "ixdDMmFV",
+            digits: "l0C",
+            info: &["-v", "-V", "--version", "-h", "--help"],
+            ..interp("eE", "I", true)
+        },
+        "ruby" => Interpreter {
+            attached: "FxWK",
+            digits: "0T",
+            long_arg: &["--encoding", "--external-encoding", "--internal-encoding"],
+            info: &["-v", "--version", "-h", "--help"],
+            ..interp("e", "ICrE", true)
+        },
+        "node" => Interpreter {
+            code_words: &["-e", "-p", "-pe", "-ep", "--eval", "--print"],
+            long_arg: &[
+                "--require",
+                "--import",
+                "--loader",
+                "--experimental-loader",
+                "--conditions",
+                "--input-type",
+                "--env-file",
+                "--title",
+                "--watch-path",
+                "--test-name-pattern",
+                "--redirect-warnings",
+            ],
+            info: &[
+                "-v",
+                "--version",
+                "-h",
+                "--help",
+                "--v8-options",
+                "-c",
+                "--check",
+                "--test",
+                "--run",
+            ],
+            ..interp("", "rC", true)
+        },
+        "bun" => Interpreter {
+            code_words: &["-e", "--eval", "-p", "--print"],
+            ..interp("", "", false)
+        },
+        "php" => Interpreter {
+            module: "f",
+            info: &[
+                "-v",
+                "--version",
+                "-h",
+                "--help",
+                "-i",
+                "-m",
+                "-l",
+                "-S",
+                "--ini",
+                "--rf",
+                "--rc",
+                "--re",
+                "--rz",
+                "--ri",
+            ],
+            ..interp("rBRE", "cdztSFD", true)
+        },
+        "lua" | "luajit" => Interpreter {
+            info: &["-v", "-b", "-h", "--help"],
+            ..interp("e", "lj", true)
+        },
+        "Rscript" => interp("e", "", false),
+        "R" => Interpreter {
+            code_words: &["--file"],
+            ..interp("e", "", true)
+        },
+        "osascript" => interp("e", "ls", true),
+        "tclsh" | "wish" | "jimsh" => Interpreter {
+            long_arg: &["-encoding"],
+            ..interp("", "", true)
+        },
+        "expect" => Interpreter {
+            module: "f",
+            info: &["-v"],
+            ..interp("c", "", true)
+        },
+        "julia" => Interpreter {
+            code_words: &["--eval", "--print"],
+            ..interp("eE", "pLJCtg", true)
+        },
+        _ => return None,
+    })
+}
+
+/// The code an interpreter is given in `cooked` (`-` for its input or a
+/// script only known at run time), or `None` when it runs a script file
+/// or no code.
+fn inline_code(base: &str, raw: &[String], cooked: &[String]) -> Option<String> {
+    let n = cooked.len();
+    let next = |i: usize| Some(cooked.get(i + 1).cloned().unwrap_or_else(|| "-".into()));
+    let lower = base.to_ascii_lowercase();
+    if lower == "pwsh" || lower.starts_with("powershell") {
+        for (i, w) in cooked.iter().enumerate().skip(1) {
+            let w = w.to_ascii_lowercase();
+            if [
+                "-c",
+                "-command",
+                "-e",
+                "-ec",
+                "-enc",
+                "-encodedcommand",
+                "-cwa",
+                "-commandwithargs",
+            ]
+            .contains(&w.as_str())
+            {
+                return next(i);
+            }
+            if ["-f", "-file"].contains(&w.as_str()) || !w.starts_with('-') {
+                return None;
+            }
+        }
+        return None;
+    }
+    if base == "deno" {
+        return match cooked.get(1).map(String::as_str) {
+            Some("eval") => (2..n)
+                .find(|&k| !cooked[k].starts_with('-'))
+                .map(|k| cooked[k].clone())
+                .or_else(|| Some("-".into())),
+            Some("run") if cooked[2..].iter().any(|w| w == "-") => Some("-".into()),
+            _ => None,
+        };
+    }
+    let it = interpreter(base)?;
+    let mut i = 1;
+    while i < n {
+        let w = cooked[i].as_str();
+        if w == "--" {
+            i += 1;
+            break;
+        }
+        if w == "-" {
+            return Some("-".into());
+        }
+        if !w.starts_with('-') {
+            break;
+        }
+        if it.info.contains(&w) {
+            return None;
+        }
+        if it.code_words.contains(&w) {
+            return next(i);
+        }
+        if let Some((name, value)) = w.split_once('=') {
+            if it.code_words.contains(&name) {
+                return Some(value.to_string());
+            }
+            i += 1;
+            continue;
+        }
+        if it.long_arg.contains(&w) {
+            i += 2;
+            continue;
+        }
+        if w.starts_with("--") {
+            i += 1;
+            continue;
+        }
+        let letters: Vec<char> = w[1..].chars().collect();
+        let mut k = 0;
+        let mut skip_next = false;
+        while k < letters.len() {
+            let c = letters[k];
+            let rest: String = letters[k + 1..].iter().collect();
+            if it.code.contains(c) {
+                return if rest.is_empty() { next(i) } else { Some(rest) };
+            }
+            if it.module.contains(c) {
+                return None;
+            }
+            if it.arg.contains(c) {
+                skip_next = rest.is_empty();
+                break;
+            }
+            if it.attached.contains(c) {
+                break;
+            }
+            k += 1;
+            if it.digits.contains(c) {
+                while k < letters.len()
+                    && (letters[k].is_ascii_digit()
+                        || (c == 'C' && "IOESioDALa".contains(letters[k])))
+                {
+                    k += 1;
+                }
+            }
+        }
+        i += if skip_next { 2 } else { 1 };
+    }
+    match cooked.get(i) {
+        // A script from a pipe or computed at run time.
+        Some(script) => computed_source(&raw[i], script).then(|| "-".into()),
+        None => it.stdin.then(|| "-".into()),
+    }
+}
+
+/// What an `awk` or `sed` program does beyond reading and printing.
+#[derive(Default)]
+struct ProgramEffects {
+    /// Shell commands it runs: their text when the program spells it.
+    commands: Vec<Option<String>>,
+    /// Files it writes: their names when the program spells them.
+    writes: Vec<Option<String>>,
+    /// It runs code it computes (`system($0)`), or could not be read.
+    computed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum AwkTok {
+    Str(String),
+    Regex,
+    Ident(String),
+    Num,
+    Punct(&'static str),
+    Newline,
+}
+
+const AWK_PUNCT: &[&str] = &[
+    "|&", "||", "&&", ">>", ">=", "<=", "==", "!=", "!~", "++", "--", "+=", "-=", "*=", "/=", "%=",
+    "^=", "**", "|", ">", "<", "(", ")", "{", "}", "[", "]", ";", ",", "!", "~", "+", "-", "*",
+    "/", "%", "^", "?", ":", "=", "$", "@",
+];
+
+/// The tokens of an awk program, or `None` when it cannot be read.
+fn awk_tokens(p: &[char]) -> Option<Vec<AwkTok>> {
+    let mut out: Vec<AwkTok> = Vec::new();
+    let mut i = 0;
+    while i < p.len() {
+        let c = p[i];
+        match c {
+            ' ' | '\t' | '\r' => i += 1,
+            '\\' if p.get(i + 1) == Some(&'\n') => i += 2,
+            '\n' => {
+                out.push(AwkTok::Newline);
+                i += 1;
+            }
+            '#' => {
+                while i < p.len() && p[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '"' => {
+                let mut s = String::new();
+                i += 1;
+                loop {
+                    match p.get(i)? {
+                        '"' => break,
+                        '\\' => {
+                            let e = *p.get(i + 1)?;
+                            s.push(match e {
+                                'n' => '\n',
+                                't' => '\t',
+                                e => e,
+                            });
+                            i += 2;
+                        }
+                        &ch => {
+                            s.push(ch);
+                            i += 1;
+                        }
+                    }
+                }
+                i += 1;
+                out.push(AwkTok::Str(s));
+            }
+            '/' if matches!(
+                out.last(),
+                None | Some(AwkTok::Newline) | Some(AwkTok::Regex)
+            ) || matches!(out.last(), Some(AwkTok::Punct(t)) if *t != ")" && *t != "]" && *t != "$")
+                || matches!(out.last(), Some(AwkTok::Ident(w)) if ["print", "printf", "return", "in", "case"].contains(&w.as_str())) =>
+            {
+                i += 1;
+                let mut bracket = false;
+                loop {
+                    match p.get(i)? {
+                        '\\' => i += 1,
+                        '[' => bracket = true,
+                        ']' => bracket = false,
+                        '/' if !bracket => break,
+                        '\n' => return None,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                i += 1;
+                out.push(AwkTok::Regex);
+            }
+            c if c.is_ascii_alphabetic() || c == '_' => {
+                let start = i;
+                while i < p.len() && (p[i].is_ascii_alphanumeric() || p[i] == '_') {
+                    i += 1;
+                }
+                out.push(AwkTok::Ident(p[start..i].iter().collect()));
+            }
+            c if c.is_ascii_digit() || c == '.' => {
+                while i < p.len() && (p[i].is_ascii_alphanumeric() || p[i] == '.') {
+                    i += 1;
+                }
+                out.push(AwkTok::Num);
+            }
+            _ => {
+                let rest: String = p[i..p.len().min(i + 2)].iter().collect();
+                let t = AWK_PUNCT.iter().find(|t| rest.starts_with(**t))?;
+                i += t.len();
+                out.push(AwkTok::Punct(t));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// What awk program `p` runs and writes: `system("...")`, `"..." |
+/// getline`, `print | "..."` and `print > "..."`.
+fn awk_effects(p: &str, fx: &mut ProgramEffects) {
+    let chars: Vec<char> = p.chars().collect();
+    let Some(toks) = awk_tokens(&chars) else {
+        fx.computed = true;
+        return;
+    };
+    let ends = |t: Option<&AwkTok>| {
+        matches!(
+            t,
+            None | Some(AwkTok::Newline) | Some(AwkTok::Punct(";" | "}" | ")"))
+        )
+    };
+    // The string at `k` when it is a whole expression ending there.
+    let literal_at = |k: usize| match toks.get(k) {
+        Some(AwkTok::Str(s)) if ends(toks.get(k + 1)) => Some(s.clone()),
+        _ => None,
+    };
+    let operand = |t: Option<&AwkTok>| {
+        matches!(
+            t,
+            Some(AwkTok::Str(_) | AwkTok::Num | AwkTok::Regex | AwkTok::Ident(_))
+                | Some(AwkTok::Punct(")" | "]" | "$" | "++" | "--"))
+        )
+    };
+    let mut print = false;
+    let mut parens = 0usize;
+    for (k, t) in toks.iter().enumerate() {
+        match t {
+            AwkTok::Ident(w) if w == "print" || w == "printf" => {
+                print = true;
+                parens = 0;
+            }
+            AwkTok::Ident(w) if w == "system" => {
+                let arg = match (toks.get(k + 1), toks.get(k + 2), toks.get(k + 3)) {
+                    (Some(AwkTok::Punct("(")), Some(AwkTok::Str(s)), Some(AwkTok::Punct(")"))) => {
+                        Some(s.clone())
+                    }
+                    _ => None,
+                };
+                if arg.is_none() {
+                    fx.computed = true;
+                }
+                fx.commands.push(arg);
+            }
+            AwkTok::Punct("|" | "|&") => {
+                if matches!(toks.get(k + 1), Some(AwkTok::Ident(w)) if w == "getline") {
+                    // `"cmd" | getline`: the string before, standing alone.
+                    let cmd = match (k.checked_sub(1).map(|j| &toks[j]), k.checked_sub(2)) {
+                        (Some(AwkTok::Str(s)), j) if !operand(j.map(|j| &toks[j])) => {
+                            Some(s.clone())
+                        }
+                        _ => None,
+                    };
+                    if cmd.is_none() {
+                        fx.computed = true;
+                    }
+                    fx.commands.push(cmd);
+                } else if print && parens == 0 {
+                    let cmd = literal_at(k + 1);
+                    if cmd.is_none() {
+                        fx.computed = true;
+                    }
+                    fx.commands.push(cmd);
+                } else {
+                    fx.computed = true;
+                }
+            }
+            AwkTok::Punct(">" | ">>") if print && parens == 0 => {
+                fx.writes.push(literal_at(k + 1));
+            }
+            AwkTok::Punct("@") => {
+                // Gawk's indirect call `@f()` may name `system`.
+                if !matches!(toks.get(k + 1), Some(AwkTok::Ident(w)) if ["load", "include", "namespace"].contains(&w.as_str()))
+                {
+                    fx.computed = true;
+                }
+            }
+            AwkTok::Punct("(") if print => parens += 1,
+            AwkTok::Punct(")") if print => {
+                if parens == 0 {
+                    print = false;
+                } else {
+                    parens -= 1;
+                }
+            }
+            AwkTok::Punct(";" | "{" | "}") | AwkTok::Newline => print = false,
+            _ => {}
+        }
+    }
+}
+
+/// The program operands of `awk` in `cooked`: `(raw, text)` of each
+/// program text, or `None` when the program comes from a file.
+fn awk_programs<'a>(raw: &'a [String], cooked: &'a [String]) -> Vec<(&'a str, &'a str)> {
+    let n = cooked.len();
+    let mut programs = Vec::new();
+    let mut from_file = false;
+    let mut i = 1;
+    while i < n {
+        let w = cooked[i].as_str();
+        if w == "--" {
+            i += 1;
+            break;
+        }
+        if !w.starts_with('-') || w == "-" {
+            break;
+        }
+        match w {
+            "-f" | "--file" | "-E" | "--exec" | "-i" | "--include" => {
+                from_file |= !w.starts_with("-i") && w != "--include";
+                i += 2;
+            }
+            "-e" | "--source" => {
+                if i + 1 < n {
+                    programs.push((raw[i + 1].as_str(), cooked[i + 1].as_str()));
+                }
+                i += 2;
+            }
+            "-F" | "-v" | "-l" | "-W" | "--field-separator" | "--assign" | "--load" => i += 2,
+            _ if w.starts_with("--source=") => {
+                programs.push((raw[i].as_str(), &w["--source=".len()..]));
+                i += 1;
+            }
+            _ if w.starts_with("--file=") || w.starts_with("--exec=") || w.starts_with("-f") => {
+                from_file = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if programs.is_empty() && !from_file && i < n {
+        programs.push((raw[i].as_str(), cooked[i].as_str()));
+    }
+    programs
+}
+
+/// What sed script `s` does beyond editing text, or `Err` when it cannot be
+/// read.
+fn sed_effects(s: &str, fx: &mut ProgramEffects) -> Result<(), ()> {
+    let c: Vec<char> = s.chars().collect();
+    let n = c.len();
+    let mut i = 0;
+    let to_eol = |i: &mut usize| -> String {
+        let start = *i;
+        while *i < n && c[*i] != '\n' {
+            *i += 1;
+        }
+        c[start..*i].iter().collect()
+    };
+    // Past a regex delimited by `d` from `i` (after the opening delimiter).
+    let regex = |i: &mut usize, d: char| -> Result<(), ()> {
+        let mut bracket = false;
+        while *i < n {
+            match c[*i] {
+                '\\' => *i += 1,
+                '[' if !bracket && d != '[' => bracket = true,
+                ']' if bracket => bracket = false,
+                ch if ch == d && !bracket => {
+                    *i += 1;
+                    return Ok(());
+                }
+                _ => {}
+            }
+            *i += 1;
+        }
+        Err(())
+    };
+    let address = |i: &mut usize| -> Result<(), ()> {
+        match c.get(*i) {
+            Some('/') => {
+                *i += 1;
+                regex(i, '/')?;
+                while matches!(c.get(*i), Some('I' | 'M')) {
+                    *i += 1;
+                }
+            }
+            Some('\\') => {
+                let d = *c.get(*i + 1).ok_or(())?;
+                *i += 2;
+                regex(i, d)?;
+                while matches!(c.get(*i), Some('I' | 'M')) {
+                    *i += 1;
+                }
+            }
+            Some('$') => *i += 1,
+            Some(ch) if ch.is_ascii_digit() => {
+                while c
+                    .get(*i)
+                    .is_some_and(|ch| ch.is_ascii_digit() || *ch == '~')
+                {
+                    *i += 1;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+    loop {
+        while i < n && (c[i].is_whitespace() || c[i] == ';') {
+            i += 1;
+        }
+        if i >= n {
+            return Ok(());
+        }
+        if c[i] == '#' {
+            to_eol(&mut i);
+            continue;
+        }
+        address(&mut i)?;
+        while c.get(i).is_some_and(|ch| *ch == ' ' || *ch == '\t') {
+            i += 1;
+        }
+        if c.get(i) == Some(&',') {
+            i += 1;
+            while c.get(i).is_some_and(|ch| *ch == ' ') {
+                i += 1;
+            }
+            if matches!(c.get(i), Some('+' | '~')) {
+                i += 1;
+            }
+            address(&mut i)?;
+        }
+        while c
+            .get(i)
+            .is_some_and(|ch| *ch == ' ' || *ch == '\t' || *ch == '!')
+        {
+            i += 1;
+        }
+        let Some(&cmd) = c.get(i) else {
+            return Err(());
+        };
+        i += 1;
+        match cmd {
+            // A block's commands may follow its brace directly.
+            '{' | '}' => continue,
+            '=' | 'd' | 'D' | 'g' | 'G' | 'h' | 'H' | 'x' | 'n' | 'N' | 'p' | 'P' | 'z' | 'F' => {}
+            'l' | 'L' | 'q' | 'Q' => {
+                while c.get(i).is_some_and(|ch| *ch == ' ' || ch.is_ascii_digit()) {
+                    i += 1;
+                }
+            }
+            ':' | 'b' | 't' | 'T' | 'v' => {
+                while i < n && c[i] != '\n' && c[i] != ';' && (cmd == ':' || c[i] != '}') {
+                    i += 1;
+                }
+            }
+            'a' | 'i' | 'c' => {
+                // Text to the end of the line, continued by a backslash.
+                while i < n && c[i] != '\n' {
+                    if c[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            'r' | 'R' => {
+                to_eol(&mut i);
+            }
+            'w' | 'W' => {
+                let file = to_eol(&mut i);
+                fx.writes.push(Some(file.trim_start().to_string()));
+            }
+            'e' => {
+                // `e` alone runs the pattern space, `e cmd` the command.
+                let code = to_eol(&mut i);
+                let code = code.trim();
+                if code.is_empty() {
+                    fx.computed = true;
+                    fx.commands.push(None);
+                } else {
+                    fx.commands.push(Some(code.to_string()));
+                }
+            }
+            's' | 'y' => {
+                let d = *c.get(i).ok_or(())?;
+                if d == '\n' || d == '\\' {
+                    return Err(());
+                }
+                i += 1;
+                regex(&mut i, d)?;
+                regex(&mut i, d)?;
+                if cmd == 's' {
+                    while let Some(&f) = c.get(i) {
+                        match f {
+                            'g' | 'p' | 'i' | 'I' | 'm' | 'M' => i += 1,
+                            f if f.is_ascii_digit() => i += 1,
+                            'e' => {
+                                // Runs the result as a command.
+                                fx.computed = true;
+                                fx.commands.push(None);
+                                i += 1;
+                            }
+                            'w' => {
+                                i += 1;
+                                let file = to_eol(&mut i);
+                                fx.writes.push(Some(file.trim_start().to_string()));
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+            }
+            _ => return Err(()),
+        }
+        while c.get(i).is_some_and(|ch| *ch == ' ' || *ch == '\t') {
+            i += 1;
+        }
+        match c.get(i) {
+            None | Some(';' | '\n' | '}' | '#') => {}
+            _ => return Err(()),
+        }
+    }
+}
+
+/// The scripts of a `sed` command in `cooked`, as `(raw, text)`, read as
+/// GNU sed does (`bsd: false`: options anywhere, `-i` alone takes no
+/// suffix) or as BSD sed does (`-i SUFFIX`, options first). `None` when
+/// a script comes from a file the run computes, or `--sandbox` turns off
+/// commands and writes (an empty list).
+fn sed_scripts<'a>(
+    raw: &'a [String],
+    cooked: &'a [String],
+    bsd: bool,
+) -> Option<Vec<(&'a str, &'a str)>> {
+    let n = cooked.len();
+    let mut scripts = Vec::new();
+    let mut operands = Vec::new();
+    let mut from_file = false;
+    let mut i = 1;
+    let mut ended = false;
+    while i < n {
+        let w = cooked[i].as_str();
+        if ended || !w.starts_with('-') || w == "-" {
+            if bsd {
+                operands.extend(i..n);
+                break;
+            }
+            operands.push(i);
+            i += 1;
+            continue;
+        }
+        if w == "--" {
+            ended = true;
+            i += 1;
+            continue;
+        }
+        if w == "--sandbox" {
+            return Some(Vec::new());
+        }
+        if let Some(long) = w.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, None), |(a, b)| (a, Some(b)));
+            match (name, value) {
+                ("expression", Some(_)) => scripts.push((raw[i].as_str(), value.unwrap())),
+                ("expression", None) if i + 1 < n => {
+                    scripts.push((raw[i + 1].as_str(), cooked[i + 1].as_str()));
+                    i += 1;
+                }
+                ("file", v) => {
+                    let f = v.or(cooked.get(i + 1).map(String::as_str)).unwrap_or("-");
+                    if v.is_none() {
+                        i += 1;
+                    }
+                    if computed_source(f, f) {
+                        return None;
+                    }
+                    from_file = true;
+                }
+                ("line-length", None) => i += 1,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        let letters: Vec<char> = w[1..].chars().collect();
+        for (k, &ch) in letters.iter().enumerate() {
+            let rest: String = letters[k + 1..].iter().collect();
+            match ch {
+                'e' | 'f' | 'l' => {
+                    let (r, text) = if rest.is_empty() {
+                        i += 1;
+                        match (raw.get(i), cooked.get(i)) {
+                            (Some(r), Some(t)) => (r.as_str(), t.as_str()),
+                            _ => break,
+                        }
+                    } else {
+                        (raw[i].as_str(), &w[w.len() - rest.len()..])
+                    };
+                    if ch == 'e' {
+                        scripts.push((r, text));
+                    } else if ch == 'f' {
+                        if computed_source(r, text) {
+                            return None;
+                        }
+                        from_file = true;
+                    }
+                    break;
+                }
+                'i' | 'I' if bsd => {
+                    if rest.is_empty() {
+                        i += 1;
+                    }
+                    break;
+                }
+                'i' => break,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if scripts.is_empty() && !from_file {
+        if let Some(&k) = operands.first() {
+            scripts.push((raw[k].as_str(), cooked[k].as_str()));
+        }
+    }
+    Some(scripts)
+}
+
+/// Checks what an `awk` or `sed` program runs and writes. Program text the
+/// run computes is code the scan cannot read: the inline-code marker.
+fn program_effects(
+    base: &str,
+    raw: &[String],
+    cooked: &[String],
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let mut fx = ProgramEffects::default();
+    let mut unreadable = false;
+    if base == "sed" {
+        for bsd in [false, true] {
+            let Some(scripts) = sed_scripts(raw, cooked, bsd) else {
+                unreadable = true;
+                continue;
+            };
+            for (r, text) in scripts {
+                shared.charge(text.len());
+                if !is_static_word(r) {
+                    unreadable = true;
+                    continue;
+                }
+                // BSD's reading of a GNU `-i` takes a file name as the
+                // script: one sed refuses, so only the GNU reading counts.
+                if sed_effects(text, &mut fx).is_err() && !bsd && text.contains(['e', 'w', 'W']) {
+                    unreadable = true;
+                }
+            }
+        }
+    } else {
+        for (r, text) in awk_programs(raw, cooked) {
+            shared.charge(text.len());
+            if !is_static_word(r) {
+                unreadable = true;
+                continue;
+            }
+            awk_effects(text, &mut fx);
+        }
+    }
+    if unreadable || fx.computed {
+        let code = awk_programs(raw, cooked)
+            .first()
+            .map(|(_, t)| t.to_string())
+            .filter(|_| base != "sed")
+            .unwrap_or_else(|| cooked[1..].join(" "));
+        push_code_marker(&cooked[0], &code, out);
+    }
+    // Both readings of a sed command often find the same things.
+    let mut seen = std::collections::HashSet::new();
+    for cmd in fx.commands.into_iter().flatten() {
+        if seen.insert(cmd.clone()) {
+            run_string(&cmd, cwd, shared, depth, out)?;
+        }
+    }
+    let program = cooked.join(" ");
+    let mut seen = std::collections::HashSet::new();
+    for w in fx.writes {
+        if seen.insert(w.clone()) {
+            push_literal_write(out, w.as_deref(), &program);
+        }
+    }
+    Ok(())
+}
+
+/// Records code the scan cannot read, run by `name`: checked as the
+/// resource `code:NAME CODE`, which only a rule such as `code:python *`
+/// (or `*`) allows.
+fn push_code_marker(name: &str, code: &str, out: &mut Analysis) {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let resource = format!("code:{base} {code}");
+    let save = format!("code:{base} *");
+    if !out.delegated.iter().any(|(r, _)| *r == resource) {
+        out.delegated.push((resource, save));
+    }
+}
+
+/// `git -c` settings and subcommand options that run a program.
+fn git_effects(
+    raw: &[String],
+    cooked: &[String],
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let n = cooked.len();
+    let mut i = 1;
+    while i < n {
+        let w = cooked[i].as_str();
+        match w {
+            "-c" => {
+                if i + 1 < n {
+                    git_setting(&raw[i + 1], &cooked[i + 1], cwd, shared, depth, out)?;
+                }
+                i += 2;
+            }
+            "--config-env" => {
+                if let Some(kv) = cooked.get(i + 1) {
+                    git_env_setting(kv, out);
+                }
+                i += 2;
+            }
+            _ if w.starts_with("--config-env=") => {
+                git_env_setting(&w["--config-env=".len()..], out);
+                i += 1;
+            }
+            // Git's own programs from another directory.
+            _ if w.starts_with("--exec-path=") => {
+                mark_dynamic(out, "dynamic-execution");
+                i += 1;
+            }
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix"
+            | "--list-cmds" | "--attr-source" => i += 2,
+            _ if w.starts_with('-') => i += 1,
+            _ => break,
+        }
+    }
+    let Some(sub) = cooked.get(i).map(String::as_str) else {
+        return Ok(());
+    };
+    let args = i + 1;
+    // Where the value of a long option (or `short`) given as the next word
+    // is, for every use.
+    let values = |long: &[&str], short: Option<&str>| -> Vec<usize> {
+        (args..n.saturating_sub(1))
+            .filter(|&k| long.contains(&cooked[k].as_str()) || short == Some(cooked[k].as_str()))
+            .map(|k| k + 1)
+            .collect()
+    };
+    let attached = |long: &[&str]| -> Vec<(usize, String)> {
+        (args..n)
+            .filter_map(|k| {
+                long.iter().find_map(|l| {
+                    cooked[k]
+                        .strip_prefix(l)
+                        .and_then(|v| v.strip_prefix('='))
+                        .map(|v| (k, v.to_string()))
+                })
+            })
+            .collect()
+    };
+    let mut code: Vec<(usize, Option<String>)> = Vec::new();
+    let mut check = |long: &[&str], short: Option<&str>| {
+        for k in values(long, short) {
+            code.push((k, None));
+        }
+        for (k, v) in attached(long) {
+            code.push((k, Some(v)));
+        }
+    };
+    match sub {
+        "rebase" => check(&["--exec"], Some("-x")),
+        "difftool" => check(&["--extcmd"], Some("-x")),
+        "fetch" | "pull" | "clone" | "ls-remote" | "archive" | "push" | "remote" => check(
+            &["--upload-pack", "--receive-pack", "--exec"],
+            (sub == "clone" || sub == "ls-remote").then_some("-u"),
+        ),
+        "filter-branch" => check(
+            &[
+                "--env-filter",
+                "--tree-filter",
+                "--index-filter",
+                "--parent-filter",
+                "--msg-filter",
+                "--commit-filter",
+                "--tag-name-filter",
+            ],
+            None,
+        ),
+        "send-email" => check(&["--sendmail-cmd"], None),
+        "grep" => {
+            for (k, w) in cooked.iter().enumerate().skip(args) {
+                if let Some(v) = w
+                    .strip_prefix("--open-files-in-pager=")
+                    .or_else(|| w.strip_prefix("-O").filter(|v| !v.is_empty()))
+                {
+                    code.push((k, Some(v.to_string())));
+                }
+            }
+        }
+        "bisect" if cooked.get(args).is_some_and(|w| w == "run") => {
+            // `git bisect run cmd args...`.
+            if args + 1 < n {
+                let words = &cooked[args + 1..];
+                let resource = words.join(" ");
+                out.delegated
+                    .push((resource.clone(), save_pattern(words, &resource)));
+                delegate(&raw[args + 1..], words, cwd, shared, depth + 1, out)?;
+            }
+        }
+        "submodule" => {
+            if let Some(f) = (args..n).find(|&k| cooked[k] == "foreach") {
+                let mut k = f + 1;
+                while k < n && cooked[k].starts_with('-') {
+                    k += 1;
+                }
+                if k < n {
+                    let text = cooked[k..].join(" ");
+                    let ok = raw[k..].iter().all(|w| is_static_word(w));
+                    shell_code(ok.then_some(text.as_str()), cwd, shared, depth, out)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    for (k, value) in code {
+        let text = value.unwrap_or_else(|| cooked[k].clone());
+        shell_code(
+            is_static_word(&raw[k]).then_some(text.as_str()),
+            cwd,
+            shared,
+            depth,
+            out,
+        )?;
+    }
+    Ok(())
+}
+
+/// A `git -c key=value` setting (`raw` as written).
+fn git_setting(
+    raw: &str,
+    kv: &str,
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let (key, value) = kv.split_once('=').unwrap_or((kv, "true"));
+    let key = key.to_ascii_lowercase();
+    let parts: Vec<&str> = key.split('.').collect();
+    let (section, name) = (parts[0], *parts.last().unwrap_or(&""));
+    let static_value = is_static_word(raw).then_some(value);
+    // Settings naming files or directories of more settings or hooks.
+    // `protocol.ext.allow` lets `ext::` URLs run commands.
+    let indirect = matches!(section, "include" | "includeif")
+        || key == "core.hookspath"
+        || key == "protocol.ext.allow"
+        || (key == "protocol.allow" && value == "always");
+    if indirect {
+        mark_dynamic(out, "dynamic-execution");
+        return Ok(());
+    }
+    let runs = match section {
+        "alias" => {
+            // `!cmd` runs a shell command, anything else a git command.
+            return match static_value {
+                Some(v) if v.starts_with('!') => shell_code(Some(&v[1..]), cwd, shared, depth, out),
+                Some(v) => shell_code(Some(&format!("git {v}")), cwd, shared, depth, out),
+                None => shell_code(None, cwd, shared, depth, out),
+            };
+        }
+        "core" => matches!(
+            name,
+            "pager"
+                | "editor"
+                | "sshcommand"
+                | "askpass"
+                | "fsmonitor"
+                | "gitproxy"
+                | "alternaterefscommand"
+        ),
+        "pager" | "sequence" => true,
+        "diff" => name == "external" || name == "command" || name == "textconv",
+        "merge" => name == "driver",
+        "filter" => matches!(name, "clean" | "smudge" | "process"),
+        "credential" => name == "helper",
+        "gpg" => name == "program",
+        "uploadpack" => name == "packobjectshook",
+        "remote" => name == "uploadpack" || name == "receivepack",
+        "difftool" | "mergetool" | "man" | "browser" => name == "cmd" || name == "path",
+        "web" => name == "browser",
+        "interactive" => name == "difffilter",
+        "sendemail" => name == "sendmailcmd" || (name == "smtpserver" && value.starts_with('/')),
+        _ => false,
+    };
+    if !runs {
+        return Ok(());
+    }
+    if key == "core.fsmonitor" && matches!(value, "true" | "false") {
+        return Ok(());
+    }
+    let value = static_value.map(|v| {
+        if section == "credential" && !v.is_empty() && !v.starts_with('!') && !v.starts_with('/') {
+            format!("git credential-{v}")
+        } else {
+            v.trim_start_matches('!').to_string()
+        }
+    });
+    shell_code(value.as_deref(), cwd, shared, depth, out)
+}
+
+/// `git --config-env key=VAR`: a setting whose value comes from the
+/// environment, unknown to the scan.
+fn git_env_setting(kv: &str, out: &mut Analysis) {
+    let key = kv.split('=').next().unwrap_or(kv).to_ascii_lowercase();
+    let harmless = [
+        "user.",
+        "color.",
+        "advice.",
+        "init.",
+        "author.",
+        "committer.",
+    ]
+    .iter()
+    .any(|p| key.starts_with(p));
+    if !harmless {
+        mark_dynamic(out, "dynamic-execution");
+    }
+}
+
+/// Commands `ssh`, `scp`, `sftp` and `rsync` run: a `ProxyCommand` or
+/// `-e`/`-S` program here, and the remote command there.
+fn remote_effects(
+    base: &str,
+    raw: &[String],
+    cooked: &[String],
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let n = cooked.len();
+    let value_of = |k: usize, rest: &str| -> Option<(usize, String)> {
+        if rest.is_empty() {
+            (k + 1 < n).then(|| (k + 1, cooked[k + 1].clone()))
+        } else {
+            Some((k, rest.to_string()))
+        }
+    };
+    let static_at = |k: usize| is_static_word(&raw[k]);
+    if base == "rsync" {
+        let mut k = 1;
+        while k < n {
+            let w = cooked[k].as_str();
+            if w == "--" {
+                break;
+            }
+            if let Some(v) = w.strip_prefix("--rsh=") {
+                shell_code(static_at(k).then_some(v), cwd, shared, depth, out)?;
+            } else if w == "--rsh" && k + 1 < n {
+                shell_code(
+                    static_at(k + 1).then_some(&cooked[k + 1]),
+                    cwd,
+                    shared,
+                    depth,
+                    out,
+                )?;
+                k += 1;
+            } else if let Some(v) = w.strip_prefix("--rsync-path=") {
+                remote_code(static_at(k).then_some(v), cwd, shared, depth, out)?;
+            } else if w.len() > 1 && w.starts_with('-') && !w.starts_with("--") {
+                let letters = &w[1..];
+                for (j, ch) in letters.char_indices() {
+                    if "BfMT@".contains(ch) {
+                        break;
+                    }
+                    if ch == 'e' {
+                        if let Some((at, v)) = value_of(k, &letters[j + 1..]) {
+                            shell_code(static_at(at).then_some(&v), cwd, shared, depth, out)?;
+                            k = at;
+                        }
+                        break;
+                    }
+                }
+            }
+            k += 1;
+        }
+        return Ok(());
+    }
+    let with_arg = match base {
+        "ssh" => "BbcDEeFIiJLlmOoPpQRSWw",
+        "scp" => "DFJPSXcilo",
+        _ => "BbcDFiJlloPRSsX", // sftp
+    };
+    let mut host = false;
+    let mut no_command = base != "ssh";
+    let mut k = 1;
+    while k < n {
+        let w = cooked[k].as_str();
+        if w == "--" {
+            k += if host { 1 } else { 2 };
+            host = true;
+            break;
+        }
+        if w.len() > 1 && w.starts_with('-') {
+            let letters = &w[1..];
+            let mut next = k + 1;
+            for (j, ch) in letters.char_indices() {
+                if "NsGVQW".contains(ch) && base == "ssh" {
+                    no_command = true;
+                }
+                if !with_arg.contains(ch) {
+                    continue;
+                }
+                let Some((at, v)) = value_of(k, &letters[j + 1..]) else {
+                    break;
+                };
+                next = at + 1;
+                match ch {
+                    'o' => {
+                        let (key, value) = v
+                            .split_once(['=', ' ', '\t'])
+                            .map_or((v.as_str(), ""), |(a, b)| {
+                                (a, b.trim_start_matches(['=', ' ', '\t']))
+                            });
+                        let key = key.to_ascii_lowercase();
+                        if value.eq_ignore_ascii_case("none") {
+                        } else if ["proxycommand", "localcommand", "knownhostscommand"]
+                            .contains(&key.as_str())
+                        {
+                            shell_code(static_at(at).then_some(value), cwd, shared, depth, out)?;
+                        } else if key == "remotecommand" {
+                            remote_code(static_at(at).then_some(value), cwd, shared, depth, out)?;
+                        }
+                    }
+                    // A program run here in place of `ssh` (scp, sftp),
+                    // sftp's local server.
+                    'S' | 'D' if base != "ssh" => {
+                        shell_code(static_at(at).then_some(&v), cwd, shared, depth, out)?;
+                    }
+                    // sftp batch commands, which may run local `!cmd`s.
+                    'b' if base == "sftp" && computed_source(&raw[at], &v) => {
+                        mark_dynamic(out, "dynamic-execution");
+                    }
+                    'O' if base == "ssh" => no_command = true,
+                    _ => {}
+                }
+                break;
+            }
+            k = next;
+            continue;
+        }
+        if !host {
+            host = true;
+            k += 1;
+            continue;
+        }
+        break;
+    }
+    if !no_command && k < n {
+        let text = cooked[k..].join(" ");
+        let ok = raw[k..].iter().all(|w| is_static_word(w));
+        remote_code(ok.then_some(text.as_str()), cwd, shared, depth, out)?;
+    } else if !no_command && host {
+        // With no command the remote shell runs what it reads.
+        mark_dynamic(out, "dynamic-execution");
+    }
+    Ok(())
+}
+
+/// Shell code another machine runs (`ssh host cmd`): its commands are
+/// checked like local ones, so a rule denying `rm *` denies `ssh host rm
+/// x`, but its directories and files are the remote machine's.
+fn remote_code(
+    code: Option<&str>,
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let Some(code) = code else {
+        mark_dynamic(out, "dynamic-execution");
+        return Ok(());
+    };
+    let mut inner = Analysis::default();
+    run_string(code, cwd, shared, depth, &mut inner)?;
+    out.delegated.extend(inner.delegated);
+    out.deny_only.extend(inner.deny_only);
+    if let Some(d) = inner.dynamic {
+        mark_dynamic(out, &d);
+    }
+    Ok(())
 }
 
 /// An `env` operand that sets a variable: `NAME=value` with a name (`=rm`
@@ -4142,6 +6613,279 @@ mod tests {
         let src = format!("echo {}$(rm -rf x){}", "$((".repeat(20), "))".repeat(20));
         let a = timed(&src, limit).unwrap();
         assert!(has(&a.commands, "rm -rf x"), "{a:?}");
+    }
+
+    #[test]
+    fn sec_more_wrappers_check_the_wrapped_command() {
+        for (src, wrapped) in [
+            ("taskset 0x1 rm x", "rm x"),
+            ("taskset -c 1,2 rm x", "rm x"),
+            ("flock /tmp/l rm x", "rm x"),
+            ("flock -n -w 5 l -c 'rm x; touch y'", "touch y"),
+            ("lockf -t 3 l rm x", "rm x"),
+            ("chroot / rm x", "rm x"),
+            ("script -q /dev/null rm x", "rm x"),
+            ("script -qc 'rm x' log", "rm x"),
+            ("su -c 'rm x' root", "rm x"),
+            ("su root -lc 'rm x'", "rm x"),
+            ("runuser -u nobody -- rm x", "rm x"),
+            ("sudo --user root -E rm x", "rm x"),
+            ("sudo -i rm x", "rm x"),
+            ("doas -u root rm x", "rm x"),
+            ("gtimeout --foreground -s KILL 5 rm x", "rm x"),
+            ("stdbuf --output L rm x", "rm x"),
+            ("ionice -c 3 rm x", "rm x"),
+            ("chrt -f 10 rm x", "rm x"),
+            ("setsid -f rm x", "rm x"),
+            ("unbuffer rm x", "rm x"),
+            ("caffeinate -t 10 rm x", "rm x"),
+            ("arch -arch x86_64 rm x", "rm x"),
+            ("busybox rm x", "rm x"),
+            ("watch -n 1 'rm x | cat'", "rm x"),
+            ("watch -d rm x", "rm x"),
+            ("watch -x rm x", "rm x"),
+            ("parallel -j 2 rm ::: a b", "rm"),
+            ("nix-shell --run 'rm x'", "rm x"),
+            ("nix develop -c rm x", "rm x"),
+            ("entr -s 'rm x'", "rm x"),
+            ("ssh host rm x", "rm x"),
+            ("ssh -p 22 host -o ProxyCommand='nc %h %p' ls", "nc %h %p"),
+            ("scp -S rmprog a host:b", "rmprog"),
+            ("rsync -avze 'ssh -p 2' a host:b", "ssh -p 2"),
+        ] {
+            let a = full(src);
+            assert!(has(&a.delegated, wrapped), "{src}: {:?}", a.delegated);
+            assert_eq!(a.dynamic, None, "{src}");
+        }
+        // No command runs.
+        for src in [
+            "taskset -p 1 123",
+            "ionice -p 123",
+            "chrt -p 123",
+            "sudo -l rm x",
+        ] {
+            let a = full(src);
+            assert!(a.delegated.is_empty(), "{src}: {:?}", a.delegated);
+            assert_eq!(a.dynamic, None, "{src}");
+        }
+        // A shell reading its input, or options the scan cannot read.
+        for src in [
+            "chroot /",
+            "su - root",
+            "sudo -s",
+            "doas -s",
+            "parallel ::: 'rm a'",
+            "parallel '{}' ::: rm",
+            "parallel --frob rm ::: a",
+            "at now",
+            "tmux new-session -d 'rm x'",
+            "ssh -T git@github.com",
+            "flock l -c \"$x\"",
+        ] {
+            assert!(full(src).dynamic.is_some(), "{src}");
+        }
+        // Lock files and typescripts are writes; `ssh`'s remote `cd` is not
+        // a local directory.
+        let paths = |src: &str| -> Vec<Option<String>> {
+            full(src).writes.into_iter().map(|w| w.path).collect()
+        };
+        assert_eq!(paths("flock l rm x"), [Some("l".to_string())]);
+        assert_eq!(paths("script -qc 'rm x'"), [Some("typescript".to_string())]);
+        assert!(full("ssh host 'cd /etc && rm x'").directories.is_empty());
+    }
+
+    #[test]
+    fn sec_inline_code_is_checked_as_a_marker() {
+        for (src, marker) in [
+            ("python3 -c 'print(1)'", "code:python3 print(1)"),
+            ("python3 -Ic 'print(1)'", "code:python3 print(1)"),
+            ("python3 <<'EOF'\nprint(1)\nEOF", "code:python3 -"),
+            ("perl -pi -e 's/a/b/' f", "code:perl s/a/b/"),
+            ("perl -lne 'print' f", "code:perl print"),
+            ("ruby -rjson -e 'p 1'", "code:ruby p 1"),
+            ("node -pe 1", "code:node 1"),
+            ("node --eval=x", "code:node x"),
+            (
+                "osascript -e 'do shell script \"rm x\"'",
+                "code:osascript do shell script \"rm x\"",
+            ),
+            ("deno eval x", "code:deno x"),
+            ("php -r x", "code:php x"),
+            ("awk '{system($0)}'", "code:awk {system($0)}"),
+            ("awk \"{print $x}\" f", "code:awk {print $x}"),
+            ("sed -e 's/x/y/e' f", "code:sed -e s/x/y/e f"),
+            ("sed \"s/$a/b/\" f", "code:sed s/$a/b/ f"),
+        ] {
+            let a = full(src);
+            assert!(has(&a.delegated, marker), "{src}: {:?}", a.delegated);
+            let save = a.delegated.iter().find(|(r, _)| r == marker).unwrap();
+            assert!(
+                save.1.starts_with("code:") && save.1.ends_with(" *"),
+                "{save:?}"
+            );
+        }
+        // Script files, modules and plain text programs are no marker.
+        for src in [
+            "python3 script.py",
+            "python3 -m pytest",
+            "python3 --version",
+            "perl script.pl",
+            "node app.js",
+            "php -S localhost:8000",
+            "awk '{print $1}' f",
+            "awk '$3 > 100 {print $1}' f",
+            "awk '/a|b/ {print}' f",
+            "awk -f prog.awk f",
+            "sed 's/a/b/g' f",
+            "sed -i 's/a/b/' file.txt",
+            "sed -i '' 's/a/b/' file.txt",
+            "sed ':a;N;$!ba;s/\\n/ /g' f",
+            "sed '/start/,/end/{/x/d}' f",
+            "sed -n '1,5p;$a text' f",
+            "sed --sandbox 's/x/y/e' f",
+        ] {
+            let a = full(src);
+            assert!(
+                !a.delegated.iter().any(|(r, _)| r.starts_with("code:")),
+                "{src}: {:?}",
+                a.delegated
+            );
+            assert_eq!(a.dynamic, None, "{src}");
+        }
+    }
+
+    #[test]
+    fn sec_programs_shell_commands_and_writes_are_checked() {
+        for (src, cmd) in [
+            ("awk 'BEGIN{system(\"rm x\")}'", "rm x"),
+            ("awk '{print | \"sort\"}' f", "sort"),
+            (
+                "awk 'BEGIN { while ((\"ls\" | getline l) > 0) print l }'",
+                "ls",
+            ),
+            ("sed '1e rm x' f", "rm x"),
+            ("git -c core.pager='rm x' log", "rm x"),
+            ("git -c alias.x='!rm y' x", "rm y"),
+            ("git -c alias.x=rm x", "git rm"),
+            ("git rebase -x 'rm z' HEAD~2", "rm z"),
+            ("git rebase --exec='make test' main", "make test"),
+            ("git bisect run rm q", "rm q"),
+            ("git submodule foreach 'rm r'", "rm r"),
+            ("GIT_SSH_COMMAND='rm s' git fetch", "rm s"),
+            ("export GIT_SSH_COMMAND='rm s'; git fetch", "rm s"),
+            ("sudo GIT_SSH_COMMAND='rm t' git fetch", "rm t"),
+            ("env PAGER='rm u' man ls", "rm u"),
+            ("LESSOPEN='|rm v %s' less f", "rm v %s"),
+        ] {
+            let a = full(src);
+            assert!(has(&a.delegated, cmd), "{src}: {:?}", a.delegated);
+        }
+        // Pagers that only page ask nothing new.
+        for src in [
+            "GIT_PAGER=cat git log",
+            "git -c core.pager=cat log",
+            "GIT_EDITOR=true git rebase -i HEAD~1",
+            "git -c user.name=me commit -m hi",
+        ] {
+            let a = full(src);
+            assert!(
+                a.delegated.iter().all(|(r, _)| r.starts_with("git")),
+                "{src}: {:?}",
+                a.delegated
+            );
+            assert_eq!(a.dynamic, None, "{src}");
+        }
+        for src in [
+            "git -c core.pager=\"$p\" log",
+            "git -c include.path=x log",
+            "git -c protocol.ext.allow=always clone ext::x",
+            "GIT_CONFIG_KEY_0=core.pager git log",
+            "GIT_SSH_COMMAND=\"$c\" git fetch",
+        ] {
+            assert!(full(src).dynamic.is_some(), "{src}");
+        }
+        let paths = |src: &str| -> Vec<Option<String>> {
+            full(src).writes.into_iter().map(|w| w.path).collect()
+        };
+        assert_eq!(paths("awk '{print > \"o\"}' f"), [Some("o".to_string())]);
+        assert_eq!(paths("awk -F: '{print $1 > $2}' f"), [None]);
+        assert_eq!(paths("sed 'w out' f"), [Some("out".to_string())]);
+        assert_eq!(paths("sed 's/a/b/w out2' f"), [Some("out2".to_string())]);
+        assert_eq!(paths("find . -fprint o"), [Some("o".to_string())]);
+    }
+
+    #[test]
+    fn sec_zsh_short_loops_are_read() {
+        for (src, cmds) in [
+            ("for x (a b) rm $x", &["rm $x"][..]),
+            ("for x in a b; rm $x", &["rm $x"]),
+            ("for x (a b); rm $x", &["rm $x"]),
+            ("for x (a\nb)\nrm $x", &["rm $x"]),
+            ("for k v (a 1 b 2) echo $k$v", &["echo $k$v"]),
+            ("for x (a b) { rm $x; }", &["rm $x"]),
+            ("for x (a b) do rm $x; done", &["rm $x"]),
+            ("for ((i=0;i<2;i++)) rm $i", &["rm $i"]),
+            (
+                "for x (a) rm $x && touch y; echo z",
+                &["rm $x", "touch y", "echo z"],
+            ),
+            ("for x (a) for y (b) rm $x$y", &["rm $x$y"]),
+        ] {
+            assert_eq!(resources(src), cmds, "{src}");
+        }
+        for src in ["for x in a b; done", "for x (a b) ;; rm x", "for x (a b"] {
+            assert!(scan(src).is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn sec_dash_arithmetic_names_are_dynamic_only_when_they_can_name_a_command() {
+        for src in [
+            "x=rm; (( $x ))",
+            "read x; (( $x ))",
+            "for x in rm; do (( $x )); done",
+            ": ${x:=rm}; (( $x ))",
+            "(( $(echo rm) ))",
+            "(( $1 ))",
+            "echo rm; (( $_ ))",
+            "(( ${x:-rm} ))",
+        ] {
+            assert!(full(src).dynamic.is_some(), "{src}");
+        }
+        for src in [
+            "(( $x ))",
+            "i=0; while (( $i < 3 )); do i=$((i + 1)); done",
+            "for i in 1 2; do (( $i > 1 )); done",
+            "(( ${#x} > 2 ))",
+            "(( $? ))",
+        ] {
+            assert_eq!(full(src).dynamic, None, "{src}");
+        }
+    }
+
+    #[test]
+    fn sec_programs_and_wrappers_in_bounded_time() {
+        // Programs the scan reads (awk, sed, shell strings in them) count
+        // toward the same budget, and nest no deeper than other strings.
+        let limit = std::time::Duration::from_secs(2);
+        let awk = format!("awk '{}'", "{ print $1 > \"o\" } ".repeat(3000));
+        timed(&awk, limit).unwrap();
+        let sed = format!("sed '{}' f", "s/a/b/g;".repeat(7000));
+        timed(&sed, limit).unwrap();
+        let calls = format!("awk 'BEGIN {{ {} }}'", "system(\"rm x\"); ".repeat(3000));
+        timed(&calls, limit).unwrap();
+        let wrappers = format!("{}rm x", "nice taskset 1 flock l stdbuf -oL ".repeat(1500));
+        timed(&wrappers, limit).unwrap();
+        let loops = format!("{}rm x", "for x (a) ".repeat(100));
+        timed(&loops, limit).unwrap();
+        let mut nested = String::from("rm x");
+        for _ in 0..12 {
+            nested = format!(
+                "awk 'BEGIN {{ system(\"{}\") }}'",
+                nested.replace('\'', "'\\''").replace('"', "\\\"")
+            );
+        }
+        timed(&nested, limit).ok();
     }
 
     #[test]

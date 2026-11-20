@@ -2222,19 +2222,19 @@ mod tests {
             (
                 "/bin/zsh",
                 r#"for value (a b) printf %s "$value""#,
-                "",
+                "ab",
                 &["printf *"],
             ),
             (
                 "/bin/zsh",
                 r#"for value (a b) { printf %s "$value"; }"#,
-                "",
+                "ab",
                 &["printf *"],
             ),
             (
                 "/bin/zsh",
                 r#"for value ($(printf a)) do printf %s "$value"; done"#,
-                "",
+                "a",
                 &["printf *"],
             ),
             (
@@ -2259,13 +2259,7 @@ mod tests {
             ctx.shell = shell.to_string();
             let result = sh(&ctx, command).await;
             assert!(asker.take().is_empty(), "{command}");
-            if output.is_empty() {
-                // Zsh-only short loops: refused unrun (see the header).
-                let err = result.unwrap_err();
-                assert!(err.contains("cannot analyze"), "{command}: {err}");
-            } else {
-                assert_eq!(result.unwrap().content, *output, "{command}");
-            }
+            assert_eq!(result.unwrap().content, *output, "{command}");
         }
     }
 

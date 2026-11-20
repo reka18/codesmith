@@ -13,7 +13,8 @@
 //! Every logged command must be accounted for by the scan: some command or
 //! delegated command the scan reports matches a rule `name *` for the logged
 //! name, or the scan refused the input (unanalyzable) or flagged it as
-//! dynamic (refused whenever a rule could deny). Every file the shell itself
+//! dynamic (refused whenever a rule could deny), or reported code in
+//! another language (`code:perl ...`, see `shell_scan`). Every file the shell itself
 //! creates in the work directory must likewise be a write the scan reports
 //! (or the scan flags an unknown write target, or the input as dynamic).
 //!
@@ -161,6 +162,28 @@ const PASS_THROUGH: &[(&str, &[&str])] = &[
     ("find", &["/usr/bin/find"]),
     ("nice", &["/usr/bin/nice"]),
     ("timeout", &["/usr/bin/timeout"]),
+    // Wrappers and programs that run commands or write files, so their
+    // grammar is checked against the real thing where it is installed.
+    ("stdbuf", &["/usr/bin/stdbuf"]),
+    ("caffeinate", &["/usr/bin/caffeinate"]),
+    ("arch", &["/usr/bin/arch"]),
+    ("lockf", &["/usr/bin/lockf"]),
+    ("script", &["/usr/bin/script"]),
+    ("flock", &["/usr/bin/flock"]),
+    ("taskset", &["/usr/bin/taskset"]),
+    ("setsid", &["/usr/bin/setsid"]),
+    ("awk", &["/usr/bin/awk"]),
+    ("sed", &["/usr/bin/sed"]),
+    ("perl", &["/usr/bin/perl"]),
+    ("ssh", &["/usr/bin/ssh"]),
+    (
+        "git",
+        &[
+            "/Library/Developer/CommandLineTools/usr/bin/git",
+            "/opt/homebrew/bin/git",
+            "/usr/bin/git",
+        ],
+    ),
 ];
 
 /// The shells inputs run under, as `(label, path)` candidates.
@@ -266,7 +289,7 @@ impl Slot {
             let mut p = format!(
                 "(version 1)\n(allow default)\n(deny network*)\n(deny file-write* (subpath \"/\"))\n\
                  (allow file-write* (subpath \"{r}\") (literal \"/dev/null\") (literal \"/dev/tty\") \
-                 (regex #\"^/dev/fd/\") (regex #\"^/dev/ttys\"))\n(deny process-exec*)\n\
+                 (regex #\"^/dev/fd/\") (regex #\"^/dev/ttys\") (literal \"/dev/ptmx\"))\n(deny process-exec*)\n\
                  (allow process-exec* (subpath \"{r}/bin\")"
             );
             let shells = SHELLS.iter().map(|(_, s)| s.to_string());
@@ -468,6 +491,12 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
     let v = verdict(input, &work);
     let (resources, writes, dirs, redirect_only) = match &v {
         Verdict::Refused | Verdict::Dynamic => return Vec::new(),
+        // Inline code (`perl -e`, `awk '{system($0)}'`) is checked as the
+        // resource `code:NAME ...`, which only a rule naming it allows: what
+        // the code runs or writes is its own business, like a script's.
+        Verdict::Checked { resources, .. } if resources.iter().any(|r| r.starts_with("code:")) => {
+            return Vec::new()
+        }
         Verdict::Checked {
             resources,
             writes,
@@ -498,6 +527,17 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
             if resources
                 .iter()
                 .any(|r| wildcard::matches(r, &pattern, false))
+            {
+                continue;
+            }
+            // Git reaching a remote runs `ssh` itself, as the program it is.
+            if name == "ssh"
+                && argv.last().is_some_and(|a| {
+                    a.starts_with("git-upload-pack") || a.starts_with("git-receive-pack")
+                })
+                && resources
+                    .iter()
+                    .any(|r| wildcard::matches(r, "git *", false))
             {
                 continue;
             }

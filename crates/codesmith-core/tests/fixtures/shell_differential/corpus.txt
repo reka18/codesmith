@@ -1630,3 +1630,159 @@ x='a[$(rm F)]';
  a=(1); echo ${=a[(e)x]}
 %%
 echo "${x-"'$\(rm  F)'"}"
+%% ---- wrappers that run their argument (real where installed)
+taskset 1 rm F
+%%
+taskset -c 0 rm F
+%%
+flock lk rm F
+%%
+flock -n lk -c 'rm F; touch G'
+%%
+lockf lk rm F
+%%
+lockf -t 0 lk touch G
+%%
+chroot / rm F
+%%
+script -q /dev/null rm F
+%%
+script -q out touch G
+%%
+su -c 'rm F' nobody
+%%
+sudo -u root -E rm F
+%%
+sudo --user root rm F
+%%
+doas -u root rm F
+%%
+gtimeout 1 rm F
+%%
+timeout --foreground 5 rm F
+%%
+timeout -s KILL 5 touch G
+%%
+stdbuf -oL rm F
+%%
+stdbuf -o L touch G
+%%
+ionice -c 3 rm F
+%%
+chrt -f 10 rm F
+%%
+setsid -f rm F
+%%
+unbuffer rm F
+%%
+watch -n 1 'rm F'
+%%
+watch -d rm F
+%%
+parallel rm ::: F
+%%
+caffeinate -t 1 rm F
+%%
+caffeinate -i touch G
+%%
+arch -arm64 rm F
+%%
+arch -arch arm64 touch G
+%%
+busybox rm F
+%%
+nice -n 1 stdbuf -oL timeout 5 rm F
+%%
+env X=1 caffeinate -t 1 arch -arm64 touch G
+%% ---- ssh runs its ProxyCommand here
+ssh -o ProxyCommand='rm F' -o BatchMode=yes x
+%%
+ssh -oProxyCommand='touch G' -oBatchMode=yes x true
+%% ---- code in another language; shell commands it spells are checked
+perl -e 'system("rm F")'
+%%
+perl -le 'print 1; system "touch G"'
+%%
+perl -ne 'print' f1
+%%
+awk 'BEGIN { system("rm F") }'
+%%
+awk 'BEGIN { "touch G" | getline x }'
+%%
+awk 'BEGIN { print "x" | "rm F" }'
+%%
+awk 'BEGIN { print "x" > "out" }'
+%%
+awk 'BEGIN { printf "x" >> "out2" }'
+%%
+awk '$1 > 0 { print }' f1
+%%
+awk '/a|b/ { print > "out" }' f1
+%%
+echo 'rm F' | awk '{ system($0) }'
+%%
+awk 'BEGIN { c = "rm F"; system(c) }'
+%%
+sed -n 'w out' f1
+%%
+sed 's/x/y/w out2' f1
+%%
+sed -n '/x/{w out
+}' f1
+%%
+sed '1e rm F' f1
+%%
+sed -i '' 's/x/y/' f1
+%%
+find . -name f1 -fprint out
+%%
+git -c alias.x='!rm F' x
+%%
+git -c alias.x='!touch G' -c alias.y=x y
+%% ---- programs that run a command line from a variable or setting
+GIT_SSH_COMMAND='rm F' git ls-remote x:y
+%%
+git -c core.sshCommand='touch G' ls-remote x:y
+%%
+export GIT_SSH_COMMAND='rm F'; git ls-remote x:y
+%%
+GIT_SSH_COMMAND='rm F'; export GIT_SSH_COMMAND; git ls-remote x:y
+%%
+env GIT_SSH_COMMAND='touch G' git ls-remote x:y
+%%
+GIT_PAGER='rm F' git -p version
+%% ---- Zsh's short loops
+for x (F) rm $x
+%%
+for x in F; rm $x
+%%
+for k v (F G) rm $k $v
+%%
+for x (F) { rm $x; }
+%%
+for x (F); rm $x
+%%
+for x (F)
+rm $x
+%%
+for ((i=0;i<1;i++)) rm F
+%%
+for x (F) rm $x && touch G; echo done
+%%
+for x (F) for y (G) rm $x $y
+%% ---- Dash runs `(( $x ))` as the command `$x`
+x=rm; (( $x F ))
+%%
+x=touch; (( $x G ))
+%%
+for x in rm; do (( $x F )); done
+%%
+read x <<< rm; (( $x F ))
+%%
+: ${x:=rm}; (( $x F ))
+%%
+set -- rm; (( $1 F ))
+%%
+echo rm; (( $_ F ))
+%%
+i=0; (( $i < 1 )) && touch G

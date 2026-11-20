@@ -123,11 +123,35 @@ Beyond the commands as written, CodeSmith also checks:
   variable assignments removed as well, so `r''m x` and `FOO=1 rm x` are
   checked as `rm x`.
 - **Wrappers.** The command that a wrapper runs is checked too:
-  `env touch x`, `sudo rm x`, `xargs rm`, `nice`, `timeout`, `find -exec`,
-  and the commands inside a static `sh -c '...'`, `eval '...'` or `trap`
-  string. A rule that denies `rm *` also denies those forms.
+  `env touch x`, `sudo rm x`, `xargs rm`, `nice`, `timeout`/`gtimeout`,
+  `stdbuf`, `ionice`, `chrt`, `taskset`, `setsid`, `flock`, `chroot`,
+  `script`, `su -c`, `doas`, `watch`, `parallel`, `caffeinate`, `arch`,
+  `find -exec`, and the commands inside a static `sh -c '...'`, `eval '...'`
+  or `trap` string. A rule that denies `rm *` also denies those forms. A
+  wrapper that starts a shell reading its input (`sudo -s`, `su user`,
+  `chroot dir`, `at`) can't be checked command by command.
+- **Commands other programs run.** Shell commands given to another program
+  are checked the same way: `git -c core.pager='...'`, `git -c
+  alias.x='!...'`, `git rebase -x '...'`, `GIT_SSH_COMMAND='...' git fetch`
+  (and `PAGER`, `EDITOR`, `GIT_EDITOR` and similar variables), `ssh -o
+  ProxyCommand='...'`, `rsync -e '...'`, awk's `system("...")` and pipes,
+  and sed's `e` command. `GIT_PAGER=cat` and `GIT_EDITOR=true` ask nothing.
+  The command after `ssh host` is checked too, though it runs on the other
+  machine.
+- **Inline code.** Code in another language on the command line (`python -c
+  '...'`, `perl -e`, `ruby -e`, `node -e`, `osascript -e`, a script piped
+  or heredoc'd into `python3`, an awk program that runs `system($0)`, sed's
+  `s///e`, or an awk/sed program built from shell variables) can't be read
+  by the scanner. It's checked as an extra resource, `code:<program> <code>`,
+  that a rule like `python *` doesn't match. With the defaults this allows
+  it. With an allow-list, you're asked once, and "always" saves
+  `code:python3 *`. To refuse inline code, deny `code:*` (or
+  `code:python3 *`). Running a script file (`python3 x.py`, `perl x.pl`)
+  or a module (`python3 -m pytest`) adds no `code:` resource.
 - **Redirects.** A file that a redirect writes to (`>`, `>>`, `&>`, `>|`,
-  `<>`) is checked like a `write`: `external_directory` if it is outside the
+  `<>`), or that a program writes by name (`awk '{print > "f"}'`, `sed 'w
+  f'`, `find -fprint f`, `flock`'s lock file, `script`'s typescript), is
+  checked like a `write`: `external_directory` if it is outside the
   project, then `edit` on the path. Under the `plan` agent,
   `echo x > notes.md` is refused because `edit` is denied.
 - **Directories.** `cd` and `pushd` targets, and the tool's `workdir`,
