@@ -2248,6 +2248,18 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                 (Role::User, Part::Text(t)) if t.starts_with("<conversation-checkpoint>") => {
                     out.push(Entry::Notice("(earlier conversation summarized)".into()));
                 }
+                // A command the user ran with `!`.
+                (Role::User, Part::Text(t)) if codesmith_core::user_shell::parse(t).is_some() => {
+                    let shown = codesmith_core::user_shell::parse(t).unwrap();
+                    out.push(Entry::Tool(Tool {
+                        id: format!("user-shell-{}", out.len()),
+                        name: "shell".into(),
+                        detail: shown.command.lines().next().unwrap_or("").to_string(),
+                        result: Some((first_line(&shown.text), shown.failed)),
+                        output: shown.text,
+                        ..Default::default()
+                    }))
+                }
                 (Role::User, Part::Text(t))
                     if t.starts_with("<shell ")
                         || t.starts_with("<system-reminder>")

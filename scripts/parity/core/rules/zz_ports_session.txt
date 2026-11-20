@@ -8,3 +8,13 @@
 807 :: ported :: tests/oc_session_fork.rs::oc_session_does_not_copy_a_running_assistant_into_a_fork
 898 :: ported :: tests/oc_session_fork.rs::oc_session_rejects_forking_an_empty_session
 910 :: ported :: tests/oc_session_fork.rs::oc_session_forks_before_the_selected_boundary_message :: a message is its record sequence number
+855 :: ported :: tests/oc_session_shell.rs::oc_session_copies_only_settled_shell_messages_into_forks :: a running command is not in the log yet
+1178 :: ported :: tests/oc_session_shell.rs::oc_session_runs_a_shell_command_in_the_session_environment :: adapted: the notification, not a projected shell message
+1203 :: ported :: tests/oc_session_shell.rs::oc_session_still_records_a_failing_command
+@session-runner-message.test.ts
+23 :: ported :: tests/oc_session_shell.rs::oc_session_user_shells_reach_the_model_only_through_their_notification
+@session-shell.test.ts
+240 :: ported :: tests/oc_session_shell.rs::oc_session_shell_records_output_and_one_completion_without_waking_the_model
+313 :: ported :: tests/oc_session_shell.rs::oc_session_shell_records_a_cancelled_or_timed_out_command
+379 :: ported :: tests/oc_session_shell.rs::oc_session_shell_records_a_spawn_failure_before_failing
+399 :: ported :: tests/oc_session_shell.rs::oc_session_shell_outlives_an_interrupted_caller

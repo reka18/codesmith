@@ -1568,3 +1568,40 @@ async fn sessions_fork_over_http() {
     let (code, _) = s.post("/sessions/ses_missing/fork", json!({})).await;
     assert_eq!(code, 404);
 }
+
+/// `POST /sessions/{id}/shell` runs a command as the user: answered when it
+/// ends, recorded for the model's next step, no model call.
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_run_user_shell_commands_over_http() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Served").always(
+        "answer",
+        M::tools().and(M::prompt("next")),
+        Reply::text("Seen."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let (code, r) = s
+        .post(
+            &format!("/sessions/{sid}/shell"),
+            json!({"command": "echo hi; exit 3"}),
+        )
+        .await;
+    assert_eq!(code, 200, "{r}");
+    assert_eq!(
+        (r["state"].as_str(), r["exit"].as_i64()),
+        (Some("completed"), Some(3))
+    );
+    assert!(r["output"].as_str().unwrap().contains("hi"), "{r}");
+    assert!(m.steps().is_empty(), "no model call");
+    let (code, _) = s.post(&format!("/sessions/{sid}/shell"), json!({})).await;
+    assert_eq!(code, 400);
+
+    let mut ev = s.turn(&sid, "next").await;
+    ev.until("done").await;
+    let step = m.by("answer").pop().unwrap();
+    assert!(step.to_string().contains("Exit code: 3"), "{step}");
+}

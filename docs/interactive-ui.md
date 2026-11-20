@@ -314,6 +314,15 @@ and `opencode` is used.
 Commands that change the session wait until the current turn is finished.
 Press **Esc** first to interrupt it.
 
+## Shell commands
+
+A prompt that starts with `!` runs the rest as a shell command, as you, as
+OpenCode's shell mode does: no permission prompt and no model call. It runs
+in the session's folder (and [environment](local-server.md#session-environment)),
+is drawn as a shell row (Ctrl+O shows its output), and its output and exit
+code join the conversation, so the model sees them with your next message.
+Esc leaves it running; it is recorded when it ends.
+
 ## Pickers
 
 `/model`, `/agent`, `/sessions` and `/themes` without arguments open a

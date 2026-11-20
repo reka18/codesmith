@@ -820,6 +820,7 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/jobs", get(jobs))
         .route("/sessions/{id}/jobs/{jid}/cancel", post(cancel_job))
         .route("/sessions/{id}/fork", post(fork))
+        .route("/sessions/{id}/shell", post(shell))
         .route("/sessions/{id}/undo", post(undo))
         .route("/sessions/{id}/redo", post(redo))
         .route("/shell-daemon/handoff", post(daemon_handoff))
@@ -1485,6 +1486,52 @@ async fn fork(
     Ok(Json(
         json!({"id": info.id, "title": info.title, "agent": info.agent, "model": info.model, "usage": info.usage, "directory": info.directory, "fork": origin}),
     ))
+}
+
+/// Run a shell command as the user (OpenCode's `session.shell`): no
+/// permission check and no model call; its output joins the session for the
+/// model's next step. Answers once it ends. The session is busy meanwhile,
+/// and an abort leaves the command running, to be recorded when it ends.
+async fn shell(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let command = b["command"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|c| !c.trim().is_empty())
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "\"command\" is required".into()))?;
+    let live = st.live(&id).await?;
+    let mut g = live.lock().await;
+    let mut s = g.session.take().ok_or_else(busy)?;
+    if let Some(w) = g.waiter.take() {
+        w.abort();
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let live2 = live.clone();
+    g.task = Some(tokio::spawn(async move {
+        let r = s.shell(&command).await;
+        let mut g = live2.lock().await;
+        g.session = Some(s);
+        g.task = None;
+        wake(&live2, &mut g);
+        drop(g);
+        let _ = tx.send(r);
+    }));
+    drop(g);
+    let ran = rx
+        .await
+        .map_err(|_| ApiError(StatusCode::CONFLICT, "aborted".into()))?
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(json!({
+        "id": ran.id,
+        "command": ran.command,
+        "state": ran.state.as_str(),
+        "exit": ran.exit,
+        "output": ran.output,
+        "truncated": ran.truncated,
+    })))
 }
 
 async fn undo(st: State<St>, id: UrlPath<String>) -> Result<Json<Value>, ApiError> {

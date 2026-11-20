@@ -58,6 +58,13 @@ model is told the conversation is a fork: work started before it (background
 commands, subagents) belongs to the original, and files and branches are
 shared with it.
 
+## Shell commands
+
+`!command` at the prompt (or `POST /sessions/{id}/shell` on
+[`serve`](local-server.md)) runs a command as you, without the model. Its
+output and exit code are recorded in the session, so the model sees them
+with your next message. See [the UI](interactive-ui.md#shell-commands).
+
 ## Background commands
 
 A shell command started with `background: true` (or one that outlives its

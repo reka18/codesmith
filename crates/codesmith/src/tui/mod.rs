@@ -271,6 +271,45 @@ impl Runner {
         }));
     }
 
+    /// Run `!command` as the user (OpenCode's shell mode): shown as a shell
+    /// row, recorded for the model's next step, no model call.
+    fn user_shell(&mut self, command: String) {
+        if self.app.busy {
+            self.app
+                .notice("A turn is still running. Press Esc to interrupt it first.");
+            return;
+        }
+        let Some(mut s) = self.session.take() else {
+            self.app.error("no session");
+            return;
+        };
+        self.app.busy = true;
+        let tx = self.tx.clone();
+        let cwd = s.cwd.clone();
+        self.task = Some(tokio::spawn(async move {
+            use codesmith_core::session::Sink;
+            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let id = format!("user-shell-{}", session::new_id());
+            sink.tool_start(&id, "shell", &serde_json::json!({"command": command}));
+            let result = match s.shell(&command).await {
+                Ok(ran) => {
+                    let shown = codesmith_core::user_shell::parse(&ran.text)
+                        .map_or(ran.output.clone(), |v| v.text);
+                    sink.tool_end(&id, "shell", &shown, ran.failed());
+                    Ok(())
+                }
+                Err(e) => {
+                    sink.tool_end(&id, "shell", &format!("{e:#}"), true);
+                    Ok(())
+                }
+            };
+            let _ = tx.send(Ev::Done {
+                result,
+                session: Box::new(s),
+            });
+        }));
+    }
+
     /// Run a native command (`/review`, `/calibrate`) on a task; its report
     /// joins the session as an exchange.
     fn native(&mut self, name: &str, args: &str) {
@@ -931,6 +970,11 @@ impl Runner {
         match ev {
             Ev::Key(k) => {
                 let result = match self.app.on_key(k) {
+                    Some(Action::Submit(t)) if user_command(&t).is_some() => {
+                        let command = user_command(&t).unwrap_or_default().to_string();
+                        self.user_shell(command);
+                        Ok(())
+                    }
                     Some(Action::Submit(t)) => {
                         let limits = self.loaded.config.media.image;
                         let pending = std::mem::take(&mut self.app.attachments);
@@ -1258,7 +1302,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         r.app.notice(f);
     }
     if let Some(p) = opts.prompt.filter(|p| !p.trim().is_empty()) {
-        r.submit(p.clone(), p, vec![]);
+        match user_command(&p) {
+            Some(c) => r.user_shell(c.to_string()),
+            None => r.submit(p.clone(), p, vec![]),
+        }
     }
 
     let mini_opts = opts.mini.clone();
@@ -1398,6 +1445,12 @@ fn mini_screen(cwd: &std::path::Path) -> Result<mini::Mini<std::io::Stdout>> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let detail = mini::splash::directory_label(cwd, home.as_deref());
     Ok(mini::Mini::new(std::io::stdout(), cols, rows, row, detail))
+}
+
+/// The command of a `!command` prompt (OpenCode's shell mode).
+fn user_command(text: &str) -> Option<&str> {
+    let c = text.trim_start().strip_prefix('!')?.trim();
+    (!c.is_empty()).then_some(c)
 }
 
 /// The text of a prompt, if it has any.

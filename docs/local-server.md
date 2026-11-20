@@ -63,6 +63,7 @@ permission and question ids are random.
 | `POST /sessions/{id}/abort` | Stop the running turn, or the session's background commands when it is idle ([details](#aborting)). |
 | `POST /sessions/{id}/permissions/{rid} {reply, message?}` | Answer a permission request: `once`, `always` or `reject` (with optional feedback). |
 | `POST /sessions/{id}/questions/{qid} {answers}` or `{dismiss: true}` | Answer the agent's questions. `answers` is one list of strings per question. |
+| `POST /sessions/{id}/shell {command}` | Run a shell command as the user (the UI's `!command`): no permission check and no model call. Answers when it ends with `id`, `command`, `state` (`completed` or `cancelled`), `exit` and `output`; the output joins the session for the model's next step. The session is busy meanwhile; `jobs` lists the command, so it can be cancelled. |
 | `POST /sessions/{id}/fork {before?}` | Fork the session through its latest message, or up to message `before` (a number from `seqs` in `GET /sessions/{id}`, one per message). Returns the new session with `fork: {session, boundary}`; 400 for a session with no messages, 404 for an unknown message ([forking](sessions.md#forking)). |
 | `POST /sessions/{id}/undo`, `POST /sessions/{id}/redo` | Undo or redo the latest turn's file changes. |
 | `GET /sessions/{id}/jobs` | The session's running shell commands: `id`, `command`, `pid`, `background`, and `output` (the file their output streams to) for background ones. |

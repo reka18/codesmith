@@ -743,6 +743,52 @@ impl Session {
         Ok(())
     }
 
+    /// Run `command` as the user (OpenCode's `Session.shell`, `!command` at
+    /// the prompt): no permission check and no model call. When it ends, its
+    /// notification joins the history for the model's next step (see
+    /// [`crate::user_shell`]). The command outlives a dropped call, and
+    /// then records its notification itself; one that cannot start is
+    /// recorded as such before the error.
+    pub async fn shell(&mut self, command: &str) -> Result<crate::user_shell::Ran> {
+        use crate::user_shell as us;
+        let started = tool::shell::start_user(
+            &self.shell,
+            &self.id,
+            &self.cwd,
+            command,
+            &self.jobs,
+            self.limits,
+        )
+        .await;
+        let handle = match started {
+            Ok((_, h)) => h,
+            Err(e) => {
+                self.push(Message::user(us::failed(command, &e)))?;
+                return Err(anyhow!(e));
+            }
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let path = self.store.as_ref().and_then(|s| s.path());
+        let (id, stored) = (self.id.clone(), self.stored);
+        tokio::spawn(async move {
+            let Ok(run) = handle.await else {
+                return;
+            };
+            let text = us::notification(&run);
+            if let Err((_, text)) = tx.send((run, text)) {
+                if let Some(st) = path.filter(|_| stored).and_then(|p| Store::open(&p).ok()) {
+                    let message = Message::user(text);
+                    let _ = st.append(&id, &Record::Message { message });
+                }
+            }
+        });
+        let (run, text) = rx
+            .await
+            .map_err(|_| anyhow!("the command {command:?} could not be waited on"))?;
+        self.push(Message::user(text.clone()))?;
+        Ok(us::ran(&run, text))
+    }
+
     /// The store sequence number of each of [`Session::messages`] (`None`
     /// for a checkpoint): a message's id, as a fork boundary takes it.
     pub fn seqs(&self) -> &[Option<i64>] {

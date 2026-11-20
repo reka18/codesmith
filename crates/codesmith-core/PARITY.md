@@ -17,13 +17,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 79 | 7 | 50 | 190 | 67 | 0 |
+| Session runner | 393 | 85 | 7 | 44 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 6 | 0 | 16 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 17 | 0 | 68 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 21 | 0 | 64 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1339** | **15** | **482** | **2355** | **1397** | **0** |
+| **Total** | **5588** | **1349** | **15** | **472** | **2355** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (482 cases in 54 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (472 cases in 52 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -99,7 +99,6 @@ Missing features, by how many OpenCode test cases each would unlock (482 cases i
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [Hosted (Provider-executed) Tools in Sessions](#hosted-provider-executed-tools-in-sessions) | 11 | provider-executed tool results in the session; provider-executed results replayed inline; … |
 | [Plugin Session API](#plugin-session-api) | 9 | plugins creating child sessions; plugins admitting compaction; … |
-| [User Shell Commands](#user-shell-commands) | 9 | shell command run as a session message; user-run (`!`) background shells entering context via a completion notice; … |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
 | [Tool-use Policies](#tool-use-policies) | 6 | a deny-only policy layer over permissions (an allow never grants) |
 | [Mercurial VCS](#mercurial-vcs) | 6 | Mercurial project markers; Mercurial support |
@@ -132,7 +131,6 @@ Missing features, by how many OpenCode test cases each would unlock (482 cases i
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
 | [Per-session Permission Rules](#per-session-permission-rules) | 1 | stored per-session rules inherited by children and forks |
 | [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
-| [Session Forking](#session-forking) | 1 | fork a session at a message boundary |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 | [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
@@ -563,18 +561,6 @@ Missing features, by how many OpenCode test cases each would unlock (482 cases i
 - `plugin/session-remove.test.ts`: Effect plugins can remove sessions and their children
 - `plugin/session-remove.test.ts`: Promise plugins can remove sessions and their children
 
-### User Shell Commands
-
-9 cases.
-
-- `session-create.test.ts`: runs a shell command and projects the started/ended shell message
-- `session-create.test.ts`: still emits shell ended for a failing command
-- `session-runner-message.test.ts`: background user shells enter model context only through their completion notification
-- `session-shell.test.ts`: records output and admits one completion without waking the model after exit ${exit} (2 cases)
-- `session-shell.test.ts`: records a ${outcome.status} shell and admits its completion without waking the model (2 cases)
-- `session-shell.test.ts`: admits a spawn failure without waking the model before failing the caller
-- `session-shell.test.ts`: keeps the shell and completion alive when the waiting caller is interrupted
-
 ### Decision Models
 
 7 cases.
@@ -845,12 +831,6 @@ Missing features, by how many OpenCode test cases each would unlock (482 cases i
 1 cases.
 
 - `session-create.test.ts`: filters project sessions by subpath
-
-### Session Forking
-
-1 cases.
-
-- `session-create.test.ts`: copies only settled shell messages into forks
 
 ### Provider Media Capabilities
 
@@ -1738,7 +1718,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (276 of 393)</summary>
+<details><summary>Session runner (282 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1872,7 +1852,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`session-shell.test.ts`**
 
 - D routes shell completion to the moved Session while retaining output from its original Location — deliberate: session.rs: no session moves
+- P records output and admits one completion without waking the model after exit ${exit} ×2 — `tests/oc_session_shell.rs::oc_session_shell_records_output_and_one_completion_without_waking_the_model`
+- P records a ${outcome.status} shell and admits its completion without waking the model ×2 — `tests/oc_session_shell.rs::oc_session_shell_records_a_cancelled_or_timed_out_command`
 - D names the session, a truncated command and the exit on shell spans outside any turn — effect-internal: tracing spans
+- P admits a spawn failure without waking the model before failing the caller — `tests/oc_session_shell.rs::oc_session_shell_records_a_spawn_failure_before_failing`
+- P keeps the shell and completion alive when the waiting caller is interrupted — `tests/oc_session_shell.rs::oc_session_shell_outlives_an_interrupted_caller`
 
 **`session-step.test.ts`**
 
@@ -2048,7 +2032,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (186 of 308)</summary>
+<details><summary>Sessions and their store (190 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -2069,9 +2053,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D replays a fork with stable projected identities — storage-model: a fork copies records with their sequence numbers; there is no event to replay
 - P inherits instruction entries when forking — `tests/oc_session_fork.rs::oc_session_inherits_instruction_entries_when_forking` (attached context)
 - P does not copy a running assistant into a fork — `tests/oc_session_fork.rs::oc_session_does_not_copy_a_running_assistant_into_a_fork`
+- P copies only settled shell messages into forks — `tests/oc_session_shell.rs::oc_session_copies_only_settled_shell_messages_into_forks` (a running command is not in the log yet)
 - P rejects forking an empty session — `tests/oc_session_fork.rs::oc_session_rejects_forking_an_empty_session`
 - P forks before the selected boundary message — `tests/oc_session_fork.rs::oc_session_forks_before_the_selected_boundary_message` (a message is its record sequence number)
 - D returns the current Session projection after updates · persists creation through the current created event · persists caller-ID creation through the existing created event · includes current creation rows in the Session event stream · replays one prompt lifecycle into a fresh target database · does not mask unrelated created projector defects — storage-model: projector created events and replay
+- P runs a shell command and projects the started/ended shell message — `tests/oc_session_shell.rs::oc_session_runs_a_shell_command_in_the_session_environment` (adapted: the notification, not a projected shell message)
+- P still emits shell ended for a failing command — `tests/oc_session_shell.rs::oc_session_still_records_a_failing_command`
 - D imports projected messages and reserves their aggregate sequence · clamps imported busy and viewed watermarks to their idle transition · imports a long transcript in statements under 100 bound parameters — storage-model: aggregate sequences, watermarks and bound-parameter limits
 
 **`session-environment.test.ts`**
@@ -2119,6 +2106,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-runner-message.test.ts`**
 
+- P background user shells enter model context only through their completion notification — `tests/oc_session_shell.rs::oc_session_user_shells_reach_the_model_only_through_their_notification`
 - P omits empty assistant turns — `src/runner.rs::oc_session_message_omits_empty_assistant_turns`
 - D maps every top-level Session message type — storage-model: maps OpenCode's stored message types
 - D leaves out the recent context of a checkpoint that kept none — deliberate: compaction.rs: the kept tail stays as real messages

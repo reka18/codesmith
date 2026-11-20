@@ -721,3 +721,24 @@ async fn a_subagents_activity_is_drawn_in_its_row() {
     ui.quit().await;
     m.assert_done();
 }
+
+// `!command` runs the command as the user (OpenCode's shell mode): drawn as
+// a shell row, recorded for the model's next step, no model call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bang_prompt_runs_a_shell_command_without_the_model() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--prompt '!echo user-shell-output'") else {
+        return;
+    };
+    ui.wait_for("1 command").await;
+    ui.send(b"\x0f").await;
+    ui.wait_for("user-shell-output").await;
+    ui.quit().await;
+    assert!(m.steps().is_empty(), "no model call");
+    let id = e.store().list(None, false).unwrap()[0].id.clone();
+    let h = e.history(&id);
+    assert_eq!(h.len(), 1);
+    assert!(h[0].to_string().contains("user-shell-output"));
+}

@@ -1220,7 +1220,7 @@ pub fn notification(job: &Job, limits: ToolOutputConfig) -> String {
 }
 
 /// `s` as a double-quoted attribute value.
-fn attribute(s: &str) -> String {
+pub(crate) fn attribute(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('<', "&lt;")
@@ -1231,7 +1231,7 @@ fn attribute(s: &str) -> String {
 /// `text` with the `<` of every tag that could open or close a `<shell>`
 /// frame (`<shell`, `</shell`, `< / SHELL`, ...) escaped as `&lt;`; the
 /// rest of the output is left as it was.
-fn neutralize_frame(text: &str) -> String {
+pub(crate) fn neutralize_frame(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (i, c) in text.char_indices() {
         if c == '<' && opens_frame(&text[i + 1..]) {
@@ -1728,6 +1728,135 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         let _ = std::fs::remove_file(&file);
     }
     Ok(Output::bounded(text))
+}
+
+/// A command the user ran (OpenCode's `Session.shell`), once it ended.
+#[derive(Debug, Clone)]
+pub struct UserRun {
+    pub id: String,
+    pub command: String,
+    /// How it ended; `None` when it could not be waited on.
+    pub ending: Option<Ending>,
+    /// Stopped by [`Jobs::cancel`].
+    pub cancelled: bool,
+    /// Its output as the model sees a command's (see [`capture`]).
+    pub output: String,
+    pub truncated: bool,
+    /// The stop timeout it had when it timed out, in ms.
+    pub timeout_ms: u64,
+}
+
+/// Start `command` for the user in `cwd`, with no permission check and no
+/// timeout, as OpenCode's `Session.shell` runs a shell (`!command` at the
+/// prompt): in the session's environment, listed among `jobs`' running
+/// commands so it can be cancelled or given a timeout, and stopped with
+/// them. It runs on its own task, so it outlives the caller; the handle
+/// gives its result.
+pub async fn start_user(
+    shell: &str,
+    session_id: &str,
+    cwd: &Path,
+    command: &str,
+    jobs: &Jobs,
+    limits: ToolOutputConfig,
+) -> Result<(String, tokio::task::JoinHandle<UserRun>), String> {
+    let mut sc = crate::plugin::ShellCommand {
+        session_id: session_id.to_string(),
+        cwd: cwd.to_path_buf(),
+        command: command.to_string(),
+        env: Default::default(),
+    };
+    crate::plugin::active().shell_before(&mut sc);
+    match std::fs::metadata(&sc.cwd) {
+        Ok(m) if m.is_dir() => {}
+        _ => {
+            return Err(format!(
+                "Working directory does not exist: {}",
+                sc.cwd.display()
+            ))
+        }
+    }
+    let id = jobs.next_id();
+    let out_dir = crate::paths::session_output_dir(session_id);
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("Unable to create {}: {e}", out_dir.display()))?;
+    let file = out_dir.join(format!("{session_id}_{id}_{}.log", super::unique_id()));
+    let environment = jobs.environment();
+    let meta = super::shell_proc::Meta {
+        id: id.clone(),
+        command: command.to_string(),
+        shell: shell.to_string(),
+        file: file.display().to_string(),
+        session_id: session_id.to_string(),
+        directory: String::new(),
+        timeout_ms: 0,
+        timeout_deadline: None,
+        waited: true,
+        stop_reason: None,
+    };
+    let mut child = jobs
+        .spawn_proc(shell, &sc, &file, environment.as_ref(), meta)
+        .await?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    jobs.shared.controls.lock().unwrap().insert(id.clone(), tx);
+    jobs.shared.foreground.lock().unwrap().push(Running {
+        id: id.clone(),
+        command: command.to_string(),
+        pid: child.id(),
+    });
+    // Only the shared state: the command must not keep the owner alive.
+    let shared = jobs.shared.clone();
+    let (rid, command) = (id.clone(), command.to_string());
+    let handle = tokio::spawn(async move {
+        let mut stop_at: Option<(tokio::time::Instant, u64)> = None;
+        let mut cancelled = false;
+        let ending = loop {
+            let until = stop_at.map(|(t, _)| t);
+            tokio::select! {
+                status = child.wait() => break status.ok(),
+                _ = sleep_until(until) => {
+                    child.stopping("timeout");
+                    break Some(Ending::TimedOut(child.stop(KILL_GRACE).await.map(Box::new)));
+                }
+                c = rx.recv() => match c {
+                    Some(Control::Cancel) => {
+                        cancelled = true;
+                        child.stopping("killed");
+                        break child.stop(KILL_GRACE).await;
+                    }
+                    Some(Control::Timeout(ms)) => {
+                        stop_at = deadline(ms).map(|t| (t, ms));
+                        child.set_timeout(ms);
+                    }
+                    Some(Control::Background) => {}
+                    None => break child.wait().await.ok(),
+                },
+            }
+        };
+        shared.controls.lock().unwrap().remove(&rid);
+        shared.foreground.lock().unwrap().retain(|r| r.id != rid);
+        #[cfg(unix)]
+        if let Some(remote) = shared.remote.lock().unwrap().remove(&rid) {
+            if let Some(ctx) = shared.daemon.lock().unwrap().as_ref() {
+                super::shell_proc::forget(&ctx.client, remote);
+            }
+        }
+        shared.wake.notify_waiters();
+        let (output, truncated) = capture(&file, limits);
+        if !truncated {
+            let _ = std::fs::remove_file(&file);
+        }
+        UserRun {
+            id: rid,
+            command,
+            ending,
+            cancelled,
+            output,
+            truncated,
+            timeout_ms: stop_at.map_or(0, |(_, ms)| ms),
+        }
+    });
+    Ok((id, handle))
 }
 
 /// `shell` as a path to run: a bare name is looked up on this process's
