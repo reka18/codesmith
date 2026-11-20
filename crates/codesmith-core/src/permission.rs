@@ -236,14 +236,34 @@ impl Gate {
         self.asker.clone()
     }
 
+    /// Configured rules, then saved approvals. To judge a request, use
+    /// [`Gate::allows`] or [`Gate::assert`], which check configured denies
+    /// first; evaluating this list alone lets an approval hide a deny.
     pub fn rules(&self) -> Vec<Rule> {
         let mut all = self.rules.clone();
         all.extend(self.saved.lock().unwrap().iter().cloned());
         all
     }
 
-    /// Allowed by rules alone, without asking.
+    /// The configured rules (agent, config, session), without saved approvals.
+    pub fn configured(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// The approvals saved by "always" answers.
+    pub fn saved(&self) -> Vec<Rule> {
+        self.saved.lock().unwrap().clone()
+    }
+
+    /// Allowed by rules alone, without asking. A configured deny wins over
+    /// a saved approval, as in [`Gate::assert`].
     pub fn allows(&self, action: &str, resources: &[String]) -> bool {
+        if resources
+            .iter()
+            .any(|r| evaluate(action, r, &self.rules) == Effect::Deny)
+        {
+            return false;
+        }
         let saved = self.saved.lock().unwrap();
         evaluate_all_layers(action, resources, &[&self.rules, &saved]) == Effect::Allow
     }
@@ -298,6 +318,22 @@ impl Gate {
     }
 }
 
+/// What answering "always" to `req` saves, as resource patterns for its
+/// action: shown in permission prompts.
+pub fn always_saves(req: &Request) -> Vec<String> {
+    safe_saves(req)
+}
+
+/// A one-line description of [`always_saves`], for prompts.
+pub fn always_summary(req: &Request) -> String {
+    let saves = always_saves(req);
+    if saves.is_empty() {
+        "always: saves nothing (same as once)".into()
+    } else {
+        format!("always saves {}: {}", req.action, saves.join(", "))
+    }
+}
+
 /// The rules "always" saves for `req`. An `external_directory` approval is
 /// saved for the directory (`<dir>/*`), except when that directory is `/`,
 /// the home directory or above it: approving `~/.zshrc` must not approve all
@@ -331,6 +367,25 @@ fn safe_saves(req: &Request) -> Vec<String> {
         }
     }
     out
+}
+
+/// Narrow the base rules' tool-output allowance (see [`base_rules`]) to one
+/// session's own directory, in place, so rule order is kept.
+pub fn scope_tool_output(rules: &mut [Rule], session_id: &str) {
+    let all = crate::paths::tool_output_dir().display().to_string();
+    let mine = crate::paths::session_output_dir(session_id)
+        .display()
+        .to_string();
+    let all_glob = format!("{all}/*");
+    for r in rules.iter_mut() {
+        if r.action == "external_directory" {
+            if r.resource == all {
+                r.resource = mine.clone();
+            } else if r.resource == all_glob {
+                r.resource = format!("{mine}/*");
+            }
+        }
+    }
 }
 
 /// Every agent starts from these (OpenCode's `Agent.Info.default`, with
@@ -1162,5 +1217,56 @@ mod tests {
             );
             assert_eq!(outcome(&g, &n, &request(next)), *next_effect, "{next}");
         }
+    }
+}
+
+#[cfg(test)]
+mod scoping {
+    use super::*;
+
+    #[test]
+    fn a_session_reaches_only_its_own_tool_output() {
+        let mut rules = base_rules();
+        scope_tool_output(&mut rules, "ses_a");
+        let root = crate::paths::tool_output_dir().display().to_string();
+        let mine = crate::paths::session_output_dir("ses_a")
+            .display()
+            .to_string();
+        let theirs = crate::paths::session_output_dir("ses_b")
+            .display()
+            .to_string();
+        assert_eq!(
+            evaluate("external_directory", &format!("{mine}/tool_1"), &rules),
+            Effect::Allow
+        );
+        assert_eq!(
+            evaluate("external_directory", &format!("{theirs}/tool_1"), &rules),
+            Effect::Ask
+        );
+        assert_eq!(
+            evaluate("external_directory", &format!("{root}/tool_1"), &rules),
+            Effect::Ask
+        );
+        assert_eq!(
+            crate::paths::session_output_dir("../x"),
+            crate::paths::tool_output_dir().join("___x")
+        );
+    }
+
+    #[test]
+    fn allows_checks_configured_denies_before_saved_approvals() {
+        let g = Gate::new(
+            vec![
+                Rule::new("*", "*", Effect::Allow),
+                Rule::new("edit", "secret/*", Effect::Deny),
+            ],
+            Arc::new(Fixed(Reply::Once)),
+        );
+        g.approvals()
+            .lock()
+            .unwrap()
+            .push(Rule::new("edit", "*", Effect::Allow));
+        assert!(!g.allows("edit", &["secret/a".into()]));
+        assert!(g.allows("edit", &["open/a".into()]));
     }
 }

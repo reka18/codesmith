@@ -58,6 +58,9 @@ pub struct Scanned {
     /// place the shell evaluates as code (arithmetic, subscripts, `${x@P}`):
     /// `x='a[$(touch X)]'; echo $((x))` runs `touch X`.
     pub dynamic: Option<Opaque>,
+    /// Set when the script changes what `cd` resolves against (`CDPATH`,
+    /// `HOME`, `PWD`, `OLDPWD`, physical mode): see [`Analysis::unknown_cwd`].
+    pub cd_context: bool,
 }
 
 /// Why a command could not be analyzed.
@@ -89,6 +92,7 @@ pub fn scan_all(input: &str) -> Result<Scanned, Opaque> {
     Ok(Scanned {
         commands: s.finish(),
         dynamic: (flags.payload && flags.sink).then_some("dynamic-execution"),
+        cd_context: flags.cd_context,
     })
 }
 
@@ -145,6 +149,8 @@ struct Flags {
     /// The script evaluates text: arithmetic or a subscript naming a
     /// variable, a binding builtin given a subscript, `${!x}`, `${x@P}`.
     sink: bool,
+    /// The script sets what `cd` resolves against.
+    cd_context: bool,
 }
 
 impl Flags {
@@ -228,6 +234,9 @@ const SHELL_EVALUATED: [&str; 21] = [
     "SPROMPT",
     "FCEDIT",
 ];
+
+/// Variables `cd` resolves against: `CDPATH=/etc cd ssh` leaves the project.
+const CD_CONTEXT: [&str; 6] = ["CDPATH", "cdpath", "HOME", "PWD", "OLDPWD", "home"];
 
 /// Variables that are the shell's own tables of what names run: Bash's
 /// command hash and aliases, Zsh's `zsh/parameter` arrays and hook lists.
@@ -1905,6 +1914,9 @@ impl<'a> Scanner<'a> {
             }
         }
         let name = name.trim_end_matches('+');
+        if CD_CONTEXT.contains(&name.split('[').next().unwrap_or(name)) {
+            self.flags.cd_context = true;
+        }
         if SHELL_EVALUATED.contains(&name) {
             self.flags.sink = true;
         }
@@ -1961,6 +1973,40 @@ impl<'a> Scanner<'a> {
             || (name == "r" && args.is_empty())
         {
             self.flags.eval();
+        }
+        if matches!(
+            name,
+            "declare"
+                | "typeset"
+                | "local"
+                | "export"
+                | "readonly"
+                | "read"
+                | "mapfile"
+                | "readarray"
+                | "getopts"
+                | "printf"
+                | "print"
+                | "vared"
+                | "unset"
+                | "set"
+                | "setopt"
+                | "unsetopt"
+                | "emulate"
+                | "shopt"
+        ) && (matches!(name, "setopt" | "unsetopt" | "emulate" | "shopt")
+            || args.iter().any(|w| {
+                let n = w.value.split(['=', '[']).next().unwrap_or("");
+                CD_CONTEXT.contains(&n.trim_end_matches('+'))
+                    || (name == "set"
+                        && (w.value == "physical"
+                            || (w.value.starts_with(['-', '+'])
+                                && !w.value.starts_with("--")
+                                && w.value.contains('P'))))
+            }))
+        {
+            // `set -P` makes `cd ..` physical; `read CDPATH` sets the path.
+            self.flags.cd_context = true;
         }
         let operand_evaluates = |w: &Word| w.value.contains('[') || w.raw.contains(['$', '`']);
         match name {
@@ -2171,6 +2217,10 @@ pub struct Analysis {
     /// commands in a static `sh -c`/`eval`/`trap` string. Checked too, so a
     /// rule denying `rm *` also denies those spellings.
     pub delegated: Vec<(String, String)>,
+    /// The shell may end up in a directory the scan cannot name (a `cd` to
+    /// a computed or `-` target, `popd`, `cd -P`, `CDPATH`...), so any
+    /// relative path written afterwards is only known at run time.
+    pub unknown_cwd: bool,
     /// Readings only some shell gives (see [`Command::alternate`]): checked
     /// only against deny rules, so they never add a question.
     pub deny_only: Vec<(String, String)>,
@@ -2368,6 +2418,7 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
     if let Some(reason) = scanned.dynamic {
         out.dynamic.get_or_insert_with(|| reason.to_string());
     }
+    out.unknown_cwd |= scanned.cd_context;
     for item in scanned.commands {
         for (raw, value) in &item.writes {
             out.writes.push(Write {
@@ -2431,6 +2482,7 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
         if let Some(index) = directory_command(&item.words) {
             let (dirs, complete) =
                 directory_args(&item.raw_words[index..], &item.words[index..], cwd);
+            out.unknown_cwd |= !complete;
             out.directories.extend(dirs);
             // A quoted spelling (`'cd' /tmp`) still changes directory, but
             // stays a command checked by the shell rules, as in OpenCode.
@@ -2607,6 +2659,7 @@ fn run_string(code: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> Resul
     out.deny_only.extend(inner.deny_only);
     out.directories.extend(inner.directories);
     out.writes.extend(inner.writes);
+    out.unknown_cwd |= inner.unknown_cwd;
     if let Some(d) = inner.dynamic {
         mark_dynamic(out, &d);
     }
@@ -2973,6 +3026,7 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
     }
     let mut end_of_options = false;
     let mut operands = Vec::new();
+    let mut physical = false;
     for (r, v) in raw.iter().zip(values).skip(1) {
         if end_of_options {
             operands.push((r, v));
@@ -2984,10 +3038,27 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
         }
         if v == "-" || !v.starts_with('-') {
             operands.push((r, v));
+        } else if v.contains('P') {
+            // `cd -P link/..` resolves the link first: not where `..` says.
+            physical = true;
         }
     }
     if operands.is_empty() {
-        return (Vec::new(), false);
+        // Bare `cd` goes home; bare `pushd` swaps with the stack top.
+        return if values[0] == "pushd" {
+            (Vec::new(), false)
+        } else {
+            (vec![home().display().to_string()], !physical)
+        };
+    }
+    if operands.len() > 1 || physical {
+        // Zsh's `cd old new` substitutes in `$PWD`.
+        let dirs = operands
+            .iter()
+            .filter(|(r, _)| is_static_word(r))
+            .filter_map(|(r, v)| expand_known_directory(v, cwd, tilde_prefix(r, v)))
+            .collect();
+        return (dirs, false);
     }
     let resolved: Vec<Option<String>> = operands
         .iter()

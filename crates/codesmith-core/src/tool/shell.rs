@@ -697,13 +697,19 @@ fn write_targets(
             continue;
         }
         let p = Path::new(path);
+        if !p.is_absolute() && analysis.unknown_cwd {
+            // After a `cd` the scan cannot follow, a relative path could be
+            // anywhere.
+            unknown.get_or_insert_with(|| w.raw.clone());
+            continue;
+        }
         let bases: Vec<&PathBuf> = if p.is_absolute() {
             dirs.iter().take(1).collect()
         } else {
             dirs.iter().collect()
         };
         for base in bases {
-            let t = ctx.resolve(&super::normalize(&base.join(p)).display().to_string());
+            let t = ctx.resolve(&physical(&base.join(p)).display().to_string());
             if !targets.iter().any(|x| x.absolute == t.absolute) {
                 targets.push(t);
             }
@@ -713,25 +719,45 @@ fn write_targets(
 }
 
 /// How the rules settle `action` for a resource nothing is known about:
-/// the strictest effect any rule could have on it. A rule is a candidate
-/// unless a later rule for every resource (`*`) overrides it.
-fn unknown_effect(rules: &[Rule], action: &str) -> Effect {
-    let relevant: Vec<&Rule> = rules
-        .iter()
-        .filter(|r| crate::wildcard::matches(action, &r.action, false))
-        .collect();
-    let (from, mut effect) = match relevant.iter().rposition(|r| r.resource == "*") {
-        Some(i) => (i, Effect::Allow),
-        None => (0, Effect::Ask),
-    };
-    for r in &relevant[from..] {
-        effect = match (effect, r.effect) {
-            (Effect::Deny, _) | (_, Effect::Deny) => Effect::Deny,
-            (Effect::Ask, _) | (_, Effect::Ask) => Effect::Ask,
-            _ => Effect::Allow,
+/// the strictest effect any configured rule could have on it. A rule is a
+/// candidate unless a later rule for every resource (`*`) overrides it;
+/// built-in agent rules only restrict (see `permission`). Saved approvals
+/// can only turn an ask into an allow, never hide a configured deny.
+fn unknown_effect(configured: &[Rule], saved: &[Rule], action: &str) -> Effect {
+    let candidates = |rules: &mut dyn Iterator<Item = &Rule>| {
+        let relevant: Vec<&Rule> = rules
+            .filter(|r| crate::wildcard::matches(action, &r.action, false))
+            .collect();
+        let (from, mut effect) = match relevant.iter().rposition(|r| r.resource == "*") {
+            Some(i) => (i, Effect::Allow),
+            None => (0, Effect::Ask),
         };
+        for r in &relevant[from..] {
+            effect = match (effect, r.effect) {
+                (Effect::Deny, _) | (_, Effect::Deny) => Effect::Deny,
+                (Effect::Ask, _) | (_, Effect::Ask) => Effect::Ask,
+                _ => Effect::Allow,
+            };
+        }
+        effect
+    };
+    let all = candidates(&mut configured.iter());
+    let others = candidates(&mut configured.iter().filter(|r| !r.builtin));
+    let effect = match (all, others) {
+        (Effect::Deny, _) | (_, Effect::Deny) => Effect::Deny,
+        (Effect::Ask, _) | (_, Effect::Ask) => Effect::Ask,
+        _ => Effect::Allow,
+    };
+    let approved = saved.iter().any(|r| {
+        r.effect == Effect::Allow
+            && r.resource == "*"
+            && crate::wildcard::matches(action, &r.action, false)
+    });
+    if effect == Effect::Ask && approved {
+        Effect::Allow
+    } else {
+        effect
     }
-    effect
 }
 
 /// Allow something the rules cannot see into (code only known at run time,
@@ -743,10 +769,10 @@ fn authorize_unknown(
     command: &str,
     title: &str,
 ) -> Result<(), String> {
-    let rules = ctx.gate.rules();
+    let saved = ctx.gate.saved();
     let mut ask = None;
     for action in actions {
-        match unknown_effect(&rules, action) {
+        match unknown_effect(ctx.gate.configured(), &saved, action) {
             Effect::Deny => {
                 return Err(format!(
                     "Permission denied: {title}; a rule denies some {action} requests, so it cannot run. Write the command so each part is visible (no computed command names, evaluated strings or arithmetic on variables set from text)."
@@ -777,6 +803,26 @@ fn authorize_unknown(
         Reply::Once | Reply::Always => Ok(()),
         Reply::Reject(feedback) => Err(Denied::Declined { feedback }.to_string()),
     }
+}
+
+/// `path` with each `..` applied to the real directory before it, as the
+/// kernel does: `link/../x` is beside the link's target, not beside `link`.
+fn physical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                if let Ok(real) = std::fs::canonicalize(&out) {
+                    out = real;
+                }
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Resolve `dir` (as written in a `cd`) against the working directory.
@@ -811,6 +857,17 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     let mut dirs = vec![dir.clone()];
     dirs.extend(analysis.directories.iter().map(|d| resolve_dir(&dir, d)));
     ctx.authorize_external_dirs(&dirs)?;
+    if analysis.unknown_cwd {
+        authorize_unknown(
+            ctx,
+            &["external_directory"],
+            &sc.command,
+            &format!(
+                "$ {} (changes to a directory only known when it runs)",
+                sc.command
+            ),
+        )?;
+    }
     let (targets, unknown_write) = write_targets(ctx, &dirs, &analysis);
     for t in &targets {
         ctx.authorize_external(t, false)?;
@@ -848,6 +905,10 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             save.push(s.clone());
         }
     }
+    // A saved pattern is a wildcard: `'*' x` or `xargs '*'` would save
+    // `* *`, allowing every command. Save only patterns whose words hold no
+    // wildcard (the trailing ` *` aside); "always" saves nothing else.
+    save.retain(|s| !s.strip_suffix(" *").unwrap_or(s).contains(['*', '?']));
     if !resources.is_empty() {
         ctx.ask(Request {
             action: "shell".into(),
@@ -918,10 +979,10 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     }
     let jobs = ctx.jobs.clone().unwrap_or_default();
     let id = jobs.next_id();
-    let out_dir = crate::paths::tool_output_dir();
+    let out_dir = crate::paths::session_output_dir(&ctx.session_id);
+    super::cleanup_once(&super::cleanup_root(&out_dir));
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("Unable to create {}: {e}", out_dir.display()))?;
-    super::cleanup_once(&out_dir);
     let file = out_dir.join(format!(
         "{}_{id}_{}.log",
         ctx.session_id,
@@ -998,6 +1059,9 @@ fn spawn(
         .arg(&sc.command)
         .current_dir(&sc.cwd)
         .envs(&sc.env)
+        // `cd` must resolve as the scan resolved it (see `shell_scan`).
+        .env_remove("CDPATH")
+        .env_remove("OLDPWD")
         .env("AGENT", "1")
         .env("CODESMITH", "1")
         .env("AI_AGENT", ai_agent)
@@ -2664,5 +2728,132 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{command}: {e}"));
         }
         assert!(rec.actions().is_empty());
+    }
+}
+
+/// Findings of a security re-review, kept as regression tests.
+#[cfg(test)]
+mod secreview {
+    use super::super::testing::Env;
+    use super::*;
+    use crate::permission::{base_rules, Effect, Fixed, Gate, Reply, Rule};
+    use std::sync::Arc;
+
+    fn env_with(rules: Vec<Rule>, reply: Reply) -> Env {
+        let mut e = Env::new();
+        e.gate = Gate::new(rules, Arc::new(Fixed(reply)));
+        e
+    }
+
+    /// "Always" on a command whose words hold a wildcard must not save
+    /// `* *` (every command).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn always_never_saves_a_wildcard_command_pattern() {
+        let mut rules = base_rules();
+        rules.push(Rule::new("shell", "*", Effect::Ask));
+        for command in [
+            "find . -name nothing-here -exec \"*\" {} +",
+            "true | xargs '*'",
+            "'r*' nothing-here",
+        ] {
+            let env = env_with(rules.clone(), Reply::Always);
+            let _ = run(&env.ctx(), &json!({"command": command})).await;
+            assert!(
+                !env.gate.allows("shell", &["rm -rf ~".into()]),
+                "{command}: saved {:?}",
+                env.gate.saved()
+            );
+        }
+    }
+
+    /// A saved `edit *` approval does not override a configured deny for a
+    /// write to a computed path.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saved_approval_does_not_beat_a_deny_for_computed_writes() {
+        let mut rules = base_rules();
+        rules.push(Rule::new("external_directory", "*", Effect::Allow));
+        rules.push(Rule::new("edit", "secret/*", Effect::Deny));
+        let env = env_with(rules, Reply::Reject(Some("asked".into())));
+        std::fs::create_dir_all(env.root().join("secret")).unwrap();
+        env.gate
+            .approvals()
+            .lock()
+            .unwrap()
+            .push(Rule::new("edit", "*", Effect::Allow));
+        let ctx = env.ctx();
+        assert!(run(&ctx, &json!({"command": "echo pwned > secret/a"}))
+            .await
+            .is_err());
+        let r = run(&ctx, &json!({"command": "F=secret/b; echo pwned > \"$F\""})).await;
+        assert!(r.is_err(), "{:?}", r.map(|o| o.content));
+        assert!(!env.root().join("secret/b").exists());
+        // `allows` checks configured denies first as well.
+        assert!(!env.gate.allows("edit", &["secret/a".into()]));
+    }
+
+    /// The plan agent's built-in edit deny holds against an `edit *`
+    /// approval carried over from another agent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plan_agent_deny_survives_a_carried_over_approval() {
+        let cfg = crate::config::Config::default();
+        let plan = crate::agent::resolve(&cfg, "plan").unwrap();
+        let env = env_with(plan.permissions.clone(), Reply::Once);
+        env.gate
+            .approvals()
+            .lock()
+            .unwrap()
+            .push(Rule::new("edit", "*", Effect::Allow));
+        let ctx = env.ctx();
+        let r = run(&ctx, &json!({"command": "F=b.txt; echo pwned > \"$F\""})).await;
+        assert!(r.is_err(), "{:?}", r.map(|o| o.content));
+        assert!(!env.root().join("b.txt").exists());
+    }
+
+    /// A `cd` the scan cannot follow (bare `cd`, `CDPATH`) is checked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cd_to_an_unseen_directory_is_checked() {
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(other.path().join("ssh")).unwrap();
+        let (env, rec) = Env::recording(base_rules());
+        rec.deny_action("external_directory");
+        let ctx = env.ctx();
+        // Bare `cd` goes home, outside the project: asked, here refused.
+        let r = run(&ctx, &json!({"command": "cd && pwd"})).await;
+        assert!(r.is_err(), "{:?}", r.map(|o| o.content));
+        let home = dirs::home_dir().unwrap().display().to_string();
+        assert!(rec
+            .requests()
+            .iter()
+            .any(|(a, res)| a == "external_directory" && res.iter().any(|r| r.starts_with(&home))));
+        let cmd = format!(
+            "CDPATH={} cd ssh && echo pwned > authorized_keys",
+            other.path().display()
+        );
+        let r = run(&ctx, &json!({ "command": cmd })).await;
+        assert!(r.is_err(), "{:?}", r.map(|o| o.content));
+        assert!(!other.path().join("ssh/authorized_keys").exists());
+        for command in [
+            "cd - && echo x > f",
+            "popd && echo x > f",
+            "cd -P sub/.. && echo x > f",
+            "cd \"$D\" && echo x > f",
+            "set -P; cd sub/..; echo x > f",
+        ] {
+            let a = shell_scan::analyze(command, &env.root()).unwrap();
+            assert!(a.unknown_cwd, "{command}");
+        }
+    }
+
+    /// `..` after a symlink is resolved as the kernel resolves it.
+    #[test]
+    fn writes_through_a_symlink_parent_resolve_physically() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("real/inner")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("real/inner"), root.join("link")).unwrap();
+        #[cfg(unix)]
+        assert_eq!(physical(&root.join("link/../x")), root.join("real/x"));
+        assert_eq!(physical(&root.join("a/./b/../c")), root.join("a/c"));
     }
 }

@@ -274,7 +274,11 @@ pub async fn run(ctx: &Ctx<'_>, name: &str, input: &Value) -> Executed {
             content: if out.bounded {
                 out.content
             } else {
-                truncate(&out.content, ctx.limits, &paths::tool_output_dir())
+                truncate(
+                    &out.content,
+                    ctx.limits,
+                    &paths::session_output_dir(&ctx.session_id),
+                )
             },
             is_error: false,
             media: out.media,
@@ -626,7 +630,7 @@ pub fn truncate(text: &str, limits: ToolOutputConfig, dir: &Path) -> String {
         end
     };
     let shown = &text[..shown_end];
-    cleanup_once(dir);
+    cleanup_once(&cleanup_root(dir));
     let file = dir.join(format!("tool_{}", unique_id()));
     let saved = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, text));
     let shown_lines = count_lines(&text[..end]);
@@ -742,9 +746,25 @@ fn cluster_start(text: &str, mut i: usize) -> usize {
 /// How long saved tool output is kept.
 pub const OUTPUT_RETENTION: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
-/// Delete files in `dir` last modified more than `retention` ago (by
-/// modification time, as OpenCode's `ToolOutput.cleanup` does).
+/// The directory whose old output to clean up when saving in `dir`: the
+/// whole tool-output directory for a session's directory in it.
+pub(crate) fn cleanup_root(dir: &Path) -> PathBuf {
+    let root = paths::tool_output_dir();
+    if dir.parent() == Some(root.as_path()) {
+        root
+    } else {
+        dir.to_path_buf()
+    }
+}
+
+/// Delete files in `dir`, and in its session directories, last modified
+/// more than `retention` ago (by modification time, as OpenCode's
+/// `ToolOutput.cleanup` does); session directories left empty go too.
 pub fn cleanup_outputs(dir: &Path, retention: std::time::Duration) {
+    cleanup_level(dir, retention, true);
+}
+
+fn cleanup_level(dir: &Path, retention: std::time::Duration, descend: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -760,6 +780,13 @@ pub fn cleanup_outputs(dir: &Path, retention: std::time::Duration) {
             .is_some_and(|age| age > retention);
         if meta.is_file() && old {
             let _ = std::fs::remove_file(entry.path());
+        } else if meta.is_dir() && descend {
+            cleanup_level(&entry.path(), retention, false);
+            if old {
+                // A session directory untouched for that long; only
+                // removed when nothing in it is newer.
+                let _ = std::fs::remove_dir(entry.path());
+            }
         }
     }
 }

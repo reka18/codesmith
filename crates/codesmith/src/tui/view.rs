@@ -306,7 +306,14 @@ fn permission_lines(
     }
     if action {
         lines.push(Line::from(Span::styled(
-            cut(&format!("action: {}", display_safe(&req.action)), width),
+            cut(
+                &display_safe(&format!(
+                    "action: {} · {}",
+                    req.action,
+                    codesmith_core::permission::always_summary(req)
+                )),
+                width,
+            ),
             dim(),
         )));
     }

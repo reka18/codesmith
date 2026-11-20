@@ -305,7 +305,6 @@ impl Session {
             .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
             .unwrap_or_else(|| "/bin/sh".into());
         let declined = Arc::new(AtomicBool::new(false));
-        let gate = Gate::new(agent.permissions.clone(), watch(asker.clone(), &declined));
         let (id, messages, seqs, usage, title, stored) = match resumed {
             Some((info, hist)) => {
                 let (seqs, messages): (Vec<_>, Vec<_>) = hist.into_iter().unzip();
@@ -327,6 +326,9 @@ impl Session {
                 false,
             ),
         };
+        let mut rules = agent.permissions.clone();
+        crate::permission::scope_tool_output(&mut rules, &id);
+        let gate = Gate::new(rules, watch(asker.clone(), &declined));
         Ok(Session {
             id,
             cwd,
@@ -1280,7 +1282,7 @@ impl Session {
         };
         match t.execute(ctx, tool::repair(input)).await {
             Ok(text) => (
-                tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+                tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
                 false,
             ),
             Err(e) => (e, true),
@@ -1358,7 +1360,7 @@ impl Session {
         };
         match result {
             Ok(text) => (
-                tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+                tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
                 false,
             ),
             Err(e) => (format!("{e:#}"), true),
@@ -1459,7 +1461,12 @@ impl Session {
             use crate::permission::{evaluate, Denied, Effect, Gate, Request};
             let rules = self.gate.rules();
             let named = au::explicit_effect(action, resource, &rules);
-            if named == Effect::Deny || evaluate(action, resource, &rules) == Effect::Deny {
+            // A saved approval must not hide a configured deny.
+            let configured = self.gate.configured();
+            if named == Effect::Deny
+                || au::explicit_effect(action, resource, configured) == Effect::Deny
+                || evaluate(action, resource, configured) == Effect::Deny
+            {
                 let (action, resource) = (action.into(), resource.into());
                 return Err(Denied::Blocked { action, resource }.to_string());
             }
@@ -1605,7 +1612,7 @@ impl Session {
         .await;
         let (text, is_error) = out.render();
         (
-            tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+            tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
             is_error,
         )
     }
@@ -1631,7 +1638,7 @@ impl Session {
         }
         match self.mcp.call_media(name, args).await {
             Ok((text, is_error, media)) => (
-                tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+                tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
                 is_error,
                 media,
             ),

@@ -36,6 +36,22 @@ pub fn tool_output_dir() -> PathBuf {
     data_dir().join("tool-output")
 }
 
+/// One session's saved tool output: sessions (and projects) cannot read
+/// each other's, which `tool_output_dir` keeps for a week.
+pub fn session_output_dir(session_id: &str) -> PathBuf {
+    let safe: String = session_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    tool_output_dir().join(if safe.is_empty() { "_".into() } else { safe })
+}
+
 /// A private scratch directory the agent may use without asking.
 pub fn tmp_dir() -> PathBuf {
     data_dir().join("tmp")
