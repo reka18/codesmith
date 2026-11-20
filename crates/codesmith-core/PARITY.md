@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 10 | 0 | 467 | 281 | 38 | 0 |
+| Providers, models and credentials | 796 | 56 | 0 | 385 | 317 | 38 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 0 | 0 | 27 | 211 | 4 | 0 |
-| **Total** | **5588** | **707** | **15** | **1161** | **2285** | **1420** | **0** |
+| **Total** | **5588** | **753** | **15** | **1079** | **2321** | **1420** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,13 +78,12 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (1161 cases in 69 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (1079 cases in 68 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 232 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
-| [Model Catalog (models.dev)](#model-catalog-modelsdev) | 82 | OpenCode's editable provider/model catalog and its events; catalog capabilities, packages and generated variants; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Instruction State Tracking](#instruction-state-tracking) | 61 | Code Mode catalog deltas; Code Mode catalog snapshots and deltas; … |
 | [PTY Sessions](#pty-sessions) | 38 | persistent PTY daemon; persistent terminals; … |
@@ -451,87 +450,6 @@ Missing features, by how many OpenCode test cases each would unlock (1161 cases 
 - `tool-patch.test.ts`: adds files by overwriting existing targets
 - `tool-patch.test.ts`: overwrites an add target that appears during permission approval
 - `tool-patch.test.ts`: preserves a later commit defect after earlier sequential applications
-
-### Model Catalog (models.dev)
-
-82 cases.
-
-- `catalog.test.ts`: keeps nested model values editable after ${path} model resolution (4 cases)
-- `catalog.test.ts`: publishes an updated event after provider changes
-- `catalog.test.ts`: preserves provider identity when updating new and existing providers
-- `catalog.test.ts`: derives availability from active credentials without changing provider state
-- `catalog.test.ts`: reuses the model catalog across credential switches
-- `catalog.test.ts`: persists direct edits to models returned by list and get
-- `catalog.test.ts`: gives foreign definitions the registering provider's identity
-- `catalog.test.ts`: keeps materialized models when another provider becomes available
-- `catalog.test.ts`: derives availability from a provider's integration
-- `catalog.test.ts`: makes an explicitly enabled provider available without a connection
-- `catalog.test.ts`: projects environment connections without a catalog plugin
-- `catalog.test.ts`: stores provider package settings
-- `catalog.test.ts`: uses model package settings over provider settings
-- `catalog.test.ts`: resolves default model package settings from the provider
-- `catalog.test.ts`: rewrites AI SDK packages and their options on write
-- `catalog.test.ts`: keeps settings scoped while resolving request overlay merges
-- `catalog.test.ts`: uses a transform-provided default model until that transform is replaced
-- `config/provider.test.ts`: inherits the provider compaction setting with model overrides and rejects unsupported routes
-- `config/provider.test.ts`: carries a configured provider cache format to the runtime model
-- `config/provider.test.ts`: keeps the provider websocket policy out of model settings
-- `config/provider.test.ts`: configured provider transport overrides ${builtin.id} defaults (4 cases)
-- `config/provider.test.ts`: lets config change a catalog model's type and keeps it when unset
-- `config/provider.test.ts`: preserves catalog capabilities unless config overrides them
-- `config/provider.test.ts`: merges partial config capabilities onto the base model's existing fields
-- `config/provider.test.ts`: generates variants after rewriting a configured model package
-- `config/provider.test.ts`: preserves plugin-supplied variants on custom models when config omits variants
-- `config/provider.test.ts`: respells inherited variants when config moves a catalog model to another package
-- `config/provider.test.ts`: keeps a moved catalog model without reasoning variants free of variants
-- `config/provider.test.ts`: builds configured reasoning variants after provider and model package normalization
-- `config/provider.test.ts`: applies configured release date, temperature support, and reasoning field
-- `model-plugins.test.ts`: composes source, configuration, and restriction plugins across reload and unload
-- `model-plugins.test.ts`: shares a plugin's definitions across locations while keeping model edits and cached results local
-- `model-plugins.test.ts`: replays cross-provider policies when shared access changes, including reads inside a batch
-- `model-plugins.test.ts`: removes a failed model plugin's access and providers without retaining its partial model edits
-- `model-plugins.test.ts`: hides an account-specific inventory after switching credentials until its source refreshes
-- `model-plugins.test.ts`: derives a custom provider from inactive templates independently of the upstream account's model policies
-- `models.test.ts`: normalizes permissive interleaved values to compatibility
-- `models.test.ts`: get() returns normalized snapshots from KV when a cache entry exists
-- `models.test.ts`: takes each model's package from its first API and skips URLs packages build themselves
-- `models.test.ts`: keeps non-chat models with their type, maps MIME modalities, and skips malformed models
-- `models.test.ts`: maps per-token text prices, context tiers, and mode multipliers onto cost
-- `models.test.ts`: skips APIs whose opencode entrypoint this build doesn't have
-- `models.test.ts`: skips non-chat models whose only opencode package serves another type
-- `models.test.ts`: drops model types opencode doesn't keep
-- `models.test.ts`: skips API entries and modes it can't read and keeps the model
-- `models.test.ts`: reads a models.dev v1 catalog by converting it to v2
-- `models.test.ts`: falls back to /api.json when a custom mirror has no v2 catalog
-- `models.test.ts`: get() returns empty catalog when KV is empty, fetch disabled, and the bundled snapshot is disabled
-- `models.test.ts`: get() falls back to the bundled snapshot when KV is empty and fetch is disabled
-- `models.test.ts`: get() recovers from a corrupted KV entry by fetching a fresh catalog
-- `models.test.ts`: get() still populates the catalog when the KV cache write fails
-- `models.test.ts`: uses the default models URL when the configured URL is empty
-- `models.test.ts`: get() is single-flight under concurrent calls
-- `models.test.ts`: get() caches across calls (later KV writes are ignored until invalidate)
-- `models.test.ts`: refresh(true) fetches via HttpClient and updates the cache
-- `models.test.ts`: refresh(false) skips fetch when the KV entry is fresh
-- `models.test.ts`: refresh(false) fetches when the KV entry is stale
-- `models.test.ts`: refresh publishes Refreshed globally across locations
-- `models.test.ts`: refresh(false) stays quiet when the fetched body matches the cached digest
-- `models.test.ts`: refresh(false) revalidates with the stored ETag and treats 304 as unchanged
-- `models.test.ts`: refresh(false) republishes once for legacy cache entries without a digest
-- `models.test.ts`: refresh swallows HTTP errors and leaves cache intact
-- `plugin/models-dev.test.ts`: shares definitions between Locations while provider and model edits own their copies
-- `plugin/models-dev.test.ts`: replaces its snapshot reference on refresh without touching the sibling Location
-- `plugin/models-dev.test.ts`: adopts a refresh that completes between its initial read and its subscription
-- `plugin/models-dev.test.ts`: keeps the retained definition unchanged across model replay
-- `plugin/models-dev.test.ts`: keeps the shared snapshot pristine while provider and model transforms mutate owned records
-- `plugin/models-dev.test.ts`: projects normalized definitions for available providers
-- `plugin/models-dev.test.ts`: omits deprecated and non-text model definitions
-- `plugin/models-dev.test.ts`: lists non-chat models only by type, so sessions never see them
-- `plugin/models-dev.test.ts`: registers key methods for providers with environment variables
-- `plugin/models-dev.test.ts`: preserves provider and model URL templates in the catalog
-- `plugin/models-dev.test.ts`: copies model request bodies without reinterpreting literal __proto__ keys
-- `plugin/models-dev.test.ts`: omits legacy provider aliases
-- `plugin/models-dev.test.ts`: registers every listed environment variable for provider plugins to narrow
-- `plugin/models-dev.test.ts`: converts reasoning options into settings variants
 
 ### Claude Agent SDK Provider
 
@@ -2456,12 +2374,12 @@ Tests for behaviour CodeSmith already has but no test pins (1420 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 537 |
-| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 309 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 297 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 210 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 544 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 317 |
+| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 310 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 213 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 88 |
+| Other (each says why) | 93 |
 
 ## Per-test inventory
 
@@ -3655,7 +3573,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (291 of 796)</summary>
+<details><summary>Providers, models and credentials (373 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3668,12 +3586,28 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`catalog.test.ts`**
 
+- D keeps nested model values editable after ${path} model resolution ×4 · publishes an updated event after provider changes · preserves provider identity when updating new and existing providers · derives availability from active credentials without changing provider state · reuses the model catalog across credential switches · persists direct edits to models returned by list and get · gives foreign definitions the registering provider's identity · keeps materialized models when another provider becomes available · derives availability from a provider's integration · makes an explicitly enabled provider available without a connection · projects environment connections without a catalog plugin · stores provider package settings · uses model package settings over provider settings · resolves default model package settings from the provider · rewrites AI SDK packages and their options on write · keeps settings scoped while resolving request overlay merges — storage-model: OpenCode's editable provider/model store, its events and credential-derived availability (CodeSmith resolves config over the catalog at each model resolution; see tests/oc_catalog.rs)
 - D defaults to big-pickle when only free OpenCode models are available · keeps the newest default when a paid model is available — cloud: OpenCode free models
+- D uses a transform-provided default model until that transform is replaced — storage-model: OpenCode's editable provider/model store, its events and credential-derived availability (CodeSmith resolves config over the catalog at each model resolution; see tests/oc_catalog.rs)
 - D small model uses the newest release in the first matching family · small model returns undefined without a matching family — deliberate: title.rs: no small model
 
 **`config/provider.test.ts`**
 
+- D inherits the provider compaction setting with model overrides and rejects unsupported routes — other: provider-native compaction settings (CodeSmith always compacts by summary)
+- D carries a configured provider cache format to the runtime model — other: CodeSmith detects the cache marker format from the endpoint; there is no cacheFormat setting
+- D keeps the provider websocket policy out of model settings — other: model-level transport settings (CodeSmith's transport is a provider setting only)
+- P configured provider transport overrides ${builtin.id} defaults ×2 — `tests/oc_catalog.rs::oc_catalog_configured_provider_transport_overrides_builtin_defaults` (the openai and azure rows)
+- D configured provider transport overrides ${builtin.id} defaults ×2 — other: xAI is OpenAI Chat in CodeSmith, and only the azure provider defaults to WebSocket
+- P lets config change a catalog model's type and keeps it when unset — `tests/oc_catalog.rs::oc_catalog_lets_config_change_a_catalog_models_type_and_keeps_it_when_unset`
+- P preserves catalog capabilities unless config overrides them — `tests/oc_catalog.rs::oc_catalog_preserves_catalog_capabilities_unless_config_overrides_them`
+- P merges partial config capabilities onto the base model's existing fields — `tests/oc_catalog.rs::oc_catalog_merges_partial_config_capabilities_onto_the_base_models_existing_fields`
 - D uses native model defaults for migrated ${scenario.name} ×7 · matches native configuration for migrated ${scenario.name} ×7 · preserves existing catalog metadata when migrated fields are omitted · keeps catalog capabilities that a migrated override omits — deliberate: config.rs: no v1 format migration
+- P generates variants after rewriting a configured model package — `tests/oc_catalog.rs::oc_catalog_generates_variants_after_rewriting_a_configured_model_package` (adapted: a configured protocol for the package)
+- D preserves plugin-supplied variants on custom models when config omits variants — deliberate: plugin.rs: plugins supplying variants to custom models
+- P respells inherited variants when config moves a catalog model to another package — `tests/oc_catalog.rs::oc_catalog_respells_inherited_variants_when_config_moves_a_catalog_model_to_another_package` (adapted: moved to another protocol)
+- P keeps a moved catalog model without reasoning variants free of variants — `tests/oc_catalog.rs::oc_catalog_keeps_a_moved_catalog_model_without_reasoning_variants_free_of_variants`
+- P builds configured reasoning variants after provider and model package normalization — `tests/oc_catalog.rs::oc_catalog_builds_configured_reasoning_variants_after_provider_and_model_package_normalization` (adapted: one provider per protocol)
+- P applies configured release date, temperature support, and reasoning field — `tests/oc_catalog.rs::oc_catalog_applies_configured_release_date_temperature_support_and_reasoning_field` (adapted: no release dates or freeform formats kept)
 
 **`integration-refresh.test.ts`**
 
@@ -3687,6 +3621,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D ${providerID} catalog with OPENCODE_DISABLE_FREE_MODELS=${flag} ×8 — cloud: OpenCode free models
 
+**`model-plugins.test.ts`**
+
+- D composes source, configuration, and restriction plugins across reload and unload · shares a plugin's definitions across locations while keeping model edits and cached results local · replays cross-provider policies when shared access changes, including reads inside a batch · removes a failed model plugin's access and providers without retaining its partial model edits · hides an account-specific inventory after switching credentials until its source refreshes · derives a custom provider from inactive templates independently of the upstream account's model policies — deliberate: plugin.rs: plugins are compiled in, so no plugin edits the model catalog
+
 **`model-resolver.test.ts`**
 
 - D routes compatible packages to the host's dedicated package when one exists · resolves environment templates before native providers inspect endpoints · keeps catalog apiKey credentials out of provider JSON · uses no native API-key auth for explicitly enabled providers without credentials · keeps native provider environment auth strict when no API key is configured · maps catalog Anthropic AI SDK models into native routes · does not project API key metadata into settings or the request body · does not project OAuth account metadata into the request body · applies plugin-projected OpenAI endpoint and headers · does not route native OpenAI-compatible packages to the codex backend · maps legacy OpenAI organization and project settings to headers · keeps non-ChatGPT OAuth credentials on the configured endpoint · loads dynamic native provider packages through the injected package loader · maps OAuth credentials to native provider auth settings without their metadata · routes supported AISDK catalog packages through native provider packages · never loads the AI SDK for packages with native implementations · loads supported AISDK catalog packages as native routes · loads arbitrary AISDK packages through the injected AISDK loader · rejects unresolved variables before loading opaque AISDK packages · rejects placeholders introduced by environment expansion before loading providers · rejects unresolved variables before loading native provider packages · rejects AISDK packages without an available loader · reports provider configuration errors from supported packages · distinguishes unexpected constructor failures from configuration errors · reports package load and AISDK initialization failures with their causes · drops an empty API key before loading an AISDK package · applies provider timeouts to resolved image, video, and decision models · reports whether a catalog model declares a provider package — platform: AI SDK / native package routing and loaders
@@ -3696,6 +3634,35 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P parses %j at the first slash ×7 — `src/config.rs::oc_config_normalizes_short_model_selections` (model selection parsing)
 - P accepts a model selection without a variant — `src/config.rs::oc_config_normalizes_short_model_selections` (model selection parsing)
 - P preserves an explicit model variant — `src/config.rs::oc_config_normalizes_short_model_selections` (model selection parsing)
+
+**`models.test.ts`**
+
+- P normalizes permissive interleaved values to compatibility — `tests/oc_catalog.rs::oc_catalog_normalizes_permissive_interleaved_values_to_compatibility` (config's `interleaved`)
+- P get() returns normalized snapshots from KV when a cache entry exists — `tests/oc_catalog.rs::oc_catalog_get_returns_normalized_snapshots_from_kv_when_a_cache_entry_exists`
+- P takes each model's package from its first API and skips URLs packages build themselves — `tests/oc_catalog.rs::oc_catalog_takes_each_models_package_from_its_first_api_and_skips_urls_packages_build_themselves`
+- P keeps non-chat models with their type, maps MIME modalities, and skips malformed models — `tests/oc_catalog.rs::oc_catalog_keeps_non_chat_models_with_their_type_maps_mime_modalities_and_skips_malformed_models`
+- P maps per-token text prices, context tiers, and mode multipliers onto cost — `tests/oc_catalog.rs::oc_catalog_maps_per_token_text_prices_context_tiers_and_mode_multipliers_onto_cost`
+- P skips APIs whose opencode entrypoint this build doesn't have — `tests/oc_catalog.rs::oc_catalog_skips_apis_whose_opencode_entrypoint_this_build_doesnt_have`
+- P skips non-chat models whose only opencode package serves another type — `tests/oc_catalog.rs::oc_catalog_skips_non_chat_models_whose_only_opencode_package_serves_another_type`
+- P drops model types opencode doesn't keep — `tests/oc_catalog.rs::oc_catalog_drops_model_types_not_kept`
+- P skips API entries and modes it can't read and keeps the model — `tests/oc_catalog.rs::oc_catalog_skips_api_entries_and_modes_it_cant_read_and_keeps_the_model`
+- P reads a models.dev v1 catalog by converting it to v2 — `tests/oc_catalog.rs::oc_catalog_reads_a_models_dev_v1_catalog_by_converting_it_to_v2`
+- P falls back to /api.json when a custom mirror has no v2 catalog — `tests/oc_catalog.rs::oc_catalog_falls_back_to_api_json_when_a_custom_mirror_has_no_v2_catalog` (adapted: a local server)
+- P get() returns empty catalog when KV is empty, fetch disabled, and the bundled snapshot is disabled — `tests/oc_catalog.rs::oc_catalog_get_returns_empty_catalog_when_kv_is_empty_fetch_disabled_and_the_bundled_snapshot_is_disabled`
+- P get() falls back to the bundled snapshot when KV is empty and fetch is disabled — `tests/oc_catalog.rs::oc_catalog_get_falls_back_to_the_bundled_snapshot_when_kv_is_empty_and_fetch_is_disabled`
+- P get() recovers from a corrupted KV entry by fetching a fresh catalog — `tests/oc_catalog.rs::oc_catalog_get_recovers_from_a_corrupted_kv_entry_by_fetching_a_fresh_catalog`
+- P get() still populates the catalog when the KV cache write fails — `tests/oc_catalog.rs::oc_catalog_get_still_populates_the_catalog_when_the_kv_cache_write_fails`
+- P uses the default models URL when the configured URL is empty — `tests/oc_catalog.rs::oc_catalog_uses_the_default_models_url_when_the_configured_url_is_empty` (adapted: checks the source rather than sending the request)
+- P get() is single-flight under concurrent calls — `tests/oc_catalog.rs::oc_catalog_get_is_single_flight_under_concurrent_calls`
+- P get() caches across calls (later KV writes are ignored until invalidate) — `tests/oc_catalog.rs::oc_catalog_get_caches_across_calls_later_kv_writes_are_ignored_until_invalidate`
+- P refresh(true) fetches via HttpClient and updates the cache — `tests/oc_catalog.rs::oc_catalog_refresh_true_fetches_via_http_and_updates_the_cache` (adapted: a generic codesmith/<version> User-Agent)
+- P refresh(false) skips fetch when the KV entry is fresh — `tests/oc_catalog.rs::oc_catalog_refresh_false_skips_fetch_when_the_kv_entry_is_fresh`
+- P refresh(false) fetches when the KV entry is stale — `tests/oc_catalog.rs::oc_catalog_refresh_false_fetches_when_the_kv_entry_is_stale` (adapted: the subscribe channel for the Refreshed event)
+- D refresh publishes Refreshed globally across locations — client-server: the Refreshed event across OpenCode Locations; CodeSmith has one catalog per process
+- P refresh(false) stays quiet when the fetched body matches the cached digest — `tests/oc_catalog.rs::oc_catalog_refresh_false_stays_quiet_when_the_fetched_body_matches_the_cached_digest`
+- P refresh(false) revalidates with the stored ETag and treats 304 as unchanged — `tests/oc_catalog.rs::oc_catalog_refresh_false_revalidates_with_the_stored_etag_and_treats_304_as_unchanged` (adapted: no tracing spans)
+- P refresh(false) republishes once for legacy cache entries without a digest — `tests/oc_catalog.rs::oc_catalog_refresh_false_republishes_once_for_legacy_cache_entries_without_a_digest`
+- P refresh swallows HTTP errors and leaves cache intact — `tests/oc_catalog.rs::oc_catalog_refresh_swallows_http_errors_and_leaves_cache_intact`
 
 **`network-guard.test.ts`**
 
@@ -3708,6 +3675,23 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`npm.test.ts`**
 
 - D keeps normal scoped package specs unchanged · handles git https specs · accepts registry packages and rejects unsupported install targets · accepts registry and npm-compatible Git specs · canonicalizes registry keys and hashes Git specs · locates cached scoped package specs without reifying · reifies when package cache directory exists without the package installed · installs and locates %s Git packages with dependencies ×2 · installs a Git package from an npm ::path: subdirectory at a %s ×2 · checks and updates mutable Git packages without changing pinned installs · rejects only the newest installed version, keeping its files for what still runs it · reports Git's own error when a Git package cannot be fetched · records Git revisions when the cache directory is reached through a symlink · locates a cached package without installing it · installs and updates without requesting registry audits · checks a mutable registry target without mutation and explicitly updates it · never reports a pinned registry target as outdated — platform: npm package installs
+
+**`plugin/models-dev.test.ts`**
+
+- D shares definitions between Locations while provider and model edits own their copies — client-server: definitions shared between OpenCode Locations
+- D replaces its snapshot reference on refresh without touching the sibling Location — client-server: snapshot references per OpenCode Location
+- P adopts a refresh that completes between its initial read and its subscription — `tests/oc_catalog.rs::oc_catalog_adopts_a_refresh_that_completes_between_its_initial_read_and_its_subscription` (adapted: each model resolution reads the current catalog)
+- D keeps the retained definition unchanged across model replay — effect-internal: model replay in OpenCode's editable model store
+- P keeps the shared snapshot pristine while provider and model transforms mutate owned records — `tests/oc_catalog.rs::oc_catalog_keeps_the_shared_snapshot_pristine_while_provider_and_model_transforms_mutate_owned_records` (adapted: config overrides instead of transforms)
+- P projects normalized definitions for available providers — `tests/oc_catalog.rs::oc_catalog_projects_normalized_definitions_for_available_providers`
+- P omits deprecated and non-text model definitions — `tests/oc_catalog.rs::oc_catalog_omits_deprecated_and_non_text_model_definitions`
+- P lists non-chat models only by type, so sessions never see them — `tests/oc_catalog.rs::oc_catalog_lists_non_chat_models_only_by_type_so_sessions_never_see_them`
+- P registers key methods for providers with environment variables — `tests/oc_catalog.rs::oc_catalog_registers_key_methods_for_providers_with_environment_variables` (adapted: the provider's key variables)
+- P preserves provider and model URL templates in the catalog — `tests/oc_catalog.rs::oc_catalog_preserves_provider_and_model_url_templates_in_the_catalog` (CodeSmith fills them from the environment at resolution)
+- P copies model request bodies without reinterpreting literal __proto__ keys — `tests/oc_catalog.rs::oc_catalog_copies_model_request_bodies_without_reinterpreting_literal_proto_keys`
+- P omits legacy provider aliases — `tests/oc_catalog.rs::oc_catalog_omits_legacy_provider_aliases`
+- P registers every listed environment variable for provider plugins to narrow — `tests/oc_catalog.rs::oc_catalog_registers_every_listed_environment_variable_for_provider_plugins_to_narrow`
+- P converts reasoning options into settings variants — `tests/oc_catalog.rs::oc_catalog_converts_reasoning_options_into_settings_variants`
 
 **`plugin/provider-openai.test.ts`**
 

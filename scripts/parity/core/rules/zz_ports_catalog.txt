@@ -1,0 +1,58 @@
+# The Model Catalog (models.dev) group, ported in tests/oc_catalog.rs.
+@models.test.ts
+21 :: ported :: tests/oc_catalog.rs::oc_catalog_normalizes_permissive_interleaved_values_to_compatibility :: config's `interleaved`
+246 :: ported :: tests/oc_catalog.rs::oc_catalog_get_returns_normalized_snapshots_from_kv_when_a_cache_entry_exists
+262 :: ported :: tests/oc_catalog.rs::oc_catalog_takes_each_models_package_from_its_first_api_and_skips_urls_packages_build_themselves
+351 :: ported :: tests/oc_catalog.rs::oc_catalog_keeps_non_chat_models_with_their_type_maps_mime_modalities_and_skips_malformed_models
+403 :: ported :: tests/oc_catalog.rs::oc_catalog_maps_per_token_text_prices_context_tiers_and_mode_multipliers_onto_cost
+456 :: ported :: tests/oc_catalog.rs::oc_catalog_skips_apis_whose_opencode_entrypoint_this_build_doesnt_have
+513 :: ported :: tests/oc_catalog.rs::oc_catalog_skips_non_chat_models_whose_only_opencode_package_serves_another_type
+554 :: ported :: tests/oc_catalog.rs::oc_catalog_drops_model_types_not_kept
+587 :: ported :: tests/oc_catalog.rs::oc_catalog_skips_api_entries_and_modes_it_cant_read_and_keeps_the_model
+631 :: ported :: tests/oc_catalog.rs::oc_catalog_reads_a_models_dev_v1_catalog_by_converting_it_to_v2
+684 :: ported :: tests/oc_catalog.rs::oc_catalog_falls_back_to_api_json_when_a_custom_mirror_has_no_v2_catalog :: adapted: a local server
+731 :: ported :: tests/oc_catalog.rs::oc_catalog_get_returns_empty_catalog_when_kv_is_empty_fetch_disabled_and_the_bundled_snapshot_is_disabled
+744 :: ported :: tests/oc_catalog.rs::oc_catalog_get_falls_back_to_the_bundled_snapshot_when_kv_is_empty_and_fetch_is_disabled
+761 :: ported :: tests/oc_catalog.rs::oc_catalog_get_recovers_from_a_corrupted_kv_entry_by_fetching_a_fresh_catalog
+778 :: ported :: tests/oc_catalog.rs::oc_catalog_get_still_populates_the_catalog_when_the_kv_cache_write_fails
+797 :: ported :: tests/oc_catalog.rs::oc_catalog_uses_the_default_models_url_when_the_configured_url_is_empty :: adapted: checks the source rather than sending the request
+810 :: ported :: tests/oc_catalog.rs::oc_catalog_get_is_single_flight_under_concurrent_calls
+825 :: ported :: tests/oc_catalog.rs::oc_catalog_get_caches_across_calls_later_kv_writes_are_ignored_until_invalidate
+846 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_true_fetches_via_http_and_updates_the_cache :: adapted: a generic codesmith/<version> User-Agent
+875 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_false_skips_fetch_when_the_kv_entry_is_fresh
+890 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_false_fetches_when_the_kv_entry_is_stale :: adapted: the subscribe channel for the Refreshed event
+927 :: design :: client-server :: the Refreshed event across OpenCode Locations; CodeSmith has one catalog per process
+972 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_false_stays_quiet_when_the_fetched_body_matches_the_cached_digest
+1009 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_false_revalidates_with_the_stored_etag_and_treats_304_as_unchanged :: adapted: no tracing spans
+1081 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_false_republishes_once_for_legacy_cache_entries_without_a_digest
+1112 :: ported :: tests/oc_catalog.rs::oc_catalog_refresh_swallows_http_errors_and_leaves_cache_intact
+@plugin/models-dev.test.ts
+127 :: design :: client-server :: definitions shared between OpenCode Locations
+260 :: design :: client-server :: snapshot references per OpenCode Location
+293 :: ported :: tests/oc_catalog.rs::oc_catalog_adopts_a_refresh_that_completes_between_its_initial_read_and_its_subscription :: adapted: each model resolution reads the current catalog
+324 :: design :: effect-internal :: model replay in OpenCode's editable model store
+383 :: ported :: tests/oc_catalog.rs::oc_catalog_keeps_the_shared_snapshot_pristine_while_provider_and_model_transforms_mutate_owned_records :: adapted: config overrides instead of transforms
+460 :: ported :: tests/oc_catalog.rs::oc_catalog_projects_normalized_definitions_for_available_providers
+627 :: ported :: tests/oc_catalog.rs::oc_catalog_omits_deprecated_and_non_text_model_definitions
+709 :: ported :: tests/oc_catalog.rs::oc_catalog_lists_non_chat_models_only_by_type_so_sessions_never_see_them
+770 :: ported :: tests/oc_catalog.rs::oc_catalog_registers_key_methods_for_providers_with_environment_variables :: adapted: the provider's key variables
+797 :: ported :: tests/oc_catalog.rs::oc_catalog_preserves_provider_and_model_url_templates_in_the_catalog :: CodeSmith fills them from the environment at resolution
+865 :: ported :: tests/oc_catalog.rs::oc_catalog_copies_model_request_bodies_without_reinterpreting_literal_proto_keys
+921 :: ported :: tests/oc_catalog.rs::oc_catalog_omits_legacy_provider_aliases
+977 :: ported :: tests/oc_catalog.rs::oc_catalog_registers_every_listed_environment_variable_for_provider_plugins_to_narrow
+1031 :: ported :: tests/oc_catalog.rs::oc_catalog_converts_reasoning_options_into_settings_variants
+@config/provider.test.ts
+38 :: design :: other :: provider-native compaction settings (CodeSmith always compacts by summary)
+176 :: design :: other :: CodeSmith detects the cache marker format from the endpoint; there is no cacheFormat setting
+269 :: design :: other :: model-level transport settings (CodeSmith's transport is a provider setting only)
+306:2 :: ported :: tests/oc_catalog.rs::oc_catalog_configured_provider_transport_overrides_builtin_defaults :: the openai and azure rows
+306:2 :: design :: other :: xAI is OpenAI Chat in CodeSmith, and only the azure provider defaults to WebSocket
+425 :: ported :: tests/oc_catalog.rs::oc_catalog_lets_config_change_a_catalog_models_type_and_keeps_it_when_unset
+460 :: ported :: tests/oc_catalog.rs::oc_catalog_preserves_catalog_capabilities_unless_config_overrides_them
+509 :: ported :: tests/oc_catalog.rs::oc_catalog_merges_partial_config_capabilities_onto_the_base_models_existing_fields
+822 :: ported :: tests/oc_catalog.rs::oc_catalog_generates_variants_after_rewriting_a_configured_model_package :: adapted: a configured protocol for the package
+856 :: design :: deliberate :: plugin.rs: plugins supplying variants to custom models
+907 :: ported :: tests/oc_catalog.rs::oc_catalog_respells_inherited_variants_when_config_moves_a_catalog_model_to_another_package :: adapted: moved to another protocol
+944 :: ported :: tests/oc_catalog.rs::oc_catalog_keeps_a_moved_catalog_model_without_reasoning_variants_free_of_variants
+970 :: ported :: tests/oc_catalog.rs::oc_catalog_builds_configured_reasoning_variants_after_provider_and_model_package_normalization :: adapted: one provider per protocol
+1057 :: ported :: tests/oc_catalog.rs::oc_catalog_applies_configured_release_date_temperature_support_and_reasoning_field :: adapted: no release dates or freeform formats kept

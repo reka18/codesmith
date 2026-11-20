@@ -9,7 +9,7 @@
 533,640 :: portable :: config::resolve_model :: default model when none is configured; a disabled provider's default ignored (S)
 562,586 :: design :: cloud :: OpenCode free models
 665,696 :: design :: deliberate :: title.rs: no small model
-* :: feature :: Model Catalog (models.dev) :: OpenCode's editable provider/model catalog and its events
+* :: design :: storage-model :: OpenCode's editable provider/model store, its events and credential-derived availability (CodeSmith resolves config over the catalog at each model resolution; see tests/oc_catalog.rs)
 
 @config/provider-options.test.ts
 * :: portable :: codesmith_ai options :: provider/model/variant options split into settings and body (S)
@@ -40,7 +40,7 @@
 * :: design :: cloud :: OpenCode free models
 
 @model-plugins.test.ts
-* :: feature :: Model Catalog (models.dev) :: plugin-edited model catalogs
+* :: design :: deliberate :: plugin.rs: plugins are compiled in, so no plugin edits the model catalog
 
 @model-resolver.test.ts
 66,734 :: portable :: config providers (azure) :: Azure deployment routing (S)
