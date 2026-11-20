@@ -993,7 +993,7 @@ mod tests {
                 message: Message {
                     role: Role::Assistant,
                     parts: vec![
-                        Part::Reasoning(big.clone()),
+                        Part::Reasoning(big.clone().into()),
                         Part::ToolCall {
                             id: "1".into(),
                             name: "read".into(),
