@@ -419,7 +419,14 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
             eprintln!("running automations; Ctrl+C to stop");
             runner().run_forever().await;
         }
-        AutomationCmd::RunDue => println!("{} fired", runner().tick().await?),
+        AutomationCmd::RunDue => {
+            // Release the lease after, or every run-due in the next minute
+            // would find it taken and fire nothing.
+            let r = runner();
+            let fired = r.tick().await;
+            r.release()?;
+            println!("{} fired", fired?);
+        }
     }
     Ok(())
 }

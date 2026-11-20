@@ -534,6 +534,19 @@ pub fn lease(db: &Store, holder: &str, ttl: i64) -> Result<bool> {
     })
 }
 
+/// Give up the scheduler lease if `holder` has it, so another process can
+/// schedule right away instead of waiting for it to expire.
+pub fn release(db: &Store, holder: &str) -> Result<()> {
+    db.with_conn(|c| {
+        ensure(c)?;
+        c.execute(
+            "DELETE FROM automation_lease WHERE name = 'scheduler' AND holder = ?1",
+            params![holder],
+        )?;
+        Ok(())
+    })
+}
+
 /// Due automations, each claimed for one run: its run count goes up and its
 /// next due time moves on (or it is marked done), all in one transaction.
 pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
@@ -770,6 +783,11 @@ impl Runner {
             .map(|(a, was)| self.fire(a, now - was > 60_000));
         futures_util::future::join_all(jobs).await;
         Ok(n)
+    }
+
+    /// Release the scheduler lease (a one-off `tick` is done with it).
+    pub fn release(&self) -> Result<()> {
+        release(&Store::open(&self.db)?, &self.holder)
     }
 
     /// How many event automations this process is following now.
@@ -1471,6 +1489,16 @@ mod tests {
         assert!(
             lease(&db, "two", 60_000).unwrap(),
             "an expired lease is taken over"
+        );
+        release(&db, "one").unwrap();
+        assert!(
+            !lease(&db, "one", 60_000).unwrap(),
+            "only the holder releases"
+        );
+        release(&db, "two").unwrap();
+        assert!(
+            lease(&db, "one", 60_000).unwrap(),
+            "a released lease is free at once"
         );
     }
 
