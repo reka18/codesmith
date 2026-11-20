@@ -81,6 +81,26 @@ pub trait Sink: Send {
     fn todos(&mut self, _todos: &[Todo]) {}
     /// Something worth telling the user that is not part of the answer.
     fn notice(&mut self, _message: &str) {}
+    /// A subagent session started. Until its `child_end`, the tool calls
+    /// this sink sees are its own (or its subagents'), and its text and
+    /// reasoning arrive as `child_text` and `child_reasoning`.
+    fn child_start(&mut self, _child: &ChildSession) {}
+    /// The subagent `id` ended: `completed`, `interrupted` or `failed`
+    /// (with why).
+    fn child_end(&mut self, _id: &str, _status: &str, _error: Option<&str>) {}
+    fn child_text(&mut self, _delta: &str) {}
+    fn child_reasoning(&mut self, _delta: &str) {}
+}
+
+/// A subagent session, as its parent's sink sees it start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildSession {
+    pub id: String,
+    /// The session that started it: the top session, or a subagent.
+    pub parent_id: String,
+    /// 1 for a subagent of the top session.
+    pub depth: u32,
+    pub title: String,
 }
 
 fn forward_progress(sink: &mut dyn Sink, id: &str, p: tool::Progress) {
@@ -97,7 +117,24 @@ struct ChildSink<'a> {
 }
 
 impl Sink for ChildSink<'_> {
-    fn text(&mut self, _delta: &str) {}
+    fn text(&mut self, delta: &str) {
+        self.parent.child_text(delta);
+    }
+    fn reasoning(&mut self, delta: &str) {
+        self.parent.child_reasoning(delta);
+    }
+    fn child_text(&mut self, delta: &str) {
+        self.parent.child_text(delta);
+    }
+    fn child_reasoning(&mut self, delta: &str) {
+        self.parent.child_reasoning(delta);
+    }
+    fn child_start(&mut self, child: &ChildSession) {
+        self.parent.child_start(child);
+    }
+    fn child_end(&mut self, id: &str, status: &str, error: Option<&str>) {
+        self.parent.child_end(id, status, error);
+    }
     fn tool_start(&mut self, id: &str, name: &str, input: &serde_json::Value) {
         self.parent
             .tool_start(id, &format!("{} › {name}", self.label), input);
@@ -1895,6 +1932,12 @@ impl Session {
         .map_err(|e| format!("{e:#}"))?;
         child.depth = self.depth + 1;
         child.lsp = self.lsp.clone();
+        sink.child_start(&ChildSession {
+            id: child.id.clone(),
+            parent_id: self.id.clone(),
+            depth: child.depth,
+            title: label.clone(),
+        });
         let mut csink = ChildSink {
             parent: sink,
             label: agent_id.to_string(),
@@ -1907,6 +1950,11 @@ impl Session {
             Err(e) => Err(e),
         };
         add(&mut self.usage, &child.usage);
+        match &outcome {
+            Ok(()) if child.stopped().is_some() => sink.child_end(&child.id, "interrupted", None),
+            Ok(()) => sink.child_end(&child.id, "completed", None),
+            Err(e) => sink.child_end(&child.id, "failed", Some(&format!("{e:#}"))),
+        }
         let answer = child
             .messages
             .iter()

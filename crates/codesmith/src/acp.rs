@@ -78,6 +78,9 @@ impl Conn {
     fn update(&self, session: &str, update: Value) {
         self.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session, "update": update}}));
     }
+    fn notify(&self, method: &str, params: Value) {
+        self.send(json!({"jsonrpc": "2.0", "method": method, "params": params}));
+    }
     fn request(
         &self,
         session: &str,
@@ -356,8 +359,109 @@ struct TurnStats {
     finish: Option<Reason>,
 }
 
+/// The client asks for subagent activity apart, as OpenCode's
+/// `opencode/session/child_update` notifications.
+const CHILD_UPDATES: &str = "opencode/child-session-updates";
+const CHILD_UPDATE_METHOD: &str = "opencode/session/child_update";
+const CHILD_META: &str = "opencode/child-session";
+
+/// A subagent session whose activity streams within the turn.
+#[derive(Clone, Debug, PartialEq)]
+struct Child {
+    id: String,
+    parent: String,
+    depth: u32,
+    title: String,
+    /// Its message being streamed.
+    message: String,
+}
+
+impl Child {
+    /// OpenCode's `ACPChild.meta`.
+    fn meta(&self) -> Value {
+        let mut m = json!({"id": self.id, "parentID": self.parent, "depth": self.depth});
+        if !self.title.is_empty() {
+            m["title"] = json!(self.title);
+        }
+        json!({CHILD_META: m})
+    }
+
+    /// OpenCode's `ACPChild.project`: the update marked as the child's,
+    /// its tool call ids made unique and titles prefixed.
+    fn project(&self, mut update: Value) -> Value {
+        let meta = self.meta();
+        match update.get_mut("_meta").and_then(Value::as_object_mut) {
+            Some(m) => m.extend(meta.as_object().unwrap().clone()),
+            None => update["_meta"] = meta,
+        }
+        if matches!(
+            update["sessionUpdate"].as_str(),
+            Some("tool_call" | "tool_call_update")
+        ) {
+            if let Some(id) = update["toolCallId"].as_str() {
+                update["toolCallId"] = json!(format!("{}:{id}", self.id));
+            }
+            if let (Some(t), false) = (update["title"].as_str(), self.title.is_empty()) {
+                update["title"] = json!(format!("{}: {t}", self.title));
+            }
+        }
+        update
+    }
+
+    /// OpenCode's `ACPChild.update`: a `child_update` notification's params.
+    fn notification(&self, root: &str, event: Value) -> Value {
+        let mut p = json!({
+            "rootSessionId": root,
+            "childSessionId": self.id,
+            "parentSessionId": self.parent,
+            "depth": self.depth,
+        });
+        if !self.title.is_empty() {
+            p["title"] = json!(self.title);
+        }
+        p.as_object_mut()
+            .unwrap()
+            .extend(event.as_object().unwrap().clone());
+        p
+    }
+}
+
+/// Send `update` for session `sid`, or for its subagent `child`: apart,
+/// when the client takes child updates, else projected into the session's
+/// own stream (OpenCode's `route`; every child here runs within the turn).
+fn route(conn: &Conn, sid: &str, child: Option<&Child>, apart: bool, update: Value) {
+    match child {
+        None => conn.update(sid, update),
+        Some(c) if apart => conn.notify(
+            CHILD_UPDATE_METHOD,
+            c.notification(sid, json!({"type": "update", "update": c.project(update)})),
+        ),
+        Some(c) => conn.update(sid, c.project(update)),
+    }
+}
+
 /// The tool call that is running, so permission requests can point at it.
-type Current = Arc<Mutex<Option<(String, String, Value)>>>;
+#[derive(Clone, Debug)]
+struct Call {
+    /// The id the client knows it by, before a child's projection.
+    id: String,
+    name: String,
+    input: Value,
+    /// The subagent that made it.
+    child: Option<Child>,
+}
+
+impl Call {
+    /// The id the client sees.
+    fn client_id(&self) -> String {
+        match &self.child {
+            Some(c) => format!("{}:{}", c.id, self.id),
+            None => self.id.clone(),
+        }
+    }
+}
+
+type Current = Arc<Mutex<Option<Call>>>;
 
 /// A file an edit is about to change, and its text (`None`: new file).
 type Before = (PathBuf, Option<String>);
@@ -446,10 +550,15 @@ struct AcpSink {
     /// signature).
     aliases: HashMap<String, String>,
     retrying: bool,
+    /// The client takes subagent activity apart (`child_update`).
+    child_updates: bool,
+    /// The subagents running, innermost last, with the call that was
+    /// running when each started.
+    children: Vec<(Child, Option<Call>)>,
 }
 
 impl AcpSink {
-    fn new(conn: Conn, session: &str, slot: &Slot, compaction: bool) -> Self {
+    fn new(conn: Conn, session: &str, slot: &Slot, compaction: bool, child_updates: bool) -> Self {
         AcpSink {
             conn,
             session: session.to_string(),
@@ -468,7 +577,49 @@ impl AcpSink {
             pending: BTreeSet::new(),
             aliases: HashMap::new(),
             retrying: false,
+            child_updates,
+            children: Vec::new(),
         }
+    }
+
+    /// The subagent whose activity this is, if any.
+    fn child(&self) -> Option<&Child> {
+        self.children.last().map(|(c, _)| c)
+    }
+
+    /// Send an update of the session or of the subagent running.
+    fn emit(&self, update: Value) {
+        route(
+            &self.conn,
+            &self.session,
+            self.child(),
+            self.child_updates,
+            update,
+        );
+    }
+
+    /// Where a call's state is kept: a subagent's calls by their projected
+    /// id, so they cannot meet the session's own.
+    fn key(&self, id: &str) -> String {
+        match self.child() {
+            Some(c) => format!("{}:{id}", c.id),
+            None => id.to_string(),
+        }
+    }
+
+    /// A subagent's status, for clients that take child updates.
+    fn child_status(&self, child: &Child, status: &str, error: Option<&str>) {
+        if !self.child_updates {
+            return;
+        }
+        let mut event = json!({"type": "status", "status": status});
+        if let Some(e) = error {
+            event["error"] = json!({"type": "unknown", "message": e});
+        }
+        self.conn.notify(
+            CHILD_UPDATE_METHOD,
+            child.notification(&self.session, event),
+        );
     }
 
     /// The id the client knows call `id` by.
@@ -549,6 +700,12 @@ impl Sink for AcpSink {
     fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
         self.settle_retry();
         self.in_reasoning = false;
+        // A subagent's calls arrive as "agent › tool": its projection names it.
+        let name = if self.child().is_some() {
+            base_name(name)
+        } else {
+            name
+        };
         let shown = self.client_id(id);
         let before = matches!(base_name(name), "edit" | "write")
             .then(|| file_path(input).map(|p| absolute(&self.cwd, p)))
@@ -558,27 +715,37 @@ impl Sink for AcpSink {
                 (p, old)
             });
         self.tools
-            .insert(id.into(), (name.into(), input.clone(), before));
-        *self.current.lock().unwrap() = Some((shown.clone(), name.to_string(), input.clone()));
+            .insert(self.key(id), (name.into(), input.clone(), before));
+        *self.current.lock().unwrap() = Some(Call {
+            id: shown.clone(),
+            name: name.to_string(),
+            input: input.clone(),
+            child: self.child().cloned(),
+        });
         // A call announced while it streamed is already known to the client.
-        if !self.pending.remove(&shown) {
+        if self.child().is_some() || !self.pending.remove(&shown) {
             let mut call = tool_call(&self.cwd, &shown, name, input, "pending");
             call["sessionUpdate"] = json!("tool_call");
-            self.conn.update(&self.session, call);
+            self.emit(call);
         }
         let mut running = tool_call(&self.cwd, &shown, name, input, "in_progress");
         running["sessionUpdate"] = json!("tool_call_update");
         running.as_object_mut().unwrap().remove("name");
-        self.conn.update(&self.session, running);
+        self.emit(running);
     }
     fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
-        *self.current.lock().unwrap() = None;
+        // Within a subagent, the call that started it is running again.
+        *self.current.lock().unwrap() = self.children.last().and_then(|(_, outer)| outer.clone());
+        let key = self.key(id);
         let (name, input, before) = self
             .tools
-            .remove(id)
-            .unwrap_or_else(|| (name.to_string(), json!({}), None));
-        let media = self.media.remove(id).unwrap_or_default();
-        let shown = self.aliases.remove(id).unwrap_or_else(|| id.to_string());
+            .remove(&key)
+            .unwrap_or_else(|| (base_name(name).to_string(), json!({}), None));
+        let media = self.media.remove(&key).unwrap_or_default();
+        let shown = match self.child() {
+            Some(_) => id.to_string(),
+            None => self.aliases.remove(id).unwrap_or_else(|| id.to_string()),
+        };
         let mut update = result_update(&self.cwd, &shown, &name, &input, output, is_error, &media);
         if let (false, Some((path, old))) = (is_error, before) {
             if let Ok(new) = std::fs::read_to_string(&path) {
@@ -590,10 +757,45 @@ impl Sink for AcpSink {
                 }
             }
         }
-        self.conn.update(&self.session, update);
+        self.emit(update);
+        if let Some((c, _)) = self.children.last_mut() {
+            c.message = unique("msg");
+        }
     }
     fn tool_media(&mut self, id: &str, media: &[Media]) {
-        self.media.insert(id.to_string(), media.to_vec());
+        self.media.insert(self.key(id), media.to_vec());
+    }
+    fn child_start(&mut self, child: &codesmith_core::session::ChildSession) {
+        let c = Child {
+            id: child.id.clone(),
+            parent: child.parent_id.clone(),
+            depth: child.depth,
+            title: child.title.clone(),
+            message: unique("msg"),
+        };
+        self.child_status(&c, "created", None);
+        self.child_status(&c, "running", None);
+        let outer = self.current.lock().unwrap().clone();
+        self.children.push((c, outer));
+    }
+    fn child_end(&mut self, id: &str, status: &str, error: Option<&str>) {
+        let Some(at) = self.children.iter().rposition(|(c, _)| c.id == id) else {
+            return;
+        };
+        let (c, outer) = self.children.remove(at);
+        *self.current.lock().unwrap() = outer;
+        self.child_status(&c, status, error);
+    }
+    fn child_text(&mut self, delta: &str) {
+        if let Some(c) = self.child() {
+            self.emit(chunk("agent_message_chunk", &c.message, delta));
+        }
+    }
+    fn child_reasoning(&mut self, delta: &str) {
+        if let Some(c) = self.child() {
+            let id = reasoning_id(&c.message, 0);
+            self.emit(chunk("agent_thought_chunk", &id, delta));
+        }
     }
     fn todos(&mut self, todos: &[Todo]) {
         self.conn.update(&self.session, plan(todos));
@@ -689,7 +891,12 @@ impl Asker for AcpAsker {
     fn ask(&self, req: &Request) -> Reply {
         let current = self.current.lock().unwrap().clone();
         let mut tc = match &current {
-            Some((id, name, input)) => {
+            Some(Call {
+                id,
+                name,
+                input,
+                child,
+            }) => {
                 let mut tc = tool_call(&self.cwd, id, name, input, "pending");
                 if let Some(t) = permission_title(name, input) {
                     tc["title"] = json!(t);
@@ -698,6 +905,11 @@ impl Asker for AcpAsker {
                 }
                 if let Some(d) = preview(&self.cwd, name, input) {
                     tc["content"] = json!([d]);
+                }
+                if let Some(c) = child {
+                    tc["sessionUpdate"] = json!("tool_call");
+                    tc = c.project(tc);
+                    tc.as_object_mut().unwrap().remove("sessionUpdate");
                 }
                 tc
             }
@@ -864,8 +1076,8 @@ impl Questioner for AcpQuestioner {
             "message": message,
             "requestedSchema": question_schema(questions),
         });
-        if let Some((id, ..)) = self.current.lock().unwrap().as_ref() {
-            params["toolCallId"] = json!(id);
+        if let Some(call) = self.current.lock().unwrap().as_ref() {
+            params["toolCallId"] = json!(call.client_id());
         }
         let rx = self
             .conn
@@ -1401,6 +1613,12 @@ impl Agent {
         Store::open(&self.db).ok()
     }
 
+    /// The client takes subagent activity apart (OpenCode's
+    /// `opencode/child-session-updates` capability).
+    fn child_updates(&self) -> bool {
+        self.client.lock().unwrap()["_meta"][CHILD_UPDATES] == json!(true)
+    }
+
     fn client_has(&self, pointer: &str) -> bool {
         self.client
             .lock()
@@ -1695,6 +1913,7 @@ impl Agent {
                         "promptCapabilities": {"image": true, "audio": false, "embeddedContext": true},
                         "mcpCapabilities": {"http": true, "sse": false},
                         "sessionCapabilities": {"additionalDirectories": {}, "close": {}, "delete": {}, "fork": {}, "list": {}, "resume": {}},
+                        "_meta": {CHILD_UPDATES: true},
                     },
                     "authMethods": [{"id": AUTH_METHOD, "name": "Login with codesmith", "description": "Run `codesmith auth login <provider>` in the terminal"}],
                     "agentInfo": {"name": "codesmith", "title": "CodeSmith", "version": env!("CARGO_PKG_VERSION")},
@@ -1961,9 +2180,10 @@ impl Agent {
         };
         *slot.stats.lock().unwrap() = TurnStats::default();
         let compaction = self.client_has("/session/compaction");
+        let child_updates = self.child_updates();
         let (me, slot2) = (self.clone(), slot.clone());
         let task = tokio::spawn(async move {
-            let mut sink = AcpSink::new(me.conn.clone(), &sid, &slot2, compaction);
+            let mut sink = AcpSink::new(me.conn.clone(), &sid, &slot2, compaction, child_updates);
             let title_before = s.title.clone();
             let result = me
                 .run_turn(&mut s, &slot2, &text, attached, &mut sink)
@@ -2124,7 +2344,13 @@ impl Agent {
     async fn resumed(self: Arc<Self>, slot: Arc<Slot>, mut s: Session) {
         *slot.stats.lock().unwrap() = TurnStats::default();
         let compaction = self.client_has("/session/compaction");
-        let mut sink = AcpSink::new(self.conn.clone(), &slot.id, &slot, compaction);
+        let mut sink = AcpSink::new(
+            self.conn.clone(),
+            &slot.id,
+            &slot,
+            compaction,
+            self.child_updates(),
+        );
         let title_before = s.title.clone();
         if let Err(e) = s.resume_background(&mut sink).await {
             eprintln!("acp: resuming session {}: {e:#}", slot.id);
@@ -2286,10 +2512,22 @@ impl Agent {
                 Err(e) => eprintln!("acp: could not reload session {sid}: {e:#}"),
             }
         }
-        if let Some((id, name, input)) = slot.current.lock().unwrap().take() {
-            self.conn.update(
+        if let Some(call) = slot.current.lock().unwrap().take() {
+            let update = result_update(
+                &slot.cwd,
+                &call.id,
+                &call.name,
+                &call.input,
+                "Cancelled",
+                true,
+                &[],
+            );
+            route(
+                &self.conn,
                 sid,
-                result_update(&slot.cwd, &id, &name, &input, "Cancelled", true, &[]),
+                call.child.as_ref(),
+                self.child_updates(),
+                update,
             );
         }
         if let Some((id, reason)) = slot.compacting.lock().unwrap().take() {
@@ -2449,11 +2687,12 @@ pub async fn run() -> Result<()> {
 ///   references them in the text, for `read` and its permission checks);
 /// - non-image media in tool results (ACP tool content carries images;
 ///   a PDF a tool returned reaches the model but not the client);
-/// - child-session updates (`opencode/child-session-updates`), turns woken
-///   by subagents after `end_turn`, and `_session/steering`: subagents run
-///   inside the parent's turn and their tool calls stream into it (turns
-///   woken by background shells are ported; a prompt during one waits for
-///   it instead of steering into it);
+/// - background subagents, and turns woken by them after `end_turn`:
+///   subagents run inside the parent's turn (child updates and their
+///   projection into the parent are ported; turns woken by background
+///   shells are too);
+/// - `_session/steering`: a prompt during a woken turn waits for it
+///   instead of steering into it;
 /// - terminal auth (`--login`) and the auth-required mapping from a server
 ///   event (provider HTTP 401/403 errors map to -32000 instead);
 /// - full-file diffs on replay for files over 256 KiB (before and after
@@ -2582,6 +2821,26 @@ mod tests {
                         WOKE.lock().unwrap().push(marker.to_string());
                         reply(&format!("woke again: {marker}"))
                     }
+                }
+            } else if prompt.contains("delegate") || prompt.contains("nest deeper") {
+                // A subagent that starts one of its own, which reads a file.
+                let (description, task) = if prompt.contains("delegate") {
+                    ("Explore code", "nest deeper")
+                } else {
+                    ("Deeper", "leaf read")
+                };
+                match done {
+                    0 => call(
+                        1,
+                        "subagent",
+                        json!({"agent": "nester", "description": description, "prompt": task}),
+                    ),
+                    _ => reply(&format!("{description} done")),
+                }
+            } else if prompt.contains("leaf read") {
+                match done {
+                    0 => call(1, "read", json!({"path": "a.txt"})),
+                    _ => reply("leaf done"),
                 }
             } else if let Some(command) = prompt.strip_prefix("background ") {
                 match done {
@@ -2943,6 +3202,10 @@ mod tests {
         assert_eq!(
             r["agentCapabilities"]["mcpCapabilities"],
             json!({"http": true, "sse": false})
+        );
+        assert_eq!(
+            r["agentCapabilities"]["_meta"],
+            json!({"opencode/child-session-updates": true})
         );
         assert_eq!(
             r["authMethods"],
@@ -4463,6 +4726,167 @@ mod tests {
             .await;
         let (done, _) = c.until(id, |_| None).await;
         assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+    }
+
+    /// A client and a session whose prompt runs a subagent, which runs
+    /// one of its own that reads a file (with permission).
+    async fn delegate(child_updates: bool) -> (Value, Vec<Value>, Vec<Value>, String) {
+        let (_d, cwd, base) = tmp().await;
+        std::fs::write(cwd.join("a.txt"), "alpha\n").unwrap();
+        let mut c = start_with(
+            &cwd,
+            &base,
+            json!({
+                "subagent_depth": 2,
+                "agents": {"nester": {"mode": "subagent", "description": "Nests"}},
+                "permissions": [{"action": "read", "resource": "*", "effect": "ask"}],
+            }),
+        );
+        let caps = if child_updates {
+            json!({"_meta": {"opencode/child-session-updates": true}})
+        } else {
+            json!({})
+        };
+        c.request(
+            "initialize",
+            json!({"protocolVersion": 1, "clientCapabilities": caps}),
+        )
+        .await;
+        let sid = c.new_session(&cwd).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "delegate"}]}),
+            )
+            .await;
+        let mut asked = Vec::new();
+        let (done, seen) = c
+            .until(id, |m| {
+                asked.push(m["params"].clone());
+                allow_once(m)
+            })
+            .await;
+        (done, seen, asked, sid)
+    }
+
+    // turn.test.ts: "shows nested and background child work and routes its
+    // permissions (child capability: false)": a subagent's calls stream in
+    // the parent's own updates, under ids and titles of their child session.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_child_work_is_projected_into_the_parent() {
+        let (done, seen, asked, sid) = delegate(false).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+        assert!(!seen.iter().any(|m| m["method"] == CHILD_UPDATE_METHOD));
+        let calls = updates(&seen, "tool_call");
+        // The parent's subagent call, the child's, and the grandchild's read.
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls[0]["toolCallId"], "c1");
+        assert!(calls[0]["_meta"].is_null());
+        let child = &calls[1]["_meta"][CHILD_META];
+        assert_eq!(child["parentID"], json!(sid));
+        assert_eq!(child["depth"], 1);
+        assert_eq!(child["title"], "Explore code");
+        assert_eq!(
+            calls[1]["toolCallId"],
+            json!(format!("{}:c1", child["id"].as_str().unwrap()))
+        );
+        assert!(calls[1]["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("Explore code: subagent"));
+        let grandchild = &calls[2]["_meta"][CHILD_META];
+        assert_eq!(grandchild["parentID"], child["id"]);
+        assert_eq!(grandchild["depth"], 2);
+        assert_eq!(grandchild["title"], "Deeper");
+        let read_id = format!("{}:c1", grandchild["id"].as_str().unwrap());
+        assert_eq!(calls[2]["toolCallId"], json!(read_id));
+        assert_eq!(calls[2]["title"], "Deeper: read a.txt");
+        // Its permission request points at the projected call.
+        let read_ask = asked
+            .iter()
+            .find(|a| a["toolCall"]["toolCallId"] == json!(read_id))
+            .expect("the read's permission request");
+        assert_eq!(read_ask["sessionId"], json!(sid));
+        assert_eq!(read_ask["toolCall"]["title"], "Deeper: a.txt");
+        assert_eq!(read_ask["toolCall"]["_meta"][CHILD_META], *grandchild);
+        let ended: Vec<&Value> = updates(&seen, "tool_call_update")
+            .into_iter()
+            .filter(|u| u["status"] == "completed")
+            .collect();
+        assert_eq!(
+            ended.iter().map(|u| &u["toolCallId"]).collect::<Vec<_>>(),
+            [&json!(read_id), &calls[1]["toolCallId"], &json!("c1")]
+        );
+        // The children's answers are marked as theirs.
+        let texts: Vec<&Value> = updates(&seen, "agent_message_chunk");
+        let deeper = texts
+            .iter()
+            .find(|u| u["content"]["text"] == "Deeper done")
+            .unwrap();
+        assert_eq!(deeper["_meta"][CHILD_META], *child);
+        let own = texts
+            .iter()
+            .find(|u| u["content"]["text"] == "Explore code done")
+            .unwrap();
+        assert!(own["_meta"].is_null());
+    }
+
+    // turn.test.ts: "shows nested and background child work and routes its
+    // permissions (child capability: true)": with the capability, a
+    // subagent's activity and status go apart, as child_update notifications.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_child_work_goes_to_child_updates() {
+        let (done, seen, asked, sid) = delegate(true).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+        let calls = updates(&seen, "tool_call");
+        assert_eq!(calls.len(), 1, "only the parent's own call: {calls:?}");
+        assert!(updates(&seen, "agent_message_chunk")
+            .iter()
+            .all(|u| u["_meta"].is_null()));
+        let child: Vec<&Value> = seen
+            .iter()
+            .filter(|m| m["method"] == CHILD_UPDATE_METHOD)
+            .map(|m| &m["params"])
+            .collect();
+        assert!(child.iter().all(|p| p["rootSessionId"] == json!(sid)));
+        let statuses: Vec<(u64, &str)> = child
+            .iter()
+            .filter(|p| p["type"] == "status")
+            .map(|p| (p["depth"].as_u64().unwrap(), p["status"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                (1, "created"),
+                (1, "running"),
+                (2, "created"),
+                (2, "running"),
+                (2, "completed"),
+                (1, "completed"),
+            ]
+        );
+        let first = child[0];
+        assert_eq!(first["parentSessionId"], json!(sid));
+        assert_eq!(first["title"], "Explore code");
+        let deeper = child.iter().find(|p| p["depth"] == 2).unwrap();
+        assert_eq!(deeper["parentSessionId"], first["childSessionId"]);
+        let read_id = format!("{}:c1", deeper["childSessionId"].as_str().unwrap());
+        let read: Vec<&str> = child
+            .iter()
+            .filter(|p| p["type"] == "update" && p["update"]["toolCallId"] == json!(read_id))
+            .map(|p| p["update"]["sessionUpdate"].as_str().unwrap())
+            .collect();
+        assert_eq!(read, ["tool_call", "tool_call_update", "tool_call_update"]);
+        assert!(child.iter().any(|p| p["type"] == "update"
+            && p["childSessionId"] == first["childSessionId"]
+            && p["update"]["content"]["text"] == "Deeper done"));
+        // Permissions still go to the session, with the child's call.
+        assert!(
+            asked
+                .iter()
+                .any(|a| a["sessionId"] == json!(sid)
+                    && a["toolCall"]["toolCallId"] == json!(read_id))
+        );
     }
 
     // compaction.ts `update`: failed and cancelled compactions, for clients
