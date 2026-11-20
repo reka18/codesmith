@@ -63,7 +63,7 @@ p("- **ported after a fix**: CodeSmith was wrong in a way that matters; it was f
 p("- **gap: missing feature**: the test needs a feature CodeSmith does not have (grouped in the [roadmap](#roadmap)).")
 p("- **gap: by design / not applicable**: CodeSmith differs on purpose (a documented deliberate difference), or the test is about OpenCode's own machinery (Effect layers, its SQLite event store, its client/server Locations, hosted services, Windows/PowerShell, npm packages).")
 p("- **gap: not yet ported**: CodeSmith has the behaviour (or its equivalent) but no test pins it yet; these need no new feature and are the [porting backlog](#porting-backlog).")
-p("- **gap: found bug**: porting showed CodeSmith wrong in a file another change owns; [recorded](#found-bugs-and-differences), not fixed here.")
+p("- **gap: found bug**: porting showed CodeSmith wrong and it is [recorded](#found-bugs-and-differences) rather than fixed.")
 p()
 p("How the buckets were decided: a test is **ported** only when a CodeSmith test named for it (or citing it) checks the same behaviour; \"adapted\" notes say where a port asserts CodeSmith's wording or message model instead of OpenCode's. **Not yet ported** is a judgement that CodeSmith has the behaviour, made by reading its code, not by running the test, so porting a backlog test can still turn up a bug (as the ports in this change did). Where one table mixes PowerShell and POSIX rows, the rows were counted from the table and split between the two buckets.")
 p()
@@ -90,12 +90,15 @@ for (const r of fixed) p(`- \`${r.file}\`: "${r.name}" (${r.count} case${r.count
 p()
 
 // bugs
+const bugs = rows.filter((r) => r.bucket === "bug")
+const differs = rows.filter((r) => r.bucket === "design" && r.ref === "differs")
 p("## Found bugs and differences")
 p()
-p("Porting found these in files this change does not own (`session.rs` belongs to concurrent work), so they are recorded instead of fixed. The repro tests are in the files named, `#[ignore]`d where they would fail.")
+if (!bugs.length && !differs.length) p("None open: every bug porting found is fixed above.")
+else p("Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.")
 p()
-for (const r of rows.filter((r) => r.bucket === "bug")) p(`- **Bug** (\`${r.ref}\`), \`${r.file}\` "${r.name}" (${r.count}): ${r.note}.`)
-for (const r of rows.filter((r) => r.bucket === "design" && r.ref === "differs")) p(`- **Difference to decide**, \`${r.file}\` "${r.name}" (${r.count}): ${r.note}.`)
+for (const r of bugs) p(`- **Bug** (\`${r.ref}\`), \`${r.file}\` "${r.name}" (${r.count}): ${r.note}.`)
+for (const r of differs) p(`- **Difference to decide**, \`${r.file}\` "${r.name}" (${r.count}): ${r.note}.`)
 p()
 
 // roadmap

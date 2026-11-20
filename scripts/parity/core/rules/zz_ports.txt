@@ -54,12 +54,7 @@
 5511 :: ported :: tests/oc_runner.rs::oc_session_returns_tool_failures_to_the_model_and_continues :: adapted: a failing tool call stands in for a tool defect
 7320 :: ported :: tests/oc_runner.rs::oc_session_does_not_continue_after_a_provider_error_follows_a_tool_call
 2207 :: ported :: tests/oc_runner.rs::oc_session_fails_before_the_model_request_when_the_agent_is_unavailable
-6347,6553 :: bug :: session.rs :: an "unknown" finish reason ends the turn as a normal stop; OpenCode retries it before (or after text from) a step that ran no tool
-6184 :: design :: differs :: CodeSmith compacts and retries a context overflow even after partial output; OpenCode fails the step
 2915 :: ported :: tests/oc_compaction.rs::oc_compaction_preserves_provider_errors_from_manual_compaction
-3197 :: bug :: session.rs :: compaction ignores the summary's finish reason, so a summary blocked by the provider is not reported as blocked (with partial text it is committed)
-3265 :: bug :: session.rs :: a summary cut short by the output limit or a content filter is committed (tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it, ignored)
-4072 :: design :: differs :: when recovery summarization fails, the summary's error is reported instead of the original overflow (tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails, ignored)
 3971 :: ported :: tests/oc_compaction.rs::oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn
 3938,3989 :: ported :: tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries :: the scripted model has no configured limit and fails with a raw overflow
 @agent.test.ts
@@ -79,3 +74,11 @@
 214 :: ported :: tests/oc_tools.rs::oc_format_returns_none_when_no_formatter_runs
 246 :: ported :: tests/oc_tools.rs::oc_format_stops_after_the_first_formatter_that_succeeds :: adapted: configured formatters run in key order
 278 :: ported :: tests/oc_tools.rs::oc_format_tries_the_next_formatter_when_the_first_fails
+
+@session-runner.test.ts
+6347 :: fixed :: tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output :: an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran
+6553 :: fixed :: tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text :: as above, dropping the text it streamed
+6184 :: fixed :: tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output :: an overflow after partial output was compacted and retried; it now fails the turn
+3197 :: fixed :: tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider :: a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category)
+3265 :: fixed :: tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it :: the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history
+4072 :: fixed :: tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails :: the failed summary's error was reported instead of the overflow

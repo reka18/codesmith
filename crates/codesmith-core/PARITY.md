@@ -9,7 +9,7 @@ Every test in `packages/core/test` was examined: 332 files, 3826 test sites, 558
 - **gap: missing feature**: the test needs a feature CodeSmith does not have (grouped in the [roadmap](#roadmap)).
 - **gap: by design / not applicable**: CodeSmith differs on purpose (a documented deliberate difference), or the test is about OpenCode's own machinery (Effect layers, its SQLite event store, its client/server Locations, hosted services, Windows/PowerShell, npm packages).
 - **gap: not yet ported**: CodeSmith has the behaviour (or its equivalent) but no test pins it yet; these need no new feature and are the [porting backlog](#porting-backlog).
-- **gap: found bug**: porting showed CodeSmith wrong in a file another change owns; [recorded](#found-bugs-and-differences), not fixed here.
+- **gap: found bug**: porting showed CodeSmith wrong and it is [recorded](#found-bugs-and-differences) rather than fixed.
 
 How the buckets were decided: a test is **ported** only when a CodeSmith test named for it (or citing it) checks the same behaviour; "adapted" notes say where a port asserts CodeSmith's wording or message model instead of OpenCode's. **Not yet ported** is a judgement that CodeSmith has the behaviour, made by reading its code, not by running the test, so porting a backlog test can still turn up a bug (as the ports in this change did). Where one table mixes PowerShell and POSIX rows, the rows were counted from the table and split between the two buckets.
 
@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 51 | 0 | 85 | 185 | 67 | 5 |
+| Session runner | 393 | 51 | 7 | 85 | 183 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 9 | 0 | 29 | 12 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -52,13 +52,19 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 0 | 0 | 27 | 211 | 4 | 0 |
-| **Total** | **5588** | **707** | **8** | **1161** | **2287** | **1420** | **5** |
+| **Total** | **5588** | **707** | **15** | **1161** | **2285** | **1420** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
+- `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
+- `session-runner.test.ts`: "rejects compaction ${response} without retrying or committing its draft" (2 cases): the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history. Pinned by `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it`.
+- `session-runner.test.ts`: "publishes the original overflow when recovery summarization fails" (1 case): the failed summary's error was reported instead of the overflow. Pinned by `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails`.
+- `session-runner.test.ts`: "does not recover context overflow after durable assistant output" (1 case): an overflow after partial output was compacted and retried; it now fails the turn. Pinned by `tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output`.
+- `session-runner.test.ts`: "retries an unknown finish before output" (1 case): an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output`.
+- `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
 - `shell.test.ts`: "builds command args per shell family" (1 case): POSIX families; Zsh now gets `+o nomatch`. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `shell.test.ts`: "passes an unmatched zsh glob through to the command" (1 case): an unmatched glob failed the whole Zsh line. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `tool-search.test.ts`: "${name} distinguishes a malformed filename glob from an empty search" (2 cases): the glob error read "Invalid glob in pattern error parsing glob ...". Pinned by `tests/oc_tools.rs::oc_search_distinguishes_a_malformed_glob_from_an_empty_search`.
@@ -67,14 +73,8 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 
 ## Found bugs and differences
 
-Porting found these in files this change does not own (`session.rs` belongs to concurrent work), so they are recorded instead of fixed. The repro tests are in the files named, `#[ignore]`d where they would fail.
+None open: every bug porting found is fixed above.
 
-- **Bug** (`session.rs`), `session-runner.test.ts` "explains a compaction blocked by the provider" (1): compaction ignores the summary's finish reason, so a summary blocked by the provider is not reported as blocked (with partial text it is committed).
-- **Bug** (`session.rs`), `session-runner.test.ts` "rejects compaction ${response} without retrying or committing its draft" (2): a summary cut short by the output limit or a content filter is committed (tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it, ignored).
-- **Bug** (`session.rs`), `session-runner.test.ts` "retries an unknown finish before output" (1): an "unknown" finish reason ends the turn as a normal stop; OpenCode retries it before (or after text from) a step that ran no tool.
-- **Bug** (`session.rs`), `session-runner.test.ts` "retries an unknown finish cleanly after observable text when no tool ran" (1): an "unknown" finish reason ends the turn as a normal stop; OpenCode retries it before (or after text from) a step that ran no tool.
-- **Difference to decide**, `session-runner.test.ts` "publishes the original overflow when recovery summarization fails" (1): when recovery summarization fails, the summary's error is reported instead of the original overflow (tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails, ignored).
-- **Difference to decide**, `session-runner.test.ts` "does not recover context overflow after durable assistant output" (1): CodeSmith compacts and retries a context overflow even after partial output; OpenCode fails the step.
 
 ## Roadmap
 
@@ -2462,7 +2462,6 @@ Tests for behaviour CodeSmith already has but no test pins (1420 cases), by area
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 210 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 88 |
-| Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
 
@@ -2510,9 +2509,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P preserves provider errors from manual compaction — `tests/oc_compaction.rs::oc_compaction_preserves_provider_errors_from_manual_compaction`
 - P compaction ${summary ? "recovers" : "stops"} after one template reminder for ${response} ×3 — `tests/parity.rs::oc_compaction_nudges_a_reply_without_the_template`
 - D waits for plugin activation before each step and tool call — effect-internal: plugin activation waits
-- X explains a compaction blocked by the provider — compaction ignores the summary's finish reason, so a summary blocked by the provider is not reported as blocked (with partial text it is committed)
+- F explains a compaction blocked by the provider — `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider` (a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category))
 - D stops compaction retries through the ${header ? "provider header" : "retry hook"} ×2 — deliberate: retry.rs: retry headers and retry hooks not honoured
-- X rejects compaction ${response} without retrying or committing its draft ×2 — a summary cut short by the output limit or a content filter is committed (tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it, ignored)
+- F rejects compaction ${response} without retrying or committing its draft ×2 — `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it` (the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history)
 - D stops after four smaller compaction inputs overflow · resends compaction as text after payload too large, then shrinks later rejections · shortens the only exchange's user text when it does not fit · shrinks after payload too large on a compaction already sent as text · does not resend a rejected conversation unchanged when compacting · aims the first overflow compaction below the rejected context · serializes history without tools or media after a summary input overflow · drops tool output in serialized compaction history before omitting exchanges · fits serialized compaction history by omitting oldest exchanges — deliberate: compaction.rs: a summary request is not shrunk and retried
 - P automatically compacts into a completed summary and retained recent turn — `tests/parity.rs::oc_compaction_auto_compacts_past_the_buffered_ceiling`
 - P forces one compaction and retries after provider context overflow — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries`
@@ -2521,7 +2520,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P recovers from provider context overflow without a configured context limit — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
 - P persists a second context overflow after one recovery — `tests/oc_compaction.rs::oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn`
 - P recovers once from a raw context overflow failure — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
-- D publishes the original overflow when recovery summarization fails — differs: when recovery summarization fails, the summary's error is reported instead of the original overflow (tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails, ignored)
+- F publishes the original overflow when recovery summarization fails — `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails` (the failed summary's error was reported instead of the overflow)
 - D projects reasoning and tool events without executing or continuing tools — storage-model: projection-only replay of events
 - D joins concurrent resume calls into one active provider run — effect-internal: concurrent resume joining / run fan-out
 - D steers an active step with newly recorded prompts · promotes queued input after continuation ends · keeps queued input parked when a steer is cancelled during preparation · dispatches a queued move when a steer is cancelled during preparation · preserves durable queued input for a later wake after interruption · preserves durable steering input for a later resume after interruption · promotes queued inputs one at a time in FIFO order · stops a steer-scoped drain before queued input · a steer-scoped drain runs a queued manual compaction next in line · a steer-scoped drain leaves a compaction parked behind a queued prompt · promotes queued input after steering continuation ends · promotes steers before the next queued input · coalesces multiple active steering prompts into one continuation step · runs steering input accepted while the active step fails — deliberate: session.rs: no steers, queues or inbox
@@ -2545,18 +2544,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P projects provider errors emitted before assistant step start — `tests/oc_runner.rs::oc_session_projects_provider_errors_as_terminal_failures` (adapted: the prompt stays in history for the next turn)
 - P projects content-filter finishes as visible terminal failures — `tests/runner_parity.rs::oc_session_projects_content_filter_finishes_as_visible_terminal_failures`
 - P settles a local tool before one content-filter step failure — `tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure`
-- D does not recover context overflow after durable assistant output — differs: CodeSmith compacts and retries a context overflow even after partial output; OpenCode fails the step
+- F does not recover context overflow after durable assistant output — `tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output` (an overflow after partial output was compacted and retried; it now fails the turn)
 - P bounds jittered exponential backoff before output for ${failure.name} ×2 — `src/retry.rs::oc_session_retry_keeps_the_general_allowance_for_other_transient_failures` (backoff schedule bounds)
 - D immediately rebuilds once after explicit continuation rejection · bounds repeated continuation rejection to one immediate recovery — other: explicit continuation rejection is a Responses-WebSocket transport detail (tests/websocket_session.rs covers the transport)
 - P retries an incomplete stream before output — `tests/runner_parity.rs::oc_session_retries_an_incomplete_stream_before_output`
 - D marks only the retried attempt span with its attempt number ${failed.name} ×2 — effect-internal: tracing span attributes
-- X retries an unknown finish before output — an "unknown" finish reason ends the turn as a normal stop; OpenCode retries it before (or after text from) a step that ran no tool
+- F retries an unknown finish before output — `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output` (an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran)
 - D uses a larger provider retry-after delay · caps an excessive provider retry-after delay at fifteen minutes — deliberate: retry.rs: retry-after not honoured
 - P continues ${type} after an output token limit ×2 — `tests/runner_parity.rs::oc_session_continues_text_after_an_output_token_limit`
 - P compacts when the provider cuts an oversized prompt to its window and replies with nothing — `tests/runner_parity.rs::oc_session_compacts_when_the_provider_cuts_an_oversized_prompt_to_its_window_and_replies_with_nothing`
 - P caps output token limit continuations and resets for new input (${tools}) ×2 — `tests/runner_parity.rs::oc_session_caps_output_token_limit_continuations_and_resets_for_new_input`
 - P retries an incomplete stream cleanly from the prompt when no tool ran — `tests/oc_runner.rs::oc_session_retries_an_incomplete_stream_cleanly_from_the_prompt`
-- X retries an unknown finish cleanly after observable text when no tool ran — an "unknown" finish reason ends the turn as a normal stop; OpenCode retries it before (or after text from) a step that ran no tool
+- F retries an unknown finish cleanly after observable text when no tool ran — `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text` (as above, dropping the text it streamed)
 - D retries after a mid-stream rate limit honoring retry-after without partial text — deliberate: retry.rs: retry-after not honoured
 - P retries after an unrecognized mid-stream provider failure when no tool ran — `tests/oc_runner.rs::oc_session_retries_after_an_unrecognized_mid_stream_failure`
 - P drops interrupted reasoning and retries cleanly without continuation prompt — `tests/oc_runner.rs::oc_session_drops_interrupted_reasoning_and_retries_cleanly`
