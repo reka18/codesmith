@@ -13,6 +13,8 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/reka18/codesmith"
 rust-version = "1.85"
+homepage = "https://github.com/reka18/codesmith"
+readme = "README.md"
 
 [workspace.dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
@@ -45,8 +47,8 @@ textwrap = "0.16"
 unicode-width = "0.2"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
-codesmith-ai = { path = "crates/codesmith-ai" }
-codesmith-core = { path = "crates/codesmith-core" }
+codesmith-ai = { path = "crates/codesmith-ai", version = "0.1.0" }
+codesmith-core = { path = "crates/codesmith-core", version = "0.1.0" }
 
 [profile.release]
 lto = true

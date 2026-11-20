@@ -13,9 +13,42 @@ your own machines.
 
 ## Install
 
+Prebuilt binaries for macOS (Apple Silicon and Intel) and Linux (x86_64 and
+arm64) are attached to each [GitHub Release](https://github.com/reka18/codesmith/releases).
+The macOS binaries are signed with a Developer ID and notarized by Apple; the
+Linux binaries are statically linked and run on any distribution.
+
+**Install script** (macOS and Linux). Downloads the release tarball for your
+platform, checks it against the release's `SHA256SUMS`, and puts `codesmith`
+in `~/.local/bin`. It sends nothing anywhere else.
+
 ```sh
-cargo install --path crates/codesmith
+curl -fsSL https://raw.githubusercontent.com/reka18/codesmith/main/install.sh | sh
 ```
+
+Set `CODESMITH_VERSION=0.1.0` to pick a version and `CODESMITH_INSTALL_DIR` to
+install somewhere else. Read the script first if you prefer:
+[install.sh](install.sh).
+
+**Homebrew**
+
+```sh
+brew install reka18/tap/codesmith
+```
+
+**Manually**: download `codesmith-<version>-<target>.tar.gz` and `SHA256SUMS`
+from the release, check with `shasum -a 256 -c SHA256SUMS --ignore-missing`,
+unpack, and put `codesmith` on your `PATH`.
+
+**From source** (Rust 1.85 or later):
+
+```sh
+cargo install --locked --git https://github.com/reka18/codesmith codesmith
+# or, from a checkout
+cargo install --locked --path crates/codesmith
+```
+
+Maintainers: see [RELEASING.md](RELEASING.md).
 
 ## Use
 
