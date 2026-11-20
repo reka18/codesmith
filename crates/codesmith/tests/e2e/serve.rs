@@ -1513,3 +1513,58 @@ async fn a_foreground_command_survives_a_graceful_restart() {
         .unwrap();
     assert!(crate::model::content(&last).contains("fg-ok"), "{last}");
 }
+
+/// `POST /sessions/{id}/fork` copies a session through its latest message,
+/// or up to the one numbered `before` (from `seqs` in `GET /sessions/{id}`).
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_fork_over_http() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Served").always(
+        "answer",
+        M::tools(),
+        Reply::text("Hi."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    // Nothing to fork yet.
+    let (code, r) = s.post(&format!("/sessions/{sid}/fork"), json!({})).await;
+    assert!(code == 400 || code == 404, "{code} {r}");
+
+    let mut ev = s.turn(&sid, "hello").await;
+    ev.until("done").await;
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    let seqs = shown["seqs"].as_array().unwrap();
+    assert_eq!(seqs.len(), shown["messages"].as_array().unwrap().len());
+    let first = seqs[0].as_i64().unwrap();
+
+    let (code, forked) = s.post(&format!("/sessions/{sid}/fork"), json!({})).await;
+    assert_eq!(code, 200, "{forked}");
+    let fid = forked["id"].as_str().unwrap().to_string();
+    assert_ne!(fid, sid);
+    assert_eq!(forked["fork"]["session"], json!(sid));
+    let (code, f) = s.get(&format!("/sessions/{fid}")).await;
+    assert_eq!(code, 200);
+    assert_eq!(f["messages"], shown["messages"]);
+
+    let (code, before) = s
+        .post(&format!("/sessions/{sid}/fork"), json!({"before": first}))
+        .await;
+    assert_eq!(code, 200, "{before}");
+    assert_eq!(
+        before["fork"]["boundary"],
+        json!({"type": "before", "seq": first})
+    );
+    let bid = before["id"].as_str().unwrap();
+    let (_, b) = s.get(&format!("/sessions/{bid}")).await;
+    assert_eq!(b["messages"], json!([]));
+
+    let (code, _) = s
+        .post(&format!("/sessions/{sid}/fork"), json!({"before": 9999}))
+        .await;
+    assert_eq!(code, 404);
+    let (code, _) = s.post("/sessions/ses_missing/fork", json!({})).await;
+    assert_eq!(code, 404);
+}

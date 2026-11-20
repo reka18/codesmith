@@ -294,6 +294,7 @@ and `opencode` is used.
 |---|---|
 | `/new` | Start a new session. |
 | `/sessions` | Pick a session in this folder to continue. |
+| `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input. See [sessions](sessions.md#forking). |
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
 | `/agent [id]` | Switch agent, or pick one. |
 | `/model [provider/model]` | Switch model, or pick one. |

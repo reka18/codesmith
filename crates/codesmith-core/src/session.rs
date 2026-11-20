@@ -743,6 +743,12 @@ impl Session {
         Ok(())
     }
 
+    /// The store sequence number of each of [`Session::messages`] (`None`
+    /// for a checkpoint): a message's id, as a fork boundary takes it.
+    pub fn seqs(&self) -> &[Option<i64>] {
+        &self.seqs
+    }
+
     /// Give the session another id (a host that names its sessions itself
     /// before the first record is written). The rule letting it read its own
     /// saved tool output moves to the new id's directory: assigning
@@ -1115,6 +1121,15 @@ impl Session {
         // Commands that finished since the last turn ended come first, in
         // the order things happened.
         self.report_finished_jobs()?;
+        // A fork is told it is one before its first prompt.
+        if self.stored
+            && self
+                .store
+                .as_ref()
+                .is_some_and(|st| st.take_fork_notice(&self.id).unwrap_or(false))
+        {
+            self.push(Message::user(crate::fork::NOTICE))?;
+        }
         let mut user = Message::user(text);
         user.parts.extend(media.into_iter().map(Part::Media));
         self.push(user)?;
@@ -3102,7 +3117,8 @@ fn add(total: &mut Usage, u: &Usage) {
     crate::stats::add(total, u);
 }
 
-fn new_id() -> String {
+/// A new session id.
+pub fn new_id() -> String {
     use rand::Rng;
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

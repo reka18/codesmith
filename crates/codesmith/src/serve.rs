@@ -688,6 +688,17 @@ fn transcript(messages: &[codesmith_ai::Message]) -> Vec<&codesmith_ai::Message>
         .collect()
 }
 
+/// The record sequence number (a message's id, as `fork` takes it) of
+/// each message [`transcript`] keeps.
+fn transcript_seqs(messages: &[codesmith_ai::Message], seqs: &[Option<i64>]) -> Vec<Option<i64>> {
+    messages
+        .iter()
+        .zip(seqs)
+        .filter(|(m, _)| !codesmith_core::runner::is_engine(m))
+        .map(|(_, s)| *s)
+        .collect()
+}
+
 fn summary(s: &Session) -> Value {
     json!({"id": s.id, "title": s.title, "agent": s.agent.name, "model": s.model_spec, "usage": s.usage, "directory": s.cwd})
 }
@@ -808,6 +819,7 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/background", post(background))
         .route("/sessions/{id}/jobs", get(jobs))
         .route("/sessions/{id}/jobs/{jid}/cancel", post(cancel_job))
+        .route("/sessions/{id}/fork", post(fork))
         .route("/sessions/{id}/undo", post(undo))
         .route("/sessions/{id}/redo", post(redo))
         .route("/shell-daemon/handoff", post(daemon_handoff))
@@ -908,6 +920,7 @@ async fn show(State(st): State<St>, UrlPath(id): UrlPath<String>) -> Result<Json
         Some(s) => {
             let mut v = summary(s);
             v["messages"] = json!(transcript(&s.messages));
+            v["seqs"] = json!(transcript_seqs(&s.messages, s.seqs()));
             v["todos"] = json!(s.todos);
             v["busy"] = json!(false);
             v["background"] = json!(s.background_running());
@@ -1436,6 +1449,42 @@ async fn answer_question(
             format!("no open question {qid}"),
         )),
     }
+}
+
+/// Fork a session (OpenCode's `session.fork`): a new session with its
+/// history through the latest message, or up to the one numbered `before`.
+async fn fork(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+    body: Option<Json<Value>>,
+) -> Result<Json<Value>, ApiError> {
+    if !st.store()?.get(&id)?.is_some_and(|i| st.ours(&i)) {
+        return Err(not_found(&id));
+    }
+    let b = body.map(|b| b.0).unwrap_or_default();
+    let before = match &b["before"] {
+        Value::Null => None,
+        v => Some(v.as_i64().ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "before must be a message number".into(),
+            )
+        })?),
+    };
+    let to = session::new_id();
+    let info = st.store()?.fork_at(&id, &to, before).map_err(|e| {
+        if e.is::<codesmith_core::fork::Empty>() {
+            ApiError(StatusCode::BAD_REQUEST, format!("{e:#}"))
+        } else if e.is::<codesmith_core::fork::MessageNotFound>() {
+            ApiError(StatusCode::NOT_FOUND, format!("{e:#}"))
+        } else {
+            e.into()
+        }
+    })?;
+    let origin = st.store()?.fork_origin(&info.id)?;
+    Ok(Json(
+        json!({"id": info.id, "title": info.title, "agent": info.agent, "model": info.model, "usage": info.usage, "directory": info.directory, "fork": origin}),
+    ))
 }
 
 async fn undo(st: State<St>, id: UrlPath<String>) -> Result<Json<Value>, ApiError> {

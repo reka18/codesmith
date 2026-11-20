@@ -560,6 +560,40 @@ impl Runner {
                     .collect();
                 self.app.modal = Some(Modal::Picker(Picker::new(Pick::Session, "Sessions", items)));
             }
+            "fork" if self.idle_or_say() => {
+                let Some(s) = &self.session else {
+                    return Ok(());
+                };
+                if !s.seqs().iter().any(Option::is_some) {
+                    self.app.notice("nothing to fork yet");
+                    return Ok(());
+                }
+                let mut items = vec![PickItem {
+                    current: false,
+                    label: "the whole session".into(),
+                    detail: "through the latest message".into(),
+                    id: String::new(),
+                }];
+                // Your prompts, newest first: the fork stops before the one picked.
+                let prompts = s
+                    .messages
+                    .iter()
+                    .zip(s.seqs())
+                    .filter_map(|(m, seq)| Some((m, (*seq)?)))
+                    .filter(|(m, _)| {
+                        m.role == codesmith_ai::Role::User && !codesmith_core::runner::is_engine(m)
+                    })
+                    .filter_map(|(m, seq)| Some((prompt_text(m)?, seq)));
+                let mut prompts: Vec<_> = prompts.collect();
+                prompts.reverse();
+                items.extend(prompts.into_iter().map(|(text, seq)| PickItem {
+                    current: false,
+                    label: text.lines().next().unwrap_or("").chars().take(80).collect(),
+                    detail: format!("before message {seq}"),
+                    id: seq.to_string(),
+                }));
+                self.app.modal = Some(Modal::Picker(Picker::new(Pick::Fork, "Fork", items)));
+            }
             "undo" | "redo" if self.idle_or_say() => {
                 let db = open_store().ok_or_else(|| anyhow!("the session store is unavailable"))?;
                 let root = config::project_root(&self.cwd);
@@ -763,6 +797,27 @@ impl Runner {
                 let s = self.make(Some(id))?;
                 self.install(s, true);
             }
+            Pick::Fork if self.idle_or_say() => {
+                let before = id.parse::<i64>().ok();
+                let mut db =
+                    open_store().ok_or_else(|| anyhow!("the session store is unavailable"))?;
+                let to = session::new_id();
+                db.fork_at(&self.session_id, &to, before)?;
+                // As in OpenCode, the prompt forked before is back in the input to edit.
+                let text = before.and_then(|b| {
+                    let s = self.session.as_ref()?;
+                    let i = s.seqs().iter().position(|q| *q == Some(b))?;
+                    prompt_text(&s.messages[i])
+                });
+                self.forget_approvals();
+                self.end_jobs();
+                let s = self.make(Some(to))?;
+                self.install(s, true);
+                if let Some(t) = text {
+                    self.app.input.set(t);
+                }
+                self.app.notice("forked the session");
+            }
             Pick::Agent if self.idle_or_say() => self.set_agent(&id)?,
             Pick::Theme => {
                 self.theme_before = None;
@@ -772,7 +827,7 @@ impl Runner {
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => self.set_model(&id)?,
             Pick::DiffSource | Pick::DiffBase => self.app.diff_picked(kind, &id),
-            Pick::Session | Pick::Agent | Pick::Model => {}
+            Pick::Session | Pick::Fork | Pick::Agent | Pick::Model => {}
         }
         Ok(())
     }
@@ -1345,6 +1400,20 @@ fn mini_screen(cwd: &std::path::Path) -> Result<mini::Mini<std::io::Stdout>> {
     Ok(mini::Mini::new(std::io::stdout(), cols, rows, row, detail))
 }
 
+/// The text of a prompt, if it has any.
+fn prompt_text(m: &codesmith_ai::Message) -> Option<String> {
+    let text: Vec<&str> = m
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            codesmith_ai::Part::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let text = text.join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// The UI's own commands, and whether each takes an argument.
 const BUILTINS: &[(&str, bool)] = &[
     ("exit", false),
@@ -1358,6 +1427,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("theme", true),
     ("new", false),
     ("sessions", false),
+    ("fork", false),
     ("undo", false),
     ("redo", false),
     ("compact", false),

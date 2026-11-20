@@ -155,6 +155,8 @@ impl Tool {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pick {
     Session,
+    /// A message to fork the session before ("" forks all of it).
+    Fork,
     Model,
     Agent,
     Theme,
@@ -376,6 +378,7 @@ struct Child {
 /// The slash commands the help lists.
 const HELP_COMMANDS: &str = "/new            start a new session
 /sessions       pick a session to continue
+/fork           fork the session (all of it, or before a prompt you pick)
 /undo, /redo    undo or redo the latest turn's file changes
 /agent [id]     switch agent (build, plan, …)
 /model [p/m]    switch model (p/m#variant picks a variant)
@@ -499,6 +502,7 @@ pub fn help_text(k: &Keymap) -> String {
 pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "start a new session"),
     ("sessions", "pick a session to continue"),
+    ("fork", "fork the session, all of it or before a prompt"),
     ("undo", "undo the latest turn's file changes"),
     ("redo", "redo the latest undone turn"),
     ("agent", "switch agent"),

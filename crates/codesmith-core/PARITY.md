@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 6 | 0 | 16 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 10 | 0 | 76 | 168 | 54 | 0 |
+| Sessions and their store | 308 | 17 | 0 | 68 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1332** | **15** | **490** | **2354** | **1397** | **0** |
+| **Total** | **5588** | **1339** | **15** | **482** | **2355** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (490 cases in 54 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (482 cases in 54 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -99,7 +99,6 @@ Missing features, by how many OpenCode test cases each would unlock (490 cases i
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [Hosted (Provider-executed) Tools in Sessions](#hosted-provider-executed-tools-in-sessions) | 11 | provider-executed tool results in the session; provider-executed results replayed inline; … |
 | [Plugin Session API](#plugin-session-api) | 9 | plugins creating child sessions; plugins admitting compaction; … |
-| [Session Forking](#session-forking) | 9 | fork a session at a message boundary |
 | [User Shell Commands](#user-shell-commands) | 9 | shell command run as a session message; user-run (`!`) background shells entering context via a completion notice; … |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
 | [Tool-use Policies](#tool-use-policies) | 6 | a deny-only policy layer over permissions (an allow never grants) |
@@ -133,6 +132,7 @@ Missing features, by how many OpenCode test cases each would unlock (490 cases i
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
 | [Per-session Permission Rules](#per-session-permission-rules) | 1 | stored per-session rules inherited by children and forks |
 | [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
+| [Session Forking](#session-forking) | 1 | fork a session at a message boundary |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 | [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
@@ -563,20 +563,6 @@ Missing features, by how many OpenCode test cases each would unlock (490 cases i
 - `plugin/session-remove.test.ts`: Effect plugins can remove sessions and their children
 - `plugin/session-remove.test.ts`: Promise plugins can remove sessions and their children
 
-### Session Forking
-
-9 cases.
-
-- `session-create.test.ts`: forks a session by replaying a durable fork event into copied projected rows
-- `session-create.test.ts`: queues a fork notice after copied history and before the first prompt
-- `session-create.test.ts`: keeps a fork untitled when its parent is untitled
-- `session-create.test.ts`: replays a fork with stable projected identities
-- `session-create.test.ts`: inherits instruction entries when forking
-- `session-create.test.ts`: does not copy a running assistant into a fork
-- `session-create.test.ts`: copies only settled shell messages into forks
-- `session-create.test.ts`: rejects forking an empty session
-- `session-create.test.ts`: forks before the selected boundary message
-
 ### User Shell Commands
 
 9 cases.
@@ -859,6 +845,12 @@ Missing features, by how many OpenCode test cases each would unlock (490 cases i
 1 cases.
 
 - `session-create.test.ts`: filters project sessions by subpath
+
+### Session Forking
+
+1 cases.
+
+- `session-create.test.ts`: copies only settled shell messages into forks
 
 ### Provider Media Capabilities
 
@@ -1736,7 +1728,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 546 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 331 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 332 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
@@ -2056,7 +2048,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (178 of 308)</summary>
+<details><summary>Sessions and their store (186 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -2071,6 +2063,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D preserves the project canonical directory when creating a session in another clone · repeat Session.create on the same location spawns no git · follows the directory's project identity established after creation · does not adopt nested repositories or sessions in another workspace — client-server: project identity across clones/workspaces
 - D stores supplied immutable create attributes · stores creation metadata and inherits it through children and forks — storage-model: immutable create attributes and creation metadata
+- P forks a session by replaying a durable fork event into copied projected rows — `tests/oc_session_fork.rs::oc_session_forks_a_session_into_copied_history` (adapted: records copied, not an event replayed)
+- P queues a fork notice after copied history and before the first prompt — `tests/oc_session_fork.rs::oc_session_queues_a_fork_notice_before_the_first_prompt`
+- P keeps a fork untitled when its parent is untitled — `tests/oc_session_fork.rs::oc_session_keeps_a_fork_untitled_when_its_parent_is_untitled`
+- D replays a fork with stable projected identities — storage-model: a fork copies records with their sequence numbers; there is no event to replay
+- P inherits instruction entries when forking — `tests/oc_session_fork.rs::oc_session_inherits_instruction_entries_when_forking` (attached context)
+- P does not copy a running assistant into a fork — `tests/oc_session_fork.rs::oc_session_does_not_copy_a_running_assistant_into_a_fork`
+- P rejects forking an empty session — `tests/oc_session_fork.rs::oc_session_rejects_forking_an_empty_session`
+- P forks before the selected boundary message — `tests/oc_session_fork.rs::oc_session_forks_before_the_selected_boundary_message` (a message is its record sequence number)
 - D returns the current Session projection after updates · persists creation through the current created event · persists caller-ID creation through the existing created event · includes current creation rows in the Session event stream · replays one prompt lifecycle into a fresh target database · does not mask unrelated created projector defects — storage-model: projector created events and replay
 - D imports projected messages and reserves their aggregate sequence · clamps imported busy and viewed watermarks to their idle transition · imports a long transcript in statements under 100 bound parameters — storage-model: aggregate sequences, watermarks and bound-parameter limits
 

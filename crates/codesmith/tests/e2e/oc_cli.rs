@@ -300,3 +300,41 @@ async fn oc_empty_xdg_overrides_use_the_home_defaults() {
         "{got:?}"
     );
 }
+
+/// `session messages` numbers the messages, `session fork` copies a session
+/// through its latest message or up to one (OpenCode's `session fork`).
+#[tokio::test(flavor = "multi_thread")]
+async fn session_fork_copies_history_through_or_before_a_message() {
+    let e = Env::new();
+    let id = one_session(&e).await;
+    let listed = e.run(&["session", "messages", &id]).await;
+    listed.ok();
+    let user = listed
+        .stdout
+        .lines()
+        .find(|l| l.contains("user") && l.contains("hello"))
+        .unwrap_or_else(|| panic!("{}", listed.both()));
+    assert!(listed.stdout.contains("Hi."), "{}", listed.both());
+    let seq = user.split_whitespace().next().unwrap().to_string();
+
+    let out = e.run(&["session", "fork", &id]).await;
+    out.ok();
+    let fork = out.stdout.trim().rsplit(' ').next().unwrap().to_string();
+    assert!(
+        out.stdout.contains(&format!("Forked {id} into ")),
+        "{}",
+        out.both()
+    );
+    let info = e.store().get(&fork).unwrap().unwrap();
+    assert_eq!(info.title.as_deref(), Some("Hello (fork #1)"));
+    assert_eq!(e.history(&fork), e.history(&id));
+
+    let out = e.run(&["session", "fork", &id, "--before", &seq]).await;
+    out.ok();
+    let before = out.stdout.trim().rsplit(' ').next().unwrap().to_string();
+    assert!(e.history(&before).is_empty());
+
+    let out = e.run(&["session", "fork", &id, "--before", "9999"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(out.stderr.contains("no message 9999"), "{}", out.both());
+}

@@ -751,17 +751,45 @@ impl Store {
         Ok(out)
     }
 
-    /// Copy session `from` into a new session `to`: its records, its
-    /// attached context, and an instruction baseline holding the newest
-    /// values, so the fork starts from what its source last said (OpenCode
-    /// seeds a fork the same way) while the copied updates stay in view.
-    pub fn fork(&mut self, from: &str, to: &str) -> Result<()> {
-        let mut e = self.export(from)?;
-        e.info.id = to.to_string();
-        e.info.parent_id = None;
-        e.info.updated = now();
-        self.import(&e)?;
-        if let Some(state) = crate::instruction_state::fold(&e.entries) {
+    /// Fork session `from` into a new session `to` through its latest
+    /// message (see [`Store::fork_at`]).
+    pub fn fork(&mut self, from: &str, to: &str) -> Result<Info> {
+        self.fork_at(from, to, None)
+    }
+
+    /// Fork session `from` into a new top-level session `to`, as OpenCode's
+    /// `Session.fork` does: its settled history through the latest message,
+    /// or up to the message recorded at `before` (see [`crate::fork`]); its
+    /// attached context and session meta; and an instruction baseline
+    /// holding the newest values, so the fork starts from what its source
+    /// last said (OpenCode seeds a fork the same way) while the copied
+    /// updates stay in view. The fork starts with no usage and gives the
+    /// model [`crate::fork::NOTICE`] before its first prompt. Fails with
+    /// [`crate::fork::Empty`] for a session with no messages and
+    /// [`crate::fork::MessageNotFound`] for a `before` that is not one.
+    pub fn fork_at(&mut self, from: &str, to: &str, before: Option<i64>) -> Result<Info> {
+        let parent = self
+            .get(from)?
+            .ok_or_else(|| anyhow!("no session {from}"))?;
+        let entries = self.entries(from)?;
+        let boundary = crate::fork::boundary(from, &entries, before)?;
+        let t = now();
+        let info = Info {
+            id: to.to_string(),
+            directory: parent.directory.clone(),
+            title: crate::fork::title(parent.title.as_deref()),
+            agent: parent.agent.clone(),
+            model: parent.model.clone(),
+            parent_id: None,
+            created: t,
+            updated: t,
+            usage: Usage::default(),
+        };
+        self.import(&Export {
+            info: info.clone(),
+            entries: crate::fork::copied(&entries, boundary),
+        })?;
+        if let Some(state) = crate::instruction_state::fold(&entries) {
             self.append(
                 to,
                 &Record::Instructions {
@@ -784,7 +812,46 @@ impl Store {
                 self.put_context(to, &c.key, &c.value)?;
             }
         }
-        Ok(())
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute_batch(META_TABLE)?;
+            // The parent's billing split and its own origin are not the fork's.
+            conn.execute(
+                "INSERT INTO session_meta (session_id, key, value)
+                 SELECT ?2, key, value FROM session_meta
+                 WHERE session_id = ?1 AND key NOT IN ('unbilled_usage', ?3, ?4)",
+                params![from, to, crate::fork::ORIGIN_META, crate::fork::NOTICE_META],
+            )?;
+        }
+        let origin = crate::fork::Origin {
+            session: from.to_string(),
+            boundary,
+        };
+        self.set_meta(
+            to,
+            crate::fork::ORIGIN_META,
+            Some(&serde_json::to_string(&origin)?),
+        )?;
+        self.set_meta(to, crate::fork::NOTICE_META, Some("1"))?;
+        Ok(info)
+    }
+
+    /// Where session `id` was forked from, if it is a fork.
+    pub fn fork_origin(&self, id: &str) -> Result<Option<crate::fork::Origin>> {
+        Ok(self
+            .meta(id, crate::fork::ORIGIN_META)?
+            .and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
+    /// Take the fork notice still owed to session `id`: true once, the
+    /// first time after it was forked.
+    pub fn take_fork_notice(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(META_TABLE)?;
+        Ok(conn.execute(
+            "DELETE FROM session_meta WHERE session_id = ?1 AND key = ?2",
+            params![id, crate::fork::NOTICE_META],
+        )? > 0)
     }
 
     pub fn export(&self, id: &str) -> Result<Export> {

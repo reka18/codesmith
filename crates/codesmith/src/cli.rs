@@ -654,6 +654,20 @@ enum SessionCmd {
         /// Path to the exported JSON, or - to read stdin.
         file: String,
     },
+    /// List a session's messages with their numbers (for `session fork --before`).
+    Messages {
+        /// Session id (default: the latest in this directory).
+        id: Option<String>,
+    },
+    /// Fork a session: a new session with its history through the latest
+    /// message, or up to a message, that then goes its own way.
+    Fork {
+        /// Session id (default: the latest in this directory).
+        id: Option<String>,
+        /// Copy the history up to (not including) this message (see `session messages`).
+        #[arg(long)]
+        before: Option<i64>,
+    },
     /// Undo the latest turn: restore the files it changed and hide it.
     Undo {
         /// Session id (default: the latest in this directory).
@@ -2137,6 +2151,28 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
                 return Err(anyhow!("no session {id}"));
             }
         }
+        SessionCmd::Messages { id } => {
+            let info = session_target(&db, &cwd, id)?;
+            let entries = db.entries(&info.id)?;
+            for (seq, m) in codesmith_core::fork::messages(&entries) {
+                if codesmith_core::runner::is_engine(m) {
+                    continue;
+                }
+                let role = match m.role {
+                    codesmith_ai::Role::User => "user",
+                    codesmith_ai::Role::Assistant => "assistant",
+                    codesmith_ai::Role::System => "system",
+                };
+                let text = message_line(m);
+                println!("{seq:>5}  {role:<9}  {text}");
+            }
+        }
+        SessionCmd::Fork { id, before } => {
+            let info = session_target(&db, &cwd, id)?;
+            let to = session::new_id();
+            let forked = db.fork_at(&info.id, &to, before)?;
+            println!("Forked {} into {}", info.id, forked.id);
+        }
         SessionCmd::Undo { id } => {
             let (info, snaps) = snapshot_target(&db, &cwd, id)?;
             match session::undo(&db, &info.id, &snaps)? {
@@ -2198,17 +2234,50 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
     Ok(())
 }
 
+/// Session `id`, else the latest in `cwd`.
+fn session_target(db: &Store, cwd: &std::path::Path, id: Option<String>) -> Result<store::Info> {
+    match id {
+        Some(id) => db.get(&id)?.ok_or_else(|| anyhow!("no session {id}")),
+        None => db
+            .latest(&cwd.display().to_string())?
+            .ok_or_else(|| anyhow!("no session in {}", cwd.display())),
+    }
+}
+
+/// A message on one line: its first text, else what its parts are.
+fn message_line(m: &codesmith_ai::Message) -> String {
+    use codesmith_ai::Part;
+    let text = m.parts.iter().find_map(|p| match p {
+        Part::Text(t) if !t.text.trim().is_empty() => Some(t.text.trim().to_string()),
+        _ => None,
+    });
+    let line = text.unwrap_or_else(|| {
+        let kinds: Vec<String> = m
+            .parts
+            .iter()
+            .map(|p| match p {
+                Part::ToolCall { name, .. } => format!("[call {name}]"),
+                Part::ToolResult { name, .. } => format!("[result {name}]"),
+                Part::Media(_) => "[media]".into(),
+                _ => "[...]".into(),
+            })
+            .collect();
+        kinds.join(" ")
+    });
+    let first = line.lines().next().unwrap_or("");
+    let mut out: String = first.chars().take(80).collect();
+    if first.chars().count() > 80 || line.lines().count() > 1 {
+        out.push_str("...");
+    }
+    out
+}
+
 fn snapshot_target(
     db: &Store,
     cwd: &std::path::Path,
     id: Option<String>,
 ) -> Result<(store::Info, Snapshots)> {
-    let info = match id {
-        Some(id) => db.get(&id)?.ok_or_else(|| anyhow!("no session {id}"))?,
-        None => db
-            .latest(&cwd.display().to_string())?
-            .ok_or_else(|| anyhow!("no session in {}", cwd.display()))?,
-    };
+    let info = session_target(db, cwd, id)?;
     let root = config::project_root(std::path::Path::new(&info.directory));
     let snaps = Snapshots::for_project(&root)
         .ok_or_else(|| anyhow!("snapshots are not kept for {}", root.display()))?;

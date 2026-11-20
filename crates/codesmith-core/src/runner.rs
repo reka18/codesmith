@@ -48,7 +48,7 @@ pub const CONTINUE_AFTER_OUTPUT_LIMIT: &str = "Your last response hit the output
 /// as user text.
 pub fn is_engine_message(text: &str) -> bool {
     let t = text.trim();
-    t == CONTINUE_AFTER_OUTPUT_LIMIT || t == MAX_STEPS_PROMPT.trim()
+    t == CONTINUE_AFTER_OUTPUT_LIMIT || t == MAX_STEPS_PROMPT.trim() || t == crate::fork::NOTICE
 }
 
 /// Whether a stored message is the engine's, not the user's: a system update

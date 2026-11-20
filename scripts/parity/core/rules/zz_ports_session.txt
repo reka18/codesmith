@@ -1,0 +1,10 @@
+# Ports of the session feature groups (tests/oc_session_*.rs).
+@session-create.test.ts
+615 :: ported :: tests/oc_session_fork.rs::oc_session_forks_a_session_into_copied_history :: adapted: records copied, not an event replayed
+676 :: ported :: tests/oc_session_fork.rs::oc_session_queues_a_fork_notice_before_the_first_prompt
+701 :: ported :: tests/oc_session_fork.rs::oc_session_keeps_a_fork_untitled_when_its_parent_is_untitled
+718 :: design :: storage-model :: a fork copies records with their sequence numbers; there is no event to replay
+753 :: ported :: tests/oc_session_fork.rs::oc_session_inherits_instruction_entries_when_forking :: attached context
+807 :: ported :: tests/oc_session_fork.rs::oc_session_does_not_copy_a_running_assistant_into_a_fork
+898 :: ported :: tests/oc_session_fork.rs::oc_session_rejects_forking_an_empty_session
+910 :: ported :: tests/oc_session_fork.rs::oc_session_forks_before_the_selected_boundary_message :: a message is its record sequence number

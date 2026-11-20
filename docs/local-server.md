@@ -56,13 +56,14 @@ permission and question ids are random.
 | `GET /health` | Version, directory, model. |
 | `GET /sessions` | List sessions. |
 | `POST /sessions {agent?, model?}` | Create a session. |
-| `GET /sessions/{id}` | Session info and messages. |
+| `GET /sessions/{id}` | Session info, `messages`, and `seqs`: each message's number. |
 | `DELETE /sessions/{id}` | Delete a session. |
 | `POST /sessions/{id}/messages {text, attachments?}` | Run a turn. The response streams Server-Sent Events. |
 | `GET /sessions/{id}/events` | Follow the session: every turn's events from now on, as Server-Sent Events, including the turns the server starts itself ([background commands](#background-commands)). |
 | `POST /sessions/{id}/abort` | Stop the running turn, or the session's background commands when it is idle ([details](#aborting)). |
 | `POST /sessions/{id}/permissions/{rid} {reply, message?}` | Answer a permission request: `once`, `always` or `reject` (with optional feedback). |
 | `POST /sessions/{id}/questions/{qid} {answers}` or `{dismiss: true}` | Answer the agent's questions. `answers` is one list of strings per question. |
+| `POST /sessions/{id}/fork {before?}` | Fork the session through its latest message, or up to message `before` (a number from `seqs` in `GET /sessions/{id}`, one per message). Returns the new session with `fork: {session, boundary}`; 400 for a session with no messages, 404 for an unknown message ([forking](sessions.md#forking)). |
 | `POST /sessions/{id}/undo`, `POST /sessions/{id}/redo` | Undo or redo the latest turn's file changes. |
 | `GET /sessions/{id}/jobs` | The session's running shell commands: `id`, `command`, `pid`, `background`, and `output` (the file their output streams to) for background ones. |
 | `POST /sessions/{id}/background` | Move the running turn's foreground commands to the background ([details](#stopping-and-backgrounding-commands)). |

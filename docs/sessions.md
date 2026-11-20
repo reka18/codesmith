@@ -38,6 +38,26 @@ Set `"snapshots": false` to turn snapshots off; undo then has nothing to
 restore. Snapshots are never taken when the project root is your home folder
 or `/`.
 
+## Forking
+
+A fork is a new session with a copy of another's history that then goes its
+own way; the original is left as it was.
+
+- `/fork` in the UI picks where: the whole session, or before one of your
+  prompts, which comes back in the input to edit and send.
+- `codesmith session fork [ID]` forks through the latest message;
+  `--before N` stops before message `N` (`codesmith session messages [ID]`
+  lists them by number).
+- [`serve`](local-server.md) has `POST /sessions/{id}/fork`, and
+  [ACP](editors-acp.md) `session/fork`.
+
+A fork is titled after its source (`Title (fork #1)`), starts with no usage,
+and keeps the source's attached context and newest instructions. It leaves
+out what was undone and a step still running. Before its first prompt the
+model is told the conversation is a fork: work started before it (background
+commands, subagents) belongs to the original, and files and branches are
+shared with it.
+
 ## Background commands
 
 A shell command started with `background: true` (or one that outlives its

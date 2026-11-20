@@ -92,12 +92,14 @@ codesmith session list [--all] [--json]   # this folder's sessions (--all: every
 codesmith session export ID > session.json
 codesmith session import session.json     # or - for stdin
 codesmith session delete ID               # also deletes its subagent sessions
+codesmith session messages [ID]           # its messages, numbered
+codesmith session fork  [ID] [--before N] # a copy through the latest message, or up to message N
 codesmith session diff  [ID]              # file changes since the latest turn began
 codesmith session undo  [ID]              # restore the files and hide the latest turn
 codesmith session redo  [ID]              # bring it back
 ```
 
-`diff`, `undo` and `redo` default to the latest session in this folder. See
+`messages`, `fork`, `diff`, `undo` and `redo` default to the latest session in this folder. See
 [sessions](sessions.md).
 
 ## `codesmith models`
