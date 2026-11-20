@@ -815,9 +815,10 @@ pub struct Loaded {
 pub const NAMES: [&str; 2] = ["codesmith.json", "codesmith.jsonc"];
 
 /// The nearest ancestor of `dir` (inclusive) containing `.git` or a
-/// Mercurial `.hg`, else `dir` (see [`crate::vcs::marker`]).
+/// Mercurial `.hg`, when it is a repository this user controls, else `dir`
+/// (see [`crate::vcs::trusted_marker`]).
 pub fn project_root(dir: &Path) -> PathBuf {
-    crate::vcs::marker(dir)
+    crate::vcs::trusted_marker(dir)
         .map(|(d, _)| d)
         .unwrap_or_else(|| dir.to_path_buf())
 }
@@ -2116,6 +2117,21 @@ mod tests {
             dir.path().join("repo")
         );
         assert_eq!(project_root(dir.path()), dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_world_writable_repository_is_not_the_project_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        std::fs::create_dir_all(shared.join(".git")).unwrap();
+        std::fs::create_dir_all(shared.join("work")).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        // The folder itself, not the planted repository.
+        assert_eq!(project_root(&shared.join("work")), shared.join("work"));
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(project_root(&shared.join("work")), shared);
     }
 
     #[test]

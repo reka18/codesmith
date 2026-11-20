@@ -46,9 +46,18 @@ pub fn marker(dir: &Path) -> Option<(PathBuf, Kind)> {
     })
 }
 
-/// The project `dir` belongs to.
+/// [`marker`], when the repository it found is one this user controls
+/// (see [`crate::tool::trusted_repository`]): a `.git` or `.hg` another
+/// user planted in a shared ancestor such as `/tmp` does not make that
+/// ancestor the project.
+pub fn trusted_marker(dir: &Path) -> Option<(PathBuf, Kind)> {
+    marker(dir).filter(|(root, _)| crate::tool::trusted_repository(root))
+}
+
+/// The project `dir` belongs to: its trusted repository, else `dir`
+/// itself.
 pub fn resolve(dir: &Path) -> Project {
-    match marker(dir) {
+    match trusted_marker(dir) {
         Some((directory, Kind::Git)) => Project {
             id: crate::worktree::project_id(&directory),
             directory,

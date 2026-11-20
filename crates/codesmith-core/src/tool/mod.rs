@@ -943,9 +943,8 @@ pub(crate) fn unique_id() -> String {
 /// turn one approval into all of it. A shared folder itself saves only the
 /// file ([`crate::permission::shared_dir`]).
 pub fn repository_glob(dir: &Path) -> String {
-    let root = crate::vcs::marker(dir)
+    let root = crate::vcs::trusted_marker(dir)
         .map(|(r, _)| r)
-        .filter(|r| trusted_repository(r))
         .unwrap_or_else(|| dir.to_path_buf());
     format!("{}/*", root.display())
 }
