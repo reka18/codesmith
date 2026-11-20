@@ -1774,12 +1774,7 @@ pub fn secure_url(url: &str) -> bool {
     };
     match u.scheme() {
         "https" => u.host().is_some(),
-        "http" => match u.host() {
-            Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
-            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-            None => false,
-        },
+        "http" => crate::config::is_loopback_url(url),
         _ => false,
     }
 }

@@ -181,10 +181,13 @@ pub struct CatalogConfig {
 #[serde(default)]
 pub struct ProviderConfig {
     pub name: Option<String>,
-    /// Whether the provider is a server on this machine or network, which
-    /// one request at a time keeps busy (so a session's title waits for the
-    /// turn's response). Unset, a loopback, private-network or `.local`
-    /// base URL is local.
+    /// Whether the provider is a local server: one on this machine or
+    /// network that one request at a time keeps busy. A local server's
+    /// side requests (the session title, background compaction summaries)
+    /// never run beside a turn's request, and a local server with
+    /// `settings.discovery` has its models listed without being asked.
+    /// Unset, [`ProviderConfig::is_local`] and
+    /// [`ProviderConfig::probe_unprompted`] decide from the base URL.
     pub local: Option<bool>,
     pub protocol: Option<Protocol>,
     /// Environment variables that may hold the API key, in order.
@@ -206,6 +209,22 @@ pub struct ProviderConfig {
     /// provider (see [`ModelConfig::compatibility`]).
     pub compatibility: Map<String, Value>,
     pub models: BTreeMap<String, ModelConfig>,
+}
+
+impl ProviderConfig {
+    /// Whether this provider is a local, single-instance server, whose side
+    /// requests wait for the turn: `local`, else whether `base_url` is on
+    /// this machine or a private network ([`is_local_url`]).
+    pub fn is_local(&self, base_url: &str) -> bool {
+        self.local.unwrap_or_else(|| is_local_url(base_url))
+    }
+
+    /// Whether this provider's server may be asked for its models without
+    /// the user asking (`codesmith models`, the model picker): `local`,
+    /// else whether `base_url` is on this machine ([`is_loopback_url`]).
+    pub fn probe_unprompted(&self, base_url: &str) -> bool {
+        self.local.unwrap_or_else(|| is_loopback_url(base_url))
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1615,6 +1634,7 @@ impl Config {
             })
             .transpose()?
             .unwrap_or_default();
+        let local = p.is_local(&base_url);
         let mut headers: Vec<(String, String)> = p.headers.into_iter().collect();
         crate::providers::gateways::apply(pid, &base_url, &mut headers);
         for (k, v) in plugin.iter().flat_map(|r| r.headers.iter()) {
@@ -1691,7 +1711,6 @@ impl Config {
             _ => websocket_route(pid, protocol, &p.settings, &base_url)?,
         };
         let native_compaction = native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
-        let local = p.local.unwrap_or_else(|| is_local_url(&base_url));
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id: wire_model,
@@ -1724,10 +1743,50 @@ impl Config {
     }
 }
 
+// Two questions are asked of a server's address, with different answers:
+//
+// - May CodeSmith contact it without being asked (to list a local
+//   provider's models)? Only on this machine: [`is_loopback_url`]. Asking
+//   a host elsewhere on the network unprompted would announce the user to
+//   it, and a name that merely looks local (`gpu.lan`) may not be.
+// - Is it a local, single-instance server, which one request keeps busy,
+//   so that side requests wait for the turn? The broader
+//   [`is_local_url`]: this machine or a private network (a box on the LAN,
+//   a Tailscale peer).
+//
+// A provider's `local` setting answers both when it is set: `true` says
+// the server is the user's own (so it may be asked for its models too),
+// `false` that it is a hosted service that runs requests side by side
+// (so it is not asked unprompted, even on loopback, as a proxy there
+// would forward the request). See [`ProviderConfig::is_local`] and
+// [`ProviderConfig::probe_unprompted`].
+
+/// Whether `url`'s host is this machine: `localhost`, `127.0.0.0/8`, `::1`
+/// or an IPv4-mapped loopback address (no other name, which a resolver may
+/// send out to the network). The servers that may be asked for their
+/// models without being asked.
+pub fn is_loopback_url(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    match u.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost"
+        }
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+        None => false,
+    }
+}
+
 /// Whether `url` points at this machine or a private network: a loopback,
 /// private, link-local, shared (CGNAT, as Tailscale uses) or unique-local
 /// address, `localhost`, a single-label host name, or a `.local`, `.lan`,
-/// `.internal`, `.home.arpa` or `.ts.net` name.
+/// `.internal`, `.home.arpa` or `.ts.net` name. The servers taken to be
+/// local, single-instance ones (see [`ProviderConfig::is_local`]).
 pub fn is_local_url(url: &str) -> bool {
     let Ok(u) = url::Url::parse(url) else {
         return false;
@@ -2782,6 +2841,53 @@ mod tests {
             "not a url",
         ] {
             assert!(!is_local_url(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn loopback_urls() {
+        for u in [
+            "http://127.0.0.1:8000/v1",
+            "http://127.1.2.3/v1",
+            "http://localhost:1234/v1",
+            "http://LOCALHOST./v1",
+            "http://[::1]:8080/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+        ] {
+            assert!(is_loopback_url(u), "{u}");
+            assert!(is_local_url(u), "{u}: loopback is local too");
+        }
+        for u in [
+            "http://192.168.1.20:8000/v1",
+            "http://skeptic-macmini.local:8000/v1",
+            "http://macmini:8000/v1",
+            "http://100.101.102.103:8000/v1",
+            "http://0.0.0.0:8000/v1",
+            "http://omlx.localhost:8000/v1",
+            "https://api.openai.com/v1",
+            "not a url",
+        ] {
+            assert!(!is_loopback_url(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn the_local_setting_answers_both_questions() {
+        let p = |local: Option<bool>| ProviderConfig {
+            local,
+            ..Default::default()
+        };
+        let lan = "http://192.168.1.20:8000/v1";
+        let lo = "http://127.0.0.1:8000/v1";
+        let far = "https://gpu.example.com/v1";
+        // Unset: the address decides, loopback only for probing.
+        assert!(p(None).is_local(lan) && !p(None).probe_unprompted(lan));
+        assert!(p(None).is_local(lo) && p(None).probe_unprompted(lo));
+        assert!(!p(None).is_local(far) && !p(None).probe_unprompted(far));
+        // Set, it wins both ways.
+        for u in [lan, lo, far] {
+            assert!(p(Some(true)).is_local(u) && p(Some(true)).probe_unprompted(u));
+            assert!(!p(Some(false)).is_local(u) && !p(Some(false)).probe_unprompted(u));
         }
     }
 

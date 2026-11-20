@@ -305,7 +305,7 @@ Provider fields:
 | Field | Meaning |
 |---|---|
 | `name` | Display name. |
-| `local` | Whether the server runs on this machine or network and serves one request at a time. Unset, a loopback, private-network (including Tailscale's `100.64.0.0/10`), `.local`, `.lan`, `.internal`, `.ts.net` or single-label host is local. See [Using a local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama). |
+| `local` | Whether the server is your own and serves one request at a time. Unset, a loopback, private-network (including Tailscale's `100.64.0.0/10`), `.local`, `.lan`, `.internal`, `.ts.net` or single-label host is local, and only a loopback one is asked for its models unprompted. Set, it decides both. See [Using a local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama). |
 | `protocol` | `openai-chat` (the default for custom providers), `openai-responses`, `anthropic-messages` or `google-gemini`. |
 | `settings.baseURL` | API base URL (`baseUrl` and `base_url` also work). Required for a custom provider. |
 | `settings.apiKey` | The key. Use `{env:}` or `{file:}` rather than writing it in the file. |
@@ -429,10 +429,29 @@ An OpenAI-compatible server on another machine:
 ```
 
 `codesmith debug model box/qwen3.5` prints `local: yes` for a provider
-treated as local. Set `"local": false` on a provider that is a private
-address but serves many requests at once (a vLLM cluster behind a
-gateway, say) to run titles beside the turn again, or `"local": true` on
-a public address that is really a single box.
+treated as local.
+
+CodeSmith asks two different questions of a server's address:
+
+- **Is it a local, single-request server?** Then side requests (titles,
+  background summaries) wait for the turn. Unset, a loopback or
+  private-network address, a Tailscale address or `.ts.net` name, a
+  `.local`, `.lan`, `.internal` or `.home.arpa` name, or a single-label
+  host is.
+- **May it be asked for its models without being asked?** `codesmith
+  models` and the model picker list what a local provider with
+  `settings.discovery` serves right now. Unset, only a server on this
+  machine (`localhost`, `127.0.0.0/8`, `::1`) is contacted this way, so
+  nothing on your network is contacted unless you ask
+  (`codesmith models box` always asks).
+
+`"local"` on a provider answers both. `"local": true` says the server is
+yours: titles and summaries wait for the turn, and a server on another
+machine (the box above, with `"discovery": "openai"`) is listed in
+`codesmith models` and the model picker. `"local": false` says it serves
+many requests at once (a vLLM cluster behind a gateway, a proxy to a
+hosted service on `localhost`): side requests run beside the turn and its
+models are listed only when asked.
 
 ### Azure OpenAI
 
@@ -817,10 +836,11 @@ defaults for a custom model (200,000 tokens of context, no tools).
 
 Only the provider's own endpoint is asked: the configured `settings.baseURL`
 (with `settings.apiKey` or the saved key sent as a bearer token), else the
-default address in the table above. `codesmith models` asks every local
-provider whose endpoint is on this machine (`localhost`, `127.0.0.0/8`,
-`::1`), giving each half a second to connect, so a server that is not
-running is skipped; `codesmith models <provider>` asks that provider's
+default address in the table above. `codesmith models` (and the model
+picker, each time it opens) asks every local provider whose endpoint is on
+this machine (`localhost`, `127.0.0.0/8`, `::1`) or whose `local` is
+`true`, but none with `local: false`, giving each half a second to
+connect, so a server that is not running is skipped; `codesmith models <provider>` asks that provider's
 endpoint wherever it is. The list is kept in `live-models.json` for the
 endpoint it came from, through outages until the next success; an empty
 answer brings the catalog's models back.

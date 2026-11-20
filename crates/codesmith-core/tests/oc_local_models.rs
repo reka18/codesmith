@@ -138,11 +138,17 @@ fn oc_lmstudio_is_registered_as_a_built_in_provider_plugin() {
     ] {
         let p = c.provider(id).unwrap();
         assert_eq!(p.settings.base_url.as_deref(), Some(url), "{id}");
-        assert!(local::loopback(url));
+        assert!(codesmith_core::config::is_loopback_url(url));
     }
-    assert!(!local::loopback("http://192.168.1.4:1234/v1"));
-    assert!(local::loopback("http://localhost:1234/v1"));
-    assert!(local::loopback("http://[::1]:1234/v1"));
+    assert!(!codesmith_core::config::is_loopback_url(
+        "http://192.168.1.4:1234/v1"
+    ));
+    assert!(codesmith_core::config::is_loopback_url(
+        "http://localhost:1234/v1"
+    ));
+    assert!(codesmith_core::config::is_loopback_url(
+        "http://[::1]:1234/v1"
+    ));
 }
 
 #[tokio::test]
@@ -694,4 +700,31 @@ async fn a_configured_provider_discovers_only_with_settings_discovery_on_loopbac
     assert_eq!(found, ["omlx"], "a remote endpoint is not asked unprompted");
     assert_eq!(c.list_models("omlx", &[]), ["local-model"]);
     assert!(c.list_models("plain", &[]).is_empty());
+}
+
+#[tokio::test]
+async fn the_local_setting_decides_whether_a_server_is_asked_unprompted() {
+    let (_g, _d) = data_folder().await;
+    let s = serve(json_handler(json!({"data": [{"id": "proxied"}]}))).await;
+    // A loopback proxy to a hosted service, marked not local: not asked.
+    let c = config(json!({"providers": {
+        "proxy": {"local": false, "settings": {"baseURL": format!("{}/v1", s.origin), "discovery": "openai"}},
+    }}));
+    let found = local::discover_providers(&c, &live::file(), &["proxy".into()]).await;
+    assert!(found.is_empty());
+    assert!(s.seen().is_empty(), "nothing was sent to it");
+    // `local: true` vouches for a server; on loopback it is asked as before.
+    let c = config(json!({"providers": {
+        "proxy": {"local": true, "settings": {"baseURL": format!("{}/v1", s.origin), "discovery": "openai"}},
+    }}));
+    let found = local::discover_providers(&c, &live::file(), &["proxy".into()]).await;
+    assert_eq!(found, ["proxy"]);
+    // Off loopback, only `local: true` lets the listing ask.
+    let p = |local: Option<bool>| codesmith_core::config::ProviderConfig {
+        local,
+        ..Default::default()
+    };
+    let lan = "http://192.168.1.20:8000/v1";
+    assert!(!p(None).probe_unprompted(lan));
+    assert!(p(Some(true)).probe_unprompted(lan));
 }

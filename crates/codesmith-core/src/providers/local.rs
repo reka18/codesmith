@@ -8,8 +8,10 @@
 //! windows and capabilities without asking again. Only the configured base
 //! URL, or a built-in provider's default loopback address, is contacted:
 //! `codesmith models <provider>` asks any configured endpoint, and the
-//! listings that discover on their own ([`discover_local`]) ask only
-//! loopback ones.
+//! listings that discover on their own ([`discover_local`]: `codesmith
+//! models`, the model picker) ask only the ones
+//! [`ProviderConfig::probe_unprompted`](crate::config::ProviderConfig::probe_unprompted)
+//! allows: loopback ones, or any a provider's `local: true` vouches for.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
@@ -77,20 +79,6 @@ pub fn root(kind: Kind, base_url: &str) -> Option<String> {
     r.set_query(None);
     r.set_fragment(None);
     Some(r.to_string().trim_end_matches('/').to_string())
-}
-
-/// Whether a URL's host is a loopback address (`localhost`, `127.0.0.0/8`,
-/// `::1`).
-pub fn loopback(base_url: &str) -> bool {
-    let Ok(u) = url::Url::parse(base_url) else {
-        return false;
-    };
-    match u.host() {
-        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(a)) => a.is_loopback(),
-        Some(url::Host::Ipv6(a)) => a.is_loopback(),
-        None => false,
-    }
 }
 
 /// A discovered model, as kept (OpenCode's `LocalModel`).
@@ -415,16 +403,17 @@ pub fn providers(config: &crate::config::Config) -> Vec<String> {
     ids
 }
 
-/// Discover the models of every local provider whose endpoint is on this
-/// machine (see [`discover`]).
+/// Discover the models of every local provider that may be asked without
+/// being asked (see [`discover_providers`]).
 pub async fn discover_local(config: &crate::config::Config, path: &Path) -> Vec<String> {
     discover_providers(config, path, &providers(config)).await
 }
 
 /// Discover the models of the providers `ids` whose endpoint (the
-/// configured base URL, or the built-in default) is on this machine, at
-/// once and briefly: a server that is not running is skipped and its kept
-/// list stays. The providers that answered.
+/// configured base URL, or the built-in default) is on this machine, or
+/// that `local: true` vouches for, at once and briefly: a server that is
+/// not running is skipped and its kept list stays. The providers that
+/// answered.
 pub async fn discover_providers(
     config: &crate::config::Config,
     path: &Path,
@@ -438,7 +427,11 @@ pub async fn discover_providers(
     let jobs = ids.iter().filter_map(|id| {
         let p = config.provider(id)?;
         let kind = kind(id, &p.settings)?;
-        let base = p.settings.base_url.clone().filter(|u| loopback(u))?;
+        let base = p
+            .settings
+            .base_url
+            .clone()
+            .filter(|u| p.probe_unprompted(u))?;
         let key = config.provider_key(id, &p);
         let client = client.clone();
         Some(async move {
