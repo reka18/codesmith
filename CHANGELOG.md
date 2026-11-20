@@ -71,6 +71,8 @@ replays of its recorded provider traffic.
   that read progress reports show when a session works or waits; on exit
   the session and the command that continues it are printed. Mentions of
   other sessions (`ses_…`) in replies are shown with their titles.
+- **External editor:** `<leader>e` or `/editor` edits the prompt in
+  `$VISUAL` or `$EDITOR`, handing it the terminal and taking it back.
 - **Mini mode:** `codesmith mini` is OpenCode's split-footer interface:
   finished transcript rows are written once into the terminal's own
   scrollback (searchable and selectable after exit) while a live footer

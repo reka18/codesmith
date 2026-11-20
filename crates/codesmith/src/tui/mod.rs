@@ -24,6 +24,7 @@ mod diff_source;
 mod diff_tree;
 mod diff_view;
 mod editor;
+mod external;
 mod group;
 pub(crate) mod keymap;
 mod markdown;
@@ -138,6 +139,8 @@ struct Runner {
     theme_before: Option<String>,
     /// `ctrl+z` was pressed: suspend before the next frame.
     suspend: bool,
+    /// `prompt.editor`: edit the prompt in `$EDITOR` before the next frame.
+    edit: bool,
     /// `app.clear` (mini mode): clear the screen before the next frame.
     clear: bool,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
@@ -566,6 +569,7 @@ impl Runner {
             "help" => self.app.modal = Some(Modal::Help(0)),
             "themes" | "theme" => self.theme_command(args),
             "clear" => self.app.set_entries(Vec::new()),
+            "editor" => self.edit = true,
             "diff" => {
                 let dir = self
                     .session
@@ -1010,6 +1014,7 @@ impl Runner {
                     .notice(format!("theme mode: {} (pinned)", self.themes.mode().key()));
             }
             "terminal.suspend" => self.suspend = true,
+            "prompt.editor" => self.edit = true,
             "terminal.title.toggle" => {
                 let on = self.outside.toggle_title();
                 self.app.notice(if on {
@@ -1021,6 +1026,64 @@ impl Runner {
             "app.clear" => self.clear = true,
             id if id.starts_with("session.tab.") => self.tab_command(id),
             _ => {}
+        }
+    }
+
+    /// Edit the prompt in the external editor, the terminal handed to it
+    /// and taken back after.
+    async fn edit_prompt(&mut self, screen: &mut Screen, cursor: settings::Cursor) {
+        let Some(editor) = external::configured(&|k| std::env::var(k).ok()) else {
+            self.app
+                .error("Failed to open editor: Set $VISUAL or $EDITOR to open an external editor");
+            return;
+        };
+        let value = self.app.input.text().to_string();
+        let cwd = self.cwd.clone();
+        pause_input(true);
+        let full = matches!(screen, Screen::Full(_));
+        if let Screen::Mini(m) = screen {
+            m.release();
+        }
+        let result = tokio::task::spawn_blocking(move || {
+            external::open(
+                &value,
+                Some(&editor),
+                &cwd,
+                &mut || {
+                    if full {
+                        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+                        ratatui::restore();
+                    }
+                },
+                &mut || {},
+            )
+        })
+        .await
+        .unwrap_or_else(|e| Err(anyhow!("{e}")));
+        match screen {
+            Screen::Full(t) => {
+                use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+                let _ = enable_raw_mode();
+                let _ = execute!(
+                    std::io::stdout(),
+                    EnterAlternateScreen,
+                    EnableBracketedPaste
+                );
+                if let Some(c) = cursor_style(cursor) {
+                    let _ = execute!(std::io::stdout(), c);
+                }
+                let _ = t.clear();
+            }
+            Screen::Mini(m) => m.retake(),
+        }
+        pause_input(false);
+        match result {
+            Ok(Some(text)) => {
+                let text = app::strip_escapes(external::normalize(&text));
+                self.app.input.set(text);
+            }
+            Ok(None) => {}
+            Err(e) => self.app.error(format!("Failed to open editor: {e:#}")),
         }
     }
 
@@ -1302,8 +1365,43 @@ fn spawn_hangup(tx: UnboundedSender<Ev>) {
     drop(tx);
 }
 
+/// The input thread stops reading while this is set (an external editor
+/// has the terminal), and says so in [`INPUT_IDLE`].
+static INPUT_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INPUT_IDLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stop (or start again) reading the terminal's input. Pausing waits, for
+/// at most half a second, until the reader is idle.
+fn pause_input(pause: bool) {
+    use std::sync::atomic::Ordering;
+    INPUT_PAUSED.store(pause, Ordering::SeqCst);
+    if !pause {
+        return;
+    }
+    let until = std::time::Instant::now() + Duration::from_millis(500);
+    while !INPUT_IDLE.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn spawn_input(tx: UnboundedSender<Ev>) {
+    use std::sync::atomic::Ordering;
     std::thread::spawn(move || loop {
+        if INPUT_PAUSED.load(Ordering::SeqCst) {
+            INPUT_IDLE.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        INPUT_IDLE.store(false, Ordering::SeqCst);
+        // Polled, so a pause is seen within one wait.
+        match event::poll(Duration::from_millis(50)) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(_) => break,
+        }
+        if INPUT_PAUSED.load(Ordering::SeqCst) {
+            continue;
+        }
         let ev = match event::read() {
             Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => Ev::Key(k),
             Ok(Event::Paste(s)) => Ev::Paste(s),
@@ -1422,6 +1520,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         detected: None,
         theme_before: None,
         suspend: false,
+        edit: false,
         clear: false,
         diffs: settings::Diffs::default(),
         tabs,
@@ -1551,6 +1650,9 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
                     Screen::Full(t) => suspend(t, tui.cursor),
                     Screen::Mini(m) => m.suspend(),
                 }
+            }
+            if std::mem::take(&mut r.edit) {
+                r.edit_prompt(&mut screen, tui.cursor).await;
             }
             if std::mem::take(&mut r.clear) {
                 if let Screen::Mini(m) = &mut screen {
@@ -1686,6 +1788,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("model", true),
     ("variant", true),
     ("diff", false),
+    ("editor", false),
 ];
 
 /// The built-in command `/name args` invokes, if any. As in OpenCode

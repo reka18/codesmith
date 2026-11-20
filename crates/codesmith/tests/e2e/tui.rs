@@ -123,6 +123,11 @@ pub(crate) struct Ui {
 impl Ui {
     /// The UI with `args`, or `None` where `script(1)` is missing.
     pub(crate) fn start(e: &Env, args: &str) -> Option<Ui> {
+        Self::start_with(e, args, &[])
+    }
+
+    /// [`start`](Self::start) with more environment variables.
+    pub(crate) fn start_with(e: &Env, args: &str, vars: &[(&str, &str)]) -> Option<Ui> {
         if !std::path::Path::new("/usr/bin/script").exists() {
             eprintln!("skipped: script(1) is not installed");
             return None;
@@ -139,6 +144,7 @@ impl Ui {
             .env_clear()
             .envs(e.vars())
             .env("TERM", "xterm-256color")
+            .envs(vars.iter().copied())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1110,4 +1116,37 @@ async fn oc_sighup_clears_the_title_and_closes_the_ui() {
     }
     ui.read_to_end().await;
     assert!(ui.screen.contains("\x1b]0;\x07"), "{:?}", ui.screen);
+}
+
+// editor.test.ts: "returns the edited prompt and resumes the renderer", in
+// the UI: `/editor` hands the terminal to `$EDITOR`, takes it back, and
+// the edited prompt is sent as usual.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_external_editor_edits_the_prompt() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Edited").then(
+        "edited",
+        M::tools().and(M::prompt("say edited")),
+        Reply::text("Edited prompt answered."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let script = e.project.join("editor.sh");
+    std::fs::write(&script, "#!/bin/sh\nprintf 'say edited\\n' > \"$1\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let editor = script.to_str().unwrap().to_string();
+    let Some(mut ui) = Ui::start_with(&e, "", &[("EDITOR", &editor)]) else {
+        return;
+    };
+    ui.wait_for("/help for commands").await;
+    ui.send(b"/editor\r").await;
+    ui.wait_for("say edited").await;
+    ui.send(b"\r").await;
+    ui.wait_for("› say edited").await;
+    ui.wait_for("Edited prompt answered.").await;
+    ui.quit().await;
+    m.assert_done();
 }

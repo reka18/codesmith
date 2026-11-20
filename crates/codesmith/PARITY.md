@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 326 | 241 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 331 | 236 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 8 | 9 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **593** | **686** | **2357** | **259** |
+| **Total** | **4637** | **742** | **598** | **681** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -595,6 +595,11 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/cmd/tui/notifications` | plays done only once none of the session's direct children is running | after a fix | oc_plays_done_once_no_direct_child_runs |
 | `tui/test/cli/cmd/tui/notifications` | notifies session errors once and suppresses the following idle done notification | after a fix | oc_notifies_errors_once_and_suppresses_the_done |
 | `tui/test/config` | defines attention sound names | after a fix | oc_defines_attention_sound_names |
+| `tui/test/editor` | rejects when the external editor cannot start | after a fix | oc_rejects_when_the_external_editor_cannot_start (`tui/external.rs`) |
+| `tui/test/editor` | returns the edited prompt and resumes the renderer | after a fix | oc_returns_the_edited_prompt_and_resumes_the_renderer; also the_external_editor_edits_the_prompt (e2e) |
+| `tui/test/editor` | says which variable to set when no external editor is configured | after a fix | oc_says_which_variable_to_set_when_no_editor_is_configured |
+| `tui/test/editor` | normalizes a single trailing editor newline for one-line prompts | after a fix | oc_normalizes_a_single_trailing_editor_newline_for_one_line_prompts |
+| `tui/test/editor` | preserves multiline prompts that end with a newline | after a fix | oc_preserves_multiline_prompts_that_end_with_a_newline |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -895,14 +900,6 @@ transport and its tool presentation.
 - `tui/test/cli/tui/session-rows`: carries model identity with the cross-turn cache baseline
 - `tui/test/cli/tui/session-rows`: resets the cross-turn cache baseline after compaction
 - `tui/test/cli/tui/session-rows`: closes turn usage on the idle marker so steered steps share one footer
-
-### tui: external editor (5)
-
-- `tui/test/editor`: rejects when the external editor cannot start
-- `tui/test/editor`: returns the edited prompt and resumes the renderer
-- `tui/test/editor`: says which variable to set when no external editor is configured
-- `tui/test/editor`: normalizes a single trailing editor newline for one-line prompts
-- `tui/test/editor`: preserves multiline prompts that end with a newline
 
 ### tui: sidebar and footer status (5)
 

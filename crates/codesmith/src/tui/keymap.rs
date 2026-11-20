@@ -1525,6 +1525,7 @@ pub mod scope {
         "app.exit",
         "terminal.suspend",
         "terminal.title.toggle",
+        "prompt.editor",
         "app.clear",
         "agent.cycle",
         "agent.cycle.reverse",

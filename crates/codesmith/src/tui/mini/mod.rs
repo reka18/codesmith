@@ -234,6 +234,24 @@ impl Mini<std::io::Stdout> {
 
     #[cfg(not(unix))]
     pub fn suspend(&mut self) {}
+
+    /// Hand the terminal to another program (an external editor) in its
+    /// normal mode, below the footer.
+    pub fn release(&mut self) {
+        use ratatui::crossterm::{event, execute, terminal};
+        self.surface.close();
+        let _ = self.surface.flush();
+        let _ = execute!(std::io::stdout(), event::DisableBracketedPaste);
+        let _ = terminal::disable_raw_mode();
+    }
+
+    /// Take the terminal back after [`release`](Self::release).
+    pub fn retake(&mut self) {
+        use ratatui::crossterm::{event, execute, terminal};
+        let _ = terminal::enable_raw_mode();
+        let _ = execute!(std::io::stdout(), event::EnableBracketedPaste);
+        self.surface.restart(self.surface.rows.saturating_sub(1));
+    }
 }
 
 #[cfg(test)]

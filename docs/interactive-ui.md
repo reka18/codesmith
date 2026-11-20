@@ -75,8 +75,12 @@ bindings](#key-bindings)), and `/help` lists the bindings in effect.
 | **ctrl+k** / **ctrl+u** | Delete to the end / the start of the line. |
 | **ctrl+shift+d** | Delete the line. |
 | **ctrl+c** | Clear the prompt. |
+| **leader e** | Edit the prompt in `$VISUAL` or `$EDITOR` (`/editor` too). |
 
-Pastes go in at the cursor.
+Pastes go in at the cursor. The external editor gets the terminal while
+it runs (`$EDITOR` may carry arguments, as `code --wait`); what it saves
+comes back as the prompt, the one newline editors add after a single line
+dropped, and the UI takes the terminal back however the editor ended.
 
 ### Everything else
 
@@ -310,6 +314,7 @@ and `opencode` is used.
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |
+| `/editor` | Edit the prompt in `$VISUAL` or `$EDITOR`. |
 | `/diff` | Open or close the [diff viewer and review panel](#the-diff-viewer-and-review-panel). |
 | `/verbosity [low\|medium\|high]` | Cycle the transcript's [verbosity](#verbosity), or set it. |
 | `/themes [name\|dark\|light\|system]` | Pick a [theme](#themes) (`/theme` too), or set its mode. |

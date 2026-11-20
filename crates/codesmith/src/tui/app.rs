@@ -430,6 +430,7 @@ const HELP_COMMANDS: &str = "/new            start a new session
 /thinking       show or hide reasoning
 /verbosity [l]  cycle the transcript's verbosity, or set low, medium or high
 /diff           open or close the diff viewer and review panel (? there: its keys)
+/editor         edit the prompt in $VISUAL or $EDITOR
 /help           this help
 /exit           quit
 /calibrate      survey the codebase and choose review dimensions
@@ -519,6 +520,7 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("session.first", "scroll to the top"),
     ("session.last", "follow the bottom again"),
     ("terminal.suspend", ""),
+    ("prompt.editor", "edit the prompt in $VISUAL or $EDITOR"),
     ("help.show", "this help"),
     ("diff.open", "open or close the diff viewer"),
     ("pane.focus.right", "focus the docked diff viewer"),
@@ -571,6 +573,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ),
     ("help", "keys and commands"),
     ("diff", "open or close the diff viewer and review panel"),
+    ("editor", "edit the prompt in $VISUAL or $EDITOR"),
     ("themes", "pick a theme, or set the light or dark mode"),
     ("exit", "quit"),
 ];
@@ -1200,6 +1203,7 @@ impl App {
             }
             "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
             "terminal.title.toggle" => return Some(Some(Action::Run("terminal.title.toggle"))),
+            "prompt.editor" => return Some(Some(Action::Run("prompt.editor"))),
             // Tab commands while tabs are on, as OpenCode enables them.
             id if id.starts_with("session.tab.") => {
                 self.tabs.as_ref()?;
