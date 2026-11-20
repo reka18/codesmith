@@ -338,6 +338,25 @@ impl Session {
     }
 
     fn request(&self) -> Request {
+        let plugins = crate::plugin::active();
+        let mut req = self.base_request(&plugins);
+        plugins.request(&self.loaded.config, &self.id, &mut req);
+        req
+    }
+
+    /// Plugin tools this agent may use (hidden when its rules deny them).
+    fn plugin_tools(&self, plugins: &crate::plugin::Registry) -> Vec<Arc<dyn crate::plugin::Tool>> {
+        let rules = &self.agent.permissions;
+        plugins
+            .tools(&self.loaded.config)
+            .into_iter()
+            .filter(|t| {
+                crate::permission::evaluate(t.name(), "*", rules) != crate::permission::Effect::Deny
+            })
+            .collect()
+    }
+
+    fn base_request(&self, plugins: &crate::plugin::Registry) -> Request {
         Request {
             model: self.model.model_id.clone(),
             system: self.system.clone(),
@@ -370,6 +389,15 @@ impl Session {
                     description: t.description.clone(),
                     parameters: t.schema.clone(),
                 }))
+                .chain(
+                    self.plugin_tools(plugins)
+                        .iter()
+                        .map(|t| codesmith_ai::ToolSpec {
+                            name: t.name().to_string(),
+                            description: t.description().to_string(),
+                            parameters: t.parameters(),
+                        }),
+                )
                 .collect(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
@@ -410,7 +438,23 @@ impl Session {
             self.title_task = Some(self.spawn_title(text));
         }
         self.push(Message::user(text))?;
+        let plugins = crate::plugin::active();
+        plugins.event(
+            &self.loaded.config,
+            &crate::plugin::Event::TurnStart {
+                session_id: &self.id,
+                text,
+            },
+        );
         let result = self.run_steps(sink).await;
+        let err = result.as_ref().err().map(|e| format!("{e:#}"));
+        plugins.event(
+            &self.loaded.config,
+            &crate::plugin::Event::TurnEnd {
+                session_id: &self.id,
+                error: err.as_deref(),
+            },
+        );
         if let Some(s) = &self.store {
             if self.stored {
                 let _ = s.set_usage(&self.id, &self.usage);
@@ -428,6 +472,7 @@ impl Session {
         // over the limit after compacting cannot loop.
         let mut compacted_this_step = false;
         let mut repeats = RepeatGuard::default();
+        let mut continued = 0u32;
         while steps < max_steps {
             self.report_finished_jobs()?;
             if !compacted_this_step && self.due_for_compaction() {
@@ -453,6 +498,14 @@ impl Session {
                 model: self.model_spec.clone(),
                 usage,
             })?;
+            crate::plugin::active().event(
+                &self.loaded.config,
+                &crate::plugin::Event::StepEnd {
+                    session_id: &self.id,
+                    model: &self.model_spec,
+                    usage: &usage,
+                },
+            );
             let calls: Vec<(String, String, serde_json::Value)> = parts
                 .iter()
                 .filter_map(|p| match p {
@@ -468,6 +521,19 @@ impl Session {
             })?;
             if calls.is_empty() {
                 if self.jobs.running() == 0 && self.jobs_pending() == 0 {
+                    let answer = self.last_answer();
+                    let idle = crate::plugin::Idle {
+                        session_id: &self.id,
+                        parent_id: self.parent.as_deref(),
+                        answer: &answer,
+                        continued,
+                    };
+                    if let Some(next) = crate::plugin::active().idle(&self.loaded.config, &idle) {
+                        continued += 1;
+                        sink.notice("a plugin continued the turn");
+                        self.push(Message::user(next))?;
+                        continue;
+                    }
                     return Ok(());
                 }
                 // The model is done for now, but background commands are still
@@ -480,8 +546,26 @@ impl Session {
                 continue;
             }
             let mut results = Vec::new();
+            let plugins = crate::plugin::active();
             for (id, name, input) in calls {
                 sink.tool_start(&id, &name, &input);
+                plugins.event(
+                    &self.loaded.config,
+                    &crate::plugin::Event::ToolStart {
+                        session_id: &self.id,
+                        id: &id,
+                        name: &name,
+                        input: &input,
+                    },
+                );
+                let mut call = crate::plugin::ToolCall {
+                    session_id: self.id.clone(),
+                    id: id.clone(),
+                    name: name.clone(),
+                    input,
+                };
+                let refused = plugins.tool_before(&self.loaded.config, &mut call).err();
+                let input = call.input.clone();
                 let started = std::time::Instant::now();
                 let verdict = repeats.check(&name, &input);
                 if verdict == Repeat::Abort {
@@ -493,7 +577,11 @@ impl Session {
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
                     _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
+                    _ if refused.is_some() => (refused.clone().unwrap_or_default(), true),
                     _ if self.mcp.tool(&name).is_some() => self.run_mcp(&name, &input).await,
+                    _ if self.plugin_tools(&plugins).iter().any(|t| t.name() == name) => {
+                        self.run_plugin_tool(&plugins, &name, &input).await
+                    }
                     Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
                     Some(Tool::Subagent) => self.run_subagent(&input, sink).await,
                     Some(Tool::Skill) => self.run_skill(&input),
@@ -514,12 +602,24 @@ impl Session {
                         tool::execute(&ctx, &name, &input).await
                     }
                 };
+                let (mut content, mut is_error) = (content, is_error);
+                plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
                 self.record(&Record::Tool {
                     name: name.clone(),
                     ms: started.elapsed().as_millis() as u64,
                     error: is_error,
                 })?;
                 sink.tool_end(&id, &name, &content, is_error);
+                plugins.event(
+                    &self.loaded.config,
+                    &crate::plugin::Event::ToolEnd {
+                        session_id: &self.id,
+                        id: &id,
+                        name: &name,
+                        output: &content,
+                        is_error,
+                    },
+                );
                 results.push(Part::ToolResult {
                     id,
                     name,
@@ -579,6 +679,60 @@ impl Session {
                 sink.todos(&self.todos);
                 (tool::todo::summarize(&self.todos), false)
             }
+            Err(e) => (e, true),
+        }
+    }
+
+    /// The model's final text in the latest assistant message.
+    fn last_answer(&self) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| {
+                m.parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let Part::Text(t) = p {
+                            Some(t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    async fn run_plugin_tool(
+        &self,
+        plugins: &crate::plugin::Registry,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> (String, bool) {
+        let Some(t) = self
+            .plugin_tools(plugins)
+            .into_iter()
+            .find(|t| t.name() == name)
+        else {
+            return (
+                format!("The {name} tool is not available to this agent."),
+                true,
+            );
+        };
+        if let Err(e) = self.allowed(name, "*", format!("Run plugin tool {name}")) {
+            return (e, true);
+        }
+        let ctx = crate::plugin::ToolContext {
+            cwd: self.cwd.clone(),
+            root: self.root.clone(),
+            session_id: self.id.clone(),
+        };
+        match t.execute(ctx, tool::repair(input)).await {
+            Ok(text) => (
+                tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+                false,
+            ),
             Err(e) => (e, true),
         }
     }

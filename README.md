@@ -313,6 +313,38 @@ and refreshed automatically; `codesmith mcp logout <name>` forgets them. Set
 `"oauth": {"clientId": "...", "clientSecret": "...", "scope": "...", "port": 19876}`
 to use a pre-registered client, or `"oauth": false` to turn it off.
 
+## Plugins
+
+Plugins are native Rust, compiled into your own build of CodeSmith — no
+scripting runtime, no downloads. A plugin implements
+`codesmith::plugin::Plugin`, overriding only the hooks it needs, and a
+three-line `main` builds a CodeSmith that includes it:
+
+```rust
+fn main() {
+    codesmith::main(vec![std::sync::Arc::new(MyPlugin)]);
+}
+```
+
+The hooks follow OpenCode's plugin API:
+
+| Hook | What it can do |
+| --- | --- |
+| `config` | edit the merged config: add or change agents, commands, providers, MCP servers, formatters, permissions; receives the plugin's options |
+| `tools` | add tools (permission-checked by name like any other) |
+| `tool_before` / `tool_after` | change a tool call's input or refuse it; change what the model sees |
+| `shell_before` | change a shell command or its environment |
+| `request` | change the system prompt, messages, tools or body just before a model request |
+| `permission` | answer a permission prompt instead of the user |
+| `event` | observe turns, steps and tool calls |
+| `idle` | continue a finished turn with another message (at most 5 times) |
+
+Config enables plugins by id: `"plugins": {"my-plugin": {...options}}`, or
+`false` to turn one off. `codesmith debug plugins` lists what is compiled in.
+[`examples/plugin-example`](examples/plugin-example/src/main.rs) is a complete
+one (a `todo_scan` tool, a `/standup` command and a force-push guard):
+`cargo run -p codesmith-plugin-example -- debug plugins`.
+
 ## Editors (ACP)
 
 `codesmith acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com)
@@ -362,7 +394,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
 4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees, stats~~
-5. ~~ACP~~; native Rust plugins, code mode, automations
+5. ~~ACP, native Rust plugins~~; code mode, automations
 
 ## License
 

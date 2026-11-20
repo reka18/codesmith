@@ -11,6 +11,7 @@ pub mod instructions;
 pub mod mcp;
 pub mod paths;
 pub mod permission;
+pub mod plugin;
 pub mod prompt;
 pub mod question;
 pub mod review;

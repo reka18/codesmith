@@ -346,10 +346,18 @@ fn spawn(
     let out = std::fs::File::create(file)
         .map_err(|e| format!("Unable to create {}: {e}", file.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
+    let mut sc = crate::plugin::ShellCommand {
+        session_id: session.to_string(),
+        cwd: dir.to_path_buf(),
+        command: command.to_string(),
+        env: Default::default(),
+    };
+    crate::plugin::active().shell_before(&mut sc);
     let mut cmd = tokio::process::Command::new(shell);
     cmd.arg("-c")
-        .arg(command)
+        .arg(&sc.command)
         .current_dir(dir)
+        .envs(&sc.env)
         .env("CODESMITH_SESSION_ID", session)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))

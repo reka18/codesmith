@@ -186,7 +186,10 @@ impl Gate {
                 action: req.action.clone(),
                 resource: req.resources.join(", "),
             }),
-            Effect::Ask => match self.asker.ask(req) {
+            Effect::Ask => match crate::plugin::active()
+                .permission(req)
+                .unwrap_or_else(|| self.asker.ask(req))
+            {
                 Reply::Once => Ok(()),
                 Reply::Always => {
                     let mut saved = self.saved.lock().unwrap();

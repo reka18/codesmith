@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/codesmith-ai", "crates/codesmith-core", "crates/codesmith"]
+members = [
+    "crates/codesmith-ai",
+    "crates/codesmith-core",
+    "crates/codesmith",
+    "examples/plugin-example",
+]
 
 [workspace.package]
 version = "0.1.0"

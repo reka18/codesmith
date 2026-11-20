@@ -45,6 +45,8 @@ pub struct Config {
     pub formatter: Option<crate::format::Setting>,
     /// Where `--worktree` creates worktrees and what it runs in them.
     pub worktree: crate::worktree::WorktreeConfig,
+    /// Compiled-in plugins: `false` turns one off, an object is its options.
+    pub plugins: BTreeMap<String, Value>,
     /// Code review settings for `/review` and `/calibrate`.
     pub review: crate::review::ReviewConfig,
     /// Model Context Protocol servers whose tools the agent can use.
@@ -207,7 +209,8 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
             parse(&text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?,
         );
     }
-    let config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
+    let mut config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
+    crate::plugin::active().transform(&mut config);
     Ok(Loaded {
         config,
         files,
