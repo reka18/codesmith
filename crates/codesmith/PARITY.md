@@ -61,14 +61,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 5 | 63 | 163 | 1 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 7 | 718 | 496 | 16 |
+| tui: main UI | 1250 | 13 | 10 | 718 | 496 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 0 | 267 | 537 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **15** | **1504** | **2113** | **263** |
+| **Total** | **4637** | **742** | **18** | **1504** | **2113** | **260** |
 
 ## Fixes made while porting
 
@@ -106,16 +106,18 @@ Where the tests live:
   stays: OpenCode sends `/quit now` to the model as a prompt (it sends any
   slash text that is not a command), while CodeSmith reports `/quit takes no
   arguments`, as it reports unknown commands rather than sending them.
+- **Compact token counts and truncation** (`util/locale`): `999 950`
+  tokens showed as `1000K`; as in OpenCode, counts that round to a thousand
+  thousands are millions (`1M`; CodeSmith still drops a trailing `.0`, so
+  OpenCode's `1.0M` is `1M`). Cutting text to width 0 gave `…` rather than
+  nothing, and cutting could split a grapheme (an emoji family, a letter
+  with a combining mark); it now keeps whole graphemes.
 
 ## Differences found but not fixed
 
 These are in files other work in progress owns, so they are recorded here
 rather than changed:
 
-- `tui/view.rs`: `tokens(999_950)` is `1000K` where OpenCode rolls over to
-  `1.0M` (`util/locale`: "rolls the compact form over at the rounding
-  boundary"), and `cut(s, 0)` returns `…` where OpenCode returns an empty
-  string (`util/locale`: "truncates text from the right by terminal width").
 - `codesmith-core/src/stats.rs`: the calendar labels a partial first month
   (`Apr` for a range that starts on April 29) where OpenCode shows only
   `May` (`cli/test/stats`: "renders shared intensity levels and partial
@@ -143,6 +145,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/local-attachment` | parses multi-file drops from POSIX, URI-list, and Windows terminals | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
 | `tui/test/prompt/local-attachment` | resolves a single image path before splitting spaces | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
 | `tui/test/prompt/local-attachment` | resolves quoted paths and URI lists as ordered attachments | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
+| `tui/test/util/locale` | truncates text from the right by terminal width | after a fix | oc_cut_truncates_from_the_right_by_terminal_width |
+| `tui/test/util/locale` | takes whole graphemes within terminal width | after a fix | oc_take_keeps_whole_graphemes_within_terminal_width (adapted) |
+| `tui/test/util/locale` | rolls the compact form over at the rounding boundary | after a fix | oc_token_counts_roll_over_at_the_rounding_boundary (adapted: `1M` for `1.0M`) |
 | `tui/test/mini/prompt.shared` | recognizes exit commands | after a fix | oc_exit_commands_ignore_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes the new-session command | after a fix | oc_the_new_session_command_ignores_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes only the compact command | after a fix | oc_only_the_compact_command_compacts |
@@ -751,9 +756,9 @@ behaviour exists; no test cites it not cited by a test oc_acp_elicitation_mappin
 - `cli/test/acp/translate`: leaves a user's shell command, whose notice waits for the next prompt, out of pending work
 - `cli/test/acp/turn`: cancels unsupported session forms so execution can continue
 
-### tui: text truncation (15)
+### tui: text truncation (12)
 
-view.rs cut() matches except width 0; it is private to view.rs
+file paths and middle truncation, which view.rs does not do as OpenCode does
 
 - `tui/test/ui/file-path`: keeps the full path when it fits
 - `tui/test/ui/file-path`: adds nearest parent segments from right to left
@@ -765,9 +770,6 @@ view.rs cut() matches except width 0; it is private to view.rs
 - `tui/test/ui/file-path`: preserves absolute roots
 - `tui/test/ui/file-path`: measures terminal columns without splitting graphemes
 - `tui/test/ui/file-path`: never exceeds the requested width
-- `tui/test/util/locale`: truncates text from the right by terminal width
-- `tui/test/util/locale`: takes whole graphemes within terminal width
-- `tui/test/util/locale`: rolls the compact form over at the rounding boundary
 - `tui/test/util/locale`: truncates text in the middle without overflowing small widths
 - `tui/test/util/path-format`: formats relative, home, and foreign paths
 

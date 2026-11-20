@@ -628,6 +628,7 @@ dependencies = [
  "tempfile",
  "textwrap",
  "tokio",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

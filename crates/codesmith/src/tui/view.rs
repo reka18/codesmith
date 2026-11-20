@@ -107,22 +107,34 @@ fn quiet(tool: &str) -> bool {
     )
 }
 
-/// `s` cut to `n` columns, ending in `…` when shortened.
+/// `s` cut to `n` columns, ending in `…` when shortened (OpenCode's
+/// `Locale.truncateWidth`): nothing at width 0, whole graphemes only.
 fn cut(s: &str, n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
     if s.width() <= n {
         return s.to_string();
     }
+    let mut o = take(s, n - 1);
+    o.push('…');
+    o
+}
+
+/// The whole graphemes of `s` that fit in `n` columns (OpenCode's
+/// `Locale.takeWidth`).
+fn take(s: &str, n: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
     let mut o = String::new();
     let mut w = 0;
-    for c in s.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-        if w + cw + 1 > n {
+    for g in s.graphemes(true) {
+        let gw = g.width();
+        if w + gw > n {
             break;
         }
-        o.push(c);
-        w += cw;
+        o.push_str(g);
+        w += gw;
     }
-    o.push('…');
     o
 }
 
@@ -791,7 +803,9 @@ pub fn input_height(app: &App, width: u16) -> u16 {
 pub fn tokens(n: u64) -> String {
     match n {
         0..=999 => n.to_string(),
-        1_000..=999_999 => format!("{:.1}K", n as f64 / 1e3).replace(".0K", "K"),
+        // Rounding 999 950 and up to thousands would give `1000K`; as in
+        // OpenCode's `Locale.number`, they are millions.
+        1_000..=999_949 => format!("{:.1}K", n as f64 / 1e3).replace(".0K", "K"),
         _ => format!("{:.1}M", n as f64 / 1e6).replace(".0M", "M"),
     }
 }
@@ -1983,5 +1997,41 @@ mod tests {
         assert_eq!(tokens(950), "950");
         assert_eq!(tokens(12_345), "12.3K");
         assert_eq!(tokens(2_000_000), "2M");
+    }
+
+    // OpenCode util/locale.test.ts: "truncates text from the right by
+    // terminal width".
+    #[test]
+    fn oc_cut_truncates_from_the_right_by_terminal_width() {
+        assert_eq!(cut("abcdefgh", 5), "abcd…");
+        assert_eq!(cut("ab界cd", 5), "ab界…");
+        assert_eq!(cut("abcdefgh", 1), "…");
+        assert_eq!(cut("abcdefgh", 0), "");
+        assert_eq!(cut("", 0), "");
+        assert_eq!(cut("ab界cd", 4), "ab…", "a wide character is not split");
+    }
+
+    // OpenCode util/locale.test.ts: "takes whole graphemes within terminal
+    // width" (adapted: the grapheme split is unicode-segmentation's).
+    #[test]
+    fn oc_take_keeps_whole_graphemes_within_terminal_width() {
+        assert_eq!(take("ab界cd", 4), "ab界");
+        assert_eq!(take("ab界cd", 3), "ab");
+        let family = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
+        assert_eq!(take(&format!("a{family}b"), 3), format!("a{family}"));
+        assert_eq!(cut(&format!("a{family}bc"), 4), format!("a{family}…"));
+    }
+
+    // OpenCode util/locale.test.ts: "rolls the compact form over at the
+    // rounding boundary" (adapted: CodeSmith drops a trailing `.0`, so
+    // OpenCode's `1.0M` is `1M`).
+    #[test]
+    fn oc_token_counts_roll_over_at_the_rounding_boundary() {
+        assert_eq!(tokens(999_949), "999.9K");
+        assert_eq!(tokens(999_950), "1M");
+        assert_eq!(tokens(1_000_000), "1M");
+        assert_eq!(tokens(999), "999");
+        assert_eq!(tokens(1_000), "1K");
+        assert_eq!(tokens(1_050_000), "1.1M");
     }
 }
