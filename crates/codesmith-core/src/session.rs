@@ -263,7 +263,16 @@ pub struct Session {
     pub agent: Agent,
     pub model: ModelRef,
     pub model_spec: String,
+    /// The system prompt of the latest request: [`Session::base_system`]
+    /// and the instruction baseline (see [`crate::instruction_state`]).
     pub system: String,
+    /// The agent's own prompt, else the model's base prompt.
+    base_system: String,
+    /// The `<env>` block the environment instruction reads.
+    env_block: String,
+    /// The instruction state; `None` until the next observation makes a
+    /// baseline.
+    instruction: Option<crate::instruction_state::State>,
     pub tools: Vec<Tool>,
     pub messages: Vec<Message>,
     /// Store sequence number of each message (`None` for a checkpoint).
@@ -332,6 +341,8 @@ struct Turn {
     /// before reporting them, and when the next one may start.
     resume_failures: u32,
     resume_due: Option<std::time::Instant>,
+    /// The turn already observed the instructions for its first step.
+    observed: bool,
 }
 
 /// What a front end does for an idle session's background commands, from
@@ -396,12 +407,14 @@ impl Session {
         let config = &loaded.config;
         let mut seen = 0;
         let mut ran_with = None;
+        let mut instruction = None;
         let resumed: Option<Resumed> = match (&opts.resume, &store) {
             (Some(id), Some(s)) => {
                 let info = s.get(id)?.ok_or_else(|| anyhow!("no session {id}"))?;
                 let entries = s.entries(id)?;
                 seen = entries.last().map_or(0, |e| e.seq);
                 ran_with = last_step_model(&entries);
+                instruction = crate::instruction_state::fold(&entries);
                 Some((info, store::history_with_seqs(&entries)))
             }
             (Some(_), None) => {
@@ -460,34 +473,19 @@ impl Session {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
         let _ = std::fs::create_dir_all(&tmp);
-        let env = prompt::environment(&prompt::Environment {
+        let env_block = prompt::env_block(&prompt::Environment {
             cwd: &cwd,
             root: &loaded.root,
             is_git: loaded.root.join(".git").exists(),
             tmp: &tmp,
-            date: prompt::today(),
+            date: String::new(),
         });
-        let files = instructions::discover(
-            &cwd,
-            &loaded.root,
-            &paths::config_dir(),
-            &config.instructions,
-        );
-        let mut system = prompt::assemble(
-            agent.system.as_deref(),
-            &model.model_id,
-            &names,
-            &env,
-            &instructions::render(&files),
-        );
-        if tools.contains(&Tool::Skill) {
-            system.push_str("\n\n");
-            system.push_str(&crate::skill::instructions(&skills));
-        }
-        if agent.id == "plan" {
-            system.push_str("\n\n");
-            system.push_str(agent::PLAN_REMINDER);
-        }
+        let base_system = match &agent.system {
+            Some(s) => s.clone(),
+            None => prompt::base(&model.model_id, &names),
+        };
+        // Until the first observation, the base alone.
+        let system = assemble_system(&base_system, "", agent.id == "plan");
         let shell = config
             .shell
             .clone()
@@ -530,6 +528,9 @@ impl Session {
             model,
             model_spec,
             system,
+            base_system,
+            env_block,
+            instruction,
             tools,
             messages,
             seqs,
@@ -574,6 +575,7 @@ impl Session {
                 retry_scale: 1.0,
                 resume_failures: 0,
                 resume_due: None,
+                observed: false,
             },
             shared: Shared {
                 seen,
@@ -616,6 +618,7 @@ impl Session {
                 self.messages = messages;
                 self.seqs = seqs;
                 self.ran_with = last_step_model(&entries);
+                self.instruction = crate::instruction_state::fold(&entries);
                 if let Some(info) = st.get(&self.id)? {
                     self.unbilled = stored_unbilled(st, &self.id, &info.usage);
                     self.usage = info.usage;
@@ -830,16 +833,86 @@ impl Session {
         }
     }
 
-    /// The system prompt with Code Mode and MCP server instructions.
-    fn system_prompt(&self, code: &[crate::codemode::Entry]) -> String {
-        let mut system = self.system.clone();
-        if !code.is_empty() {
-            system = format!("{system}\n\n{}", crate::codemode::instructions(code));
+    /// The system prompt: the base and the instruction baseline, Code Mode
+    /// and MCP server instructions among them.
+    fn system_prompt(&self, _code: &[crate::codemode::Entry]) -> String {
+        self.system.clone()
+    }
+
+    /// The instruction sources, read fresh: most shared across sessions
+    /// first (OpenCode's order), so the baseline stays a reusable cached
+    /// prefix: the Code Mode catalog, MCP server instructions, skills, instruction files, then the date and environment, and the
+    /// context a host attached.
+    fn instruction_sources(&mut self) -> Result<crate::instruction_state::List> {
+        let config = &self.loaded.config;
+        let code = self.code_entries();
+        let codemode = (!code.is_empty()).then(|| crate::codemode_catalog::inventory(&code));
+        let mut lists = vec![
+            crate::codemode_catalog::source(codemode, Some(crate::codemode_catalog::INLINE_BUDGET)),
+            crate::mcp::instruction_source(&self.mcp_instructions(&code)),
+        ];
+        if self.tools.contains(&Tool::Skill) {
+            let home = dirs::home_dir().unwrap_or_default();
+            self.skills = crate::skill::discover(&crate::skill::roots(
+                &self.cwd,
+                &self.root,
+                &paths::config_dir(),
+                &home,
+                &config.skills,
+            ));
+            lists.push(crate::skill::source(&self.skills));
         }
-        if let Some(mcp) = self.mcp_instructions(code) {
-            system = format!("{system}\n\n{mcp}");
+        let files = instructions::discover(
+            &self.cwd,
+            &self.root,
+            &paths::config_dir(),
+            &config.instructions,
+        );
+        lists.push(instructions::source(instructions::read(&files)));
+        lists.push(prompt::builtin_sources(
+            prompt::today,
+            self.env_block.clone(),
+        ));
+        let context = match &self.store {
+            Some(st) => st.context(&self.id, true)?,
+            None => Vec::new(),
+        };
+        lists.push(crate::instruction_state::context_sources(&context));
+        Ok(crate::instruction_state::combine(lists)?)
+    }
+
+    /// Read the instruction sources and record what changed: the first
+    /// time, the baseline; later, an update the model sees here as a system
+    /// message. Then render the system prompt from the baseline. Fails while
+    /// a source cannot be read and there is no baseline yet.
+    fn observe_instructions(&mut self) -> Result<()> {
+        use crate::instruction_state as is;
+        let list = self.instruction_sources()?;
+        let o = is::observe(&list, self.instruction.as_ref())?;
+        if o.changed() {
+            let text = is::update_text(&list, &o)?;
+            let seq = self.record(&is::record(&o.delta, Some(text.clone()), o.initial))?;
+            let at = seq.unwrap_or(0);
+            match &mut self.instruction {
+                Some(s) if !o.initial => {
+                    s.current = o.current;
+                    s.through = at;
+                }
+                _ => self.instruction = Some(is::State::baseline(at, o.current)),
+            }
+            if !text.is_empty() {
+                self.messages.push(Message::system(text));
+                self.seqs.push(seq);
+            }
         }
-        system
+        let initial = self
+            .instruction
+            .as_ref()
+            .map(|s| s.initial.clone())
+            .unwrap_or_default();
+        let text = is::join(&is::render_initial(&list, &initial)?);
+        self.system = assemble_system(&self.base_system, &text, self.agent.id == "plan");
+        Ok(())
     }
 
     /// Every tool offered to the model: built-in, MCP, resource, plugin,
@@ -947,6 +1020,11 @@ impl Session {
         sink: &mut dyn Sink,
     ) -> Result<()> {
         let _lease = self.take_turn(sink).await?;
+        // What changed since the last turn comes before the new prompt; a
+        // baseline that cannot be made yet leaves the prompt unsent.
+        self.mcp.refresh().await;
+        self.observe_instructions()?;
+        self.turn.observed = true;
         // Subagents share the parent's turn snapshot.
         let mut snapshots = None;
         if self.parent.is_none()
@@ -1037,6 +1115,12 @@ impl Session {
                         self.last_prompt_tokens.max(self.estimate_prompt())
                     ));
                 }
+            }
+            // Each step sees the instructions as they are now.
+            if !std::mem::take(&mut self.turn.observed) {
+                // Tool lists a server announced as changed count already.
+                self.mcp.refresh().await;
+                self.observe_instructions()?;
             }
             // The last allowed step must answer in text (OpenCode's MAX_STEPS).
             let final_step = steps + 1 >= max_steps;
@@ -1775,10 +1859,9 @@ impl Session {
 
     /// The `<mcp_instructions>` block for servers whose tools this session can
     /// reach, directly or through Code Mode (OpenCode's rule).
-    fn mcp_instructions(&self, code: &[crate::codemode::Entry]) -> Option<String> {
+    fn mcp_instructions(&self, code: &[crate::codemode::Entry]) -> Vec<(String, String, bool)> {
         let direct = self.mcp_tools();
-        let servers: Vec<(String, String, bool)> = self
-            .mcp
+        self.mcp
             .instructions()
             .into_iter()
             .filter_map(|(server, text)| {
@@ -1786,8 +1869,7 @@ impl Session {
                 let in_direct = direct.iter().any(|t| t.server == server);
                 (in_code || in_direct).then_some((server, text, in_code))
             })
-            .collect();
-        (!servers.is_empty()).then(|| crate::mcp::render_instructions(&servers))
+            .collect()
     }
 
     /// The prompt a custom command sends: its template filled in, or an MCP
@@ -2412,19 +2494,36 @@ impl Session {
             Some(seq) => seq,
             None => self.seqs.iter().flatten().max().copied().unwrap_or(0) + 1,
         };
+        let mut updates = Vec::new();
+        let mut at = 0;
         if let (Some(s), true) = (&self.store, self.stored) {
-            s.append(
+            at = s.append(
                 &self.id,
                 &Record::Checkpoint {
                     summary: summary.clone(),
                     keep_from,
                 },
             )?;
+            updates = s
+                .entries(&self.id)?
+                .into_iter()
+                .filter(|e| matches!(e.record, Record::Instructions { text: Some(_), .. }))
+                .map(|e| Some(e.seq))
+                .collect();
+        }
+        // The checkpoint starts a new instruction epoch: the baseline takes
+        // the newest values, and the updates kept after it are part of it.
+        if let Some(state) = &mut self.instruction {
+            state.advance(at);
         }
         let mut messages = vec![Message::user(store::checkpoint_text(&summary))];
         let mut seqs = vec![None];
-        messages.extend(self.messages.drain(k..));
-        seqs.extend(self.seqs.drain(k..));
+        for (m, seq) in self.messages.drain(k..).zip(self.seqs.drain(k..)) {
+            if !updates.contains(&seq) {
+                messages.push(m);
+                seqs.push(seq);
+            }
+        }
         self.messages = messages;
         self.seqs = seqs;
         if !kept_all_turn {
@@ -2974,6 +3073,19 @@ pub fn turn_diff(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Strin
     };
     let now = snaps.capture()?;
     Ok(Some(snaps.diff(&tree, &now)?))
+}
+
+/// The system prompt: the base, the instruction baseline, and the plan
+/// agent's reminder.
+fn assemble_system(base: &str, instructions: &str, plan: bool) -> String {
+    let mut parts = vec![base];
+    if !instructions.is_empty() {
+        parts.push(instructions);
+    }
+    if plan {
+        parts.push(agent::PLAN_REMINDER);
+    }
+    parts.join("\n\n")
 }
 
 fn add(total: &mut Usage, u: &Usage) {

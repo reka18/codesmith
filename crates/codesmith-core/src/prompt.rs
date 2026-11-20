@@ -62,6 +62,49 @@ pub fn environment(e: &Environment) -> String {
     .join("\n")
 }
 
+/// The `<env>` block alone.
+pub fn env_block(e: &Environment) -> String {
+    [
+        "<env>".to_string(),
+        format!("  Working directory: {}", e.cwd.display()),
+        format!("  Workspace root folder: {}", e.root.display()),
+        format!("  Is directory a git repo: {}", if e.is_git { "yes" } else { "no" }),
+        format!("  Platform: {}", std::env::consts::OS),
+        format!("  Prefer {} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.", e.tmp.display()),
+        "</env>".into(),
+    ]
+    .join("\n")
+}
+
+/// The date and environment as instruction sources (OpenCode's built-in
+/// instructions): `date` is read at each observation, so a session that
+/// runs past midnight is told the new date, once a day.
+pub fn builtin_sources(
+    date: impl Fn() -> String + Send + Sync + 'static,
+    env: String,
+) -> crate::instruction_state::List {
+    use crate::instruction_state::{make, Definition, Observed};
+    let mut list = make::<String>(Definition {
+        key: "core/date".into(),
+        read: Box::new(move || Observed::Value(date())),
+        initial: Box::new(|d| format!("Today's date: {d}")),
+        changed: Box::new(|_, d| Some(format!("Today's date is now: {d}"))),
+        removed: None,
+    });
+    list.extend(make::<String>(Definition {
+        key: "core/environment".into(),
+        read: Box::new(move || Observed::Value(env.clone())),
+        initial: Box::new(|e| {
+            format!(
+                "Here is some useful information about the environment you are running in:\n{e}"
+            )
+        }),
+        changed: Box::new(|_, e| Some(format!("The environment you are running in is now:\n{e}"))),
+        removed: None,
+    }));
+    list
+}
+
 /// Today's date in OpenCode's `Date.toDateString()` form, e.g. "Thu Nov 19 2026".
 pub fn today() -> String {
     chrono::Local::now().format("%a %b %d %Y").to_string()

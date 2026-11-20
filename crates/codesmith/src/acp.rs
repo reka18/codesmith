@@ -2329,13 +2329,8 @@ impl Agent {
             let mut db = self
                 .store()
                 .ok_or_else(|| internal("the session store is unavailable", Value::Null))?;
-            let mut e = db
-                .export(&sid)
-                .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
-            e.info.id = fork.clone();
-            e.info.parent_id = None;
-            e.info.updated = store::now();
-            db.import(&e)
+            // The fork starts from the source's newest instructions.
+            db.fork(&sid, &fork)
                 .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
             sid = fork;
         }

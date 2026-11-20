@@ -128,7 +128,11 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
     // Four steps, then the title call's.
     assert_eq!(kinds.iter().filter(|k| *k == "step").count(), 5);
     assert_eq!(kinds.iter().filter(|k| *k == "tool").count(), 3);
-    assert_eq!(kinds.first().map(String::as_str), Some("snapshot"));
+    // The instruction baseline, then the turn's snapshot.
+    assert_eq!(
+        kinds[..2],
+        ["instructions".to_string(), "snapshot".to_string()]
+    );
     // The turn ends, then the title call (which ran beside it) is counted.
     assert_eq!(
         kinds[kinds.len() - 2..],

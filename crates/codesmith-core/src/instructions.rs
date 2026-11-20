@@ -12,11 +12,16 @@
 //!      home folder, a relative one is looked for in every folder from the
 //!      working directory up to the project root
 //!
-//! Deliberate differences: configured URLs are not fetched, the files are
-//! read once per session (no change or removal notices mid-session, so
-//! `instruction-state.test.ts` has no counterpart), and trailing whitespace
-//! of each file is trimmed.
+//! The files are read again before each model step ([`source`]): a file
+//! that changes, appears or goes away mid-session reaches the model as an
+//! update (a diff when that is shorter), not as a new system prompt (see
+//! [`crate::instruction_state`]).
+//!
+//! Deliberate differences: configured URLs are not fetched, and trailing
+//! whitespace of each file is trimmed.
 
+use crate::instruction_state::{self as is, Definition, Observed};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 fn claude_fallback() -> bool {
@@ -163,6 +168,115 @@ pub fn render(files: &[PathBuf]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// One loaded instruction file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct File {
+    pub path: String,
+    pub content: String,
+}
+
+impl File {
+    pub fn new(path: impl Into<String>, content: impl Into<String>) -> File {
+        File {
+            path: path.into(),
+            content: content.into(),
+        }
+    }
+}
+
+/// Read discovered files: a file that vanished in between is skipped, one
+/// that cannot be read makes the whole source unavailable for now (its
+/// stored value stands), and none at all is a removal.
+pub fn read(files: &[PathBuf]) -> Observed<Vec<File>> {
+    let mut out = Vec::new();
+    for f in files {
+        match std::fs::read_to_string(f) {
+            Ok(t) => out.push(File::new(f.display().to_string(), t.trim_end())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Observed::Unavailable,
+        }
+    }
+    if out.is_empty() {
+        Observed::Removed
+    } else {
+        Observed::Value(out)
+    }
+}
+
+/// `Instructions from: <path>` sections.
+pub fn render_files(files: &[File]) -> String {
+    files
+        .iter()
+        .map(|f| format!("Instructions from: {}\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// A unified diff of two texts from the first hunk on, three lines of
+/// context (OpenCode's `createPatch` sliced at `@@`).
+fn patch(path: &str, before: &str, after: &str) -> String {
+    let diff = similar::TextDiff::from_lines(before, after);
+    let text = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(path, path)
+        .to_string();
+    text.find("@@")
+        .map(|i| text[i..].trim_end().to_string())
+        .unwrap_or_default()
+}
+
+fn render_update(previous: &[File], current: &[File]) -> Option<String> {
+    let changes = is::diff_by_key(
+        previous,
+        current,
+        |f| f.path.clone(),
+        |a, b| a.content != b.content,
+    );
+    let mut parts: Vec<String> = Vec::new();
+    for f in &changes.removed {
+        parts.push(format!("The instructions from {} no longer apply.", f.path));
+    }
+    for f in &changes.added {
+        parts.push(format!(
+            "New instructions apply from:\n{}",
+            render_files(std::slice::from_ref(f))
+        ));
+    }
+    for (before, after) in &changes.changed {
+        let diff = format!(
+            "The instructions from {} changed. Here's the diff:\n```diff\n{}\n```",
+            after.path,
+            patch(&after.path, &before.content, &after.content)
+        );
+        let replacement = format!(
+            "The instructions changed:\n{}",
+            render_files(std::slice::from_ref(after))
+        );
+        parts.push(if diff.chars().count() < replacement.chars().count() {
+            diff
+        } else {
+            replacement
+        });
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+pub const KEY: &str = "core/instructions";
+
+/// The instruction files as an instruction source.
+pub fn source(observed: Observed<Vec<File>>) -> is::List {
+    is::make::<Vec<File>>(Definition {
+        key: KEY.into(),
+        read: Box::new(move || observed.clone()),
+        initial: Box::new(|f| render_files(f)),
+        changed: Box::new(|a, b| render_update(a, b)),
+        removed: Some(Box::new(|_| {
+            "Previously loaded instructions no longer apply.".into()
+        })),
+    })
 }
 
 #[cfg(test)]

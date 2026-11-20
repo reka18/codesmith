@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use codesmith_ai::{Message, Usage};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i32 = 1;
@@ -74,6 +75,24 @@ pub enum Record {
         path: PathBuf,
         old: Option<String>,
         new: String,
+    },
+    /// An instruction state change (see [`crate::instruction_state`]):
+    /// the values that changed and the ones removed. A `baseline` starts the
+    /// state over with these values (the session's first, or after an undo
+    /// dropped the state); `text` is the update the model sees here as a
+    /// system message, absent for a baseline and a silent update. A `fork`
+    /// baseline keeps the updates the fork copied in view.
+    Instructions {
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        changed: BTreeMap<String, serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        baseline: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fork: bool,
     },
     /// A record kind from a newer CodeSmith; ignored.
     #[serde(other)]
@@ -158,6 +177,31 @@ const LEASE_TABLE: &str = "CREATE TABLE IF NOT EXISTS session_lease (
 const META_TABLE: &str = "CREATE TABLE IF NOT EXISTS session_meta (
     session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
     PRIMARY KEY (session_id, key));";
+
+/// Context entries a host attached to a session (OpenCode's instruction
+/// entries); a removed one stays until its removal is announced.
+const CONTEXT_TABLE: &str = "CREATE TABLE IF NOT EXISTS session_context (
+    session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT, removed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, key));";
+
+/// A context entry's value is larger than [`crate::instruction_state::MAX_ENTRY_BYTES`].
+#[derive(Debug)]
+pub struct ValueTooLarge {
+    pub actual: usize,
+    pub max: usize,
+}
+
+impl std::fmt::Display for ValueTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Instruction entry value is {} bytes; the limit is {} bytes",
+            self.actual, self.max
+        )
+    }
+}
+
+impl std::error::Error for ValueTooLarge {}
 
 /// Run a write transaction, retrying for a while when another connection
 /// holds the write lock past the busy timeout.
@@ -589,6 +633,8 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(META_TABLE)?;
         conn.execute("DELETE FROM session_meta WHERE session_id = ?1", [id])?;
+        conn.execute_batch(CONTEXT_TABLE)?;
+        conn.execute("DELETE FROM session_context WHERE session_id = ?1", [id])?;
         Ok(conn.execute("DELETE FROM session WHERE id = ?1", [id])? > 0)
     }
 
@@ -622,6 +668,115 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Attach `value` to session `id` under `key` as context the model sees
+    /// (OpenCode's `InstructionEntry.put`): in the system prompt when the
+    /// session's instruction baseline is made, else as an update at the next
+    /// step. Fails with [`ValueTooLarge`] past 256 KiB of JSON.
+    pub fn put_context(&self, id: &str, key: &str, value: &serde_json::Value) -> Result<()> {
+        let json = serde_json::to_string(value)?;
+        let max = crate::instruction_state::MAX_ENTRY_BYTES;
+        if json.len() > max {
+            return Err(ValueTooLarge {
+                actual: json.len(),
+                max,
+            }
+            .into());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(CONTEXT_TABLE)?;
+        conn.execute(
+            "INSERT INTO session_context (session_id, key, value, removed) VALUES (?1, ?2, ?3, 0)
+             ON CONFLICT(session_id, key) DO UPDATE SET value = ?3, removed = 0",
+            params![id, key, json],
+        )?;
+        Ok(())
+    }
+
+    /// Detach the context under `key`; the model is told it no longer applies.
+    pub fn remove_context(&self, id: &str, key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(CONTEXT_TABLE)?;
+        conn.execute(
+            "UPDATE session_context SET value = NULL, removed = 1 WHERE session_id = ?1 AND key = ?2",
+            params![id, key],
+        )?;
+        Ok(())
+    }
+
+    /// The context attached to session `id`, by key; with `removed`, the
+    /// detached entries too.
+    pub fn context(
+        &self,
+        id: &str,
+        removed: bool,
+    ) -> Result<Vec<crate::instruction_state::ContextEntry>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(CONTEXT_TABLE)?;
+        let mut stmt = conn.prepare(
+            "SELECT key, value, removed FROM session_context WHERE session_id = ?1 ORDER BY key",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, bool>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (key, value, gone) = row?;
+            if gone && !removed {
+                continue;
+            }
+            let value = match value {
+                Some(v) => serde_json::from_str(&v)?,
+                None => serde_json::Value::Null,
+            };
+            out.push(crate::instruction_state::ContextEntry {
+                key,
+                value,
+                removed: gone,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Copy session `from` into a new session `to`: its records, its
+    /// attached context, and an instruction baseline holding the newest
+    /// values, so the fork starts from what its source last said (OpenCode
+    /// seeds a fork the same way) while the copied updates stay in view.
+    pub fn fork(&mut self, from: &str, to: &str) -> Result<()> {
+        let mut e = self.export(from)?;
+        e.info.id = to.to_string();
+        e.info.parent_id = None;
+        e.info.updated = now();
+        self.import(&e)?;
+        if let Some(state) = crate::instruction_state::fold(&e.entries) {
+            self.append(
+                to,
+                &Record::Instructions {
+                    changed: state.current,
+                    removed: Vec::new(),
+                    text: None,
+                    baseline: true,
+                    fork: true,
+                },
+            )?;
+        }
+        for c in self.context(from, true)? {
+            if c.removed {
+                let conn = self.conn.lock().unwrap();
+                conn.execute(
+                    "INSERT INTO session_context (session_id, key, value, removed) VALUES (?1, ?2, NULL, 1)",
+                    params![to, c.key],
+                )?;
+            } else {
+                self.put_context(to, &c.key, &c.value)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn export(&self, id: &str) -> Result<Export> {
@@ -681,11 +836,18 @@ pub fn history_with_seqs(entries: &[Entry]) -> Vec<(Option<i64>, Message)> {
         ),
         _ => (Vec::new(), 0),
     };
+    // Instruction updates before the baseline's epoch are part of it.
+    let epoch = crate::instruction_state::fold(entries).map_or(i64::MAX, |s| s.epoch);
     for e in entries {
-        if let Record::Message { message } = &e.record {
-            if e.seq >= keep_from && visible(e.seq) {
-                out.push((Some(e.seq), message.clone()));
-            }
+        if e.seq < keep_from || !visible(e.seq) {
+            continue;
+        }
+        match &e.record {
+            Record::Message { message } => out.push((Some(e.seq), message.clone())),
+            Record::Instructions {
+                text: Some(text), ..
+            } if e.seq >= epoch => out.push((Some(e.seq), Message::system(text.clone()))),
+            _ => {}
         }
     }
     out

@@ -151,6 +151,46 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
 
 /// The system-prompt section listing available skills.
 pub fn instructions(skills: &[Skill]) -> String {
+    render_summaries(&summaries(skills))
+}
+
+/// What the skill list says about one skill.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Summary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+fn summaries(skills: &[Skill]) -> Vec<Summary> {
+    let mut out: Vec<Summary> = skills
+        .iter()
+        .map(|s| Summary {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            description: s.description.clone(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+fn entries(skills: &[Summary]) -> Vec<String> {
+    skills
+        .iter()
+        .flat_map(|s| {
+            [
+                "  <skill>".to_string(),
+                format!("    <id>{}</id>", s.id),
+                format!("    <name>{}</name>", s.name),
+                format!("    <description>{}</description>", s.description),
+                "  </skill>".to_string(),
+            ]
+        })
+        .collect()
+}
+
+fn render_summaries(skills: &[Summary]) -> String {
     let mut lines = vec![
         "Skills provide specialized instructions and workflows for specific tasks.".to_string(),
         "Use the skill tool to load a skill when a task matches its description.".into(),
@@ -159,12 +199,45 @@ pub fn instructions(skills: &[Skill]) -> String {
         lines.push("No skills are currently available.".into());
     } else {
         lines.push("<available_skills>".into());
-        for s in skills {
-            lines.push(format!("  <skill>\n    <id>{}</id>\n    <name>{}</name>\n    <description>{}</description>\n  </skill>", s.id, s.name, s.description));
-        }
+        lines.extend(entries(skills));
         lines.push("</available_skills>".into());
     }
     lines.join("\n")
+}
+
+const UPDATE: crate::instruction_state::ListUpdate<Summary> = crate::instruction_state::ListUpdate {
+    key: |s| s.id.clone(),
+    changed: |a, b| a.name != b.name || a.description != b.description,
+    entries,
+    render: render_summaries,
+    replaced: "The available skills have changed. This list supersedes the previous available skills list.",
+    added: "New skills are available in addition to those previously listed:",
+    changed_text: "The following skills have changed. Each entry replaces the previously listed skill with the same ID:",
+    removed: |ids| format!("The following skill IDs are no longer available and must not be used: {ids}."),
+};
+
+pub const KEY: &str = "core/skill-guidance";
+
+/// The skill list as an instruction source: none is a removal, and an
+/// update names only the skills that came, went or changed.
+pub fn source(skills: &[Skill]) -> crate::instruction_state::List {
+    use crate::instruction_state::{make, Definition, Observed};
+    let list = summaries(skills);
+    make::<Vec<Summary>>(Definition {
+        key: KEY.into(),
+        read: Box::new(move || {
+            if list.is_empty() {
+                Observed::Removed
+            } else {
+                Observed::Value(list.clone())
+            }
+        }),
+        initial: Box::new(|s| render_summaries(s)),
+        changed: Box::new(|a, b| Some(UPDATE.render(a, b))),
+        removed: Some(Box::new(|_| {
+            "Skill guidance is no longer available. Do not use any previously listed skill.".into()
+        })),
+    })
 }
 
 /// Up to `max` files in the skill's folder besides SKILL.md, relative to it.

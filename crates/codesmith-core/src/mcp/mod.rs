@@ -16,7 +16,7 @@ pub mod oauth;
 pub use events::{EventMessage, EventStream, EventType, StreamError};
 
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -420,20 +420,91 @@ pub fn prompt_result_text(result: &Value) -> String {
 /// `<server>` block per server, with a pointer to `execute` when its tools
 /// are reached through Code Mode. Entries are (server, instructions, codemode).
 pub fn render_instructions(servers: &[(String, String, bool)]) -> String {
-    let mut out = vec!["<mcp_instructions>".to_string()];
-    for (server, text, codemode) in servers {
-        out.push(format!("  <server name=\"{server}\">"));
-        if *codemode {
+    render_summaries(&summaries(servers))
+}
+
+/// One server's instructions as the instruction state keeps them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstructionSummary {
+    pub server: String,
+    pub instructions: String,
+    /// `false` when the server's tools are direct tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codemode: Option<bool>,
+}
+
+fn summaries(servers: &[(String, String, bool)]) -> Vec<InstructionSummary> {
+    servers
+        .iter()
+        .map(|(server, text, codemode)| InstructionSummary {
+            server: server.clone(),
+            instructions: text.clone(),
+            codemode: (!codemode).then_some(false),
+        })
+        .collect()
+}
+
+fn summary_entries(servers: &[InstructionSummary]) -> Vec<String> {
+    let mut out = Vec::new();
+    for s in servers {
+        out.push(format!("  <server name=\"{}\">", s.server));
+        if s.codemode != Some(false) {
             out.push(format!(
                 "    Use tools from this server through `execute` under `tools[{}]`.",
-                serde_json::to_string(server).unwrap()
+                serde_json::to_string(&s.server).unwrap()
             ));
         }
-        out.extend(text.lines().map(|l| format!("    {l}")));
+        out.extend(s.instructions.split('\n').map(|l| format!("    {l}")));
         out.push("  </server>".into());
     }
+    out
+}
+
+fn render_summaries(servers: &[InstructionSummary]) -> String {
+    let mut out = vec!["<mcp_instructions>".to_string()];
+    out.extend(summary_entries(servers));
     out.push("</mcp_instructions>".into());
     out.join("\n")
+}
+
+const INSTRUCTION_UPDATE: crate::instruction_state::ListUpdate<InstructionSummary> =
+    crate::instruction_state::ListUpdate {
+        key: |s| s.server.clone(),
+        changed: |a, b| a.instructions != b.instructions || a.codemode != b.codemode,
+        entries: summary_entries,
+        render: render_summaries,
+        replaced: "The available MCP server instructions have changed. This list supersedes the previous one.",
+        added: "New MCP server instructions are available in addition to those previously listed:",
+        changed_text: "The following MCP server instructions have changed. Each entry replaces the previously listed server with the same name:",
+        removed: |names| {
+            format!("Instructions for the following MCP servers are no longer available: {names}.")
+        },
+    };
+
+pub const INSTRUCTIONS_KEY: &str = "core/mcp-guidance";
+
+/// Server instructions as an instruction source: `(server, instructions,
+/// through Code Mode)` for the servers whose tools the session can reach,
+/// none being a removal.
+pub fn instruction_source(servers: &[(String, String, bool)]) -> crate::instruction_state::List {
+    use crate::instruction_state::{make, Definition, Observed};
+    let mut list = summaries(servers);
+    list.sort_by(|a, b| a.server.cmp(&b.server));
+    make::<Vec<InstructionSummary>>(Definition {
+        key: INSTRUCTIONS_KEY.into(),
+        read: Box::new(move || {
+            if list.is_empty() {
+                Observed::Removed
+            } else {
+                Observed::Value(list.clone())
+            }
+        }),
+        initial: Box::new(|s| render_summaries(s)),
+        changed: Box::new(|a, b| Some(INSTRUCTION_UPDATE.render(a, b))),
+        removed: Some(Box::new(|_| {
+            "MCP server instructions are no longer available.".into()
+        })),
+    })
 }
 
 /// The `list_mcp_resources` and `read_mcp_resource` tool definitions:

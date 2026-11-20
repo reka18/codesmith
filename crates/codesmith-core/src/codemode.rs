@@ -74,6 +74,11 @@ pub fn signature(e: &Entry) -> String {
     signature::signature(&path(e), &e.schema, None)
 }
 
+/// The signature of the global `search(...)` a partial catalog points at.
+pub fn search_signature() -> String {
+    search::search_signature()
+}
+
 /// A catalog line's description: the first line, at most 500 characters.
 fn summary(description: &str) -> String {
     let first = description.split('\n').next().unwrap_or("").trim();
