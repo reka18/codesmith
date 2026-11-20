@@ -4,9 +4,11 @@
 mod edit;
 mod glob;
 mod grep;
+pub mod html_markdown;
 mod lsp;
 mod read;
 pub mod shell;
+pub mod shell_scan;
 pub mod subagent;
 pub mod todo;
 mod webfetch;
@@ -359,19 +361,21 @@ impl Ctx<'_> {
     }
 
     /// For paths outside the project, ask for `external_directory` on the
-    /// containing directory first.
+    /// containing directory first. A file is named by its path; a directory
+    /// as `<dir>/*`, as OpenCode names it, so a rule for `<dir>/*` covers the
+    /// directory itself.
     pub fn authorize_external(&self, t: &Target, is_dir: bool) -> Result<(), String> {
         if !t.external {
             return Ok(());
         }
-        let dir = if is_dir {
-            t.absolute.clone()
-        } else {
-            t.absolute
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_default()
-        };
+        if is_dir {
+            return self.authorize_external_dirs(std::slice::from_ref(&t.absolute));
+        }
+        let dir = t
+            .absolute
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
         let glob = format!("{}/*", dir.display());
         self.ask(Request {
             action: "external_directory".into(),
@@ -379,6 +383,36 @@ impl Ctx<'_> {
             save: vec![glob],
             title: format!("Access outside the project: {}", dir.display()),
         })
+    }
+
+    /// One `external_directory` request for every directory in `dirs`
+    /// outside the project (absolute paths), each named `<dir>/*`.
+    pub fn authorize_external_dirs(&self, dirs: &[PathBuf]) -> Result<(), String> {
+        let mut globs: Vec<String> = Vec::new();
+        for d in dirs {
+            let t = self.resolve(&d.display().to_string());
+            let glob = format!("{}/*", t.absolute.display());
+            if t.external && !globs.contains(&glob) {
+                globs.push(glob);
+            }
+        }
+        if globs.is_empty() {
+            return Ok(());
+        }
+        let shown: Vec<&str> = globs.iter().map(|g| g.trim_end_matches("/*")).collect();
+        self.ask(Request {
+            action: "external_directory".into(),
+            resources: globs.clone(),
+            save: globs.clone(),
+            title: format!("Access outside the project: {}", shown.join(", ")),
+        })
+    }
+
+    /// Refuse if a configured rule denies the request, without asking.
+    pub fn check_not_denied(&self, action: &str, resources: &[String]) -> Result<(), String> {
+        self.gate
+            .assert_not_denied(action, resources)
+            .map_err(|e| e.to_string())
     }
 
     pub fn ask(&self, req: Request) -> Result<(), String> {
@@ -410,6 +444,7 @@ pub fn truncate(text: &str, limits: ToolOutputConfig, dir: &Path) -> String {
         end
     };
     let shown = &text[..shown_end];
+    cleanup_once(dir);
     let file = dir.join(format!("tool_{}", unique_id()));
     let saved = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, text));
     let shown_lines = count_lines(&text[..end]);
@@ -462,7 +497,9 @@ fn after_lines(text: &str, n: usize) -> usize {
     }
 }
 
-/// The largest char boundary at or below `max` bytes.
+/// The longest start of `text` within `max` bytes that splits neither a
+/// character nor a grapheme cluster (emoji with modifiers or joiners, flag
+/// pairs, combining marks) nor a `\r\n` (OpenCode's `byteBoundary`).
 fn byte_boundary(text: &str, max: usize) -> usize {
     if text.len() <= max {
         return text.len();
@@ -471,7 +508,84 @@ fn byte_boundary(text: &str, max: usize) -> usize {
     while !text.is_char_boundary(i) {
         i -= 1;
     }
+    if i == 0 {
+        return 0;
+    }
+    let before = text[..i].chars().next_back().unwrap();
+    let after = text[i..].chars().next().unwrap();
+    if before.is_ascii() && after.is_ascii() {
+        return if before == '\r' && after == '\n' {
+            i - 1
+        } else {
+            i
+        };
+    }
+    cluster_start(text, i)
+}
+
+/// Characters that continue the grapheme cluster before them.
+fn extends(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF
+        | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x200D | 0x1F3FB..=0x1F3FF
+        | 0xE0020..=0xE007F | 0xE0100..=0xE01EF)
+}
+
+fn regional(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
+}
+
+/// Move `i` (a char boundary) back to the start of the cluster it is in.
+fn cluster_start(text: &str, mut i: usize) -> usize {
+    while i > 0 {
+        let Some(next) = text[i..].chars().next() else {
+            return i;
+        };
+        let prev = text[..i].chars().next_back().unwrap();
+        if extends(next) || prev == '\u{200D}' {
+            i -= prev.len_utf8();
+            continue;
+        }
+        if regional(next) && regional(prev) {
+            let run = text[..i].chars().rev().take_while(|c| regional(*c)).count();
+            if run % 2 == 1 {
+                i -= prev.len_utf8();
+            }
+        }
+        break;
+    }
     i
+}
+
+/// How long saved tool output is kept.
+pub const OUTPUT_RETENTION: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Delete files in `dir` last modified more than `retention` ago (by
+/// modification time, as OpenCode's `ToolOutput.cleanup` does).
+pub fn cleanup_outputs(dir: &Path, retention: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > retention);
+        if meta.is_file() && old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Clean up `dir` the first time output is saved in this process.
+fn cleanup_once(dir: &Path) {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| cleanup_outputs(dir, OUTPUT_RETENTION));
 }
 
 pub(crate) fn unique_id() -> String {
@@ -741,5 +855,178 @@ mod tests {
         assert_eq!(count_lines("a\n"), 1);
         assert_eq!(count_lines("a\nb"), 2);
         assert_eq!(count_lines("\n\n"), 2);
+    }
+
+    // ---------------------------------------------------------------------
+    // Ported from OpenCode's packages/core/test/tool-output.test.ts (MIT).
+    // One `oc_tool_output_*` test per OpenCode case, in the same order.
+    //
+    // Intentional differences: a result is one text, so the preview and the
+    // marker are joined by a line break and the multi-part cases (cutting
+    // inside a later part, joining parts, keeping file parts in order) have
+    // no counterpart; tools that bound their own output return
+    // `Output::bounded`, which `execute` leaves alone (OpenCode's
+    // "truncation state" metadata).
+    // ---------------------------------------------------------------------
+
+    fn limits(max_lines: usize, max_bytes: usize) -> ToolOutputConfig {
+        ToolOutputConfig {
+            max_lines,
+            max_bytes,
+        }
+    }
+
+    fn cut(text: &str, l: ToolOutputConfig) -> (String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        (truncate(text, l, dir.path()), dir)
+    }
+
+    /// The preview and the marker.
+    fn split(out: &str) -> (&str, &str) {
+        let i = out.rfind("[showing").unwrap();
+        (out[..i].strip_suffix('\n').unwrap_or(&out[..i]), &out[i..])
+    }
+
+    #[test]
+    fn oc_tool_output_writes_oversized_text_and_returns_a_preview() {
+        let (out, dir) = cut("one\ntwo\nthree", limits(2, 1_000));
+        let (shown, marker) = split(&out);
+        assert_eq!(shown, "one\ntwo");
+        let file = marker
+            .strip_prefix("[showing lines 1-2 of 3; full output saved to ")
+            .and_then(|m| m.strip_suffix(']'))
+            .unwrap();
+        assert!(file.starts_with(&dir.path().display().to_string()));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "one\ntwo\nthree");
+    }
+
+    #[test]
+    fn oc_tool_output_keeps_the_preview_when_saving_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("tool-output");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let out = truncate("one\ntwo\nthree", limits(2, 1_000), &blocked);
+        let (shown, marker) = split(&out);
+        assert_eq!(shown, "one\ntwo");
+        assert!(
+            marker.starts_with("[showing lines 1-2 of 3; full output could not be saved: ")
+                && marker.ends_with(']'),
+            "{marker}"
+        );
+    }
+
+    #[test]
+    fn oc_tool_output_cuts_at_the_byte_limit_inside_a_line() {
+        let (out, _d) = cut("one\ntwo", limits(100, 5));
+        let (shown, marker) = split(&out);
+        assert_eq!(shown, "one\nt");
+        assert!(
+            marker.starts_with("[showing lines 1-2 of 2 (last line cut); full output saved to ")
+        );
+    }
+
+    #[test]
+    fn oc_tool_output_shows_the_start_of_a_long_single_line() {
+        let text = serde_json::json!({ "items": (0..50).collect::<Vec<_>>() }).to_string();
+        let (out, _d) = cut(&text, limits(100, 20));
+        let (shown, marker) = split(&out);
+        assert_eq!(shown, &text[..20]);
+        assert!(
+            marker.starts_with("[showing lines 1-1 of 1 (last line cut); full output saved to ")
+        );
+    }
+
+    #[test]
+    fn oc_tool_output_never_splits_a_character_or_emoji() {
+        let family = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
+        for (text, shown) in [
+            ("ab✓✓✓".to_string(), "ab✓"),
+            (format!("ab{family}cd"), "ab"),
+            ("ab👍🏽cd".to_string(), "ab"),
+            ("ab🇯🇵cd".to_string(), "ab"),
+            ("ab𝒳𝒳".to_string(), "ab𝒳"),
+        ] {
+            let (out, _d) = cut(&text, limits(100, 7));
+            assert_eq!(split(&out).0, shown, "{text}");
+        }
+    }
+
+    #[test]
+    fn oc_tool_output_keeps_flags_and_long_clusters_whole() {
+        let (out, _d) = cut(&format!("a{}", "🇯🇵".repeat(40)), limits(100, 165));
+        assert_eq!(split(&out).0, format!("a{}", "🇯🇵".repeat(20)));
+        let cluster = format!("👍{}", "🏽\u{301}".repeat(60));
+        let (out, _d) = cut(&format!("ab{cluster}z"), limits(100, 165));
+        assert_eq!(split(&out).0, "ab");
+    }
+
+    #[test]
+    fn oc_tool_output_ends_a_line_cut_before_its_line_break() {
+        let (out, _d) = cut("one\r\ntwo\r\nthree", limits(1, 1_000));
+        let (shown, marker) = split(&out);
+        assert_eq!(shown, "one");
+        assert!(marker.starts_with("[showing lines 1-1 of 3;"));
+        let (out, _d) = cut("\nfoo\nbar", limits(1, 1_000));
+        assert!(out.starts_with("[showing lines 1-1 of 3;"), "{out:?}");
+        // A byte cut between `\r` and `\n` keeps the pair together.
+        let (out, _d) = cut("one\r\ntwo", limits(100, 4));
+        assert_eq!(split(&out).0, "one");
+    }
+
+    #[test]
+    fn oc_tool_output_counts_a_blank_last_line_of_the_preview() {
+        let (out, _d) = cut("a\n\n\nb", limits(2, 1_000));
+        assert!(out.starts_with("a\n\n[showing lines 1-2 of 4;"), "{out:?}");
+    }
+
+    #[test]
+    fn oc_tool_output_shows_nothing_under_a_zero_line_limit() {
+        let (out, _d) = cut("secret", limits(0, 1_000));
+        assert!(out.starts_with("[showing 0 lines of 1;"), "{out}");
+        assert!(!out.contains("secret\n"));
+    }
+
+    #[test]
+    fn oc_tool_output_leaves_text_that_fits_unchanged() {
+        let (out, dir) = cut("small", ToolOutputConfig::default());
+        assert_eq!(out, "small");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn oc_tool_output_does_not_count_a_trailing_newline_as_a_line() {
+        let (out, _d) = cut("one\ntwo\n", limits(2, 1_000));
+        assert_eq!(out, "one\ntwo\n");
+    }
+
+    #[test]
+    fn oc_tool_output_reports_a_trailing_newline_cut_by_the_byte_limit() {
+        let (out, _d) = cut("one\n", limits(2, 3));
+        let (shown, marker) = split(&out);
+        assert_eq!(shown, "one");
+        assert!(
+            marker.starts_with("[showing lines 1-1 of 1; full output saved to "),
+            "{marker}"
+        );
+    }
+
+    #[test]
+    fn oc_tool_output_cleans_up_by_modification_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("tool_ffffffffffff0000");
+        let recent = dir.path().join("tool_000000000001ffff");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(&recent, "recent").unwrap();
+        let eight_days =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(eight_days)
+            .unwrap();
+        cleanup_outputs(dir.path(), OUTPUT_RETENTION);
+        assert!(!old.exists());
+        assert!(recent.exists());
     }
 }

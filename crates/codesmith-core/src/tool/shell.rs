@@ -3,8 +3,14 @@
 //! with `background: true`, or a foreground command that outlives its
 //! timeout, keeps running with its output streaming to a file, and the
 //! session is told when it finishes.
+//!
+//! Before anything runs, the command is split into the commands it would
+//! run (`shell_scan`), and each is checked against the `shell` rules; `cd`
+//! targets outside the project need `external_directory` approval. Output
+//! that does not fit the limits is shown from its end, like OpenCode's. A
+//! command stopped at its timeout gets SIGTERM, then SIGKILL after 3 s.
 
-use super::{opt_bool, opt_str, opt_u64, str_arg, Ctx, Outcome, Output};
+use super::{opt_bool, opt_str, opt_u64, shell_scan, str_arg, Ctx, Outcome, Output};
 use crate::config::ToolOutputConfig;
 use crate::permission::Request;
 use serde_json::{json, Value};
@@ -55,46 +61,64 @@ pub fn spec(shell: &str) -> (String, Value) {
     )
 }
 
-/// The rule saved by "always allow": the command's first word, any arguments.
-pub fn save_pattern(command: &str) -> String {
-    match command.split_whitespace().next() {
-        Some(first) => format!("{first} *"),
-        None => "*".into(),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ending {
     Exited(i32),
     Signaled(i32),
-    TimedOut,
+    /// Stopped at its timeout; how the stopped process ended, when known.
+    TimedOut(Option<Box<Ending>>),
+}
+
+/// The exit status as OpenCode words it: the code, or 128 + the signal and
+/// its name, or `unknown`.
+fn exit_code(ending: Option<&Ending>) -> String {
+    match ending {
+        Some(Ending::Exited(c)) => c.to_string(),
+        Some(Ending::Signaled(sig)) => match signal_name(*sig) {
+            Some(name) => format!("{} ({name})", 128 + sig),
+            None => "unknown".into(),
+        },
+        Some(Ending::TimedOut(inner)) => exit_code(inner.as_deref()),
+        None => "unknown".into(),
+    }
 }
 
 /// The notice after the output, as OpenCode's `ShellResult.notice` words it.
 pub fn notice(ending: &Ending, timeout_ms: u64) -> Option<String> {
     match ending {
         Ending::Exited(0) => None,
-        Ending::Exited(code) => Some(format!("Exit code: {code}")),
-        Ending::Signaled(sig) => Some(format!("Exit code: {} ({})", 128 + sig, signal_name(*sig))),
-        Ending::TimedOut => Some(format!(
-            "Command timed out after {} seconds. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: unknown",
-            timeout_ms as f64 / 1000.0
+        Ending::Exited(_) | Ending::Signaled(_) => Some(format!("Exit code: {}", exit_code(Some(ending)))),
+        Ending::TimedOut(inner) => Some(format!(
+            "Command timed out{}. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: {}",
+            if timeout_ms > 0 {
+                format!(" after {} seconds", timeout_ms as f64 / 1000.0)
+            } else {
+                String::new()
+            },
+            exit_code(inner.as_deref())
         )),
     }
 }
 
-fn signal_name(sig: i32) -> &'static str {
-    match sig {
+fn signal_name(sig: i32) -> Option<&'static str> {
+    Some(match sig {
         1 => "SIGHUP",
         2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        5 => "SIGTRAP",
         6 => "SIGABRT",
+        8 => "SIGFPE",
         9 => "SIGKILL",
+        11 => "SIGSEGV",
         13 => "SIGPIPE",
+        14 => "SIGALRM",
         15 => "SIGTERM",
-        _ => "signal",
-    }
+        _ => return None,
+    })
 }
 
+/// Output followed by its notice, separated by a blank line.
 pub fn render(output: &str, ending: &Ending, timeout_ms: u64) -> String {
     let body = if output.is_empty() {
         "(no output)"
@@ -105,6 +129,138 @@ pub fn render(output: &str, ending: &Ending, timeout_ms: u64) -> String {
         Some(n) => format!("{body}\n\n{n}"),
         None => body.to_string(),
     }
+}
+
+fn format_size(bytes: u64) -> String {
+    let kb = bytes as f64 / 1024.0;
+    if kb > 1024.0 {
+        format!("{:.1} MB", kb / 1024.0)
+    } else {
+        format!("{} KB", kb.round() as u64)
+    }
+}
+
+/// What the model sees of a command's output file: all of it when it fits
+/// the limits, otherwise its end, with a note saying which lines are shown
+/// and where the full output is. Ported from OpenCode's `Shell.result`
+/// capture. Returns the text and whether it was cut.
+pub fn capture(file: &Path, limits: ToolOutputConfig) -> (String, bool) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(file) else {
+        return ("Shell command output is no longer available.".into(), false);
+    };
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let max = limits.max_bytes as u64;
+    let start = size.saturating_sub(max);
+    let before = start.saturating_sub(1);
+    let mut window = Vec::new();
+    if f.seek(SeekFrom::Start(before)).is_err() || f.read_to_end(&mut window).is_err() {
+        return ("Shell command output is no longer available.".into(), false);
+    }
+    let skip = (start - before) as usize;
+    let mut tail = &window[skip.min(window.len())..];
+    // Start on a whole UTF-8 character.
+    if start > 0 {
+        while let Some((&b, rest)) = tail.split_first() {
+            if b & 0xC0 != 0x80 {
+                break;
+            }
+            tail = rest;
+        }
+    }
+    let page = String::from_utf8_lossy(tail).into_owned();
+    let partial = start > 0 && window.first() != Some(&b'\n');
+    let ends_with_newline = page.ends_with('\n');
+    let mut lines: Vec<&str> = page.split('\n').collect();
+    if ends_with_newline {
+        lines.pop();
+    }
+    if start == 0 && lines.len() <= limits.max_lines {
+        return (
+            if page.is_empty() {
+                "(no output)".into()
+            } else {
+                page.clone()
+            },
+            false,
+        );
+    }
+    // Count lines and find where the last two start, in one pass.
+    let (newlines, starts) = line_stats(file);
+    let total = newlines + if ends_with_newline { 0 } else { 1 };
+    let suffix = format!("full output saved to {}]", file.display());
+    if partial && lines.len() == 1 {
+        let line_start = if ends_with_newline {
+            starts.0
+        } else {
+            starts.1
+        };
+        let end = size - u64::from(ends_with_newline);
+        let text = lines[0];
+        return (
+            format!(
+                "{text}\n\n[showing the last {} of line {total} ({}); {suffix}",
+                format_size(text.len() as u64),
+                format_size(end - line_start)
+            ),
+            true,
+        );
+    }
+    let keep = limits.max_lines.min(lines.len() - usize::from(partial));
+    let kept = &lines[lines.len() - keep..];
+    (
+        format!(
+            "{}\n\n[showing lines {}-{total} of {total}; {suffix}",
+            kept.join("\n"),
+            total + 1 - keep
+        ),
+        true,
+    )
+}
+
+/// Newlines in `file`, and where its second-to-last and last lines start.
+fn line_stats(file: &Path) -> (usize, (u64, u64)) {
+    use std::io::Read;
+    let mut count = 0;
+    let (mut prev, mut last) = (0u64, 0u64);
+    let mut offset = 0u64;
+    if let Ok(mut f) = std::fs::File::open(file) {
+        let mut buf = vec![0u8; 64 * 1024];
+        while let Ok(n) = f.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            for (i, b) in buf[..n].iter().enumerate() {
+                if *b == b'\n' {
+                    count += 1;
+                    prev = last;
+                    last = offset + i as u64 + 1;
+                }
+            }
+            offset += n as u64;
+        }
+    }
+    (count, (prev, last))
+}
+
+/// A finished command's text for the model: its captured output and notice.
+fn result_text(
+    file: &Path,
+    ending: &Ending,
+    timeout_ms: u64,
+    limits: ToolOutputConfig,
+) -> (String, bool) {
+    let (out, truncated) = capture(file, limits);
+    let body = if truncated {
+        out
+    } else {
+        out.strip_suffix('\n').unwrap_or(&out).to_string()
+    };
+    let text = match notice(ending, timeout_ms) {
+        Some(n) => format!("{body}\n\n{n}"),
+        None => body,
+    };
+    (text, truncated)
 }
 
 /// A command running (or finished) in the background.
@@ -198,10 +354,7 @@ impl Jobs {
                 Some(d) => match tokio::time::timeout(d, child.wait()).await {
                     Ok(Ok(status)) => ending_of(status),
                     Ok(Err(_)) => Ending::Exited(-1),
-                    Err(_) => {
-                        kill_group(&mut child).await;
-                        Ending::TimedOut
-                    }
+                    Err(_) => Ending::TimedOut(stop(&mut child).await.map(Box::new)),
                 },
                 None => child
                     .wait()
@@ -217,15 +370,8 @@ impl Jobs {
 /// The message the session sends when a background command finishes
 /// (OpenCode's `ShellResult.notification`).
 pub fn notification(job: &Job, limits: ToolOutputConfig) -> String {
-    let output = std::fs::read(&job.file)
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
     let ending = job.ending.clone().unwrap_or(Ending::Exited(-1));
-    let text = super::truncate(
-        &render(&output, &ending, job.timeout_ms),
-        limits,
-        &crate::paths::tool_output_dir(),
-    );
+    let (text, _) = result_text(&job.file, &ending, job.timeout_ms, limits);
     format!(
         "<shell id=\"{}\" state=\"completed\" command=\"{}\">\n{text}\n</shell>",
         job.id,
@@ -254,38 +400,80 @@ fn background_text(job: &Job, timed_out: Option<u64>) -> String {
     lines.join("\n")
 }
 
+/// Resolve `dir` (as written in a `cd`) against the working directory.
+fn resolve_dir(workdir: &Path, dir: &str) -> PathBuf {
+    let p = Path::new(dir);
+    super::normalize(&if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        workdir.join(p)
+    })
+}
+
 pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     let command = str_arg(input, "command")?;
     let background = opt_bool(input, "background").unwrap_or(false);
     let timeout = opt_u64(input, "timeout");
-    let dir = match opt_str(input, "workdir") {
-        Some(w) => {
-            let t = ctx.resolve(w);
-            ctx.authorize_external(&t, true)?;
-            if !t.absolute.is_dir() {
-                return Err(format!("Working directory does not exist: {w}"));
-            }
-            t.absolute
-        }
+    let requested = match opt_str(input, "workdir") {
+        Some(w) => ctx.resolve(w).absolute,
         None => ctx.cwd.clone(),
     };
-    ctx.ask(Request {
-        action: "shell".into(),
-        resources: vec![command.to_string()],
-        save: vec![save_pattern(command)],
-        title: format!("$ {command}"),
-    })?;
+    // Plugins may rewrite the command or move it; everything below checks
+    // what will actually run.
+    let mut sc = crate::plugin::ShellCommand {
+        session_id: ctx.session_id.clone(),
+        cwd: requested,
+        command: command.to_string(),
+        env: Default::default(),
+    };
+    crate::plugin::active().shell_before(&mut sc);
+    let dir = sc.cwd.clone();
+    let analysis = shell_scan::analyze(&sc.command, &dir)?;
+    let mut dirs = vec![dir.clone()];
+    dirs.extend(analysis.directories.iter().map(|d| resolve_dir(&dir, d)));
+    ctx.authorize_external_dirs(&dirs)?;
+    if !analysis.commands.is_empty() {
+        let (resources, save) = analysis.commands.iter().cloned().unzip();
+        ctx.ask(Request {
+            action: "shell".into(),
+            resources,
+            save,
+            title: format!("$ {}", sc.command),
+        })?;
+    }
+    // Approval can outlive the directory, so check it just before spawning.
+    match std::fs::metadata(&dir) {
+        Err(_) => {
+            return Err(format!(
+                "Working directory does not exist: {}",
+                dir.display()
+            ))
+        }
+        Ok(m) if !m.is_dir() => {
+            return Err(format!(
+                "Working directory is not a directory: {}",
+                dir.display()
+            ))
+        }
+        Ok(_) => {}
+    }
+    if background && ctx.jobs.is_none() {
+        return Err(
+            "Background commands are not available here. Run the command in the foreground.".into(),
+        );
+    }
     let jobs = ctx.jobs.clone().unwrap_or_default();
     let id = jobs.next_id();
     let out_dir = crate::paths::tool_output_dir();
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("Unable to create {}: {e}", out_dir.display()))?;
+    super::cleanup_once(&out_dir);
     let file = out_dir.join(format!(
         "{}_{id}_{}.log",
         ctx.session_id,
         super::unique_id()
     ));
-    let mut child = spawn(&ctx.shell, command, &dir, &ctx.session_id, &file)?;
+    let mut child = spawn(&ctx.shell, &sc, &file)?;
     let mut job = Job {
         id: id.clone(),
         command: command.to_string(),
@@ -296,69 +484,59 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         notified: false,
     };
     if background {
-        if ctx.jobs.is_none() {
-            return Err(
-                "Background commands are not available here. Run the command in the foreground."
-                    .into(),
-            );
-        }
         jobs.add(job.clone());
-        jobs.watch(id, child, timeout.map(Duration::from_millis));
+        // A background timeout of 0 (or none) never stops the command.
+        let stop_after = timeout.filter(|t| *t > 0).map(Duration::from_millis);
+        jobs.watch(id, child, stop_after);
         return Ok(Output::bounded(background_text(&job, None)));
     }
-    let limit = timeout.unwrap_or(DEFAULT_TIMEOUT_MS);
-    match tokio::time::timeout(Duration::from_millis(limit), child.wait()).await {
-        Ok(status) => {
-            let ending = status
-                .map(ending_of)
-                .map_err(|e| format!("Command failed: {e}"))?;
-            let out = std::fs::read(&file)
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .unwrap_or_default();
-            let _ = std::fs::remove_file(&file);
-            Ok(Output::text(render(&out, &ending, limit)))
-        }
+    // A foreground timeout of 0 falls back to the default, so a call can't
+    // block until the command exits.
+    let limit = timeout.filter(|t| *t > 0).unwrap_or(DEFAULT_TIMEOUT_MS);
+    let ending = match tokio::time::timeout(Duration::from_millis(limit), child.wait()).await {
+        Ok(status) => status
+            .map(ending_of)
+            .map_err(|e| format!("Command failed: {e}"))?,
         Err(_) if ctx.jobs.is_some() => {
             job.timeout_ms = limit;
             jobs.add(job.clone());
             jobs.watch(id, child, None);
-            Ok(Output::bounded(background_text(&job, Some(limit))))
+            return Ok(Output::bounded(background_text(&job, Some(limit))));
         }
-        Err(_) => {
-            kill_group(&mut child).await;
-            let out = std::fs::read(&file)
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .unwrap_or_default();
-            let _ = std::fs::remove_file(&file);
-            Ok(Output::text(render(&out, &Ending::TimedOut, limit)))
-        }
+        Err(_) => Ending::TimedOut(stop(&mut child).await.map(Box::new)),
+    };
+    let (text, truncated) = result_text(&file, &ending, limit, ctx.limits);
+    if !truncated {
+        let _ = std::fs::remove_file(&file);
     }
+    Ok(Output::bounded(text))
 }
 
-/// Start `command` under `shell -c` with stdout and stderr appended to `file`.
+/// Start the command under `shell -c` with stdout and stderr appended to `file`.
 fn spawn(
     shell: &str,
-    command: &str,
-    dir: &Path,
-    session: &str,
+    sc: &crate::plugin::ShellCommand,
     file: &Path,
 ) -> Result<tokio::process::Child, String> {
     let out = std::fs::File::create(file)
         .map_err(|e| format!("Unable to create {}: {e}", file.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut sc = crate::plugin::ShellCommand {
-        session_id: session.to_string(),
-        cwd: dir.to_path_buf(),
-        command: command.to_string(),
-        env: Default::default(),
-    };
-    crate::plugin::active().shell_before(&mut sc);
     let mut cmd = tokio::process::Command::new(shell);
+    // Mark the command as run by an agent, as OpenCode does (AGENT,
+    // OPENCODE, AI_AGENT), keeping an outer AI_AGENT marker.
+    let ai_agent = std::env::var("AI_AGENT")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| sc.env.get("AI_AGENT").filter(|v| !v.is_empty()).cloned())
+        .unwrap_or_else(|| "codesmith".into());
     cmd.arg("-c")
         .arg(&sc.command)
-        .current_dir(dir)
+        .current_dir(&sc.cwd)
         .envs(&sc.env)
-        .env("CODESMITH_SESSION_ID", session)
+        .env("AGENT", "1")
+        .env("CODESMITH", "1")
+        .env("AI_AGENT", ai_agent)
+        .env("CODESMITH_SESSION_ID", &sc.session_id)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
@@ -383,16 +561,30 @@ fn ending_of(status: std::process::ExitStatus) -> Ending {
     Ending::Exited(status.code().unwrap_or(-1))
 }
 
-async fn kill_group(child: &mut tokio::process::Child) {
+/// How long a stopped command gets to exit after SIGTERM before SIGKILL.
+const KILL_GRACE: Duration = Duration::from_secs(3);
+
+/// Stop the command's process group: SIGTERM, then SIGKILL if it is still
+/// running after a grace period. Returns how it ended.
+async fn stop(child: &mut tokio::process::Child) -> Option<Ending> {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
-        let _ = tokio::process::Command::new("/bin/kill")
-            .arg("-KILL")
-            .arg(format!("-{pid}"))
-            .status()
-            .await;
+        let signal = |sig: &'static str| {
+            tokio::process::Command::new("/bin/kill")
+                .arg(sig)
+                .arg(format!("-{pid}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+        };
+        let _ = signal("-TERM").await;
+        if let Ok(Ok(status)) = tokio::time::timeout(KILL_GRACE, child.wait()).await {
+            return Some(ending_of(status));
+        }
+        let _ = signal("-KILL").await;
     }
     let _ = child.kill().await;
+    child.wait().await.ok().map(ending_of)
 }
 
 #[cfg(test)]
@@ -409,7 +601,7 @@ mod tests {
             notice(&Ending::Signaled(9), 1000).unwrap(),
             "Exit code: 137 (SIGKILL)"
         );
-        assert!(notice(&Ending::TimedOut, 1500)
+        assert!(notice(&Ending::TimedOut(None), 1500)
             .unwrap()
             .starts_with("Command timed out after 1.5 seconds."));
     }
@@ -422,13 +614,6 @@ mod tests {
             render("oops\n", &Ending::Exited(1), 1),
             "oops\n\nExit code: 1"
         );
-    }
-
-    #[test]
-    fn save_patterns() {
-        assert_eq!(save_pattern("git status --short"), "git *");
-        assert_eq!(save_pattern("  ls"), "ls *");
-        assert_eq!(save_pattern(""), "*");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -524,7 +709,7 @@ mod tests {
         );
         jobs.wait_any().await;
         let done = jobs.take_finished();
-        assert_eq!(done[0].ending, Some(Ending::TimedOut));
+        assert!(matches!(done[0].ending, Some(Ending::TimedOut(_))));
         assert!(notification(&done[0], ToolOutputConfig::default())
             .contains("Command timed out after 0.3 seconds"));
     }
@@ -567,5 +752,1078 @@ mod tests {
     fn wait_any_returns_when_nothing_runs() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(Jobs::default().wait_any());
+    }
+
+    // ---------------------------------------------------------------------
+    // Ported from OpenCode's packages/core/test/tool-shell.test.ts (MIT).
+    // One `oc_shell_*` test per OpenCode case, in the same order.
+    //
+    // Intentional differences:
+    // - Shell IDs are `shell_<n>` per session, not `sh_<random>`, and the
+    //   result is one text (output, blank line, notice) rather than parts.
+    //   A trailing newline of output that fits is dropped (`pwd` reads as
+    //   the path alone); truncated output is shown as OpenCode shows it.
+    // - Zsh short loop forms (`for v (a b) cmd`) are refused as opaque by
+    //   CodeSmith's scanner; OpenCode's scanner accepts them.
+    // - The environment markers are `AGENT=1`, `CODESMITH=1`,
+    //   `AI_AGENT=codesmith` (kept when already set) and
+    //   `CODESMITH_SESSION_ID`. There is no per-session environment store,
+    //   so the session-environment cases are not ported.
+    // - No Code Mode, no PowerShell, no persistent process daemon, no
+    //   tracing spans, no progress events, no job cancel/backgroundAll and
+    //   no `shell.timeout` update API: those cases are not ported. A user's
+    //   stop drops the running call, which kills the command
+    //   (`kill_on_drop`), so the "stopped" suite has no counterpart.
+    // - Saved ("always") approvals and configured rules are both `Gate`
+    //   rules; a test's pre-saved approvals are configured allow rules.
+    // ---------------------------------------------------------------------
+
+    use crate::permission::{Asker, Effect, Gate, Request as PermRequest, Rule};
+    use std::collections::VecDeque;
+
+    /// Answers requests from a script (rejecting once it runs out) and
+    /// records them; `on_ask` runs before answering.
+    type OnAsk = Box<dyn Fn(&PermRequest) + Send + Sync>;
+
+    #[derive(Default)]
+    struct Scripted {
+        replies: Mutex<VecDeque<Reply>>,
+        asked: Mutex<Vec<PermRequest>>,
+        on_ask: Option<OnAsk>,
+    }
+
+    impl Scripted {
+        fn reply(&self, r: Reply) {
+            self.replies.lock().unwrap().push_back(r);
+        }
+        fn take(&self) -> Vec<PermRequest> {
+            std::mem::take(&mut *self.asked.lock().unwrap())
+        }
+    }
+
+    impl Asker for Scripted {
+        fn ask(&self, req: &PermRequest) -> Reply {
+            if let Some(f) = &self.on_ask {
+                f(req);
+            }
+            self.asked.lock().unwrap().push(req.clone());
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Reply::Reject(None))
+        }
+    }
+
+    fn scripted(rules: Vec<Rule>) -> (Env, Arc<Scripted>) {
+        scripted_with(rules, Scripted::default())
+    }
+
+    fn scripted_with(rules: Vec<Rule>, asker: Scripted) -> (Env, Arc<Scripted>) {
+        let asker = Arc::new(asker);
+        let env = Env {
+            dir: tempfile::tempdir().unwrap(),
+            gate: Gate::new(rules, asker.clone()),
+        };
+        (env, asker)
+    }
+
+    fn allow(resource: &str) -> Rule {
+        Rule::new("shell", resource, Effect::Allow)
+    }
+
+    fn deny(action: &str, resource: &str) -> Rule {
+        Rule::new(action, resource, Effect::Deny)
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    async fn sh(ctx: &Ctx<'_>, command: &str) -> Outcome {
+        run(ctx, &json!({ "command": command })).await
+    }
+
+    fn outside() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().canonicalize().unwrap();
+        (d, p)
+    }
+
+    fn has(shell: &str) -> bool {
+        Path::new(shell).exists()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_declarations_reuse_approvals_while_substitutions_ask() {
+        let (env, asker) = scripted(vec![allow("printf *")]);
+        let ctx = env.ctx();
+        let marker = env.root().join("marker");
+        sh(
+            &ctx,
+            "export SCAN_TEST=hello; unset SCAN_TEST; printf hello > marker",
+        )
+        .await
+        .unwrap();
+        assert!(asker.take().is_empty());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "hello");
+
+        let (env, asker) = scripted(vec![]);
+        let ctx = env.ctx();
+        let marker = env.root().join("marker");
+        let command = r#"export SCAN_TEST=$(printf hello); printf %s "$SCAN_TEST" > marker"#;
+        let mut prompts = Vec::new();
+        for reply in [Reply::Reject(None), Reply::Once, Reply::Always] {
+            let _ = std::fs::remove_file(&marker);
+            asker.reply(reply.clone());
+            let out = sh(&ctx, command).await;
+            prompts.extend(asker.take());
+            if reply == Reply::Reject(None) {
+                assert_eq!(out.unwrap_err(), "The user declined this request.");
+                assert!(!marker.exists());
+                continue;
+            }
+            out.unwrap();
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "hello");
+        }
+        // After "always", the same command runs without asking.
+        std::fs::remove_file(&marker).unwrap();
+        sh(&ctx, command).await.unwrap();
+        assert!(asker.take().is_empty());
+        assert_eq!(prompts.len(), 3);
+        for p in &prompts {
+            assert_eq!(p.action, "shell");
+            assert_eq!(
+                p.resources,
+                strs(&["printf hello", r#"printf %s "$SCAN_TEST" > marker"#])
+            );
+            assert_eq!(p.save, strs(&["printf *", "printf *"]));
+        }
+
+        let (env, _) = scripted(vec![allow("*"), deny("shell", "printf hello")]);
+        let marker = env.root().join("marker");
+        let err = sh(&env.ctx(), command).await.unwrap_err();
+        assert!(
+            err.contains("Permission denied") && err.contains("shell"),
+            "{err}"
+        );
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_pipeline_redirect_target_stays_visible() {
+        let command = "printf hello | cat > marker";
+        let (env, asker) = scripted(vec![allow("printf hello"), allow("cat")]);
+        let marker = env.root().join("marker");
+        assert!(sh(&env.ctx(), command).await.is_err());
+        let asked = asker.take();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].resources, strs(&["printf hello", "cat > marker"]));
+        assert_eq!(asked[0].save, strs(&["printf *", "cat *"]));
+        assert!(!marker.exists());
+
+        let (env, asker) = scripted(vec![
+            allow("printf hello"),
+            allow("cat"),
+            allow("cat > marker"),
+        ]);
+        sh(&env.ctx(), command).await.unwrap();
+        assert!(asker.take().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(env.root().join("marker")).unwrap(),
+            "hello"
+        );
+
+        let (env, asker) = scripted(vec![allow("printf *"), allow("cat *")]);
+        sh(&env.ctx(), command).await.unwrap();
+        assert!(asker.take().is_empty());
+
+        let (env, asker) = scripted(vec![allow("*"), deny("shell", "* > marker")]);
+        let err = sh(&env.ctx(), command).await.unwrap_err();
+        assert!(err.starts_with("Permission denied"), "{err}");
+        assert!(asker.take().is_empty());
+        assert!(!env.root().join("marker").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_external_directory_rejection_stops_execution() {
+        let (_o, out) = outside();
+        for reply in [Reply::Reject(None), Reply::Once] {
+            let (env, asker) = scripted(vec![allow("*")]);
+            let marker = env.root().join("marker");
+            let command = format!(
+                "cd '{}' && pwd -P && printf reached > '{}'",
+                out.display(),
+                marker.display()
+            );
+            asker.reply(reply.clone());
+            let result = sh(&env.ctx(), &command).await;
+            let asked = asker.take();
+            assert_eq!(asked.len(), 1);
+            assert_eq!(asked[0].action, "external_directory");
+            assert_eq!(asked[0].resources, [format!("{}/*", out.display())]);
+            if reply == Reply::Once {
+                assert_eq!(result.unwrap().content, out.display().to_string());
+                assert_eq!(std::fs::read_to_string(&marker).unwrap(), "reached");
+            } else {
+                assert!(result.is_err());
+                assert!(!marker.exists());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_numeric_symlink_operand_reaches_outside_unprompted() {
+        // A known limit shared with OpenCode: `cd` targets are checked
+        // lexically, so a symlink inside the project is not followed.
+        let (_o, out) = outside();
+        let (env, asker) = scripted(vec![allow("*"), deny("external_directory", "*")]);
+        std::os::unix::fs::symlink(&out, env.root().join("123")).unwrap();
+        let marker = env.root().join("marker");
+        let result = sh(
+            &env.ctx(),
+            &format!(
+                "cd 123 && pwd -P && printf reached > '{}'",
+                marker.display()
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(asker.take().is_empty());
+        assert_eq!(result.content, out.display().to_string());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "reached");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_continued_directory_operand_enforces_external_deny() {
+        let parent = tempfile::tempdir().unwrap();
+        let parent = parent.path().canonicalize().unwrap();
+        std::fs::create_dir(parent.join("active")).unwrap();
+        std::fs::create_dir(parent.join("outside")).unwrap();
+        let asker = Arc::new(Scripted::default());
+        let gate = Gate::new(
+            vec![
+                allow("*"),
+                deny(
+                    "external_directory",
+                    &format!("{}/*", parent.join("outside").display()),
+                ),
+            ],
+            asker.clone(),
+        );
+        let env = Env {
+            dir: tempfile::tempdir().unwrap(),
+            gate,
+        };
+        let mut ctx = env.ctx();
+        ctx.cwd = parent.join("active");
+        ctx.root = parent.join("active");
+        let marker = parent.join("active/marker");
+        let command = format!(
+            "cd ../out\\\nside && pwd -P && printf reached > '{}'",
+            marker.display()
+        );
+        let err = sh(&ctx, &command).await.unwrap_err();
+        assert!(
+            err.contains("Permission denied") && err.contains("external_directory"),
+            "{err}"
+        );
+        assert!(asker.take().is_empty());
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_conditional_substitution_nested_deny() {
+        if !has("/bin/bash") {
+            return;
+        }
+        let (env, _) = scripted(vec![allow("*"), deny("shell", "printf *")]);
+        let mut ctx = env.ctx();
+        ctx.shell = "/bin/bash".into();
+        let err = sh(&ctx, r#"[[ -n <(printf reached > marker) ]]; wait "$!""#)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Permission denied"), "{err}");
+        assert!(!env.root().join("marker").exists());
+    }
+
+    async fn conditional_substitution(reply: Reply) {
+        if !has("/bin/bash") {
+            return;
+        }
+        let (env, asker) = scripted(vec![allow("wait *")]);
+        let mut ctx = env.ctx();
+        ctx.shell = "/bin/bash".into();
+        let marker = env.root().join("marker");
+        let command = r#"[[ -n <(printf reached > marker) ]]; wait "$!""#;
+        asker.reply(reply.clone());
+        let result = sh(&ctx, command).await;
+        let asked = asker.take();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked[0].resources,
+            strs(&["printf reached > marker", r#"wait "$!""#])
+        );
+        assert_eq!(asked[0].save, strs(&["printf *", "wait *"]));
+        if reply == Reply::Reject(None) {
+            assert!(result.is_err());
+            assert!(!marker.exists());
+            return;
+        }
+        result.unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "reached");
+        std::fs::remove_file(&marker).unwrap();
+        let _ = sh(&ctx, command).await;
+        let always = reply == Reply::Always;
+        assert_eq!(asker.take().len(), if always { 0 } else { 1 });
+        assert_eq!(marker.exists(), always);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_conditional_substitutions_respect_reject() {
+        conditional_substitution(Reply::Reject(None)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_conditional_substitutions_respect_once() {
+        conditional_substitution(Reply::Once).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_conditional_substitutions_respect_always() {
+        conditional_substitution(Reply::Always).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_compound_syntax_approval_compatibility() {
+        let fixtures: &[(&str, &str, &str, &[&str])] = &[
+            (
+                "/bin/zsh",
+                r#"for value (a b) printf %s "$value""#,
+                "",
+                &["printf *"],
+            ),
+            (
+                "/bin/zsh",
+                r#"for value (a b) { printf %s "$value"; }"#,
+                "",
+                &["printf *"],
+            ),
+            (
+                "/bin/zsh",
+                r#"for value ($(printf a)) do printf %s "$value"; done"#,
+                "",
+                &["printf *"],
+            ),
+            (
+                "/bin/bash",
+                r#"probe() for value in a b; do printf %s "$value"; done; probe"#,
+                "ab",
+                &["printf *", "probe *"],
+            ),
+            (
+                "/bin/bash",
+                r#"printf %s "$(probe() case value in (value) printf hello;; esac; probe)""#,
+                "hello",
+                &["printf *", "probe *"],
+            ),
+        ];
+        for (shell, command, output, saved) in fixtures {
+            if !has(shell) {
+                continue;
+            }
+            let (env, asker) = scripted(saved.iter().map(|s| allow(s)).collect());
+            let mut ctx = env.ctx();
+            ctx.shell = shell.to_string();
+            let result = sh(&ctx, command).await;
+            assert!(asker.take().is_empty(), "{command}");
+            if output.is_empty() {
+                // Zsh-only short loops: refused unrun (see the header).
+                let err = result.unwrap_err();
+                assert!(err.contains("cannot analyze"), "{command}: {err}");
+            } else {
+                assert_eq!(result.unwrap().content, *output, "{command}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_ordinary_syntax_reuses_existing_approvals() {
+        let fixtures: &[(&str, &str, &[&str])] = &[
+            ("cat <<'EOF'\nhello\nEOF", "hello", &["cat *"]),
+            (
+                "cat <<EOF\n$(printf hello)\nEOF",
+                "hello",
+                &["cat *", "printf *"],
+            ),
+            (
+                r#"for value in a b; do if test -n "$value"; then printf %s "$value"; fi; done"#,
+                "ab",
+                &["test *", "printf *"],
+            ),
+            (
+                r#"greet() { case "$1" in a) printf hello;; *) printf other;; esac; }; greet a"#,
+                "hello",
+                &["greet *", "printf *"],
+            ),
+            (
+                r#"value=; printf %s "${value:-fallback}""#,
+                "fallback",
+                &["printf *"],
+            ),
+            (
+                r#"count=1; ((count += 1)); printf %s "$count""#,
+                "2",
+                &["((count += 1)) *", "printf *"],
+            ),
+            (r"printf %s $'a\nb'", "a\nb", &["printf *"]),
+        ];
+        for shell in ["/bin/bash", "/bin/zsh"] {
+            if !has(shell) {
+                continue;
+            }
+            for (command, output, saved) in fixtures {
+                let (env, asker) = scripted(saved.iter().map(|s| allow(s)).collect());
+                let mut ctx = env.ctx();
+                ctx.shell = shell.into();
+                let result = sh(&ctx, command).await;
+                assert!(asker.take().is_empty(), "{shell}: {command}");
+                assert_eq!(result.unwrap().content, *output, "{shell}: {command}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_loop_body_deny_prevents_execution() {
+        for shell in ["/bin/bash", "/bin/zsh"] {
+            if !has(shell) {
+                continue;
+            }
+            let (env, _) = scripted(vec![allow("*"), deny("shell", "printf *")]);
+            let mut ctx = env.ctx();
+            ctx.shell = shell.into();
+            let err = sh(&ctx, "for value in a; do printf body > marker; done")
+                .await
+                .unwrap_err();
+            assert!(err.starts_with("Permission denied"), "{err}");
+            assert!(!env.root().join("marker").exists());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_registers_and_returns_real_output() {
+        let (description, schema) = spec("/bin/sh");
+        assert!(description.starts_with("Execute a shell command and return its output."));
+        assert!(schema["properties"]["timeout"].get("maximum").is_none());
+        let (env, asker) = scripted(vec![]);
+        asker.reply(Reply::Once);
+        assert_eq!(
+            sh(&env.ctx(), "printf hello").await.unwrap().content,
+            "hello"
+        );
+        let asked = asker.take();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].action, "shell");
+        assert_eq!(asked[0].resources, ["printf hello"]);
+        assert_eq!(asked[0].save, ["printf *"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_identifies_agent_commands() {
+        let env = Env::new();
+        let out = sh(
+            &env.ctx(),
+            r#"printf %s "$AGENT|$CODESMITH|$AI_AGENT|$CODESMITH_SESSION_ID""#,
+        )
+        .await
+        .unwrap()
+        .content;
+        let ai = std::env::var("AI_AGENT")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "codesmith".into());
+        assert_eq!(out, format!("1|1|{ai}|test"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_resolves_a_relative_workdir() {
+        let env = Env::new();
+        std::fs::create_dir(env.root().join("src")).unwrap();
+        let out = run(&env.ctx(), &json!({"command": "pwd", "workdir": "src"}))
+            .await
+            .unwrap();
+        assert_eq!(out.content, env.root().join("src").display().to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_reports_a_missing_workdir() {
+        let env = Env::new();
+        assert_eq!(
+            run(&env.ctx(), &json!({"command": "pwd", "workdir": "missing"}))
+                .await
+                .unwrap_err(),
+            format!(
+                "Working directory does not exist: {}",
+                env.root().join("missing").display()
+            )
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_permissions_compound_commands_separately() {
+        let (env, asker) = scripted(vec![]);
+        asker.reply(Reply::Once);
+        sh(&env.ctx(), "printf one && printf two").await.unwrap();
+        let asked = asker.take();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].resources, ["printf one", "printf two"]);
+        assert_eq!(asked[0].save, ["printf *", "printf *"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_captures_stderr_only_and_mixed_output() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        assert_eq!(
+            sh(&ctx, "printf 'stderr only' >&2").await.unwrap().content,
+            "stderr only"
+        );
+        let mixed = sh(&ctx, "printf stdout; sleep 0.05; printf stderr >&2")
+            .await
+            .unwrap()
+            .content;
+        assert!(
+            mixed.contains("stdout") && mixed.contains("stderr"),
+            "{mixed}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_rejects_a_workdir_that_stops_being_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().canonicalize().unwrap().join("src");
+        std::fs::create_dir(&workdir).unwrap();
+        let w = workdir.clone();
+        let asker = Scripted {
+            on_ask: Some(Box::new(move |req| {
+                if req.action == "shell" {
+                    std::fs::remove_dir_all(&w).unwrap();
+                    std::fs::write(&w, "not a directory").unwrap();
+                }
+            })),
+            ..Default::default()
+        };
+        asker.reply(Reply::Once);
+        let asker = Arc::new(asker);
+        let env = Env {
+            dir,
+            gate: Gate::new(vec![], asker.clone()),
+        };
+        let err = run(&env.ctx(), &json!({"command": "pwd", "workdir": "src"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "Working directory is not a directory: {}",
+                workdir.display()
+            )
+        );
+        let actions: Vec<_> = asker.take().into_iter().map(|r| r.action).collect();
+        assert_eq!(actions, ["shell"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_approves_an_explicit_external_workdir_first() {
+        let (_o, out) = outside();
+        let (env, asker) = scripted(vec![]);
+        asker.reply(Reply::Once);
+        asker.reply(Reply::Once);
+        run(
+            &env.ctx(),
+            &json!({"command": "pwd", "workdir": out.display().to_string()}),
+        )
+        .await
+        .unwrap();
+        let asked = asker.take();
+        let actions: Vec<_> = asked.iter().map(|r| r.action.as_str()).collect();
+        assert_eq!(actions, ["external_directory", "shell"]);
+        assert_eq!(asked[0].resources, [format!("{}/*", out.display())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_deduplicates_external_approvals_across_workdir_and_cd() {
+        let (_o, out) = outside();
+        let command = format!("cd '{}' && pwd", out.display());
+        for input in [
+            json!({"command": command}),
+            json!({"command": command, "workdir": out.display().to_string()}),
+        ] {
+            let (env, asker) = scripted(vec![]);
+            asker.reply(Reply::Once);
+            asker.reply(Reply::Once);
+            run(&env.ctx(), &input).await.unwrap();
+            let asked = asker.take();
+            let actions: Vec<_> = asked.iter().map(|r| r.action.as_str()).collect();
+            assert_eq!(actions, ["external_directory", "shell"]);
+            assert_eq!(asked[0].resources, [format!("{}/*", out.display())]);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_approves_an_expanded_external_home() {
+        let (env, asker) = scripted(vec![]);
+        asker.reply(Reply::Once);
+        asker.reply(Reply::Once);
+        sh(&env.ctx(), "cd ~ && pwd").await.unwrap();
+        let asked = asker.take();
+        let actions: Vec<_> = asked.iter().map(|r| r.action.as_str()).collect();
+        assert_eq!(actions, ["external_directory", "shell"]);
+        let home = dirs::home_dir().unwrap().display().to_string();
+        assert!(
+            asked[0].resources[0].starts_with(&home),
+            "{:?}",
+            asked[0].resources
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_does_not_execute_after_denial() {
+        let (_o, out) = outside();
+        let (env, rec) = Env::recording(vec![]);
+        rec.deny_action("external_directory");
+        let marker = env.root().join("marker");
+        let cmd = format!("touch '{}'", marker.display());
+        assert!(run(
+            &env.ctx(),
+            &json!({"command": cmd, "workdir": out.display().to_string()})
+        )
+        .await
+        .is_err());
+        assert_eq!(rec.actions(), ["external_directory"]);
+        let (env, rec) = Env::recording(vec![]);
+        rec.deny_action("shell");
+        assert!(sh(&env.ctx(), "touch marker").await.is_err());
+        assert_eq!(rec.actions(), ["shell"]);
+        assert!(!env.root().join("marker").exists() && !marker.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_rejects_malformed_syntax_without_partial_execution() {
+        let (env, rec) = Env::recording(vec![]);
+        let err = sh(&env.ctx(), "printf hello > marker\necho \"")
+            .await
+            .unwrap_err();
+        assert!(err.contains("unterminated-quote"), "{err}");
+        assert!(rec.actions().is_empty());
+        assert!(!env.root().join("marker").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_preserves_arithmetic_and_directory_permissions() {
+        for shell in ["/bin/sh", "/bin/zsh"] {
+            if !has(shell) {
+                continue;
+            }
+            let (env, rec) = Env::recording(vec![]);
+            std::fs::create_dir_all(env.root().join("one/two")).unwrap();
+            let mut ctx = env.ctx();
+            ctx.shell = shell.into();
+            let home = dirs::home_dir().unwrap().canonicalize().unwrap();
+            for (command, output) in [
+                ("echo $((1 + 1))", "2".to_string()),
+                ("cd ~ && pwd", home.display().to_string()),
+                (
+                    "cd one&&cd two&&pwd",
+                    env.root().join("one/two").display().to_string(),
+                ),
+            ] {
+                assert_eq!(
+                    sh(&ctx, command).await.unwrap().content,
+                    output,
+                    "{shell}: {command}"
+                );
+            }
+            let asked = rec.requests();
+            let actions: Vec<_> = asked.iter().map(|r| r.0.as_str()).collect();
+            assert_eq!(actions, ["shell", "external_directory", "shell", "shell"]);
+            let home = dirs::home_dir().unwrap();
+            assert_eq!(asked[1].1, [format!("{}/*", home.display())]);
+            assert_eq!(asked[0].1, ["echo $((1 + 1))"]);
+            assert_eq!(asked[2].1, ["pwd"]);
+            assert_eq!(asked[3].1, ["pwd"]);
+            let saves: Vec<_> = rec
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.save.clone())
+                .collect();
+            assert_eq!(saves[0], ["echo *"]);
+            assert_eq!(saves[2], ["pwd *"]);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_keeps_non_zero_exits_useful() {
+        let env = Env::new();
+        assert_eq!(
+            sh(&env.ctx(), "printf body && exit 7")
+                .await
+                .unwrap()
+                .content,
+            "body\n\nExit code: 7"
+        );
+    }
+
+    fn overflow(bytes: usize) -> String {
+        format!("printf output-start; head -c {bytes} /dev/zero | tr '\\0' 'x'; printf output-end")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_exit_status_follows_the_truncation_marker() {
+        let env = Env::new();
+        let out = sh(
+            &env.ctx(),
+            &format!("{} && exit 3", overflow(50 * 1024 + 1024)),
+        )
+        .await
+        .unwrap()
+        .content;
+        let re = regex::Regex::new(
+            r"(?s)output-end\n\n\[showing the last 50 KB of line 1 \(51 KB\); full output saved to ([^\]]+)\]\n\nExit code: 3$",
+        )
+        .unwrap();
+        let caps = re
+            .captures(&out)
+            .unwrap_or_else(|| panic!("{}", &out[out.len() - 300..]));
+        let saved = std::fs::read_to_string(&caps[1]).unwrap();
+        assert!(saved.starts_with("output-start") && saved.ends_with("output-end"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_foreground_timeout_moves_to_background_and_reports_once() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let release = env.root().join("release");
+        let command = format!(
+            "head -c 6 /dev/zero | tr '\\0' 'x'; while [ ! -e '{}' ]; do sleep 0.05; done",
+            release.display()
+        );
+        let out = run(&ctx, &json!({"command": command, "timeout": 10}))
+            .await
+            .unwrap()
+            .content;
+        let job = jobs.inner.lock().unwrap()[0].clone();
+        assert!(job.pid.unwrap() > 0);
+        assert!(out.starts_with(&format!(
+            "Command moved to the background (shell ID: shell_1).\nPID: {}\nOutput is streaming to: {}\n\nThe command did not finish within its timeout of 0.01 seconds and was moved to the background. Do not start another copy while it is running.",
+            job.pid.unwrap(),
+            job.file.display()
+        )), "{out}");
+        assert_eq!(jobs.running(), 1);
+        std::fs::write(&release, "").unwrap();
+        jobs.wait_any().await;
+        let done = jobs.take_finished();
+        assert_eq!(done[0].ending, Some(Ending::Exited(0)));
+        assert!(notification(&done[0], ToolOutputConfig::default()).contains("xxxxxx"));
+        assert!(jobs.take_finished().is_empty());
+        assert_eq!(jobs.running(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_returns_a_fast_foreground_result_directly() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let out = run(&ctx, &json!({"command": "printf hello", "timeout": 10_000}))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "hello");
+        assert_eq!(ctx.jobs.as_ref().unwrap().running(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_preserves_a_timeout_promoted_failure() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(
+            &ctx,
+            &json!({"command": "sleep 0.3; exit 7", "timeout": 10}),
+        )
+        .await
+        .unwrap();
+        jobs.wait_any().await;
+        let done = jobs.take_finished();
+        assert_eq!(done[0].ending, Some(Ending::Exited(7)));
+        assert!(notification(&done[0], ToolOutputConfig::default()).contains("Exit code: 7"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_foreground_timeout_of_zero_is_the_default() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let out = run(
+            &ctx,
+            &json!({"command": "sleep 0.3; printf done", "timeout": 0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content, "done");
+        assert_eq!(ctx.jobs.as_ref().unwrap().running(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_stops_a_background_command_at_its_timeout() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(
+            &ctx,
+            &json!({"command": "sleep 60", "background": true, "timeout": 50}),
+        )
+        .await
+        .unwrap();
+        jobs.wait_any().await;
+        assert!(matches!(
+            jobs.take_finished()[0].ending,
+            Some(Ending::TimedOut(_))
+        ));
+        // Without a timeout (or with 0) a background command keeps running.
+        run(
+            &ctx,
+            &json!({"command": "sleep 0.3", "background": true, "timeout": 0}),
+        )
+        .await
+        .unwrap();
+        jobs.wait_any().await;
+        assert_eq!(jobs.take_finished()[0].ending, Some(Ending::Exited(0)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_truncates_overflowing_output_from_the_end() {
+        let env = Env::new();
+        let out = sh(&env.ctx(), &overflow(50 * 1024 + 1024))
+            .await
+            .unwrap()
+            .content;
+        assert!(!out.contains("output-start") && out.contains("output-end"));
+        assert!(out.contains("full output saved to "));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_uses_configured_line_limits() {
+        let env = Env::new();
+        let mut ctx = env.ctx();
+        ctx.limits = ToolOutputConfig {
+            max_lines: 2,
+            max_bytes: 1_000,
+        };
+        let out = sh(&ctx, "printf 'one\\ntwo\\nthree'")
+            .await
+            .unwrap()
+            .content;
+        assert!(
+            !out.contains("one") && out.starts_with("two\nthree"),
+            "{out}"
+        );
+        assert!(out.contains("full output saved to "));
+    }
+
+    async fn truncated(env: &Env, contents: &[u8]) -> String {
+        let file = env.root().join("contents.txt");
+        std::fs::write(&file, contents).unwrap();
+        let out = sh(&env.ctx(), &format!("cat '{}'", file.display()))
+            .await
+            .unwrap()
+            .content;
+        assert!(out.contains("full output saved to "));
+        out
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_drops_the_partial_first_line() {
+        let env = Env::new();
+        let lines: Vec<String> = (1..=10)
+            .map(|i| format!("{i:x<width$}", width = 10 * 1024))
+            .collect();
+        let out = truncated(&env, (lines.join("\n") + "\n").as_bytes()).await;
+        assert!(out.starts_with("7xxx"), "{}", &out[..20]);
+        assert!(out.contains(&format!(
+            "{}\n\n[showing lines 7-10 of 10; full output saved to ",
+            lines[9]
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_says_how_much_of_a_long_line_is_shown() {
+        let env = Env::new();
+        let out = truncated(&env, format!("head\n{}", "x".repeat(200 * 1024)).as_bytes()).await;
+        assert!(out.starts_with(&format!("{}\n\n", "x".repeat(50 * 1024))));
+        assert!(
+            out.contains("[showing the last 50 KB of line 2 (200 KB); full output saved to "),
+            "{}",
+            &out[50 * 1024..]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_truncated_view_starts_on_a_whole_character() {
+        let env = Env::new();
+        let contents = format!("{}€{}", "a".repeat(100), "b".repeat(50 * 1024 - 1));
+        let out = truncated(&env, contents.as_bytes()).await;
+        assert!(out.starts_with(&format!("{}\n\n", "b".repeat(50 * 1024 - 1))));
+        assert!(!out.contains('\u{FFFD}'));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_numbers_lines_exactly_at_the_line_limit() {
+        let env = Env::new();
+        let lines: Vec<String> = (1..=2500).map(|i| format!("line {i}")).collect();
+        let out = truncated(&env, (lines.join("\n") + "\n").as_bytes()).await;
+        assert!(out.starts_with("line 501\n"));
+        assert!(out.contains("line 2500\n\n[showing lines 501-2500 of 2500; full output saved to "));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_returns_the_shell_id_and_pid_for_a_background_command() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let out = run(
+            &ctx,
+            &json!({"command": "sleep 60", "timeout": 50, "background": true}),
+        )
+        .await
+        .unwrap()
+        .content;
+        let job = jobs.inner.lock().unwrap()[0].clone();
+        assert_eq!(
+            out,
+            format!(
+                "Command moved to the background (shell ID: shell_1).\nPID: {}\nOutput is streaming to: {}\n\n{BACKGROUND_INSTRUCTION}",
+                job.pid.unwrap(),
+                job.file.display()
+            )
+        );
+        jobs.wait_any().await;
+        let done = jobs.take_finished();
+        assert_eq!(
+            done[0].ending,
+            Some(Ending::TimedOut(Some(Box::new(Ending::Signaled(15)))))
+        );
+        let note = notification(&done[0], ToolOutputConfig::default());
+        assert!(note.ends_with("\nCommand timed out after 0.05 seconds. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: 143 (SIGTERM)\n</shell>"), "{note}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_preserves_a_background_non_zero_exit() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(
+            &ctx,
+            &json!({"command": "printf body && exit 7", "background": true}),
+        )
+        .await
+        .unwrap();
+        jobs.wait_any().await;
+        let note = notification(&jobs.take_finished()[0], ToolOutputConfig::default());
+        assert!(note.contains("\nbody\n\nExit code: 7\n</shell>"), "{note}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_reports_a_silent_background_command() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(&ctx, &json!({"command": "exit 7", "background": true}))
+            .await
+            .unwrap();
+        jobs.wait_any().await;
+        let note = notification(&jobs.take_finished()[0], ToolOutputConfig::default());
+        assert!(
+            note.contains("\n(no output)\n\nExit code: 7\n</shell>"),
+            "{note}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_escalates_a_timeout_when_sigterm_is_ignored() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let ready = env.root().join("ready");
+        let command = format!(
+            "trap '' TERM; : > '{}'; while :; do sleep 60; done",
+            ready.display()
+        );
+        run(
+            &ctx,
+            &json!({"command": command, "background": true, "timeout": 300}),
+        )
+        .await
+        .unwrap();
+        jobs.wait_any().await;
+        let job = jobs.take_finished().remove(0);
+        assert!(ready.exists());
+        assert_eq!(
+            job.ending,
+            Some(Ending::TimedOut(Some(Box::new(Ending::Signaled(9)))))
+        );
+        let alive = std::process::Command::new("/bin/kill")
+            .args(["-0", &job.pid.unwrap().to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the process was reaped");
+    }
+
+    #[test]
+    fn oc_shell_words_the_status_as_an_exit_code() {
+        assert_eq!(notice(&Ending::Exited(0), 0), None);
+        assert_eq!(notice(&Ending::Exited(7), 0).unwrap(), "Exit code: 7");
+        assert_eq!(notice(&Ending::Exited(143), 0).unwrap(), "Exit code: 143");
+        assert_eq!(
+            notice(&Ending::Signaled(15), 0).unwrap(),
+            "Exit code: 143 (SIGTERM)"
+        );
+        assert_eq!(
+            notice(&Ending::Signaled(9), 0).unwrap(),
+            "Exit code: 137 (SIGKILL)"
+        );
+        assert_eq!(
+            notice(&Ending::Signaled(99), 0).unwrap(),
+            "Exit code: unknown"
+        );
+        assert_eq!(
+            notice(&Ending::TimedOut(Some(Box::new(Ending::Signaled(15)))), 120_000).unwrap(),
+            "Command timed out after 120 seconds. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: 143 (SIGTERM)"
+        );
+        assert_eq!(
+            notice(&Ending::TimedOut(None), 0).unwrap(),
+            "Command timed out. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: unknown"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_shell_settles_a_command_ended_by_an_external_signal() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        run(&ctx, &json!({"command": "sleep 60", "background": true}))
+            .await
+            .unwrap();
+        let pid = jobs.inner.lock().unwrap()[0].pid.unwrap();
+        std::process::Command::new("/bin/kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .status()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), jobs.wait_any())
+            .await
+            .unwrap();
+        assert_eq!(jobs.take_finished()[0].ending, Some(Ending::Signaled(15)));
     }
 }

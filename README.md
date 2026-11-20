@@ -172,7 +172,7 @@ Other commands: `codesmith models`, `codesmith debug paths|config|model|agents|p
 | `glob` | Find files by glob pattern, respecting `.gitignore` |
 | `grep` | Search file contents with ripgrep's regex engine |
 | `shell` | Run a command; long-running ones move to the background and the agent is told when they finish. Large output is saved to a file |
-| `webfetch` | Fetch a URL as markdown, text or HTML; each redirect is permission-checked |
+| `webfetch` | Fetch a URL as markdown, text or HTML; redirect targets are checked against deny rules |
 | `todowrite` | Keep a visible todo list for multi-step work |
 | `subagent` | Delegate a task to a subagent (`general`, `explore`, or your own) in a child session |
 | `skill` | Load a skill's instructions when a task matches its description |
@@ -248,6 +248,15 @@ matching rule wins and anything unmatched asks. Actions are tool names, with
 the project. `*` matches anything; a trailing ` *` also matches the bare
 command (`git *` matches `git`). By default everything is allowed except
 reading `.env` files, which asks.
+
+Shell commands are split into the commands they run, and each is checked on
+its own: `git status && rm -rf build` is checked as `git status` and
+`rm -rf build`, and so are commands inside `$(...)`, backticks, pipelines,
+subshells, loops, conditionals and functions. Redirects stay part of the
+command (`cat > out`), so a rule like `* > secret*` catches them. `cd`
+targets outside the project need `external_directory` approval. A command
+the scanner cannot analyze is refused rather than run unchecked. "Always
+allow" saves the command's leading words (`git status *`, `npm run build *`).
 
 **Instructions**: `~/.config/codesmith/AGENTS.md` (else
 `~/.claude/CLAUDE.md`), then `AGENTS.md` files from the working directory up,

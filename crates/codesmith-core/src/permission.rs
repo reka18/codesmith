@@ -169,6 +169,21 @@ impl Gate {
         evaluate_all(action, resources, &self.rules()) == Effect::Allow
     }
 
+    /// Refuse only when a configured rule denies the request; never asks.
+    /// Used for follow-up requests the user already approved the start of,
+    /// such as `webfetch` redirect targets (OpenCode's `assertNotDenied`).
+    pub fn assert_not_denied(&self, action: &str, resources: &[String]) -> Result<(), Denied> {
+        for r in resources {
+            if evaluate(action, r, &self.rules) == Effect::Deny {
+                return Err(Denied::Blocked {
+                    action: action.into(),
+                    resource: r.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Allow, ask, or refuse. Configured denies are checked before saved
     /// approvals, so "always allow" can never override an explicit deny.
     pub fn assert(&self, req: &Request) -> Result<(), Denied> {
@@ -387,5 +402,527 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r, Rule::new("shell", "git *", Effect::Ask));
+    }
+
+    // ---------------------------------------------------------------------
+    // Ported from OpenCode's packages/core/test/permission.test.ts (MIT).
+    // One `oc_permission_*` test per OpenCode case, in the same order.
+    //
+    // Intentional differences:
+    // - CodeSmith asks synchronously through an `Asker`; there is no pending
+    //   request queue, request IDs, bus events, metadata or nested-call rows,
+    //   so the cases about listing, sibling rejection, pending auto-approval
+    //   and JSON encoding of pending requests have no counterpart.
+    // - "Always" approvals are kept for the session (`Gate`), not stored per
+    //   project in a database, and cannot be edited.
+    // - Custom agents start from the base rules (`* allow`, `.env` asks),
+    //   not from an empty rule set; a session without an agent uses `build`
+    //   (resolved in the CLI, not here).
+    // - The shell scanner impact cases run CodeSmith's scanner (the "native"
+    //   column of OpenCode's table); PowerShell fixtures are not ported.
+    // ---------------------------------------------------------------------
+
+    fn assertion(action: &str, res: &[&str], save: &[&str]) -> Request {
+        Request {
+            action: action.into(),
+            resources: res.iter().map(|s| s.to_string()).collect(),
+            save: save.iter().map(|s| s.to_string()).collect(),
+            title: String::new(),
+        }
+    }
+
+    /// What a gate does with `req`: allow without asking, ask, or deny.
+    fn outcome(g: &Gate, n: &AtomicUsize, req: &Request) -> Effect {
+        let before = n.load(Ordering::SeqCst);
+        match g.assert(req) {
+            Err(Denied::Blocked { .. }) => Effect::Deny,
+            _ if n.load(Ordering::SeqCst) > before => Effect::Ask,
+            _ => Effect::Allow,
+        }
+    }
+
+    fn counting(rules: Vec<Rule>, reply: Reply) -> (Gate, Arc<AtomicUsize>) {
+        let n = Arc::new(AtomicUsize::new(0));
+        (Gate::new(rules, Arc::new(Counting(n.clone(), reply))), n)
+    }
+
+    fn allow_all(action: &str) -> Vec<Rule> {
+        vec![Rule::new(action, "*", Effect::Allow)]
+    }
+
+    #[test]
+    fn oc_permission_returns_the_evaluated_effect_and_only_asks_when_needed() {
+        let req = assertion("read", &["src/index.ts"], &[]);
+        let (g, n) = counting(allow_all("read"), Reply::Once);
+        assert_eq!(outcome(&g, &n, &req), Effect::Allow);
+        let (g, n) = counting(vec![Rule::new("read", "*", Effect::Deny)], Reply::Once);
+        assert_eq!(outcome(&g, &n, &req), Effect::Deny);
+        let (g, n) = counting(vec![], Reply::Once);
+        assert_eq!(outcome(&g, &n, &req), Effect::Ask);
+    }
+
+    #[test]
+    fn oc_permission_evaluates_against_an_explicit_agent() {
+        let mut config = crate::config::Config::default();
+        let reviewer = |rules: Vec<Rule>| crate::config::AgentConfig {
+            permissions: rules,
+            ..Default::default()
+        };
+        config.agents.insert(
+            "reviewer".into(),
+            reviewer(vec![Rule::new("read", "*", Effect::Deny)]),
+        );
+        let rules =
+            |c: &crate::config::Config, id: &str| crate::agent::resolve(c, id).unwrap().permissions;
+        assert_eq!(
+            evaluate("read", "src/index.ts", &rules(&config, "build")),
+            Effect::Allow
+        );
+        assert_eq!(
+            evaluate("read", "src/index.ts", &rules(&config, "reviewer")),
+            Effect::Deny
+        );
+        config.agents.insert("reviewer".into(), reviewer(vec![]));
+        // Custom agents start from the base rules, which allow (see header).
+        assert_eq!(
+            evaluate("read", "src/index.ts", &rules(&config, "reviewer")),
+            Effect::Allow
+        );
+    }
+
+    #[test]
+    fn oc_permission_allows_and_denies_from_explicit_rules_without_asking() {
+        let req = assertion("read", &["src/index.ts"], &[]);
+        let (g, n) = counting(allow_all("read"), Reply::Reject(None));
+        assert!(g.assert(&req).is_ok());
+        let (g, _) = counting(vec![Rule::new("read", "*", Effect::Deny)], Reply::Once);
+        assert!(matches!(g.assert(&req), Err(Denied::Blocked { .. })));
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn oc_permission_checks_for_a_deny_without_asking() {
+        let res = vec!["src/index.ts".to_string()];
+        let (g, n) = counting(vec![], Reply::Reject(None));
+        assert!(g.assert_not_denied("read", &res).is_ok());
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        let (g, _) = counting(vec![Rule::new("read", "*", Effect::Deny)], Reply::Once);
+        assert!(matches!(
+            g.assert_not_denied("read", &res),
+            Err(Denied::Blocked { .. })
+        ));
+    }
+
+    #[test]
+    fn oc_permission_reports_whether_a_request_is_already_allowed() {
+        let res = vec!["src/index.ts".to_string()];
+        let (g, n) = counting(vec![], Reply::Once);
+        assert!(!g.allows("read", &res));
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        assert!(counting(allow_all("read"), Reply::Once)
+            .0
+            .allows("read", &res));
+        assert!(
+            !counting(vec![Rule::new("read", "*", Effect::Deny)], Reply::Once)
+                .0
+                .allows("read", &res)
+        );
+    }
+
+    #[test]
+    fn oc_permission_matches_windows_rules_against_slash_normalized_resources() {
+        let rules = vec![Rule::new(
+            "external_directory",
+            "C:\\Users\\x\\proj\\*",
+            Effect::Allow,
+        )];
+        assert_eq!(
+            evaluate("external_directory", "C:/Users/x/proj/src/*", &rules),
+            Effect::Allow
+        );
+        assert_eq!(
+            evaluate("external_directory", "C:/Users/x/other/*", &rules),
+            Effect::Ask
+        );
+    }
+
+    #[test]
+    fn oc_permission_matches_file_rules_without_case_where_files_ignore_it() {
+        let rules = vec![
+            Rule::new("*", "*", Effect::Allow),
+            Rule::new("edit", ".opencode/*", Effect::Ask),
+            Rule::new("read", "*.env", Effect::Deny),
+            Rule::new("shell", "git push*", Effect::Ask),
+        ];
+        let files = cfg!(target_os = "macos") || cfg!(windows);
+        let expect = |yes: Effect| if files { yes } else { Effect::Allow };
+        assert_eq!(
+            evaluate("edit", ".OPENCODE/plugins/guard.ts", &rules),
+            expect(Effect::Ask)
+        );
+        assert_eq!(
+            evaluate("read", "Secrets.ENV", &rules),
+            expect(Effect::Deny)
+        );
+        assert_eq!(
+            evaluate("shell", "GIT PUSH origin dev", &rules),
+            if cfg!(windows) {
+                Effect::Ask
+            } else {
+                Effect::Allow
+            }
+        );
+        assert!(crate::wildcard::matches(".OPENCODE/x", ".opencode/*", true));
+        assert_eq!(
+            crate::wildcard::matches(".OPENCODE/x", ".opencode/*", false),
+            cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn oc_permission_allows_managed_output_reads_without_external_access() {
+        let rules = vec![
+            Rule::new("*", "*", Effect::Deny),
+            Rule::new("read", "*", Effect::Allow),
+        ];
+        assert_eq!(evaluate("read", "tool_123", &rules), Effect::Allow);
+        assert_eq!(
+            evaluate("external_directory", "/tmp/tool-output/*", &rules),
+            Effect::Deny
+        );
+    }
+
+    #[test]
+    fn oc_permission_evaluates_shell_with_normal_rule_semantics() {
+        let req = assertion("shell", &["pwd"], &[]);
+        let (g, n) = counting(allow_all("*"), Reply::Once);
+        assert_eq!(outcome(&g, &n, &req), Effect::Allow);
+        let (g, n) = counting(vec![], Reply::Once);
+        assert_eq!(outcome(&g, &n, &req), Effect::Ask);
+    }
+
+    #[test]
+    fn oc_permission_session_rules_after_agent_rules_before_saved_approvals() {
+        let agent = allow_all("*");
+        let session = vec![Rule::new("edit", "/original/**", Effect::Deny)];
+        let rules: Vec<Rule> = agent.into_iter().chain(session).collect();
+        assert_eq!(
+            evaluate("edit", "/original/src/index.ts", &rules),
+            Effect::Deny
+        );
+
+        let pwd = assertion("shell", &["pwd"], &["pwd"]);
+        let (g, _) = counting(vec![Rule::new("shell", "*", Effect::Deny)], Reply::Once);
+        g.saved
+            .lock()
+            .unwrap()
+            .push(Rule::new("shell", "pwd", Effect::Allow));
+        assert!(matches!(g.assert(&pwd), Err(Denied::Blocked { .. })));
+        let (g, n) = counting(vec![Rule::new("shell", "*", Effect::Ask)], Reply::Once);
+        g.saved
+            .lock()
+            .unwrap()
+            .push(Rule::new("shell", "pwd", Effect::Allow));
+        assert_eq!(outcome(&g, &n, &pwd), Effect::Allow);
+    }
+
+    #[test]
+    fn oc_permission_saved_approvals_keep_configured_deny_precedence() {
+        let pwd = assertion("shell", &["pwd"], &["pwd"]);
+        let (g, n) = counting(vec![], Reply::Always);
+        assert_eq!(outcome(&g, &n, &pwd), Effect::Ask);
+        assert_eq!(outcome(&g, &n, &pwd), Effect::Allow);
+        let (g, _) = counting(vec![Rule::new("shell", "*", Effect::Deny)], Reply::Always);
+        g.saved
+            .lock()
+            .unwrap()
+            .push(Rule::new("shell", "pwd", Effect::Allow));
+        assert!(matches!(g.assert(&pwd), Err(Denied::Blocked { .. })));
+    }
+
+    #[test]
+    fn oc_permission_resolves_an_asked_permission_once() {
+        let (g, n) = counting(vec![], Reply::Once);
+        g.assert(&assertion("read", &["src/index.ts"], &[]))
+            .unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn oc_permission_declining_fails_the_request() {
+        let (g, _) = counting(vec![], Reply::Reject(None));
+        assert!(matches!(
+            g.assert(&assertion("read", &["src/index.ts"], &[])),
+            Err(Denied::Declined { feedback: None })
+        ));
+    }
+
+    #[test]
+    fn oc_permission_always_saves_the_requested_patterns() {
+        let (g, n) = counting(vec![], Reply::Always);
+        g.assert(&assertion("read", &["src/index.ts"], &["src/*"]))
+            .unwrap();
+        assert_eq!(
+            *g.saved.lock().unwrap(),
+            vec![Rule::new("read", "src/*", Effect::Allow)]
+        );
+        assert_eq!(
+            outcome(&g, &n, &assertion("read", &["src/next.ts"], &[])),
+            Effect::Allow
+        );
+        assert_eq!(
+            outcome(&g, &n, &assertion("read", &["docs/a.md"], &[])),
+            Effect::Ask
+        );
+    }
+
+    /// Effect of the scanned `command` under configured `rules` and `saved`
+    /// approvals, as the shell tool asks it.
+    fn shell_effect(command: &str, rules: Vec<Rule>, saved: &[&str]) -> (Effect, Vec<String>) {
+        let parsed =
+            crate::tool::shell_scan::analyze(command, std::path::Path::new("/project")).unwrap();
+        assert!(!parsed.commands.is_empty(), "{command}");
+        assert!(parsed.directories.is_empty(), "{command}");
+        let (resources, save): (Vec<String>, Vec<String>) = parsed.commands.into_iter().unzip();
+        let (g, n) = counting(rules, Reply::Once);
+        for s in saved {
+            g.saved
+                .lock()
+                .unwrap()
+                .push(Rule::new("shell", s, Effect::Allow));
+        }
+        let req = Request {
+            action: "shell".into(),
+            resources,
+            save: save.clone(),
+            title: String::new(),
+        };
+        (outcome(&g, &n, &req), save)
+    }
+
+    #[test]
+    fn oc_permission_shell_scanner_impact() {
+        use Effect::{Allow, Ask, Deny};
+        struct Fixture {
+            command: &'static str,
+            approved: &'static [&'static str],
+            exact: &'static [&'static str],
+            denied: &'static str,
+            saved: Effect,
+            exact_effect: Effect,
+            denied_effect: Effect,
+        }
+        let fixtures = [
+            Fixture {
+                command: "time -p git status",
+                approved: &["time *"],
+                exact: &["time -p git status"],
+                denied: "time -p git status",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "coproc git status",
+                approved: &["coproc *"],
+                exact: &["coproc git status"],
+                denied: "coproc git status",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "export X=value; unset X; git status",
+                approved: &["git status *"],
+                exact: &["git status"],
+                denied: "export *",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Allow,
+            },
+            Fixture {
+                command: "export VERSION=$(git describe --tags); npm run build",
+                approved: &["git describe *", "npm run build *"],
+                exact: &["git describe --tags", "npm run build"],
+                denied: "export *",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Allow,
+            },
+            Fixture {
+                command: "export VERSION=$(git describe --tags); npm run build",
+                approved: &["git describe *", "npm run build *"],
+                exact: &["git describe --tags", "npm run build"],
+                denied: "git describe *",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "printf ok && git status > output",
+                approved: &["printf *", "git status *"],
+                exact: &["printf ok", "git status"],
+                denied: "git status *",
+                saved: Allow,
+                exact_effect: Ask,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "printf ok | cat < input > output",
+                approved: &["printf *", "cat *"],
+                exact: &["printf ok", "cat"],
+                denied: "cat *",
+                saved: Allow,
+                exact_effect: Ask,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "FOO=bar > output; printf done",
+                approved: &["printf *"],
+                exact: &["printf done"],
+                denied: "FOO=bar > output",
+                saved: Ask,
+                exact_effect: Ask,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "VERSION=$(git describe --tags) > build/version.txt",
+                approved: &["git describe *"],
+                exact: &["git describe --tags"],
+                denied: "VERSION=$(git describe --tags) > build/version.txt",
+                saved: Ask,
+                exact_effect: Ask,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "git $(printf diff) --stat",
+                approved: &["git *", "printf *"],
+                exact: &["git $(printf diff) --stat", "printf diff"],
+                denied: "git $(printf diff) --stat",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: "true && cat > secret",
+                approved: &["true *", "cat *"],
+                exact: &["true", "cat"],
+                denied: "* > secret*",
+                saved: Allow,
+                exact_effect: Ask,
+                denied_effect: Deny,
+            },
+            Fixture {
+                command: ">> ~/.zshrc <<< 'x'",
+                approved: &[">> *"],
+                exact: &[">> ~/.zshrc <<< 'x'"],
+                denied: ">> *",
+                saved: Allow,
+                exact_effect: Allow,
+                denied_effect: Deny,
+            },
+        ];
+        for f in fixtures {
+            let c = f.command;
+            let exact_rules = || {
+                f.exact
+                    .iter()
+                    .map(|r| Rule::new("shell", r, Allow))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(shell_effect(c, vec![], &[]).0, Ask, "{c}: no approval");
+            assert_eq!(
+                shell_effect(c, vec![], &["*"]).0,
+                Allow,
+                "{c}: saved wildcard"
+            );
+            assert_eq!(
+                shell_effect(c, vec![], f.approved).0,
+                f.saved,
+                "{c}: saved approvals"
+            );
+            assert_eq!(
+                shell_effect(c, exact_rules(), &[]).0,
+                f.exact_effect,
+                "{c}: exact configured"
+            );
+            assert_eq!(
+                shell_effect(c, vec![], f.exact).0,
+                f.exact_effect,
+                "{c}: exact saved"
+            );
+            assert_eq!(
+                shell_effect(c, vec![Rule::new("shell", f.denied, Deny)], &["*"]).0,
+                f.denied_effect,
+                "{c}: configured deny"
+            );
+        }
+    }
+
+    #[test]
+    fn oc_permission_always_covers_repeats_and_narrows_prefix_scope() {
+        use Effect::{Allow, Ask};
+        let fixtures: &[(&str, &[&str], &str, Effect)] = &[
+            ("npm run 123", &["npm run 123 *"], "npm run build", Ask),
+            (
+                "aws --cli-read-timeout 60 s3 ls",
+                &["aws --cli-read-timeout 60 *"],
+                "aws --cli-read-timeout 60 ec2 describe-instances",
+                Allow,
+            ),
+            (
+                "git $(printf diff) --stat",
+                &["git $(printf diff) *", "printf *"],
+                "git --stat",
+                Ask,
+            ),
+            (
+                "printf ok && git status > output",
+                &["printf *", "git status *"],
+                "git status --short",
+                Allow,
+            ),
+            (
+                "FOO=bar > output; printf done",
+                &["FOO=bar > *", "printf *"],
+                "FOO=bar rm -rf /",
+                Ask,
+            ),
+        ];
+        let request = |command: &str| {
+            let parsed =
+                crate::tool::shell_scan::analyze(command, std::path::Path::new("/project"))
+                    .unwrap();
+            let (resources, save) = parsed.commands.into_iter().unzip();
+            Request {
+                action: "shell".into(),
+                resources,
+                save,
+                title: String::new(),
+            }
+        };
+        for (command, grants, next, next_effect) in fixtures {
+            let n = Arc::new(AtomicUsize::new(0));
+            let g = Gate::new(vec![], Arc::new(Counting(n.clone(), Reply::Always)));
+            assert_eq!(outcome(&g, &n, &request(command)), Ask);
+            let mut saved: Vec<String> = g
+                .saved
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.resource.clone())
+                .collect();
+            saved.sort();
+            saved.dedup();
+            let mut want: Vec<String> = grants.iter().map(|s| s.to_string()).collect();
+            want.sort();
+            assert_eq!(saved, want, "{command}");
+            assert_eq!(
+                outcome(&g, &n, &request(command)),
+                Allow,
+                "{command}: repeat"
+            );
+            assert_eq!(outcome(&g, &n, &request(next)), *next_effect, "{next}");
+        }
     }
 }

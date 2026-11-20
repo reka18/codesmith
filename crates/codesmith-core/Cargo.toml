@@ -20,7 +20,6 @@ globset.workspace = true
 grep-matcher.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
-htmd.workspace = true
 ignore.workspace = true
 rand.workspace = true
 sha2.workspace = true

