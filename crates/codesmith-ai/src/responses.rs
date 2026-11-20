@@ -828,7 +828,8 @@ const NEED_ITEM: [&str; 12] = [
 /// The checks OpenCode makes before an event's handling: required item ids,
 /// well-formed refusals, and one reasoning item at a time.
 fn validate(state: &State, kind: &str, v: &Value) -> Result<(), Error> {
-    let missing = || Error::Decode(format!("{kind} is missing item_id: {v}"));
+    let quoted = || crate::quote(&v.to_string());
+    let missing = || Error::Decode(format!("{kind} is missing item_id: {}", quoted()));
     match kind {
         _ if NEED_ITEM.contains(&kind) && !v["item_id"].is_string() => Err(missing()),
         "response.refusal.delta" | "response.refusal.done" => {
@@ -839,7 +840,7 @@ fn validate(state: &State, kind: &str, v: &Value) -> Result<(), Error> {
             };
             match v["item_id"].is_string() && v[value].is_string() {
                 true => Ok(()),
-                false => Err(Error::Decode(format!("{kind} is malformed: {v}"))),
+                false => Err(Error::Decode(format!("{kind} is malformed: {}", quoted()))),
             }
         }
         "response.output_item.added"
@@ -850,7 +851,8 @@ fn validate(state: &State, kind: &str, v: &Value) -> Result<(), Error> {
                     .is_some_and(|t| t.id != item_str(&v["item"], "id")) =>
         {
             Err(Error::Decode(format!(
-                "{kind} started reasoning before the previous item ended: {v}"
+                "{kind} started reasoning before the previous item ended: {}",
+                quoted()
             )))
         }
         _ => Ok(()),
@@ -1183,8 +1185,8 @@ impl Decoder for Decode {
         if f.data.trim() == "[DONE]" {
             return Ok(vec![]);
         }
-        let v: Value =
-            serde_json::from_str(&f.data).map_err(|e| Error::Decode(format!("{e}: {}", f.data)))?;
+        let v: Value = serde_json::from_str(&f.data)
+            .map_err(|e| Error::Decode(format!("{e}: {}", crate::quote(&f.data))))?;
         let kind = v["type"]
             .as_str()
             .map(str::to_string)

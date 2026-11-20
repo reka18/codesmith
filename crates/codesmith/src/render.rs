@@ -60,9 +60,36 @@ impl Printer {
                 String::new()
             },
             session,
-            title.map(|t| format!(" \"{t}\"")).unwrap_or_default()
+            title
+                .map(|t| format!(" \"{}\"", safe(t)))
+                .unwrap_or_default()
         );
     }
+}
+
+/// Text from the model, a tool, a provider or an MCP server made safe to
+/// print to a terminal: control characters (ESC, so OSC 52 clipboard
+/// writes, OSC 8 links and title changes; C1 controls; `\r`) and the
+/// characters that reorder or hide text are written as visible escapes.
+/// Line breaks and tabs stay.
+pub fn safe(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' | '\t' => out.push(c),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
+            c if c.is_control()
+                || matches!(c as u32, 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0xFEFF) =>
+            {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn usage_json(u: &Usage) -> Value {
@@ -128,7 +155,7 @@ impl Sink for Printer {
             self.emit(json!({"type": "text", "text": delta}));
             return;
         }
-        print!("{delta}");
+        print!("{}", safe(delta));
         let _ = std::io::stdout().flush();
         self.at_line_start = delta.ends_with('\n');
     }
@@ -145,7 +172,7 @@ impl Sink for Printer {
             eprint!("\x1b[2;3m");
             self.in_reasoning = true;
         }
-        eprint!("{delta}");
+        eprint!("{}", safe(delta));
     }
 
     fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
@@ -159,8 +186,9 @@ impl Sink for Printer {
             self.at_line_start = true;
         }
         eprintln!(
-            "\x1b[36m⚙ {name}\x1b[0m \x1b[2m{}\x1b[0m",
-            describe(name, input)
+            "\x1b[36m⚙ {}\x1b[0m \x1b[2m{}\x1b[0m",
+            safe(name),
+            safe(&describe(name, input))
         );
     }
 
@@ -169,7 +197,7 @@ impl Sink for Printer {
             self.emit(json!({"type": "tool_result", "id": id, "name": name, "output": output, "is_error": is_error}));
             return;
         }
-        let first = output.lines().next().unwrap_or("");
+        let first = safe(output.lines().next().unwrap_or(""));
         if is_error {
             eprintln!("  \x1b[31m✗ {first}\x1b[0m");
         } else {
@@ -188,8 +216,9 @@ impl Sink for Printer {
             self.emit(json!({"type": "retry", "attempt": attempt, "error": error, "wait_ms": wait.as_millis() as u64}));
         } else {
             eprintln!(
-                "\x1b[33mretry {attempt} in {:.1}s: {error}\x1b[0m",
-                wait.as_secs_f32()
+                "\x1b[33mretry {attempt} in {:.1}s: {}\x1b[0m",
+                wait.as_secs_f32(),
+                safe(error)
             );
         }
     }
@@ -207,7 +236,7 @@ impl Sink for Printer {
                 Status::Pending => ("○", ""),
                 Status::Cancelled => ("✗", "\x1b[2;9m"),
             };
-            eprintln!("  {style}{mark} {}\x1b[0m", t.content);
+            eprintln!("  {style}{mark} {}\x1b[0m", safe(&t.content));
         }
     }
 
@@ -215,7 +244,7 @@ impl Sink for Printer {
         if self.json {
             self.emit(json!({"type": "notice", "message": message}));
         } else {
-            eprintln!("\x1b[33m{message}\x1b[0m");
+            eprintln!("\x1b[33m{}\x1b[0m", safe(message));
         }
     }
 
@@ -230,8 +259,25 @@ impl Sink for Printer {
 
 #[cfg(test)]
 mod tests {
-    use super::describe;
+    use super::{describe, safe};
     use serde_json::json;
+
+    // OSC 52 (clipboard), OSC 8 (links), title changes, C1 controls and
+    // bidi overrides in untrusted text are shown, not sent; line breaks
+    // and tabs are kept.
+    #[test]
+    fn untrusted_text_cannot_drive_the_terminal() {
+        assert_eq!(
+            safe("a\x1b]52;c;ZXZpbA==\x07b\tc\nd"),
+            "a\\x1b]52;c;ZXZpbA==\\x07b\tc\nd"
+        );
+        assert_eq!(
+            safe("\x1b]8;;https://evil\x1b\\x\x1b]8;;\x1b\\"),
+            "\\x1b]8;;https://evil\\x1b\\x\\x1b]8;;\\x1b\\"
+        );
+        assert_eq!(safe("\u{9b}31m\r\u{202e}"), "\\u{9b}31m\\r\\u{202e}");
+        assert_eq!(safe("plain — ü 日本"), "plain — ü 日本");
+    }
 
     #[test]
     fn tool_descriptions() {

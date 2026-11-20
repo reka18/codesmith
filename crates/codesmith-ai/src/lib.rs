@@ -987,6 +987,22 @@ impl From<reqwest::Error> for Error {
     }
 }
 
+/// The most of a provider's payload an error message quotes.
+pub const QUOTE_MAX: usize = 2048;
+
+/// `payload` cut to [`QUOTE_MAX`] bytes for an error message, with a count
+/// of what was left out: a stream frame can be megabytes.
+pub fn quote(payload: &str) -> String {
+    if payload.len() <= QUOTE_MAX {
+        return payload.to_string();
+    }
+    let cut = (0..=QUOTE_MAX)
+        .rev()
+        .find(|i| payload.is_char_boundary(*i))
+        .unwrap_or(0);
+    format!("{}… ({} more bytes)", &payload[..cut], payload.len() - cut)
+}
+
 /// `text` with the query string of every URL in it replaced by `?…`, so a
 /// key passed as a query parameter is not shown.
 pub fn redact_urls(text: &str) -> String {

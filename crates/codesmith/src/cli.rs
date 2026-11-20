@@ -751,7 +751,11 @@ pub async fn entry() -> i32 {
     match run(cli).await {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("\x1b[31merror:\x1b[0m {e:#}");
+            // The error can carry a provider's or MCP server's text.
+            eprintln!(
+                "\x1b[31merror:\x1b[0m {}",
+                crate::render::safe(&format!("{e:#}"))
+            );
             1
         }
     }
@@ -848,7 +852,9 @@ async fn run(cli: Cli) -> Result<()> {
                     codesmith_core::mcp::Status::NeedsAuth => {
                         println!("{name}: needs authorization; run `codesmith mcp auth {name}`")
                     }
-                    codesmith_core::mcp::Status::Failed(e) => println!("{name}: failed: {e}"),
+                    codesmith_core::mcp::Status::Failed(e) => {
+                        println!("{name}: failed: {}", crate::render::safe(e))
+                    }
                 }
                 for t in mcp.tools().iter().filter(|t| &t.server == name) {
                     let d: String = t
@@ -1387,7 +1393,7 @@ pub(crate) async fn connect_mcp(
     if warn {
         for (name, s) in &mcp.statuses {
             match s {
-                codesmith_core::mcp::Status::Failed(e) => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} failed to start: {e}"),
+                codesmith_core::mcp::Status::Failed(e) => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} failed to start: {}", crate::render::safe(e)),
                 codesmith_core::mcp::Status::NeedsAuth => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} needs authorization: run `codesmith mcp auth {name}`"),
                 _ => {}
             }

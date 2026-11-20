@@ -838,8 +838,8 @@ pub struct Decode {
 
 impl Decoder for Decode {
     fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error> {
-        let v: Value =
-            serde_json::from_str(&f.data).map_err(|e| Error::Decode(format!("{e}: {}", f.data)))?;
+        let v: Value = serde_json::from_str(&f.data)
+            .map_err(|e| Error::Decode(format!("{e}: {}", crate::quote(&f.data))))?;
         handle(&mut self.state, &v)
     }
     fn done(&self) -> bool {

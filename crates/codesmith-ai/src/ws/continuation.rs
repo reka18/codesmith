@@ -133,7 +133,11 @@ impl Driver {
             .ok()
             .filter(Value::is_object)
             .ok_or_else(|| {
-                Error::Decode(format!("Invalid {} WebSocket event: {frame}", self.name))
+                Error::Decode(format!(
+                    "Invalid {} WebSocket event: {}",
+                    self.name,
+                    crate::quote(frame)
+                ))
             })?;
         let observation = (self.base)(create, frame, &event)?;
         if event["type"] == "response.output_item.done" && event["item"].is_object() {

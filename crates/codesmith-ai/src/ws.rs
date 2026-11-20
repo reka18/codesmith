@@ -366,7 +366,7 @@ pub fn order(name: &'static str) -> continuation::Base {
     let mut terminal = false;
     Box::new(move |_create, frame, event| {
         let kind = event["type"].as_str().unwrap_or("");
-        let invalid = |m: String| Err(Error::Decode(format!("{m}: {frame}")));
+        let invalid = |m: String| Err(Error::Decode(format!("{m}: {}", crate::quote(frame))));
         if terminal {
             return invalid(format!("{name} emitted {kind} after a terminal event"));
         }

@@ -50,5 +50,8 @@ pub(crate) fn array_of(v: &Value, k: &str, null: bool, ok: impl Fn(&Value) -> bo
 /// The error for an event that fails its schema (OpenCode's
 /// `Invalid <route> stream event`), with the event for context.
 pub(crate) fn invalid(route: &str, event: &Value) -> Error {
-    Error::Decode(format!("Invalid {route} stream event: {event}"))
+    Error::Decode(format!(
+        "Invalid {route} stream event: {}",
+        crate::quote(&event.to_string())
+    ))
 }

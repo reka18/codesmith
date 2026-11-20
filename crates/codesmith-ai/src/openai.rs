@@ -1229,8 +1229,8 @@ impl Decoder for Decode {
             self.done = true;
             return Ok(vec![]);
         }
-        let v: Value =
-            serde_json::from_str(&f.data).map_err(|e| Error::Decode(format!("{e}: {}", f.data)))?;
+        let v: Value = serde_json::from_str(&f.data)
+            .map_err(|e| Error::Decode(format!("{e}: {}", crate::quote(&f.data))))?;
         if v.get("error").is_some_and(|e| !e.is_null()) {
             return Err(chunk_error(&v));
         }
