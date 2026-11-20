@@ -8,6 +8,9 @@
 //! up, and leaves out what was undone, the parent's step and tool
 //! statistics (a fork starts with no usage, as OpenCode's does) and a
 //! running step: an assistant message whose tool calls have no results.
+//! Compactions it reaches, checkpoints and native windows
+//! ([`Record::Native`]), are copied as OpenCode copies settled compaction
+//! rows: a native window still replays only on the model that made it.
 //! Before its first prompt the fork tells the model it is one
 //! ([`NOTICE`], OpenCode's fork-notice plugin).
 

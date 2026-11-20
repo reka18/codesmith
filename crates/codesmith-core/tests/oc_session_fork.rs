@@ -317,3 +317,55 @@ fn fork_leaves_out_undone_messages() {
         .iter()
         .any(|e| matches!(e.record, Record::Revert { .. })));
 }
+
+/// Not in OpenCode's tests (its forks copy settled compaction rows): a
+/// native compaction the fork's history reaches is copied, so the fork
+/// replays the same window on the model that made it and falls back to
+/// the full history on another; one past the boundary stays behind.
+#[test]
+fn fork_copies_native_compaction_windows_it_reaches() {
+    let mut st = Store::memory().unwrap();
+    create(&st, "p", None);
+    message(&st, "p", Message::user("old"));
+    let kept = message(&st, "p", Message::user("kept"));
+    st.append(
+        "p",
+        &Record::Native {
+            window: vec![assistant("window")],
+            model: "fake/m".into(),
+            keep_from: kept,
+        },
+    )
+    .unwrap();
+    let after = message(&st, "p", Message::user("after"));
+
+    st.fork("p", "all").unwrap();
+    let entries = st.entries("all").unwrap();
+    let on = |model: &str| -> Vec<String> {
+        codesmith_core::store::history_for(&entries, Some(model))
+            .iter()
+            .map(|(_, m)| text(m))
+            .collect()
+    };
+    assert_eq!(on("fake/m"), ["window", "kept", "after"]);
+    assert_eq!(on("other/x"), ["old", "kept", "after"]);
+
+    // Cut before the compaction's own record would be; here before `after`,
+    // which follows it, so the window comes along.
+    st.fork_at("p", "before-after", Some(after)).unwrap();
+    let entries = st.entries("before-after").unwrap();
+    let h: Vec<String> = codesmith_core::store::history_for(&entries, Some("fake/m"))
+        .iter()
+        .map(|(_, m)| text(m))
+        .collect();
+    assert_eq!(h, ["window", "kept"]);
+
+    // Before `kept`, the compaction (recorded later) is not copied.
+    st.fork_at("p", "before-kept", Some(kept)).unwrap();
+    assert!(!st
+        .entries("before-kept")
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e.record, Record::Native { .. })));
+    assert_eq!(texts(&st, "before-kept"), ["old"]);
+}
