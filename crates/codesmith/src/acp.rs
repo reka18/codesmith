@@ -15,6 +15,7 @@ use codesmith_core::permission::{Approvals, Asker, Effect, Reply, Request, Rule}
 use codesmith_core::question::{Prompt as Question, Questioner};
 use codesmith_core::session::{Options, Session, Sink};
 use codesmith_core::store::{self, Record, Store};
+use codesmith_core::tool::shell::Jobs;
 use codesmith_core::tool::todo::{Status, Todo};
 use codesmith_core::{agent, command, config};
 use serde_json::{json, Value};
@@ -753,6 +754,11 @@ struct Slot {
     /// The "always" approvals given in this session, kept in force across
     /// every rebuild (cancel, mode and model switches, a reload).
     approvals: Approvals,
+    /// Its background commands, given to every rebuild (cancel, mode and
+    /// model switches, a reload, reopening it), so they outlive the session
+    /// a stopped turn dropped. Stopped by `session/close`,
+    /// `session/delete` and the end of input.
+    jobs: Jobs,
 }
 
 pub type Loader = Arc<dyn Fn(&Path) -> Result<Loaded> + Send + Sync>;
@@ -1275,6 +1281,7 @@ impl Agent {
         )?;
         s.id = slot.id.clone();
         s.share_approvals(slot.approvals.clone());
+        s.adopt_jobs(slot.jobs.clone());
         *slot.shown.lock().unwrap() = (s.model_spec.clone(), s.agent.id.clone());
         if stored {
             if let Some(db) = self.store() {
@@ -1290,7 +1297,7 @@ impl Agent {
         cwd: &Path,
         servers: BTreeMap<String, ServerConfig>,
         dirs: &[PathBuf],
-        approvals: Approvals,
+        (approvals, jobs): (Approvals, Jobs),
     ) -> Result<Arc<Slot>> {
         let mut loaded = (self.load)(cwd)?;
         loaded.config.mcp.servers.extend(servers);
@@ -1328,6 +1335,7 @@ impl Agent {
             stale: AtomicBool::new(false),
             shown: Default::default(),
             approvals,
+            jobs,
         });
         let s = self.build(&slot)?;
         *slot.session.lock().await = Some(s);
@@ -1506,7 +1514,7 @@ impl Agent {
             "session/delete" => {
                 let sid = p["sessionId"].as_str().unwrap_or("").to_string();
                 if let Some(slot) = self.sessions.lock().await.remove(&sid) {
-                    self.stop(&sid, &slot, false).await;
+                    self.end(&sid, &slot).await;
                 }
                 self.store()
                     .map(|db| db.delete(&sid))
@@ -1517,7 +1525,7 @@ impl Agent {
             "session/close" => {
                 let sid = p["sessionId"].as_str().unwrap_or("").to_string();
                 if let Some(slot) = self.sessions.lock().await.remove(&sid) {
-                    self.stop(&sid, &slot, false).await;
+                    self.end(&sid, &slot).await;
                 }
                 Ok(json!({}))
             }
@@ -1577,7 +1585,7 @@ impl Agent {
         Ok(json!({"sessions": sessions}))
     }
 
-    async fn open_session(&self, method: &str, p: &Value) -> Result<Value, RpcError> {
+    async fn open_session(self: &Arc<Self>, method: &str, p: &Value) -> Result<Value, RpcError> {
         let cwd = parse_cwd(&p["cwd"])?;
         let dirs = additional_directories(&cwd, &p["additionalDirectories"])?;
         let servers = mcp_servers(&p["mcpServers"])?;
@@ -1617,20 +1625,20 @@ impl Agent {
                 .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
             sid = fork;
         }
-        // Reopening a session that is open keeps its approvals; a new or
-        // forked one starts without any.
-        let approvals = match method {
+        // Reopening a session that is open keeps its approvals and its
+        // background commands; a new or forked one starts without any.
+        let kept = match method {
             "session/load" | "session/resume" => self
                 .sessions
                 .lock()
                 .await
                 .get(&sid)
-                .map(|s| s.approvals.clone()),
+                .map(|s| (s.approvals.clone(), s.jobs.clone())),
             _ => None,
         }
         .unwrap_or_default();
         let slot = self
-            .open(&sid, &cwd, servers, &dirs, approvals)
+            .open(&sid, &cwd, servers, &dirs, kept)
             .await
             .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
         let (modes, options) = {
@@ -1647,6 +1655,13 @@ impl Agent {
         let replaced = self.sessions.lock().await.insert(sid.clone(), slot.clone());
         if let Some(old) = replaced {
             self.stop(&sid, &old, false).await;
+            // Wait for the commands the new slot took over (after the
+            // response: the writer keeps order).
+            let (me, slot) = (self.clone(), slot.clone());
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                me.wake(slot).await;
+            });
         }
         // Sent right after the response (the writer keeps order).
         let (conn, update) = (self.conn.clone(), self.commands(&slot));
@@ -2003,8 +2018,10 @@ impl Agent {
     /// turn is taken first, so one finishing meanwhile cannot answer or put
     /// its session back; with `reload` the session reloads from the store.
     /// Without it (close, delete, replacement) the slot is done: its wait
-    /// for background commands stops and it is never resumed again. A
-    /// cancel leaves an idle session's wait alone, as OpenCode's does.
+    /// for background commands stops and it is never resumed again. The
+    /// commands themselves keep running (a replacement took them over;
+    /// [`Agent::end`] stops them). A cancel leaves an idle session's wait
+    /// alone, as OpenCode's does, and the commands survive it.
     async fn stop(&self, sid: &str, slot: &Slot, reload: bool) {
         if !reload {
             slot.closed.store(true, Ordering::SeqCst);
@@ -2033,6 +2050,13 @@ impl Agent {
         if let Some(rpc) = queued {
             self.conn.respond(&rpc, json!({"stopReason": "cancelled"}));
         }
+    }
+
+    /// The session is over (closed, deleted, or the input ended): stop its
+    /// turn and its background commands.
+    async fn end(&self, sid: &str, slot: &Slot) {
+        self.stop(sid, slot, false).await;
+        slot.jobs.stop_all().await;
     }
 
     /// Settle a stopped turn: with `reload` the session reloads, then its
@@ -2068,6 +2092,8 @@ impl Agent {
                 let sid = p["sessionId"].as_str().unwrap_or("").to_string();
                 if let Ok(slot) = self.slot(&sid).await {
                     self.stop(&sid, &slot, true).await;
+                    // Its background commands survived: wait for them.
+                    self.clone().wake(slot).await;
                 }
             }
             // Cancelling the prompt request cancels its turn.
@@ -2094,6 +2120,7 @@ impl Agent {
                     let ours = matches!(slot.running.lock().unwrap().as_ref(), Some(Running::Prompt(r)) if r == id);
                     if ours {
                         self.stop(&sid, &slot, true).await;
+                        self.clone().wake(slot).await;
                     }
                 }
             }
@@ -2164,7 +2191,7 @@ where
     // Input closed: stop running turns, flush what is queued.
     let slots: Vec<(String, Arc<Slot>)> = agent.sessions.lock().await.drain().collect();
     for (sid, slot) in slots {
-        agent.stop(&sid, &slot, false).await;
+        agent.end(&sid, &slot).await;
     }
     drop(agent);
     drop(conn);
@@ -2245,12 +2272,15 @@ mod tests {
     static FLAKY: AtomicUsize = AtomicUsize::new(0);
     /// The background command notices the model answered, by marker.
     static WOKE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    const MARKERS: [&str; 5] = [
+    const MARKERS: [&str; 8] = [
         "done-wake",
         "done-prompt",
         "done-cancel",
         "done-queue",
         "done-close",
+        "done-keep",
+        "done-reopen",
+        "done-delete",
     ];
     /// Requests whose prompt carried attachments.
     static MEDIA_REQUESTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
@@ -4176,19 +4206,92 @@ mod tests {
         assert_eq!(woke("done-cancel"), 0);
     }
 
-    /// Closing a session that waits for a background command stops the
-    /// wait (and the command): nothing wakes it.
+    /// Closing or deleting a session that waits for a background command
+    /// stops the wait and the command: nothing wakes it, and the command
+    /// never gets to its end.
     #[tokio::test(flavor = "multi_thread")]
     async fn closing_a_waiting_session_stops_its_wake() {
+        for (method, marker) in [
+            ("session/close", "done-close"),
+            ("session/delete", "done-delete"),
+        ] {
+            let (_d, cwd, base) = tmp().await;
+            let mut c = start(&cwd, &base);
+            let sid = c.new_session(&cwd).await;
+            launch(
+                &mut c,
+                &sid,
+                &format!("sleep 1; touch ended; echo {marker}"),
+            )
+            .await;
+            let r = c.request(method, json!({"sessionId": sid})).await;
+            assert_eq!(r["result"], json!({}), "{r}");
+            let more = tokio::time::timeout(Duration::from_millis(1800), c.recv()).await;
+            assert!(more.is_err(), "{more:?}");
+            assert_eq!(woke(marker), 0);
+            assert!(
+                !cwd.join("ended").exists(),
+                "{method} left the command running"
+            );
+        }
+    }
+
+    /// Fixed: a cancel and every mode or model switch rebuilt the session
+    /// and stopped its background commands with the old one, so their
+    /// results were never reported. As in OpenCode they keep running, and
+    /// the command still wakes the session when it finishes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn background_commands_survive_a_cancel_and_mode_and_model_switches() {
         let (_d, cwd, base) = tmp().await;
         let mut c = start(&cwd, &base);
         let sid = c.new_session(&cwd).await;
-        launch(&mut c, &sid, "sleep 1; echo done-close").await;
-        let r = c.request("session/close", json!({"sessionId": sid})).await;
-        assert_eq!(r["result"], json!({}), "{r}");
-        let more = tokio::time::timeout(Duration::from_millis(1800), c.recv()).await;
-        assert!(more.is_err(), "{more:?}");
-        assert_eq!(woke("done-close"), 0);
+        launch(&mut c, &sid, "sleep 3; echo done-keep").await;
+        // A later turn, cancelled while it asks to run its command.
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "slow"}]}),
+            )
+            .await;
+        c.wait(|m| m["method"] == "session/request_permission")
+            .await;
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        let (done, _) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "cancelled");
+        let set = |id: &str, value: &str| json!({"sessionId": sid, "configId": id, "value": value});
+        for (option, value) in [("mode", "plan"), ("model", "fake/other"), ("mode", "build")] {
+            let r = c
+                .request("session/set_config_option", set(option, value))
+                .await;
+            assert!(r.get("error").is_none(), "{r}");
+        }
+        let (m, _) = c
+            .wait(|m| chunk_text(m).is_some_and(|t| t.contains("woke")))
+            .await;
+        assert_eq!(chunk_text(&m), Some("woke: done-keep"));
+        assert_eq!(woke("done-keep"), 1);
+    }
+
+    /// Reopening (`session/load`) a session that is open keeps its
+    /// background commands: the reopened session is woken by them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reopening_a_session_keeps_its_background_commands() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        launch(&mut c, &sid, "sleep 2; echo done-reopen").await;
+        let r = c
+            .request(
+                "session/load",
+                json!({"sessionId": sid, "cwd": cwd, "mcpServers": []}),
+            )
+            .await;
+        assert!(r.get("error").is_none(), "{r}");
+        let (m, _) = c
+            .wait(|m| chunk_text(m).is_some_and(|t| t.contains("woke")))
+            .await;
+        assert_eq!(chunk_text(&m), Some("woke: done-reopen"));
+        assert_eq!(woke("done-reopen"), 1);
     }
 
     /// A prompt sent during a resumed turn waits for it to end, then runs

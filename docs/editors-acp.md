@@ -72,9 +72,13 @@ OpenCode's does:
   request is withdrawn, its call in flight fails, the session reloads, and a
   prompt waiting behind it is answered with `cancelled`. A cancel while the
   session is idle leaves the wait alone.
-- Closing, deleting or reopening the session stops the wait and its
-  commands. A cancelled turn, or a mode or model switch, also stops the
-  session's commands, as in the terminal UI.
+- The commands survive a cancelled turn and mode, model and effort
+  switches, as in OpenCode: the rebuilt session waits for them and is woken
+  when they finish. Reopening an open session (`session/load` or
+  `session/resume`) hands them to the new one. A forked session starts
+  without any; the original keeps its own.
+- Closing or deleting the session, or the end of the agent's input, stops
+  the wait and its commands.
 
 ## Images and resources
 

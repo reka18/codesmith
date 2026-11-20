@@ -33,6 +33,7 @@ use codesmith_core::question::Questioner;
 use codesmith_core::session::{self, Options, Session};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::{self, Store};
+use codesmith_core::tool::shell::Jobs;
 use codesmith_core::{agent, command};
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
@@ -75,6 +76,11 @@ struct Runner {
     /// Waits, while the UI is idle, for one of the session's background
     /// commands to finish, then sends `Ev::Background`.
     waiter: Option<tokio::task::JoinHandle<()>>,
+    /// The current session's background commands, given to every rebuild
+    /// of it (interrupt, undo, an agent or model switch), so they outlive
+    /// the session object a turn's task dropped. Stopped when the TUI
+    /// moves to another session (`/new`, `/sessions`) or exits.
+    jobs: Jobs,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -103,12 +109,22 @@ impl Runner {
             open_store(),
         )?;
         s.share_approvals(self.approvals.clone());
+        s.adopt_jobs(self.jobs.clone());
         Ok(s)
     }
 
     /// Start over with no approvals, for a different session.
     fn forget_approvals(&mut self) {
         self.approvals = Approvals::default();
+    }
+
+    /// Leaving the current session for another: stop its background
+    /// commands (the TUI shows and wakes one session only, so nothing
+    /// would report them) and start the next one with none.
+    fn end_jobs(&mut self) {
+        self.stop_waiting();
+        let old = std::mem::take(&mut self.jobs);
+        tokio::spawn(async move { old.stop_all().await });
     }
 
     /// Install a session and refresh the header (and transcript when continuing).
@@ -385,6 +401,7 @@ impl Runner {
             }
             "new" if self.idle_or_say() => {
                 self.forget_approvals();
+                self.end_jobs();
                 let s = self.make(None)?;
                 self.app.entries.clear();
                 self.install(s, false);
@@ -593,9 +610,12 @@ impl Runner {
 
     fn picked(&mut self, kind: Pick, id: String) -> Result<()> {
         match kind {
-            Pick::Session => {
+            // Not while a turn (a resumed one may start while the picker
+            // is open) holds the session and its commands.
+            Pick::Session if self.idle_or_say() => {
                 if id != self.session_id {
                     self.forget_approvals();
+                    self.end_jobs();
                 }
                 let s = self.make(Some(id))?;
                 self.install(s, true);
@@ -604,7 +624,7 @@ impl Runner {
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => self.set_model(&id)?,
-            Pick::Agent | Pick::Model => {}
+            Pick::Session | Pick::Agent | Pick::Model => {}
         }
         Ok(())
     }
@@ -801,6 +821,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         stopping: false,
         skip_done: 0,
         waiter: None,
+        jobs: Jobs::default(),
     };
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
         .into_iter()

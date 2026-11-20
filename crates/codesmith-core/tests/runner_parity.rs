@@ -1217,6 +1217,38 @@ async fn a_turn_ends_while_its_background_command_runs_and_resumes_when_it_finis
     assert_eq!(t.s.background_finished(), 0);
 }
 
+/// Fixed: rebuilding a session (a cancel, undo, or a mode or model switch)
+/// stopped its background commands with the old session. A front end now
+/// keeps the jobs and hands them to the rebuilt session, which reports them.
+#[tokio::test(flavor = "multi_thread")]
+async fn adopted_jobs_outlive_the_old_session_and_are_reported_by_the_new_one() {
+    let mut t = plain().await;
+    t.push([
+        call(
+            "c1",
+            "shell",
+            json!({"command": "sleep 1; echo survived", "description": "slow", "background": true}),
+        ),
+        text("Started it."),
+    ]);
+    t.prompt("start it").await.unwrap();
+    let jobs = t.s.jobs();
+    let mut u = plain().await;
+    drop(t);
+    u.s.adopt_jobs(jobs);
+    assert_eq!(u.s.background_running(), 1);
+    u.s.wait_background().await;
+    assert_eq!(u.s.background_finished(), 1);
+    u.push([text("Saw it.")]);
+    let mut sink = Rec(u.seen.clone());
+    u.s.resume_background(&mut sink).await.unwrap();
+    let note = last_message(&u.requests()[0])["content"].to_string();
+    assert!(
+        note.contains("<shell id=\\\"shell_1\\\"") && note.contains("survived"),
+        "{note}"
+    );
+}
+
 /// A command that finished after its turn ended is reported at the next
 /// prompt, before the user's message.
 #[tokio::test(flavor = "multi_thread")]

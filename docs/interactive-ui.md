@@ -119,10 +119,12 @@ like any other.
 
 A prompt you send before that goes first: the wait is cancelled and your
 turn reports the finished command (or the next one does, if it is still
-running), so each result reaches the model once. Interrupting a turn,
-`/new`, `/sessions`, `/agent`, `/model`, `/variant`, `/undo` and `/redo`
-reload the session, which stops its background commands, and so does
-quitting. See [background commands](sessions.md#background-commands).
+running), so each result reaches the model once. The commands keep running
+when you interrupt a later turn, switch with `/agent`, `/model`, `/variant`
+or **Tab**, and across `/undo` and `/redo`; the reloaded session reports
+them. Leaving the session with `/new` or `/sessions` (for a different one)
+stops them, and so does quitting. See
+[background commands](sessions.md#background-commands).
 
 ## Permission and question dialogs
 

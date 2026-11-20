@@ -282,11 +282,13 @@ pub struct Job {
 /// The commands of one session: its background jobs, and the process groups
 /// of foreground commands while they run.
 ///
-/// Handles are cheap clones. When the session's last handle goes (the
-/// session is dropped, or replaced by a reload after an interrupt, undo or
-/// abort), every command still running is stopped: its process group gets
-/// SIGTERM, then SIGKILL after [`KILL_GRACE`]. The watcher tasks hold only
-/// the shared state, so they do not keep the commands alive.
+/// Handles are cheap clones. A front end that rebuilds a session (after an
+/// interrupt, undo, or a mode or model switch) keeps a handle and gives it
+/// to each rebuilt session, so the commands outlive the old one. When the
+/// last handle goes (the session is ended and dropped), every command
+/// still running is stopped: its process group gets SIGTERM, then SIGKILL
+/// after [`KILL_GRACE`]. The watcher tasks hold only the shared state, so
+/// they do not keep the commands alive.
 #[derive(Clone)]
 pub struct Jobs {
     shared: Arc<Shared>,

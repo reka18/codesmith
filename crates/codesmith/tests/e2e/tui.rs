@@ -372,3 +372,98 @@ async fn a_prompt_while_the_ui_waits_reports_the_command_once() {
     assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
     m.assert_done();
 }
+
+// Fixed: an interrupt of a later turn, `/agent`, `/model` and `/undo`
+// rebuilt the session and stopped its background commands with the old
+// one, so they were never reported. As in OpenCode they keep running; the
+// idle UI resumes the session when the command finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn background_commands_survive_an_interrupt_switches_and_undo() {
+    let e = Env::new();
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "resumed",
+                M::tools().and(notified),
+                Reply::text("The build finished fine."),
+            )
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 6; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "wait",
+                M::tools().and(M::prompt("wait a bit")).and(M::step(0)),
+                Reply::call("shell", json!({"command": "sleep 30", "description": "wait"})),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
+        return;
+    };
+    ui.wait_for("Tab agents").await;
+    ui.send(b"wait a bit\r").await;
+    ui.wait_for("sleep 30").await;
+    // Interrupted once the idle prompt's title is back.
+    ui.send(b"\x03").await;
+    ui.wait_for("Tab agents").await;
+    ui.send(b"/agent plan\r/model fake/other\r/undo\r").await;
+    ui.wait_for("the latest turn").await;
+    ui.wait_for("The build finished fine.").await;
+    ui.quit().await;
+    let last = crate::model::messages(&m.by("resumed")[0])
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(crate::model::content(&last).contains("built-ok"), "{last}");
+    m.assert_done();
+}
+
+// `/new` ends the current session: its background commands are stopped
+// (the UI shows and wakes one session only) and never reported.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_stops_the_old_ones_background_commands() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 2; touch ended", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::text("The build is running."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
+        return;
+    };
+    ui.wait_for("Tab agents").await;
+    ui.send(b"/new\r").await;
+    ui.wait_for("new session").await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    ui.quit().await;
+    assert!(!e.project.join("ended").exists(), "the command ran on");
+    assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
+    m.assert_done();
+}

@@ -106,7 +106,9 @@ attached across aborts and undo.
 ## Aborting
 
 `POST /sessions/{id}/abort` stops the running turn and reloads the session
-from the store, which also stops its background commands. The response is
+from the store. Its background commands keep running (as in OpenCode) and
+still resume the session when they finish; undo and redo keep them too. The
+response is
 `{"aborted": true}`, and the turn's stream (and every follower) gets `done`
 with `error: "aborted"`. A tool parked in a blocking call only notices the
 abort when that call returns: if the turn has not stopped within 10 seconds,

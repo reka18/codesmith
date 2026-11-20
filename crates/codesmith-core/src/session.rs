@@ -1069,6 +1069,23 @@ impl Session {
         self.jobs.wait_any().await;
     }
 
+    /// A handle on this session's commands (background jobs and their
+    /// unreported results), for a front end that rebuilds the session
+    /// (cancel, undo, a mode or model switch) to hand to the rebuilt one
+    /// with [`Session::adopt_jobs`]. The commands run until the last
+    /// handle goes or they are stopped, so one held across the rebuild
+    /// keeps them alive while the old session is dropped.
+    pub fn jobs(&self) -> tool::shell::Jobs {
+        self.jobs.clone()
+    }
+
+    /// Take over `jobs` (from an earlier build of the same session): their
+    /// results are reported by this session's turns and waits. Any job
+    /// this session had started itself loses its handle here.
+    pub fn adopt_jobs(&mut self, jobs: tool::shell::Jobs) {
+        self.jobs = jobs;
+    }
+
     /// Kills this session's commands from a signal handler, or waits for
     /// one to finish while the session is idle (see [`tool::shell::Reaper`]).
     pub fn reaper(&self) -> tool::shell::Reaper {

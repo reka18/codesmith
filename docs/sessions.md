@@ -58,10 +58,16 @@ once:
   command that never exits (a dev server) keeps them waiting until they are
   interrupted.
 
-A session's commands stop with it: when the program exits, when a turn is
-interrupted or aborted (the session reloads), and when you switch session,
-agent or model, or undo, in the UI. A command's output file stays, and is
-named in the result.
+A session's commands last as long as the session, as in OpenCode: they keep
+running when a later turn is interrupted, cancelled or aborted, when you
+switch agent, mode, model or variant, and across undo and redo (they are not
+file changes), and are reported when they finish. They stop when the session
+ends: when you start or switch to another session in the UI, delete or close
+it over the server or ACP, when the program exits, and when you stop them
+explicitly (abort on an idle server session). Unlike OpenCode's server, the
+UI does not keep a session you left running in the background: it shows and
+wakes one session only, so nothing would report the commands of another. A
+command's output file stays, and is named in the result.
 
 ## Export, import and delete
 

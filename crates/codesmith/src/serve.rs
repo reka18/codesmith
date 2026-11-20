@@ -45,6 +45,7 @@ use codesmith_core::question::{Prompt, Questioner};
 use codesmith_core::session::{self, Options, Session, Sink};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::Store;
+use codesmith_core::tool::shell::Jobs;
 use codesmith_core::tool::todo::Todo;
 use futures_util::Stream;
 use serde_json::{json, Value};
@@ -190,6 +191,10 @@ struct Live {
     /// The agent and model it was made with, for a reload before anything
     /// was stored.
     selection: (String, String),
+    /// Its background commands, given to every reload (abort, undo,
+    /// redo), so they outlive the session a stopped turn dropped. Stopped
+    /// by `DELETE` or an abort of the idle session.
+    jobs: Jobs,
 }
 
 /// How long an abort waits for the turn's task to stop. A tool parked in a
@@ -307,6 +312,7 @@ impl Server {
             Some(self.store()?),
         )?;
         Ok(Live {
+            jobs: s.jobs(),
             approvals: s.approvals(),
             selection: (s.agent.id.clone(), s.model_spec.clone()),
             session: Some(s),
@@ -318,8 +324,8 @@ impl Server {
 
     /// Rebuild `g`'s session `id` from the store, where every message of
     /// a stopped turn already is. One never stored starts empty under the
-    /// same id and selection. "Always" approvals and watchers carry over;
-    /// the old session's background commands are stopped with it.
+    /// same id and selection. "Always" approvals, watchers and background
+    /// commands carry over (call [`wake`] after, to wait for the commands).
     fn reload(&self, g: &mut Live, id: &str) -> Result<()> {
         if let Some(w) = g.waiter.take() {
             w.abort();
@@ -335,6 +341,7 @@ impl Server {
         let mut s = fresh.session.expect("a made session");
         s.id = id.to_string();
         s.share_approvals(g.approvals.clone());
+        s.adopt_jobs(g.jobs.clone());
         g.selection = fresh.selection;
         g.session = Some(s);
         g.prompter = fresh.prompter;
@@ -556,9 +563,8 @@ async fn remove(
             let _ = tokio::time::timeout(STOP_WAIT, &mut t).await;
         }
         // Its background commands go with it; watchers' streams end.
-        if let Some(s) = g.session.take() {
-            s.stop_background().await;
-        }
+        g.session.take();
+        g.jobs.stop_all().await;
         g.prompter.watchers.lock().unwrap().clear();
     }
     let deleted = st.store()?.delete(&id)?;
@@ -765,9 +771,9 @@ async fn abort(
         let waiting = g.waiter.take().inspect(|w| w.abort()).is_some();
         let running = g.session.as_ref().map_or(0, |s| s.background_running());
         if waiting || running > 0 {
-            if let Some(s) = &g.session {
-                s.stop_background().await;
-            }
+            g.jobs.stop_all().await;
+            // A fresh registry: the stopped ones are dropped unreported.
+            g.jobs = Jobs::default();
             st.reload(&mut g, &id)?;
             return Ok(Json(
                 json!({"aborted": false, "background_stopped": running}),
@@ -798,8 +804,9 @@ async fn abort(
             let _ = t.await;
             let mut g = live.lock().await;
             if g.session.is_none() && g.task.is_none() {
-                if let Err(e) = st.reload(&mut g, &id) {
-                    eprintln!("serve: could not reload session {id}: {e:#}");
+                match st.reload(&mut g, &id) {
+                    Ok(()) => wake(&live, &mut g),
+                    Err(e) => eprintln!("serve: could not reload session {id}: {e:#}"),
                 }
             }
         });
@@ -811,6 +818,9 @@ async fn abort(
         st.live.lock().await.remove(&id);
         return Err(e.into());
     }
+    // Its background commands survive the abort (as in OpenCode): wait
+    // for them again. An abort of the idle session stops them.
+    wake(&live, &mut g);
     Ok(Json(json!({"aborted": true})))
 }
 
@@ -907,6 +917,8 @@ async fn undo_redo(
         session::redo(&db, &id, &snaps)?
     };
     st.reload(&mut g, &id)?;
+    // Undo restores files, not commands: the background ones keep running.
+    wake(&live, &mut g);
     Ok(Json(
         json!({"files": changes.map(|c| c.into_iter().map(|c| c.path).collect::<Vec<_>>())}),
     ))

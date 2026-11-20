@@ -848,3 +848,108 @@ async fn aborting_an_idle_session_stops_its_background_commands() {
     assert_eq!(shown["busy"], false);
     m.assert_done();
 }
+
+/// Fixed: an abort of a later turn, and an undo, reloaded the session and
+/// stopped its background commands with the old one, so they were never
+/// reported. As in OpenCode they keep running; the idle session is
+/// resumed when the command finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn background_commands_survive_an_abort_and_undo() {
+    let e = Env::new();
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "resumed",
+                M::tools().and(notified),
+                Reply::text("It finished."),
+            )
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 4; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::text("The build is running."),
+            )
+            .then(
+                "wait",
+                M::tools().and(M::prompt("wait a bit")).and(M::step(0)),
+                Reply::call("shell", json!({"command": "sleep 30", "description": "wait"})),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut watch = s.watch(&sid).await;
+    s.turn(&sid, "build it").await.until("done").await;
+    let mut ev = s.turn(&sid, "wait a bit").await;
+    ev.until("tool_start").await;
+    let (code, r) = s.post(&format!("/sessions/{sid}/abort"), json!({})).await;
+    assert_eq!((code, &r), (200, &json!({"aborted": true})));
+    let (code, r) = s.post(&format!("/sessions/{sid}/undo"), json!({})).await;
+    assert_eq!(code, 200, "{r}");
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["background"], 1, "{shown}");
+    let resumed = loop {
+        let turn = watch.until("done").await;
+        if turn.last().unwrap().1["resumed"] == true {
+            break turn;
+        }
+    };
+    assert_eq!(
+        resumed.last().unwrap().1["error"],
+        Value::Null,
+        "{resumed:?}"
+    );
+    let last = crate::model::messages(&m.by("resumed")[0])
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(crate::model::content(&last).contains("built-ok"), "{last}");
+    m.assert_done();
+}
+
+/// Deleting a session stops its background commands: the command never
+/// gets to its end, and nothing resumes the session.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_session_stops_its_background_commands() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 2; touch ended", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::text("The build is running."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    s.turn(&sid, "build it").await.until("done").await;
+    let (code, r) = s.delete(&format!("/sessions/{sid}")).await;
+    assert_eq!((code, &r), (200, &json!({"deleted": true})));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!e.project.join("ended").exists(), "the command ran on");
+    assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
+    m.assert_done();
+}
