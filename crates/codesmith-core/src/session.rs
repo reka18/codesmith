@@ -46,6 +46,9 @@ use std::time::Duration;
 pub trait Sink: Send {
     fn text(&mut self, delta: &str);
     fn reasoning(&mut self, _delta: &str) {}
+    /// An image (or other file) the model generated, as it arrives; it is
+    /// kept as an assistant [`Part::Media`].
+    fn media(&mut self, _media: &codesmith_ai::Media) {}
     /// A tool call started streaming its arguments; its `tool_start` comes
     /// once the response is complete and the call runs.
     fn tool_input(&mut self, _id: &str, _name: &str) {}
@@ -2398,6 +2401,7 @@ impl Session {
             match ev {
                 Event::TextDelta(d) => sink.text(d),
                 Event::ReasoningDelta(d) => sink.reasoning(d),
+                Event::Media(m) => sink.media(m),
                 _ => {}
             }
         })

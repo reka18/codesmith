@@ -174,7 +174,11 @@ Media (`lib.rs` and every protocol; the 41 cases in the `*_media` tests)
   turn's results.
 - Media in an assistant message (generated images): Gemini replays it as
   model `inlineData` with its thought signature; Responses, which has no
-  assistant image item, as user input in place.
+  assistant image item, as user input in place; Anthropic and Chat leave
+  it out. The Gemini decoder streams a model's `inlineData` parts as
+  `Event::Media` (OpenCode's media event), with the part's
+  `thoughtSignature` under `google`, which the session keeps as an
+  assistant `Part::Media` in stream order (OpenCode's session drops them).
 - Rejections are a new `Error::Invalid`, raised by `check` before anything is
   sent, so a session fails fast and never retries them.
 - `normalize_tool_history` keeps a media-only result's empty text.

@@ -670,6 +670,20 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
             }
             continue;
         }
+        // An image (or other file) an image-output model generated.
+        if let Some(d) = p.get("inlineData").filter(|d| d.is_object()) {
+            state.end_thinking(&mut out);
+            state.end_text(&mut out);
+            let mut media = Media::base64(
+                d["mimeType"].as_str().unwrap_or_default(),
+                d["data"].as_str().unwrap_or_default(),
+            );
+            if let Some(s) = p["thoughtSignature"].as_str().filter(|s| !s.is_empty()) {
+                media = media.with_meta("google", json!({"thoughtSignature": s}));
+            }
+            out.push(Event::Media(media));
+            continue;
+        }
         if let Some(f) = p.get("functionCall") {
             state.end_thinking(&mut out);
             state.end_text(&mut out);
@@ -717,7 +731,10 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     } else if out.iter().any(|e| {
         matches!(
             e,
-            Event::TextDelta(_) | Event::ReasoningDelta(_) | Event::ToolCall { .. }
+            Event::TextDelta(_)
+                | Event::ReasoningDelta(_)
+                | Event::ToolCall { .. }
+                | Event::Media(_)
         )
     }) {
         state.past_checkpoint = true;
@@ -997,6 +1014,78 @@ mod tests {
         );
         assert_eq!(split_id("call_0~S1"), ("call_0", Some("S1")));
         assert_eq!(split_id("call_0"), ("call_0", None));
+    }
+
+    // Image-output models stream what they draw as `inlineData` parts
+    // (OpenCode surfaces them as media events): kept in order as assistant
+    // media with the part's signature, and replayed as model inline data.
+    #[test]
+    fn generated_images_are_assistant_media() {
+        let mut s = State::default();
+        let mut c = crate::Collector::default();
+        let chunks = [
+            json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "Here you go."}]}}]}),
+            json!({"candidates": [{"content": {"role": "model", "parts": [
+                {"inlineData": {"mimeType": "image/png", "data": "AAECAw=="}, "thoughtSignature": "sig_1"},
+                {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}}
+            ]}}]}),
+            json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "Two cats."}]}, "finishReason": "STOP"}]}),
+        ];
+        let mut events = Vec::new();
+        for v in &chunks {
+            events.extend(handle(&mut s, v).unwrap());
+        }
+        events.extend(finish(&mut s).unwrap());
+        assert!(matches!(
+            &crate::content(events.clone())[..],
+            [
+                Event::TextDelta(_),
+                Event::Media(_),
+                Event::Media(_),
+                Event::TextDelta(_),
+                Event::Finish { .. }
+            ]
+        ));
+        for e in &events {
+            c.push(e);
+        }
+        let png = Media::base64("image/png", "AAECAw==")
+            .with_meta("google", json!({"thoughtSignature": "sig_1"}));
+        let jpeg = Media::base64("image/jpeg", "/9j/");
+        let parts = c.finish();
+        assert_eq!(
+            parts,
+            vec![
+                Part::text("Here you go."),
+                Part::Media(png),
+                Part::Media(jpeg),
+                Part::text("Two cats."),
+            ]
+        );
+        let b = body(&req(vec![
+            Message::user("Draw two cats"),
+            Message {
+                role: Role::Assistant,
+                parts,
+            },
+            Message::user("Now make them orange"),
+        ]));
+        assert_eq!(
+            b["contents"][1],
+            json!({"role": "model", "parts": [
+                {"text": "Here you go."},
+                {"inlineData": {"mimeType": "image/png", "data": "AAECAw=="}, "thoughtSignature": "sig_1"},
+                {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}},
+                {"text": "Two cats."},
+            ]})
+        );
+        // Malformed inline data fails the stream, as OpenCode's schema does.
+        let mut s = State::default();
+        assert!(handle(
+            &mut s,
+            &json!({"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png"}}]}}]})
+        )
+        .is_err());
     }
 
     #[test]

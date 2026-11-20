@@ -1,8 +1,9 @@
 //! Images and PDFs through a session, against a scripted OpenAI Chat model:
 //! `read` on an image reaches the next request as vision input, a model
 //! configured without image input gets a note instead, attachments ride on
-//! the user message, MCP tool images reach the model too, and all of it
-//! survives the session store.
+//! the user message, MCP tool images reach the model too, images a Gemini
+//! model generates are kept and sent back, and all of it survives the
+//! session store.
 
 use codesmith_ai::{Media, Part};
 use codesmith_core::config::{Config, Loaded};
@@ -262,5 +263,124 @@ async fn mcp_tool_images_reach_the_model() {
     assert_eq!(
         msgs.last().unwrap(),
         &json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{PIXEL}")}}]})
+    );
+}
+
+/// A Gemini image model: it draws a pixel (with a signature) after some
+/// text, and records every request body.
+async fn gemini(log: Arc<Mutex<Vec<Value>>>) -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = l.accept().await.unwrap();
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 65536];
+                let body = loop {
+                    let n = s.read(&mut tmp).await.unwrap();
+                    buf.extend_from_slice(&tmp[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(i) = text.find("\r\n\r\n") {
+                        let len: usize = text[..i]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= i + 4 + len {
+                            break serde_json::from_slice::<Value>(&buf[i + 4..i + 4 + len])
+                                .unwrap();
+                        }
+                    }
+                };
+                log.lock().unwrap().push(body);
+                let sse: String = [
+                    json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "Here it is."}]}}]}),
+                    json!({"candidates": [{"content": {"role": "model", "parts": [{"inlineData": {"mimeType": "image/png", "data": PIXEL}, "thoughtSignature": "sig_1"}]}, "finishReason": "STOP"}],
+                        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3}}),
+                ]
+                .iter()
+                .map(|v| format!("data: {v}\n\n"))
+                .collect();
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}", sse.len()).as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}/v1beta")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn generated_images_are_kept_and_sent_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let base = gemini(log.clone()).await;
+    let open = |resume: Option<String>| {
+        let config: Config = serde_json::from_value(json!({
+            "model": "g/gemini-image", "snapshots": false,
+            "providers": {"g": {"protocol": "google-gemini", "settings": {"baseURL": base, "apiKey": "x"},
+                "models": {"gemini-image": {}}}},
+        }))
+        .unwrap();
+        let loaded = Loaded {
+            config,
+            files: vec![],
+            root: dir.path().to_path_buf(),
+        };
+        Session::new(
+            &loaded,
+            dir.path().to_path_buf(),
+            Options {
+                agent: None,
+                model: None,
+                resume,
+                title: Some("t".into()),
+                parent: None,
+                questioner: None,
+                mcp: None,
+            },
+            Arc::new(Fixed(Reply::Once)),
+            Some(Store::open(&dir.path().join("s.db")).unwrap()),
+        )
+        .unwrap()
+    };
+
+    /// Records the generated media the sink is shown.
+    struct Seen(Vec<Media>);
+    impl Sink for Seen {
+        fn text(&mut self, _: &str) {}
+        fn media(&mut self, media: &Media) {
+            self.0.push(media.clone());
+        }
+    }
+    let drawn =
+        Media::base64("image/png", PIXEL).with_meta("google", json!({"thoughtSignature": "sig_1"}));
+    let mut s = open(None);
+    let mut seen = Seen(vec![]);
+    s.prompt("draw a pixel", &mut seen).await.unwrap();
+    assert_eq!(seen.0, vec![drawn.clone()]);
+    let id = s.id.clone();
+    drop(s);
+
+    // Stored as the assistant's, after its text, and sent back with its
+    // signature by the resumed session.
+    let mut again = open(Some(id));
+    let answer = again.messages.last().unwrap();
+    assert_eq!(answer.role, codesmith_ai::Role::Assistant);
+    assert_eq!(
+        answer.parts,
+        vec![Part::text("Here it is."), Part::Media(drawn)]
+    );
+    again.prompt("make it red", &mut Quiet).await.unwrap();
+    let req = log.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        req["contents"][1],
+        json!({"role": "model", "parts": [
+            {"text": "Here it is."},
+            {"inlineData": {"mimeType": "image/png", "data": PIXEL}, "thoughtSignature": "sig_1"},
+        ]})
     );
 }

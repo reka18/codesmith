@@ -892,6 +892,10 @@ pub enum Event {
     HostedCall(Hosted),
     /// A hosted tool's result (`result` is set), for the call with its id.
     HostedResult(Hosted),
+    /// An image (or other file) the model generated, with the provider
+    /// state needed to replay it (Gemini's `thoughtSignature` under
+    /// `google`): it becomes an assistant [`Part::Media`].
+    Media(Media),
     /// Provider state for the text block or tool call that just ended (a
     /// Responses item id and phase): it joins the latest text or tool-call
     /// part.
@@ -1165,6 +1169,10 @@ impl Collector {
             Event::ToolCall { id, name, input } => {
                 self.close();
                 self.parts.push(Part::tool_call(id, name, input.clone()));
+            }
+            Event::Media(m) => {
+                self.close();
+                self.parts.push(Part::Media(m.clone()));
             }
             Event::PartMeta(meta) => {
                 if matches!(self.open, Some(Open::Text(_))) {

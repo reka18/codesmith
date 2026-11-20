@@ -676,7 +676,9 @@ pub fn body_with(req: &Request, p: &Provider) -> Value {
                 Part::Text(t) if !t.trim().is_empty() => Some(json!({"type": "text", "text": t.as_str()})),
                 Part::ToolCall { id, name, input, .. } => Some(json!({"type": "tool_use", "id": tool_id(id), "name": name, "input": input})),
                 Part::Reasoning(r) if m.role == Role::Assistant => lower_reasoning(r, require_signature),
-                Part::Media(media) => lower_media(media),
+                // Anthropic takes no media from the assistant; media another
+                // model generated is left out, as in OpenCode.
+                Part::Media(media) if m.role != Role::Assistant => lower_media(media),
                 Part::ToolResult { id, content, is_error, media, .. } => {
                     // Media rides inside the result as image/document blocks.
                     let content = if media.is_empty() {
@@ -1311,6 +1313,30 @@ pub(crate) fn request(
 mod tests {
     use super::*;
     use crate::Message;
+
+    // An image Gemini generated, in history switched to Claude: Anthropic
+    // takes no assistant media, so it is left out (as in OpenCode).
+    #[test]
+    fn generated_assistant_media_is_left_out() {
+        let png = Media::base64("image/png", "AAECAw==")
+            .with_meta("google", json!({"thoughtSignature": "sig_1"}));
+        let req = Request {
+            model: "claude".into(),
+            messages: vec![
+                Message::user("Draw a cat"),
+                Message {
+                    role: Role::Assistant,
+                    parts: vec![Part::text("Here you go."), Part::Media(png)],
+                },
+                Message::user("Thanks"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            body(&req)["messages"][1]["content"],
+            json!([{"type": "text", "text": "Here you go."}])
+        );
+    }
 
     #[test]
     fn body_folds_roles_and_maps_parts() {
