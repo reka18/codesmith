@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 457 | 93 | 672 | 13 |
+| tui: main UI | 1250 | 15 | 461 | 89 | 672 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **733** | **529** | **2372** | **259** |
+| **Total** | **4637** | **744** | **737** | **525** | **2372** | **259** |
 
 ## Fixes made while porting
 
@@ -295,6 +295,12 @@ Where the tests live:
   session's `/goal` showed only through `/goal`. The status line now leads
   with `◎ goal` (muted), `◎ goal paused` (warning) or `◎ goal met`, kept
   current from the goal plugin's changes.
+- **Prompt stash and path frecency** (`prompt/jsonl`, `prompt/history`):
+  `prompt.stash` and `prompt.stash.pop` did nothing, and `@` listed files
+  in name order. The stash now keeps 50 prompts in `prompt-stash.jsonl`,
+  `frecency.jsonl` records each mentioned file and orders the `@` list
+  before anything is typed, both parsed as OpenCode's (bad lines skipped,
+  latest kept); a prompt restored after a fork follows the typed one.
 
 ## Differences found but not fixed
 
@@ -800,6 +806,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/traits` | shell mode disables capture and labels the prompt without suspending | after a fix | oc_shell_mode_disables_capture_and_labels_the_prompt_without_suspending |
 | `tui/test/prompt-shell-failure` | a failed shell command in an existing session toasts and restores the composer | after a fix | oc_a_failed_shell_command_toasts_and_restores_the_prompt (adapted: the runner's failure path) |
 | `tui/test/feature-plugins/prompt-footer` | prompt footer shows the session's goal without its objective and opens it on click | after a fix | oc_prompt_footer_shows_the_sessions_goal_without_its_objective (adapted: no mouse, so the click half is dropped) |
+| `tui/test/prompt/jsonl` | stash JSONL skips corruption and retains newest entries | after a fix | oc_stash_jsonl_skips_corruption_and_retains_newest_entries |
+| `tui/test/prompt/jsonl` | frecency JSONL skips corruption, keeps latest path state, and limits entries | after a fix | oc_frecency_jsonl_skips_corruption_keeps_latest_path_state_and_limits_entries |
+| `tui/test/prompt/history` | appends a prompt and shifts ranges by the %s offset (2 cases) | after a fix | oc_appends_a_prompt_after_the_typed_one (adapted: parts follow labels, not offsets) |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -946,12 +955,6 @@ transport and its tool presentation.
 - `cli/test/acp/translate`: replays a cancelled compaction as cancelled
 - `cli/test/acp/translate`: skips a running compaction on replay
 - `cli/test/acp/translate`: replays a compaction as a marker when the client lacks the capability
-
-### tui: prompt stash, path frecency and appended prompts (4)
-
-- `tui/test/prompt/history`: appends a prompt and shifts ranges by the %s offset (2 cases)
-- `tui/test/prompt/jsonl`: stash JSONL skips corruption and retains newest entries
-- `tui/test/prompt/jsonl`: frecency JSONL skips corruption, keeps latest path state, and limits entries
 
 ### tui: per-agent and per-session model selection, the rest (2)
 

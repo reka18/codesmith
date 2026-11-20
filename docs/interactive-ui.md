@@ -106,7 +106,10 @@ palette) pastes in whole. **super+z** or **ctrl+-** (`input.undo`) undoes
 an edit in the prompt and **super+shift+z** or **ctrl+.** (`input.redo`)
 redoes it; a run of typing is one step, and an undone chip or `@file`
 mention is sent as before. The same image pasted twice keeps its label
-and is attached once. The external editor gets the terminal while
+and is attached once. *Stash prompt* (`prompt.stash`, unbound by default;
+in the command palette) puts the prompt aside and *Pop stashed prompt*
+(`prompt.stash.pop`) brings the latest back; the stash keeps 50 prompts
+across restarts, in `prompt-stash.jsonl` beside the history. The external editor gets the terminal while
 it runs (`$EDITOR` may carry arguments, as `code --wait`); what it saves
 comes back as the prompt, the one newline editors add after a single line
 dropped, and the UI takes the terminal back however the editor ended.
@@ -407,7 +410,9 @@ is remembered and comes back when you pick it again. They are kept in
 ## Autocomplete and `@` mentions
 
 Typing `/` lists commands: built-in, custom, and MCP prompts. Typing `@`
-lists project files, matched fuzzily and respecting `.gitignore`. **↑/↓**
+lists project files, matched fuzzily and respecting `.gitignore`. Before
+anything is typed after `@`, the files mentioned most and most lately come
+first (OpenCode's frecency, kept in `frecency.jsonl`). **↑/↓**
 choose, **Tab** completes, **Enter** runs the command or inserts the file,
 and **Esc** closes the list.
 

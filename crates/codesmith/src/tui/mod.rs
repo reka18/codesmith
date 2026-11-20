@@ -56,6 +56,7 @@ mod parity_tabs;
 #[cfg(test)]
 mod parity_ui;
 pub(crate) mod settings;
+mod stash;
 mod tabs;
 mod tabs_host;
 mod term;
@@ -1805,6 +1806,8 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     r.app.set_commands(&cmds);
     r.app.cwd = r.cwd.clone();
     r.history = history::Store::load(history::file());
+    r.app.stash = stash::Stash::load(stash::Stash::file());
+    r.app.frecency = stash::Frecency::load(stash::Frecency::file());
     for e in &r.history.entries {
         r.app.history.push(history::text(e));
         r.app.history_files.push(history::files(e));

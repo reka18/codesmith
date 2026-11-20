@@ -491,6 +491,10 @@ pub struct App {
     pub toasts: super::toast::Toasts,
     /// The session's parent, for a subagent's session.
     pub parent: Option<String>,
+    /// Prompts put aside (`prompt.stash`).
+    pub stash: super::stash::Stash,
+    /// How often and lately each file was mentioned with `@`.
+    pub frecency: super::stash::Frecency,
     /// The session's goal (`/goal`), shown in the status line.
     pub goal: Option<codesmith_core::plugin::goal::Status>,
 }
@@ -806,6 +810,8 @@ impl App {
         std::mem::swap(&mut self.files, &mut to.files);
         std::mem::swap(&mut self.history, &mut to.history);
         std::mem::swap(&mut self.history_files, &mut to.history_files);
+        std::mem::swap(&mut self.stash, &mut to.stash);
+        std::mem::swap(&mut self.frecency, &mut to.frecency);
         std::mem::swap(&mut self.diff_memory, &mut to.diff_memory);
         std::mem::swap(&mut self.tabs, &mut to.tabs);
         std::mem::swap(&mut self.session_labels, &mut to.session_labels);
@@ -1396,6 +1402,18 @@ impl App {
             &self.commands,
             &self.files,
         );
+        // Before anything is typed, the files mentioned most and lately
+        // come first, as OpenCode's frecency orders them.
+        if let Some(p) = self.popup.as_mut() {
+            let typed = &self.input.text()[p.start..self.input.cursor()];
+            if p.kind == Kind::File && typed == "@" {
+                let mut labels: Vec<String> = p.items.iter().map(|i| i.label.clone()).collect();
+                super::stash::rank(&mut labels, &self.cwd, &self.frecency.data);
+                for (item, label) in p.items.iter_mut().zip(labels) {
+                    item.label = label;
+                }
+            }
+        }
     }
 
     /// Accept the highlighted completion. `run` submits a slash command.
@@ -1415,6 +1433,8 @@ impl App {
                 self.input.replace_before_cursor(p.start, &item.label);
             }
             Kind::File => {
+                let abs = self.cwd.join(item.label.trim_end_matches('/'));
+                self.frecency.touch(&abs.display().to_string());
                 // A directory stays open for drilling down.
                 let sep = if item.label.ends_with('/') { "" } else { " " };
                 self.input
@@ -1430,6 +1450,11 @@ impl App {
             name: name.into(),
             args: String::new(),
         }))
+    }
+
+    #[cfg(test)]
+    pub(super) fn palette_run_for_tests(&mut self, id: &str) -> Option<Action> {
+        self.palette_run(id)
     }
 
     #[cfg(test)]
@@ -1709,6 +1734,17 @@ impl App {
                 self.popup = None;
                 self.toggle_panel(None);
                 return Some(None);
+            }
+            "prompt.stash" if !empty => {
+                let text = self.input.text().to_string();
+                self.stash.push(&text);
+                self.input.set("");
+                self.pasted.clear();
+            }
+            "prompt.stash.pop" => {
+                if let Some(t) = self.stash.pop() {
+                    self.input.replace_all(t);
+                }
             }
             "app.toggle.paste_summary" => {
                 self.paste_full = !self.paste_full;

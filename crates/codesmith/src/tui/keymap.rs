@@ -1526,6 +1526,8 @@ pub mod scope {
         "input.redo",
         "app.toggle.paste_summary",
         "session.child.first",
+        "prompt.stash",
+        "prompt.stash.pop",
         "app.exit",
         "terminal.suspend",
         "terminal.title.toggle",

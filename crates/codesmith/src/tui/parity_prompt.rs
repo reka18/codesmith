@@ -316,3 +316,101 @@ fn oc_a_failed_shell_command_toasts_and_restores_the_prompt() {
     assert!(f.contains("echo restored"));
     assert_eq!(a.input.text(), "!echo restored");
 }
+
+// ----- prompt stash, frecency and appended prompts ---------------------------
+
+// jsonl.test.ts: "stash JSONL skips corruption and retains newest entries"
+#[test]
+fn oc_stash_jsonl_skips_corruption_and_retains_newest_entries() {
+    use super::stash::{parse_stash, MAX_STASH_ENTRIES};
+    let mut lines: Vec<String> = (0..MAX_STASH_ENTRIES + 2)
+        .map(|i| {
+            serde_json::json!({ "prompt": { "text": i.to_string(), "files": [], "agents": [], "pasted": [] }, "timestamp": i })
+                .to_string()
+        })
+        .collect();
+    lines.insert(2, "broken".into());
+    let r = parse_stash(&lines.join("\n"));
+    assert_eq!(r.len(), MAX_STASH_ENTRIES);
+    assert_eq!(r[0]["prompt"]["text"], "2");
+}
+
+// jsonl.test.ts: "frecency JSONL skips corruption, keeps latest path state, and limits entries"
+#[test]
+fn oc_frecency_jsonl_skips_corruption_keeps_latest_path_state_and_limits_entries() {
+    use super::stash::{parse_frecency, Use, MAX_FRECENCY_ENTRIES};
+    let mut lines: Vec<String> = (0..=MAX_FRECENCY_ENTRIES)
+        .map(|i| {
+            serde_json::json!({ "path": i.to_string(), "frequency": 1, "lastOpen": i }).to_string()
+        })
+        .collect();
+    lines.push("broken".into());
+    lines.push(serde_json::json!({ "path": "1000", "frequency": 2, "lastOpen": 2000 }).to_string());
+    let r = parse_frecency(&lines.join("\n"));
+    assert_eq!(r.len(), MAX_FRECENCY_ENTRIES);
+    assert_eq!(
+        r[0],
+        (
+            "1000".to_string(),
+            Use {
+                frequency: 2,
+                last_open: 2000
+            }
+        )
+    );
+    assert!(!r.iter().any(|(p, _)| p == "0"));
+}
+
+// history.test.ts: "appends a prompt and shifts ranges by the %s offset" (2 cases)
+// (adapted) CodeSmith's prompt parts follow their labels, not offsets, so
+// a prompt brought back after the typed one keeps its chips and mentions
+// as text; both width methods are the one editor here.
+#[test]
+fn oc_appends_a_prompt_after_the_typed_one() {
+    let mut a = App::new();
+    a.input.set("日本👨‍👩‍👧\t\x0c");
+    a.restore_prompt("@a.ts [Pasted]");
+    assert_eq!(a.input.text(), "日本👨‍👩‍👧\t\x0c\n\n@a.ts [Pasted]");
+    assert_eq!(a.input.cursor(), a.input.text().len());
+    let mut a = App::new();
+    a.restore_prompt("next");
+    assert_eq!(a.input.text(), "next");
+}
+
+// (not in OpenCode's tests) The stash keeps a prompt across restarts and
+// gives it back; the `@` list puts the files mentioned most first.
+#[test]
+fn stash_round_trip_and_frecent_files_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = App::new();
+    a.stash = super::stash::Stash::load(dir.path().join("prompt-stash.jsonl"));
+    a.input.set("half a thought");
+    a.on_key(key(KeyCode::Char('x')));
+    let id = |a: &mut App, id: &'static str| a.palette_run_for_tests(id);
+    id(&mut a, "prompt.stash");
+    assert_eq!(a.input.text(), "");
+    let again = super::stash::Stash::load(dir.path().join("prompt-stash.jsonl"));
+    assert_eq!(again.entries.len(), 1);
+    id(&mut a, "prompt.stash.pop");
+    assert_eq!(a.input.text(), "half a thoughtx");
+
+    let mut a = App::new();
+    a.cwd = dir.path().to_path_buf();
+    a.frecency = super::stash::Frecency::load(dir.path().join("frecency.jsonl"));
+    a.set_files(vec!["a.rs".into(), "b.rs".into()]);
+    a.on_key(key(KeyCode::Char('@')));
+    a.on_key(key(KeyCode::Char('b')));
+    a.on_key(key(KeyCode::Tab));
+    assert_eq!(a.input.text(), "@b.rs ");
+    a.input.set("");
+    a.on_key(key(KeyCode::Char('@')));
+    let labels: Vec<_> = a
+        .popup
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.label.clone())
+        .collect();
+    assert_eq!(labels, ["b.rs", "a.rs"]);
+}

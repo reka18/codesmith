@@ -102,6 +102,9 @@ replays of its recorded provider traffic.
 - **Line ranges:** `@file#12-20` attaches those lines of the file.
 - **Goal in the status line:** `◎ goal`, `◎ goal paused` or `◎ goal met`
   while the session has a `/goal`.
+- **Prompt stash and file frecency:** `prompt.stash` and
+  `prompt.stash.pop` put a prompt aside and bring it back; `@` lists the
+  files mentioned most and lately first.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump
