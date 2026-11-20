@@ -10,11 +10,14 @@
 //! - The kept tail stays as real messages, not a text transcript, so it must
 //!   fit `keep` tokens: the cut moves forward to the next turn start, where
 //!   OpenCode moves it back to the start of the turn it falls in.
-//! - The prompt size is the provider's count from the last step or a
-//!   four-characters-per-token estimate, whichever is larger; there are no
-//!   per-media estimates, input-only limits, background (precomputed)
-//!   summaries, native provider compaction, compaction hooks or a separate
-//!   compaction model, and a summary request is not shrunk and retried.
+//! - Whether compaction is due uses the provider's count from the last step
+//!   or a four-characters-per-token estimate, whichever is larger; there are
+//!   no per-media estimates, input-only limits or a separate compaction
+//!   model. The summary request itself is sized as in OpenCode: the
+//!   provider's count plus an estimate since, while it applies (see
+//!   `session/compact.rs`), and [`flatten`] is OpenCode's
+//!   `flattenAndDropOldest`, without a previous summary's recent text
+//!   (CodeSmith's kept tail is real messages).
 //! - The update prompt has no legacy-checkpoint rewrite variant.
 
 use codesmith_ai::{Message, Part, Role};
@@ -30,6 +33,10 @@ pub struct Settings {
     /// Room kept free below the window before compacting.
     pub buffer: Option<Buffer>,
     pub keep: Keep,
+    /// Write the summary in the background as the session nears automatic
+    /// compaction, so compaction can swap it in instead of waiting for one
+    /// (default true). A summary that is never used still costs tokens.
+    pub background: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -64,6 +71,9 @@ impl Buffer {
 impl Settings {
     pub fn auto(&self) -> bool {
         self.auto.unwrap_or(true)
+    }
+    pub fn background(&self) -> bool {
+        self.background.unwrap_or(true)
     }
     pub fn keep(&self) -> u64 {
         self.keep.tokens.unwrap_or(KEEP_TOKENS)
@@ -332,6 +342,348 @@ pub fn is_overflow(error: &str) -> bool {
 /// update; sessions from before the system role stored it as user text
 /// wrapped in `<system-reminder>`.
 pub const CONTINUE: &str = "The conversation above was compacted into a checkpoint. Continue the task from where it left off.";
+
+/// After each "too long" rejection of a summary request, the next attempt
+/// aims at this share of the first rejected request's size.
+pub const SHRINK_STEPS: [f64; 4] = [0.85, 0.7, 0.5, 0.35];
+/// A common window size, assumed for a summary request when the model's
+/// window is unknown.
+pub const UNKNOWN_WINDOW: u64 = 200_000;
+/// A summary gets at least this much output (or the room left, if less),
+/// even when the estimate margin leaves less.
+pub const SUMMARY_OUTPUT_FLOOR: u64 = 32_000;
+/// The least output a request asks for.
+pub const OUTPUT_TOKEN_MIN: u64 = 1_024;
+/// The output a request asks for when the model's limit is unknown.
+pub const OUTPUT_TOKEN_FALLBACK: u64 = 32_000;
+/// How far an estimate may run low, in the room left for the output.
+pub const ESTIMATE_ERROR: f64 = 0.15;
+/// Characters kept, half from the start and half from the end, of a cut
+/// tool input, tool output or user message in a summary transcript.
+pub const TRANSCRIPT_CLIP: usize = 2_000;
+/// Tokens before the ceiling at which a background summary starts: writing
+/// one takes 30–60 s, and how much the conversation grows in that time does
+/// not depend on the window, so the lead is fixed.
+pub const PRECOMPUTE_LEAD: u64 = 60_000;
+/// Prompt caches expire this long after their last use unless the model
+/// sets `cache.ttl`.
+pub const CACHE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// A background summary starts only while this much of the latest
+/// response's cache lifetime is left.
+pub const CACHE_MARGIN: std::time::Duration = std::time::Duration::from_secs(30);
+/// The most a swapped-in background summary keeps verbatim beside it, and
+/// the tail at which a held one is replaced, as a share of the budget.
+pub const PRECOMPUTED_TAIL_SHARE: f64 = 0.4;
+/// Failed background summaries after which no new one starts until the
+/// next compaction.
+pub const PRECOMPUTE_MAX_FAILURES: u32 = 2;
+
+/// A prompt's size: `measured` is what the provider reported for the latest
+/// response, `estimated` the text since (or everything, unmeasured).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Estimate {
+    pub measured: u64,
+    pub estimated: u64,
+}
+
+impl Estimate {
+    pub fn total(&self) -> u64 {
+        self.measured + self.estimated
+    }
+}
+
+/// Estimated size of a request: its system prompt, tool definitions and
+/// messages.
+pub fn estimate_request(req: &codesmith_ai::Request) -> u64 {
+    let tools: usize = req
+        .tools
+        .iter()
+        .map(|t| t.name.len() + t.description.len() + t.parameters.to_string().len())
+        .sum();
+    (req.system.len() + tools).div_ceil(4) as u64 + estimate(&req.messages)
+}
+
+/// The largest summary request that leaves [`RESERVE_MIN`] of the window
+/// for the summary (less when the request cannot generate that much).
+/// Zero for an unknown window.
+pub fn summary_room(window: u64, max_output: Option<u32>) -> u64 {
+    let output = max_output.map_or(RESERVE_MIN, |o| o as u64);
+    window.saturating_sub(RESERVE_MIN.min(output))
+}
+
+/// The output limit a request of `input` tokens asks for: the model's
+/// limit, fitted to the room the prompt leaves in the window (with a margin
+/// for a low estimate), and never under [`OUTPUT_TOKEN_MIN`].
+pub fn output_limit(window: Option<u64>, max_output: Option<u32>, input: Estimate) -> u64 {
+    let requested = max_output.map_or(OUTPUT_TOKEN_FALLBACK, |o| o as u64);
+    let Some(window) = window.filter(|w| *w > 0) else {
+        return requested;
+    };
+    let room = window as i64
+        - input.measured as i64
+        - (input.estimated as f64 * (1.0 + ESTIMATE_ERROR)).ceil() as i64;
+    requested.min((OUTPUT_TOKEN_MIN as i64).max(room) as u64)
+}
+
+/// The output limit for a summary request of `size` that was prepared for
+/// `current`: lowered to the room the request leaves, but the summary still
+/// gets up to [`SUMMARY_OUTPUT_FLOOR`] of the room left without the margin.
+pub fn fit_output(current: u64, window: Option<u64>, size: Estimate) -> u64 {
+    let margin = output_limit(window, Some(u32::MAX), size);
+    let plain = output_limit(
+        window,
+        Some(u32::MAX),
+        Estimate {
+            measured: size.total(),
+            estimated: 0,
+        },
+    );
+    current.min(margin.max(SUMMARY_OUTPUT_FLOOR.min(plain)))
+}
+
+/// Milliseconds a prompt cache entry lives, from a `cache.ttl` such as
+/// `"5m"` or `"1h"`; [`CACHE_LIFETIME`] when unset or unreadable.
+pub fn cache_lifetime(ttl: Option<&str>) -> std::time::Duration {
+    parse_duration(ttl.unwrap_or("")).unwrap_or(CACHE_LIFETIME)
+}
+
+/// A duration such as `"90s"`, `"5m"`, `"1.5h"` or `"250ms"`.
+pub fn parse_duration(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    let split = s.find(|c: char| !(c.is_ascii_digit() || c == '.'))?;
+    let (n, unit) = s.split_at(split);
+    let n: f64 = n.parse().ok()?;
+    let ms = match unit.trim() {
+        "ms" => 1.0,
+        "s" => 1_000.0,
+        "m" => 60_000.0,
+        "h" => 3_600_000.0,
+        "d" => 86_400_000.0,
+        _ => return None,
+    };
+    (n >= 0.0).then(|| std::time::Duration::from_millis((n * ms) as u64))
+}
+
+/// How far one exchange of a summary transcript is shortened, in the
+/// order the levels apply: whole; tool outputs cut; tool outputs left out
+/// and tool inputs cut; only the user's text, cut; omitted.
+const OUTPUTS_CLIPPED: usize = 1;
+const OUTPUTS_REMOVED: usize = 2;
+const USER_ONLY: usize = 3;
+const OMITTED: usize = 4;
+const LEVELS: usize = 5;
+
+/// `text` cut to [`TRANSCRIPT_CLIP`] characters from its start and end.
+fn clip_transcript(text: &str) -> String {
+    let count = text.chars().count();
+    if count <= TRANSCRIPT_CLIP {
+        return text.to_string();
+    }
+    let half = TRANSCRIPT_CLIP / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(count - half).collect();
+    format!(
+        "{head}\n[… {} characters omitted …]\n{tail}",
+        count - TRANSCRIPT_CLIP
+    )
+}
+
+/// One message as transcript lines at a shortening level; empty for what
+/// that level leaves out.
+fn flatten_message(m: &Message, level: usize) -> String {
+    if m.role == Role::System || level == OMITTED {
+        return String::new();
+    }
+    if level >= USER_ONLY && m.role != Role::User {
+        return String::new();
+    }
+    let speaker = if m.role == Role::User {
+        "User"
+    } else {
+        "Assistant"
+    };
+    let mut lines = Vec::new();
+    for p in &m.parts {
+        match p {
+            Part::Text(t) if !t.is_empty() => {
+                let text = if level >= USER_ONLY {
+                    clip_transcript(t)
+                } else {
+                    t.to_string()
+                };
+                lines.push(format!("[{speaker}]: {text}"));
+            }
+            _ if level >= USER_ONLY => {}
+            Part::Media(media) => lines.push(format!("[{} omitted]", media.mime)),
+            Part::ToolCall { name, input, .. } => {
+                let input = input.to_string();
+                let input = if level >= OUTPUTS_REMOVED {
+                    clip_transcript(&input)
+                } else {
+                    input
+                };
+                lines.push(format!("[Assistant tool call]: {name}({input})"));
+            }
+            Part::Hosted(h) => {
+                let input = h.input.to_string();
+                lines.push(format!(
+                    "[Assistant tool call]: {}({})",
+                    h.name,
+                    if level >= OUTPUTS_REMOVED {
+                        clip_transcript(&input)
+                    } else {
+                        input
+                    }
+                ));
+            }
+            Part::ToolResult {
+                content,
+                is_error,
+                media,
+                ..
+            } => {
+                let label = if *is_error {
+                    "Tool error"
+                } else {
+                    "Tool result"
+                };
+                if level >= OUTPUTS_REMOVED {
+                    lines.push(format!("[{label} omitted]"));
+                    continue;
+                }
+                let output = std::iter::once(content.clone())
+                    .chain(media.iter().map(crate::media::label))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let output = if level >= OUTPUTS_CLIPPED {
+                    clip_transcript(&output)
+                } else {
+                    output
+                };
+                lines.push(format!("[{label}]: {output}"));
+            }
+            _ => {}
+        }
+    }
+    lines.join("\n")
+}
+
+/// Whether a message is the checkpoint a compaction leaves at the start
+/// of the history.
+pub fn is_checkpoint(m: &Message) -> bool {
+    m.role == Role::User
+        && matches!(m.parts.first(), Some(Part::Text(t)) if t.starts_with("<conversation-checkpoint>"))
+}
+
+/// The summary request's history as text: a previous checkpoint (or a
+/// native window) stays in front as it is, and the conversation since is
+/// one user message of `[User]: …` / `[Assistant]: …` lines, without tool
+/// definitions, reasoning or media. When it does not fit `target` tokens
+/// (with the system prompt), exchanges are shortened oldest first, one
+/// level at a time (see the levels above), so whole exchanges are omitted
+/// only as a last resort; the newest is never omitted. `None` when even so
+/// it does not fit. Ported from OpenCode's `flattenAndDropOldest`.
+pub fn flatten(req: &codesmith_ai::Request, target: u64) -> Option<codesmith_ai::Request> {
+    let lead_len = req
+        .messages
+        .iter()
+        .rposition(is_checkpoint)
+        .map_or(0, |i| i + 1);
+    let lead = &req.messages[..lead_len];
+    // A real user message and everything after it, up to the next one, is
+    // one exchange, rendered at every level once.
+    let mut groups: Vec<Vec<&Message>> = Vec::new();
+    for m in &req.messages[lead_len..] {
+        if starts_turn(m) || groups.is_empty() {
+            groups.push(vec![m]);
+        } else {
+            groups.last_mut().unwrap().push(m);
+        }
+    }
+    let exchanges: Vec<Vec<String>> = groups
+        .iter()
+        .map(|g| {
+            (0..LEVELS)
+                .map(|level| {
+                    g.iter()
+                        .map(|m| flatten_message(m, level))
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .collect::<Vec<String>>()
+        })
+        .filter(|r| !r[0].is_empty())
+        .collect();
+    if exchanges.is_empty() {
+        return None;
+    }
+    let note = |omitted: usize| {
+        if omitted == 0 {
+            String::new()
+        } else {
+            format!(
+                "[{omitted} older {} omitted]\n\n",
+                if omitted == 1 {
+                    "exchange"
+                } else {
+                    "exchanges"
+                }
+            )
+        }
+    };
+    let size = |t: &str| {
+        if t.is_empty() {
+            0
+        } else {
+            (t.len() as u64).div_ceil(4) + 1
+        }
+    };
+    let fixed = (req.system.len() as u64).div_ceil(4)
+        + estimate(lead)
+        + (note(exchanges.len()).len() as u64).div_ceil(4);
+    let room = target as i64 - fixed as i64;
+    let mut levels = vec![0usize; exchanges.len()];
+    let mut total: i64 = exchanges.iter().map(|r| size(&r[0]) as i64).sum();
+    let newest = exchanges.len() - 1;
+    for level in 1..LEVELS {
+        for i in 0..exchanges.len() {
+            if total <= room {
+                break;
+            }
+            // The newest exchange is shortened but never left out.
+            if i == newest && exchanges[i][level].is_empty() {
+                continue;
+            }
+            total += size(&exchanges[i][level]) as i64 - size(&exchanges[i][levels[i]]) as i64;
+            levels[i] = level;
+        }
+    }
+    if total > room {
+        return None;
+    }
+    let omitted = levels
+        .iter()
+        .zip(&exchanges)
+        .filter(|(l, r)| r[**l].is_empty())
+        .count();
+    let text = exchanges
+        .iter()
+        .zip(&levels)
+        .map(|(r, l)| r[*l].as_str())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut messages = lead.to_vec();
+    messages.push(Message::user(format!("{}{text}", note(omitted))));
+    Some(codesmith_ai::Request {
+        tools: Vec::new(),
+        namespaces: Vec::new(),
+        tool_choice: None,
+        messages,
+        ..req.clone()
+    })
+}
 
 #[cfg(test)]
 mod tests {

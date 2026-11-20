@@ -98,6 +98,16 @@ Run `/compact` (**Ctrl+X c**) to do it now. Compaction needs the model's
 `limit.context` to know when to start. See
 [compaction settings](configuration.md#compaction).
 
+The summary request is the session's own request (the same system prompt,
+tools and messages) with the summary instructions added at the end, so the
+provider reads it from the prompt cache instead of processing the whole
+conversation again. It is sized with the provider's token count from the
+latest response. When the conversation no longer fits beside the summary,
+the history before the kept turns is sent instead, and when even that does
+not fit, a shortened transcript of it (oldest tool output first) without the
+tool definitions; if the provider still rejects it as too long, the
+transcript is shortened further and sent again, up to four times.
+
 When the turn in progress is summarized too, CodeSmith tells the model to
 carry on with a system update (see
 [provider options](configuration.md#provider-options-and-variants)); it is

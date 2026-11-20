@@ -26,7 +26,7 @@ The hooks follow OpenCode's plugin API:
 | `tool_before` | Change a tool call's input, or refuse it with a message the model sees. |
 | `tool_after` | Change what the model sees from a tool call. |
 | `shell_before` | Change a shell command, its folder or its environment. The permission checks run on the result. |
-| `request` | Change the system prompt, messages, tools or body just before a model request. |
+| `request` | Change the system prompt, messages, tools or body just before a model request. It also runs for compaction summaries (`req.interaction` is `Compaction`), before the summary instructions are added, so a hook that shapes every request alike keeps the summary on the prompt cache. |
 | `permission` | Answer a permission request instead of the user. It is consulted only for requests the rules would ask about, never for ones they deny. |
 | `event` | Observe turns, steps and tool calls. |
 | `idle` | Continue a finished turn with another message (at most 5 times per turn). |

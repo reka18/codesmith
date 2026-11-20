@@ -22,6 +22,8 @@
 //!   does; a subagent waits too before it reports, since it cannot be
 //!   resumed later. Dropping a session stops the commands it still runs.
 
+mod compact;
+
 use crate::agent::{self, Agent};
 use crate::compaction;
 use crate::config::{Loaded, ModelRef};
@@ -177,7 +179,6 @@ pub const MAX_RETRIES: u32 = retry::MAX_RETRIES;
 /// answer in text.
 pub const DEFAULT_MAX_STEPS: u32 = 200;
 const TITLE_MAX_TOKENS: u32 = 256;
-const SUMMARY_SYSTEM: &str = "You are a helpful assistant that writes concise, structured summaries of coding sessions so another agent can resume the work.";
 
 /// Variant names that are reasoning efforts (OpenCode's `ReasoningEfforts`).
 const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -301,6 +302,7 @@ pub struct Session {
     /// Whether a tool that can change files ran since the instructions
     /// were last observed (see [`Session::observe_instructions`]).
     agent_changed_files: bool,
+    compact: compact::State,
     loaded: Loaded,
     parent: Option<String>,
     depth: u32,
@@ -573,6 +575,7 @@ impl Session {
             last_prompt_tokens: 0,
             compaction_skipped: false,
             agent_changed_files: false,
+            compact: Default::default(),
             gate,
             shell,
             limits: config.tool_output,
@@ -1158,7 +1161,7 @@ impl Session {
             self.report_finished_jobs()?;
             if !compacted_this_step && self.due_for_compaction() {
                 if self.worth_compacting() {
-                    self.compact(sink).await?;
+                    self.compact_for(sink, compact::Reason::Auto).await?;
                     compacted_this_step = true;
                 } else if !self.compaction_skipped {
                     self.compaction_skipped = true;
@@ -1192,7 +1195,11 @@ impl Session {
                         && compaction::is_overflow(&e.to_string()) =>
                 {
                     overflow_compacted = true;
-                    if self.compact(sink).await.is_err() {
+                    if self
+                        .compact_for(sink, compact::Reason::Overflow)
+                        .await
+                        .is_err()
+                    {
                         return Err(e);
                     }
                     continue;
@@ -1202,8 +1209,7 @@ impl Session {
             steps += 1;
             compacted_this_step = false;
             self.count_usage(&usage);
-            self.last_prompt_tokens =
-                usage.input + usage.cache_read + usage.cache_write + usage.output;
+            self.measured(&usage);
             sink.step_end(&reason, &usage);
             self.record(&Record::Step {
                 model: self.model_spec.clone(),
@@ -2516,169 +2522,6 @@ impl Session {
         }
     }
 
-    /// Estimated size of the next request: system prompt, every offered
-    /// tool definition (MCP, plugin and the rest, not only the built-in
-    /// tools) and history (about four characters per token).
-    pub fn estimate_prompt(&self) -> u64 {
-        let plugins = crate::plugin::active();
-        let code = self.code_entries();
-        let tools: usize = self
-            .tool_specs(&plugins, &code)
-            .iter()
-            .map(|t| serde_json::to_string(t).map(|s| s.len()).unwrap_or(0))
-            .sum();
-        (self.system_prompt(&code).len() + tools).div_ceil(4) as u64
-            + compaction::estimate(&self.messages)
-    }
-
-    fn due_for_compaction(&self) -> bool {
-        // Only a checkpoint (or nothing) left: compacting again cannot help.
-        let settings = &self.loaded.config.compaction;
-        if self.messages.len() < 2 || !settings.auto() {
-            return false;
-        }
-        match self.model.context {
-            Some(window) if window > 0 => {
-                self.last_prompt_tokens.max(self.estimate_prompt()) > settings.ceiling(window)
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether summarizing again could shrink the prompt: not when the
-    /// history after the checkpoint still fits in what compaction keeps.
-    /// The prompt is then over the limit because of the system prompt and
-    /// tool definitions (many MCP tools on a small model), and every step
-    /// would summarize again for nothing. Without a checkpoint the history
-    /// itself may be what fills the window (the estimate can be well off),
-    /// so the first compaction always runs.
-    fn worth_compacting(&self) -> bool {
-        match self.messages.first() {
-            Some(m) if is_checkpoint(m) => {
-                compaction::estimate(&self.messages[1..]) > self.loaded.config.compaction.keep()
-            }
-            _ => true,
-        }
-    }
-
-    /// Replace older history with a structured summary, keeping the newest turns.
-    pub async fn compact(&mut self, sink: &mut dyn Sink) -> Result<()> {
-        let before = self.estimate_prompt();
-        let k = compaction::split(&self.messages, self.loaded.config.compaction.keep());
-        if k == 0 || self.messages.is_empty() {
-            return Err(anyhow!("nothing to compact yet"));
-        }
-        sink.compaction_start();
-        match self.summarize(sink, k).await {
-            Ok(summary) => {
-                sink.compaction_end(Ok(&summary));
-                self.keep_summary(summary, k)?;
-                sink.compacted(before, self.estimate_prompt());
-                Ok(())
-            }
-            Err(e) => {
-                sink.compaction_end(Err(&format!("{e:#}")));
-                Err(e)
-            }
-        }
-    }
-
-    /// The summary of `self.messages[..k]`, streamed to `sink`.
-    async fn summarize(&mut self, sink: &mut dyn Sink, k: usize) -> Result<String> {
-        // Unstored sessions have no sequence numbers at all, so look at the text.
-        let update =
-            self.seqs.first() == Some(&None) && self.messages.first().is_some_and(is_checkpoint);
-        let mut convo = compaction::for_summary(&self.messages[..k]);
-        convo.push(Message::user(compaction::prompt(update)));
-        let mut delta = |d: &str| sink.compaction_delta(d);
-        let (mut summary, usage, reason) = complete_streaming(
-            &self.client,
-            &self.model,
-            SUMMARY_SYSTEM,
-            &convo,
-            None,
-            retry::Policy::default(),
-            &mut delta,
-        )
-        .await?;
-        self.count_side_call(usage)?;
-        cut_short(reason.as_ref())?;
-        if !compaction::is_summary(&summary) {
-            convo.push(Message {
-                role: Role::Assistant,
-                parts: vec![Part::text(summary.clone())],
-            });
-            convo.push(Message::user(compaction::NUDGE));
-            let (usage, reason);
-            let mut delta = |d: &str| sink.compaction_delta(d);
-            (summary, usage, reason) = complete_streaming(
-                &self.client,
-                &self.model,
-                SUMMARY_SYSTEM,
-                &convo,
-                None,
-                retry::Policy::default(),
-                &mut delta,
-            )
-            .await?;
-            self.count_side_call(usage)?;
-            cut_short(reason.as_ref())?;
-        }
-        if summary.trim().is_empty() {
-            return Err(anyhow!(
-                "compaction failed: the model returned an empty summary"
-            ));
-        }
-        Ok(summary)
-    }
-
-    /// Replace `self.messages[..k]` with the checkpoint of `summary`.
-    fn keep_summary(&mut self, summary: String, k: usize) -> Result<()> {
-        let kept_all_turn = k < self.messages.len();
-        let keep_from = match self.seqs.get(k).copied().flatten() {
-            Some(seq) => seq,
-            None => self.seqs.iter().flatten().max().copied().unwrap_or(0) + 1,
-        };
-        let mut updates = Vec::new();
-        let mut at = 0;
-        if let (Some(s), true) = (&self.store, self.stored) {
-            at = s.append(
-                &self.id,
-                &Record::Checkpoint {
-                    summary: summary.clone(),
-                    keep_from,
-                },
-            )?;
-            updates = s
-                .entries(&self.id)?
-                .into_iter()
-                .filter(|e| matches!(e.record, Record::Instructions { text: Some(_), .. }))
-                .map(|e| Some(e.seq))
-                .collect();
-        }
-        // The checkpoint starts a new instruction epoch: the baseline takes
-        // the newest values, and the updates kept after it are part of it.
-        if let Some(state) = &mut self.instruction {
-            state.advance(at);
-        }
-        let mut messages = vec![Message::user(store::checkpoint_text(&summary))];
-        let mut seqs = vec![None];
-        for (m, seq) in self.messages.drain(k..).zip(self.seqs.drain(k..)) {
-            if !updates.contains(&seq) {
-                messages.push(m);
-                seqs.push(seq);
-            }
-        }
-        self.messages = messages;
-        self.seqs = seqs;
-        if !kept_all_turn {
-            // The current turn itself was summarized; tell the model to carry on.
-            self.push(Message::system(compaction::CONTINUE))?;
-        }
-        self.last_prompt_tokens = 0;
-        Ok(())
-    }
-
     /// Record what call `id` changed in `path`, when the change is small
     /// enough to keep. A file that existed and is gone was deleted: its new
     /// text is empty.
@@ -2963,24 +2806,6 @@ impl HostedRows {
     }
 }
 
-/// A summary the output limit or a content filter cut short is not a
-/// summary: compacting with it would lose the history it left out. As in
-/// OpenCode, it fails the compaction without a retry.
-fn cut_short(reason: Option<&FinishReason>) -> Result<()> {
-    match reason {
-        Some(r) if r.is_length() => Err(anyhow!(
-            "compaction failed: the summary was cut off at the output limit"
-        )),
-        Some(r) if r.is_content_filter() => Err(anyhow!(
-            "Compaction summary was blocked by the provider{}",
-            runner::content_filtered(r)
-                .strip_prefix(runner::CONTENT_FILTERED)
-                .unwrap_or_default()
-        )),
-        _ => Ok(()),
-    }
-}
-
 /// A response that ended with a finish reason the provider did not name
 /// (OpenCode's normalized `unknown`) and ran no tool is treated as a failed
 /// attempt, so it is retried from the prompt like an incomplete stream; its
@@ -3013,12 +2838,6 @@ fn unknown_finish(
 }
 
 /// A tool-free model call that returns the whole text reply.
-/// The summary message a compaction leaves at the start of the history.
-fn is_checkpoint(m: &Message) -> bool {
-    m.role == Role::User
-        && matches!(m.parts.first(), Some(Part::Text(t)) if t.starts_with("<conversation-checkpoint>"))
-}
-
 /// A command's first line, cut to 60 characters, for a progress notice.
 fn short_command(command: &str) -> String {
     let line = command.lines().next().unwrap_or("").trim();

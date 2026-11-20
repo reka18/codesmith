@@ -990,6 +990,10 @@ tokens of the newest turns are kept beside the summary.
 | `buffer` | 15% (min 16,000) | Room kept free below the window: a number of tokens, or a share such as `"20%"`. |
 | `keep.tokens` | `15000` | Tokens of recent history kept verbatim. |
 
+The summary request reuses the session's prompt cache; see [long
+sessions](sessions.md#long-sessions-compaction). Its output limit is the
+model's `limit.output`, lowered to the room the request leaves in the window.
+
 Without `limit.context`, CodeSmith cannot tell when the window is nearly
 full. Compaction then happens only when you run `/compact`, or when the
 provider rejects a prompt as too long (unless `auto` is `false`).

@@ -77,7 +77,10 @@ async fn model(script: Shared) -> String {
                     .to_string();
                 let kind = if system == title::SYSTEM {
                     Kind::Title
-                } else if system.starts_with("You are a helpful assistant that writes concise") {
+                } else if body["messages"]
+                    .to_string()
+                    .contains("Do not continue the task or call tools.")
+                {
                     Kind::Summary
                 } else {
                     Kind::Main

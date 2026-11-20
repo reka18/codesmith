@@ -1,0 +1,14 @@
+# Compaction ports: the summary request's cache prefix (tests/oc_compaction_cache.rs).
+@session-compaction.test.ts
+806 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_past_the_ceiling_keeps_the_conversation_unchanged_while_the_window_fits :: adapted: the system prompt and tools counted in
+828 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_sends_the_history_before_the_tail_unchanged_when_the_whole_does_not_fit :: adapted: keep raised to make the latest exchange the tail
+856 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_lowers_the_output_limit_when_it_sends_a_request_it_could_not_shrink
+879 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_keeps_the_output_limit_for_a_request_that_fits_its_target
+980 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_request_reuses_the_session_prompt_cache_key :: adapted: no forks; the session's own key
+1057:1 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning :: background=false
+1057:1 :: feature :: Background Compaction Summaries :: background=true: the held summary's request keeps the prefix
+1090 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_still_flattens_genuinely_oversized_measured_input
+1104 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_shrinks_from_the_rejected_measured_size
+1180 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_reuses_usage_only_for_the_matching_agent :: adapted: the agent switched in place
+@session-runner.test.ts
+2932 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_preserves_the_session_request_prefix_during_compaction :: adapted: no hooks or tool call

@@ -703,10 +703,9 @@ async fn oc_session_compacts_when_the_provider_cuts_an_oversized_prompt_to_its_w
     t.prompt("Large prompt").await.unwrap();
     let reqs = t.requests();
     assert_eq!(reqs.len(), 3);
-    assert!(reqs[1]["messages"][0]["content"]
-        .as_str()
-        .unwrap()
-        .starts_with("You are a helpful assistant that writes concise"));
+    assert!(reqs[1]["messages"]
+        .to_string()
+        .contains("Do not continue the task or call tools."));
     assert_eq!(texts(&t.s).last().unwrap(), "Done");
 }
 
@@ -1779,9 +1778,9 @@ async fn compaction_does_not_repeat_when_the_history_is_already_small() {
         t.s.estimate_prompt()
     );
     let is_summary = |b: &Value| {
-        b["messages"][0]["content"]
-            .as_str()
-            .is_some_and(|s| s.starts_with("You are a helpful assistant that writes concise"))
+        b["messages"]
+            .to_string()
+            .contains("Do not continue the task or call tools.")
     };
     t.push([text("one")]);
     t.prompt("first").await.unwrap();

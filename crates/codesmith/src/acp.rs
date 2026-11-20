@@ -3180,9 +3180,14 @@ mod tests {
     async fn fake_model() -> String {
         async fn chat(Json(b): Json<Value>) -> axum::response::Response {
             let msgs = b["messages"].as_array().unwrap();
-            if b.get("tools").is_none() {
-                let system = msgs[0]["content"].as_str().unwrap_or("");
-                return sse(if system.contains("summaries") {
+            // A summary request is the session's request plus the summary
+            // instructions.
+            let summary = msgs.last().is_some_and(|m| {
+                m.to_string()
+                    .contains("Do not continue the task or call tools.")
+            });
+            if b.get("tools").is_none() || summary {
+                return sse(if summary {
                     vec![
                         json!({"choices": [{"delta": {"content": "## Objective\n"}}]}),
                         json!({"choices": [{"delta": {"content": "Ship it."}, "finish_reason": "stop"}]}),

@@ -74,7 +74,10 @@ async fn model(script: Shared) -> String {
                     .to_string();
                 let kind = if system == title::SYSTEM {
                     Kind::Title
-                } else if system.starts_with("You are a helpful assistant that writes concise") {
+                } else if body["messages"]
+                    .to_string()
+                    .contains("Do not continue the task or call tools.")
+                {
                     Kind::Summary
                 } else {
                     Kind::Main
@@ -264,18 +267,21 @@ async fn oc_compaction_manual_compaction_summarizes_short_context() {
     s.compact(&mut Quiet).await.unwrap();
     let r = requests(&script, Kind::Summary);
     assert_eq!(r.len(), 1);
-    assert!(
-        r[0].get("tools").is_none(),
-        "compaction must not offer tools"
-    );
+    // The session's own request (its tools and the whole conversation, the
+    // kept tail included), so the summary reads the prompt cache.
+    let main = requests(&script, Kind::Main);
+    assert_eq!(r[0]["tools"], main.last().unwrap()["tools"]);
     let msgs = r[0]["messages"].as_array().unwrap();
-    assert!(msgs[1]["content"].to_string().contains("Earlier question"));
-    assert!(
-        !msgs
-            .iter()
-            .any(|m| m["content"].to_string().contains("Read it")),
-        "the kept tail is not summarized"
+    let normal = main.last().unwrap()["messages"].as_array().unwrap();
+    assert_eq!(
+        msgs[..normal.len()],
+        normal[..],
+        "the session's request is the summary request's prefix"
     );
+    assert!(msgs[1]["content"].to_string().contains("Earlier question"));
+    assert!(msgs
+        .iter()
+        .any(|m| m["content"].to_string().contains("Read it")));
     assert_eq!(
         msgs.last().unwrap()["content"],
         compaction::prompt(false),

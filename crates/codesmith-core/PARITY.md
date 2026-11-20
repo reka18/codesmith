@@ -17,9 +17,9 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 70 | 7 | 59 | 190 | 67 | 0 |
+| Session runner | 393 | 76 | 7 | 53 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
-| Compaction | 51 | 9 | 0 | 29 | 12 | 1 | 0 |
+| Compaction | 51 | 18 | 0 | 24 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 4 | 0 | 23 | 36 | 5 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1269** | **15** | **554** | **2354** | **1396** | **0** |
+| **Total** | **5588** | **1284** | **15** | **543** | **2350** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (554 cases in 59 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (543 cases in 59 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -95,9 +95,8 @@ Missing features, by how many OpenCode test cases each would unlock (554 cases i
 | [Tool Input Repair](#tool-input-repair) | 17 | repair before validation, other harnesses' tool names, Code Mode calls; schema-guided repair of nested containers, nulls, unions, tuples and dictionaries |
 | [MCP Elicitation](#mcp-elicitation) | 16 | forms behind elicitation and questions (conditional fields); elicitation forms and URL elicitations |
 | [Native Provider Compaction](#native-provider-compaction) | 16 | routes that cannot compact natively; provider-native compaction endpoints; … |
+| [Background Compaction Summaries](#background-compaction-summaries) | 15 | background=true: the held summary's request keeps the prefix; precomputed summaries swapped in at compaction |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
-| [Compaction Prompt-cache Prefix](#compaction-prompt-cache-prefix) | 14 | summary requests reuse the session's cache prefix and measured input; summary request keeps the session request prefix |
-| [Background Compaction Summaries](#background-compaction-summaries) | 14 | precomputed summaries swapped in at compaction |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
@@ -131,6 +130,7 @@ Missing features, by how many OpenCode test cases each would unlock (554 cases i
 | [Repository-scoped External Approvals](#repository-scoped-external-approvals) | 2 | an "always" external approval saved at the enclosing repository; external approval saved at the nearest project directory |
 | [Saved Approvals Management](#saved-approvals-management) | 2 | listing, editing and removing saved approvals per project |
 | [Plugin Permission API](#plugin-permission-api) | 2 | plugins asserting permissions |
+| [Compaction Prompt-cache Prefix](#compaction-prompt-cache-prefix) | 2 | summary requests reuse the session's cache prefix and measured input |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Attachment Deduplication](#attachment-deduplication) | 2 | durable attachment references deduplicate provider media |
 | [Code Mode Progress](#code-mode-progress) | 2 | execute progress rows |
@@ -520,38 +520,11 @@ Missing features, by how many OpenCode test cases each would unlock (554 cases i
 - `session-runner.test.ts`: automatically persists native windows, retains earlier users, and waits for fresh usage
 - `session-runner.test.ts`: recovers an overflowing native window with another native compaction
 
-### Stateless Generate API
-
-14 cases.
-
-- `generate.test.ts`: retries a stateless call the provider never received
-- `generate.test.ts`: does not retry a stateless ${reason._tag} failure the provider may have run (3 cases)
-- `generate.test.ts`: does not retry stateless ${reason._tag} failures (3 cases)
-- `generate.test.ts`: honors provider backoff and cancels without another generation
-- `generate.test.ts`: retries an overloaded provider at most three times
-- `generate.test.ts`: attributes each stateless completion without creating a stored session
-- `session-generate.test.ts`: generates from fresh settled Session context and records only its usage
-- `session-generate.test.ts`: runs generate hooks instead of context hooks
-- `session-generate.test.ts`: regenerates a failed partial answer without mutating Session history
-- `session-generate.test.ts`: blocks unavailable initial instructions before generation
-
-### Compaction Prompt-cache Prefix
-
-14 cases.
-
-- `session-compaction.test.ts`: forked session compaction reuses the fork root prompt cache key
-- `session-compaction.test.ts`: summary cache prefix uses measured input with old reasoning (background=${background}) (2 cases)
-- `session-compaction.test.ts`: summary cache prefix still flattens genuinely oversized measured input
-- `session-compaction.test.ts`: summary measured recovery shrinks from the rejected measured size
-- `session-compaction.test.ts`: summary cache prefix survives hooks that shape every request alike
-- `session-compaction.test.ts`: summary resends as text when a hook makes the request larger than the measured count
-- `session-compaction.test.ts`: summary measured recovery reuses usage only for the matching agent
-- `session-runner.test.ts`: preserves the session request prefix during ${reason} compaction (${route.id}) (6 cases)
-
 ### Background Compaction Summaries
 
-14 cases.
+15 cases.
 
+- `session-compaction.test.ts`: summary cache prefix uses measured input with old reasoning (background=${background})
 - `session-compaction.test.ts`: background summaries stay off when disabled
 - `session-compaction.test.ts`: automatic compaction swaps in the background summary without another model call
 - `session-compaction.test.ts`: automatic compaction waits for a background summary still being written
@@ -566,6 +539,21 @@ Missing features, by how many OpenCode test cases each would unlock (554 cases i
 - `session-compaction.test.ts`: a background summary starts a fixed lead before the threshold, not at a share of it
 - `session-compaction.test.ts`: a background summary starts on a window whose threshold is under 64k
 - `session-compaction.test.ts`: a background summary waits for a response whose prompt is still cached
+
+### Stateless Generate API
+
+14 cases.
+
+- `generate.test.ts`: retries a stateless call the provider never received
+- `generate.test.ts`: does not retry a stateless ${reason._tag} failure the provider may have run (3 cases)
+- `generate.test.ts`: does not retry stateless ${reason._tag} failures (3 cases)
+- `generate.test.ts`: honors provider backoff and cancels without another generation
+- `generate.test.ts`: retries an overloaded provider at most three times
+- `generate.test.ts`: attributes each stateless completion without creating a stored session
+- `session-generate.test.ts`: generates from fresh settled Session context and records only its usage
+- `session-generate.test.ts`: runs generate hooks instead of context hooks
+- `session-generate.test.ts`: regenerates a failed partial answer without mutating Session history
+- `session-generate.test.ts`: blocks unavailable initial instructions before generation
 
 ### Client-attached MCP Servers
 
@@ -902,6 +890,13 @@ Missing features, by how many OpenCode test cases each would unlock (554 cases i
 
 - `plugin/permission-assert.test.ts`: Effect plugins assert permissions and receive outcomes as tool errors
 - `plugin/permission-assert.test.ts`: Promise plugins assert permissions with plain input
+
+### Compaction Prompt-cache Prefix
+
+2 cases.
+
+- `session-compaction.test.ts`: summary cache prefix survives hooks that shape every request alike
+- `session-compaction.test.ts`: summary resends as text when a hook makes the request larger than the measured count
 
 ### Freeform Tool Formats
 
@@ -1821,7 +1816,7 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 550 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 546 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 327 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
@@ -1832,7 +1827,7 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (267 of 393)</summary>
+<details><summary>Session runner (273 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1891,6 +1886,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P explains when manual compaction has no history — `tests/parity.rs::oc_compaction_nothing_to_compact_in_an_empty_session`
 - D delivers steered manual compaction when the model has no context limit · runs manual compaction at the next step boundary before queued prompts · runs manual compaction before the continuation of an active tool turn — deliberate: session.rs: manual compaction runs between turns, not at a step boundary
 - P preserves provider errors from manual compaction — `tests/oc_compaction.rs::oc_compaction_preserves_provider_errors_from_manual_compaction`
+- P preserves the session request prefix during ${reason} compaction (${route.id}) ×6 — `tests/oc_compaction_cache.rs::oc_compaction_preserves_the_session_request_prefix_during_compaction` (adapted: no hooks or tool call)
 - P compaction ${summary ? "recovers" : "stops"} after one template reminder for ${response} ×3 — `tests/parity.rs::oc_compaction_nudges_a_reply_without_the_template`
 - D waits for plugin activation before each step and tool call — effect-internal: plugin activation waits
 - F explains a compaction blocked by the provider — `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider` (a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category))
@@ -2019,7 +2015,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Compaction (21 of 51)</summary>
+<details><summary>Compaction (26 of 51)</summary>
 
 
 **`config/compaction.test.ts`**
@@ -2041,7 +2037,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P auto compaction estimates current content against the buffered prompt ceiling — `src/compaction.rs::oc_compaction_auto_ceiling_and_buffers` (cases without input-only limits)
 - P manual compaction summarizes short context instead of no-op — `tests/parity.rs::oc_compaction_manual_compaction_summarizes_short_context`
 - P summary updates include the retained tail in compaction hooks and the model request — `tests/parity.rs::oc_compaction_updates_an_existing_checkpoint` (model-request half; no compaction hooks)
-- D summary compaction past the ceiling keeps the conversation unchanged while the window fits · summary compaction sends the history before the tail unchanged when the whole conversation does not fit · compaction lowers the output limit when it sends a request it could not shrink · compaction keeps the output limit for a request that fits its target — deliberate: compaction.rs: a summary request is not shrunk and retried; the kept tail is real messages
+- P summary compaction past the ceiling keeps the conversation unchanged while the window fits — `tests/oc_compaction_cache.rs::oc_compaction_summary_past_the_ceiling_keeps_the_conversation_unchanged_while_the_window_fits` (adapted: the system prompt and tools counted in)
+- P summary compaction sends the history before the tail unchanged when the whole conversation does not fit — `tests/oc_compaction_cache.rs::oc_compaction_summary_sends_the_history_before_the_tail_unchanged_when_the_whole_does_not_fit` (adapted: keep raised to make the latest exchange the tail)
+- P compaction lowers the output limit when it sends a request it could not shrink — `tests/oc_compaction_cache.rs::oc_compaction_lowers_the_output_limit_when_it_sends_a_request_it_could_not_shrink`
+- P compaction keeps the output limit for a request that fits its target — `tests/oc_compaction_cache.rs::oc_compaction_keeps_the_output_limit_for_a_request_that_fits_its_target`
+- P forked session compaction reuses the fork root prompt cache key — `tests/oc_compaction_cache.rs::oc_compaction_summary_request_reuses_the_session_prompt_cache_key` (adapted: no forks; the session's own key)
+- P summary cache prefix uses measured input with old reasoning (background=${background}) — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning` (background=false)
+- P summary cache prefix still flattens genuinely oversized measured input — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_still_flattens_genuinely_oversized_measured_input`
+- P summary measured recovery shrinks from the rejected measured size — `tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_shrinks_from_the_rejected_measured_size`
+- P summary measured recovery reuses usage only for the matching agent — `tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_reuses_usage_only_for_the_matching_agent` (adapted: the agent switched in place)
 
 </details>
 
