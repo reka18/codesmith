@@ -728,3 +728,73 @@ async fn the_local_setting_decides_whether_a_server_is_asked_unprompted() {
     assert!(!p(None).probe_unprompted(lan));
     assert!(p(Some(true)).probe_unprompted(lan));
 }
+
+#[tokio::test]
+async fn unprompted_discovery_sends_the_key_only_to_a_configured_endpoint() {
+    let (_g, _d) = data_folder().await;
+    // A built-in provider's default port gets no key, even with one set.
+    let c = config(json!({"providers": {"ollama": {"settings": {"apiKey": "sk-local"}}}}));
+    let p = c.provider("ollama").unwrap();
+    assert!(p.settings.base_url.is_some(), "a built-in default endpoint");
+    assert_eq!(local::unprompted_key(&c, "ollama", &p), None);
+    // The endpoint the user configured does.
+    let s = serve(json_handler(json!({"data": [{"id": "m"}]}))).await;
+    let c = config(json!({"providers": {"omlx": {"settings": {
+        "baseURL": format!("{}/v1", s.origin), "discovery": "openai", "apiKey": "sk-local"}}}}));
+    let p = c.provider("omlx").unwrap();
+    assert_eq!(
+        local::unprompted_key(&c, "omlx", &p).as_deref(),
+        Some("sk-local")
+    );
+    let found = local::discover_providers(&c, &live::file(), &["omlx".into()]).await;
+    assert_eq!(found, ["omlx"]);
+    assert_eq!(
+        s.seen()[0].authorization.as_deref(),
+        Some("Bearer sk-local")
+    );
+}
+
+#[tokio::test]
+async fn discovery_answers_are_bounded_and_only_needed_show_fields_are_kept() {
+    // A model list past the cap is refused, and the kept list stays.
+    let huge = format!(
+        "{{\"data\": [{{\"id\": \"m\", \"pad\": \"{}\"}}]}}",
+        "x".repeat(local::MAX_ANSWER)
+    );
+    let s = serve(Arc::new(move |_| (200, huge.clone()))).await;
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("live.json");
+    let err = refresh(
+        &path,
+        "omlx",
+        Kind::OpenAi,
+        &format!("{}/v1", s.origin),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("larger than"), "{err:#}");
+
+    // Of Ollama's details, only what the list reads is kept.
+    let state = Arc::new(Mutex::new(json!({
+        "tags": [tag("qwen3", "one")],
+        "show": {"qwen3": {"capabilities": ["completion"], "license": "L".repeat(10_000),
+            "modelfile": "FROM x", "details": {"family": "qwen3", "format": "gguf"},
+            "model_info": {"qwen3.context_length": 32768, "tokenizer.ggml.tokens": ["a", "b"]}}}
+    })));
+    let s = serve(ollama_handler(state)).await;
+    refresh(&path, "ollama", Kind::Ollama, &s.origin, None)
+        .await
+        .unwrap();
+    let raw = live::load_in(&path, "ollama").unwrap();
+    let show = &raw["models"][0]["show"];
+    assert_eq!(
+        *show,
+        json!({"capabilities": ["completion"], "details": {"family": "qwen3"},
+            "model_info": {"qwen3.context_length": 32768}})
+    );
+    assert_eq!(
+        find(&kept(&path, "ollama"), "qwen3").unwrap().limit.context,
+        32768
+    );
+}

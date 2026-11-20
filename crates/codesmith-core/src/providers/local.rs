@@ -113,12 +113,51 @@ async fn get(client: &reqwest::Client, url: &str, key: Option<&str>) -> Result<r
     Ok(r)
 }
 
-async fn get_json(client: &reqwest::Client, url: &str, key: Option<&str>) -> Result<Value> {
-    get(client, url, key)
-        .await?
-        .json()
+/// The most of a model list or model details read from a server.
+pub const MAX_ANSWER: usize = 4 * 1024 * 1024;
+
+/// A response's JSON body, read up to [`MAX_ANSWER`] bytes.
+async fn json_capped(mut r: reqwest::Response, url: &str) -> Result<Value> {
+    if r.content_length().is_some_and(|n| n > MAX_ANSWER as u64) {
+        anyhow::bail!("{url}: the answer is larger than {} MiB", MAX_ANSWER >> 20);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = r
+        .chunk()
         .await
-        .map_err(|_| anyhow!("{url}: the answer is not JSON"))
+        .map_err(|e| anyhow!("{}", codesmith_ai::Error::from(e)))?
+    {
+        if body.len() + chunk.len() > MAX_ANSWER {
+            anyhow::bail!("{url}: the answer is larger than {} MiB", MAX_ANSWER >> 20);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| anyhow!("{url}: the answer is not JSON"))
+}
+
+async fn get_json(client: &reqwest::Client, url: &str, key: Option<&str>) -> Result<Value> {
+    let r = get(client, url, key).await?;
+    json_capped(r, url).await
+}
+
+/// What is kept of an Ollama `/api/show` answer: only what the model list
+/// reads (its capabilities, family and context length).
+fn show_summary(info: &Value) -> Value {
+    let context: Map<String, Value> = info["model_info"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(k, _)| k.ends_with(".context_length"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut out = json!({
+        "capabilities": info["capabilities"].as_array().cloned().unwrap_or_default(),
+        "model_info": context,
+    });
+    if let Some(f) = info["details"]["family"].as_str() {
+        out["details"] = json!({"family": f});
+    }
+    out
 }
 
 /// The server's models, as kept: `{id, name, family?, tools?, vision?,
@@ -277,7 +316,7 @@ async fn ollama(
                 if !r.status().is_success() {
                     return None;
                 }
-                r.json::<Value>().await.ok()?
+                show_summary(&json_capped(r, &format!("{root}/api/show")).await.ok()?)
             }
         };
         Some((m, digest, info))
@@ -409,6 +448,21 @@ pub async fn discover_local(config: &crate::config::Config, path: &Path) -> Vec<
     discover_providers(config, path, &providers(config)).await
 }
 
+/// The key an unprompted discovery of provider `id` sends: its key only
+/// when the user configured its base URL, never to a built-in default port,
+/// where whoever listens (another local user, say) is not vouched for.
+pub fn unprompted_key(
+    config: &crate::config::Config,
+    id: &str,
+    p: &crate::config::ProviderConfig,
+) -> Option<String> {
+    let configured = config
+        .providers
+        .get(id)
+        .is_some_and(|c| c.settings.base_url.is_some());
+    config.provider_key(id, p).filter(|_| configured)
+}
+
 /// Discover the models of the providers `ids` whose endpoint (the
 /// configured base URL, or the built-in default) is on this machine, or
 /// that `local: true` vouches for, at once and briefly: a server that is
@@ -432,7 +486,7 @@ pub async fn discover_providers(
             .base_url
             .clone()
             .filter(|u| p.probe_unprompted(u))?;
-        let key = config.provider_key(id, &p);
+        let key = unprompted_key(config, id, &p);
         let client = client.clone();
         Some(async move {
             refresh(&client, path, id, kind, &base, key.as_deref())

@@ -460,7 +460,13 @@ pub async fn materialize(
                     codesmith_ai::Error::Decode("a generated data URL is not valid base64".into())
                 })?
             } else {
-                generation::download(p, &url, authorized, MAX_BYTES).await?
+                {
+                    // The URL is the provider's choice: one that is not
+                    // itself local may not point downloads at this machine
+                    // or its network.
+                    let public_only = !crate::config::is_local_url(&p.base_url);
+                    generation::download(p, &url, authorized, public_only, MAX_BYTES).await?
+                }
             };
             (mime, data)
         }

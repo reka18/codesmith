@@ -940,6 +940,80 @@ fn download_client() -> Result<&'static reqwest::Client, Error> {
         .ok_or_else(|| Error::Invalid("unable to create the HTTP client".into()))
 }
 
+/// Whether `ip` is a public address: not loopback, unspecified, private,
+/// link-local, shared (CGNAT), unique-local, multicast or broadcast (an
+/// IPv4-mapped IPv6 address is judged as its IPv4 address).
+pub fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b)))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// The client for one hop to `url` that may reach only public addresses:
+/// the host is resolved here, refused unless every address is public, and
+/// the connection pinned to those addresses (so a second lookup cannot
+/// point it elsewhere).
+async fn public_client(url: &reqwest::Url) -> Result<reqwest::Client, Error> {
+    let refuse = |what: &str| {
+        Err(Error::Invalid(format!(
+            "the generated file's URL points at a private or local address ({what})"
+        )))
+    };
+    let port = url.port_or_known_default().unwrap_or(443);
+    let builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(30));
+    let Some(host) = url.host_str() else {
+        return Err(Error::Invalid(
+            "the generated file's URL has no host".into(),
+        ));
+    };
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    let builder = if let Ok(ip) = literal.parse::<std::net::IpAddr>() {
+        if !public_ip(ip) {
+            return refuse(&ip.to_string());
+        }
+        builder
+    } else {
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| Error::Invalid(format!("cannot resolve {host}: {e}")))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(Error::Invalid(format!("cannot resolve {host}")));
+        }
+        if let Some(a) = addrs.iter().find(|a| !public_ip(a.ip())) {
+            return refuse(&format!("{host} is {}", a.ip()));
+        }
+        builder.resolve_to_addrs(host, &addrs)
+    };
+    builder
+        .build()
+        .map_err(|e| Error::Invalid(format!("unable to create the HTTP client: {e}")))
+}
+
 /// Whether `url` has the same scheme, host and port as `base`.
 fn same_origin(url: &reqwest::Url, base: &str) -> bool {
     let Ok(base) = reqwest::Url::parse(base) else {
@@ -955,14 +1029,16 @@ fn same_origin(url: &reqwest::Url, base: &str) -> bool {
 /// provider's key (a Google Files API URI), but only to the provider's own
 /// origin (scheme, host and port of its base URL): a URL or redirect hop
 /// anywhere else is fetched without credentials. Redirects are followed by
-/// hand, at most [`MAX_REDIRECTS`].
+/// hand, at most [`MAX_REDIRECTS`]. With `public_only` (a provider that is
+/// not itself local), no hop may reach a loopback, private or link-local
+/// address: the URL is the provider's choice, not the user's.
 pub async fn download(
     p: &Provider,
     url: &str,
     authorized: bool,
+    public_only: bool,
     max: usize,
 ) -> Result<Vec<u8>, Error> {
-    let client = download_client()?;
     let mut current = reqwest::Url::parse(url)
         .map_err(|e| Error::Invalid(format!("the generated file's URL is invalid: {e}")))?;
     let mut redirects = 0;
@@ -972,6 +1048,13 @@ pub async fn download(
                 "the generated file's URL must use http:// or https://".into(),
             ));
         }
+        let pinned;
+        let client = if public_only {
+            pinned = public_client(&current).await?;
+            &pinned
+        } else {
+            download_client()?
+        };
         let resp = if authorized && same_origin(&current, &p.base_url) {
             let mut rb = client.get(current.clone());
             for (k, v) in p.auth_headers(p.headers.clone()) {
@@ -1132,16 +1215,22 @@ mod tests {
         let (base, base_seen) = recorder(|_| (200, String::new())).await;
         let p = google(&base);
         // The provider's own origin gets the key.
-        let got = download(&p, &format!("{base}/v1beta/files/a:download"), true, 1024)
-            .await
-            .unwrap();
+        let got = download(
+            &p,
+            &format!("{base}/v1beta/files/a:download"),
+            true,
+            false,
+            1024,
+        )
+        .await
+        .unwrap();
         assert_eq!(got, b"mp4!");
         assert_eq!(
             base_seen.lock().unwrap()[0].1.as_deref(),
             Some("secret-key")
         );
         // A job result naming another origin is fetched without it.
-        let got = download(&p, &format!("{other}/steal"), true, 1024)
+        let got = download(&p, &format!("{other}/steal"), true, false, 1024)
             .await
             .unwrap();
         assert_eq!(got, b"mp4!");
@@ -1173,7 +1262,7 @@ mod tests {
         })
         .await;
         let p = google(&base);
-        let got = download(&p, &format!("{base}/v1beta/files/a"), true, 1024)
+        let got = download(&p, &format!("{base}/v1beta/files/a"), true, false, 1024)
             .await
             .unwrap();
         assert_eq!(got, b"mp4!");
@@ -1192,10 +1281,68 @@ mod tests {
     async fn downloads_stop_after_too_many_redirects() {
         let (base, seen) = recorder(|_| (302, "location: /again\r\n".into())).await;
         let p = google(&base);
-        let err = download(&p, &format!("{base}/start"), false, 1024)
+        let err = download(&p, &format!("{base}/start"), false, false, 1024)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("redirects"), "{err}");
         assert_eq!(seen.lock().unwrap().len(), MAX_REDIRECTS + 1);
+    }
+
+    #[test]
+    fn only_public_addresses_count_as_public() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+        ] {
+            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "93.184.216.34",
+            "8.8.8.8",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(public_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remote_providers_media_url_cannot_reach_local_addresses() {
+        let (local, seen) = recorder(|_| (200, String::new())).await;
+        let p = Provider {
+            base_url: "https://api.x.ai/v1".into(),
+            ..Provider::default()
+        };
+        let port = local.rsplit(':').next().unwrap().to_string();
+        for url in [
+            format!("{local}/img.png"),
+            format!("http://localhost:{port}/img.png"),
+            format!("http://[::ffff:127.0.0.1]:{port}/img.png"),
+        ] {
+            let err = download(&p, &url, false, true, 1024).await.unwrap_err();
+            assert!(err.to_string().contains("private or local"), "{url}: {err}");
+        }
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "nothing reached the local server"
+        );
+        // A local provider's own downloads may.
+        let got = download(&p, &format!("{local}/img.png"), false, false, 1024)
+            .await
+            .unwrap();
+        assert_eq!(got, b"mp4!");
     }
 }
