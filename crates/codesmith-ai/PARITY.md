@@ -9,7 +9,8 @@ caching and tool choice in [`src/parity_cache.rs`](src/parity_cache.rs),
 stream lifecycle, partial output and Gemini continuation in
 [`src/parity_stream.rs`](src/parity_stream.rs), endpoints, auth, billed
 cost, compatibility overrides and request encoding in
-[`src/parity_endpoint.rs`](src/parity_endpoint.rs) (and the two
+[`src/parity_endpoint.rs`](src/parity_endpoint.rs), hosted tools in
+[`src/parity_hosted.rs`](src/parity_hosted.rs) (and the two
 default-auth cases in `codesmith-core/src/config.rs`), the partial JSON parser in
 [`src/partial_json.rs`](src/partial_json.rs), and the session's handling of a
 failed step's partial output in `codesmith-core/tests/runner_parity.rs`).
@@ -37,13 +38,13 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
 | OpenAI Chat | 115 | 15 | 88 | 12 |
-| OpenAI Responses | 159 | 22 | 75 | 62 |
-| Anthropic Messages | 95 | 9 | 70 | 16 |
+| OpenAI Responses | 159 | 22 | 91 | 46 |
+| Anthropic Messages | 95 | 9 | 75 | 11 |
 | Gemini | 61 | 12 | 44 | 5 |
 | Shared | 85 | 10 | 59 | 16 |
-| **Total** | **515** | **68** | **336** | **111** |
+| **Total** | **515** | **68** | **357** | **90** |
 
-Of the gaps, 76 are missing provider features (the roadmap) and
+Of the gaps, 55 are missing provider features (the roadmap) and
 35 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -383,6 +384,36 @@ Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
   config tests, and the first reads a test variable in place of
   `OPENAI_API_KEY` (adapted).
 
+Hosted (provider-executed) tools (`hosted.rs`, Responses, Anthropic,
+Gemini; the 21 cases in `src/parity_hosted.rs`)
+- A `hostedTools` provider option declares them (short names or wire
+  declarations, beside function tools); Responses checks
+  `image_generation` options before sending, a tool choice naming it sends
+  `{"type": "image_generation"}`, and Anthropic adds the `web_fetch` and
+  `code_execution` betas.
+- Responses `web_search_call`, `file_search_call`, `code_interpreter_call`,
+  `mcp_call`, `web_search_preview_call`, `computer_call` and
+  `image_generation_call` items, Anthropic `server_tool_use` with its
+  `*_tool_result` block (errors from `*_tool_result_error`; malformed
+  input ends the stream), and Gemini `executableCode` /
+  `codeExecutionResult` parts and search grounding decode as
+  `Event::HostedCall` / `Event::HostedResult`, stored as one `Part::Hosted`
+  naming the protocol that ran it. They never run locally and do not
+  continue the turn; the session shows them as settled tool rows.
+- Replay: Responses sends a complete item from this API under its own id
+  (once per message), and everything else (errors, other protocols'
+  results, unknown item types, ids that do not match) as portable user
+  content, generated images as `input_image`; Anthropic sends
+  `server_tool_use` plus its result block and rejects results of unknown
+  server tools; Gemini sends code execution back as its parts. Hosted parts
+  of other protocols are left out of Anthropic, Gemini and Chat requests.
+- Adapted: OpenCode's two parts (call and result) are one part here; its
+  `store: true` / `false` variants lower the same way (CodeSmith's Responses
+  requests are stateless); "foreign" results (another provider's metadata
+  key) are results from another protocol; the malformed server tool input
+  error names the route (`Anthropic Messages`) where OpenCode names the
+  adapter.
+
 ## Partially ported
 
 - `gemini` "does not resume a response cut off by its own timeout": a reqwest
@@ -415,7 +446,6 @@ Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
 - `tool-schema-projection` "declares every tool schema root as an object" and
   "selects tool schema handling from the model name …": the explicit
   `sanitizer` override cases are omitted.
-- `tool-history` cases: provider-executed parts are omitted.
 - Provider options and reasoning replay (`src/parity_options.rs`):
   "forwards standard Gemini generation
   options" passes the knobs as options (CodeSmith's request has only
@@ -485,39 +515,6 @@ _OpenAI Responses 26._
 - `openai-responses` — fails immediately when WebSocket is already closed
 - `openai-responses` — keeps the system code when a WebSocket fails to connect
 - `openai-responses` — prepares the composed native continuation request
-
-</details>
-
-
-### Hosted (provider-executed) tools (21 tests)
-
-Web search, code interpreter, computer use, image generation and Anthropic server tools: never declared, so their items are not decoded or replayed.
-
-_OpenAI Responses 16, Anthropic Messages 5._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — lowers the hosted OpenAI image generation tool
-- `openai-responses` — rejects invalid hosted image generation options locally
-- `openai-responses` — replays complete hosted tool items when storage is enabled
-- `openai-responses` — replays stateless hosted tool results as native provider items
-- `openai-responses` — replays OpenAI hosted tool extensions but rejects foreign and unknown items
-- `openai-responses` — preserves foreign hosted tool results as portable message content when storage is enabled
-- `openai-responses` — does not replay hosted tool items whose result id differs from provider metadata
-- `openai-responses` — falls back to portable hosted results when stored item metadata is malformed
-- `openai-responses` — continues stateless hosted image generation with the generated image
-- `openai-responses` — preserves foreign hosted images as portable image content when storage is enabled
-- `openai-responses` — decodes web_search_call as provider-executed tool-call + tool-result
-- `openai-responses` — decodes computer_call as provider-executed tool-call + tool-result
-- `openai-responses` — replays hosted image results as portable content regardless of storage
-- `openai-responses` — preserves failed hosted tool results as portable error content
-- `openai-responses` — rejects malformed image generation base64
-- `openai-responses` — decodes code_interpreter_call as provider-executed events with code input
-- `anthropic-messages` — keeps malformed server tool input terminal
-- `anthropic-messages` — decodes server_tool_use + web_search_tool_result as provider-executed events
-- `anthropic-messages` — decodes web_search_tool_result_error as provider-executed error result
-- `anthropic-messages` — round-trips provider-executed assistant content into server tool blocks
-- `anthropic-messages` — rejects round-trip for unknown server tool names
 
 </details>
 

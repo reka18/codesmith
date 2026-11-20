@@ -26,6 +26,11 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 
 [Plugins](plugins.md) can add tools of their own.
 
+Providers can also run tools of their own, such as web search or code
+execution, when a model's `hostedTools` option turns them on
+([config](configuration.md#hosted-tools)). Their calls show as tool rows but
+never run locally.
+
 Each agent has a step limit, 200 by default (`agents.<id>.steps`). On the
 last step, the model has to answer in text.
 

@@ -295,6 +295,42 @@ Responses, and `<system-update>` text in a user message elsewhere. Set
 `"systemUpdates": true` (or `false`) in a model's `options` to override the
 Anthropic Messages detection, for example for a gateway's model alias.
 
+### Hosted tools
+
+Some providers run tools themselves: web search, code execution, image
+generation. Turn them on with a `hostedTools` list in a provider's or a
+model's `options`. Each entry is a short name or the provider's own tool
+declaration (camelCase keys are converted):
+
+| Protocol | Short names | Declarations |
+|---|---|---|
+| OpenAI Responses | `web_search`, `web_search_preview`, `file_search`, `code_interpreter`, `image_generation` | any `{"type": …}`, e.g. `{"type": "image_generation", "quality": "high", "size": "1024x1024"}` |
+| Anthropic Messages | `web_search`, `web_fetch`, `code_execution` | `{"type": "web_search_20250305", "name": "web_search", "maxUses": 5}` |
+| Gemini | `google_search`, `code_execution`, `url_context` | a tool object, e.g. `{"googleSearch": {}}` |
+
+```jsonc
+"models": {
+  "gpt-5": { "options": { "hostedTools": ["web_search", { "type": "image_generation", "quality": "high" }] } },
+  "claude-sonnet-4-5": { "options": { "hostedTools": ["web_search", "web_fetch"] } }
+}
+```
+
+The provider runs these tools; CodeSmith never does. A hosted call shows up
+as a tool row that settles when its result arrives (generated images are
+shown like tool images), it does not start another step, and it is not
+subject to permissions. Its call and result are stored with the session and
+sent back the way the provider that ran it expects: Responses items,
+Anthropic `server_tool_use` and result blocks, Gemini `executableCode` and
+`codeExecutionResult` parts. After switching models, a Responses model sees
+results from other providers as user content (generated images as images),
+and other protocols leave them out. Anthropic's beta headers for
+`web_fetch` and `code_execution` are added for you, and naming a
+Responses hosted tool in a tool choice (`image_generation`) forces it. OpenAI
+Chat has no hosted tools; the option is ignored there. Invalid declarations
+(an unknown short name, bad image generation options) fail before the
+request is sent. Sessions with hosted calls can't be opened by CodeSmith
+builds older than this feature.
+
 ### Prompt caching
 
 Prompt caching is on by default, as in OpenCode, so a long session pays the
