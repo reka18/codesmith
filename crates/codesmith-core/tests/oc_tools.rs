@@ -1233,3 +1233,32 @@ async fn oc_read_truncates_long_lines() {
         format!("1: {}... (line truncated to 2000 chars)", "a".repeat(1_999))
     );
 }
+
+// --- shell.test.ts ---
+
+/// "builds command args per shell family" (the POSIX shells) and "passes an
+/// unmatched zsh glob through to the command". Fixed: Zsh ran without
+/// `+o nomatch`, so an unmatched glob failed the whole line.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command() {
+    let env = Env::with_rules(vec![allow("*")]);
+    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if !Path::new(shell).exists() {
+            continue;
+        }
+        let mut ctx = env.ctx();
+        ctx.shell = shell.into();
+        ctx.jobs = Some(tool::shell::Jobs::default());
+        let (out, err) = tool::execute(
+            &ctx,
+            "shell",
+            &json!({"command": "echo opencode-missing-*.nope; echo after", "description": "glob"}),
+        )
+        .await;
+        assert!(!err, "{shell}: {out}");
+        assert!(
+            out.starts_with("opencode-missing-*.nope\nafter"),
+            "{shell}: {out}"
+        );
+    }
+}

@@ -1382,6 +1382,21 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
 
 /// `shell` as a path to run: a bare name is looked up on this process's
 /// `PATH`, since a session environment may not have one.
+/// The arguments before the command, as OpenCode's `ShellSelect.args`: Zsh
+/// gets `+o nomatch` so an unmatched glob reaches the command as written
+/// (as in Bash) instead of failing the whole line.
+fn shell_args(shell: &str) -> &'static [&'static str] {
+    let name = Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(shell);
+    if name == "zsh" {
+        &["+o", "nomatch", "-c"]
+    } else {
+        &["-c"]
+    }
+}
+
 fn program(shell: &str) -> PathBuf {
     if shell.contains('/') {
         return PathBuf::from(shell);
@@ -1421,7 +1436,7 @@ fn spawn(
     if let Some(vars) = environment {
         cmd.env_clear().envs(vars);
     }
-    cmd.arg("-c")
+    cmd.args(shell_args(shell))
         .arg(&sc.command)
         .current_dir(&sc.cwd)
         .envs(&sc.env)
