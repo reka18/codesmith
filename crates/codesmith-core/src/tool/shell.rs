@@ -1261,12 +1261,28 @@ mod tests {
             return;
         }
         result.unwrap();
+        // macOS ships bash 3.2, which does not set `$!` for a process
+        // substitution, so `wait` returns before the write lands: poll.
+        let appears = |p: &std::path::Path| {
+            (0..60).any(|_| {
+                p.exists() || {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    false
+                }
+            }) || p.exists()
+        };
+        assert!(appears(&marker));
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "reached");
         std::fs::remove_file(&marker).unwrap();
         let _ = sh(&ctx, command).await;
         let always = reply == Reply::Always;
         assert_eq!(asker.take().len(), if always { 0 } else { 1 });
-        assert_eq!(marker.exists(), always);
+        if always {
+            assert!(appears(&marker));
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(!marker.exists());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

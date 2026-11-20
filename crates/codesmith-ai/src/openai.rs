@@ -59,11 +59,16 @@ impl Compat {
     pub fn call_id(&self, id: &str) -> String {
         let id = split_id(id).0;
         if self.mistral {
-            let mut s: String = id
-                .chars()
-                .filter(char::is_ascii_alphanumeric)
-                .take(9)
-                .collect();
+            // Mistral wants exactly 9 alphanumerics. OpenCode keeps the first
+            // nine, which makes ids sharing a prefix (`tool<time>…`,
+            // `toolu_01…`) collide; an id that does not already fit is
+            // hashed in full instead, stably, so a call and its result agree.
+            let alnum: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
+            let mut s = if alnum.len() <= 9 {
+                alnum
+            } else {
+                mistral_hash(id)
+            };
             while s.len() < 9 {
                 s.push('0');
             }
@@ -1057,5 +1062,55 @@ mod tests {
         assert_eq!(d.push(&bytes[..1]), "");
         assert_eq!(d.push(&bytes[1..3]), "é");
         assert_eq!(d.push(&bytes[3..]), "✓");
+    }
+}
+
+/// 9 base-62 characters from a 64-bit FNV-1a hash of the whole id.
+fn mistral_hash(id: &str) -> String {
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in id.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    (0..9)
+        .map(|_| {
+            let d = DIGITS[(h % 62) as usize] as char;
+            h /= 62;
+            d
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod mistral_id_tests {
+    use super::*;
+
+    #[test]
+    fn long_ids_with_a_shared_prefix_do_not_collide() {
+        let c = Compat::detect("http://localhost:1234/v1", "devstral-small");
+        let a = c.call_id("tool18e9a0001");
+        let b = c.call_id("tool18e9a0002");
+        let x = c.call_id("toolu_01A0aaaaaaaaaaaa");
+        let y = c.call_id("toolu_01A0bbbbbbbbbbbb");
+        assert_ne!(a, b);
+        assert_ne!(x, y);
+        for id in [&a, &b, &x, &y] {
+            assert!(
+                id.len() == 9 && id.chars().all(|c| c.is_ascii_alphanumeric()),
+                "{id}"
+            );
+        }
+        assert_eq!(c.call_id("tool18e9a0001"), a, "stable");
+        assert_eq!(
+            c.call_id("abc"),
+            "abc000000",
+            "short ids keep OpenCode's padding"
+        );
+        assert_eq!(
+            c.call_id("call_12345"),
+            "call12345",
+            "ids that already fit are kept"
+        );
     }
 }

@@ -20,6 +20,11 @@ use tokio::time::Instant;
 /// servers often publish several times in a row (OpenCode: 150 ms).
 pub const DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Quiet period after an empty push. Many servers clear a file's
+/// diagnostics first and publish the real ones a moment later, so an empty
+/// list is not trusted as quickly as a non-empty one.
+pub const EMPTY_DEBOUNCE: Duration = Duration::from_millis(600);
+
 /// Frame a JSON-RPC message with its `Content-Length` header.
 pub fn encode(msg: &Value) -> Vec<u8> {
     let body = msg.to_string();
@@ -252,17 +257,20 @@ impl Client {
 
     /// Wait until diagnostics for `path` arrive and go quiet for
     /// [`DEBOUNCE`], or until `timeout`.
-    pub async fn wait(rx: &mut broadcast::Receiver<PathBuf>, path: &Path, timeout: Duration) {
-        let key = path_key(path);
-        let deadline = Instant::now() + timeout;
-        let mut until = deadline;
-        loop {
-            match tokio::time::timeout_at(until, rx.recv()).await {
-                Ok(Ok(p)) if p == key => until = (Instant::now() + DEBOUNCE).min(deadline),
-                Ok(Ok(_)) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
-                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return,
-            }
-        }
+    pub async fn wait(
+        &self,
+        rx: &mut broadcast::Receiver<PathBuf>,
+        path: &Path,
+        timeout: Duration,
+    ) {
+        let empty = |key: &Path| {
+            self.diagnostics
+                .lock()
+                .unwrap()
+                .get(key)
+                .is_none_or(|d| d.is_empty())
+        };
+        wait_for(rx, path, timeout, empty).await
     }
 
     pub fn diagnostics(&self) -> HashMap<PathBuf, Vec<Diagnostic>> {
@@ -356,6 +364,33 @@ async fn read_loop<R: AsyncBufRead + Unpin>(client: Weak<Client>, mut r: R) {
     }
 }
 
+/// Wait until diagnostics for `path` arrive and go quiet, or `timeout`.
+/// `empty` says whether the latest list for a path has no diagnostics.
+pub async fn wait_for(
+    rx: &mut broadcast::Receiver<PathBuf>,
+    path: &Path,
+    timeout: Duration,
+    empty: impl Fn(&Path) -> bool,
+) {
+    let key = path_key(path);
+    let deadline = Instant::now() + timeout;
+    let mut until = deadline;
+    loop {
+        match tokio::time::timeout_at(until, rx.recv()).await {
+            Ok(Ok(p)) if p == key => {
+                let quiet = if empty(&key) {
+                    EMPTY_DEBOUNCE
+                } else {
+                    DEBOUNCE
+                };
+                until = (Instant::now() + quiet).min(deadline)
+            }
+            Ok(Ok(_)) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,12 +435,37 @@ mod tests {
         let path = PathBuf::from("/nonexistent/a.rs");
         // Nothing arrives: returns at the timeout.
         let t = Instant::now();
-        Client::wait(&mut rx, &path, Duration::from_millis(50)).await;
+        wait_for(&mut rx, &path, Duration::from_millis(50), |_| false).await;
         assert!(t.elapsed() >= Duration::from_millis(50));
         // A push arrives: returns after the debounce, well before the timeout.
         tx.send(path_key(&path)).unwrap();
         let t = Instant::now();
-        Client::wait(&mut rx, &path, Duration::from_secs(5)).await;
+        wait_for(&mut rx, &path, Duration::from_secs(5), |_| false).await;
         assert!(t.elapsed() < Duration::from_secs(2));
+        // An empty push waits longer for the follow-up real list.
+        tx.send(path_key(&path)).unwrap();
+        let t = Instant::now();
+        wait_for(&mut rx, &path, Duration::from_secs(5), |_| true).await;
+        assert!(t.elapsed() >= EMPTY_DEBOUNCE, "{:?}", t.elapsed());
+        // ... and a real list arriving after it ends the wait one debounce later.
+        let tx2 = tx.clone();
+        let key = path_key(&path);
+        tokio::spawn(async move {
+            tx2.send(key.clone()).unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            tx2.send(key).unwrap();
+        });
+        let t = Instant::now();
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        wait_for(&mut rx, &path, Duration::from_secs(5), |_| {
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+        })
+        .await;
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(300) + DEBOUNCE
+                && took < Duration::from_millis(300) + EMPTY_DEBOUNCE,
+            "{took:?}"
+        );
     }
 }

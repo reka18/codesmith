@@ -339,7 +339,7 @@ impl Lsp {
         let waits = clients.into_iter().map(|c| async move {
             let mut rx = c.subscribe();
             if c.open(file).await.is_ok() && wait {
-                Client::wait(&mut rx, file, self.timeouts.diagnostics).await;
+                c.wait(&mut rx, file, self.timeouts.diagnostics).await;
             }
         });
         futures_util::future::join_all(waits).await;

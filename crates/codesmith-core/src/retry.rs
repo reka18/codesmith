@@ -239,7 +239,10 @@ pub fn classify(e: &Error) -> Class {
         // An error a provider reported inside its stream, already judged
         // retryable or not by the protocol; its text refines the class.
         Error::Provider { message, retryable } => match classify_failure(None, message) {
+            // The text did not decide it: trust the protocol's judgement,
+            // and never retry what it marked non-retryable.
             Class::Unknown if *retryable => Class::ProviderInternal,
+            Class::Unknown => Class::InvalidRequest,
             c => c,
         },
     }
@@ -592,7 +595,12 @@ mod tests {
                 Class::ProviderInternal,
                 "the protocol's retryable judgement is kept"
             );
-            assert_eq!(p("something odd happened", false), Class::Unknown);
+            assert_eq!(
+                p("something odd happened", false),
+                Class::InvalidRequest,
+                "a non-retryable error is not retried"
+            );
+            assert!(!p("something odd happened", false).retryable());
             assert_ne!(
                 p("insufficient_quota: You exceeded your current quota", false),
                 Class::ProviderInternal,

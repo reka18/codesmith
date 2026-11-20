@@ -19,6 +19,9 @@ use crate::{
 };
 use serde_json::{json, Value};
 
+/// Marks Mistral-family cases whose ids are hashed (see openai::call_id).
+const MISTRAL_ID: &str = "<mistral-hashed>";
+
 #[path = "parity_options.rs"]
 mod options;
 
@@ -427,19 +430,33 @@ fn openai_chat_requests() {
                 json!({"type": "function", "function": {"name": "lookup", "description": "Lookup data", "parameters": schema}})
             );
         }),
+        // Deliberate difference: OpenCode keeps the first nine alphanumerics
+        // (`toolu01CB`), so ids sharing a prefix collide; CodeSmith hashes an
+        // id that does not already fit into nine (see openai::call_id).
         ("openai-compatible-chat :: normalizes tool call IDs for the selected model family", || {
             let long = format!("call_{}", "a".repeat(48));
             for (model, id, want) in [
-                ("mistral-small", "toolu_01CBhTTz95qkd9LJMdC9sf8t", "toolu01CB"),
+                ("mistral-small", "toolu_01CBhTTz95qkd9LJMdC9sf8t", MISTRAL_ID),
                 ("devstral-small", "abc", "abc000000"),
-                ("codestral-latest", "toolu_01CBhTTz95", "toolu01CB"),
-                ("pixtral-large", "toolu_01CBhTTz95", "toolu01CB"),
-                ("open-mixtral-8x22b", "toolu_01CBhTTz95", "toolu01CB"),
+                ("codestral-latest", "toolu_01CBhTTz95", MISTRAL_ID),
+                ("pixtral-large", "toolu_01CBhTTz95", MISTRAL_ID),
+                ("open-mixtral-8x22b", "toolu_01CBhTTz95", MISTRAL_ID),
                 ("anthropic/claude-sonnet-4", "call|item/+", "call_item__"),
                 ("openai/gpt-4o", long.as_str(), &long[..40]),
                 ("ordinary-model", "call|item/+", "call|item/+"),
                 ("zai-glm-5-2", "call_long_identifier", "call_long_identifier"),
             ] {
+                if want == MISTRAL_ID {
+                    let r = req(model, vec![asst(vec![call(id, "lookup", json!({}))]), results(vec![result(id, "lookup", "")])]);
+                    let m = chat_at(COMPATIBLE, &r)["messages"].clone();
+                    let got = m[0]["tool_calls"][0]["id"].as_str().unwrap().to_string();
+                    assert!(got.len() == 9 && got.chars().all(|c| c.is_ascii_alphanumeric()), "{model}: {got}");
+                    assert_eq!(m[1]["tool_call_id"], json!(got), "{model}: the result uses the same id");
+                    let other = "toolu_01CBzzzzzzzzzz";
+                    let r2 = req(model, vec![asst(vec![call(other, "lookup", json!({}))]), results(vec![result(other, "lookup", "")])]);
+                    assert_ne!(chat_at(COMPATIBLE, &r2)["messages"][0]["tool_calls"][0]["id"], json!(got), "{model}: a shared prefix must not collide");
+                    continue;
+                }
                 let r = req(
                     model,
                     vec![
