@@ -40,13 +40,13 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
 | OpenAI Chat | 115 | 15 | 88 | 12 |
-| OpenAI Responses | 159 | 22 | 117 | 20 |
-| Anthropic Messages | 95 | 9 | 75 | 11 |
-| Gemini | 61 | 12 | 44 | 5 |
-| Shared | 85 | 10 | 59 | 16 |
-| **Total** | **515** | **68** | **383** | **64** |
+| OpenAI Responses | 159 | 22 | 122 | 15 |
+| Anthropic Messages | 95 | 9 | 79 | 7 |
+| Gemini | 61 | 12 | 45 | 4 |
+| Shared | 85 | 10 | 60 | 15 |
+| **Total** | **515** | **68** | **394** | **53** |
 
-Of the gaps, 29 are missing provider features (the roadmap) and
+Of the gaps, 18 are missing provider features (the roadmap) and
 35 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -136,7 +136,7 @@ Gemini (`gemini.rs`)
   `MISSING_THOUGHT_SIGNATURE` finishes are errors; in-stream errors are
   classified by status.
 
-Media (`lib.rs` and every protocol; the 34 cases in the `*_media` tests)
+Media (`lib.rs` and every protocol; the 41 cases in the `*_media` tests)
 - `Part::Media` (user attachments) and `media` on `Part::ToolResult` (images
   and files a tool returned, such as `read` on a PNG or PDF), each a MIME type
   plus inline base64 or a URL. Both are additive in the stored JSON: results
@@ -155,6 +155,21 @@ Media (`lib.rs` and every protocol; the 34 cases in the `*_media` tests)
   tool media nests inside `functionResponse.parts`, except on Gemini 2.5 and
   for `fileData`, which go to a following `Attached media from tool result:`
   user turn shared by a batch of results.
+- `Media.meta` holds per-part provider options and state keyed by provider
+  (OpenCode's `providerMetadata`; absent from stored JSON when empty):
+  Anthropic `file_id` (a `file` source), `title`, `context`, `citations`
+  and `transformations.oversized_image` (`downsize` or `error`; anything
+  malformed is an `Error::Invalid`), Responses `openai.detail`, and Gemini's
+  `google.thoughtSignature` on generated media.
+- Video: Anthropic `video` blocks, inline or by any URL, in user turns and
+  tool results; on Responses, xAI (`api.x.ai`) takes video as a named
+  `input_file`. Meta (`api.meta.ai`) cannot see video inside tool results:
+  on Responses a batch of results sends its videos in a user message after
+  it (a result left empty says so), and on Messages they move after the
+  turn's results.
+- Media in an assistant message (generated images): Gemini replays it as
+  model `inlineData` with its thought signature; Responses, which has no
+  assistant image item, as user input in place.
 - Rejections are a new `Error::Invalid`, raised by `check` before anything is
   sent, so a session fails fast and never retries them.
 - `normalize_tool_history` keeps a media-only result's empty text.
@@ -219,6 +234,41 @@ Reasoning replay (`lib.rs` and every protocol)
   stripped on replay), the latest `reasoning_opaque`, and the field reasoning
   streamed under (replayed under that field; fully structured reasoning gets
   no scalar field; Kimi details keep `reasoning_content`).
+
+Responses item ids and phases (`lib.rs`, `responses.rs`;
+`src/parity_tests.rs` `openai_responses_item_metadata`)
+- Text and tool-call parts carry provider state as reasoning does:
+  `Part::Text` holds a `Text { text, meta }` (stored as a plain string when
+  there is no state, so older sessions load unchanged) and
+  `Part::ToolCall` an optional `meta` (absent from stored JSON when unset).
+  `Event::PartMeta` gives the state of the text block or tool call that just
+  ended, and `Collector` attaches it to that part.
+- Responses: a text block keeps its message item id and `phase`
+  (`commentary`, `final_answer`, or an explicit `null`, from
+  `output_item.added` or `.done`), and a function call its item id. Replay
+  sends consecutive text of one item as one `message` with that `id`,
+  `phase` and `status: "completed"`, and calls with their `id`; an id
+  without a nonempty prefix and suffix around `_` is left out, its item
+  kept. Text routes by output index before item id, and an
+  `output_text.done` whose item streamed nothing supplies the text.
+
+Effort updates (`Part::Effort`; `src/parity_options.rs` `effort_updates`, after
+OpenCode's `effort-updates.test.ts`, not counted above)
+- A `Role::System` message whose only part is `Part::Effort { effort,
+  previous }` changes the reasoning effort from that point on (OpenCode's
+  `Message.effort`). Claude Opus 5, every Claude 5.1 model and later
+  versions (unless thinking is off) take it as a native `system` message
+  with `output_config.effort` (with the `mid-conversation-output-config`
+  beta), and GPT-6 and later on Responses (not in `pro` mode or with
+  context management) as a `configuration_update` item, consecutive ones
+  coalesced; an `effortUpdates` option overrides the detection. The
+  top-level effort stays at the one before the first update, so the cached
+  prefix survives; history whose last update disagrees with the requested
+  effort drops its updates. Other routes drop the updates, and
+  `normalize_tool_history` holds them after pending results like other
+  system updates. The Anthropic message tail's cache marker skips a
+  trailing update. Sessions do not write effort updates yet: a variant
+  switch still changes the request's effort.
 
 Prompt caching (`cache.rs`, every protocol), on by default as in OpenCode
 - `Request.cache` is OpenCode's cache policy: `auto` (the default), off, or
@@ -477,8 +527,6 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
 - `openai-compatible-chat` "requires reasoning for DeepSeek …": no
   provider-name detection (CodeSmith detects from the endpoint and model id)
   and no `reasoningField` override.
-- `openai-responses` "preserves standard refusal content …": text only, no
-  item id/phase replay.
 - `anthropic-messages` "prepares Anthropic Messages target": a system-only
   cache policy stands for OpenCode's manual system hint.
 - `openai-compatible-chat` "prepares generic Chat target": no `strict` flag
@@ -495,8 +543,7 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
   options" passes the knobs as options (CodeSmith's request has only
   `max_tokens` and `temperature` as fields); "infers empty-signature
   compatibility across Kimi providers" by endpoint and model id, without the
-  provider-id-only case; the Responses replay cases send no `status` on
-  assistant messages, and "reconciles reasoning summaries that arrive only
+  provider-id-only case; "reconciles reasoning summaries that arrive only
   as finals" and "joins streamed summary blocks …" add the answer that
   follows the reasoning (see deliberate differences); "replays the latest
   reasoning_opaque …" and "accepts empty IDs …" check the stored part, not
@@ -505,7 +552,15 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
   request only; the Gemini cases send `{"output": …}` (as above); "bridges
   image tool results …" uses a Mistral model where OpenCode sets an explicit
   compatibility flag; "forwards native video URLs …" covers generateContent,
-  not Interactions.
+  not Interactions; "serializes Messages video inputs" has no per-part
+  cache hint (CodeSmith has none) or provider file reference (CodeSmith
+  media has no reference source), and the Meta cases detect Meta by its
+  endpoint where OpenCode uses its routes.
+- Responses item metadata: "preserves final reasoning metadata …" checks
+  the one reasoning block CodeSmith makes per item (see deliberate
+  differences); "preserves provider-issued item ids …" drops the reasoning
+  item that has neither encrypted state nor a valid id, which OpenCode
+  replays without its id.
 
 ## Deliberate differences
 
@@ -545,28 +600,6 @@ _OpenAI Chat 8._
 </details>
 
 
-### Image, PDF and video parts (7 tests)
-
-Media in user messages and tool results is supported (see "Fixes made while
-porting"). What is left: assistant-authored media (generated images replayed),
-per-part provider options (Anthropic `file_id`, citations, transformations),
-and video beyond URLs and inline parts on Chat, Responses and Gemini.
-
-_OpenAI Responses 2, Anthropic Messages 4, Gemini 1._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — lowers Responses video by provider and preserves ordered tool results
-- `openai-responses` — replays assistant media parts as portable user image input
-- `anthropic-messages` — lowers per-part Anthropic media options from provider metadata
-- `anthropic-messages` — rejects invalid per-part Anthropic media options
-- `anthropic-messages` — serializes Messages video inputs
-- `anthropic-messages` — moves Meta tool result videos after consecutive results
-- `gemini` — replays generated assistant media as model inline data
-
-</details>
-
-
 ### Signed text and signature overrides (5 tests)
 
 Anthropic thinking signatures, redacted thinking and Gemini thought signatures are stored and replayed, but plain text parts carry no provider state (Gemini signs visible text too), there is no per-model `requireSignature` override, and composed continuations and server-tool metadata are not modelled.
@@ -597,34 +630,6 @@ _OpenAI Responses 4, Shared 1._
 - `openai-responses` — defaults tool namespace descriptions
 - `openai-responses` — preserves tool namespaces through streaming and history replay
 - `cache-policy` — marks the final leaf inside a tool namespace
-
-</details>
-
-
-### Responses message item ids and phases (3 tests)
-
-Reasoning items replay with their ids and encrypted content, but assistant text keeps no item id or `phase`, and a reasoning item is one stored part (OpenCode keeps one per summary part). Not request-side only: replaying ids and phases needs provider metadata on stored text and tool-call parts, captured while decoding.
-
-_OpenAI Responses 3._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — preserves and replays assistant message phases
-- `openai-responses` — preserves final reasoning metadata when storage is enabled
-- `openai-responses` — preserves provider-issued item ids and removes malformed ids without dropping items
-
-</details>
-
-
-### Per-message effort updates (1 test)
-
-OpenCode can change the reasoning effort mid-conversation (an effort update message lowered natively or as a configuration item). CodeSmith's effort is a request option for the whole request; switching variants applies from the next request.
-
-_Shared 1._
-
-<details><summary>Tests</summary>
-
-- `tool-history` — moves effort updates after the results of pending calls
 
 </details>
 

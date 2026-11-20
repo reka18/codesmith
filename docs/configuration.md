@@ -327,8 +327,11 @@ in the UI, and editors over ACP show them as an Effort option (see
 Reasoning is sent back with what each provider needs to accept it
 (Anthropic thinking signatures and redacted thinking, Responses encrypted
 reasoning, Gemini thought signatures), so thinking models keep their
-reasoning across tool calls. Sessions that contain signed reasoning can't be
-opened by CodeSmith builds older than this feature.
+reasoning across tool calls. On Responses, replies also keep their message
+item ids and phases (`commentary`, `final_answer`) and tool calls their item
+ids, which go back with the history as OpenCode sends them. Sessions that
+contain signed reasoning or these ids can't be opened by CodeSmith builds
+older than these features.
 
 CodeSmith's own instructions to the model in the middle of a conversation
 (carry on after a compaction, answer in text on the last allowed step) are
