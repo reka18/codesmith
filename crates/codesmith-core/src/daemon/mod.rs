@@ -32,10 +32,13 @@
 //!
 //! # Security
 //!
-//! - Same user only. The socket lives in `/tmp/codesmith-shelld-<uid>/`
-//!   (or under `$CODESMITH_SHELLD_SOCKET_DIR`), a directory that must be
-//!   a real directory owned by the user, mode 0700; the socket itself is
-//!   0600. Both sides also check the peer's uid on every connection
+//! - Same user only. The socket lives in `codesmith-shelld-<uid>/` under
+//!   `$CODESMITH_SHELLD_SOCKET_DIR`, else the user's own runtime directory
+//!   (`$XDG_RUNTIME_DIR`, or macOS's per-user temporary directory) when
+//!   no one else can write there, else `/tmp` (where another user can take
+//!   the name first, which stops the daemon rather than expose it). That
+//!   directory must be a real directory owned by the user, mode 0700; the
+//!   socket itself is 0600. Both sides also check the peer's uid on every connection
 //!   (`SO_PEERCRED` / `getpeereid`) and refuse anyone else.
 //! - A per-daemon secret. The registration (0600, written atomically, read
 //!   with `O_NOFOLLOW` and refused when not the user's or writable by

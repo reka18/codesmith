@@ -333,8 +333,10 @@ server itself; a command the daemon refused fails.
 
 Its files: a runtime directory `$XDG_STATE_HOME/codesmith/shelld/<random>`
 (default `~/.local/state/...`) holding `service.json` and `service.lock`,
-and a socket in `/tmp/codesmith-shelld-<uid>/` (or under
-`$CODESMITH_SHELLD_SOCKET_DIR`).
+and a socket in `codesmith-shelld-<uid>/` under
+`$CODESMITH_SHELLD_SOCKET_DIR`, else your own runtime directory
+(`$XDG_RUNTIME_DIR`, or on macOS your per-user temporary directory) when
+no one else can write there and the socket path fits, else `/tmp`.
 
 Security:
 

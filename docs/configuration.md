@@ -1246,7 +1246,7 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
 | `CODESMITH_SHELL_DAEMON` | `0`: [`codesmith serve`](local-server.md#the-shell-daemon) runs commands and terminals itself instead of in its shell daemon. |
 | `CODESMITH_SHELLD_HANDOFF` | The shell daemon handoff a server inherits from the one before it ([restarting](local-server.md#restarting-without-stopping-commands)); taken out of the environment at startup. |
-| `CODESMITH_SHELLD_SOCKET_DIR` | Where the shell daemon's socket directory goes instead of `/tmp` (absolute, no `..`). |
+| `CODESMITH_SHELLD_SOCKET_DIR` | Where the shell daemon's socket directory goes instead of your runtime directory (`$XDG_RUNTIME_DIR`, or the per-user temporary directory on macOS) or `/tmp` (absolute, no `..`). |
 | `XDG_STATE_HOME` | The shell daemon's runtime directories are under `$XDG_STATE_HOME/codesmith/shelld`, else `~/.local/state/codesmith/shelld`. |
 | `CODESMITH_DISABLE_FILEWATCHER` | `1` or `true`: watch no files ([file watching](#file-watching)). |
 
