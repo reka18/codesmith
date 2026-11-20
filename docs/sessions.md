@@ -64,7 +64,8 @@ switch agent, mode, model or variant, and across undo and redo (they are not
 file changes), and are reported when they finish. They stop when the session
 ends: when you start or switch to another session in the UI, delete or close
 it over the server or ACP, when the program exits, and when you stop them
-explicitly (abort on an idle server session). Unlike OpenCode's server, the
+explicitly (abort on an idle server session, or the server's cancel route
+for one command). Unlike OpenCode's server, the
 UI does not keep a session you left running in the background: it shows and
 wakes one session only, so nothing would report the commands of another. A
 command's output file stays, and is named in the result.

@@ -184,6 +184,7 @@ Provider fields:
 | `settings.transport` | `websocket` or `http`: how an `openai-responses` provider carries a session's steps. See [Responses over WebSocket](#responses-over-websocket). |
 | `compatibility` | [Compatibility overrides](#compatibility-overrides) for every model of this provider. |
 | `body` | Extra request-body fields for every model of this provider, merged into each request. |
+| `options` | [Provider options](#provider-options-and-variants) for every model of this provider. |
 | `cache` | [Prompt caching](#prompt-caching) for every model of this provider (`settings.cache` also works). |
 | `models` | Per-model settings, keyed by the id you use in `provider/model`. |
 
@@ -197,6 +198,8 @@ Model fields:
 | `limit.output` | Maximum output tokens per response. |
 | `temperature` | Sampling temperature. |
 | `body` | Extra request-body fields for this model, merged after the provider's `body`. |
+| `options` | [Provider options](#provider-options-and-variants) for this model, merged over the provider's. |
+| `variants` | Named sets of options, picked with `provider/model#name`. See [variants](#provider-options-and-variants). |
 | `cost` | Dollars per million tokens: `input`, `output`, `cache_read`, `cache_write`. Used for the session cost and `codesmith stats --cost` when the provider does not report what it billed (see [Billed cost](#billed-cost)). |
 | `modalities` | `{"input": [...], "output": [...]}`, as in OpenCode and models.dev. See [images and PDFs](tools.md#images-and-pdfs). |
 | `attachment` | OpenCode's older flag: `false` means text input only. |
@@ -286,6 +289,7 @@ or a model (the model's wins) overrides it, with OpenCode's names:
 | `streamUsage` | `true`: sends `stream_options.include_usage` | `false` for servers that reject it |
 | `requireReasoning` | `true` on DeepSeek (the `deepseek` provider, its endpoint or a DeepSeek model) and with a `reasoningField`: every assistant message carries the reasoning field, empty when there was none | `true` or `false` |
 | `reasoningField` | Reasoning is read from `reasoning_content`, `reasoning` or `reasoning_text` and sent back under the field it came in | A field name, e.g. `"reasoning"`: read first, and every assistant message's reasoning is written there (structured `reasoning_details` from earlier turns are not sent unless the field is `reasoning_details`). `role`, `content`, `refusal` and `tool_calls` are rejected. |
+| `requireFinishReason` | `true`: an OpenAI Chat stream that ends without a `finish_reason` was cut short, and the step is retried | `false` for servers that end streams without one; the finish is then inferred |
 | `requireAssistantAfterTool` | `true` on Mistral-family models: an assistant turn between tool results and user text | `true` or `false` |
 | `requireSignature` | Anthropic Messages: `true`, unsigned reasoning is dropped; `false` on Kimi, Moonshot, MiMo, Qwen and MiniMax servers, which take it with an empty signature | `true` or `false` |
 

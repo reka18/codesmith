@@ -30,6 +30,21 @@ the order: `settings.apiKey`, then environment variables, then saved keys.
 An empty or stale variable in your shell takes precedence over a key saved
 with `auth login`.
 
+**`OpenAI Chat stream ended without finish_reason`.** CodeSmith treats a
+Chat stream that stops without a finish reason as cut short and retries the
+step, as OpenCode does. If a server always ends its streams that way, set
+`"compatibility": {"requireFinishReason": false}` on the provider or model
+(see [compatibility overrides](configuration.md#compatibility-overrides)).
+Malformed stream events (fields of the wrong type, a tool call without an id)
+fail the step as invalid provider output, without a retry.
+
+**Responses requests fail over the WebSocket.** The built-in `openai`
+provider, `azure` on its v1 API and `xai` set to `openai-responses` carry
+session steps over the Responses WebSocket. A proxy or gateway that can't take it usually falls back to HTTP
+on its own; to stay on HTTP from the start, set
+`"settings": {"transport": "http"}` on the provider (see
+[Responses over WebSocket](configuration.md#responses-over-websocket)).
+
 **A config file is rejected.** CodeSmith stops on any file that doesn't
 parse, and names it, rather than skip it and maybe drop a `deny` rule. JSONC
 comments and trailing commas are fine. Check `{env:}` values that contain

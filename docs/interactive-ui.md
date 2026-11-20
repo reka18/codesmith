@@ -51,7 +51,7 @@ Pastes go in at the cursor.
 | Key | Action |
 |---|---|
 | **Tab** / **Shift+Tab** | Next or previous primary agent (`build`, `plan`, your own). |
-| **Esc** | Interrupt the running turn. |
+| **Esc** | Interrupt the running turn; when idle, clear the prompt. |
 | **Ctrl+C** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
 | **Ctrl+D** on an empty prompt | Quit. |
 | **Ctrl+O** | Expand or collapse all tool output. |
@@ -69,6 +69,7 @@ Pastes go in at the cursor.
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
 | `/agent [id]` | Switch agent, or pick one. |
 | `/model [provider/model]` | Switch model, or pick one. |
+| `/variant [name]` | Switch to the model's next [variant](configuration.md#provider-options-and-variants), or to the one named; `/variant default` drops it. |
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |

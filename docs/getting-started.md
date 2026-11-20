@@ -54,10 +54,10 @@ export ANTHROPIC_API_KEY=...          # or: codesmith auth login anthropic
 codesmith -m anthropic/claude-sonnet-4-5
 ```
 
-The built-in providers are `anthropic`, `openai`, `google`, `openrouter`,
-`groq`, `deepseek`, `mistral`, `xai`, `together`, `fireworks` and
-`cerebras`. See [providers](configuration.md#built-in-providers) for their
-key variables.
+The built-in providers are `anthropic`, `openai`, `google`, `azure`,
+`openrouter`, `groq`, `deepseek`, `mistral`, `xai`, `together`, `fireworks`
+and `cerebras`. See [providers](configuration.md#built-in-providers) for their
+key variables (`azure` also needs its resource name).
 
 **A local server.** `ollama`, `lmstudio` and `llamacpp` are built in at their
 default ports, with no key:
