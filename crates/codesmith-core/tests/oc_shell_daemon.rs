@@ -953,3 +953,621 @@ fn daemon_writes_and_counts_output_and_cleans_up_after_a_failed_command() {
         .unwrap();
     poll(|| !codesmith_core::daemon::fs::alive(bg));
 }
+
+// --- shell commands on the daemon (`shell-daemon.test.ts`) ---
+
+use codesmith_core::config::ToolOutputConfig;
+use codesmith_core::permission::{Effect, Fixed, Gate, Reply, Rule};
+use codesmith_core::tool::shell::{Ending, Jobs};
+use codesmith_core::tool::{self, Ctx};
+
+struct Project {
+    dir: tempfile::TempDir,
+    gate: Gate,
+    session: String,
+}
+
+impl Project {
+    fn new() -> Project {
+        Project {
+            dir: tempfile::tempdir().unwrap(),
+            gate: Gate::new(
+                vec![Rule::new("*", "*", Effect::Allow)],
+                Arc::new(Fixed(Reply::Once)),
+            ),
+            session: format!("ses_daemon_{}", codesmith_core::paths::random_token(6)),
+        }
+    }
+    fn root(&self) -> PathBuf {
+        self.dir.path().canonicalize().unwrap()
+    }
+    fn ctx(&self, jobs: &Jobs) -> Ctx<'_> {
+        Ctx {
+            cwd: self.root(),
+            root: self.root(),
+            gate: &self.gate,
+            shell: "/bin/sh".into(),
+            session_id: self.session.clone(),
+            limits: ToolOutputConfig::default(),
+            client: reqwest::Client::new(),
+            jobs: Some(jobs.clone()),
+            websearch: None,
+            format: None,
+            lsp: None,
+            progress: None,
+        }
+    }
+    fn jobs(&self, client: &Arc<Client>) -> Jobs {
+        let jobs = Jobs::default();
+        jobs.use_daemon(client.clone(), self.root().display().to_string());
+        jobs
+    }
+    async fn shell(&self, jobs: &Jobs, input: Value) -> (String, bool) {
+        tool::execute(&self.ctx(jobs), "shell", &input).await
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(codesmith_core::paths::session_output_dir(&self.session));
+    }
+}
+
+fn processes(c: &Client) -> Vec<codesmith_core::daemon::protocol::ProcessInfo> {
+    match c.request_if_running(&list()).unwrap() {
+        Some(Response::Processes { processes }) => processes,
+        _ => vec![],
+    }
+}
+
+/// Wait (at most `secs`) until every job has finished.
+async fn settle(jobs: &Jobs, secs: u64) {
+    tokio::time::timeout(Duration::from_secs(secs), async {
+        while jobs.running() > 0 {
+            jobs.wait_any().await;
+        }
+    })
+    .await
+    .expect("the jobs did not finish");
+}
+
+/// shell-daemon.test.ts: "runs a command with the server's environment, an absolute cwd and its metadata"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_metadata() {
+    let d = real();
+    let p = Project::new();
+    std::fs::create_dir(p.root().join("sub")).unwrap();
+    let jobs = p.jobs(&d.client);
+    let mut env: std::collections::BTreeMap<String, String> = [
+        ("PATH", "/usr/bin:/bin"),
+        ("FOO", "bar"),
+        ("CODESMITH_SERVER_TOKEN", "secret"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    env.insert("HOME".into(), p.root().display().to_string());
+    jobs.set_environment(Some(env));
+    let command =
+        r#"printf '%s|%s|%s|%s' "$FOO" "$AGENT" "${CODESMITH_SERVER_TOKEN:-unset}" "$(pwd)""#;
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": command, "workdir": "sub", "background": true, "timeout": 60000}),
+        )
+        .await;
+    assert!(!err, "{out}");
+    let [proc_] = processes(&d.client).try_into().unwrap();
+    assert_eq!(
+        proc_.command,
+        vec!["/bin/sh".to_string(), "-c".into(), command.into()]
+    );
+    assert_eq!(proc_.cwd, p.root().join("sub").display().to_string());
+    let m = &proc_.metadata;
+    assert_eq!(m["id"], "shell_1");
+    assert_eq!(m["command"], command);
+    assert_eq!(m["shell"], "/bin/sh");
+    assert_eq!(m["sessionID"], p.session.as_str());
+    assert_eq!(m["directory"], p.root().display().to_string());
+    assert_eq!(m["file"], proc_.output_path.as_str());
+    assert!(m["timeoutDeadline"].is_u64());
+    settle(&jobs, 10).await;
+    let [job] = jobs.take_finished().try_into().unwrap();
+    assert_eq!(job.ending, Some(Ending::Exited(0)));
+    assert_eq!(
+        std::fs::read_to_string(&job.file).unwrap(),
+        format!("bar|1|unset|{}", p.root().join("sub").display())
+    );
+    // Reported, so the daemon forgets it.
+    poll(|| processes(&d.client).is_empty());
+}
+
+/// shell-daemon.test.ts: "records successful and failed exits without signalling a finished command"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_records_successful_and_failed_exits_without_signalling_a_finished_command() {
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    for code in [0, 3] {
+        let (out, err) = p
+            .shell(
+                &jobs,
+                json!({"command": format!("exit {code}"), "background": true}),
+            )
+            .await;
+        assert!(!err, "{out}");
+    }
+    settle(&jobs, 10).await;
+    let mut endings: Vec<_> = jobs
+        .take_finished()
+        .into_iter()
+        .map(|j| (j.id, j.ending))
+        .collect();
+    endings.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        endings,
+        vec![
+            ("shell_1".to_string(), Some(Ending::Exited(0))),
+            ("shell_2".to_string(), Some(Ending::Exited(3)))
+        ]
+    );
+    // A foreground call's result is the same as from a spawned command.
+    let (out, err) = p
+        .shell(&jobs, json!({"command": "printf hi; exit 3"}))
+        .await;
+    assert!(!err);
+    assert_eq!(out, "hi\n\nExit code: 3");
+}
+
+/// shell-daemon.test.ts: "recreates the output directory removed while the Location is open"
+/// and "the spawner recreates the output directory removed while the Location is open"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_recreates_the_output_directory_removed_while_the_location_is_open() {
+    let d = real();
+    let p = Project::new();
+    for jobs in [p.jobs(&d.client), Jobs::default()] {
+        let (out, _) = p.shell(&jobs, json!({"command": "printf first"})).await;
+        assert_eq!(out, "first");
+        let _ = std::fs::remove_dir_all(codesmith_core::paths::session_output_dir(&p.session));
+        let (out, err) = p.shell(&jobs, json!({"command": "printf second"})).await;
+        assert!(!err, "{out}");
+        assert_eq!(out, "second");
+    }
+}
+
+/// shell-daemon.test.ts: "counts lines like the spawner and reads only what reached the file after a write error"
+/// (adapted: the result of a long command run by the daemon is the same
+/// as the spawner's, line counts and the truncation notice included)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_counts_lines_like_the_spawner() {
+    let d = real();
+    let p = Project::new();
+    let command = "i=1; while [ $i -le 3000 ]; do echo \"line $i\"; i=$((i+1)); done";
+    let (daemon, _) = p
+        .shell(&p.jobs(&d.client), json!({"command": command}))
+        .await;
+    let (local, _) = p.shell(&Jobs::default(), json!({"command": command})).await;
+    let strip = |s: &str| {
+        s.lines()
+            .filter(|l| !l.contains("full output saved to"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(daemon.contains("line 3000"));
+    assert_eq!(strip(&daemon), strip(&local));
+    assert!(
+        processes(&d.client).is_empty(),
+        "a finished call's record is forgotten"
+    );
+}
+
+/// shell-daemon.test.ts: "fails a command the daemon rejected instead of spawning it"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_fails_a_command_the_daemon_rejected_instead_of_spawning_it() {
+    let (_t, root, dir) = runtime();
+    let socket = dir.join("d.sock");
+    let _fake = listen(&socket, |_, req, _| match op(req) {
+        "ping" => Some(pong()),
+        "create_pipe" => Some(json!({"type": "error", "message": "output path is a symlink"})),
+        _ => Some(json!({"type": "ok"})),
+    });
+    write_registration(&dir, &socket, "test", "test");
+    let client = Arc::new(Client::new(&root, "daemon", None, None));
+    let p = Project::new();
+    let jobs = p.jobs(&client);
+    let marker = p.root().join("ran");
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": format!("touch '{}'", marker.display())}),
+        )
+        .await;
+    assert!(err);
+    assert!(out.contains("output path is a symlink"), "{out}");
+    assert!(!marker.exists(), "never spawned instead");
+    assert_eq!(jobs.running_or_unreported(), 0);
+}
+
+/// A daemon that cannot be reached or started never ran the command, so
+/// it is spawned here instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_spawns_a_command_itself_when_the_daemon_is_unavailable() {
+    let (_t, root, _dir) = runtime();
+    let client = Arc::new(Client::new(
+        &root,
+        "none",
+        Some(Launcher {
+            program: "/missing/codesmith".into(),
+            args: vec![],
+        }),
+        None,
+    ));
+    let p = Project::new();
+    let (out, err) = p
+        .shell(&p.jobs(&client), json!({"command": "printf here"}))
+        .await;
+    assert!(!err, "{out}");
+    assert_eq!(out, "here");
+}
+
+/// shell-daemon.test.ts: "reports a command lost with the daemon as killed, with what it wrote"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_reports_a_command_lost_with_the_daemon_as_killed_with_what_it_wrote() {
+    let (_t, root, dir) = runtime();
+    let socket = dir.join("d.sock");
+    let _fake = listen(&socket, |conn, req, _| match op(req) {
+        "ping" => Some(pong()),
+        "create_pipe" => {
+            std::fs::write(req["output_path"].as_str().unwrap(), "partial\n").unwrap();
+            Some(json!({"type": "created", "process": {
+                "id": 1, "pid": 4_000_000, "command": ["/bin/sh"], "cwd": req["cwd"], "group_id": "g",
+                "lifecycle": {"status": "running"}, "output_tail": 8, "output_lines": 1,
+                "output_path": req["output_path"], "metadata": req["metadata"], "started_at": 1
+            }}))
+        }
+        // The daemon goes away under the waiting server.
+        "wait" => {
+            let _ = conn.shutdown(std::net::Shutdown::Both);
+            None
+        }
+        _ => Some(json!({"type": "ok"})),
+    });
+    write_registration(&dir, &socket, "test", "test");
+    let client = Arc::new(Client::new(&root, "daemon", None, None));
+    let p = Project::new();
+    let jobs = p.jobs(&client);
+    let (out, err) = p
+        .shell(&jobs, json!({"command": "work", "background": true}))
+        .await;
+    assert!(!err, "{out}");
+    settle(&jobs, 10).await;
+    let [job] = jobs.take_finished().try_into().unwrap();
+    assert_eq!(job.ending, Some(Ending::Lost));
+    let note = codesmith_core::tool::shell::notification(&job, ToolOutputConfig::default());
+    assert!(note.contains("partial"), "{note}");
+    assert!(
+        note.contains("Command was killed: the process daemon stopped"),
+        "{note}"
+    );
+}
+
+/// shell-daemon.test.ts: "stops a timed-out command with SIGTERM, then SIGKILL after the grace period, and keeps it"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_stops_a_timed_out_command_with_sigterm_then_sigkill_after_the_grace_period_and_keeps_it(
+) {
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    let started = std::time::Instant::now();
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": "trap '' TERM; sleep 6", "background": true, "timeout": 100}),
+        )
+        .await;
+    assert!(!err, "{out}");
+    settle(&jobs, 10).await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(3),
+        "SIGKILL only after the grace period"
+    );
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "but well before it ends by itself"
+    );
+    // The daemon knows why it was stopped, for a server taking it back.
+    let [proc_] = processes(&d.client).try_into().unwrap();
+    assert_eq!(proc_.metadata["stopReason"], "timeout");
+    assert!(proc_.metadata.get("timeoutDeadline").is_none());
+    let [job] = jobs.finished().try_into().unwrap();
+    assert_eq!(
+        job.ending,
+        Some(Ending::TimedOut(Some(Box::new(Ending::Signaled(9)))))
+    );
+    assert!(job.file.exists(), "its output file is kept");
+}
+
+/// shell-daemon.test.ts: "takes its commands back after a restart and leaves other Locations' alone"
+/// (and shell-restart.test.ts's foreground call, adapted: it is taken back
+/// as a background job of its session, without its call's timeout)
+#[test]
+fn oc_takes_its_commands_back_after_a_restart_and_leaves_other_locations_alone() {
+    let mut d = real();
+    let p = Project::new();
+    // Server 1, on a runtime of its own that the restart tears down.
+    let one = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let jobs = p.jobs(&d.client);
+    let (finished_at, waited) = one.block_on(async {
+        let bg = |command: &str, timeout: u64| {
+            json!({"command": command, "background": true, "timeout": timeout})
+        };
+        p.shell(&jobs, bg("sleep 5", 0)).await; // shell_1: running
+        p.shell(&jobs, bg("printf 'done\\n'; exit 3", 0)).await; // shell_2: finished
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while jobs.running() > 1 {
+                jobs.wait_any().await;
+            }
+        })
+        .await
+        .unwrap();
+        p.shell(&jobs, bg("sleep 5", 60_000)).await; // shell_3: expiring
+        p.shell(&jobs, bg("trap '' TERM; echo ready; sleep 5", 0)).await; // shell_4: stopping
+        let file = jobs.running_jobs().into_iter().find(|j| j.id == "shell_4").unwrap().file;
+        for _ in 0..400 {
+            if std::fs::read_to_string(&file).is_ok_and(|s| s.contains("ready")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(jobs.cancel("shell_4"));
+        // shell_5: a foreground call waits on it.
+        let (ctx_jobs, root, session) = (jobs.clone(), p.root(), p.session.clone());
+        tokio::spawn(async move {
+            let gate = Gate::new(vec![Rule::new("*", "*", Effect::Allow)], Arc::new(Fixed(Reply::Once)));
+            let ctx = Ctx {
+                cwd: root.clone(),
+                root,
+                gate: &gate,
+                shell: "/bin/sh".into(),
+                session_id: session,
+                limits: ToolOutputConfig::default(),
+                client: reqwest::Client::new(),
+                jobs: Some(ctx_jobs),
+                websearch: None,
+                format: None,
+                lsp: None,
+                progress: None,
+            };
+            let _ = tool::execute(&ctx, "shell", &json!({"command": "sleep 5", "timeout": 60000})).await;
+        });
+        for _ in 0..400 {
+            if !jobs.foreground().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        (jobs.finished().len(), jobs.foreground())
+    });
+    assert_eq!(finished_at, 1);
+    assert_eq!(waited.len(), 1);
+    // A graceful restart: server 1 hands its daemon over, then goes away.
+    let h = d.client.handoff().unwrap().unwrap();
+    one.shutdown_timeout(Duration::from_millis(100));
+    drop(jobs);
+    d.client.close();
+    let next = Arc::new(Client::new(&d.root, "next", None, Some(h)));
+    assert!(next.owns());
+    // Nothing was stopped: everything but the finished one still runs.
+    let before = processes(&next);
+    assert_eq!(before.len(), 5);
+    let running = |id: &str| {
+        before
+            .iter()
+            .find(|p| p.metadata["id"] == id)
+            .is_some_and(|p| p.lifecycle == codesmith_core::daemon::protocol::Lifecycle::Running)
+    };
+    assert!(["shell_1", "shell_3", "shell_4", "shell_5"]
+        .iter()
+        .all(|id| running(id)));
+    // The expiring command's deadline passes while no server runs.
+    let expiring = before
+        .iter()
+        .find(|p| p.metadata["id"] == "shell_3")
+        .unwrap();
+    let mut meta = expiring.metadata.clone();
+    meta["timeoutDeadline"] = json!(codesmith_core::daemon::protocol::now_ms() - 1);
+    next.request(
+        &Request::SetMetadata {
+            id: expiring.id,
+            metadata: meta,
+        },
+        false,
+    )
+    .unwrap();
+
+    let two = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    two.block_on(async {
+        // Another directory's server takes nothing.
+        let other = Project::new();
+        let theirs = Jobs::default();
+        theirs.use_daemon(next.clone(), other.root().display().to_string());
+        assert_eq!(theirs.adopt(&p.session).await, 0);
+
+        let jobs = p.jobs(&next);
+        assert_eq!(jobs.adopt(&p.session).await, 5);
+        // Taking back twice takes nothing more.
+        assert_eq!(jobs.adopt(&p.session).await, 0);
+        // The finished one is reported as it ended; the interrupted stop
+        // goes straight to SIGKILL; the expired one is stopped as timed out
+        // (its SIGTERM is enough).
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while jobs.running() > 2 {
+                jobs.wait_any().await;
+            }
+        })
+        .await
+        .expect("the stopped commands end");
+        let mut ended: Vec<_> = jobs
+            .take_finished()
+            .into_iter()
+            .map(|j| (j.id, j.ending, j.cancelled, j.file))
+            .collect();
+        ended.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(std::fs::read_to_string(&ended[0].3)
+            .unwrap()
+            .starts_with("done"));
+        let ended: Vec<_> = ended.into_iter().map(|(a, b, c, _)| (a, b, c)).collect();
+        assert_eq!(
+            ended,
+            vec![
+                ("shell_2".to_string(), Some(Ending::Exited(3)), false),
+                (
+                    "shell_3".to_string(),
+                    Some(Ending::TimedOut(Some(Box::new(Ending::Signaled(15))))),
+                    false
+                ),
+                ("shell_4".to_string(), Some(Ending::Signaled(9)), true),
+            ]
+        );
+        // The waited-on command runs on, now without a timeout.
+        let ids: Vec<String> = jobs.running_jobs().into_iter().map(|j| j.id).collect();
+        assert_eq!(ids, vec!["shell_1".to_string(), "shell_5".to_string()]);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let five = processes(&next)
+            .into_iter()
+            .find(|p| p.metadata["id"] == "shell_5")
+            .unwrap();
+        assert!(five.metadata.get("timeoutDeadline").is_none());
+        assert!(five.metadata.get("waited").is_none());
+        // New commands get new IDs.
+        let (out, _) = p
+            .shell(&jobs, json!({"command": "exit 0", "background": true}))
+            .await;
+        assert!(out.contains("shell_6"), "{out}");
+        next.shutdown().unwrap();
+    });
+    two.shutdown_timeout(Duration::from_millis(100));
+    d.join();
+}
+
+/// Terminals made through a daemon's `Ptys` live in the daemon: their
+/// events reach the server, and after a handoff the next server lists
+/// them and replays their output.
+#[tokio::test(flavor = "multi_thread")]
+async fn terminals_in_the_daemon_survive_a_handoff() {
+    use codesmith_core::pty::{CreateInput, Event, Output, Ptys};
+    let mut d = real();
+    let ptys = Ptys::remote(d.client.clone(), d.root.clone(), "/bin/sh");
+    let info = ptys
+        .create(CreateInput {
+            command: Some("cat".into()),
+            title: Some("kept".into()),
+            session_id: Some("ses_t".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut events = ptys.events();
+    let mut att = ptys.attach(&info.id, None).unwrap();
+    ptys.write(&info.id, "hello\n").unwrap();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !seen.contains("hello") {
+            match att.recv().await {
+                Some(Output::Data(s)) => seen.push_str(&s),
+                other => panic!("{other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let renamed = ptys.rename(&info.id, Some("build")).unwrap();
+    assert_eq!(renamed.title, "build");
+    let updated = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(Event::Updated { info }) = events.recv().await {
+                return info;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(updated.title, "build");
+    drop(att);
+
+    let h = d.client.handoff().unwrap().unwrap();
+    d.client.close();
+    let next = Arc::new(Client::new(&d.root, "next", None, Some(h)));
+    let after = Ptys::remote(next.clone(), d.root.clone(), "/bin/sh");
+    let listed = after.list(Some("ses_t"));
+    assert_eq!(
+        listed.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+        vec![info.id.clone()]
+    );
+    let att = after.attach(&info.id, None).unwrap();
+    assert!(att.replay.contains("hello"), "{:?}", att.replay);
+    drop(att);
+    after.remove(&info.id).unwrap();
+    assert!(after.list(None).is_empty());
+    next.close();
+    d.join();
+}
+
+/// shell-daemon.test.ts: "forgets a command in the daemon before deleting its file, on remove and on eviction"
+/// (adapted: CodeSmith keeps no shell records to remove or evict; the
+/// daemon forgets a command once its result is reported, foreground or
+/// background, and never deletes its output file)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_forgets_a_command_in_the_daemon_once_it_is_reported() {
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    p.shell(&jobs, json!({"command": "printf bg", "background": true}))
+        .await;
+    settle(&jobs, 10).await;
+    // Finished but not yet reported: the next server would need it.
+    assert_eq!(processes(&d.client).len(), 1);
+    let [job] = jobs.take_finished().try_into().unwrap();
+    poll(|| processes(&d.client).is_empty());
+    assert!(job.file.exists());
+    // A long foreground result keeps its file, and is forgotten too.
+    let (out, _) = p
+        .shell(
+            &jobs,
+            json!({"command": "i=0; while [ $i -lt 3000 ]; do echo $i; i=$((i+1)); done"}),
+        )
+        .await;
+    assert!(out.contains("full output saved to"), "{out}");
+    poll(|| processes(&d.client).is_empty());
+}
+
+/// Clearing a terminal's title (`null`) reaches the daemon as a clear,
+/// not as "unchanged".
+#[test]
+fn a_cleared_title_crosses_the_wire() {
+    let r = Request::UpdatePty {
+        id: "pty_1".into(),
+        title: Some(None),
+        size: None,
+    };
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v, json!({"op": "update_pty", "id": "pty_1", "title": null}));
+    assert_eq!(serde_json::from_value::<Request>(v).unwrap(), r);
+    let unchanged: Request =
+        serde_json::from_value(json!({"op": "update_pty", "id": "pty_1"})).unwrap();
+    assert_eq!(
+        unchanged,
+        Request::UpdatePty {
+            id: "pty_1".into(),
+            title: None,
+            size: None
+        }
+    );
+}

@@ -120,7 +120,11 @@ pub enum Request {
     UpdatePty {
         id: String,
         /// Absent: unchanged; `null`: cleared.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
         title: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<crate::pty::Size>,
@@ -332,6 +336,15 @@ impl Response {
             Response::Error { .. } => "error",
         }
     }
+}
+
+/// A field that is there (even as `null`) as `Some`.
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Serialize, Deserialize)]

@@ -643,12 +643,18 @@ impl Server {
         drop(map);
         // Commands a previous server ran for it in the daemon are its
         // background jobs again; wait for them as for any.
+        // On a task of its own, so a request dropped meanwhile cannot leave
+        // it half done; the session is locked until it is.
         #[cfg(unix)]
         if self.daemon.is_some() {
-            let mut g = l.lock().await;
-            if g.jobs.adopt(id).await > 0 {
-                wake(&l, &mut g);
-            }
+            let (l2, id) = (l.clone(), id.to_string());
+            let mut g = l.clone().lock_owned().await;
+            let _ = tokio::spawn(async move {
+                if g.jobs.adopt(&id).await > 0 {
+                    wake(&l2, &mut g);
+                }
+            })
+            .await;
         }
         Ok(l)
     }
@@ -823,11 +829,21 @@ async fn daemon_handoff(State(st): State<St>) -> Result<Json<Value>, ApiError> {
             .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e.message))?;
         if let Some(h) = handoff {
-            // Commands that run in this process cannot be handed over.
-            for l in st.live.lock().await.values() {
-                if let Ok(g) = l.try_lock() {
-                    g.jobs.reaper().kill_all();
+            // Stop the turns, so their leases are free for the next
+            // server (a call waiting on a daemon command leaves it running),
+            // and the commands that run in this process, which cannot be
+            // handed over.
+            let lives: Vec<_> = st.live.lock().await.values().cloned().collect();
+            for l in lives {
+                let mut g = l.lock().await;
+                if let Some(w) = g.waiter.take() {
+                    w.abort();
                 }
+                if let Some(mut t) = g.task.take() {
+                    t.abort();
+                    let _ = tokio::time::timeout(STOP_WAIT, &mut t).await;
+                }
+                g.jobs.reaper().kill_all();
             }
             tokio::spawn(async {
                 tokio::time::sleep(Duration::from_millis(200)).await;

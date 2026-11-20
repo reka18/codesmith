@@ -1292,3 +1292,224 @@ async fn file_watching_can_be_turned_off() {
         (503, Some("File watching is disabled"))
     );
 }
+
+/// The shell daemon's runtime directories (`$XDG_STATE_HOME/codesmith/shelld`).
+fn daemons(e: &Env) -> Vec<std::path::PathBuf> {
+    let root = e.home.join(".state").join("codesmith").join("shelld");
+    std::fs::read_dir(root)
+        .map(|r| r.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
+}
+
+async fn until(what: &str, mut ok: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{what} never happened");
+}
+
+fn alive(pid: i64) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The shell daemon across a graceful restart (OpenCode's
+/// `shell-restart.test.ts` and "starts the daemon on the first command,
+/// never on boot"): the server starts its daemon only when a command
+/// runs; `POST /shell-daemon/handoff` hands it over and stops the server;
+/// the next server, given the handoff, takes the session's command back,
+/// and when it finishes the session is resumed with its output.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_command_survives_a_graceful_restart() {
+    let e = Env::new();
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::step(1)).and(notified.clone().not()),
+                Reply::text("The build is running."),
+            )
+            .then("resumed", M::tools().and(notified), Reply::text("It finished.")),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let mut one = Server::start(&e, &["--auto"]).await;
+    assert!(daemons(&e).is_empty(), "no daemon at boot");
+    let (_, created) = one.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let turn = one.turn(&sid, "build it").await.until("done").await;
+    assert_eq!(turn.last().unwrap().1["error"], Value::Null, "{turn:?}");
+    assert_eq!(daemons(&e).len(), 1, "started by the first command");
+    let (_, jobs) = one.get(&format!("/sessions/{sid}/jobs")).await;
+    let pid = jobs["data"][0]["pid"].as_i64().unwrap();
+
+    let (status, body) = one.post("/shell-daemon/handoff", json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    let handoff = body["handoff"].clone();
+    assert!(handoff["ticket"].is_string(), "{body}");
+    let exited = tokio::time::timeout(Duration::from_secs(10), one._child.wait())
+        .await
+        .expect("the server stops after handing over");
+    assert!(exited.unwrap().success());
+    assert!(alive(pid), "the command outlives the server");
+
+    let two = Server::start_with(
+        &e,
+        &["--auto"],
+        &[("CODESMITH_SHELLD_HANDOFF", &handoff.to_string())],
+    )
+    .await;
+    until("the resumed turn", || !m.by("resumed").is_empty()).await;
+    let last = crate::model::messages(&m.by("resumed")[0])
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(crate::model::content(&last).contains("built-ok"), "{last}");
+    assert_eq!(daemons(&e).len(), 1, "the same daemon");
+    drop(two);
+    // Its owner gone without a handoff, the daemon stops and cleans up.
+    until("the daemon to stop", || daemons(&e).is_empty()).await;
+    m.assert_done();
+}
+
+/// A server that ends without a handoff takes its commands with it: the
+/// daemon stops everything once its owner is gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_stopped_without_a_handoff_stops_its_commands() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Serve")
+            .then(
+                "start",
+                M::tools().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 30", "description": "server", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::step(1)),
+                Reply::text("Started."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    s.turn(&sid, "start it").await.until("done").await;
+    let (_, jobs) = s.get(&format!("/sessions/{sid}/jobs")).await;
+    let pid = jobs["data"][0]["pid"].as_i64().unwrap();
+    assert!(alive(pid));
+    drop(s);
+    until("the command to stop", || !alive(pid)).await;
+    until("the daemon to stop", || daemons(&e).is_empty()).await;
+}
+
+/// With `CODESMITH_SHELL_DAEMON=0` the server runs commands itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_daemon_can_be_turned_off() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Echo")
+            .then(
+                "run",
+                M::tools().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo hi", "description": "echo"}),
+                ),
+            )
+            .then("answer", M::tools().and(M::step(1)), Reply::text("Done.")),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start_with(&e, &["--auto"], &[("CODESMITH_SHELL_DAEMON", "0")]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    s.turn(&sid, "echo").await.until("done").await;
+    assert!(daemons(&e).is_empty());
+    let (_, body) = s.post("/shell-daemon/handoff", json!({})).await;
+    assert_eq!(body, json!({"handoff": null}));
+}
+
+/// A foreground call whose command still runs when the server hands over
+/// (`shell-restart.test.ts`, adapted): the call is interrupted with the
+/// server, and the next server takes the command back as a background job
+/// of the session, which is resumed with its output once it finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreground_command_survives_a_graceful_restart() {
+    let e = Env::new();
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::step(0)).and(notified.clone().not()),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3; echo fg-ok", "description": "build", "timeout": 60000}),
+                ),
+            )
+            .then("resumed", M::tools().and(notified), Reply::text("It finished.")),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let mut one = Server::start(&e, &["--auto"]).await;
+    let (_, created) = one.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut ev = one.turn(&sid, "build it").await;
+    ev.until("tool_start").await;
+    let mut waited = Value::Null;
+    for _ in 0..200 {
+        let (_, jobs) = one.get(&format!("/sessions/{sid}/jobs")).await;
+        if jobs["data"][0]["background"] == false {
+            waited = jobs;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pid = waited["data"][0]["pid"]
+        .as_i64()
+        .expect("the call waits on it");
+    let (_, body) = one.post("/shell-daemon/handoff", json!({})).await;
+    let handoff = body["handoff"].clone();
+    tokio::time::timeout(Duration::from_secs(10), one._child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(alive(pid), "nothing was stopped");
+
+    let _two = Server::start_with(
+        &e,
+        &["--auto"],
+        &[("CODESMITH_SHELLD_HANDOFF", &handoff.to_string())],
+    )
+    .await;
+    until("the resumed turn", || !m.by("resumed").is_empty()).await;
+    let last = crate::model::messages(&m.by("resumed")[0])
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(crate::model::content(&last).contains("fg-ok"), "{last}");
+}
