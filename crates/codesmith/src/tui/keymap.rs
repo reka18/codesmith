@@ -1525,6 +1525,7 @@ pub mod scope {
         "input.undo",
         "input.redo",
         "app.toggle.paste_summary",
+        "session.child.first",
         "app.exit",
         "terminal.suspend",
         "terminal.title.toggle",
@@ -1632,7 +1633,26 @@ pub mod scope {
         "permission.allow.always",
         "permission.reject",
     ];
-    pub const ALL: &[&[&str]] = &[AUTOCOMPLETE, PROMPT, DIFF, PICKER, QUESTION, PERMISSION];
+    /// The subagent and shell panel.
+    pub const PANEL: &[&str] = &[
+        "composer.subagent.up",
+        "composer.subagent.down",
+        "composer.subagent.select",
+        "composer.subagent.interrupt",
+        "composer.shell.up",
+        "composer.shell.down",
+        "composer.shell.select",
+        "composer.shell.kill",
+    ];
+    pub const ALL: &[&[&str]] = &[
+        AUTOCOMPLETE,
+        PROMPT,
+        DIFF,
+        PICKER,
+        QUESTION,
+        PERMISSION,
+        PANEL,
+    ];
 }
 
 fn expand(seq: &[Tok], leader: &[Vec<Stroke>]) -> Vec<Vec<Stroke>> {

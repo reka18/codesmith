@@ -95,6 +95,9 @@ Where the tests live:
 - `src/tui/parity_prompt.rs`: paste chips, prompt undo, attachment labels
   (`tui/test/prompt-paste`, `prompt/attachment`) and the prompt groups after
   them.
+- `src/tui/parity_panel.rs`: the subagent and shell panel and the output
+  viewer (`cli/tui/composer-keymap`, `util/session`,
+  `session-subagent-navigation`, `component/dialog-shell-output`).
 
 ## Summary
 
@@ -102,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 426 | 136 | 660 | 13 |
+| tui: main UI | 1250 | 15 | 444 | 116 | 662 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **702** | **572** | **2360** | **259** |
+| **Total** | **4637** | **744** | **720** | **552** | **2362** | **259** |
 
 ## Fixes made while porting
 
@@ -260,6 +263,18 @@ Where the tests live:
   chips sent in full while whole (`tui.prompt.paste: "full"` and
   `app.toggle.paste_summary` turn them off), `input.undo` and `input.redo`
   undo and redo prompt edits, and an image pasted again keeps its label.
+- **Subagent and shell panel, output viewer** (`composer-keymap`,
+  `dialog-shell-output`, `util/session`): background commands and
+  subagents could only be seen in their transcript rows. OpenCode's
+  composer panel now lists them (↓ on an empty prompt, or
+  `session.child.first`): subagents nested as `sessionFamily` draws them,
+  with the inactive filter, opening a subagent's session; background
+  commands one line each, killed with `composer.shell.kill`; and the output
+  viewer, which follows a command's output file (its latest 64 KiB from a
+  whole character, escapes out), scrolls, copies the command or output, and
+  says when the file cannot be read or is gone. Differences: ↓ opens the
+  panel only when it has something to list; interrupting a subagent
+  interrupts its turn (subagents run inside it); no mouse.
 
 ## Differences found but not fixed
 
@@ -738,6 +753,22 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/attachment` | deduplicates identical inline images while preserving other attachments | after a fix | oc_deduplicates_identical_inline_images_while_preserving_other_attachments (adapted: pasted paths) |
 | `tui/test/prompt/attachment` | reuses labels for identical image data | after a fix | oc_reuses_labels_for_identical_image_data (adapted: the same path) |
 | `tui/test/prompt/attachment` | does not reuse a label when attachment metadata differs | after a fix | oc_does_not_reuse_a_label_when_attachment_metadata_differs (adapted: another name) |
+| `tui/test/component/dialog-shell-output` | shell output opens, follows, scrolls, and survives exit at %s columns (2 cases) | after a fix | oc_shell_output_opens_follows_scrolls_and_survives_exit (adapted: the file is read, not a server; no request counts) |
+| `tui/test/component/dialog-shell-output` | empty output explains redirection, retries errors, and preserves output after removal | after a fix | oc_empty_output_explains_redirection_retries_errors_and_preserves_output_after_removal (adapted: a directory in the file's place fails the read) |
+| `tui/test/component/dialog-shell-output` | mouse-wheel scrolling pauses and resumes output following (2 cases) | after a fix | oc_scrolling_pauses_and_resumes_output_following (adapted: ↑ and ↓ for the wheel) |
+| `tui/test/component/dialog-shell-output` | large captures open at a bounded tail and clicking a shell opens the viewer | after a fix | oc_large_captures_open_at_a_bounded_tail (adapted: Enter for the click) |
+| `tui/test/component/dialog-shell-output` | new designs show footer actions instead of the legacy hint line | after a fix | oc_the_viewer_shows_footer_actions |
+| `tui/test/component/dialog-shell-output` | the retained 64 KiB tail starts on a whole character | after a fix | oc_the_retained_64_kib_tail_starts_on_a_whole_character |
+| `tui/test/session-subagent-navigation` | Home and End navigate a subagent transcript | after a fix | oc_home_and_end_navigate_a_subagent_transcript (adapted: a subagent's session opens as any session) |
+| `tui/test/util/session` | flattens nested subagents from any session in the family | after a fix | oc_flattens_nested_subagents_from_any_session_in_the_family |
+| `tui/test/cli/tui/composer-keymap` | disabled subagent bindings have no component fallbacks | after a fix | oc_disabled_subagent_bindings_have_no_component_fallbacks (adapted: no dispatch by id; the default binding) |
+| `tui/test/cli/tui/composer-keymap` | the inactive subagent filter only changes with its toggle | after a fix | oc_the_inactive_subagent_filter_only_changes_with_its_toggle (adapted: opening a subagent closes the panel; reopened, it keeps the filter) |
+| `tui/test/cli/tui/composer-keymap` | disabled shell bindings have no component fallbacks | after a fix | oc_disabled_shell_bindings_have_no_component_fallbacks (adapted) |
+| `tui/test/cli/tui/composer-keymap` | composer tabs switch by mouse and keyboard | after a fix | oc_composer_tabs_switch_by_keyboard (adapted: no mouse) |
+| `tui/test/cli/tui/composer-keymap` | shell list shows one line per command | after a fix | oc_shell_list_shows_one_line_per_command |
+| `tui/test/cli/tui/composer-keymap` | configured composer bindings work with a focused textarea | after a fix | oc_configured_composer_bindings_work_with_a_draft (adapted: a draft in the prompt) |
+| `tui/test/cli/tui/composer-keymap` | ctrl+c closes the active composer | after a fix | oc_ctrl_c_closes_the_active_composer |
+| `tui/test/cli/tui/composer-keymap` | shell output respects a configured binding with a focused textarea | after a fix | oc_shell_output_respects_a_configured_binding |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -918,30 +949,6 @@ transport and its tool presentation.
 - `tui/test/context/local-selection`: a late inactive-agent acknowledgment preserves its choice after the active agent commits
 - `tui/test/context/local-selection`: same-model agent switches clear drafts without a model acknowledgment
 
-### tui: background command output viewer (10)
-
-- `tui/test/session-shell-output`: an expanded background shell keeps its 1 MiB tail on a whole character
-- `tui/test/session-shell-stopped`: a call the user stopped shows its output once, clipped like a finished call's, then the notice once
-- `tui/test/component/dialog-shell-output`: shell output opens, follows, scrolls, and survives exit at (2 cases)
-- `tui/test/component/dialog-shell-output`: empty output explains redirection, retries errors, and preserves output after removal
-- `tui/test/component/dialog-shell-output`: mouse-wheel scrolling pauses and resumes output following (2 cases)
-- `tui/test/component/dialog-shell-output`: large captures open at a bounded tail and clicking a shell opens the viewer
-- `tui/test/component/dialog-shell-output`: new designs show footer actions instead of the legacy hint line
-- `tui/test/component/dialog-shell-output`: the retained 64 KiB tail starts on a whole character
-
-### tui: subagent and shell panels (10)
-
-- `tui/test/session-subagent-navigation`: Home and End navigate a subagent transcript
-- `tui/test/util/session`: flattens nested subagents from any session in the family
-- `tui/test/cli/tui/composer-keymap`: disabled subagent bindings have no component fallbacks
-- `tui/test/cli/tui/composer-keymap`: the inactive subagent filter only changes with its toggle
-- `tui/test/cli/tui/composer-keymap`: disabled shell bindings have no component fallbacks
-- `tui/test/cli/tui/composer-keymap`: composer tabs switch by mouse and keyboard
-- `tui/test/cli/tui/composer-keymap`: shell list shows one line per command
-- `tui/test/cli/tui/composer-keymap`: configured composer bindings work with a focused textarea
-- `tui/test/cli/tui/composer-keymap`: ctrl+c closes the active composer
-- `tui/test/cli/tui/composer-keymap`: shell output respects a configured binding with a focused textarea
-
 ### tui: goal in the prompt footer (1)
 
 - `tui/test/feature-plugins/prompt-footer`: prompt footer shows the session's goal without its objective and opens it on click
@@ -1030,7 +1037,7 @@ transport and its tool presentation.
 | server: auth and transport | by design | 28 | 7 | a bearer token instead of Basic auth, pairing and CORS; browsers are refused |
 | codemode: error wording | by design | 25 | 5 | Boa's messages; OpenCode's error kinds, locations and suggestions |
 | cli: integrations | by design | 24 | 4 | hosted, OAuth and command integrations through a server; integration login URLs; plugin-defined login forms; CodeSmith saves API keys; the /connect integration catalog |
-| tui: transcript rows | by design | 20 | 2 | CodeSmith's tool rows are its own (`⚙ name detail`), not OpenCode's inline tool copy and snapshots; no synthetic-message, retry-footer or compaction-barrier rows; a turn's error is one error row |
+| tui: transcript rows | by design | 22 | 4 | CodeSmith's tool rows are its own (`⚙ name detail`), not OpenCode's inline tool copy and snapshots; no synthetic-message, retry-footer or compaction-barrier rows; a turn's error is one error row |; a running command's row keeps a 64 KiB tail (the output viewer shows the rest) rather than an expanded 1 MiB one, and a stopped call shows its result as any call's
 | codemode: strict-mode checks | by design | 6 | 3 | Boa's strict mode words frozen-write errors differently, rejects early what OpenCode accepts (`delete` of a variable, a parameter named `arguments`), and misses two read-only writes |
 | acp: child sessions | by design | 13 | 3 | subagents run inside the parent turn; subagents run inside the parent turn; no steering |
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |

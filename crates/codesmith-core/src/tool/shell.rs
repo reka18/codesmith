@@ -565,6 +565,17 @@ impl Jobs {
             .collect()
     }
 
+    /// The job `id`, running or ended (while it is kept).
+    pub fn job(&self, id: &str) -> Option<Job> {
+        self.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|j| j.id == id)
+            .cloned()
+    }
+
     /// The foreground commands whose calls are waiting on them.
     pub fn foreground(&self) -> Vec<Running> {
         self.shared.foreground.lock().unwrap().clone()

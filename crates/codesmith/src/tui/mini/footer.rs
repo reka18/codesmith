@@ -65,6 +65,11 @@ fn modal_rows(app: &App, m: &Modal, cols: u16, room: u16) -> u16 {
             (lines + 2).min(room)
         }
         Modal::Picker(pk) => (pk.shown.len().clamp(1, 20) as u16 + 9).min(room),
+        Modal::Panel(_) => {
+            let n = app.subagents().len().max(app.shells.len()).clamp(1, 10) as u16;
+            (n + 6).min(room)
+        }
+        Modal::ShellOutput(_) => room,
         Modal::Help(_) | Modal::DiffHelp(_) => room,
     }
 }

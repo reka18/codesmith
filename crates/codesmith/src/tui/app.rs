@@ -290,6 +290,10 @@ pub enum Modal {
         reply: Option<FormReply>,
     },
     Picker(Picker),
+    /// The subagent and shell panel.
+    Panel(super::panel::Panel),
+    /// A background command's output.
+    ShellOutput(Box<super::panel::ShellView>),
     /// The help, scrolled this many rows.
     Help(usize),
     /// The diff viewer's shortcuts, scrolled this many rows.
@@ -339,6 +343,8 @@ pub enum Action {
     /// Add the model to the favourites, or take it off (ctrl+f in the
     /// model picker).
     Favorite(String),
+    /// Stop the background command (the shell panel's kill).
+    KillShell(String),
     /// Open the URL in the browser (a form's external link).
     OpenUrl(String),
     /// A command the runner carries out: `theme.switch_mode`,
@@ -475,6 +481,12 @@ pub struct App {
     pub pasted: Vec<(String, String)>,
     /// `tui.prompt.paste: "full"`: pastes go in whole, not as chips.
     pub paste_full: bool,
+    /// The session's background commands, for the shell panel (kept
+    /// current by the runner while the panel is open).
+    pub shells: Vec<super::panel::Shell>,
+    /// The subagent panel lists the inactive subagents (ctrl+a), kept
+    /// until the UI exits as OpenCode keeps its filter.
+    pub panel_inactive: bool,
 }
 
 /// How a turn ended.
@@ -772,6 +784,7 @@ impl App {
         to.grouping = self.grouping;
         to.tps = self.tps;
         to.paste_full = self.paste_full;
+        to.panel_inactive = self.panel_inactive;
         to.turn_tokens = self.turn_tokens;
         to.reasoning_source = self.reasoning_source;
         to.diff_prefs = self.diff_prefs;
@@ -1283,7 +1296,8 @@ impl App {
                 p.filter.push_str(s.lines().next().unwrap_or(""));
                 p.refilter();
             }
-            Some(Modal::Help(_) | Modal::DiffHelp(_)) => {}
+            Some(Modal::Help(_) | Modal::DiffHelp(_) | Modal::Panel(_) | Modal::ShellOutput(_)) => {
+            }
             None => {
                 if let Some(files) = super::attach::pasted_files(s, &self.cwd) {
                     for path in files {
@@ -1623,6 +1637,9 @@ impl App {
                 self.popup = None;
                 return Some(None);
             }
+            // At the newest entry, down goes on to the next binding (the
+            // subagent panel), as OpenCode's history rejects it.
+            "prompt.history.next" if self.hist.is_none() => return None,
             "prompt.history.previous" | "prompt.history.next" => {
                 self.history_step(if id.ends_with("previous") { -1 } else { 1 });
                 self.popup = None;
@@ -1646,6 +1663,18 @@ impl App {
             }
             "input.redo" => {
                 self.input.redo();
+            }
+            // Down opens the panel only when it has something to show;
+            // the palette's command always does.
+            "session.child.first"
+                if !via_leader && self.background == 0 && self.subagents().is_empty() =>
+            {
+                return None
+            }
+            "session.child.first" => {
+                self.popup = None;
+                self.toggle_panel(None);
+                return Some(None);
             }
             "app.toggle.paste_summary" => {
                 self.paste_full = !self.paste_full;
@@ -1860,6 +1889,143 @@ impl App {
         self.edited();
     }
 
+    /// The session's subagents, from its transcript: those the session
+    /// ran and, under each, the ones it ran.
+    pub fn subagents(&self) -> Vec<super::panel::Subagent> {
+        fn add(t: &Tool, parent: Option<&str>, out: &mut Vec<super::panel::Subagent>) {
+            let Some(s) = &t.sub else { return };
+            if out.iter().any(|o| o.id == s.session) {
+                return;
+            }
+            out.push(super::panel::Subagent {
+                id: s.session.clone(),
+                parent: parent.map(str::to_string),
+                agent: s.agent.clone(),
+                title: s.title.clone(),
+                running: s.status == SubStatus::Running && t.result.is_none(),
+            });
+            for n in &s.tools {
+                add(n, Some(&s.session), out);
+            }
+        }
+        let mut out = Vec::new();
+        for e in &self.entries {
+            if let Entry::Tool(t) = e {
+                add(t, None, &mut out);
+            }
+        }
+        out
+    }
+
+    /// Open the subagent and shell panel, or close it (OpenCode's
+    /// `session.child.first`).
+    pub fn toggle_panel(&mut self, tab: Option<super::panel::Tab>) {
+        if matches!(self.modal, Some(Modal::Panel(_))) && tab.is_none() {
+            self.modal = None;
+            return;
+        }
+        if self.modal.is_none() || matches!(self.modal, Some(Modal::Panel(_))) {
+            self.modal = Some(Modal::Panel(super::panel::Panel {
+                tab: tab.unwrap_or_default(),
+                active: !self.panel_inactive,
+                ..Default::default()
+            }));
+        }
+    }
+
+    fn panel_key(&mut self, k: &KeyEvent) -> Option<Action> {
+        use super::panel::{subagent_rows, ShellView, Tab};
+        let st = keymap::stroke(k);
+        let km = self.keymap.clone();
+        let hit = |id: &'static str| {
+            st.as_ref()
+                .is_some_and(|s| !km.lookup(&[id], std::slice::from_ref(s)).exact.is_empty())
+        };
+        let subs = self.subagents();
+        let Some(Modal::Panel(p)) = self.modal.as_mut() else {
+            return None;
+        };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match p.tab {
+            Tab::Subagents => {
+                let rows = subagent_rows(&subs, p.active);
+                if hit("composer.subagent.up") {
+                    if p.sel == 0 {
+                        self.modal = None;
+                    } else {
+                        p.sel -= 1;
+                    }
+                    return None;
+                }
+                if hit("composer.subagent.down") {
+                    if !rows.is_empty() {
+                        p.sel = (p.sel + 1) % rows.len();
+                    }
+                    return None;
+                }
+                if hit("composer.subagent.select") {
+                    let id = rows.get(p.sel).map(|(s, _)| s.id.clone())?;
+                    self.modal = None;
+                    return Some(Action::Picked(Pick::Session, id));
+                }
+                if hit("composer.subagent.interrupt") {
+                    // A subagent runs inside the turn: stopping it stops the turn.
+                    let running = rows.get(p.sel).is_some_and(|(s, _)| s.running);
+                    return (running && self.busy).then_some(Action::Interrupt);
+                }
+                if ctrl && k.code == KeyCode::Char('a') {
+                    p.active = !p.active;
+                    p.sel = 0;
+                    self.panel_inactive = !p.active;
+                    return None;
+                }
+            }
+            Tab::Shell => {
+                let n = self.shells.len();
+                if hit("composer.shell.up") {
+                    if p.sel == 0 {
+                        self.modal = None;
+                    } else {
+                        p.sel -= 1;
+                    }
+                    return None;
+                }
+                if hit("composer.shell.down") {
+                    if n > 0 {
+                        p.sel = (p.sel + 1) % n;
+                    }
+                    return None;
+                }
+                if hit("composer.shell.select") {
+                    let shell = self.shells.get(p.sel)?.clone();
+                    let back = Some(p.clone());
+                    let mut v = ShellView::new(&shell, back);
+                    v.refresh();
+                    self.modal = Some(Modal::ShellOutput(Box::new(v)));
+                    return None;
+                }
+                if hit("composer.shell.kill") {
+                    return self
+                        .shells
+                        .get(p.sel)
+                        .map(|s| Action::KillShell(s.id.clone()));
+                }
+            }
+        }
+        match k.code {
+            KeyCode::Left | KeyCode::Right => {
+                p.tab = match p.tab {
+                    Tab::Subagents => Tab::Shell,
+                    Tab::Shell => Tab::Subagents,
+                };
+                p.sel = 0;
+            }
+            KeyCode::Esc => self.modal = None,
+            _ => {}
+        }
+        None
+    }
+
     /// `text` with each paste chip still whole in it replaced by what was
     /// pasted (the first chip with a label by the first paste with it).
     pub fn expand_pasted(&self, text: &str) -> String {
@@ -2072,6 +2238,32 @@ impl App {
                     },
                 }
                 return self.preview(before);
+            }
+            Modal::Panel(_) => return self.panel_key(&k),
+            Modal::ShellOutput(v) => {
+                match (hits(&["dialog.select.page_up"]).is_empty(), k.code, typed) {
+                    (_, KeyCode::Up, _) => v.scroll(-1),
+                    (_, KeyCode::Down, _) => v.scroll(1),
+                    (_, KeyCode::PageUp, _) => {
+                        v.scroll(-(v.shape.get().1.max(1) as isize));
+                    }
+                    (_, KeyCode::PageDown, _) => v.scroll(v.shape.get().1.max(1) as isize),
+                    (_, KeyCode::Home, _) => v.top = Some(0),
+                    (_, KeyCode::End, _) => v.top = None,
+                    (_, _, Some('c')) => {
+                        v.copied = Some("command");
+                        self.clipboard = Some(v.command.clone());
+                    }
+                    (_, _, Some('o')) if !v.text.is_empty() => {
+                        v.copied = Some("output");
+                        self.clipboard = Some(v.text.clone());
+                    }
+                    (_, KeyCode::Esc, _) => {
+                        let back = v.back.take();
+                        self.modal = back.map(Modal::Panel);
+                    }
+                    _ => {}
+                }
             }
             Modal::Help(scroll) | Modal::DiffHelp(scroll) => match k.code {
                 KeyCode::Up => *scroll = scroll.saturating_sub(1),

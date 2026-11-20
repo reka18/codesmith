@@ -36,6 +36,7 @@ pub(crate) mod mini;
 mod models;
 mod navigation;
 mod outside;
+mod panel;
 #[cfg(test)]
 mod parity;
 #[cfg(test)]
@@ -46,6 +47,8 @@ mod parity_form;
 mod parity_groups;
 #[cfg(test)]
 mod parity_keys;
+#[cfg(test)]
+mod parity_panel;
 #[cfg(test)]
 mod parity_prompt;
 #[cfg(test)]
@@ -82,6 +85,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+/// How often an open output viewer looks at its command's output.
+const SHELL_POLL: Duration = Duration::from_millis(250);
 
 pub struct Opts {
     pub resume: Option<String>,
@@ -1265,6 +1271,33 @@ impl Runner {
         let _ = out.flush();
     }
 
+    /// While the shell panel or a command's output is open, list the
+    /// session's background commands and read the output's new part.
+    /// Returns whether the output viewer is open (it is looked at again
+    /// after [`SHELL_POLL`]).
+    fn sync_shells(&mut self) -> bool {
+        match &mut self.app.modal {
+            Some(Modal::Panel(_)) => {}
+            Some(Modal::ShellOutput(v)) => {
+                v.status = panel::status(self.jobs.job(&v.id).as_ref());
+                v.refresh();
+            }
+            _ => return false,
+        }
+        self.app.shells = self
+            .jobs
+            .running_jobs()
+            .into_iter()
+            .filter(|j| j.notice.is_none())
+            .map(|j| panel::Shell {
+                id: j.id,
+                command: j.command,
+                file: j.file,
+            })
+            .collect();
+        matches!(self.app.modal, Some(Modal::ShellOutput(_)))
+    }
+
     async fn handle(&mut self, ev: Ev) {
         match ev {
             Ev::Key(k) => {
@@ -1328,6 +1361,10 @@ impl Runner {
                         Ok(())
                     }
                     Some(Action::Preview(..) | Action::Cancelled(_)) => Ok(()),
+                    Some(Action::KillShell(id)) => {
+                        self.jobs.cancel(&id);
+                        Ok(())
+                    }
                     Some(Action::OpenUrl(url)) => {
                         // Only http(s) links open (see `open_browser`).
                         codesmith_core::mcp::oauth::open_browser(&url);
@@ -1792,14 +1829,20 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             r.sync_tabs();
             r.attend();
             r.keep_history();
+            let following = r.sync_shells();
             let tick = match &mut screen {
                 Screen::Full(t) => {
                     t.draw(|f| view::draw(f, &r.app))?;
-                    None
+                    following.then_some(SHELL_POLL)
                 }
                 Screen::Mini(m) => {
                     m.draw(&mut r.app)?;
-                    m.tick(&r.app)
+                    let t = m.tick(&r.app);
+                    if following {
+                        Some(t.map_or(SHELL_POLL, |t| t.min(SHELL_POLL)))
+                    } else {
+                        t
+                    }
                 }
             };
             let ev = match tick {

@@ -440,6 +440,32 @@ when one finishes; closing the tab stops them, and so does quitting. With
 tabs off, leaving the session with `/new` or `/sessions` (for a different
 one) stops them. See [background commands](sessions.md#background-commands).
 
+### The subagent and shell panel
+
+**↓** on an empty prompt (`session.child.first`, also *Toggle subagent
+picker* in the command palette) opens OpenCode's panel of the session's
+subagents and background commands; **←**/**→** switch between its
+**Subagents** and **Shell** tabs, **Esc** or **ctrl+c** close it.
+
+- **Subagents** lists the running subagents, the ones they ran nested
+  under them (`├─`, `└─`); **ctrl+a** shows the finished ones instead (the
+  choice is kept until the UI exits). **↑**/**↓** move
+  (`composer.subagent.up`, `.down`; up from the first row closes the
+  panel), **Enter** (`composer.subagent.select`) opens the subagent's
+  session, and **ctrl+d** (`composer.subagent.interrupt`) interrupts it: a
+  subagent runs inside its turn, so this interrupts the turn.
+- **Shell** lists the running background commands, one line each.
+  **Enter** (`composer.shell.select`) opens a command's output and
+  **ctrl+d** (`composer.shell.kill`) stops it.
+
+The output view follows the command's output as it comes (its latest
+64 KiB, with escape sequences taken out; earlier output is said to be
+left out), with its status (`Running`, `Exited · code 0`, `Killed`, `Timed
+out`). **↑**/**↓**, **PageUp**/**PageDown** and **Home** scroll back, which
+stops following; **End** or scrolling back down to the end follows again.
+**c** copies the command and **o** the output (`OSC 52`); **Esc** goes
+back to the panel. Output redirected to files is not shown.
+
 ## Session tabs
 
 As in OpenCode, sessions open as tabs: `/new` (**ctrl+x n**) starts one in

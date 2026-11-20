@@ -90,6 +90,9 @@ replays of its recorded provider traffic.
 - **Paste chips and prompt undo:** long pastes show as `[Pasted ~N
   lines]` chips (`tui.prompt.paste`), and super+z / super+shift+z undo and
   redo edits in the prompt.
+- **Subagent and shell panel:** ↓ on an empty prompt lists the session's
+  subagents (nested, with a finished filter) and background commands, and
+  opens a command's live output, as OpenCode's composer panel does.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

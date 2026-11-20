@@ -1834,6 +1834,21 @@ pub(super) fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 p.accent,
             )
         }
+        Modal::Panel(panel) => {
+            let width = MODAL_WIDTH
+                .min(area.width.saturating_sub(2))
+                .saturating_sub(4);
+            let subs = app.subagents();
+            let lines = panel.lines(&subs, &app.shells, width as usize, &app.keymap);
+            ("Subagents and shells".into(), lines, p.primary)
+        }
+        Modal::ShellOutput(v) => {
+            let width = MODAL_WIDTH
+                .min(area.width.saturating_sub(2))
+                .saturating_sub(2);
+            let lines = v.lines(width as usize, area.height);
+            (format!("Shell output · {}", v.status), lines, p.primary)
+        }
         Modal::Picker(pk) => {
             let rows = room.saturating_sub(5).clamp(1, 20);
             (
