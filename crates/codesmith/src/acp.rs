@@ -11,7 +11,7 @@ use codesmith_ai::{Media, Message, Part, Role, Usage};
 use codesmith_core::config::Loaded;
 use codesmith_core::mcp::{Mcp, ServerConfig};
 use codesmith_core::media::{self, ImageLimits};
-use codesmith_core::permission::{Asker, Effect, Reply, Request, Rule};
+use codesmith_core::permission::{Approvals, Asker, Effect, Reply, Request, Rule};
 use codesmith_core::question::{Prompt as Question, Questioner};
 use codesmith_core::session::{Options, Session, Sink};
 use codesmith_core::store::{self, Record, Store};
@@ -728,6 +728,9 @@ struct Slot {
     stale: AtomicBool,
     /// The model and agent of the latest session built.
     shown: Mutex<(String, String)>,
+    /// The "always" approvals given in this session, kept in force across
+    /// every rebuild (cancel, mode and model switches, a reload).
+    approvals: Approvals,
 }
 
 pub type Loader = Arc<dyn Fn(&Path) -> Result<Loaded> + Send + Sync>;
@@ -1249,6 +1252,7 @@ impl Agent {
             self.store(),
         )?;
         s.id = slot.id.clone();
+        s.share_approvals(slot.approvals.clone());
         *slot.shown.lock().unwrap() = (s.model_spec.clone(), s.agent.id.clone());
         if stored {
             if let Some(db) = self.store() {
@@ -1264,6 +1268,7 @@ impl Agent {
         cwd: &Path,
         servers: BTreeMap<String, ServerConfig>,
         dirs: &[PathBuf],
+        approvals: Approvals,
     ) -> Result<Arc<Slot>> {
         let mut loaded = (self.load)(cwd)?;
         loaded.config.mcp.servers.extend(servers);
@@ -1296,6 +1301,7 @@ impl Agent {
             model: Mutex::new(None),
             stale: AtomicBool::new(false),
             shown: Default::default(),
+            approvals,
         });
         let s = self.build(&slot)?;
         *slot.session.lock().await = Some(s);
@@ -1585,8 +1591,20 @@ impl Agent {
                 .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
             sid = fork;
         }
+        // Reopening a session that is open keeps its approvals; a new or
+        // forked one starts without any.
+        let approvals = match method {
+            "session/load" | "session/resume" => self
+                .sessions
+                .lock()
+                .await
+                .get(&sid)
+                .map(|s| s.approvals.clone()),
+            _ => None,
+        }
+        .unwrap_or_default();
         let slot = self
-            .open(&sid, &cwd, servers, &dirs)
+            .open(&sid, &cwd, servers, &dirs, approvals)
             .await
             .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
         let (modes, options) = {
@@ -2963,6 +2981,80 @@ mod tests {
             .await;
         let (done, _) = c.until(id, |_| None).await;
         assert_eq!(done["result"]["stopReason"], "max_tokens");
+    }
+
+    /// "Always" approvals outlive the session rebuilds of a cancel and of
+    /// mode and model switches.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn always_approvals_survive_rebuilds() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        let prompt =
+            |text: &str| json!({"sessionId": sid, "prompt": [{"type": "text", "text": text}]});
+        let always = |m: &Value| {
+            (m["method"] == "session/request_permission")
+                .then(|| json!({"outcome": {"outcome": "selected", "optionId": "always"}}))
+        };
+        let id = c.call("session/prompt", prompt("run it")).await;
+        let (done, seen) = c.until(id, always).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn");
+        assert_eq!(
+            seen.iter()
+                .filter(|m| m["method"] == "session/request_permission")
+                .count(),
+            1
+        );
+        // No ask may reach the client from here on.
+        let unasked = |m: &Value| -> Option<Value> {
+            panic!("asked again: {m}");
+        };
+        // A cancelled turn reloads the session.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f.txt"), "x").unwrap();
+        let read = format!("read {}", outside.path().join("f.txt").display());
+        let pid = c.call("session/prompt", prompt(&read)).await;
+        c.wait(|m| m["method"] == "session/request_permission")
+            .await;
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        let (done, _) = c.until(pid, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "cancelled");
+        let id = c.call("session/prompt", prompt("run it")).await;
+        let (done, _) = c.until(id, unasked).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn");
+        // Mode and model switches rebuild it too.
+        for (method, params) in [
+            (
+                "session/set_mode",
+                json!({"sessionId": sid, "modeId": "plan"}),
+            ),
+            (
+                "session/set_mode",
+                json!({"sessionId": sid, "modeId": "build"}),
+            ),
+            (
+                "session/set_config_option",
+                json!({"sessionId": sid, "configId": "model", "value": "fake/other"}),
+            ),
+        ] {
+            let r = c.request(method, params).await;
+            assert!(r.get("error").is_none(), "{r}");
+            let id = c.call("session/prompt", prompt("run it")).await;
+            let (done, _) = c.until(id, unasked).await;
+            assert_eq!(done["result"]["stopReason"], "end_turn");
+        }
+        // A new session starts without them.
+        let other = c.new_session(&cwd).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": other, "prompt": [{"type": "text", "text": "run it"}]}),
+            )
+            .await;
+        let (_, seen) = c.until(id, always).await;
+        assert!(seen
+            .iter()
+            .any(|m| m["method"] == "session/request_permission"));
     }
 
     /// Regression: a turn that finished while it was being cancelled used to
