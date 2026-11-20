@@ -75,6 +75,8 @@ is parsed:
 | `$schema` | | Ignored; allowed for editors. |
 | `model` | none | Default model as `provider/model`. Required unless you pass `-m`. |
 | `default_agent` | `build` | Primary agent for new sessions. |
+| `small_model` | the session's model | The model that writes session titles, as `provider/model[#variant]`. See [Session titles](#session-titles). |
+| `title` | `true` | `false` names sessions after their first line, with no model request. See [Session titles](#session-titles). |
 | `shell` | `$SHELL`, else `/bin/sh` | Shell the `shell` tool runs commands with (`<shell> -c`). |
 | `providers` | built-ins | Providers and their models. See [Providers and models](#providers-and-models). |
 | `agents` | built-ins | Add or override agents. See [agents](agents-and-subagents.md#configuring-agents). |
@@ -294,6 +296,7 @@ Provider fields:
 | Field | Meaning |
 |---|---|
 | `name` | Display name. |
+| `local` | Whether the server runs on this machine or network and serves one request at a time. Unset, a loopback, private-network (including Tailscale's `100.64.0.0/10`), `.local`, `.lan`, `.internal`, `.ts.net` or single-label host is local. See [Using a local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama). |
 | `protocol` | `openai-chat` (the default for custom providers), `openai-responses`, `anthropic-messages` or `google-gemini`. |
 | `settings.baseURL` | API base URL (`baseUrl` and `base_url` also work). Required for a custom provider. |
 | `settings.apiKey` | The key. Use `{env:}` or `{file:}` rather than writing it in the file. |
@@ -342,6 +345,85 @@ options. `codesmith models` lists the providers (built-in, configured, and
 catalog providers you have a key for) with their configured and catalog chat
 models, `codesmith models --refresh` fetches the model catalog first, and
 `codesmith models <provider>` asks that provider's API which models it has.
+
+### Using a local server (oMLX, LM Studio, llama.cpp, Ollama)
+
+A server on your own machine or network usually runs one model and works
+on one request at a time, and the slow part of a request is reading the
+prompt (prefill). CodeSmith is built to keep that cost down:
+
+- **Titles wait.** A session's title is normally written beside the first
+  turn. When the title would go to a local server the turn also uses, it
+  waits until the turn's first response is in, and finishes before the
+  session's next request, so it never slows the reply you are waiting for.
+  It is capped at 64 tokens and asks for no thinking (see
+  [Session titles](#session-titles)).
+- **The prompt prefix stays the same.** The system prompt, the tool
+  definitions and everything before your first message are byte for byte
+  the same on every step and every turn of a session, and across sessions
+  of the same project on the same day, so a server with a prefix cache
+  reads them once. When instruction files, skills or MCP servers change
+  during a session, the change is sent as an update after the history
+  instead of rewriting the system prompt. The date has day granularity, and
+  a session that runs past midnight is told the new date the same way.
+- **No cache fields it doesn't need.** Local servers cache by prefix on
+  their own; they get no `prompt_cache_key`, no cache lifetime and no
+  breakpoints unless you ask for them.
+
+Recommended settings:
+
+- Set `limit.context` to the context the server is started with, so
+  CodeSmith compacts before a request overflows it, and `limit.output` to
+  what you need in one reply (a few thousand to 16k tokens): it is sent as
+  `max_tokens` with each request.
+- Thinking: Qwen 3 and GLM templates think unless told otherwise. To choose
+  per session, give the model a `none` variant that turns thinking off and
+  pick it with `-m provider/model#none` (or `/variant`). Titles use the
+  `none` variant automatically when the model has one; without one, a
+  Qwen 3 or GLM model on an OpenAI-compatible server (or any model with
+  `chat_template_kwargs` in its `body`) gets
+  `chat_template_kwargs.enable_thinking: false` for the title.
+- With a second, small model loaded somewhere, set `small_model` to it; a
+  title on another server runs beside the turn. Or set `"title": false`.
+- Keep the prefix cached: turn on the server's prefix (or prompt) cache and
+  give it room for the system prompt and tools (about 10k tokens with the
+  built-in tools; MCP tools add more, so keep them in
+  [Code Mode](mcp.md#code-mode), which offers them as one tool). Switching
+  agents changes the system prompt and tools, so the first request after a
+  switch reads them again. Edits to `AGENTS.md` or skills reach a running
+  session as updates, and new sessions start from the new text.
+- Leave [prompt-cache warming](#prompt-cache-warming) off: its keep-alive
+  requests would compete with your turns.
+
+An OpenAI-compatible server on another machine:
+
+```jsonc
+{
+  "model": "box/qwen3.5",
+  "providers": {
+    "box": {
+      "name": "Mac cluster",
+      "protocol": "openai-chat",
+      "settings": { "baseURL": "http://192.168.1.20:8000/v1" },
+      "models": {
+        "qwen3.5": {
+          "id": "the-id-the-server-lists",              // `codesmith models box` shows them
+          "limit": { "context": 131072, "output": 16384 },
+          "variants": {
+            "none": { "body": { "chat_template_kwargs": { "enable_thinking": false } } }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`codesmith debug model box/qwen3.5` prints `local: yes` for a provider
+treated as local. Set `"local": false` on a provider that is a private
+address but serves many requests at once (a vLLM cluster behind a
+gateway, say) to run titles beside the turn again, or `"local": true` on
+a public address that is really a single box.
 
 ### Azure OpenAI
 
@@ -866,6 +948,32 @@ saves an [Azure CLI](#azure-openai) login. `--oauth` logs in through a
 provider's browser OAuth instead of a key ([Poe](#poe),
 [DigitalOcean](#digitalocean), [GitLab](#gitlab-sign-in),
 [Snowflake Cortex](#snowflake-cortex)).
+
+## Session titles
+
+A new session gets a short title, written by a model from your first
+message (OpenCode's title prompt). The model is, in order:
+
+1. `agents.title.model` (OpenCode's hidden `title` agent; `title` is never
+   an agent you can pick),
+2. `small_model`,
+3. the session's own model.
+
+```jsonc
+{
+  "small_model": "anthropic/claude-haiku-4-5",
+  // or turn titles off:
+  "title": false                        // also "agents": {"title": {"disable": true}}
+}
+```
+
+The title request offers no tools and leaves the model's reasoning options
+out (a `#variant` in the title model keeps that variant's). Its reply is
+capped at 256 tokens, or 64 on a local server, where it also asks for no
+thinking and waits for the turn: see
+[Using a local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama).
+When the request fails, or titles are off, the first line of the message
+names the session.
 
 ## Instructions
 

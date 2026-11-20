@@ -16,7 +16,7 @@ codesmith run -c "and now the docs"
 
 Inside the UI, `/sessions` (or **Ctrl+X l**) opens a picker, and `/new`
 starts over; each session opens in a [tab](interactive-ui.md#session-tabs)
-of its own, and the open tabs are kept for the next start. New sessions get a short generated title. `codesmith run
+of its own, and the open tabs are kept for the next start. New sessions get a short generated title ([which model writes it](configuration.md#session-titles)). `codesmith run
 --title` sets one yourself.
 
 ## Undo and redo

@@ -136,6 +136,9 @@ port, and so on) takes a few lines of config. Put this in
 Setting `limit.context` lets CodeSmith compact long sessions before they
 overflow the window. `codesmith debug model` shows what the model resolves
 to, and `codesmith models local` asks the server which models it has.
+[Using a local server](configuration.md#using-a-local-server-omlx-lm-studio-llamacpp-ollama)
+has the recommended settings: thinking, context limits, session titles and
+keeping the prompt cached.
 
 ## First session
 
