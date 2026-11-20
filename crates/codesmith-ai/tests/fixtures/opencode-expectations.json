@@ -1,0 +1,5096 @@
+{
+ "alibaba-chat/qwen-3-7-plus-streams-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-7-plus-streams-thinking-enabled.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-flash-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:53",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text lowercased contains"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-obeys-named-tool-choice.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:79",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-replays-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:64",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "at least one tool-input-delta event (streamed args); one finish event"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text lowercased contains 'sunny'; request replays first-turn reasoning (chat: reasoning_content; messages: thinking+signature; responses: reasoning item w/ summary_text) ; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up user asks temperature; request still replays first-turn reasoning"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-returns-a-json-object.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:113",
+  "calls": [
+   {
+    "text": {
+     "equals": "{\"city\":\"Paris\"}"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "JSON.parse(text) deep-equals {city:'Paris'} (not literal string equality)"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-default-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = None"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-high-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = high"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-low-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = low"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-max-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = max"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-medium-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = medium"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-minimal-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = minimal"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-none-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = none"
+   }
+  ]
+ },
+ "alibaba-chat/qwen-3-8-max-streams-xhigh-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = xhigh"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-7-plus-streams-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-7-plus-streams-thinking-enabled.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-flash-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:53",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text lowercased contains"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-follows-a-json-schema.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:132",
+  "calls": [
+   {
+    "text": {
+     "equals": "{\"city\":\"Paris\"}"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "JSON.parse(text) deep-equals {city:'Paris'}; json_schema output_config"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-obeys-named-tool-choice.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:79",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "messages: finishReason.raw == 'end_turn' (normalized stop despite tool call)"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-replays-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:64",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "at least one tool-input-delta event (streamed args); one finish event"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text lowercased contains 'sunny'; request replays first-turn reasoning (chat: reasoning_content; messages: thinking+signature; responses: reasoning item w/ summary_text) ; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up user asks temperature; request still replays first-turn reasoning"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-streams-default-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = None"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-streams-high-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = high"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-streams-low-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = low"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-streams-max-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = max"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-streams-medium-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = medium"
+   }
+  ]
+ },
+ "alibaba-messages/qwen-3-8-max-streams-xhigh-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = xhigh"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-7-plus-streams-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-7-plus-streams-thinking-enabled.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-flash-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:53",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text lowercased contains"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-continues-a-stored-response.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:165",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "finish event providerMetadata.alibaba.responseId is a string (used as previousResponseId)"
+   },
+   {
+    "text": {
+     "contains": "apricot"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text lowercased contains apricot"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-obeys-named-tool-choice.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:79",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-replays-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:64",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "at least one tool-input-delta event (streamed args); one finish event"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text lowercased contains 'sunny'; request replays first-turn reasoning (chat: reasoning_content; messages: thinking+signature; responses: reasoning item w/ summary_text) ; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up user asks temperature; request still replays first-turn reasoning"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-default-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = None"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-high-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = high"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-low-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = low"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-max-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = max"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-medium-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = medium"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-minimal-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = minimal"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-none-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = none"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-streams-xhigh-effort.json": {
+  "test": "packages/ai/test/provider/alibaba.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text with commas stripped contains 37887; exactly one finish event; request: no enable_thinking/thinking, effort field = xhigh"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-uses-hosted-code-interpreter.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:231",
+  "calls": [
+   {
+    "text": {
+     "contains": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "code_interpreter",
+      "input": null
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "toolCalls arrayContaining code_interpreter providerExecuted:true; some tool-result event"
+   }
+  ]
+ },
+ "alibaba-responses/qwen-3-8-max-uses-hosted-web-search-and-extraction.json": {
+  "test": "packages/ai/test/provider/alibaba-capabilities.recorded.test.ts:195",
+  "calls": [
+   {
+    "text": {
+     "contains": "alibaba"
+    },
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "web_search",
+      "input": null
+     },
+     {
+      "name": "web_extractor",
+      "input": null
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "toolCalls arrayContaining web_search & web_extractor with providerExecuted:true; some tool-result event; text lowercased contains 'alibaba'; replay compiles web_search_call & web_extractor_call input items"
+   }
+  ]
+ },
+ "anthropic-compatible-messages/minimax-m3-anthropic-compatible-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "anthropic-compatible-messages/minimax-m3-anthropic-compatible-tool-call.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-call",
+  "calls": null
+ },
+ "anthropic-compatible-messages/minimax-m3-anthropic-compatible-tool-loop.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-loop",
+  "calls": null
+ },
+ "anthropic-messages-cache/keeps-a-long-tool-turn-inside-the-cache-lookback.json": {
+  "test": "packages/ai/test/provider/anthropic-messages-cache.recorded.test.ts:89",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "usage: cacheReadInputTokens + cacheWriteInputTokens > 0 (call it firstCached)"
+   },
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "usage: cacheReadInputTokens >= firstCached AND cacheWriteInputTokens < firstCached (missing treated as 0)"
+   }
+  ]
+ },
+ "anthropic-messages-cache/writes-then-reads-cache-control-on-identical-second-call.json": {
+  "test": "packages/ai/test/provider/anthropic-messages-cache.recorded.test.ts:75",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "only trivially asserts cacheReadInputTokens>=0 (write or miss allowed)"
+   },
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "cacheReadInputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "identical request; second call must report cache read > 0"
+   }
+  ]
+ },
+ "anthropic-messages/anthropic-opus-4-7-image-tool-result.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "image-tool-result",
+  "calls": null
+ },
+ "azure/chat-streams-text-from-a-foundry-models-url.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:53",
+  "calls": [
+   {
+    "text": {
+     "contains": "hello"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "lowercased text; Foundry /models baseURL, Kimi-K2.5"
+   }
+  ]
+ },
+ "azure/chat-streams-text.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:43",
+  "calls": [
+   {
+    "text": {
+     "contains": "hello"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "lowercased text"
+   }
+  ]
+ },
+ "azure/messages-calls-a-tool.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:73",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "some tool call named lookup_weather with input matching {city:Paris}; finish not asserted"
+   }
+  ]
+ },
+ "azure/messages-streams-text.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:63",
+  "calls": [
+   {
+    "text": {
+     "contains": "hola"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "lowercased text"
+   }
+  ]
+ },
+ "azure/responses-calls-a-tool.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:99",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "some tool call named lookup_weather with input matching {city:Paris}"
+   }
+  ]
+ },
+ "azure/responses-continues-after-a-tool-result.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:115",
+  "calls": [
+   {
+    "text": {
+     "matches": "."
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "only text.length > 0"
+   }
+  ]
+ },
+ "azure/responses-streams-text.json": {
+  "test": "packages/ai/test/provider/azure.recorded.test.ts:89",
+  "calls": [
+   {
+    "text": {
+     "contains": "bonjour"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "lowercased text"
+   }
+  ]
+ },
+ "bedrock-mantle-messages/applies-mid-conversation-effort-updates-and-thinking-block-binding-on-opus-5-5.json": {
+  "test": "packages/ai/test/provider/bedrock-mantle.test.ts:361",
+  "calls": [
+   {
+    "text": {
+     "contains": "1591"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text with commas stripped; request thinking has block_binding drop_block"
+   },
+   {
+    "text": {
+     "contains": "1600"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text with commas stripped; request output_config effort high + system message with output_config effort low"
+   }
+  ]
+ },
+ "bedrock-mantle-messages/lowers-system-updates-to-wrapped-user-text-on-haiku-4-5-with-budget-thinking.json": {
+  "test": "packages/ai/test/provider/bedrock-mantle.test.ts:336",
+  "calls": [
+   {
+    "text": {
+     "contains": "437"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "request: thinking budget 1024, no system-role messages"
+   }
+  ]
+ },
+ "bedrock-mantle-messages/replays-signed-thinking-through-a-tool-loop-and-native-system-update.json": {
+  "test": "packages/ai/test/provider/bedrock-mantle.test.ts:276",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "some tool-input-delta event; reasoning part providerMetadata.mantle.signature is a string"
+   },
+   {
+    "text": {
+     "contains": "1591"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text contains both '1591' and '18'; request replays thinking block {thinking, signature} as messages[1].content[0] and trailing native system message w/ cache_control"
+   }
+  ]
+ },
+ "bedrock-mantle-messages/strips-unsupported-mid-conversation-effort-updates-on-opus-5-0.json": {
+  "test": "packages/ai/test/provider/bedrock-mantle.test.ts:415",
+  "calls": [
+   {
+    "text": {
+     "contains": "50"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "request output_config effort low, no system messages"
+   }
+  ]
+ },
+ "bedrock-mantle/streams-text.json": {
+  "test": "packages/ai/test/provider/bedrock-mantle.test.ts:231",
+  "calls": [
+   {
+    "text": {
+     "equals": "hello"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "text.trim().toLowerCase() === 'hello'"
+   }
+  ]
+ },
+ "cerebras-chat/cerebras-gpt-oss-120b-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "cerebras-chat/cerebras-gpt-oss-120b-tool-call.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-call",
+  "calls": null
+ },
+ "cerebras-chat/cerebras-gpt-oss-120b-tool-loop.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-loop",
+  "calls": null
+ },
+ "cloudflare-ai-gateway/cloudflare-ai-gateway-claude-haiku-4-5-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "cloudflare-ai-gateway/cloudflare-ai-gateway-claude-haiku-4-5-tool-loop.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-loop",
+  "calls": null
+ },
+ "cloudflare-ai-gateway/cloudflare-ai-gateway-openai-gpt-5-nano-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "cloudflare-ai-gateway/cloudflare-ai-gateway-openai-gpt-5-nano-tool-loop.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-loop",
+  "calls": null
+ },
+ "cloudflare-ai-gateway/cloudflare-ai-gateway-workers-ai-gpt-oss-20b-tools-tool-call.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-call",
+  "calls": null
+ },
+ "cloudflare-ai-gateway/cloudflare-ai-gateway-workers-ai-llama-3-1-8b-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "cloudflare-workers-ai/cloudflare-workers-ai-gpt-oss-20b-tools-tool-call.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-call",
+  "calls": null
+ },
+ "cloudflare-workers-ai/cloudflare-workers-ai-llama-3-1-8b-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "cohere/streams-compatible-chat-reasoning.json": {
+  "test": "packages/ai/test/provider/cohere.recorded.test.ts:75",
+  "calls": [
+   {
+    "text": {
+     "contains": "391"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "deepinfra-chat/deepinfra-llama-3-3-70b-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "deepinfra-chat/deepinfra-llama-3-3-70b-tool-call.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-call",
+  "calls": null
+ },
+ "deepinfra-chat/deepinfra-llama-3-3-70b-tool-loop.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-loop",
+  "calls": null
+ },
+ "digitalocean-chat/gpt-nano-continues-a-tool-call-with-cache-markers.json": {
+  "test": "packages/ai/test/provider/digitalocean.recorded.test.ts:61",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; cache:auto"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}"
+   }
+  ]
+ },
+ "digitalocean-chat/gpt-nano-reuses-a-cached-prompt.json": {
+  "test": "packages/ai/test/provider/digitalocean.recorded.test.ts:31",
+  "calls": [
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "trimmed; inputTokens > 4096 and inputTokens == nonCachedInputTokens + cacheReadInputTokens + cacheWriteInputTokens"
+   },
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "cacheReadInputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "trimmed; identical request; inputTokens > 4096 and inputTokens == nonCachedInputTokens + cacheReadInputTokens + cacheWriteInputTokens"
+   }
+  ]
+ },
+ "digitalocean-chat/haiku-continues-a-tool-call-with-cache-markers.json": {
+  "test": "packages/ai/test/provider/digitalocean.recorded.test.ts:61",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; cache:auto"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}"
+   }
+  ]
+ },
+ "digitalocean-chat/haiku-reuses-a-cached-prompt.json": {
+  "test": "packages/ai/test/provider/digitalocean.recorded.test.ts:31",
+  "calls": [
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "trimmed; inputTokens > 4096 and inputTokens == nonCachedInputTokens + cacheReadInputTokens + cacheWriteInputTokens"
+   },
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "cacheReadInputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "trimmed; identical request; inputTokens > 4096 and inputTokens == nonCachedInputTokens + cacheReadInputTokens + cacheWriteInputTokens"
+   }
+  ]
+ },
+ "digitalocean-responses/calls-a-freeform-text-tool.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:75",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "run",
+      "input": {
+       "code": "<stringContaining 'print(1)'>"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "freeform (custom) text tool; toolCalls[0].input.code contains 'print(1)'; toolCalls[0].providerMetadata.digitalocean.custom === true; toolChoice required"
+   }
+  ]
+ },
+ "digitalocean-responses/continues-a-tool-call.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:61",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; system 'Use the get_weather tool, then answer in one short sentence.'"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}"
+   }
+  ]
+ },
+ "digitalocean-responses/streams-text.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:49",
+  "calls": [
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "trimmed; at least one text-delta event"
+   }
+  ]
+ },
+ "gemini-cache/reports-cachedcontenttokencount-on-identical-second-call.json": {
+  "test": "packages/ai/test/provider/gemini-cache.recorded.test.ts:37",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "trivial: cacheReadInputTokens >= 0"
+   },
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "trivial: cacheReadInputTokens >= 0 (identical request; cachedContentTokenCount maps to cacheReadInputTokens)"
+   }
+  ]
+ },
+ "gemini/gemini-2-5-flash-image.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "image",
+  "calls": null
+ },
+ "google-vertex/calls-a-tool.json": {
+  "test": "packages/ai/test/provider/google-vertex.recorded.test.ts:35",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "some tool call lookup_weather input matches {city:Paris}"
+   }
+  ]
+ },
+ "google-vertex/continues-after-a-tool-result.json": {
+  "test": "packages/ai/test/provider/google-vertex.recorded.test.ts:51",
+  "calls": [
+   {
+    "text": {
+     "matches": "."
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "only text.length > 0"
+   }
+  ]
+ },
+ "google-vertex/streams-text.json": {
+  "test": "packages/ai/test/provider/google-vertex.recorded.test.ts:27",
+  "calls": [
+   {
+    "text": {
+     "contains": "hello"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "lowercased"
+   }
+  ]
+ },
+ "groq-chat/continues-qwen-parallel-tool-calls.json": {
+  "test": "packages/ai/test/provider/groq.recorded.test.ts:86",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     },
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "London"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 2 tool calls, distinct ids, inputs arrayContaining (any order), all named lookup_weather; one finish event"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text lowercased contains 'sunny'; text contains 'Paris' and 'London'; toolChoice none; tool results {condition:sunny,temperature:18C}"
+   }
+  ]
+ },
+ "groq-chat/replays-gpt-oss-reasoning-through-a-tool-loop.json": {
+  "test": "packages/ai/test/provider/groq.recorded.test.ts:86",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 1 tool call; some reasoning-delta event; one finish event"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text lowercased contains 'sunny' and text contains 'Paris'; request replays assistant `reasoning` field"
+   }
+  ]
+ },
+ "groq-chat/streams-qwen-parsed-reasoning.json": {
+  "test": "packages/ai/test/provider/groq.recorded.test.ts:152",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed == '37887'; text has no '<think>'; some reasoning-delta; usage.providerMetadata has 'groq'; one finish event"
+   }
+  ]
+ },
+ "groq-chat/streams-text-with-usage.json": {
+  "test": "packages/ai/test/provider/groq.recorded.test.ts:29",
+  "calls": [
+   {
+    "text": {
+     "equals": "hello"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text lowercased+trimmed == 'hello'; reasoning === ''; some text-delta; exactly one finish event"
+   }
+  ]
+ },
+ "meta-chat/continues-a-generated-tool-call.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:83",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "absent",
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 1 tool call; some tool-input-delta; 1 finish + 1 step-finish; reasoning === ''"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased contains 'sunny'; tool result {condition:sunny,temperature:18C}; 1 finish + 1 step-finish"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-default-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-high-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-low-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-max-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-medium-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-minimal-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-chat/streams-text-with-xhigh-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; reasoning === ''"
+   }
+  ]
+ },
+ "meta-messages/replays-encrypted-thinking-through-a-tool-loop.json": {
+  "test": "packages/ai/test/provider/meta-messages.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 tool call; some tool-input-delta; reasoning part providerMetadata.meta.redactedData non-blank (replayed as redacted_thinking)"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; toolChoice none; tool result {condition:sunny}"
+   }
+  ]
+ },
+ "meta-messages/streams-text-with-adaptive-thinking.json": {
+  "test": "packages/ai/test/provider/meta-messages.recorded.test.ts:19",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish; reasoning part providerMetadata.meta.redactedData is non-blank string (display omitted -> redacted_thinking)"
+   }
+  ]
+ },
+ "meta-messages/streams-text-with-enabled-thinking.json": {
+  "test": "packages/ai/test/provider/meta-messages.recorded.test.ts:19",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish; reasoning part providerMetadata.meta.redactedData is non-blank string (display omitted -> redacted_thinking)"
+   }
+  ]
+ },
+ "meta-responses/replays-encrypted-reasoning-through-a-tool-loop.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:83",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 1 tool call; some tool-input-delta; 1 finish + 1 step-finish; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted); replay has reasoning item summary:[] encrypted_content + function_call + function_call_output"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased contains 'sunny'; tool result {condition:sunny,temperature:18C}; 1 finish + 1 step-finish"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-default-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-high-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-low-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-max-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-medium-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-minimal-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-responses/streams-text-with-xhigh-reasoning.json": {
+  "test": "packages/ai/test/provider/meta.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; some text-delta; exactly 1 finish and 1 step-finish event; message has a reasoning part whose providerMetadata.meta.reasoningEncryptedContent is a non-blank string (reasoning text itself not asserted)"
+   }
+  ]
+ },
+ "meta-search/searches-and-replays-grounded-messages.json": {
+  "test": "packages/ai/test/provider/meta-search.recorded.test.ts:19",
+  "calls": [
+   {
+    "text": {
+     "contains": "armstrong"
+    },
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "web_search",
+      "input": null
+     }
+    ],
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased text; some tool-call event providerExecuted web_search; replay messages[1] contains server_tool_use web_search"
+   },
+   {
+    "text": {
+     "contains": "armstrong"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; follow-up without tools"
+   }
+  ]
+ },
+ "meta-search/searches-and-replays-grounded-responses.json": {
+  "test": "packages/ai/test/provider/meta-search.recorded.test.ts:19",
+  "calls": [
+   {
+    "text": {
+     "contains": "armstrong"
+    },
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "web_search",
+      "input": null
+     }
+    ],
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased text; some tool-call event providerExecuted web_search; >=1 providerExecuted web_search tool-result with result {type:json,value:{type:web_search_call,results:[{url,title}...]}}; text part providerMetadata.meta.annotations contain url_citation with http(s) url; replay has web_search_call(results) + reasoning(encrypted_content) items"
+   },
+   {
+    "text": {
+     "contains": "armstrong"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; follow-up without tools"
+   }
+  ]
+ },
+ "minimax-chat/m3-continues-a-tool-loop-with-default-thinking.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:166",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 1 tool call; some reasoning-delta; 1 finish; replay has reasoning_content + reasoning_details (from providerMetadata.minimax.reasoningDetails)"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; toolChoice none; tool result {condition:sunny,temperature:18C}"
+   }
+  ]
+ },
+ "minimax-chat/m3-streams-text-with-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:81",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; no '<think>' in text; reasoning-delta events absent; some text-delta; exactly 1 finish; finish reason not asserted"
+   }
+  ]
+ },
+ "minimax-messages/m2-7-streams-default-thinking.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:81",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; no '<think>' in text; reasoning-delta events present; some text-delta; exactly 1 finish; finish reason not asserted"
+   }
+  ]
+ },
+ "minimax-messages/m3-continues-a-tool-loop-with-adaptive-thinking.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:166",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 1 tool call; some reasoning-delta; 1 finish; each reasoning part has providerMetadata.minimax.signature string; replayed as thinking blocks"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; toolChoice none; tool result {condition:sunny,temperature:18C}"
+   }
+  ]
+ },
+ "minimax-messages/m3-generates-a-named-tool-call-with-default-thinking-off.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:114",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "absent",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "reasoning === ''; some tool-input-delta; 1 finish event"
+   }
+  ]
+ },
+ "minimax-messages/m3-streams-adaptive-thinking.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:81",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; no '<think>' in text; reasoning-delta events present; some text-delta; exactly 1 finish; finish reason not asserted"
+   }
+  ]
+ },
+ "minimax-messages/m3-streams-text-with-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:81",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; no '<think>' in text; reasoning-delta events absent; some text-delta; exactly 1 finish; finish reason not asserted"
+   }
+  ]
+ },
+ "minimax-responses/m3-continues-a-tool-loop-with-effort-minimal.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:166",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "exactly 1 tool call; some reasoning-delta; 1 finish; replay has reasoning item with summary_text == first.reasoning"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; toolChoice none; tool result {condition:sunny,temperature:18C}"
+   }
+  ]
+ },
+ "minimax-responses/m3-streams-text-with-effort-none.json": {
+  "test": "packages/ai/test/provider/minimax.recorded.test.ts:81",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped+trimmed; no '<think>' in text; reasoning-delta events absent; some text-delta; exactly 1 finish; finish reason not asserted"
+   }
+  ]
+ },
+ "mistral-chat-glm/streams-an-indexed-tool-call.json": {
+  "test": "packages/ai/test/provider/mistral.recorded.test.ts:144",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 tool-input-start, >0 tool-input-delta, exactly 1 tool-input-end, exactly 1 tool-call event"
+   }
+  ]
+ },
+ "mistral-chat/drives-a-tool-loop.json": {
+  "test": "packages/ai/test/provider/mistral.recorded.test.ts:96",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 tool-call event; named toolChoice"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; toolChoice none; tool result {condition:sunny,temperature:18C}"
+   }
+  ]
+ },
+ "mistral-chat/replays-native-reasoning.json": {
+  "test": "packages/ai/test/provider/mistral.recorded.test.ts:57",
+  "calls": [
+   {
+    "text": {
+     "equals": "391"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "trimmed; some reasoning-delta; replay sends assistant content with type 'thinking' chunk"
+   },
+   {
+    "text": {
+     "matches": "Done\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "trimmed"
+   }
+  ]
+ },
+ "mistral-chat/streams-text-with-usage.json": {
+  "test": "packages/ai/test/provider/mistral.recorded.test.ts:35",
+  "calls": [
+   {
+    "text": {
+     "matches": "^(?:hello|hi)[!.]?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "trimmed; regex flag i (case-insensitive)"
+   }
+  ]
+ },
+ "moonshot-chat/k3-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:74",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; exactly 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/k3-respects-tool-choice-none.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:36",
+  "calls": [
+   {
+    "text": {
+     "matches": "."
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text.length > 0, no tool calls"
+   }
+  ]
+ },
+ "moonshot-chat/k3-respects-tool-choice-required.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:36",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "moonshot-chat/k3-returns-native-structured-output.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:101",
+  "calls": [
+   {
+    "text": {
+     "equals": "{\"city\":\"Paris\"}"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "JSON.parse(text) deep-equals {city:'Paris'}; json_schema passed via raw http.body override"
+   }
+  ]
+ },
+ "moonshot-chat/k3-streams-text-with-default-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/k3-streams-text-with-high-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/k3-streams-text-with-low-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/k3-streams-text-with-max-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-6-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:104",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "1 finish event; continuation request replays reasoning_content"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up asks reported temperature"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-6-streams-text-with-default-thinking.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-6-streams-text-with-disabled-thinking.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-6-streams-text-with-enabled-thinking.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-7-code-highspeed-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:104",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "1 finish event; continuation request replays reasoning_content"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up asks reported temperature"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-7-code-highspeed-streams-text-with-default-thinking.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-7-code-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:104",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "1 finish event; continuation request replays reasoning_content"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up asks reported temperature"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k2-7-code-streams-text-with-default-thinking.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-chat/kimi-k3-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:104",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "1 finish event; continuation request replays reasoning_content"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up asks reported temperature"
+   }
+  ]
+ },
+ "moonshot-messages/k3-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:74",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; exactly 1 finish event"
+   }
+  ]
+ },
+ "moonshot-messages/k3-respects-tool-choice-none.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:36",
+  "calls": [
+   {
+    "text": {
+     "matches": "."
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text.length > 0, no tool calls"
+   }
+  ]
+ },
+ "moonshot-messages/k3-respects-tool-choice-required.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:36",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "moonshot-messages/k3-returns-native-structured-output.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:101",
+  "calls": [
+   {
+    "text": {
+     "equals": "{\"city\":\"Paris\"}"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "JSON.parse(text) deep-equals {city:'Paris'}; json_schema passed via raw http.body override"
+   }
+  ]
+ },
+ "moonshot-messages/k3-streams-text-with-default-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-messages/k3-streams-text-with-high-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-messages/k3-streams-text-with-low-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-messages/k3-streams-text-with-max-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-messages/kimi-k3-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:104",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "1 finish event; continuation request replays thinking blocks w/ providerMetadata.moonshot.signature"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up asks reported temperature"
+   }
+  ]
+ },
+ "moonshot-responses/k3-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:74",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; exactly 1 finish event"
+   }
+  ]
+ },
+ "moonshot-responses/k3-rejects-unsupported-tool-choice-none.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:36",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": "generate fails: error.reason._tag == \"InvalidRequest\", reason.http.status == 400, message contains 'unsupported tool_choice value: \"none\"'",
+    "notes": null
+   }
+  ]
+ },
+ "moonshot-responses/k3-rejects-unsupported-tool-choice-required.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:36",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": "generate fails: error.reason._tag == \"InvalidRequest\", reason.http.status == 400, message contains 'unsupported tool_choice value: \"required\"'",
+    "notes": null
+   }
+  ]
+ },
+ "moonshot-responses/k3-returns-native-structured-output.json": {
+  "test": "packages/ai/test/provider/moonshot-capabilities.recorded.test.ts:101",
+  "calls": [
+   {
+    "text": {
+     "equals": "{\"city\":\"Paris\"}"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "JSON.parse(text) deep-equals {city:'Paris'}; json_schema passed via raw http.body override"
+   }
+  ]
+ },
+ "moonshot-responses/k3-streams-text-with-default-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-responses/k3-streams-text-with-high-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-responses/k3-streams-text-with-low-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-responses/k3-streams-text-with-max-effort.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:16",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; some reasoning-delta; 1 finish event"
+   }
+  ]
+ },
+ "moonshot-responses/kimi-k3-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/moonshot.recorded.test.ts:104",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "1 finish event; continuation request replays reasoning item summary_text"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text contains 'Paris' and lowercased 'sunny'; tool result {condition:sunny,temperature:18C}"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "follow-up asks reported temperature"
+   }
+  ]
+ },
+ "openai-compatible-chat/gemini-parallel-tool-signatures.json": {
+  "test": "packages/ai/test/provider/gemini-openai-chat.recorded.test.ts:26",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     },
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Tokyo"
+      }
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "tool-call event inputs toEqual [{city:Paris},{city:Tokyo}] in order; calls[0].providerMetadata.google.extraContent == {google:{thought_signature:string}}, replayed as tool_calls[0].extra_content; results via local weatherRuntimeTool (Paris 22 sunny, Tokyo 0 unknown)"
+   },
+   {
+    "text": {
+     "matches": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "no tool-call events; text matches /Paris/ and /Tokyo/"
+   }
+  ]
+ },
+ "openai-compatible-chat/togetherai-streams-text.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "text",
+  "calls": null
+ },
+ "openai-compatible-chat/togetherai-streams-tool-call.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-call",
+  "calls": null
+ },
+ "openai-responses-cache/caches-the-system-prompt-on-gpt-6-2-sol.json": {
+  "test": "packages/ai/test/provider/openai-responses-cache.recorded.test.ts:59",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "usage.cacheWriteInputTokens > 1024"
+   },
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "usage.cacheReadInputTokens > 1024 (identical request)"
+   }
+  ]
+ },
+ "openai-responses-cache/reports-cached-tokens-on-identical-second-call.json": {
+  "test": "packages/ai/test/provider/openai-responses-cache.recorded.test.ts:49",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "trivial: cacheReadInputTokens >= 0"
+   },
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "cacheReadInputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "identical request"
+   }
+  ]
+ },
+ "openai-responses/openai-responses-gpt-5-5-image-tool-result.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "image-tool-result",
+  "calls": null
+ },
+ "openai-responses/openai-responses-gpt-5-5-reasoning-continuation.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "reasoning-continuation",
+  "calls": null
+ },
+ "openai-responses/openai-responses-gpt-5-5-reasoning.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "reasoning",
+  "calls": null
+ },
+ "openai-responses/openai-responses-gpt-5-5-tool-loop.json": {
+  "test": "packages/ai/test/provider/golden.recorded.test.ts",
+  "golden": "tool-loop",
+  "calls": null
+ },
+ "openrouter-reasoning-tool-loop.json": {
+  "test": "packages/ai/test/provider/openai-chat-reasoning.recorded.test.ts:110",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; some reasoning-end event providerMetadata['openrouter'].reasoningDetails is an array containing an entry with non-empty signature"
+   },
+   {
+    "text": {
+     "matches": "^Paris is sunny\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; text after first step-finish, trimmed, matches /^Paris is sunny\\.?$/"
+   }
+  ]
+ },
+ "openrouter-reasoning.json": {
+  "test": "packages/ai/test/provider/openai-chat-reasoning.recorded.test.ts:47",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "text commas stripped+trimmed; some reasoning-delta; reasoning part providerMetadata['openrouter'] has reasoningField=='reasoning' and reasoningDetails array with an entry having non-empty string signature; replay reasoning_details equals details, length 1, {type:'reasoning.text', text:reasoning, signature}"
+   }
+  ]
+ },
+ "openrouter-responses/calls-a-freeform-text-tool.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:75",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "run",
+      "input": {
+       "code": "<stringContaining 'print(1)'>"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "freeform (custom) text tool; toolCalls[0].input.code contains 'print(1)'; toolCalls[0].providerMetadata.openrouter.custom === true; toolChoice required"
+   }
+  ]
+ },
+ "openrouter-responses/continues-a-tool-call.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:61",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; system 'Use the get_weather tool, then answer in one short sentence.'"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}"
+   }
+  ]
+ },
+ "openrouter-responses/streams-text.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:49",
+  "calls": [
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "trimmed; at least one text-delta event"
+   }
+  ]
+ },
+ "pdf/anthropic-tool-result.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:146",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF delivered in pre-built tool result history"
+   }
+  ]
+ },
+ "pdf/anthropic-user-input.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:116",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF sent as user media"
+   }
+  ]
+ },
+ "pdf/gemini-tool-result.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:146",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "runTools loop step 1: model calls read_pdf (call itself not asserted); tool returns text + PDF file content"
+   },
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "combined loop text uppercased contains code; last event finish stop"
+   }
+  ]
+ },
+ "pdf/gemini-user-input.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:116",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF sent as user media"
+   }
+  ]
+ },
+ "pdf/openai-tool-result.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:146",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF delivered in pre-built tool result history"
+   }
+  ]
+ },
+ "pdf/openai-user-input.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:116",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF sent as user media"
+   }
+  ]
+ },
+ "pdf/xai-tool-result.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:146",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF delivered in pre-built tool result history"
+   }
+  ]
+ },
+ "pdf/xai-user-input.json": {
+  "test": "packages/ai/test/provider/pdf.recorded.test.ts:116",
+  "calls": [
+   {
+    "text": {
+     "contains": "ORCHID-7391"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "text uppercased contains code; PDF sent as user media"
+   }
+  ]
+ },
+ "venice-chat/claude-opus-4-8-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_rate",
+      "input": {
+       "code": "ZEBRA"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 finish event; signed: reasoning parts' providerMetadata.venice.reasoningDetails contain {type:'reasoning.text', signature:string}; replayed as reasoning_details"
+   },
+   {
+    "text": {
+     "contains": "400"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "reasoning does not contain '__ENCRYPTED_REASONING__'; toolChoice none; tool result {code:ZEBRA,rate:23}"
+   },
+   {
+    "text": {
+     "contains": "407"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "follow-up: add 7"
+   }
+  ]
+ },
+ "venice-chat/deepseek-v4-flash-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_rate",
+      "input": {
+       "code": "ZEBRA"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 finish event; scalar: if first.reasoning non-empty, replayed as assistant reasoning_content"
+   },
+   {
+    "text": {
+     "contains": "400"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "reasoning does not contain '__ENCRYPTED_REASONING__'; toolChoice none; tool result {code:ZEBRA,rate:23}"
+   },
+   {
+    "text": {
+     "contains": "407"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "follow-up: add 7"
+   }
+  ]
+ },
+ "venice-chat/gemini-3-1-pro-preview-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_rate",
+      "input": {
+       "code": "ZEBRA"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 finish event; details: replayed assistant reasoning_details contains {type:'reasoning.encrypted', data:string}"
+   },
+   {
+    "text": {
+     "contains": "400"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "reasoning does not contain '__ENCRYPTED_REASONING__'; toolChoice none; tool result {code:ZEBRA,rate:23}"
+   },
+   {
+    "text": {
+     "contains": "407"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "follow-up: add 7"
+   }
+  ]
+ },
+ "venice-chat/gemini-preserves-per-call-signatures-through-parallel-tools.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:133",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_rate",
+      "input": null
+     },
+     {
+      "name": "lookup_rate",
+      "input": null
+     }
+    ],
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "exactly 2 tool calls (ZEBRA & MOOSE inputs implied, not asserted); per-call providerMetadata.venice.thoughtSignature replayed as thought_signature if present"
+   },
+   {
+    "text": {
+     "contains": "378"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "a text part has providerMetadata.venice.messageThoughtSignature string; replayed as assistant thought_signature; tool results rate 23/31"
+   },
+   {
+    "text": {
+     "contains": "385"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "venice-chat/openai-gpt-54-mini-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:33",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "lookup_rate",
+      "input": {
+       "code": "ZEBRA"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "exactly 1 finish event; encrypted: first.reasoning does not contain '__ENCRYPTED_REASONING__'; reasoningDetails (if any) replayed"
+   },
+   {
+    "text": {
+     "contains": "400"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "reasoning does not contain '__ENCRYPTED_REASONING__'; toolChoice none; tool result {code:ZEBRA,rate:23}"
+   },
+   {
+    "text": {
+     "contains": "407"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "across all 3 responses, reasoning parts' venice.reasoningDetails include {type:'reasoning.encrypted', data:string}"
+   }
+  ]
+ },
+ "venice-chat/qwen-disables-reasoning.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:206",
+  "calls": [
+   {
+    "text": {
+     "contains": "400"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "reasoning === ''"
+   }
+  ]
+ },
+ "venice-chat/surfaces-venice-model-errors.json": {
+  "test": "packages/ai/test/provider/venice.recorded.test.ts:225",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": "generate fails: reason._tag \"InvalidRequest\", message contains \"Specified model not found\", reason.http.status 404",
+    "notes": null
+   }
+  ]
+ },
+ "venice-responses/calls-a-freeform-text-tool.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:75",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "run",
+      "input": {
+       "code": "<stringContaining 'print(1)'>"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "freeform (custom) text tool; toolCalls[0].input.code contains 'print(1)'; toolCalls[0].providerMetadata.venice.custom === true; toolChoice required"
+   }
+  ]
+ },
+ "venice-responses/continues-a-tool-call.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:61",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; system 'Use the get_weather tool, then answer in one short sentence.'"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}"
+   }
+  ]
+ },
+ "venice-responses/streams-text.json": {
+  "test": "packages/ai/test/provider/responses-routes.recorded.test.ts:49",
+  "calls": [
+   {
+    "text": {
+     "matches": "^OK\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "trimmed; at least one text-delta event"
+   }
+  ]
+ },
+ "vercel-ai-gateway-reasoning-tool-loop.json": {
+  "test": "packages/ai/test/provider/openai-chat-reasoning.recorded.test.ts:110",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; some reasoning-end event providerMetadata['vercel-ai-gateway'].reasoningDetails is an array containing an entry with non-empty signature"
+   },
+   {
+    "text": {
+     "matches": "^Paris is sunny\\.?$"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; text after first step-finish, trimmed, matches /^Paris is sunny\\.?$/"
+   }
+  ]
+ },
+ "vercel-ai-gateway-reasoning.json": {
+  "test": "packages/ai/test/provider/openai-chat-reasoning.recorded.test.ts:47",
+  "calls": [
+   {
+    "text": {
+     "equals": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "text commas stripped+trimmed; some reasoning-delta; reasoning part providerMetadata['vercel-ai-gateway'] has reasoningField=='reasoning' and reasoningDetails array with an entry having non-empty string signature; replay reasoning_details equals details, length 1, {type:'reasoning.text', text:reasoning, signature}"
+   }
+  ]
+ },
+ "vercel-native/automatically-caches-distinct-claude-system-blocks.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:100",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": null,
+    "notes": "nothing asserted"
+   },
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": {
+     ">0": [
+      "cacheReadInputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "identical request"
+   }
+  ]
+ },
+ "vercel-native/continues-chat-claude-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/continues-chat-muse-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/continues-messages-claude-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/continues-messages-deepseek-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; some reasoning-end event somewhere in loop (reasoning required)"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/continues-messages-gemini-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; some reasoning-end event somewhere in loop (reasoning required)"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/continues-responses-gpt-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/continues-responses-grok-reasoning-and-tools.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:60",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: exactly 1 tool-call overall (get_weather {city:Paris}); step-finish tool-calls; some reasoning-end event somewhere in loop (reasoning required)"
+   },
+   {
+    "text": {
+     "contains": "Paris"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "expectWeatherToolLoop: combined loop text contains 'Paris' and non-empty; final finish stop; step-finish reasons ['tool-calls','stop']; 1 tool-result {temperature:22,condition:sunny}; every finish event has providerMetadata.gateway defined"
+   }
+  ]
+ },
+ "vercel-native/rejects-invalid-credentials-without-retryable-classification.json": {
+  "test": "packages/ai/test/provider/vercel-ai-gateway.recorded.test.ts:83",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": "generate fails: reason.http.status 401 and isRetryable(error) === false",
+    "notes": null
+   }
+  ]
+ },
+ "zai-chat/glm-4-5-calls-a-tool-without-streaming-arguments.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:129",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": null,
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "zai-chat/glm-4-7-streams-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:32",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped"
+   }
+  ]
+ },
+ "zai-chat/glm-4-7-streams-thinking-enabled.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:32",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-high-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-low-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-max-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-medium-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-minimal-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-none-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-thinking-disabled.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:32",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "absent",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-thinking-enabled.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:32",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped"
+   }
+  ]
+ },
+ "zai-chat/glm-5-2-streams-xhigh-effort.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:58",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; reasoning present even for none/minimal"
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-flash-reads-image-bytes.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:81",
+  "calls": [
+   {
+    "text": {
+     "contains": "jiggling restroom prison"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "lowercased; 1 finish event"
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-preserves-reasoning-through-a-tool-loop-and-follow-up.json": {
+  "test": "packages/ai/test/provider/zai.recorded.test.ts:46",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": "present",
+    "tool_calls": [
+     {
+      "name": "get_weather",
+      "input": {
+       "city": "Paris"
+      }
+     }
+    ],
+    "finish": "tool-calls",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "some tool-input-delta; 1 finish; replayed as reasoning_content"
+   },
+   {
+    "text": {
+     "contains": "sunny"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "lowercased; tool result {condition:sunny,temperature:18C}; follow-up replay includes reasoning_content of first AND second responses"
+   },
+   {
+    "text": {
+     "contains": "18"
+    },
+    "reasoning": null,
+    "tool_calls": [],
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": null
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-rejects-disabled-thinking.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:11",
+  "calls": [
+   {
+    "text": null,
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": null,
+    "usage": null,
+    "error": "generate fails: reason._tag \"InvalidRequest\", reason.http.status 400, message contains \"always engages in thinking and cannot be disabled\"",
+    "notes": null
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-returns-a-json-object.json": {
+  "test": "packages/ai/test/provider/zai-capabilities.recorded.test.ts:108",
+  "calls": [
+   {
+    "text": {
+     "equals": "{\"city\":\"Paris\"}"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": null,
+    "error": null,
+    "notes": "JSON.parse(text) deep-equals {city:'Paris'}"
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-streams-default-effort.json": {
+  "test": "packages/ai/test/provider/zai.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-streams-high-effort.json": {
+  "test": "packages/ai/test/provider/zai.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-streams-low-effort.json": {
+  "test": "packages/ai/test/provider/zai.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "zai-chat/glm-5-3-streams-max-effort.json": {
+  "test": "packages/ai/test/provider/zai.recorded.test.ts:23",
+  "calls": [
+   {
+    "text": {
+     "contains": "37887"
+    },
+    "reasoning": "present",
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     ">0": [
+      "inputTokens",
+      "outputTokens"
+     ]
+    },
+    "error": null,
+    "notes": "text commas stripped; 1 finish event"
+   }
+  ]
+ },
+ "session-runner/openai-chat-streams-text.json": {
+  "test": "packages/core/test/session-runner-recorded.test.ts:185",
+  "calls": [
+   {
+    "text": {
+     "equals": "Hello!"
+    },
+    "reasoning": null,
+    "tool_calls": null,
+    "finish": "stop",
+    "usage": {
+     "inputTokens": 465,
+     "outputTokens": 2
+    },
+    "error": null,
+    "notes": "session-level: assistant message content == [{type:text,text:'Hello!'}], finish stop; span gen_ai.response.finish_reasons ['stop'], gen_ai.usage.input_tokens 465, output_tokens 2, cost 0; model gpt-4o-mini; event sequence (one text block, no reasoning/tools)"
+   }
+  ]
+ }
+}

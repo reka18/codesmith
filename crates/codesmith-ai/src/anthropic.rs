@@ -130,8 +130,18 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
             if let Some(r) = v["delta"]["stop_reason"].as_str() {
                 state.reason = Some(r.to_string());
             }
-            if let Some(o) = v["usage"]["output_tokens"].as_u64() {
-                state.usage.output = o;
+            // The final delta carries authoritative totals; some
+            // Anthropic-compatible servers only report input here.
+            let u = &v["usage"];
+            for (field, key) in [
+                (&mut state.usage.input, "input_tokens"),
+                (&mut state.usage.output, "output_tokens"),
+                (&mut state.usage.cache_read, "cache_read_input_tokens"),
+                (&mut state.usage.cache_write, "cache_creation_input_tokens"),
+            ] {
+                if let Some(n) = u[key].as_u64() {
+                    *field = n;
+                }
             }
         }
         "message_stop" => {
@@ -304,6 +314,30 @@ mod tests {
                     input: 12,
                     output: 40,
                     cache_read: 5,
+                    cache_write: 0
+                }
+            }]
+        );
+    }
+
+    #[test]
+    fn message_delta_usage_overrides_start() {
+        let mut s = State::default();
+        handle(
+            &mut s,
+            "message_start",
+            &json!({"message": {"usage": {"input_tokens": 0, "output_tokens": 0}}}),
+        )
+        .unwrap();
+        handle(&mut s, "message_delta", &json!({"delta": {"stop_reason": "end_turn"}, "usage": {"input_tokens": 290, "cache_read_input_tokens": 114, "output_tokens": 27}})).unwrap();
+        assert_eq!(
+            handle(&mut s, "message_stop", &json!({})).unwrap(),
+            vec![Event::Finish {
+                reason: "end_turn".into(),
+                usage: Usage {
+                    input: 290,
+                    output: 27,
+                    cache_read: 114,
                     cache_write: 0
                 }
             }]

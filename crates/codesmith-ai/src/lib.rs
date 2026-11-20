@@ -4,6 +4,8 @@
 mod anthropic;
 mod gemini;
 mod openai;
+#[cfg(test)]
+mod replay_tests;
 mod responses;
 mod sse;
 

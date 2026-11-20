@@ -96,11 +96,7 @@ pub struct State {
 pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     let mut out = Vec::new();
     if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
-        state.usage.input = u["prompt_tokens"].as_u64().unwrap_or(0);
-        state.usage.output = u["completion_tokens"].as_u64().unwrap_or(0);
-        state.usage.cache_read = u["prompt_tokens_details"]["cached_tokens"]
-            .as_u64()
-            .unwrap_or(0);
+        state.usage = usage(u);
     }
     let Some(choice) = v["choices"].get(0) else {
         return out;
@@ -113,6 +109,24 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     }
     if let Some(t) = delta["content"].as_str().filter(|s| !s.is_empty()) {
         out.push(Event::TextDelta(t.to_string()));
+    }
+    // Mistral streams content as typed chunks, reasoning among them.
+    for part in delta["content"].as_array().into_iter().flatten() {
+        match part["type"].as_str() {
+            Some("text") => {
+                if let Some(t) = part["text"].as_str().filter(|s| !s.is_empty()) {
+                    out.push(Event::TextDelta(t.to_string()));
+                }
+            }
+            Some("thinking") => {
+                for t in part["thinking"].as_array().into_iter().flatten() {
+                    if let Some(t) = t["text"].as_str().filter(|s| !s.is_empty()) {
+                        out.push(Event::ReasoningDelta(t.to_string()));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     if let Some(calls) = delta["tool_calls"].as_array() {
         for c in calls {
@@ -136,6 +150,28 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
         state.finish = Some(f.to_string());
     }
     out
+}
+
+/// `prompt_tokens` includes cache reads and writes; `Usage.input` does not.
+/// Providers disagree on where the cache counts live.
+fn usage(u: &Value) -> Usage {
+    let n = |v: &Value| v.as_u64();
+    let cache_read = n(&u["prompt_tokens_details"]["cached_tokens"])
+        .or(n(&u["prompt_cache_hit_tokens"]))
+        .or(n(&u["cached_tokens"]))
+        .or(n(&u["cache_read_input_tokens"]))
+        .unwrap_or(0);
+    let cache_write = n(&u["prompt_tokens_details"]["cache_write_tokens"])
+        .or(n(&u["cache_created_input_tokens"]))
+        .unwrap_or(0);
+    Usage {
+        input: n(&u["prompt_tokens"])
+            .unwrap_or(0)
+            .saturating_sub(cache_read + cache_write),
+        output: n(&u["completion_tokens"]).unwrap_or(0),
+        cache_read,
+        cache_write,
+    }
 }
 
 /// Events at end of stream: the accumulated tool calls, then `Finish`.
@@ -342,12 +378,66 @@ mod tests {
             vec![Event::Finish {
                 reason: "stop".into(),
                 usage: Usage {
-                    input: 10,
+                    input: 6,
                     output: 3,
                     cache_read: 4,
                     cache_write: 0
                 }
             }]
+        );
+    }
+
+    #[test]
+    fn usage_input_excludes_cache_reads_and_writes() {
+        let u = |v: Value| usage(&v);
+        assert_eq!(
+            u(
+                json!({"prompt_tokens": 5762, "completion_tokens": 4, "cache_created_input_tokens": 5759, "cache_read_input_tokens": 0, "prompt_tokens_details": {"cached_tokens": 0}})
+            ),
+            Usage {
+                input: 3,
+                output: 4,
+                cache_read: 0,
+                cache_write: 5759
+            }
+        );
+        assert_eq!(
+            u(json!({"prompt_tokens": 101, "completion_tokens": 9, "cached_tokens": 101})),
+            Usage {
+                input: 0,
+                output: 9,
+                cache_read: 101,
+                cache_write: 0
+            }
+        );
+        assert_eq!(
+            u(
+                json!({"prompt_tokens": 20, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 8, "cache_write_tokens": 2}})
+            ),
+            Usage {
+                input: 10,
+                output: 1,
+                cache_read: 8,
+                cache_write: 2
+            }
+        );
+    }
+
+    #[test]
+    fn typed_content_chunks() {
+        let mut s = State::default();
+        assert_eq!(
+            handle(
+                &mut s,
+                &json!({"choices": [{"delta": {"content": [
+                    {"type": "thinking", "thinking": [{"type": "text", "text": "17 times"}]},
+                    {"type": "text", "text": "391"}
+                ]}}]})
+            ),
+            vec![
+                Event::ReasoningDelta("17 times".into()),
+                Event::TextDelta("391".into())
+            ]
         );
     }
 

@@ -14,7 +14,12 @@ pub struct Frame {
 impl Parser {
     /// Feed a chunk; returns every frame completed by it.
     pub fn push(&mut self, chunk: &str) -> Vec<Frame> {
-        self.buf.push_str(&chunk.replace("\r\n", "\n"));
+        // Normalize CRLF over the whole buffer so a pair split across two
+        // chunks (`\r` | `\n`) still reads as one line ending.
+        self.buf.push_str(chunk);
+        if self.buf.contains('\r') {
+            self.buf = self.buf.replace("\r\n", "\n");
+        }
         let mut out = Vec::new();
         while let Some(end) = self.buf.find("\n\n") {
             let block: String = self.buf.drain(..end + 2).collect();
@@ -106,6 +111,13 @@ mod tests {
                 data: "a\nb".into()
             }]
         );
+    }
+
+    #[test]
+    fn crlf_split_across_chunks() {
+        let mut p = Parser::default();
+        assert!(p.push("data: a\r\n\r").is_empty());
+        assert_eq!(p.push("\ndata: b\r\n\r\n").len(), 2);
     }
 
     #[test]
