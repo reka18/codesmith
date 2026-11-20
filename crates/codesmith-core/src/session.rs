@@ -1091,6 +1091,9 @@ impl Session {
         if finished.is_empty() {
             return Ok(());
         }
+        // A turn like any other: one at a time across processes, after
+        // what others appended meanwhile.
+        let _lease = self.take_turn(sink).await?;
         for j in &finished {
             sink.notice(&format!(
                 "background command {} finished ({})",
