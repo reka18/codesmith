@@ -60,7 +60,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     ctx.authorize_external(&target, false)?;
     ctx.ask(Request {
         action: "lsp".into(),
-        resources: vec![target.resource.clone()],
+        resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!("Query language servers: {op} in {}", target.resource),
     })?;

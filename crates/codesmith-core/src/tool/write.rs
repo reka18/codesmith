@@ -30,7 +30,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     let lines = super::count_lines(content);
     ctx.ask(Request {
         action: "edit".into(),
-        resources: vec![target.resource.clone()],
+        resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!(
             "{} {} ({lines} lines)",

@@ -973,9 +973,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn oc_shell_numeric_symlink_operand_reaches_outside_unprompted() {
-        // A known limit shared with OpenCode: `cd` targets are checked
-        // lexically, so a symlink inside the project is not followed.
+    async fn oc_shell_numeric_symlink_operand_enforces_external_deny() {
+        // OpenCode checks `cd` targets lexically and lets a symlink inside
+        // the project reach outside unprompted; CodeSmith resolves the
+        // symlink, so the external deny applies to where it points.
         let (_o, out) = outside();
         let (env, asker) = scripted(vec![allow("*"), deny("external_directory", "*")]);
         std::os::unix::fs::symlink(&out, env.root().join("123")).unwrap();
@@ -987,11 +988,10 @@ mod tests {
                 marker.display()
             ),
         )
-        .await
-        .unwrap();
+        .await;
         assert!(asker.take().is_empty());
-        assert_eq!(result.content, out.display().to_string());
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "reached");
+        assert!(result.unwrap_err().contains("external_directory"));
+        assert!(!marker.exists());
     }
 
     #[tokio::test(flavor = "multi_thread")]

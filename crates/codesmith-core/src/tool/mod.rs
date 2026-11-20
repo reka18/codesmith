@@ -17,7 +17,7 @@ mod write;
 
 use crate::config::ToolOutputConfig;
 use crate::paths;
-use crate::permission::{Denied, Gate, Request};
+use crate::permission::{Denied, Effect, Gate, Request};
 use codesmith_ai::ToolSpec;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
@@ -359,14 +359,62 @@ pub fn normalize(p: &Path) -> PathBuf {
     out
 }
 
+/// Resolve symlinks in an absolute, lexically normalized path. An existing
+/// path is canonicalized; for one that does not exist yet, the nearest
+/// existing ancestor is, and the rest is appended. A dangling symlink is
+/// followed to where a write through it would land. On a case-insensitive
+/// volume, existing components come back in their on-disk case.
+pub fn real_path(p: &Path) -> PathBuf {
+    real_path_depth(p, 0)
+}
+
+fn real_path_depth(p: &Path, depth: usize) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else {
+        return p.to_path_buf();
+    };
+    let parent = real_path_depth(parent, depth);
+    let here = parent.join(name);
+    // A symlink that canonicalize could not follow: its target is missing.
+    if depth < 40 {
+        if let Ok(link) = std::fs::read_link(&here) {
+            return real_path_depth(&normalize(&parent.join(link)), depth + 1);
+        }
+    }
+    here
+}
+
 /// A path the model named, resolved.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
+    /// The path as named, made absolute and lexically normalized; tools do
+    /// their I/O on it.
     pub absolute: PathBuf,
+    /// `absolute` with symlinks resolved (see [`real_path`]).
+    pub real: PathBuf,
     /// The resource name used in permission rules and messages: relative to
     /// the root when inside it, absolute otherwise.
     pub resource: String,
+    /// Every name the target goes by in permission rules: `resource` first,
+    /// then the real path's name when it differs (a symlink's target, or the
+    /// on-disk spelling). Rules are checked against all of them, so a rule
+    /// matches whichever form it was written in.
+    pub resources: Vec<String>,
+    /// The real path is outside the project.
     pub external: bool,
+}
+
+/// `p` relative to `root` (`.` for the root itself), or `None` outside it.
+fn relative_to(p: &Path, root: &Path) -> Option<String> {
+    p.strip_prefix(root).ok().map(|rel| {
+        if rel.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            rel.display().to_string()
+        }
+    })
 }
 
 impl Ctx<'_> {
@@ -380,23 +428,57 @@ impl Ctx<'_> {
         } else {
             self.cwd.join(expanded)
         });
-        let inside = absolute.starts_with(&self.root) || absolute.starts_with(paths::tmp_dir());
-        let resource = match absolute.strip_prefix(&self.root) {
-            Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
-            Ok(rel) => rel.display().to_string(),
-            Err(_) => absolute.display().to_string(),
+        let real = real_path(&absolute);
+        let root = real_path(&self.root);
+        let tmp = paths::tmp_dir();
+        let inside = |p: &Path, root: &Path, tmp: &Path| p.starts_with(root) || p.starts_with(tmp);
+        let lexical = relative_to(&absolute, &self.root);
+        let real_rel = relative_to(&real, &root);
+        let external = !inside(&real, &root, &real_path(&tmp));
+        let lexical_name = lexical
+            .clone()
+            .unwrap_or_else(|| absolute.display().to_string());
+        let real_name = real_rel
+            .clone()
+            .unwrap_or_else(|| real.display().to_string());
+        // Named from outside the project but really inside it (another
+        // spelling of the root): the project-relative name is the useful one.
+        let resource = if lexical.is_none() && real_rel.is_some() {
+            real_name.clone()
+        } else {
+            lexical_name.clone()
         };
+        let mut resources = vec![resource.clone()];
+        for r in [lexical_name, real_name] {
+            if !resources.contains(&r) {
+                resources.push(r);
+            }
+        }
         Target {
             absolute,
+            real,
             resource,
-            external: !inside,
+            resources,
+            external,
         }
+    }
+
+    /// Absolute names for the external directory `dir` of `t`: the real
+    /// one, and the one as named when that is also outside the project.
+    fn external_names(&self, t: &Target, dir: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
+        let mut out = vec![dir(&t.real)];
+        let lexical_outside =
+            !t.absolute.starts_with(&self.root) && !t.absolute.starts_with(paths::tmp_dir());
+        if lexical_outside && !out.contains(&dir(&t.absolute)) {
+            out.push(dir(&t.absolute));
+        }
+        out
     }
 
     /// For paths outside the project, ask for `external_directory` on the
     /// containing directory first. A file is named by its path; a directory
     /// as `<dir>/*`, as OpenCode names it, so a rule for `<dir>/*` covers the
-    /// directory itself.
+    /// directory itself. A symlink is judged by where it points.
     pub fn authorize_external(&self, t: &Target, is_dir: bool) -> Result<(), String> {
         if !t.external {
             return Ok(());
@@ -404,17 +486,15 @@ impl Ctx<'_> {
         if is_dir {
             return self.authorize_external_dirs(std::slice::from_ref(&t.absolute));
         }
-        let dir = t
-            .absolute
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-        let glob = format!("{}/*", dir.display());
+        let files = self.external_names(t, Path::to_path_buf);
+        let dirs =
+            self.external_names(t, |p| p.parent().map(Path::to_path_buf).unwrap_or_default());
+        let save: Vec<String> = dirs.iter().map(|d| format!("{}/*", d.display())).collect();
         self.ask(Request {
             action: "external_directory".into(),
-            resources: vec![t.absolute.display().to_string()],
-            save: vec![glob],
-            title: format!("Access outside the project: {}", dir.display()),
+            resources: files.iter().map(|f| f.display().to_string()).collect(),
+            save,
+            title: format!("Access outside the project: {}", dirs[0].display()),
         })
     }
 
@@ -424,9 +504,14 @@ impl Ctx<'_> {
         let mut globs: Vec<String> = Vec::new();
         for d in dirs {
             let t = self.resolve(&d.display().to_string());
-            let glob = format!("{}/*", t.absolute.display());
-            if t.external && !globs.contains(&glob) {
-                globs.push(glob);
+            if !t.external {
+                continue;
+            }
+            for name in self.external_names(&t, Path::to_path_buf) {
+                let glob = format!("{}/*", name.display());
+                if !globs.contains(&glob) {
+                    globs.push(glob);
+                }
             }
         }
         if globs.is_empty() {
@@ -439,6 +524,19 @@ impl Ctx<'_> {
             save: globs.clone(),
             title: format!("Access outside the project: {}", shown.join(", ")),
         })
+    }
+
+    /// How the rules settle `read` for `resources` without asking: a
+    /// configured deny denies, otherwise configured and saved rules allow
+    /// or leave it to ask.
+    pub fn read_effect(&self, resources: &[String]) -> Effect {
+        if self.check_not_denied("read", resources).is_err() {
+            Effect::Deny
+        } else if self.gate.allows("read", resources) {
+            Effect::Allow
+        } else {
+            Effect::Ask
+        }
     }
 
     /// Refuse if a configured rule denies the request, without asking.
@@ -801,6 +899,265 @@ mod tests {
         assert_eq!(t.resource, "/etc/hosts");
         let t = ctx.resolve("../outside.txt");
         assert!(t.external);
+    }
+
+    // ---------------------------------------------------------------------
+    // Path resolution follows symlinks and the on-disk spelling, so the
+    // permission rules see where a path really leads.
+    // ---------------------------------------------------------------------
+
+    use crate::permission::{base_rules, Effect, Rule};
+
+    /// Base rules with `external_directory` left to ask, plus `extra`.
+    fn rules(extra: &[(&str, &str, Effect)]) -> Vec<Rule> {
+        let mut r = base_rules();
+        r.push(Rule::new("external_directory", "*", Effect::Ask));
+        r.extend(extra.iter().map(|(a, p, e)| Rule::new(a, p, *e)));
+        r
+    }
+
+    fn outside() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().canonicalize().unwrap();
+        (d, p)
+    }
+
+    fn symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn resolve_follows_symlinks() {
+        let env = Env::new();
+        let (_o, out) = outside();
+        env.write(".env", "SECRET=1");
+        symlink(&env.root().join(".env"), &env.root().join("notes.txt"));
+        symlink(&out, &env.root().join("ext"));
+        let ctx = env.ctx();
+        let t = ctx.resolve("notes.txt");
+        assert_eq!(t.resource, "notes.txt");
+        assert_eq!(t.resources, vec!["notes.txt", ".env"]);
+        assert!(!t.external);
+        let t = ctx.resolve("ext/new/file.txt");
+        assert!(t.external);
+        assert_eq!(t.real, out.join("new/file.txt"));
+        // A dangling symlink resolves to where a write through it lands.
+        symlink(&out.join("missing.txt"), &env.root().join("dangling"));
+        let t = ctx.resolve("dangling");
+        assert!(t.external);
+        assert_eq!(t.real, out.join("missing.txt"));
+        // A relative dangling symlink, inside the project.
+        symlink(Path::new("sub/later.txt"), &env.root().join("rel"));
+        let t = ctx.resolve("rel");
+        assert!(!t.external);
+        assert_eq!(t.resources, vec!["rel", "sub/later.txt"]);
+    }
+
+    /// Whether the volume holding `dir` ignores case.
+    fn ignores_case(dir: &Path) -> bool {
+        std::fs::write(dir.join("case-probe"), "").unwrap();
+        let yes = dir.join("CASE-PROBE").exists();
+        std::fs::remove_file(dir.join("case-probe")).unwrap();
+        yes
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upper_cased_path_meets_the_relative_deny() {
+        let (env, _rec) = Env::recording(rules(&[("edit", "secrets/*", Effect::Deny)]));
+        if !ignores_case(&env.root()) {
+            eprintln!("skipped: the temp volume is case-sensitive");
+            return;
+        }
+        let key = env.write("secrets/key", "original");
+        let upper = key.display().to_string().to_uppercase();
+        let ctx = env.ctx();
+        let t = ctx.resolve(&upper);
+        assert!(!t.external);
+        assert_eq!(t.resource, "secrets/key");
+        let e = Tool::Write
+            .run(&ctx, &json!({"path": upper, "content": "pwned"}))
+            .await
+            .unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+        let e = Tool::Edit
+            .run(
+                &ctx,
+                &json!({"path": upper, "oldString": "original", "newString": "pwned"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "original");
+        // A new file under an upper-cased existing directory too.
+        let new = env.root().join("secrets/new").display().to_string();
+        let e = Tool::Write
+            .run(&ctx, &json!({"path": new.to_uppercase(), "content": "x"}))
+            .await
+            .unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn symlink_to_env_asks_like_env() {
+        let (env, rec) = Env::recording(rules(&[]));
+        env.write(".env", "SECRET=hunter2");
+        symlink(Path::new(".env"), &env.root().join("notes.txt"));
+        rec.deny_action("read");
+        let ctx = env.ctx();
+        let e = Tool::Read
+            .run(&ctx, &json!({"path": "notes.txt"}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains("hunter2"), "{e}");
+        assert_eq!(
+            rec.requests(),
+            vec![(
+                "read".to_string(),
+                vec!["notes.txt".to_string(), ".env".to_string()]
+            )]
+        );
+        // A deny written for the target applies through the link.
+        let (env, _rec) = Env::recording(rules(&[("read", ".env", Effect::Deny)]));
+        env.write(".env", "SECRET=hunter2");
+        symlink(Path::new(".env"), &env.root().join("notes.txt"));
+        let e = Tool::Read
+            .run(&env.ctx(), &json!({"path": "notes.txt"}))
+            .await
+            .unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn symlinked_dir_outside_needs_external_approval() {
+        let (env, rec) = Env::recording(rules(&[]));
+        let (_o, out) = outside();
+        std::fs::write(out.join("file.txt"), "outside data").unwrap();
+        symlink(&out, &env.root().join("ext"));
+        rec.deny_action("external_directory");
+        let ctx = env.ctx();
+        let e = Tool::Read
+            .run(&ctx, &json!({"path": "ext/file.txt"}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains("outside data"), "{e}");
+        let e = Tool::Read
+            .run(&ctx, &json!({"path": "ext"}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains("file.txt"), "{e}");
+        let e = Tool::Grep
+            .run(&ctx, &json!({"pattern": "outside", "path": "ext"}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains("outside data"), "{e}");
+        assert_eq!(
+            rec.requests(),
+            vec![
+                (
+                    "external_directory".to_string(),
+                    vec![out.join("file.txt").display().to_string()]
+                ),
+                (
+                    "external_directory".to_string(),
+                    vec![format!("{}/*", out.display())]
+                ),
+                (
+                    "external_directory".to_string(),
+                    vec![format!("{}/*", out.display())]
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grep_path_env_asks_for_read() {
+        let (env, rec) = Env::recording(rules(&[]));
+        env.write(".env", "SECRET=hunter2");
+        rec.deny_action("read");
+        let e = Tool::Grep
+            .run(&env.ctx(), &json!({"pattern": "SECRET", "path": ".env"}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains("hunter2"), "{e}");
+        assert_eq!(
+            rec.requests(),
+            vec![("read".to_string(), vec![".env".to_string()])]
+        );
+        // Approved, it searches the file.
+        let (env, rec) = Env::recording(rules(&[]));
+        env.write(".env", "SECRET=hunter2");
+        let out = Tool::Grep
+            .run(&env.ctx(), &json!({"pattern": "SECRET", "path": ".env"}))
+            .await
+            .unwrap()
+            .content;
+        assert!(out.contains("hunter2"), "{out}");
+        assert_eq!(rec.actions(), vec!["read"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grep_over_a_directory_skips_files_reads_would_ask_or_deny() {
+        let (env, rec) = Env::recording(rules(&[("read", "secrets/*", Effect::Deny)]));
+        env.write("prod.env", "TOKEN=hunter2");
+        env.write(".env", "TOKEN=hunter3");
+        env.write("secrets/key", "TOKEN=hunter4");
+        env.write("app.rs", "let TOKEN = 1;");
+        let ctx = env.ctx();
+        let out = Tool::Grep
+            .run(&ctx, &json!({"pattern": "TOKEN"}))
+            .await
+            .unwrap()
+            .content;
+        assert!(rec.requests().is_empty());
+        assert!(out.starts_with("Found 1 matches"), "{out}");
+        assert!(!out.contains("hunter"), "{out}");
+        assert!(
+            out.ends_with("(Not searched, because reading them needs approval: prod.env. To search one, pass it as `path`.)"),
+            "{out}"
+        );
+        assert!(!out.contains("secrets"), "{out}");
+        // A denied directory named as `path` is refused outright.
+        let e = Tool::Grep
+            .run(&ctx, &json!({"pattern": "TOKEN", "path": "secrets/key"}))
+            .await
+            .unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+        // Glob leaves out files the read rules deny.
+        let out = Tool::Glob
+            .run(&ctx, &json!({"pattern": "**/*"}))
+            .await
+            .unwrap()
+            .content;
+        assert!(out.contains("app.rs") && !out.contains("secrets"), "{out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn writes_that_escape_the_project_ask_external() {
+        let (env, rec) = Env::recording(rules(&[]));
+        let (_o, out) = outside();
+        let sub = env.root().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        symlink(&out, &env.root().join("ext"));
+        symlink(&out.join("missing.txt"), &env.root().join("dangling"));
+        rec.deny_action("external_directory");
+        let mut ctx = env.ctx();
+        ctx.cwd = sub;
+        // `..` traversal out of the project.
+        let up = format!(
+            "../../{}/dotdot.txt",
+            out.file_name().unwrap().to_string_lossy()
+        );
+        let parent = env.root().parent().unwrap().to_path_buf();
+        assert_eq!(out.parent(), Some(parent.as_path()));
+        for path in [up.as_str(), "../ext/new.txt", "../dangling"] {
+            let e = Tool::Write
+                .run(&ctx, &json!({"path": path, "content": "x"}))
+                .await
+                .unwrap_err();
+            assert!(e.contains("declined"), "{path}: {e}");
+        }
+        assert_eq!(rec.actions(), vec!["external_directory"; 3]);
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

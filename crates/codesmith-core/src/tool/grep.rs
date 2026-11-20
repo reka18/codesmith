@@ -2,7 +2,7 @@
 
 use super::glob::{walker, Matcher, DEFAULT_LIMIT};
 use super::{opt_bool, opt_str, opt_u64, str_arg, Ctx, Outcome, Output};
-use crate::permission::Request;
+use crate::permission::{Effect, Request};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks::UTF8, BinaryDetection, SearcherBuilder};
 use serde_json::{json, Value};
@@ -44,7 +44,12 @@ pub struct Query<'a> {
 }
 
 /// Matches under `root` (a file or directory); plus whether more existed.
-pub fn search(root: &Path, q: &Query) -> Result<(Vec<Hit>, bool), String> {
+/// When `root` is a directory, only files `searchable` accepts are searched.
+pub fn search(
+    root: &Path,
+    q: &Query,
+    searchable: &dyn Fn(&Path) -> bool,
+) -> Result<(Vec<Hit>, bool), String> {
     let matcher = RegexMatcherBuilder::new()
         .fixed_strings(q.literal)
         .case_insensitive(!q.case_sensitive)
@@ -72,6 +77,7 @@ pub fn search(root: &Path, q: &Query) -> Result<(Vec<Hit>, bool), String> {
                     .map(|m| m.is_match(p.strip_prefix(root).unwrap_or(p)))
                     .unwrap_or(true)
             })
+            .filter(|p| searchable(p))
             .collect();
         v.sort();
         v
@@ -147,6 +153,21 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         save: vec!["*".into()],
         title: format!("Search for {pattern}"),
     })?;
+    // Grep shows file contents, so the read rules apply: a file named by
+    // `path` is approved like a read, and a directory a rule denies is not
+    // searched. (OpenCode checks only `grep` and `external_directory`.)
+    if path.is_some() {
+        if target.absolute.is_file() {
+            ctx.ask(Request {
+                action: "read".into(),
+                resources: target.resources.clone(),
+                save: vec!["*".into()],
+                title: format!("Read {}", target.resource),
+            })?;
+        } else {
+            ctx.check_not_denied("read", &target.resources)?;
+        }
+    }
     if !target.absolute.exists() {
         return Err(format!(
             "Unable to grep for {pattern}: {} does not exist",
@@ -162,8 +183,39 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
             .map(|l| l.max(1) as usize)
             .unwrap_or(DEFAULT_LIMIT),
     };
-    let (hits, truncated) = search(&target.absolute, &q)?;
-    Ok(Output::bounded(format(&hits, truncated)))
+    // Searching a directory skips files the read rules deny, and those they
+    // would ask about, which are named so the model can grep them by path.
+    let skipped = std::cell::RefCell::new(Vec::new());
+    let searchable = |p: &Path| {
+        let t = ctx.resolve(&p.display().to_string());
+        match ctx.read_effect(&t.resources) {
+            Effect::Allow => true,
+            Effect::Ask => {
+                skipped.borrow_mut().push(t.resource);
+                false
+            }
+            Effect::Deny => false,
+        }
+    };
+    let (hits, truncated) = search(&target.absolute, &q, &searchable)?;
+    let mut out = format(&hits, truncated);
+    let skipped = skipped.into_inner();
+    if !skipped.is_empty() {
+        out.push_str(&skipped_note(&skipped));
+    }
+    Ok(Output::bounded(out))
+}
+
+/// Names the files a directory search left out because reading them asks.
+fn skipped_note(skipped: &[String]) -> String {
+    const SHOWN: usize = 10;
+    let mut names = skipped[..skipped.len().min(SHOWN)].join(", ");
+    if skipped.len() > SHOWN {
+        names.push_str(&format!(" and {} more", skipped.len() - SHOWN));
+    }
+    format!(
+        "\n\n(Not searched, because reading them needs approval: {names}. To search one, pass it as `path`.)"
+    )
 }
 
 #[cfg(test)]

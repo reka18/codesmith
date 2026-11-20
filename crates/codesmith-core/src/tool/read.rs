@@ -75,7 +75,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
 fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> {
     ctx.ask(Request {
         action: "read".into(),
-        resources: vec![target.resource.clone()],
+        resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!("Read {}", target.resource),
     })
@@ -454,7 +454,7 @@ fn reroot(ctx: &Ctx, input: &str, abs: &Path) -> Vec<String> {
         return vec![];
     }
     let t = ctx.resolve(&candidate.display().to_string());
-    if !ctx.gate.allows("read", std::slice::from_ref(&t.resource)) {
+    if !ctx.gate.allows("read", &t.resources) {
         return vec![];
     }
     vec![if input.starts_with('/') || input.starts_with("~/") {

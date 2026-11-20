@@ -442,7 +442,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     }
     let target = ctx.resolve(path);
     ctx.authorize_external(&target, false)?;
-    let lock = file_lock(&target.absolute);
+    let lock = file_lock(&target.real);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     if target.absolute.is_dir() {
         return Err(format!("Path is a directory, not a file: {path}"));
@@ -464,16 +464,14 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     let (removed, added) = (super::count_lines(old), super::count_lines(new));
     ctx.ask(Request {
         action: "edit".into(),
-        resources: vec![target.resource.clone()],
+        resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!("Edit {} (-{removed} +{added} lines)", target.resource),
     })?;
     let (updated, n) = match result {
         Ok(r) => r,
         Err(EditError::NotFound) => {
-            let readable = ctx
-                .gate
-                .allows("read", std::slice::from_ref(&target.resource));
+            let readable = ctx.gate.allows("read", &target.resources);
             let hint = if readable {
                 miss_hint(source, old, new)
             } else {
@@ -826,7 +824,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn oc_edit_external_symlink_target_needs_only_edit_permission() {
+    async fn oc_edit_external_symlink_target_needs_external_approval() {
+        // OpenCode resolves paths lexically, so only `edit` is asked for
+        // `link.txt`; CodeSmith follows the symlink, asks
+        // `external_directory` for its target and checks `edit` rules
+        // against both names.
         let (env, rec) = Env::recording(allow_read());
         let outside = tempfile::tempdir().unwrap();
         let target = outside.path().join("external.txt");
@@ -837,9 +839,13 @@ mod tests {
             json!({"path": "link.txt", "oldString": "before", "newString": "after"}),
         )
         .unwrap();
+        let real = target.canonicalize().unwrap().display().to_string();
         assert_eq!(
             rec.requests(),
-            vec![("edit".to_string(), vec!["link.txt".to_string()])]
+            vec![
+                ("external_directory".to_string(), vec![real.clone()]),
+                ("edit".to_string(), vec!["link.txt".to_string(), real])
+            ]
         );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "after");
     }

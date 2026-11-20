@@ -69,12 +69,14 @@ pub fn walker(root: &Path, hidden: bool) -> ignore::Walk {
         .build()
 }
 
-/// Matching files under `root`, newest first, at most `limit`; plus whether more existed.
+/// Matching files under `root` that `listable` accepts, newest first, at
+/// most `limit`; plus whether more existed.
 pub fn search(
     root: &Path,
     pattern: &str,
     hidden: bool,
     limit: usize,
+    listable: &dyn Fn(&Path) -> bool,
 ) -> Result<(Vec<PathBuf>, bool), String> {
     let m = Matcher::new(pattern)?;
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
@@ -83,7 +85,7 @@ pub fn search(
             continue;
         }
         let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        if m.is_match(rel) {
+        if m.is_match(rel) && listable(entry.path()) {
             let mtime = entry
                 .metadata()
                 .ok()
@@ -128,13 +130,22 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         save: vec!["*".into()],
         title: format!("Find files matching {pattern}"),
     })?;
+    // The read rules apply to the directory searched, and files they deny
+    // are left out. (OpenCode checks only `glob` and `external_directory`.)
+    if path.is_some() {
+        ctx.check_not_denied("read", &target.resources)?;
+    }
     if !target.absolute.is_dir() {
         return Err(format!(
             "Search path is not a directory: {}",
             path.unwrap_or(".")
         ));
     }
-    let (found, truncated) = search(&target.absolute, pattern, hidden, limit)?;
+    let listable = |p: &Path| {
+        let t = ctx.resolve(&p.display().to_string());
+        ctx.check_not_denied("read", &t.resources).is_ok()
+    };
+    let (found, truncated) = search(&target.absolute, pattern, hidden, limit, &listable)?;
     let shown: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
     Ok(Output::bounded(format(&shown, truncated)))
 }
