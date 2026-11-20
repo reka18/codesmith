@@ -65,9 +65,18 @@ fn user_image(url: &str) -> Value {
 }
 
 /// A portable result's text, parsed back (JSON key order is not kept).
+/// Adapted: CodeSmith wraps it as untrusted tool output, which OpenCode
+/// does not; the envelope is checked and taken off.
 fn portable(item: &Value) -> Value {
     let text = item["content"][0]["text"].as_str().expect("portable text");
-    serde_json::from_str(text).expect("portable JSON")
+    let open = format!("<{} tool=\"", crate::hosted::ENVELOPE_TAG);
+    assert!(text.starts_with(&open), "{text}");
+    assert!(text.contains("untrusted tool output"), "{text}");
+    let body = text.split_once('\n').unwrap().1.split_once('\n').unwrap().1;
+    let body = body
+        .strip_suffix(&format!("\n</{}>", crate::hosted::ENVELOPE_TAG))
+        .expect("closed envelope");
+    serde_json::from_str(body).expect("portable JSON")
 }
 
 /// The hosted calls and results of a stream.
@@ -172,7 +181,7 @@ fn openai_responses_hosted_tools() {
                 json!([user_text("Search."), item, user_text("Continue.")])
             );
         }),
-        ("openai-responses :: replays OpenAI hosted tool extensions but rejects foreign and unknown items", || {
+        ("openai-responses :: replays OpenAI hosted tool extensions but rejects foreign and unknown items (adapted: the rejected ones wrapped as untrusted tool output)", || {
             let items = [
                 json!({"type": "computer_call", "id": "computer_1", "status": "completed", "action": {"type": "click", "x": 1, "y": 2}}),
                 json!({"type": "x_search_call", "id": "x_search_1", "status": "completed"}),
@@ -195,7 +204,7 @@ fn openai_responses_hosted_tools() {
             assert_eq!(portable(&input[2]), items[2]);
             assert_eq!(input.as_array().unwrap().len(), 3);
         }),
-        ("openai-responses :: preserves foreign hosted tool results as portable message content when storage is enabled (adapted: a result from Anthropic Messages)", || {
+        ("openai-responses :: preserves foreign hosted tool results as portable message content when storage is enabled (adapted: a result from Anthropic Messages, wrapped as untrusted tool output)", || {
             let item = json!({"type": "web_search_call", "id": "ws_1", "status": "completed"});
             let r = with_options(
                 req(
@@ -212,14 +221,14 @@ fn openai_responses_hosted_tools() {
             assert_eq!(portable(&input[0]), item);
             assert_eq!(input[1], user_text("Continue."));
         }),
-        ("openai-responses :: does not replay hosted tool items whose result id differs from provider metadata", || {
+        ("openai-responses :: does not replay hosted tool items whose result id differs from provider metadata (adapted: wrapped as untrusted tool output)", || {
             let item = json!({"type": "web_search_call", "id": "ws_other", "status": "completed"});
             let r = req("gpt-4.1-mini", vec![asst(vec![responses_hosted("ws_1", "web_search", item.clone())])]);
             let input = responses::body(&r)["input"].clone();
             assert_eq!(input.as_array().unwrap().len(), 1);
             assert_eq!(portable(&input[0]), item);
         }),
-        ("openai-responses :: falls back to portable hosted results when stored item metadata is malformed", || {
+        ("openai-responses :: falls back to portable hosted results when stored item metadata is malformed (adapted: wrapped as untrusted tool output)", || {
             let item = |id: &str| json!({"type": "web_search_call", "id": id, "status": "completed"});
             let r = with_options(
                 req(
@@ -319,7 +328,7 @@ fn openai_responses_hosted_tools() {
                 );
             }
         }),
-        ("openai-responses :: preserves failed hosted tool results as portable error content", || {
+        ("openai-responses :: preserves failed hosted tool results as portable error content (adapted: wrapped as untrusted tool output)", || {
             let item = json!({"type": "web_search_call", "id": "ws_failed", "status": "failed", "error": {"code": "search_failed", "message": "Search unavailable"}});
             let events = resp(&sse(&[item_done(item.clone()), completed()])).unwrap();
             let parts = collect(&events);
