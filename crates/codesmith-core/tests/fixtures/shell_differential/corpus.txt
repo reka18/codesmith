@@ -888,3 +888,324 @@ a[$(touch G)]=1 rm F
 <f1 rm F
 %%
 rm >out F
+%% ---- found by the generator
+coproc chmod F; wait
+%%
+if coproc rm F; then wait; fi
+%%
+coproc X=1 rm F; wait
+%%
+time X=1 rm F
+%%
+time X=1 Y=2 rm F
+%% ---- line continuations that join expansions
+echo $\
+(rm F)
+%%
+echo "$\
+(rm F)"
+%%
+echo $\
+{x:-$(rm F)}
+%%
+echo $\
+((1+$(rm F)))
+%%
+cat <\
+(rm F)
+%%
+cat <<EOF
+$\
+(rm F)
+EOF
+%%
+cat <<EOF
+\
+$(rm F)
+EOF
+%%
+echo $(\
+rm F)
+%%
+echo `\
+rm F`
+%%
+x=\
+$(rm F)
+%%
+cat <<\
+EOF
+$(rm F)
+EOF
+%%
+cat <<E\
+OF
+$(rm F)
+EOF
+%%
+r\
+m\
+ F
+%%
+e\
+val 'rm F'
+%%
+eval \
+'rm F'
+%%
+c\
+ase x in x) rm F;; esac
+%%
+i\
+f true; then rm F; fi
+%%
+f\
+() { rm F; }; f
+%%
+echo $(echo x # )
+rm F
+)
+%%
+cat =(rm F)
+%%
+echo "$(echo ")"; rm F)"
+%%
+echo "$(echo "$(rm F)")"
+%%
+echo ${x:-`rm F`}
+%%
+echo "${x:-`rm F`}"
+%%
+echo ${x:-"`rm F`"}
+%%
+echo ${x:-'$(rm F)'}
+%%
+echo "${x:-'$(rm F)'}"
+%%
+echo ${x/a/$(rm F)}
+%%
+echo ${x//a/`rm F`}
+%%
+exec 3<<<'rm F'; bash <&3
+%%
+sh < /dev/null
+%%
+bash -s < /dev/null
+%%
+bash /dev/stdin <<< 'rm F'
+%%
+bash - <<< 'rm F'
+%%
+env -S 'rm F'
+%%
+env -- X=1 rm F
+%%
+find . -name f1 -exec rm {} \;
+%%
+find . -exec sh -c 'rm F' \;
+%%
+{rm}>out
+%%
+{rm}
+%%
+{rm F}
+%% here-doc ended by a delimiter joined from two lines (not in Dash)
+cat <<EOF
+EO\
+F
+rm F
+EOF
+%% a continued line is not the delimiter; a body line opening another here-doc
+cat <<EOF
+x \
+EOF
+cat <<Z
+EOF
+rm F
+Z
+%%
+cat <<-EOF
+	EO\
+F
+rm F
+EOF
+%%
+x='a[$(rm F)]'; (\
+( x ))
+%%
+x='a[$(rm F)]'; echo $(\
+( x ))
+%%
+x='a[$(rm F)]'; echo $(\
+(x))
+%%
+echo "${x:-'`rm F`'}"
+%%
+echo "${x:+'$(rm F)'}"
+%%
+x=1; echo "${x:+'$(rm F)'}"
+%%
+echo "${x#'$(rm F)'}"
+%%
+echo "${x/'$(rm F)'/y}"
+%%
+echo "${x-"'$(rm F)'"}"
+%%
+env -- X=1 Y=2 rm F
+%%
+env -i -- X=1 ../bin/rm F
+%% zsh runs $NULLCMD / $READNULLCMD for a bare redirect
+NULLCMD=rm; >F
+%%
+READNULLCMD=rm; <f1
+%%
+NULLCMD=rm >F
+%%
+x='rm F'; $=x
+%% ---- zsh glob qualifiers reached through a globbed value
+x='*(e:rm F:)'; echo $~x
+%%
+x='*(e:rm F:)'; echo ${~x}
+%%
+x='f1(e:rm F:)'; : $~x
+%%
+x='*(+rm)'; echo $~x
+%%
+x='f1(+rm)'; echo "${~x}"
+%%
+setopt globsubst; x='f1(+rm)'; echo $x
+%% ---- zsh hash and subscripts
+hash ls=../bin/rm; ls F
+%%
+hash -d x=sub; cd ~x
+%%
+x='a[$(rm F)]'; echo $a[x]
+%%
+x='a[$(rm F)]'; a=(1); echo $a[x]
+%%
+a=(1); echo $a[$(rm F)]
+%%
+a=(1); echo ${a[(r)$(rm F)]}
+%%
+x='a[$(rm F)]'; a=(1); echo ${a[(e)x]}
+%%
+x='a[$(rm F)]'; typeset -i y; y=x
+%%
+x='a[$(rm F)]'; integer y=x
+%%
+x='a[$(rm F)]'; echo ${x:x}
+%% ---- input substituted into code by xargs and find
+xargs -I{} sh -c 'echo {}' <<< 'x; rm F'
+%%
+xargs -I X sh -c X <<< 'rm F'
+%%
+xargs -I{} sh -c '{}' <<< 'rm F'
+%%
+xargs sh -c <<< 'rm F'
+%%
+xargs -I{} bash -c 'echo {}' <<< 'x; rm F'
+%%
+xargs -I{} env {} <<< 'rm'
+%%
+xargs -I{} {} F <<< 'rm'
+%%
+xargs -n1 sh -c 'echo "$0"' <<< 'x'
+%%
+find . -name f1 -exec sh -c 'echo {}' \;
+%%
+find . -name f1 -exec {} \;
+%% ---- here-documents pending across a multi-line substitution
+cat <<EOF; echo $(
+rm F
+)
+x
+EOF
+%%
+cat <<EOF $(
+echo y
+)
+$(rm F)
+EOF
+%%
+cat <<A; cat <<B
+a
+A
+$(rm F)
+B
+%%
+echo $(cat <<EOF
+)
+rm F
+EOF
+)
+%%
+echo "$(cat <<'EOF'
+)"; rm F; echo "(
+EOF
+)"
+%% bash 3.2 ends $( at the first unbalanced ), wherever it is
+echo "$(echo ${x%)}"; rm F; ": )"
+%%
+x="$(cat <<'EOF'
+)"; rm F; echo "(
+EOF
+)"
+%%
+echo $(case x in x) echo y;; esac)
+%%
+git commit -m "$(cat <<'EOF'
+Fix the thing (and the other thing)
+
+It's done; don't worry.
+EOF
+)"
+%% ---- functions with other compound bodies
+f() for x in 1; do rm F; done; f
+%%
+f() [[ -n $(rm F) ]]; f
+%%
+f() while true; do rm F; break; done; f
+%%
+f()
+{ rm F; }; f
+%%
+function f
+{ rm F; }; f
+%%
+command eval 'rm F'
+%%
+e"v"al 'rm F'
+%%
+ev\al 'rm F'
+%%
+'eval' "rm F"
+%%
+builtin -- eval 'rm F'
+%%
+command -- eval 'rm F'
+%%
+- rm F
+%%
+exec -a x rm F
+%%
+exec -c rm F
+%%
+exec -l rm F
+%%
+exec -cl rm F
+%%
+timeout -s KILL 1 rm F
+%%
+nice -n5 rm F
+%%
+nice -5 rm F
+%%
+env -i PATH=../bin rm F
+%%
+env -C sub ../../bin/rm F
+%%
+env -u PATH -- rm F
+%%
+env --unset=X rm F
+%%
+command -p -- rm F

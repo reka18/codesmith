@@ -191,6 +191,9 @@ struct Scanner<'a> {
     heredoc_nested: Vec<Item>,
     peeked: Option<Tok>,
     flags: Flags,
+    /// Inside double quotes, where `'` in `${x:-'...'}` is an ordinary
+    /// character: `"${x:-'$(cmd)'}"` runs `cmd`.
+    in_dquote: usize,
 }
 
 /// Variables a shell evaluates as code or expands as prompts when they are
@@ -320,6 +323,7 @@ impl<'a> Scanner<'a> {
             heredoc_nested: Vec::new(),
             peeked: None,
             flags: Flags::default(),
+            in_dquote: 0,
         }
     }
 
@@ -554,6 +558,10 @@ impl<'a> Scanner<'a> {
         let mut end = self.pos;
         for doc in docs {
             let mut found = false;
+            // An unquoted body joins a line ending in `\` to the next one:
+            // Bash and Zsh end the body at `EO\` + `F`, Dash does not.
+            let mut logical = String::new();
+            let mut continued = false;
             while self.pos < self.s.len() {
                 let line_start = self.pos;
                 let mut line_end = line_start;
@@ -563,6 +571,29 @@ impl<'a> Scanner<'a> {
                 let mut line = self.text(line_start, line_end);
                 if doc.strip_tabs {
                     line = line.trim_start_matches('\t').to_string();
+                }
+                if !doc.quoted {
+                    let was_continued = continued;
+                    if !was_continued {
+                        logical.clear();
+                    }
+                    let trailing = line.chars().rev().take_while(|&c| c == '\\').count();
+                    continued = trailing % 2 == 1;
+                    logical.push_str(if continued {
+                        &line[..line.len() - 1]
+                    } else {
+                        &line
+                    });
+                    if was_continued && !continued && logical == doc.delimiter {
+                        return Err("heredoc");
+                    }
+                    if was_continued {
+                        // Not a delimiter: the line continues the one before.
+                        let nested = self.body_expansions(line_start, line_end)?;
+                        self.heredoc_nested.extend(nested);
+                        self.pos = (line_end + 1).min(self.s.len());
+                        continue;
+                    }
                 }
                 if line == doc.delimiter {
                     found = true;
@@ -833,6 +864,18 @@ impl<'a> Scanner<'a> {
     ) -> Result<(), Opaque> {
         raw.push('"');
         self.pos += 1;
+        self.in_dquote += 1;
+        let r = self.double_quoted_body(raw, value, nested);
+        self.in_dquote -= 1;
+        r
+    }
+
+    fn double_quoted_body(
+        &mut self,
+        raw: &mut String,
+        value: &mut String,
+        nested: &mut Vec<Item>,
+    ) -> Result<(), Opaque> {
         loop {
             match self.at(self.pos) {
                 None => return Err("unterminated-quote"),
@@ -888,6 +931,14 @@ impl<'a> Scanner<'a> {
     ) -> Result<(), Opaque> {
         let start = self.pos;
         let c = self.at(start).unwrap();
+        let continuation = |i: usize| self.at(i) == Some('\\') && self.at(i + 1) == Some('\n');
+        if c == '$'
+            && (continuation(start + 1)
+                || (self.at(start + 1) == Some('(') && continuation(start + 2)))
+        {
+            // `$\<newline>(cmd)` is `$(cmd)`, and `$(\<newline>(` may be `$((`.
+            return Err("line-continuation");
+        }
         if c == '`' {
             self.backtick(nested)?;
         } else {
@@ -1031,6 +1082,10 @@ impl<'a> Scanner<'a> {
                     while self.at(i).is_some_and(is_name_char) {
                         i += 1;
                     }
+                    if self.at(i) == Some('[') {
+                        // Zsh subscripts `$a[x]` without braces (arithmetic).
+                        self.flags.sink = true;
+                    }
                     self.pos = i;
                 }
                 Some(n) if n.is_ascii_digit() || "@*#?$!-".contains(n) => {
@@ -1042,6 +1097,11 @@ impl<'a> Scanner<'a> {
                     let mut i = start + 1;
                     while self.at(i).is_some_and(|c| "~=^+".contains(c)) {
                         i += 1;
+                    }
+                    if self.text(start + 1, i).contains('~') {
+                        // Globbing a value runs its glob qualifiers:
+                        // `x='*(e:cmd:)'; echo $~x`.
+                        self.flags.eval();
                     }
                     match self.at(i) {
                         Some('{') => {
@@ -1136,19 +1196,70 @@ impl<'a> Scanner<'a> {
         let saved_out = std::mem::take(&mut self.out);
         let saved_owners = std::mem::take(&mut self.heredoc_owners);
         let saved_peek = self.peeked.take();
+        let saved_dquote = std::mem::take(&mut self.in_dquote);
+        let body = self.pos;
         self.depth += 1;
         let result = self.list();
         self.depth -= 1;
+        self.in_dquote = saved_dquote;
         let inner = std::mem::replace(&mut self.out, saved_out);
         self.heredoc_owners = saved_owners;
         let (_, stop) = result?;
         if stop != Stop::RParen {
             return Err("command-substitution");
         }
-        self.next()?;
+        let Tok::Op(Op::RParen, close) = self.next()? else {
+            unreachable!()
+        };
+        if self.matched_close(body).is_some_and(|q| q != close) {
+            // Bash 3.2 (macOS's /bin/bash) ends `$(` at the first unbalanced
+            // `)`, even in a here-document body, a `case` pattern or a
+            // comment: `$(cat <<X\n)\nrm x\nX\n)` runs `rm x` there.
+            return Err("command-substitution");
+        }
         self.peeked = saved_peek;
         nested.extend(inner);
         Ok(())
+    }
+
+    /// Where Bash 3.2 ends a substitution whose body starts at `from`: the
+    /// first `)` that balances, skipping quotes and escapes but nothing else.
+    /// `None` when it finds none (a syntax error there, so nothing runs).
+    fn matched_close(&self, from: usize) -> Option<usize> {
+        let mut depth = 1usize;
+        let mut i = from;
+        let skip_quoted = |i: usize, q: char| -> Option<usize> {
+            let mut j = i + 1;
+            loop {
+                match self.at(j)? {
+                    '\\' if q != '\'' => j += 2,
+                    c if c == q => return Some(j + 1),
+                    _ => j += 1,
+                }
+            }
+        };
+        while let Some(c) = self.at(i) {
+            match c {
+                '\\' => {
+                    i += 2;
+                    continue;
+                }
+                '\'' | '"' | '`' => {
+                    i = skip_quoted(i, c)?;
+                    continue;
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
     }
 
     /// The rest of `${...}` after `${` (or a nested `{`).
@@ -1161,8 +1272,14 @@ impl<'a> Scanner<'a> {
             match self.at(self.pos) {
                 None => return Err("unterminated-quote"),
                 Some('}') => {
-                    if parameter_evaluates(&self.text(body, self.pos)) {
+                    let text = self.text(body, self.pos);
+                    if parameter_evaluates(&text) {
                         self.flags.sink = true;
+                    }
+                    if text.trim_start_matches(['=', '^', '+']).starts_with('~') {
+                        // Zsh `${~x}` globs the value, running its glob
+                        // qualifiers: `x='*(e:cmd:)'; echo ${~x}`.
+                        self.flags.eval();
                     }
                     self.pos += 1;
                     return Ok(());
@@ -1173,6 +1290,7 @@ impl<'a> Scanner<'a> {
                     }
                     self.pos += 2
                 }
+                Some('\'') if self.in_dquote > 0 => self.pos += 1,
                 Some('\'') => {
                     let close = (self.pos + 1..self.s.len())
                         .find(|&i| self.s[i] == '\'')
@@ -1340,6 +1458,10 @@ impl<'a> Scanner<'a> {
         }
         if let Tok::Op(Op::LParen, p) = *self.peek()? {
             self.next()?;
+            if self.at(p + 1) == Some('\\') && self.at(p + 2) == Some('\n') {
+                // `(\<newline>(` may be the arithmetic command `((`.
+                return Err("line-continuation");
+            }
             if self.at(p + 1) == Some('(') && self.pos == p + 1 {
                 return self.arithmetic_command(p);
             }
@@ -1663,6 +1785,10 @@ impl<'a> Scanner<'a> {
         if SHELL_EVALUATED.contains(&name) {
             self.flags.sink = true;
         }
+        if matches!(name, "NULLCMD" | "READNULLCMD") {
+            // Zsh runs it for a bare redirect: `NULLCMD=rm; >x`.
+            self.flags.eval();
+        }
         if name.starts_with("BASH_FUNC_") {
             // An exported function a child Bash defines: `env
             // 'BASH_FUNC_ls%%=() { rm x; }' bash -c ls` runs `rm x`.
@@ -1747,7 +1873,14 @@ impl<'a> Scanner<'a> {
             }
 
             "alias" if args.iter().any(|w| w.value.contains('=')) => self.flags.eval(),
-            "hash" if args.iter().any(|w| w.value.starts_with("-p")) => self.flags.eval(),
+            // `hash -p path name` (Bash), `hash name=path` (Zsh).
+            "hash"
+                if args
+                    .iter()
+                    .any(|w| w.value.starts_with("-p") || w.value.contains('=')) =>
+            {
+                self.flags.eval()
+            }
             "enable" | "setopt" | "emulate" | "shopt" => self.flags.eval(),
             _ => {}
         }
@@ -2234,6 +2367,11 @@ fn delegate(
                 }
                 if start < end {
                     let words = &cooked[start..end];
+                    let appends = cooked.get(end).is_some_and(|w| w == "+");
+                    if runs_input(&raw[start..end], words, Some("{}"), appends) {
+                        // `find -exec sh -c 'echo {}' \;` runs file names.
+                        mark_dynamic(out, "dynamic-execution");
+                    }
                     let resource = words.join(" ");
                     out.delegated
                         .push((resource.clone(), save_pattern(words, &resource)));
@@ -2244,6 +2382,21 @@ fn delegate(
             i += 1;
         }
         return Ok(());
+    }
+    if base == "xargs" {
+        if let Some(Some(at)) = wrapped_command(base, cooked) {
+            let repl = xargs_replace(&cooked[..at]);
+            let words = cooked.get(at..).unwrap_or_default();
+            if runs_input(
+                raw.get(at..).unwrap_or_default(),
+                words,
+                repl,
+                repl.is_none(),
+            ) {
+                // `xargs -I{} sh -c 'echo {}'` runs what it reads.
+                mark_dynamic(out, "dynamic-execution");
+            }
+        }
     }
     if let Some(at) = wrapped_command(base, cooked) {
         match at {
@@ -2390,6 +2543,50 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
     }
 }
 
+/// The replace string of `xargs -I R` / `-i` / `-J R` (BSD), in its options.
+fn xargs_replace(opts: &[String]) -> Option<&str> {
+    let mut it = opts.iter().skip(1);
+    while let Some(w) = it.next() {
+        match w.as_str() {
+            "-I" | "-J" => return it.next().map(String::as_str),
+            "-i" | "--replace" => return Some("{}"),
+            _ if w.starts_with("--replace=") => return Some(&w[10..]),
+            _ if w.starts_with("-I") || w.starts_with("-J") => return Some(&w[2..]),
+            _ if w.starts_with("-i") => return Some(&w[2..]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether a command that `xargs` or `find -exec` fills in runs text it is
+/// given as code: `repl` in the command name or in a shell string, or input
+/// appended (`appends`) to a shell with no script or a wrapper with no command.
+fn runs_input(raw: &[String], cooked: &[String], repl: Option<&str>, appends: bool) -> bool {
+    let Some(name) = cooked.first() else {
+        return false;
+    };
+    if repl.is_some_and(|r| !r.is_empty() && name.contains(r)) {
+        return true;
+    }
+    let base = name.rsplit('/').next().unwrap_or(name);
+    if let Some(script) = shell_string(base, raw, cooked) {
+        return match script {
+            None => true,
+            Some(code) => repl.is_some_and(|r| !r.is_empty() && code.contains(r)),
+        };
+    }
+    if base == "sh" || base == "bash" || base == "zsh" || base == "dash" {
+        // A script file named by the input.
+        return appends && cooked.len() == 1;
+    }
+    match wrapped_command(base, cooked) {
+        Some(Some(at)) if at < cooked.len() => runs_input(&raw[at..], &cooked[at..], repl, appends),
+        Some(_) => appends,
+        None => false,
+    }
+}
+
 /// A script operand whose contents come from a pipe, a process substitution
 /// or a computed name rather than a file in the repository.
 fn computed_source(raw: &str) -> bool {
@@ -2408,7 +2605,7 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     let with_arg: &[&str] = match base {
         "env" => &["-u", "--unset", "-C", "--chdir"],
         "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "caffeinate" | "noglob"
-        | "nocorrect" | "repeat" => &[],
+        | "nocorrect" | "repeat" | "coproc" => &[],
         "exec" => &["-a"],
         "stdbuf" => &["-i", "-o", "-e"],
         "time" => &["-f", "-o", "--format", "--output"],
@@ -2463,13 +2660,34 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         }
         break;
     }
+    if base == "env" {
+        // `env -- X=1 rm x`: assignments may follow `--`.
+        while cooked.get(i).is_some_and(|w| w.contains('=')) {
+            i += 1;
+        }
+    }
     if base == "timeout" || base == "repeat" {
         i += 1; // the duration, the count
     }
     if base == "nice" && cooked.get(i).is_some_and(|w| w.starts_with('-')) {
         i += 1;
     }
+    if matches!(base, "time" | "coproc") {
+        // Reserved words: the command after them may start with
+        // assignments (`time X=1 rm x`).
+        while cooked.get(i).is_some_and(|w| assignment_word(w)) {
+            i += 1;
+        }
+    }
     Some(Some(i))
+}
+
+/// `name=value` or `name+=value`.
+fn assignment_word(w: &str) -> bool {
+    w.split_once('=').is_some_and(|(name, _)| {
+        let name = name.strip_suffix('+').unwrap_or(name);
+        name.chars().next().is_some_and(is_name_start) && name.chars().all(is_name_char)
+    })
 }
 
 /// Where `cd`/`pushd`/... sits in `raw` (after `builtin`/`command` wrappers).
@@ -3104,16 +3322,17 @@ mod tests {
             ":; { touch /tmp/victim; }",
             "{fd}>/tmp/log touch /tmp/victim",
             "time touch /tmp/victim",
-            r#"printf '%s' "$(printf safe ${x%)}; touch /tmp/victim)""#,
             "if true; then echo safe; fi > /tmp/victim",
             "if true; then :; 'if' victim; fi",
         ] {
             assert!(scan(src).is_ok(), "{src}");
         }
-        assert!(
-            heads(r#"printf '%s' "$(printf safe ${x%)}; touch /tmp/victim)""#)
-                .contains(&"touch".to_string())
-        );
+        // Deliberate difference: OpenCode scans this and finds `touch`.
+        // Bash 3.2 (macOS's /bin/bash) ends the substitution at the `)` in
+        // `${x%)}`, so the same shape can hide a command from the modern
+        // reading (`"$(echo ${x%)}"; rm x; ": )"` runs `rm x` there): opaque.
+        assert!(scan(r#"printf '%s' "$(printf safe ${x%)}; touch /tmp/victim)""#).is_err());
+        assert!(scan(r#"echo "$(echo ${x%)}"; rm x; ": )""#).is_err());
         assert_eq!(
             heads("if true; then :; 'if' victim; fi"),
             ["true", ":", "if"]
@@ -3866,5 +4085,128 @@ mod tests {
         ] {
             assert_eq!(full(src).commands[0].1, save, "{src}");
         }
+    }
+
+    /// Bypasses found by `tests/shell_differential.rs` (real shells running
+    /// against logging shims): each input runs `rm F`, so the scan must
+    /// report an `rm` command, flag the input as dynamic, or refuse it.
+    #[test]
+    fn sec_differential_bypasses_are_checked() {
+        for src in [
+            "$'\\x72m' F",
+            "$'\\162m' F",
+            "$'\\162\\155' F",
+            "$'\\u0072m' F",
+            "eval $'rm\\x20F'",
+            "nice $'\\x67'it status; rm F",
+            "../bin/rm F",
+            "./../bin/rm F",
+            "~/../bin/rm F",
+            "env ../bin/rm F",
+            "=rm F",
+            "a=($(rm F))",
+            "a=([$(rm F)]=1)",
+            "a=(['$(rm F)']=1); declare -p a",
+            "echo 'rm F' | sh",
+            "echo 'rm F' | bash",
+            "bash <<< 'rm F'",
+            "bash -s < x",
+            "bash /dev/stdin <<< 'rm F'",
+            "bash - <<< 'rm F'",
+            "bash < <(echo rm F)",
+            "source <(echo rm F)",
+            ". <(echo rm F)",
+            "source /dev/stdin <<< 'rm F'",
+            "ENV='$(rm F)' sh -ic :",
+            "BASH_ENV='$(rm F)' bash -c :",
+            "env BASH_ENV='$(rm F)' bash -c :",
+            "env PS4='$(rm F)' bash -xc :",
+            "env 'BASH_FUNC_ls%%=() { rm F; }' bash -c ls",
+            "NULLCMD=rm; >F",
+            "mapfile -C 'rm F' -c 1 a <<< x",
+            "readarray -C 'rm F' -c 1 a <<< x",
+            "compgen -C 'rm F' x",
+            "history -s 'rm F'; fc -s",
+            "x='r*'; $~x F",
+            "x='rm F'; $=x",
+            "noglob rm F",
+            "nocorrect rm F",
+            "repeat 1 rm F",
+            "repeat 1 { rm F }",
+            "{rm}>out",
+            "coproc rm F",
+            "coproc X=1 rm F",
+            "time X=1 rm F",
+            "env -- X=1 rm F",
+            "echo \"$\\\n(rm F)\"",
+            "cat <<EOF\n$\\\n(rm F)\nEOF",
+            "cat <<EOF\nEO\\\nF\nrm F\nEOF",
+            "cat <<EOF\nx \\\nEOF\ncat <<Z\nEOF\nrm F\nZ",
+            "x='a[$(rm F)]'; (\\\n( x ))",
+            "x='a[$(rm F)]'; echo $(\\\n( x ))",
+            "echo \"${x:-'$(rm F)'}\"",
+            "x=1; echo \"${x:+'`rm F`'}\"",
+            "hash ls=../bin/rm; ls F",
+            "x='*(e:rm F:)'; echo $~x",
+            "x='*(e:rm F:)'; echo ${~x}",
+            "x='a[$(rm F)]'; a=(1); echo $a[x]",
+            "xargs -I X sh -c X <<< 'rm F'",
+            "xargs -I{} sh -c 'echo {}' <<< 'x; rm F'",
+            "xargs -I{} env {} F <<< rm",
+            "echo 'rm F' | xargs env",
+            "find . -exec sh -c 'echo {}' \\;",
+            "echo $(cat <<EOF\n)\nrm F\nEOF\n)",
+            "echo \"$(cat <<'EOF'\n)\"; rm F; echo \"(\nEOF\n)\"",
+            "echo \"$(echo ${x%)}\"; rm F; \": )\"",
+        ] {
+            let Ok(a) = analyze(src, Path::new("/workspace")) else {
+                continue;
+            };
+            if a.dynamic.is_some() {
+                continue;
+            }
+            let all: Vec<&String> = a
+                .commands
+                .iter()
+                .chain(&a.delegated)
+                .map(|(r, _)| r)
+                .collect();
+            assert!(
+                all.iter()
+                    .any(|r| crate::wildcard::matches(r, "rm *", false)),
+                "{src:?}: {all:?}"
+            );
+        }
+    }
+
+    /// The differential fixes leave ordinary commands checkable.
+    #[test]
+    fn sec_differential_fixes_keep_common_commands() {
+        for src in [
+            "git commit -m \"$(cat <<'EOF'\nFix the parser (and tests)\n\nIt's done; don't worry.\nEOF\n)\"",
+            "cat <<EOF > run.sh\ncargo build \\\n  --release\nEOF",
+            "bash ./build.sh",
+            "sh scripts/x.sh arg",
+            "source ./env.sh",
+            "xargs rm < list",
+            "find . -name '*.o' -exec rm {} +",
+            "find . -type f -exec grep -l x {} \\;",
+            "echo $'\\x41\\101'",
+            "a=(one two); echo \"${a[@]}\"",
+            "/usr/bin/git status",
+            "env FOO=1 cargo test",
+            "time cargo build",
+            "echo $(date) $(uname -s)",
+        ] {
+            let a = analyze(src, Path::new("/workspace")).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+            assert!(a.dynamic.is_none(), "{src:?}: {:?}", a.dynamic);
+        }
+        let a = full("/usr/bin/git status");
+        assert!(
+            a.delegated.iter().any(|(r, _)| r == "git status"),
+            "{:?}",
+            a.delegated
+        );
+        assert_eq!(full("echo $'\\x72m'").delegated[0].0, "echo rm");
     }
 }

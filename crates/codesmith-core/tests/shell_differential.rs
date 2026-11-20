@@ -132,7 +132,6 @@ const SHIMS: &[&str] = &[
     "killall",
     "pkill",
     "crontab",
-    "find",
     "nohup",
     "stdbuf",
     "su",
@@ -159,6 +158,7 @@ const PASS_THROUGH: &[(&str, &[&str])] = &[
     ("dash", &["/bin/dash", "/usr/bin/dash"]),
     ("env", &["/usr/bin/env"]),
     ("xargs", &["/usr/bin/xargs"]),
+    ("find", &["/usr/bin/find"]),
     ("nice", &["/usr/bin/nice"]),
     ("timeout", &["/usr/bin/timeout"]),
 ];
@@ -377,6 +377,9 @@ impl Slot {
             std::thread::sleep(Duration::from_millis(2));
         }
         // Background jobs may still write; give them a moment, then end them.
+        if input.contains('&') || input.contains("coproc") {
+            std::thread::sleep(Duration::from_millis(40));
+        }
         unsafe {
             libc::kill(-(child.id() as i32), libc::SIGKILL);
         }
@@ -498,6 +501,10 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
         }
         let unknown_write = writes.iter().any(Option::is_none);
         for f in &run.created {
+            if f.starts_with("sh-thd-") {
+                // Bash 3.2's here-document temp file, left after a syntax error.
+                continue;
+            }
             let abs = work.join(f);
             let named = writes.iter().flatten().any(|w| {
                 bases
@@ -625,7 +632,15 @@ const LEAVES: &[&str] = &["touch", "rm", "curl", "git", "cat", "wget", "chmod"];
 /// A spelling of command name `n` the shell resolves to `n`.
 fn name_form(r: &mut Rng, n: &str) -> String {
     let (a, b) = n.split_at(1);
-    match r.below(16) {
+    match r.below(24) {
+        16 => format!("={n}"),
+        17 => format!("$'\\{:o}'{b}", a.as_bytes()[0]),
+        18 => format!("noglob {n}"),
+        19 => format!("coproc {n}"),
+        20 => format!("time X=1 {n}"),
+        21 => format!("env -- X=1 {n}"),
+        22 => format!("~+/../bin/{n}"),
+        23 => format!("nocorrect {n}"),
         0 => format!("{a}''{b}"),
         1 => format!("\\{n}"),
         2 => format!("\"{n}\""),
@@ -662,7 +677,23 @@ fn wrap(r: &mut Rng, inner: &str, depth: usize) -> String {
     } else {
         "true".into()
     };
-    match r.below(48) {
+    match r.below(64) {
+        48 => format!("echo \"${{x:-'$({inner})'}}\""),
+        49 => format!("a=($({inner}))"),
+        50 => format!("a=([$({inner})]=1)"),
+        51 => format!("cat <<EOF\nEO\\\nF\n{inner}\nEOF"),
+        52 => format!("x=$(printf %s {}); eval \"$x\"", squote(inner)),
+        53 => format!("echo \"$\\\n({inner})\""),
+        54 => format!("{{ {inner}; }} 2>/dev/null"),
+        55 => format!("case x in *) {inner};; esac"),
+        56 => format!("[[ x == x && -n $({inner}) ]]"),
+        57 => format!("exec 3< <({inner})"),
+        58 => format!(": ${{x:=$({inner})}}"),
+        59 => format!(": \"${{x[$({inner})]}}\""),
+        60 => format!("echo {} | sh", squote(inner)),
+        61 => format!("cat <<EOF\n$(cat <<X\n$({inner})\nX\n)\nEOF"),
+        62 => format!("x=1; echo \"${{x:+'$({inner})'}}\""),
+        63 => format!("if ! {inner}; then :; fi"),
         0 => format!("( {inner} )"),
         1 => format!("{{ {inner}; }}"),
         2 => format!("if {other}; then {inner}; fi"),
