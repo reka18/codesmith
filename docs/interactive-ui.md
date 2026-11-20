@@ -30,6 +30,19 @@ See [CLI](cli.md#codesmith) for every flag.
   shows its latest 20 calls and the text it wrote last. A permission prompt
   from a subagent says which one asks (`asked by the general subagent ·
   <description>`).
+- **Groups.** Tool calls and thoughts are grouped as OpenCode groups them,
+  by the [verbosity](#verbosity) level. At `low`, the default, each run of
+  tool calls and thoughts between two replies is one row that sums it up
+  (`+ 3 commands, 1 edit, 2 thoughts, 4 reads, 1 tool`, or `+ Running
+  command…` until something finished). At `medium` and `high`, calls stand
+  alone except adjacent reads and searches (`→ Explored: 2 reads, 1
+  search`, `✱ Exploring` while they run), which `high` shows open. While
+  reasoning is hidden, adjacent thoughts are one row (`+ Thought: <title>
+  · 2 steps`, `Thinking` while they stream). A running command's latest
+  output and a running subagent's row stay in view below their collapsed
+  group, then fold into its summary. **ctrl+o** opens every group (and
+  shows tool output in full), and closes them again. Questions are never
+  grouped.
 - **Header.** The agent, model, session id and title.
 - **Status line.** Context in use (the last call's tokens, and the share of
   the model's `limit.context` when it is configured), the session's cost when
@@ -69,7 +82,7 @@ Pastes go in at the cursor.
 | **esc** | Interrupt the running turn; when idle, clear the prompt. |
 | **ctrl+c** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
 | **ctrl+d** on an empty prompt, **ctrl+x q** | Quit. |
-| **ctrl+o** | Expand or collapse all tool output and subagent activity (CodeSmith's). |
+| **ctrl+o** | Expand or collapse all tool output, subagent activity and [groups](#verbosity) (CodeSmith's). |
 | **ctrl+t** | Next model [variant](configuration.md#provider-options-and-variants) (as `/variant`). |
 | **pgup/pgdn**, **ctrl+alt+b/f** | Scroll the transcript a page. |
 | **ctrl+alt+u/d**, **ctrl+alt+y/e** | Scroll half a page, or a line. |
@@ -80,7 +93,9 @@ Pastes go in at the cursor.
 | **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help and **b** background. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
 
 Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
-`/thinking` shows or hides it.
+`/thinking` shows or hides it. Nor have the verbosity and grouping
+commands (`session.verbosity.cycle`, `session.toggle.exploration_grouping`);
+`/verbosity` cycles the level.
 
 ### Key bindings
 
@@ -123,7 +138,8 @@ The commands CodeSmith runs, by where they apply:
   `variant.cycle`, `session.list`, `session.new`, `session.compact`,
   `session.undo`, `session.redo`, `help.show`, `theme.switch`,
   `theme.switch_mode`, `theme.mode.lock`, `session.toggle.thinking`,
-  `session.toggle.tool_output` (CodeSmith's), `session.page.up/down`,
+  `session.toggle.tool_output` (CodeSmith's), `session.verbosity.cycle`,
+  `session.toggle.exploration_grouping`, `session.page.up/down`,
   `session.half.page.up/down`, `session.line.up/down`, `session.first`,
   `session.last`, `terminal.suspend`.
 - **Autocomplete:** `prompt.autocomplete.prev/next/select/complete/hide`.
@@ -138,6 +154,27 @@ bound to more than one command in the same place, a command whose binding
 you configured goes first, then the order above; two configured bindings
 that clash, or one that starts another (so the longer one never runs), are
 reported when the UI opens, as are unknown commands and keys.
+
+## Verbosity
+
+How much tool activity the transcript shows is OpenCode's
+`session.verbosity` level, set in [`tui`](configuration.md#the-terminal-ui-tui)
+and cycled with `/verbosity` (or `session.verbosity.cycle` when bound):
+
+| Level | Thoughts (reasoning hidden) | Thoughts (shown) | Reads and searches | Other calls, output and diffs |
+|---|---|---|---|---|
+| `low` (default) | counted in the run's summary row | counted in the summary row | counted in the summary row | counted in the summary row |
+| `medium` | one `Thought` row per run | in full | one `Explored` row per run | each on its own row, output and diffs collapsed |
+| `high` | one `Thought` row per run | in full | an `Explored` row, open | each on its own row, output and diffs collapsed |
+
+The summary counts finished work by kind: commands, edits (`edit`,
+`write`, `patch`), thoughts, reads, and other tools (searches, fetches,
+subagents, …); failed calls count, running ones do not. **ctrl+o** opens
+every group at any level and shows output and diffs in full.
+`session.grouping` set to `none` (or `session.toggle.exploration_grouping`)
+draws reads and searches one by one at `medium` and `high`. The level and
+grouping changed in the UI last for the run; the config sets them for the
+next one. A continued session's transcript is grouped the same way.
 
 ## Themes
 
@@ -185,6 +222,7 @@ and `opencode` is used.
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |
+| `/verbosity [low\|medium\|high]` | Cycle the transcript's [verbosity](#verbosity), or set it. |
 | `/themes [name\|dark\|light\|system]` | Pick a [theme](#themes) (`/theme` too), or set its mode. |
 | `/help` | Keys and commands. |
 | `/exit` (`/quit`, `/q`) | Quit. |

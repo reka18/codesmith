@@ -44,6 +44,11 @@ Where the tests live:
 - `src/tui/theme/tests.rs`: themes, their V1 migration, mode selection and
   the system theme (`tui/test/theme*`, `cli/tui/theme-mode`,
   `context/theme`).
+- `src/tui/group.rs` and `src/tui/parity_groups.rs`: the grouped
+  transcript and its verbosity levels (`cli/tui/session-verbosity`,
+  `grouping-tree`, `session-grouping`, `session-rows`, `group-view`,
+  `session-activity-anchor`, `session-backfill-disclosure`,
+  `session-mount-budget`, and the grouping settings of `config-v2`).
 - `src/tui/parity_keys.rs`: key bindings and the UI's settings
   (`tui/test/config`, `config-v2`, `keymap`, `cli/tui/dialog-prompt`,
   `cli/tui/reasoning-body`, `cli/test/config`).
@@ -73,14 +78,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 98 | 610 | 516 | 13 |
+| tui: main UI | 1250 | 13 | 129 | 508 | 587 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **295** | **1157** | **2184** | **259** |
+| **Total** | **4637** | **742** | **326** | **1055** | **2255** | **259** |
 
 ## Fixes made while porting
 
@@ -173,6 +178,20 @@ Where the tests live:
   start and Ctrl+Z suspends; CodeSmith keeps Tab and Shift+Tab for agents,
   Ctrl+O, Ctrl+X h and b, Ctrl+End and Tab in pickers as its own defaults.
   The help and every key hint show the bindings in effect.
+
+- **The grouped transcript** (`cli/tui/session-verbosity` and the rest of
+  its roadmap group): every tool call and thought had its own row. As in
+  OpenCode, `tui.session.verbosity` (`low`, the default, `medium`, `high`)
+  and `tui.session.grouping` now group them: at `low` each run of calls and
+  thoughts is one summary row (`+ 3 commands, 1 edit, 2 thoughts`, `+
+  Running command…`), at `medium` and `high` adjacent reads and searches
+  are an `Explored` row (open at `high`), and hidden thoughts a `Thought`
+  row. `session.verbosity.cycle`, `session.toggle.exploration_grouping` and
+  `/verbosity` switch them. OpenCode opens one group with a click; CodeSmith
+  has no mouse, so ctrl+o (its tool output key) opens them all. A running
+  command's output and a running subagent's row stay in view below their
+  collapsed group, as OpenCode keeps a call waiting for permission there.
+  The level is not written back to the config (the UI never writes it).
 
 ## Differences found but not fixed
 
@@ -299,6 +318,37 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/dialog-prompt` | dialog prompt submit can be disabled | after a fix | oc_dialog_prompt_submit_can_be_disabled (adapted: the question dialog) |
 | `tui/test/cli/tui/dialog-prompt` | dialog prompt renders block cursor and survives cursor hot reloads | after a fix | oc_dialog_prompt_renders_block_cursor_and_survives_cursor_hot_reloads (adapted: set at start; the hot-reload half is dropped) |
 | `tui/test/cli/tui/reasoning-body` | reasoning follows the markdown setting, also when it changes | after a fix | oc_reasoning_follows_the_markdown_setting_also_when_it_changes (adapted) |
+| `tui/test/cli/tui/session-verbosity` | reasoning and exploration group at every level; other tools stand alone | after a fix | oc_reasoning_and_exploration_group_at_every_level_other_tools_stand_alone |
+| `tui/test/cli/tui/session-verbosity` | medium and high add web tools to exploration and group instruction loads | after a fix | oc_medium_and_high_add_web_tools_to_exploration (adapted: the instruction half is dropped; the transcript does not show instruction loads) |
+| `tui/test/cli/tui/session-verbosity` | low wraps tools, thoughts and instruction loads in activity; text and other messages break it | after a fix | oc_low_wraps_tools_and_thoughts_in_activity_text_breaks_it (adapted: the instruction half is dropped) |
+| `tui/test/cli/tui/session-verbosity` | low hydration nests subgroups inside one activity group per run | after a fix | oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run (adapted: no instruction load) |
+| `tui/test/cli/tui/session-verbosity` | medium hydration keeps production shape plus instruction groups | after a fix | oc_medium_hydration_keeps_production_shape (adapted: the instruction group is dropped) |
+| `tui/test/cli/tui/session-verbosity` | live appends under low merge into the open activity group | after a fix | oc_live_appends_under_low_merge_into_the_open_activity_group (adapted: through session events) |
+| `tui/test/cli/tui/session-verbosity` | permission-blocked tools inside an activity group are tracked as pending without reordering | after a fix | oc_permission_blocked_tools_inside_an_activity_group_are_tracked_as_pending_without_reordering (adapted: a running call stays in place and in view) |
+| `tui/test/cli/tui/session-verbosity` | activity summary counts finished work by category | after a fix | oc_activity_summary_counts_finished_work_by_category (adapted: no instructions to count) |
+| `tui/test/cli/tui/session-verbosity` | running work is active but not counted, and failed tools are counted | after a fix | oc_running_work_is_active_but_not_counted_and_failed_tools_are_counted |
+| `tui/test/cli/tui/session-verbosity` | activity summary counts distinct instruction files and skips redacted thoughts | after a fix | oc_activity_summary_skips_redacted_thoughts (adapted: the instruction-file half is dropped) |
+| `tui/test/cli/tui/session-verbosity` | questions stand alone at every level and end an activity run | after a fix | oc_questions_stand_alone_at_every_level, oc_questions_stand_alone_at_every_level_and_end_an_activity_run |
+| `tui/test/cli/tui/session-verbosity` | a thought still streaming counts as finished once a later row closes its group | after a fix | oc_a_thought_still_streaming_counts_as_finished_once_a_later_row_closes_its_group |
+| `tui/test/cli/tui/session-verbosity` | until something finishes, the label is the first running item's status | after a fix | oc_until_something_finishes_the_label_is_the_first_running_items_status (both modules) |
+| `tui/test/cli/tui/session-verbosity` | busy labels depend only on the tool and whether it is still being prepared | after a fix | oc_busy_labels_depend_only_on_the_tool_and_whether_it_is_still_being_prepared |
+| `tui/test/cli/tui/session-verbosity` | a finished execute with no nested calls counts as one tool | after a fix | oc_a_finished_execute_with_no_nested_calls_counts_as_one_tool |
+| `tui/test/cli/tui/grouping-tree` | groups adjacent entries by path and counts leaves, not wrappers | after a fix | oc_groups_adjacent_entries_by_path_and_counts_leaves_not_wrappers |
+| `tui/test/cli/tui/grouping-tree` | a direct child breaks a subgroup without ending the outer group | after a fix | oc_a_direct_child_breaks_a_subgroup_without_ending_the_outer_group |
+| `tui/test/cli/tui/session-grouping` | a pending tool does not hide a later tool reusing its call ID in another message | after a fix | oc_a_pending_tool_does_not_hide_a_later_tool_reusing_its_call_id_in_another_message (adapted: rows are entries, not ids) |
+| `tui/test/cli/tui/session-rows` | groups exploration parts across assistant messages until a delimiter | after a fix | oc_groups_exploration_parts_across_assistant_messages_until_a_delimiter (adapted: at medium) |
+| `tui/test/cli/tui/session-rows` | keeps non-exploration tools as individual part rows | after a fix | oc_keeps_non_exploration_tools_as_individual_part_rows (adapted: at medium) |
+| `tui/test/cli/tui/session-rows` | groups adjacent reasoning parts until a visible boundary | after a fix | oc_groups_adjacent_reasoning_parts_until_a_visible_boundary (adapted: at medium) |
+| `tui/test/cli/tui/session-rows` | groups across empty assistant reasoning parts | after a fix | oc_groups_across_empty_assistant_reasoning_parts (adapted: at medium) |
+| `tui/test/cli/tui/session-rows` | completes exploration groups when another row follows | after a fix | oc_completes_exploration_groups_when_another_row_follows (adapted: the turn's end completes the last one) |
+| `tui/test/cli/tui/group-view` | retains nested expansion state and registers exact headers and parts | after a fix | oc_retains_nested_expansion_state_and_registers_exact_headers_and_parts (adapted: ctrl+o opens every group; no anchors) |
+| `tui/test/cli/tui/group-view` | a low activity group with nothing finished stays collapsed behind a status | after a fix | oc_a_low_activity_group_with_nothing_finished_stays_collapsed_behind_a_status |
+| `tui/test/cli/tui/group-view` | failed low activity uses a disclosure icon and keeps details expandable | after a fix | oc_failed_low_activity_uses_a_disclosure_icon_and_keeps_details_expandable (adapted: ctrl+o rather than a click) |
+| `tui/test/session-activity-anchor` | a low activity summary that ends the transcript opens like v2 at the bottom | after a fix | oc_a_low_activity_summary_that_ends_the_transcript_opens_like_v2_at_the_bottom (adapted: ctrl+o) |
+| `tui/test/session-backfill-disclosure` | clicking a backfilled thought group toggles it | after a fix | oc_clicking_a_backfilled_thought_group_toggles_it (adapted: a replayed session, ctrl+o) |
+| `tui/test/session-mount-budget` | an expanded group spends the mounting budget that older rows used | after a fix | oc_an_expanded_group_spends_the_mounting_budget_that_older_rows_used (adapted: only the rows in view are laid out) |
+| `tui/test/config-v2` | shows transcript verbosity in session settings | after a fix | oc_shows_transcript_verbosity_in_session_settings (adapted: no settings dialog; the `tui` setting) |
+| `tui/test/config-v2` | names tool grouping explicitly in settings | after a fix | oc_names_tool_grouping_explicitly_in_settings (adapted: the `tui` setting) |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -423,23 +473,6 @@ for larger ones).
 - `tui/test/panel` (4): e.g. "presentation changes preserve the selected panel identity"; "narrow geometry overrides presentation without discarding the user's choice"
 - `tui/test/util/added-patch` (3): e.g. "splits a complete new-file patch into independently numbered chunks"; "retains a missing-final-newline marker only on the last chunk"
 - `tui/test/config-v2` (1): e.g. "validates the explicit diff source defaults"
-
-### tui: grouped transcript and verbosity levels (109)
-
-- `tui/test/cli/tui/session-rows` (22): e.g. "indexed tail footer calculations do not subscribe to an unrelated history prefix"; "filters OpenAI cache quantization from cache reuse drops"
-- `tui/test/session-history-interactions` (17): e.g. "pending history preserves the reader: $mode, $width col"
-- `tui/test/session-home` (17): e.g. "Home loads a stable, bounded beginning (%s)"
-- `tui/test/cli/tui/session-verbosity` (16): e.g. "reasoning and exploration group at every level; other tools stand alone"; "medium and high add web tools to exploration and group instruction loads"
-- `tui/test/cli/tui/inline-tool-wrap-snapshot` (12): e.g. "falls back for unknown tool names"; "replaces pending copy when a tool fails before completion"
-- `tui/test/cli/tui/grouping-tree` (6): e.g. "groups adjacent entries by path and counts leaves, not wrappers"; "a direct child breaks a subgroup without ending the outer group"
-- `tui/test/config-v2` (2): e.g. "shows transcript verbosity in session settings"; "names tool grouping explicitly in settings"
-- `tui/test/cli/tui/group-view` (4): e.g. "retains nested expansion state and registers exact headers and parts"; "expanded instructions stay adjacent to their summary and each other"
-- `tui/test/session-activity-anchor` (4): e.g. "low activity details open below a summary that keeps it"; "a low activity summary that ends the transcript opens like v2 at the bottom"
-- `tui/test/session-group-navigation` (4): e.g. "restores exact part/group anchors at width %s with %s t"
-- `tui/test/session-history-reveal` (2): e.g. "scrolling up into older history never flashes: $width c"
-- `tui/test/cli/tui/session-grouping` (1): e.g. "a pending tool does not hide a later tool reusing its call ID in another message"
-- `tui/test/session-backfill-disclosure` (1): e.g. "clicking a backfilled thought group toggles it"
-- `tui/test/session-mount-budget` (1): e.g. "an expanded group spends the mounting budget that older rows used"
 
 ### tui: session tabs (75)
 
@@ -645,6 +678,14 @@ for larger ones).
 - `tui/test/cli/tui/message-navigation`: keeps the logical boundary when layout temporarily moves it outside the viewport
 - `tui/test/cli/tui/message-navigation`: stops at the first and last message
 
+### tui: turn usage footers (5)
+
+- `tui/test/cli/tui/session-rows`: filters OpenAI cache quantization from cache reuse drops
+- `tui/test/cli/tui/session-rows`: compares cache reuse only for the same model
+- `tui/test/cli/tui/session-rows`: carries model identity with the cross-turn cache baseline
+- `tui/test/cli/tui/session-rows`: resets the cross-turn cache baseline after compaction
+- `tui/test/cli/tui/session-rows`: closes turn usage on the idle marker so steered steps share one footer
+
 ### tui: external editor (5)
 
 - `tui/test/editor`: rejects when the external editor cannot start
@@ -748,6 +789,14 @@ for larger ones).
 
 - `tui/test/component/dialog-export-options`: tab and shift+tab move a visible focus through the export options
 
+### tui: instruction loads in the transcript (1)
+
+- `tui/test/cli/tui/group-view`: expanded instructions stay adjacent to their summary and each other (the instruction halves of four `session-verbosity` tests are dropped too)
+
+### tui: Code Mode calls in activity summaries (1)
+
+- `tui/test/cli/tui/session-verbosity`: execute counts its finished nested calls instead of itself
+
 ## By design or not applicable
 
 | Group | Kind | Cases | Files | Why |
@@ -767,6 +816,7 @@ for larger ones).
 | server: auth and transport | by design | 28 | 7 | a bearer token instead of Basic auth, pairing and CORS; browsers are refused |
 | codemode: error wording | by design | 25 | 5 | Boa's messages; OpenCode's error kinds, locations and suggestions |
 | cli: integrations | by design | 24 | 4 | hosted, OAuth and command integrations through a server; integration login URLs; plugin-defined login forms; CodeSmith saves API keys; the /connect integration catalog |
+| tui: transcript rows | by design | 20 | 2 | CodeSmith's tool rows are its own (`⚙ name detail`), not OpenCode's inline tool copy and snapshots; no synthetic-message, retry-footer or compaction-barrier rows; a turn's error is one error row |
 | codemode: strict-mode checks | by design | 6 | 3 | Boa's strict mode words frozen-write errors differently, rejects early what OpenCode accepts (`delete` of a variable, a parameter named `arguments`), and misses two read-only writes |
 | acp: child sessions | by design | 13 | 3 | subagents run inside the parent turn; subagents run inside the parent turn; no steering |
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
@@ -777,6 +827,7 @@ for larger ones).
 | acp: separate server | by design | 4 | 3 | no separate server or plugin activation; no server defects to wrap; no shared event stream |
 | util: titles | by design | 4 | 1 | CodeSmith keeps untitled sessions untitled until a title is generated |
 | tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
+| tui: group disclosure | by design | 3 | 1 | no mouse: ctrl+o opens every group, so the rows above an opened group move when scrolled up |
 | server: API command | by design | 3 | 1 | no `api` command for a server |
 | tui: model notices | by design | 3 | 1 | model switch notices are worded differently |
 | codemode: limits | by design | 3 | 2 | 400 nested calls, 64 MiB buffers |
@@ -796,6 +847,7 @@ for larger ones).
 | tui: OpenTUI internals | n/a | 272 | 41 | OpenTUI cell offsets; Solid config and keymap contexts, command object identity and keymap modes, developer tools; Solid batching and renderer internals; layout, virtualization, reactive data or event-stream internals; renderer lifecycle, caching and server sync; select widget layout and reconciliation; widgets, animation and layout helpers |
 | session-ui: web UI | n/a | 270 | 29 | web and desktop UI state machines |
 | util: helpers | n/a | 101 | 16 | TypeScript helpers with no CodeSmith counterpart (or covered by Rust std/crates) |
+| tui: paged history and anchors | n/a | 48 | 6 | the whole session is in memory and the visible tail is regrouped each frame: no history pages to load, merge at a seam or split, no row anchors or ids to restore, no reactive footer indexes |
 | tui: prompt parts | n/a | 21 | 3 | OpenCode's prompt part model and media refs |
 | cli: runtime internals | n/a | 16 | 7 | Bun/Node runtime, bundling or web UI |
 | cli: cli.json | n/a | 7 | 1 | cli.json schema, migration and file locking |

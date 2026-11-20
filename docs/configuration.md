@@ -98,7 +98,7 @@ is parsed:
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
-| `tui` | `{}` | The terminal UI: theme, key bindings, cursor and reasoning display. See [The terminal UI](#the-terminal-ui-tui). |
+| `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display and transcript verbosity. See [The terminal UI](#the-terminal-ui-tui). |
 
 Unknown keys are ignored, so a config written for a newer CodeSmith still
 loads.
@@ -714,7 +714,7 @@ theme):
     "keybinds": { "leader": "ctrl+o", "session.list": "ctrl+l", "help.show": "f1" },
     "leader": { "timeout": 1500 },
     "cursor": { "style": "line", "blinking": false },
-    "session": { "thinking": "show", "markdown": "rendered" }
+    "session": { "thinking": "show", "markdown": "rendered", "verbosity": "medium", "grouping": "auto" }
   }
 }
 ```
@@ -729,6 +729,8 @@ theme):
 | `cursor.blinking` | `true` | Whether the cursor blinks. |
 | `session.thinking` | `hide` | `show` shows reasoning from the start (`/thinking` toggles it). |
 | `session.markdown` | `rendered` | Reasoning as rendered Markdown, or `source` for its highlighted Markdown text. |
+| `session.verbosity` | `low` | How much tool activity the transcript shows: `low` sums up each run of tool calls and thoughts on one row, `medium` shows calls on their own rows with reads and searches grouped, `high` also opens those groups. See [verbosity](interactive-ui.md#verbosity). |
+| `session.grouping` | `auto` | `none` draws reads and searches one by one rather than as one `Explored` row. |
 
 OpenCode's first TUI format (its `tui.json`) works here too and is read as
 the current one: `"theme": "name"`, `leader_timeout`, and keybind names

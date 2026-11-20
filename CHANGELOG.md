@@ -43,6 +43,10 @@ replays of its recorded provider traffic.
   colors) in light or dark mode following the terminal, picked with
   `/themes`; OpenCode's keymap, its command ids, leader key and defaults,
   rebound in `tui.keybinds`.
+- **Grouped transcript:** OpenCode's verbosity levels
+  (`tui.session.verbosity`, `/verbosity`): at `low` each run of tool calls
+  and thoughts is one summary row, at `medium` and `high` reads and
+  searches are grouped; ctrl+o opens the groups.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
   web search, todos, questions, and image, PDF and video input (video only
   for models that take it).
