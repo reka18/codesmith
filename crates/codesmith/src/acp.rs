@@ -945,6 +945,28 @@ impl Sink for AcpSink {
     }
 }
 
+/// The permission action a call of tool `name` asks for itself.
+fn own_action(name: &str) -> &str {
+    match base_name(name) {
+        "write" | "patch" => "edit",
+        n => n,
+    }
+}
+
+/// The files and directories a path permission request is for, as
+/// `locations`: the resources the engine checks, not the model's input.
+fn request_locations(cwd: &Path, req: &Request) -> Vec<Value> {
+    let paths: BTreeSet<String> = req
+        .resources
+        .iter()
+        .filter(|_| matches!(req.action.as_str(), "read" | "edit" | "external_directory"))
+        .map(|r| r.strip_suffix("/*").unwrap_or(r))
+        .filter(|r| !r.is_empty() && !r.contains(['*', '?']))
+        .map(|r| absolute(cwd, r).display().to_string())
+        .collect();
+    paths.iter().map(|p| json!({"path": p})).collect()
+}
+
 /// Permission requests go to the client as `session/request_permission`.
 struct AcpAsker {
     conn: Conn,
@@ -964,14 +986,41 @@ impl Asker for AcpAsker {
                 child,
             }) => {
                 let mut tc = tool_call(&self.cwd, id, name, input, "pending");
-                if let Some(t) = permission_title(name, input) {
-                    tc["title"] = json!(t);
-                } else {
-                    tc["title"] = json!(req.title);
+                // A request for something other than the call's own action
+                // (`external_directory` for a symlink's target) names what
+                // it grants itself: the model's input would hide it.
+                let own = req.action == own_action(name);
+                let named = file_path(input).is_some_and(|p| {
+                    let p = absolute(&self.cwd, p);
+                    req.resources.iter().all(|r| absolute(&self.cwd, r) == p)
+                });
+                match permission_title(name, input).filter(|_| own || named) {
+                    Some(t) => tc["title"] = json!(t),
+                    None => tc["title"] = json!(req.title),
                 }
-                let diffs = previews(&self.cwd, name, input);
-                if !diffs.is_empty() {
-                    tc["content"] = json!(diffs);
+                let mut locations = if own {
+                    tc["locations"].as_array().cloned().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                for l in request_locations(&self.cwd, req) {
+                    if !locations.contains(&l) {
+                        locations.push(l);
+                    }
+                }
+                tc["locations"] = json!(locations);
+                let mut content = Vec::new();
+                if !own {
+                    content.push(text_content(&format!(
+                        "{}\n{}",
+                        req.resources.join("\n"),
+                        codesmith_core::permission::always_summary(req)
+                    )));
+                } else {
+                    content.extend(previews(&self.cwd, name, input));
+                }
+                if !content.is_empty() {
+                    tc["content"] = json!(content);
                 }
                 if let Some(c) = child {
                     tc["sessionUpdate"] = json!("tool_call");
@@ -980,26 +1029,13 @@ impl Asker for AcpAsker {
                 }
                 tc
             }
-            None => {
-                let paths: BTreeSet<String> = req
-                    .resources
-                    .iter()
-                    .filter(|_| {
-                        matches!(req.action.as_str(), "read" | "edit" | "external_directory")
-                    })
-                    .map(|r| r.strip_suffix("/*").unwrap_or(r))
-                    .filter(|r| !r.is_empty() && !r.contains(['*', '?']))
-                    .map(|r| absolute(&self.cwd, r).display().to_string())
-                    .collect();
-                let locations: Vec<Value> = paths.iter().map(|p| json!({"path": p})).collect();
-                json!({
-                    "toolCallId": format!("perm_{}", req.action),
-                    "title": req.title,
-                    "kind": tool_kind(&req.action),
-                    "status": "pending",
-                    "locations": locations,
-                })
-            }
+            None => json!({
+                "toolCallId": format!("perm_{}", req.action),
+                "title": req.title,
+                "kind": tool_kind(&req.action),
+                "status": "pending",
+                "locations": request_locations(&self.cwd, req),
+            }),
         };
         tc.as_object_mut().unwrap().retain(|_, v| !v.is_null());
         let params = json!({
@@ -5922,6 +5958,55 @@ mod tests {
         assert_eq!(
             p["entries"],
             json!([{"content": "a", "priority": "medium", "status": "in_progress"}])
+        );
+    }
+
+    // A project symlink to a file outside: the prompt for the outside
+    // directory names that directory and the real file, not the link.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_symlinks_permission_prompt_names_its_real_target() {
+        let (_d, cwd, base) = tmp().await;
+        let outside = tempfile::tempdir().unwrap();
+        let secret_dir = outside.path().canonicalize().unwrap().join("dotssh");
+        std::fs::create_dir(&secret_dir).unwrap();
+        let secret = secret_dir.join("id_rsa");
+        std::fs::write(&secret, "PRIVATE KEY MATERIAL").unwrap();
+        std::os::unix::fs::symlink(&secret, cwd.join("notes.md")).unwrap();
+        let mut c = start(&cwd, &base);
+        c.request(
+            "initialize",
+            json!({"protocolVersion": 1, "clientCapabilities": {}}),
+        )
+        .await;
+        let new = c
+            .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
+            .await;
+        let sid = new["result"]["sessionId"].as_str().unwrap().to_string();
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "read notes.md"}]}),
+            )
+            .await;
+        let mut asks = vec![];
+        c.until(id, |m| {
+            asks.push(m["params"]["toolCall"].clone());
+            allow_once(m)
+        })
+        .await;
+        let external = &asks[0];
+        let title = external["title"].as_str().unwrap();
+        assert!(title.contains("outside the project"), "{title}");
+        assert!(title.contains(&secret_dir.display().to_string()), "{title}");
+        assert_eq!(
+            external["locations"],
+            json!([{"path": secret.display().to_string()}])
+        );
+        let text = external["content"][0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains(&secret.display().to_string()), "{text}");
+        assert!(
+            text.contains(&format!("{}/*", secret_dir.display())),
+            "{text}"
         );
     }
 }
