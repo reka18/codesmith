@@ -19,7 +19,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Session runner | 393 | 76 | 7 | 53 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
-| Compaction | 51 | 18 | 0 | 24 | 8 | 1 | 0 |
+| Compaction | 51 | 21 | 0 | 21 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 4 | 0 | 23 | 36 | 5 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1284** | **15** | **543** | **2350** | **1396** | **0** |
+| **Total** | **5588** | **1287** | **15** | **540** | **2350** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (543 cases in 59 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (540 cases in 57 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -130,12 +130,10 @@ Missing features, by how many OpenCode test cases each would unlock (543 cases i
 | [Repository-scoped External Approvals](#repository-scoped-external-approvals) | 2 | an "always" external approval saved at the enclosing repository; external approval saved at the nearest project directory |
 | [Saved Approvals Management](#saved-approvals-management) | 2 | listing, editing and removing saved approvals per project |
 | [Plugin Permission API](#plugin-permission-api) | 2 | plugins asserting permissions |
-| [Compaction Prompt-cache Prefix](#compaction-prompt-cache-prefix) | 2 | summary requests reuse the session's cache prefix and measured input |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Attachment Deduplication](#attachment-deduplication) | 2 | durable attachment references deduplicate provider media |
 | [Code Mode Progress](#code-mode-progress) | 2 | execute progress rows |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
-| [Compaction Hooks](#compaction-hooks) | 1 | a hook supplies the summary |
 | [Per-session Permission Rules](#per-session-permission-rules) | 1 | stored per-session rules inherited by children and forks |
 | [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
@@ -891,13 +889,6 @@ Missing features, by how many OpenCode test cases each would unlock (543 cases i
 - `plugin/permission-assert.test.ts`: Effect plugins assert permissions and receive outcomes as tool errors
 - `plugin/permission-assert.test.ts`: Promise plugins assert permissions with plain input
 
-### Compaction Prompt-cache Prefix
-
-2 cases.
-
-- `session-compaction.test.ts`: summary cache prefix survives hooks that shape every request alike
-- `session-compaction.test.ts`: summary resends as text when a hook makes the request larger than the measured count
-
 ### Freeform Tool Formats
 
 2 cases.
@@ -924,12 +915,6 @@ Missing features, by how many OpenCode test cases each would unlock (543 cases i
 1 cases.
 
 - `plugin/skill.test.ts`: registers built-in skills
-
-### Compaction Hooks
-
-1 cases.
-
-- `session-compaction.test.ts`: compaction hooks can supply the summary instead of the model
 
 ### Per-session Permission Rules
 
@@ -2015,7 +2000,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Compaction (26 of 51)</summary>
+<details><summary>Compaction (29 of 51)</summary>
 
 
 **`config/compaction.test.ts`**
@@ -2036,15 +2021,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P compaction prompts prohibit task execution — `src/compaction.rs::oc_compaction_prompts_prohibit_task_execution`
 - P auto compaction estimates current content against the buffered prompt ceiling — `src/compaction.rs::oc_compaction_auto_ceiling_and_buffers` (cases without input-only limits)
 - P manual compaction summarizes short context instead of no-op — `tests/parity.rs::oc_compaction_manual_compaction_summarizes_short_context`
-- P summary updates include the retained tail in compaction hooks and the model request — `tests/parity.rs::oc_compaction_updates_an_existing_checkpoint` (model-request half; no compaction hooks)
+- P summary updates include the retained tail in compaction hooks and the model request — `tests/oc_compaction_hooks.rs::oc_compaction_summary_updates_include_the_retained_tail_in_hooks_and_the_request`
 - P summary compaction past the ceiling keeps the conversation unchanged while the window fits — `tests/oc_compaction_cache.rs::oc_compaction_summary_past_the_ceiling_keeps_the_conversation_unchanged_while_the_window_fits` (adapted: the system prompt and tools counted in)
 - P summary compaction sends the history before the tail unchanged when the whole conversation does not fit — `tests/oc_compaction_cache.rs::oc_compaction_summary_sends_the_history_before_the_tail_unchanged_when_the_whole_does_not_fit` (adapted: keep raised to make the latest exchange the tail)
 - P compaction lowers the output limit when it sends a request it could not shrink — `tests/oc_compaction_cache.rs::oc_compaction_lowers_the_output_limit_when_it_sends_a_request_it_could_not_shrink`
 - P compaction keeps the output limit for a request that fits its target — `tests/oc_compaction_cache.rs::oc_compaction_keeps_the_output_limit_for_a_request_that_fits_its_target`
+- P compaction hooks can supply the summary instead of the model — `tests/oc_compaction_hooks.rs::oc_compaction_hooks_can_supply_the_summary_instead_of_the_model`
 - P forked session compaction reuses the fork root prompt cache key — `tests/oc_compaction_cache.rs::oc_compaction_summary_request_reuses_the_session_prompt_cache_key` (adapted: no forks; the session's own key)
 - P summary cache prefix uses measured input with old reasoning (background=${background}) — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning` (background=false)
 - P summary cache prefix still flattens genuinely oversized measured input — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_still_flattens_genuinely_oversized_measured_input`
 - P summary measured recovery shrinks from the rejected measured size — `tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_shrinks_from_the_rejected_measured_size`
+- P summary cache prefix survives hooks that shape every request alike — `tests/oc_compaction_hooks.rs::oc_compaction_summary_cache_prefix_survives_hooks_that_shape_every_request_alike` (adapted: one request hook shapes both)
+- P summary resends as text when a hook makes the request larger than the measured count — `tests/oc_compaction_hooks.rs::oc_compaction_summary_resends_as_text_when_a_hook_makes_the_request_larger_than_measured`
 - P summary measured recovery reuses usage only for the matching agent — `tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_reuses_usage_only_for_the_matching_agent` (adapted: the agent switched in place)
 
 </details>

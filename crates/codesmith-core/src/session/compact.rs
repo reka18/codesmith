@@ -69,6 +69,8 @@ pub(super) struct Plan {
     as_text: bool,
     window: Option<u64>,
     retry_scale: f64,
+    /// A summary a compaction hook supplied.
+    supplied: Option<crate::plugin::Summary>,
 }
 
 /// A summary request that came back unusable, or a provider error.
@@ -204,9 +206,22 @@ impl Session {
         request.interaction = codesmith_ai::Interaction::Compaction;
         // Hooks see the request without the summary prompt, as they see the
         // session's own requests, so a hook that shapes every request alike
-        // keeps the cached prefix.
+        // keeps the cached prefix. A compaction hook may supply the summary
+        // itself, and then no request is made.
         let sent = request.messages.len();
-        plugins.request(&self.loaded.config, &self.id, &mut request);
+        let mut hooked = crate::plugin::Compaction {
+            session_id: self.id.clone(),
+            agent: self.agent.name.clone(),
+            model: self.model_spec.clone(),
+            request,
+            result: None,
+        };
+        plugins.compaction(&self.loaded.config, &mut hooked);
+        let supplied = hooked.result;
+        let mut request = hooked.request;
+        if supplied.is_none() {
+            plugins.request(&self.loaded.config, &self.id, &mut request);
+        }
         let head = crate::media::sendable(
             &crate::runner::model_messages(&self.messages[..k]),
             self.model.input.as_deref(),
@@ -262,6 +277,7 @@ impl Session {
             as_text: reason == Reason::Overflow,
             window,
             retry_scale: self.turn.retry_scale,
+            supplied,
         }
     }
 
@@ -335,6 +351,10 @@ async fn deliver(
     delta: &mut (dyn FnMut(&str) + Send),
 ) -> (Result<String>, Vec<Usage>) {
     let mut usages = Vec::new();
+    if let Some(s) = plan.supplied {
+        usages.extend(s.usage);
+        return (Ok(s.summary), usages);
+    }
     let mut policy = retry::Policy::default();
     let mut rejections = 0usize;
     let mut rejected: Option<u64> = None;

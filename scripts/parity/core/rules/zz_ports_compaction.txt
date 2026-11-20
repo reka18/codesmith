@@ -12,3 +12,9 @@
 1180 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_reuses_usage_only_for_the_matching_agent :: adapted: the agent switched in place
 @session-runner.test.ts
 2932 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_preserves_the_session_request_prefix_during_compaction :: adapted: no hooks or tool call
+# Compaction hooks (tests/oc_compaction_hooks.rs).
+@session-compaction.test.ts
+763 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_summary_updates_include_the_retained_tail_in_hooks_and_the_request
+899 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_hooks_can_supply_the_summary_instead_of_the_model
+1130 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_summary_cache_prefix_survives_hooks_that_shape_every_request_alike :: adapted: one request hook shapes both
+1152 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_summary_resends_as_text_when_a_hook_makes_the_request_larger_than_measured

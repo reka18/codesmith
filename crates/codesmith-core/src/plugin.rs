@@ -8,8 +8,8 @@
 //!
 //! The hooks follow OpenCode's plugin API: transforms of the configuration
 //! (agents, commands, providers, MCP servers, …), extra tools, and runtime
-//! hooks around tool calls, shell commands, model requests, permission
-//! prompts, session events and going idle.
+//! hooks around tool calls, shell commands, model requests, compactions,
+//! permission prompts, session events and going idle.
 
 use crate::config::Config;
 use crate::permission::{Reply, Request};
@@ -90,6 +90,32 @@ pub struct ShellCommand {
     pub env: BTreeMap<String, String>,
 }
 
+/// A compaction about to summarize the session (mutable in
+/// [`Plugin::compaction`]), OpenCode's `compaction` hook.
+#[derive(Debug, Clone)]
+pub struct Compaction {
+    pub session_id: String,
+    pub agent: String,
+    /// The session's model spec.
+    pub model: String,
+    /// The summary request as the session sends it: its system prompt,
+    /// tools and the whole conversation, without the summary instructions,
+    /// which are added after the hooks. Change it to shape the summary
+    /// request; a change every request gets alike (see [`Plugin::request`])
+    /// keeps it on the prompt cache.
+    pub request: codesmith_ai::Request,
+    /// Set it to supply the summary yourself: no model request is made.
+    pub result: Option<Summary>,
+}
+
+/// A summary a plugin supplies in place of the model's.
+#[derive(Debug, Clone, Default)]
+pub struct Summary {
+    pub summary: String,
+    /// What producing it cost, counted in the session's usage.
+    pub usage: Option<Usage>,
+}
+
 /// Things that happen in a session, for observers.
 #[derive(Debug, Clone)]
 pub enum Event<'a> {
@@ -165,6 +191,13 @@ pub trait Plugin: Send + Sync {
     /// Just before a request goes to the model: change the system prompt,
     /// messages, tools or body.
     fn request(&self, _session_id: &str, _req: &mut codesmith_ai::Request) {}
+
+    /// Before a compaction summarizes: change the summary request, or
+    /// supply the summary in `result`. Runs before [`Plugin::request`],
+    /// which compaction requests get too (with
+    /// `interaction: Interaction::Compaction`); a supplied summary skips both
+    /// the request hooks and the model.
+    fn compaction(&self, _compaction: &mut Compaction) {}
 
     /// Answer a permission prompt instead of asking the user (`None`: no opinion).
     fn permission(&self, _req: &Request) -> Option<Reply> {
@@ -291,6 +324,17 @@ impl Registry {
     pub fn request(&self, config: &Config, session_id: &str, req: &mut codesmith_ai::Request) {
         for p in self.enabled(config) {
             p.request(session_id, req);
+        }
+    }
+
+    /// Run the compaction hooks in order; the first plugin to supply a
+    /// summary ends them.
+    pub fn compaction(&self, config: &Config, compaction: &mut Compaction) {
+        for p in self.enabled(config) {
+            p.compaction(compaction);
+            if compaction.result.is_some() {
+                return;
+            }
         }
     }
 
