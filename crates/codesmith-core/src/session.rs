@@ -213,6 +213,21 @@ fn last_step_model(entries: &[store::Entry]) -> Option<String> {
     None
 }
 
+/// The [`Store::set_meta`] key of a session's unbilled usage (see
+/// [`Session::spend`]).
+const UNBILLED_META: &str = "unbilled_usage";
+
+/// The unbilled part of stored session `id`'s `usage`: kept beside it, or,
+/// for a session stored before it was, all of it unless it carries a billed
+/// cost ([`crate::stats::Spend::of_total`]).
+fn stored_unbilled(st: &Store, id: &str, usage: &Usage) -> Usage {
+    st.meta(id, UNBILLED_META)
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_else(|| crate::stats::Spend::of_total(usage).unbilled)
+}
+
 /// A stored session being continued: its row and its history with sequence numbers.
 type Resumed = (Info, Vec<(Option<i64>, Message)>);
 
@@ -249,6 +264,10 @@ pub struct Session {
     /// tell a variant switch since then: see [`Session::effort_switch`].
     ran_with: Option<String>,
     pub usage: Usage,
+    /// The part of `usage` from steps without a billed cost (priced from
+    /// the model's configured cost), kept with the session so a reload
+    /// can tell it from the billed part: see [`Session::spend`].
+    unbilled: Usage,
     pub title: Option<String>,
     last_prompt_tokens: u64,
     gate: Gate,
@@ -486,6 +505,10 @@ impl Session {
                 false,
             ),
         };
+        let unbilled = match (&store, stored) {
+            (Some(st), true) => stored_unbilled(st, &id, &usage),
+            _ => Usage::default(),
+        };
         let mut rules = agent.permissions.clone();
         crate::permission::scope_tool_output(&mut rules, &id);
         let gate = Gate::new(rules, watch(asker.clone(), &declined));
@@ -502,6 +525,7 @@ impl Session {
             seqs,
             ran_with,
             usage,
+            unbilled,
             title,
             last_prompt_tokens: 0,
             compaction_skipped: false,
@@ -583,6 +607,7 @@ impl Session {
                 self.seqs = seqs;
                 self.ran_with = last_step_model(&entries);
                 if let Some(info) = st.get(&self.id)? {
+                    self.unbilled = stored_unbilled(st, &self.id, &info.usage);
                     self.usage = info.usage;
                 }
                 self.shared.seen = last;
@@ -624,6 +649,34 @@ impl Session {
         }
         self.ran_with = Some(self.model_spec.clone());
         Ok(())
+    }
+
+    /// Add one call's usage to the session's: to the unbilled part too
+    /// when the provider reported no billed cost for it.
+    fn count_usage(&mut self, usage: &Usage) {
+        add(&mut self.usage, usage);
+        if usage.cost.is_none() {
+            add(&mut self.unbilled, usage);
+        }
+    }
+
+    /// Store the session's usage, with its unbilled part beside it.
+    fn save_usage(&self, st: &Store) {
+        let _ = st.set_usage(&self.id, &self.usage);
+        if let Ok(json) = serde_json::to_string(&self.unbilled) {
+            let _ = st.set_meta(&self.id, UNBILLED_META, Some(&json));
+        }
+    }
+
+    /// What the session has spent: the cost providers billed, and the
+    /// tokens of the steps they billed nothing for, to price. A session
+    /// mixing both (a model switch, a provider billing some calls only)
+    /// counts each part, also after a reload.
+    pub fn spend(&self) -> crate::stats::Spend {
+        crate::stats::Spend {
+            billed: self.usage.cost,
+            unbilled: self.unbilled,
+        }
     }
 
     /// Save a message (creating the session row on first use) and keep it in memory.
@@ -684,12 +737,12 @@ impl Session {
             role: Role::Assistant,
             parts: vec![Part::text(assistant)],
         })?;
-        add(&mut self.usage, usage);
+        self.count_usage(usage);
         if self.title.is_none() {
             self.title = Some(user.chars().take(60).collect());
         }
         if let Some(st) = &self.store {
-            let _ = st.set_usage(&self.id, &self.usage);
+            self.save_usage(st);
             if let Some(t) = &self.title {
                 let _ = st.set_title(&self.id, t);
             }
@@ -944,7 +997,7 @@ impl Session {
         self.finish_title().await;
         if let Some(s) = &self.store {
             if self.stored {
-                let _ = s.set_usage(&self.id, &self.usage);
+                self.save_usage(s);
             }
         }
         result
@@ -992,7 +1045,7 @@ impl Session {
             };
             steps += 1;
             compacted_this_step = false;
-            add(&mut self.usage, &usage);
+            self.count_usage(&usage);
             self.last_prompt_tokens =
                 usage.input + usage.cache_read + usage.cache_write + usage.output;
             sink.step_end(&reason, &usage);
@@ -1446,7 +1499,7 @@ impl Session {
             }
         }
         if let (Some(s), true) = (&self.store, self.stored) {
-            let _ = s.set_usage(&self.id, &self.usage);
+            self.save_usage(s);
         }
         result
     }
@@ -2155,6 +2208,8 @@ impl Session {
             Err(e) => Err(e),
         };
         add(&mut self.usage, &child.usage);
+        // The child's own split: its total may mix billed and unbilled steps.
+        add(&mut self.unbilled, &child.unbilled);
         match &outcome {
             Ok(()) if child.stopped().is_some() => sink.child_end(&child.id, "interrupted", None),
             Ok(()) => sink.child_end(&child.id, "completed", None),
@@ -2388,7 +2443,7 @@ impl Session {
         if usage == Usage::default() {
             return Ok(());
         }
-        add(&mut self.usage, &usage);
+        self.count_usage(&usage);
         self.record(&Record::Step {
             model: self.model_spec.clone(),
             usage,

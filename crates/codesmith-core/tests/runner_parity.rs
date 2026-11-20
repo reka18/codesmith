@@ -1372,6 +1372,64 @@ fn text_with_usage(t: &str, input: u64, output: u64) -> String {
     ])
 }
 
+/// Fixed: a reloaded session's spending came from its stored total, taken
+/// as all billed when any step was billed, so a session mixing billed and
+/// unbilled steps lost the unbilled ones' cost (the TUI's status after a
+/// reload). The unbilled part is now stored beside the total.
+#[tokio::test(flavor = "multi_thread")]
+async fn spending_of_mixed_billed_and_unbilled_steps_survives_a_reload() {
+    let mut t = start(Setup {
+        store: true,
+        ..Default::default()
+    })
+    .await;
+    t.push([sse(&[
+        json!({"choices": [{"delta": {"content": "billed"}, "finish_reason": "stop"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.5}}),
+    ])]);
+    t.prompt("one").await.unwrap();
+    t.push([text_with_usage("unbilled", 1000, 100)]);
+    t.prompt("two").await.unwrap();
+    let spend = t.s.spend();
+    assert_eq!(spend.billed, Some(0.5));
+    assert_eq!((spend.unbilled.input, spend.unbilled.output), (1000, 100));
+
+    let loaded = Loaded {
+        config: config("http://127.0.0.1:9/v1", json!({})),
+        files: vec![],
+        root: t.dir.path().canonicalize().unwrap(),
+    };
+    let opts = Options {
+        agent: None,
+        model: None,
+        resume: Some(t.s.id.clone()),
+        title: None,
+        parent: None,
+        questioner: None,
+        mcp: None,
+    };
+    let root = loaded.root.clone();
+    let again = Session::new(
+        &loaded,
+        root,
+        opts,
+        Arc::new(Fixed(Reply::Once)),
+        Some(t.store()),
+    )
+    .unwrap();
+    assert_eq!(again.usage, t.s.usage);
+    assert_eq!(again.spend(), spend);
+    let price = codesmith_core::config::Cost {
+        input: 1.0,
+        output: 10.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+    // $0.50 billed, plus 1000 input and 100 output tokens at $1 and $10 per million.
+    let cost = again.spend().cost(Some(&price)).unwrap();
+    assert!((cost - 0.502).abs() < 1e-9, "{cost}");
+}
+
 /// Fixed: a turn whose model answered while a background command still ran
 /// waited for the command, so the TUI and server stayed busy (and `run`
 /// hung) until it ended. As in OpenCode, the turn now ends; the command is
