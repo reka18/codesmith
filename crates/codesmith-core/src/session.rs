@@ -232,6 +232,8 @@ pub struct Options {
 }
 
 pub struct Session {
+    /// Change it with [`Session::set_id`], which moves the session's
+    /// tool-output allowance along.
     pub id: String,
     pub cwd: PathBuf,
     pub root: PathBuf,
@@ -599,6 +601,17 @@ impl Session {
         self.messages.push(message);
         self.seqs.push(seq);
         Ok(())
+    }
+
+    /// Give the session another id (a host that names its sessions itself
+    /// before the first record is written). The rule letting it read its own
+    /// saved tool output moves to the new id's directory: assigning
+    /// [`Session::id`] directly leaves it on the generated one, so reading
+    /// that output asks for `external_directory`.
+    pub fn set_id(&mut self, id: impl Into<String>) {
+        let id = id.into();
+        self.gate.rescope_tool_output(&self.id, &id);
+        self.id = id;
     }
 
     /// The "always" approvals given in this session, shared with it.
@@ -2745,6 +2758,53 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_renamed_session_reaches_its_own_tool_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let config: crate::config::Config = serde_json::from_value(serde_json::json!({
+            "model": "fake/m", "snapshots": false,
+            "providers": {"fake": {"protocol": "openai-chat",
+                "settings": {"baseURL": "http://127.0.0.1:9/v1", "apiKey": "x"}}}
+        }))
+        .unwrap();
+        let loaded = Loaded {
+            config,
+            files: vec![],
+            root: dir.path().to_path_buf(),
+        };
+        let mut s = Session::new(
+            &loaded,
+            dir.path().to_path_buf(),
+            Options {
+                agent: None,
+                model: None,
+                resume: None,
+                title: Some("t".into()),
+                parent: None,
+                questioner: None,
+                mcp: None,
+            },
+            Arc::new(crate::permission::Fixed(crate::permission::Reply::Reject(
+                None,
+            ))),
+            None,
+        )
+        .unwrap();
+        let output = |id: &str| {
+            vec![paths::session_output_dir(id)
+                .join("tool_1")
+                .display()
+                .to_string()]
+        };
+        let generated = s.id.clone();
+        assert!(s.gate.allows("external_directory", &output(&generated)));
+        s.set_id("ses_hosted");
+        assert_eq!(s.id, "ses_hosted");
+        assert!(s.gate.allows("external_directory", &output("ses_hosted")));
+        assert!(!s.gate.allows("external_directory", &output(&generated)));
+        assert!(!s.gate.allows("external_directory", &output("ses_other")));
+    }
 
     #[test]
     fn ids_look_right() {

@@ -1795,7 +1795,7 @@ impl Agent {
             asker,
             self.store(),
         )?;
-        s.id = slot.id.clone();
+        s.set_id(slot.id.clone());
         s.share_approvals(slot.approvals.clone());
         s.adopt_jobs(slot.jobs.clone());
         *slot.shown.lock().unwrap() = (s.model_spec.clone(), s.agent.id.clone());

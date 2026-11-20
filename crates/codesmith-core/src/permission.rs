@@ -250,6 +250,12 @@ impl Gate {
         &self.rules
     }
 
+    /// Point the session's tool-output allowance at session `to` (see
+    /// [`rescope_tool_output`]).
+    pub fn rescope_tool_output(&mut self, from: &str, to: &str) {
+        rescope_tool_output(&mut self.rules, from, to);
+    }
+
     /// The approvals saved by "always" answers.
     pub fn saved(&self) -> Vec<Rule> {
         self.saved.lock().unwrap().clone()
@@ -383,6 +389,23 @@ pub fn scope_tool_output(rules: &mut [Rule], session_id: &str) {
                 r.resource = mine.clone();
             } else if r.resource == all_glob {
                 r.resource = format!("{mine}/*");
+            }
+        }
+    }
+}
+
+/// Move a scoping made by [`scope_tool_output`] from session `from` to
+/// session `to`, for a session given another id after it was made.
+pub fn rescope_tool_output(rules: &mut [Rule], from: &str, to: &str) {
+    let old = crate::paths::session_output_dir(from).display().to_string();
+    let new = crate::paths::session_output_dir(to).display().to_string();
+    let old_glob = format!("{old}/*");
+    for r in rules.iter_mut() {
+        if r.action == "external_directory" {
+            if r.resource == old {
+                r.resource = new.clone();
+            } else if r.resource == old_glob {
+                r.resource = format!("{new}/*");
             }
         }
     }

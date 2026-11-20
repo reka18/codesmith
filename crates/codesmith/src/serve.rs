@@ -418,7 +418,7 @@ impl Server {
             self.make_with(None, Some(agent), Some(model), watchers)?
         };
         let mut s = fresh.session.expect("a made session");
-        s.id = id.to_string();
+        s.set_id(id);
         s.share_approvals(g.approvals.clone());
         s.adopt_jobs(g.jobs.clone());
         g.selection = fresh.selection;
