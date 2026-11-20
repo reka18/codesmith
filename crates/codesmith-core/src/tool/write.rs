@@ -41,6 +41,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     if let Some(parent) = target.absolute.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Unable to write {path}: {e}"))?;
     }
+    let content = &with_bom(&target.absolute, content);
     std::fs::write(&target.absolute, content)
         .map_err(|e| format!("Unable to write {path}: {e}"))?;
     let note = ctx.format(&target.absolute, content);
@@ -50,6 +51,19 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         if existed { "Wrote" } else { "Created" },
         target.resource
     )))
+}
+
+/// Overwriting a file keeps its UTF-8 byte order mark, and the result has
+/// at most one, as in OpenCode's `syncTextBom`.
+fn with_bom(path: &std::path::Path, content: &str) -> String {
+    const BOM: char = '\u{feff}';
+    let had = std::fs::read(path).is_ok_and(|b| b.starts_with("\u{feff}".as_bytes()));
+    let body = content.trim_start_matches(BOM);
+    if had || content.starts_with(BOM) {
+        format!("{BOM}{body}")
+    } else {
+        body.to_string()
+    }
 }
 
 #[cfg(test)]

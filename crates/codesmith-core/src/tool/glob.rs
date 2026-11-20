@@ -39,7 +39,7 @@ impl Matcher {
             .literal_separator(!by_name)
             .backslash_escape(true)
             .build()
-            .map_err(|e| format!("Invalid glob in pattern {e}"))?;
+            .map_err(|e| format!("Invalid glob in pattern '{pattern}': {}", e.kind()))?;
         Ok(Matcher {
             set: glob.compile_matcher(),
             by_name,
@@ -164,6 +164,12 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     // are left out. (OpenCode checks only `glob` and `external_directory`.)
     if path.is_some() {
         ctx.check_not_denied("read", &target.resources)?;
+    }
+    if !target.absolute.exists() {
+        return Err(format!(
+            "Search path does not exist: {}",
+            path.unwrap_or(".")
+        ));
     }
     if !target.absolute.is_dir() {
         return Err(format!(

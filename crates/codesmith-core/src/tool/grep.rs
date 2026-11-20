@@ -4,7 +4,7 @@ use super::glob::{walk_files, Matcher, DEFAULT_LIMIT};
 use super::{opt_bool, opt_str, opt_u64, str_arg, Ctx, Outcome, Output};
 use crate::permission::{Effect, Request};
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{sinks::UTF8, BinaryDetection, SearcherBuilder};
+use grep_searcher::{sinks::Lossy, BinaryDetection, SearcherBuilder};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -132,7 +132,7 @@ fn search_files(files: &[PathBuf], matcher: &grep_regex::RegexMatcher) -> Vec<Hi
         let _ = searcher.search_path(
             matcher,
             f,
-            UTF8(|line, text| {
+            Lossy(|line, text| {
                 let t = text.trim_end_matches(['\n', '\r']);
                 let t = if t.chars().count() > MAX_LINE_CHARS {
                     format!("{}…", t.chars().take(MAX_LINE_CHARS).collect::<String>())
@@ -206,7 +206,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     }
     if !target.absolute.exists() {
         return Err(format!(
-            "Unable to grep for {pattern}: {} does not exist",
+            "Search path does not exist: {}",
             path.unwrap_or(".")
         ));
     }
