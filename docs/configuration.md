@@ -100,7 +100,7 @@ is parsed:
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
-| `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display, transcript verbosity and mini mode. See [The terminal UI](#the-terminal-ui-tui). |
+| `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display, transcript verbosity, session tabs and mini mode. See [The terminal UI](#the-terminal-ui-tui). |
 | `watcher` | `{}` | `{"ignore": [...]}`: paths or globs, relative to the project, that are not watched. See [File watching](#file-watching). |
 
 Unknown keys are ignored, so a config written for a newer CodeSmith still
@@ -1131,6 +1131,26 @@ theme):
 | `diffs.single` | `false` | Show one file at a time. |
 | `diffs.fullscreen` | `false` | Open the viewer full screen rather than docked beside the session. |
 
+### Session tabs: `tui.tabs`
+
+The [session tabs](interactive-ui.md#session-tabs), as OpenCode's `tabs`
+settings:
+
+```jsonc
+{ "tui": { "tabs": { "mode": "on", "scope": "global", "layout": "vertical", "indicators": "numbers" } } }
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `mode` | `auto` | `on`, `off`, or `auto`: on unless the UI runs inside the herdr multiplexer (`HERDR_ENV=1`), which has tabs of its own. OpenCode's older `enabled: true/false` stands for `on`/`off` when `mode` is unset. |
+| `scope` | `cwd` | `cwd` keeps a set of open tabs per folder; `global` shares one. |
+| `layout` | `horizontal` | `horizontal`, a strip along the top, or `vertical`, a column on the left where the terminal is wide enough. |
+| `indicators` | `status` | `status` shows each tab's state before its title; `numbers` always shows its number. |
+
+The open tabs are kept in `~/.local/share/codesmith/tui-tabs.json`, in
+OpenCode's shape (each tab's `sessionID` and `title`, plus when it was last
+shown).
+
 ### Mini mode: `tui.mini`
 
 What [mini mode](interactive-ui.md#mini-mode) (`codesmith mini`) writes to
@@ -1161,7 +1181,7 @@ OpenCode's first TUI format (its `tui.json`) works here too and is read as
 the current one: `"theme": "name"`, `leader_timeout`, and keybind names
 like `session_list`. A name set both ways takes the command id's value.
 Settings OpenCode has for features CodeSmith lacks (`mouse`, `scroll`,
-`tabs`, `attention`, …) are ignored. A value that does not fit,
+`attention`, …) are ignored. A value that does not fit,
 an unknown command or key, and two configured bindings that clash are
 reported when the UI opens; the default is used instead.
 

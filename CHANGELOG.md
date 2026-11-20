@@ -53,6 +53,17 @@ replays of its recorded provider traffic.
   a file tree, split or unified patches with syntax colors, hunk and file
   navigation, review marks and single-file review, all on rebindable
   `diff.*` keys.
+- **Session tabs:** as in OpenCode, sessions open as tabs (`/new`, a
+  session picked in `/sessions`), each running its own turn, background
+  commands and wake-ups while another is shown. The strip (or, with
+  `tui.tabs.layout: vertical`, a column) shows each tab's status: running,
+  waiting for a permission or an answer, or unread (failed in red).
+  Keys cycle, select, close, reopen and move tabs, and go to the next tab
+  waiting for you; a background permission request is announced in the
+  shown tab. Open tabs are kept across restarts per folder (or globally),
+  and `tui.tabs` takes OpenCode's `mode`, `scope`, `layout` and
+  `indicators`. Switching sessions no longer stops the old one's
+  background commands; closing its tab does.
 - **Mini mode:** `codesmith mini` is OpenCode's split-footer interface:
   finished transcript rows are written once into the terminal's own
   scrollback (searchable and selectable after exit) while a live footer

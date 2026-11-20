@@ -45,6 +45,8 @@ terminal's own scrollback.
   group, then fold into its summary. **ctrl+o** opens every group (and
   shows tool output in full), and closes them again. Questions are never
   grouped.
+- **Tabs.** The open [session tabs](#session-tabs) along the top: each
+  one's title, its status, and `+ New session` for a new one.
 - **Header.** The agent, model, session id and title.
 - **Status line.** Context in use (the last call's tokens, and the share of
   the model's `limit.context` when it is configured), the session's cost when
@@ -92,7 +94,10 @@ Pastes go in at the cursor.
 | **end**, **ctrl+end**, **ctrl+alt+g** | Follow the bottom again. |
 | **ctrl+b** while a command runs | Move the running commands to the background. |
 | **ctrl+z** | Suspend to the shell (Unix); `fg` returns. |
-| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help and **b** background. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
+| **alt+↓** / **alt+↑**, **ctrl+tab** / **ctrl+shift+tab** | Next or previous [session tab](#session-tabs). |
+| **alt+shift+↓** / **alt+shift+↑** | Next or previous tab that is unread or waiting for you. |
+| **ctrl+shift+t**, **ctrl+x shift+t** | Reopen the last closed tab (the second is CodeSmith's: most terminals send ctrl+shift+t as ctrl+t). |
+| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
 
 Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
 `/thinking` shows or hides it. Nor have the verbosity and grouping
@@ -138,6 +143,9 @@ The commands CodeSmith runs, by where they apply:
 - **Session:** `app.exit`, `session.interrupt`, `session.background`,
   `agent.cycle`, `agent.cycle.reverse`, `agent.list`, `model.list`,
   `variant.cycle`, `session.list`, `session.new`, `session.compact`,
+  `session.tab.next/previous`, `session.tab.next_unread/previous_unread`,
+  `session.tab.close`, `session.tab.reopen`, `session.tab.select.1` to
+  `.10`, `session.tab.move.left/right` (CodeSmith's),
   `session.undo`, `session.redo`, `help.show`, `theme.switch`,
   `theme.switch_mode`, `theme.mode.lock`, `session.toggle.thinking`,
   `session.toggle.tool_output` (CodeSmith's), `session.verbosity.cycle`,
@@ -158,7 +166,7 @@ The commands CodeSmith runs, by where they apply:
   `diff.toggle_view`, `diff.toggle_fullscreen`, `diff.help`, and
   `pane.focus.left/right`. See [the diff viewer](#the-diff-viewer-and-review-panel).
 
-OpenCode's other commands (session tabs, the terminal pane, …) keep their
+OpenCode's other commands (the terminal pane, tab history, …) keep their
 ids and defaults, so a shared config loads, but do nothing here. When a key is
 bound to more than one command in the same place, a command whose binding
 you configured goes first, then the order above; two configured bindings
@@ -292,9 +300,9 @@ and `opencode` is used.
 
 | Command | What it does |
 |---|---|
-| `/new` | Start a new session. |
-| `/sessions` | Pick a session in this folder to continue. |
-| `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input. See [sessions](sessions.md#forking). |
+| `/new` | Start a new session, in a tab of its own. |
+| `/sessions` | Pick a session in this folder to continue; it opens in a tab (or its tab is shown). |
+| `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input. The fork opens in a tab of its own. See [sessions](sessions.md#forking). |
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
 | `/agent [id]` | Switch agent, or pick one. |
 | `/model [provider/model]` | Switch model, or pick one. |
@@ -313,7 +321,8 @@ and `opencode` is used.
 | `/<name> [args]` | Run a [custom command](skills-and-commands.md#commands) or an [MCP prompt](mcp.md#prompts) (`/server:prompt`). |
 
 Commands that change the session wait until the current turn is finished.
-Press **Esc** first to interrupt it.
+Press **Esc** first to interrupt it. `/new` and `/sessions` do not wait
+while tabs are on: the running turn goes on in its tab.
 
 ## Shell commands
 
@@ -366,9 +375,58 @@ turn reports the finished command (or the next one does, if it is still
 running), so each result reaches the model once. The commands keep running
 when you interrupt a later turn, switch with `/agent`, `/model`, `/variant`
 or **Tab**, and across `/undo` and `/redo`; the reloaded session reports
-them. Leaving the session with `/new` or `/sessions` (for a different one)
-stops them, and so does quitting. See
-[background commands](sessions.md#background-commands).
+them. They keep running in a tab that is not shown, which resumes by itself
+when one finishes; closing the tab stops them, and so does quitting. With
+tabs off, leaving the session with `/new` or `/sessions` (for a different
+one) stops them. See [background commands](sessions.md#background-commands).
+
+## Session tabs
+
+As in OpenCode, sessions open as tabs: `/new` (**ctrl+x n**) starts one in
+a tab of its own, and a session picked in `/sessions` opens in a tab, or
+shows its tab when it is open. Every tab's session runs on its own: a turn,
+its [background commands](#background-commands) and the resumes they bring
+go on in a tab that is not shown, each tab keeps its prompt draft, scroll
+position and diff viewer, and the prompt history and display settings are
+shared.
+
+The strip along the top shows each tab's title after an indicator:
+
+| Indicator | Meaning |
+|---|---|
+| `⠋` | A turn is running. |
+| `!` | A permission request waits for you. |
+| `?` | A question waits for you. |
+| `•` | Its turn ended since you last looked (red when it failed). |
+| `+` | A new session nothing was done in yet. |
+
+`tui.tabs.indicators: "numbers"` shows each tab's number instead. A
+permission request or question from a tab that is not shown also says so
+in the shown tab (`Tab "Build" needs your permission: alt+shift+↓ goes to
+it.`), and **alt+shift+↓** goes to the next tab that is unread or waiting.
+When the tabs do not fit, the strip shows a window around the shown one,
+with `‹3` and `2›` counting the tabs hidden either side.
+
+**alt+↓**/**alt+↑** (or **ctrl+tab**, in terminals that send it) cycle the
+tabs, **ctrl+x 1** to **0** go to tab 1 to 10, and **ctrl+x shift+←/→**
+move the shown tab. **ctrl+x w** closes it, stopping its turn and its
+background commands; the tab shown before it comes back (else its right or
+left neighbour), and closing the last one leaves a new session.
+**ctrl+x shift+t** (or **ctrl+shift+t**) reopens closed tabs, newest
+first, where they were. A new
+session left with nothing done or typed in it closes by itself, as
+OpenCode's new session page does.
+
+The open tabs are kept for the next start, one set per folder
+(`tui.tabs.scope: "global"` shares one set); a kept tab loads its session
+when it is first shown, and is marked `•` when the session changed since
+you last looked at it. With `tui.tabs.layout: "vertical"`, the tabs are a
+column on the left, each with the project (and the branch, in a worktree)
+under its title, when the terminal is at least 106 columns wide and the
+diff viewer is closed; narrower, they are the strip. `tui.tabs.mode: "off"`
+turns tabs off (see [configuration](configuration.md#session-tabs-tuitabs));
+they are on by default except inside the herdr multiplexer, and mini mode
+has none. With no mouse, there are no clicks, drags or tab menus.
 
 ## Permission and question dialogs
 

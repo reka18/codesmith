@@ -15,7 +15,8 @@ codesmith run -c "and now the docs"
 ```
 
 Inside the UI, `/sessions` (or **Ctrl+X l**) opens a picker, and `/new`
-starts over. New sessions get a short generated title. `codesmith run
+starts over; each session opens in a [tab](interactive-ui.md#session-tabs)
+of its own, and the open tabs are kept for the next start. New sessions get a short generated title. `codesmith run
 --title` sets one yourself.
 
 ## Undo and redo
@@ -44,7 +45,9 @@ A fork is a new session with a copy of another's history that then goes its
 own way; the original is left as it was.
 
 - `/fork` in the UI picks where: the whole session, or before one of your
-  prompts, which comes back in the input to edit and send.
+  prompts, which comes back in the input to edit and send. The fork opens
+  in a [tab](interactive-ui.md#session-tabs) of its own (with tabs off, in
+  place of the original).
 - `codesmith session fork [ID]` forks through the latest message;
   `--before N` stops before message `N` (`codesmith session messages [ID]`
   lists them by number).
@@ -103,14 +106,19 @@ once:
 A session's commands last as long as the session, as in OpenCode: they keep
 running when a later turn is interrupted, cancelled or aborted, when you
 switch agent, mode, model or variant, and across undo and redo (they are not
-file changes), and are reported when they finish. They stop when the session
-ends: when you start or switch to another session in the UI, delete or close
-it over the server or ACP, when the program exits, and when you stop them
-explicitly (abort on an idle server session, or the server's cancel route
-for one command). Unlike OpenCode's server, the
-UI does not keep a session you left running in the background: it shows and
-wakes one session only, so nothing would report the commands of another. A
-command's output file stays, and is named in the result.
+file changes), and are reported when they finish. In the UI they keep
+running in a [tab](interactive-ui.md#session-tabs) that is not shown, whose
+session wakes up for them as the shown one does. They stop when the session
+ends: when you close its tab in the UI (or, with tabs off, start or switch
+to another session), delete or close it over the server or ACP, when the
+program exits, and when you stop them explicitly (abort on an idle server
+session, or the server's cancel route for one command). A command's output
+file stays, and is named in the result.
+
+Before tabs, switching sessions in the UI stopped the old session's
+commands, since it watched one session only. Each tab now owns its
+session's turn, commands and wake-ups, so they run on while the tab is
+open, shown or not.
 
 Over the [server](local-server.md#the-shell-daemon), commands run in its
 shell daemon, so a graceful restart

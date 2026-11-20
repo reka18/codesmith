@@ -60,6 +60,11 @@ Where the tests live:
   (`cli/tui/diff-viewer`, `diff-viewer-file-tree`, `diff-viewer-image`,
   `feature-plugins/diff-viewer-file-tree-utils`, `session-panel`, `panel`,
   and the diff settings of `config-v2`).
+- `src/tui/parity_tabs.rs`: session tabs (`context/session-tabs-model`,
+  `context/session-tabs`, `component/session-tabs-status`, the vertical
+  tabs of `app-lifecycle` and the tab settings of `config-v2`);
+  `tests/e2e/tui.rs` runs tabs in a pty (`oc_keeps_each_visited_session_open`,
+  background tabs and their permission requests).
 - `src/tui/parity_keys.rs`: key bindings and the UI's settings
   (`tui/test/config`, `config-v2`, `keymap`, `cli/tui/dialog-prompt`,
   `cli/tui/reasoning-body`, `cli/test/config`).
@@ -89,14 +94,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 257 | 343 | 624 | 13 |
+| tui: main UI | 1250 | 13 | 299 | 268 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **516** | **796** | **2324** | **259** |
+| **Total** | **4637** | **742** | **558** | **721** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -353,9 +358,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/theme/v2/select` | selects complete light and dark themes independently | after a fix | oc_selects_complete_light_and_dark_themes_independently |
 | `tui/test/theme/v2/select` | selects the available mode when the requested mode is missing | after a fix | oc_selects_the_available_mode_when_the_requested_mode_is_missing |
 | `tui/test/theme/v2/component` | provides reactive properties, states, surfaces, and color operations | after a fix | oc_provides_reactive_properties_states_surfaces_and_color_operations (adapted: no signals) |
-| `tui/test/config-v2` | resolves nested config and keybind defaults | after a fix | oc_resolves_nested_config_and_keybind_defaults (adapted: the scroll, diffs, debug, tabs and session halves are dropped) |
+| `tui/test/config-v2` | resolves nested config and keybind defaults | after a fix | oc_resolves_nested_config_and_keybind_defaults (adapted: the scroll, diffs, debug and session halves are dropped) |
 | `tui/test/config-v2` | uses command IDs as keybind keys | after a fix | oc_uses_command_ids_as_keybind_keys |
-| `tui/test/config-v2` | preserves current navigation defaults | after a fix | oc_preserves_current_navigation_defaults |
+| `tui/test/config-v2` | preserves current navigation defaults | after a fix | oc_preserves_current_navigation_defaults (adapted: ctrl+x shift+t reopens a tab too) |
 | `tui/test/config-v2` | preserves migrated v1 keybind defaults | after a fix | oc_preserves_migrated_v1_keybind_defaults |
 | `tui/test/config-v2` | accepts every v2-only named command ID | after a fix | oc_accepts_every_v2_only_named_command_id |
 | `tui/test/config-v2` | centralizes named command defaults and resolves explicit none | after a fix | oc_centralizes_named_command_defaults_and_resolves_explicit_none |
@@ -376,6 +381,47 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/config` | merges inline CLI config content over the global config | after a fix | oc_merges_inline_cli_config_content_over_the_global_config (adapted: tui in codesmith.json; the tabs, plugins and update halves are dropped) |
 | `cli/test/config` | migrates tui and kv config into cli.json | after a fix | oc_migrates_tui_and_kv_config_into_cli_json (adapted: no kv.json, no file written) |
 | `cli/test/config` | preserves legacy cursor settings | after a fix | oc_preserves_legacy_cursor_settings |
+| `tui/test/context/session-tabs-model` | appends the branch to the project detail | after a fix | oc_appends_the_branch_to_the_project_detail |
+| `tui/test/context/session-tabs-model` | labels tabs by ordinal | after a fix | oc_labels_tabs_by_ordinal |
+| `tui/test/context/session-tabs-model` | moves a tab to a clamped index and returns the same tabs for no-ops | after a fix | oc_moves_a_tab_to_a_clamped_index_and_returns_the_same_tabs_for_no_ops (adapted: a no-op returns `false`) |
+| `tui/test/context/session-tabs-model` | overflow markers reserve room for a gap beside their digits | after a fix | oc_overflow_markers_reserve_room_for_a_gap_beside_their_digits |
+| `tui/test/context/session-tabs-model` | opens each session once and refreshes its title | after a fix | oc_opens_each_session_once_and_refreshes_its_title |
+| `tui/test/context/session-tabs-model` | selects the right tab then the left tab after closing | after a fix | oc_selects_the_right_tab_then_the_left_tab_after_closing |
+| `tui/test/context/session-tabs-model` | closing an unknown session returns the same tabs reference | after a fix | oc_closing_an_unknown_session_returns_the_same_tabs_reference (adapted: it returns `false`) |
+| `tui/test/context/session-tabs-model` | closing an already removed tab picks the neighbour at its last index | after a fix | oc_closing_an_already_removed_tab_picks_the_neighbour_at_its_last_index |
+| `tui/test/context/session-tabs-model` | cycles through a filtered tab set in either direction | after a fix | oc_cycles_through_a_filtered_tab_set_in_either_direction |
+| `tui/test/context/session-tabs-model` | cycles to the nearest matching tab from an unmatched active tab | after a fix | oc_cycles_to_the_nearest_matching_tab_from_an_unmatched_active_tab |
+| `tui/test/context/session-tabs-model` | moves backward and forward through selection history | after a fix | oc_moves_backward_and_forward_through_selection_history |
+| `tui/test/context/session-tabs-model` | truncates forward history after a new selection | after a fix | oc_truncates_forward_history_after_a_new_selection |
+| `tui/test/context/session-tabs-model` | skips closed tabs and duplicate entries for the active tab | after a fix | oc_skips_closed_tabs_and_duplicate_entries_for_the_active_tab |
+| `tui/test/context/session-tabs-model` | drops the oldest history entries beyond the limit | after a fix | oc_drops_the_oldest_history_entries_beyond_the_limit |
+| `tui/test/context/session-tabs-model` | returns to the latest history entry when no tab is active | after a fix | oc_returns_to_the_latest_history_entry_when_no_tab_is_active |
+| `tui/test/context/session-tabs-model` | returns to the previous selected open tab after closing the active tab | after a fix | oc_returns_to_the_previous_selected_open_tab_after_closing_the_active_tab |
+| `tui/test/context/session-tabs-model` | reopens the most recently closed tab at its original position | after a fix | oc_reopens_the_most_recently_closed_tab_at_its_original_position |
+| `tui/test/context/session-tabs-model` | reopens a selected closed tab without consuming newer entries | after a fix | oc_reopens_a_selected_closed_tab_without_consuming_newer_entries |
+| `tui/test/context/session-tabs-model` | skips and consumes closed entries that are already open | after a fix | oc_skips_and_consumes_closed_entries_that_are_already_open |
+| `tui/test/context/session-tabs-model` | clamps restored positions and keeps one entry per session | after a fix | oc_clamps_restored_positions_and_keeps_one_entry_per_session |
+| `tui/test/context/session-tabs-model` | expands the active tab and keeps inactive widths equal | after a fix | oc_expands_the_active_tab_and_keeps_inactive_widths_equal |
+| `tui/test/context/session-tabs-model` | reserves an active tab slot for the new session page | after a fix | oc_reserves_an_active_tab_slot_for_the_new_session_page |
+| `tui/test/context/session-tabs-model` | keeps the visible tab window stable on the new session page | after a fix | oc_keeps_the_visible_tab_window_stable_on_the_new_session_page |
+| `tui/test/context/session-tabs-model` | only swaps old and new active width inside a sticky window | after a fix | oc_only_swaps_old_and_new_active_width_inside_a_sticky_window |
+| `tui/test/context/session-tabs-model` | shares roomy width equally without changing widths on selection | after a fix | oc_shares_roomy_width_equally_without_changing_widths_on_selection |
+| `tui/test/context/session-tabs-model` | caps a single tab instead of stretching it across the terminal | after a fix | oc_caps_a_single_tab_instead_of_stretching_it_across_the_terminal |
+| `tui/test/context/session-tabs-model` | fills roomy space equally below the maximum width | after a fix | oc_fills_roomy_space_equally_below_the_maximum_width |
+| `tui/test/context/session-tabs-model` | expands only the active tab under compact pressure | after a fix | oc_expands_only_the_active_tab_under_compact_pressure |
+| `tui/test/context/session-tabs-model` | moves the window only after selection crosses its edge | after a fix | oc_moves_the_window_only_after_selection_crosses_its_edge |
+| `tui/test/context/session-tabs` | loads persisted tab metadata concurrently on connect | after a fix | oc_loads_persisted_tab_metadata (adapted: the kept tab list, per folder or shared, in OpenCode's file shape) |
+| `tui/test/context/session-tabs` | keeps each visited session open | after a fix | oc_keeps_each_visited_session_open (e2e) |
+| `tui/test/context/session-tabs` | tracks a temporary new session tab across close and creation | after a fix | oc_keeps_each_visited_session_open (e2e; adapted: keys rather than routes) |
+| `tui/test/context/session-tabs` | keeps scroll anchors for open session tabs | after a fix | oc_keeps_scroll_anchors_for_open_session_tabs (adapted: each tab's app keeps its scroll and draft) |
+| `tui/test/context/session-tabs` | derives unread state from server session times | after a fix | oc_derives_unread_state_from_session_times (adapted: the store's update time against when the tab was shown); a_background_tab_keeps_its_commands_and_resumes_by_itself (e2e) |
+| `tui/test/context/session-tabs` | marks unread failed sessions with error styling | after a fix | oc_marks_unread_failed_sessions_with_error_styling |
+| `tui/test/context/session-tabs` | distinguishes family questions and permissions without clearing them on selection | after a fix | oc_distinguishes_family_questions_and_permissions_without_clearing_them_on_selection (adapted: subagents ask through their session's dialog); a_background_tabs_permission_request_is_surfaced (e2e) |
+| `tui/test/component/session-tabs-status` | ${orientation} tabs replace ordinals with status without moving titles and keep context menu actions (2 cases) | after a fix | oc_horizontal_tabs_replace_ordinals_with_status_without_moving_titles, oc_vertical_tabs_replace_ordinals_with_status_without_moving_titles (adapted: no mouse, so no context menu) |
+| `tui/test/config-v2` | validates the session tabs setting | after a fix | oc_validates_the_session_tabs_setting (adapted: the prompt and session halves are dropped) |
+| `tui/test/config-v2` | resolves automatic tabs from the terminal environment | after a fix | oc_resolves_automatic_tabs_from_the_terminal_environment |
+| `tui/test/config-v2` | shows resolved tab defaults in settings | after a fix | oc_shows_resolved_tab_defaults_in_settings (adapted: no settings dialog) |
+| `tui/test/app-lifecycle` | vertical session tabs switch to horizontal below readable content width | after a fix | oc_vertical_session_tabs_switch_to_horizontal_below_readable_content_width (adapted: frames drawn at 120 and 100 columns) |
 | `cli/test/config` | migrates legacy keybind names in an existing cli.json | after a fix | oc_migrates_legacy_keybind_names_in_an_existing_cli_json (adapted: read without rewriting) |
 | `cli/test/config` | uses migrated keybinds when persistence fails | after a fix | oc_uses_migrated_keybinds_when_persistence_fails (adapted: never persisted) |
 | `cli/test/config` | preserves the effective value when migrating duplicate legacy keybinds | after a fix | oc_preserves_the_effective_value_when_migrating_duplicate_legacy_keybinds |
@@ -469,7 +515,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/diff-viewer` | reviewing collapses a %s body and unmarking reopens it (3 cases) | after a fix | oc_reviewing_collapses_a_patch_body_and_unmarking_reopens_it, …_image_body_…, …_fallback_body_… (adapted: the image card has a note, not a preview) |
 | `tui/test/cli/tui/diff-viewer` | reviewing after scrolling targets the visible file rather than the initial file | after a fix | oc_reviewing_after_scrolling_targets_the_visible_file_rather_than_the_initial_file |
 | `tui/test/cli/tui/diff-viewer` | single-file review advances, but reopening and the last file stay put at %i columns (2 cases) | after a fix | oc_single_file_review_advances_but_reopening_and_the_last_file_stay_put_at_80_columns, …_160_columns |
-| `tui/test/cli/tui/diff-viewer` | Alt+arrows navigate files rather than session tabs (after Tab: %s) (2 cases) | after a fix | oc_alt_arrows_navigate_files_rather_than_session_tabs_after_tab_false, …_true (adapted: there are no session tabs) |
+| `tui/test/cli/tui/diff-viewer` | Alt+arrows navigate files rather than session tabs (after Tab: %s) (2 cases) | after a fix | oc_alt_arrows_navigate_files_rather_than_session_tabs_after_tab_false, …_true (adapted: with tabs on, the focused viewer keeps its keys) |
 | `tui/test/cli/tui/diff-viewer` | pads $file fallback messages inside the card without reading images (2 cases) | after a fix | oc_pads_bun_lock_fallback_messages_inside_the_card_without_reading_images, oc_pads_assets_old_png_fallback_messages_inside_the_card_without_reading_images |
 | `tui/test/cli/tui/diff-viewer` | Ctrl+D and Ctrl+U scroll the patch viewport by half a page, without closing | after a fix | oc_ctrl_d_and_ctrl_u_scroll_the_patch_viewport_by_half_a_page_without_closing |
 | `tui/test/cli/tui/diff-viewer` | Tab and file clicks never redirect scrolling keys into the tree at %i rows (2 cases) | after a fix | oc_tab_and_file_clicks_never_redirect_scrolling_keys_into_the_tree_at_20_rows, …_32_rows (adapted: no clicks) |
@@ -630,17 +676,6 @@ transport and its tool presentation.
 - `tui/test/mini/form.shared` (2): e.g. "builds every supported answer and preserves owner location"; "rejects invalid and deliberately unsupported shapes"
 - `tui/test/mini/prompt.shared` (2): e.g. "appends and shifts part ranges by the %s offset"
 - `tui/test/mini/stream` (1): e.g. "defaults status patches to running phase"; "delivers commits before ordered footer updates"
-
-### tui: session tabs (75)
-
-- `tui/test/context/session-tabs-model` (34): e.g. "appends the branch to the project detail"; "labels tabs by ordinal"
-- `tui/test/context/session-tabs` (25): e.g. "loads persisted tab metadata concurrently on connect"; "loads VCS metadata for each persisted tab location"
-- `tui/test/component/session-tabs-mouse` (4): e.g. "releasing a transcript selection over tab controls does not activate them"; "middle-click closes a session tab without selecting it"
-- `tui/test/component/session-tabs-status` (4): e.g. "${orientation} tabs replace ordinals with status without moving titles and keep context me"; "vertical running tab pulse spans the full %i-column tab"
-- `tui/test/config-v2` (3): e.g. "validates the session tabs setting"; "resolves automatic tabs from the terminal environment"
-- `tui/test/app-lifecycle` (2): e.g. "vertical session tabs switch to horizontal below readable content width"; "narrow vertical session tabs collapse to a compact rail with the terminal"
-- `tui/test/feature-plugins/home-footer` (2): e.g. "keeps failure labels readable at the minimum supported width"; "adds secondary hints as space becomes available"
-- `tui/test/component/session-tabs-rail` (1): e.g. "compact rail renders and controls session tabs"
 
 ### cli: self-update (upgrade command, update checks) (43)
 
@@ -977,6 +1012,7 @@ transport and its tool presentation.
 | codemode: strict-mode checks | by design | 6 | 3 | Boa's strict mode words frozen-write errors differently, rejects early what OpenCode accepts (`delete` of a variable, a parameter named `arguments`), and misses two read-only writes |
 | acp: child sessions | by design | 13 | 3 | subagents run inside the parent turn; subagents run inside the parent turn; no steering |
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
+| tui: session tabs: mouse, motion and server sync | by design | 33 | 7 | no mouse: clicks, middle-click closing, drags, the tab menu and its recently closed list, opening a tab in the background, the compact rail reached by narrowing the column; no motion: width seeding, the completion reveal and running pulses; one UI running its sessions in-process: no server viewed times, terminal focus or acknowledgement retries, no other UI sharing the list, no session moves or per-tab locations and branches, no queued prompt pulses, new sessions start in the UI's folder; subagents have no transcript of their own; no home page footer |
 | tui: mini themes and permission prompt | by design | 32 | 2 | mini mode draws with the full UI's themes (its tests are ported there), not a separate mini theme resolver; its permission prompt is the full UI's dialog (y, a, n, typed feedback; `always` is for the session and asks no confirmation) |
 | tui: attachments | by design | 7 | 1 | attachments are read on send by path; SVG is not media; no remote server |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |
