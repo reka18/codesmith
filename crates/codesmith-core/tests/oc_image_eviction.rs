@@ -101,3 +101,53 @@ fn oc_images_in_tool_results_are_replaced() {
     assert_eq!(media.len(), 1);
     assert_eq!(media[0].filename.as_deref(), Some("second.png"));
 }
+
+// session-model-request.test.ts: "replaces images xAI cannot decode and keeps png, jpeg and webp"
+#[test]
+fn oc_replaces_images_xai_cannot_decode_and_keeps_png_jpeg_and_webp() {
+    use codesmith_core::media::sendable_for;
+    let img = |mime: &str, name: &str| Part::Media(Media::base64(mime, "aGVsbG8=").named(name));
+    let user = vec![
+        img("image/png", "a.png"),
+        img("image/jpeg", "b.jpg"),
+        img("image/webp", "c.webp"),
+    ];
+    let mut parts = user.clone();
+    parts.push(img("image/gif", "d.gif"));
+    let messages = vec![
+        Message {
+            role: Role::User,
+            parts,
+        },
+        Message {
+            role: Role::User,
+            parts: vec![Part::ToolResult {
+                id: "call_1".into(),
+                name: "read".into(),
+                content: "Image read successfully".into(),
+                is_error: false,
+                media: vec![Media::base64("image/gif", "R0lGODlh").named("e.gif")],
+            }],
+        },
+    ];
+    let input = vec!["text".to_string(), "image".to_string()];
+    let out = sendable_for(&messages, Some(&input), true);
+    let mut want = user.clone();
+    want.push(Part::text(
+        "ERROR: Cannot read \"d.gif\" (this model does not support image/gif input). Inform the user.",
+    ));
+    assert_eq!(out[0].parts, want);
+    match &out[1].parts[0] {
+        Part::ToolResult { content, media, .. } => {
+            assert!(media.is_empty());
+            assert!(content.starts_with("Image read successfully"));
+            assert!(content.contains(
+                "ERROR: Cannot read \"e.gif\" (this model does not support image/gif input). Inform the user."
+            ));
+        }
+        other => panic!("{other:?}"),
+    }
+    // Other providers keep them.
+    assert_eq!(sendable_for(&messages, Some(&input), false), messages);
+    assert_eq!(sendable(&messages, Some(&input)), messages);
+}

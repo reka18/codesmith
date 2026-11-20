@@ -457,6 +457,16 @@ fn replace_media(
 /// 25 MiB the oldest are dropped down to 15 MiB. The stored history keeps
 /// everything, so switching to a model that can see them restores them.
 pub fn sendable(messages: &[Message], input: Option<&[String]>) -> Vec<Message> {
+    sendable_for(messages, input, false)
+}
+
+/// The image types xAI decodes; it fails a request carrying any other.
+const XAI_IMAGES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// [`sendable`] for a model on xAI (`xai`), which takes only PNG, JPEG and
+/// WebP images: others become the same note as unsupported media
+/// (OpenCode's per-provider image formats).
+pub fn sendable_for(messages: &[Message], input: Option<&[String]>, xai: bool) -> Vec<Message> {
     let has_media = messages.iter().any(|m| {
         m.parts.iter().any(|p| match p {
             Part::Media(_) => true,
@@ -467,7 +477,22 @@ pub fn sendable(messages: &[Message], input: Option<&[String]>) -> Vec<Message> 
     if !has_media {
         return messages.to_vec();
     }
-    let supported = replace_media(messages, |m| unsupported_note(m, input));
+    let supported = replace_media(messages, |m| {
+        unsupported_note(m, input).or_else(|| {
+            let mime = m.mime.to_ascii_lowercase();
+            (xai && m.kind() == MediaKind::Image && !XAI_IMAGES.contains(&mime.as_str())).then(
+                || {
+                    let what = match &m.filename {
+                        Some(n) => format!("\"{n}\""),
+                        None => "image".into(),
+                    };
+                    format!(
+                        "ERROR: Cannot read {what} (this model does not support {mime} input). Inform the user."
+                    )
+                },
+            )
+        })
+    });
     bound_images(&supported)
 }
 

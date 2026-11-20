@@ -1258,6 +1258,9 @@ Images are fitted to these limits before they reach the model:
 With `auto_resize: false`, an image that is too large is dropped with a note
 to the model instead of scaled down. See [images and
 PDFs](tools.md#images-and-pdfs) for the rest of the media behaviour.
+xAI decodes only PNG, JPEG and WebP images, so on an `xai` model (or one at
+`api.x.ai`) any other image type is replaced by a note telling the model it
+could not see it, as media the model cannot take at all is.
 
 Media in a session (attachments, images a tool read, generated images and
 videos) is kept once in the session database's blob store, outside the

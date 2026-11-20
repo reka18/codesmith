@@ -1497,7 +1497,13 @@ impl Session {
         all.extend(self.date_note.clone().map(Message::system));
         all.extend_from_slice(history);
         scope_provider_state(&mut all, crate::config::split_variant(&self.model_spec).0);
-        crate::media::sendable(&runner::model_messages(&all), self.model.input.as_deref())
+        let xai = self.model.provider_id == "xai"
+            || self.model.provider.base_url.contains("://api.x.ai/");
+        crate::media::sendable_for(
+            &runner::model_messages(&all),
+            self.model.input.as_deref(),
+            xai,
+        )
     }
 
     /// Every tool offered to the model: built-in, MCP, resource, plugin,

@@ -21,7 +21,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
-| Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
+| Model requests and transport | 68 | 21 | 0 | 1 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
 | Sessions and their store | 308 | 75 | 0 | 0 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1656** | **18** | **119** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1657** | **18** | **118** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (119 cases in 12 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (118 cases in 11 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -98,7 +98,6 @@ Missing features, by how many OpenCode test cases each would unlock (119 cases i
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
-| [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 
 ### ChatGPT Subscription Login
 
@@ -263,12 +262,6 @@ Missing features, by how many OpenCode test cases each would unlock (119 cases i
 1 cases.
 
 - `plugin/skill.test.ts`: registers built-in skills
-
-### Provider Media Capabilities
-
-1 cases.
-
-- `session-model-request.test.ts`: replaces images xAI cannot decode and keeps png, jpeg and webp
 
 ## Porting backlog
 
@@ -1456,7 +1449,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (60 of 68)</summary>
+<details><summary>Model requests and transport (61 of 68)</summary>
 
 
 **`session-checkpoint-transport.test.ts`**
@@ -1478,6 +1471,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-model-request.test.ts`**
 
+- P replaces images xAI cannot decode and keeps png, jpeg and webp — `tests/oc_image_eviction.rs::oc_replaces_images_xai_cannot_decode_and_keeps_png_jpeg_and_webp` (adapted: a replaced tool-result image's note joins the result's text)
 - P preserves images below the trigger — `tests/oc_image_eviction.rs::oc_images_below_the_trigger_are_kept`
 - P replaces oldest images until the retained payload reaches the target — `tests/oc_image_eviction.rs::oc_oldest_images_are_replaced_down_to_the_target`
 - P keeps the replaced prefix stable as new images arrive, so the prompt cache survives — `tests/oc_image_eviction.rs::oc_the_replaced_prefix_stays_stable_as_images_arrive`
