@@ -12,6 +12,12 @@
 //! `http://localhost:1456/auth/callback`); CodeSmith ships none: give its
 //! client id with `--client-id`, `settings.clientId` or
 //! `CODESMITH_DIGITALOCEAN_CLIENT_ID`.
+//!
+//! Because the redirect names `localhost`, the listener holds the port on
+//! both `127.0.0.1` and `[::1]`, and the login fails if either is taken:
+//! otherwise another local user could listen on the other one and receive
+//! the token. A post whose state is not this login's is refused and the
+//! login keeps waiting.
 
 use super::{set, Input, Route};
 use anyhow::{anyhow, Result};
@@ -145,18 +151,20 @@ async fn read(sock: &mut TcpStream) -> Option<(String, String, String)> {
 }
 
 /// What the callback page posted: the token and its lifetime, or why not.
+/// The state is checked first, so a post that is not this login's cannot
+/// end it with an error of its choosing.
 pub fn check(body: &str, state: &str) -> Result<(String, u64), String> {
     let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
     let s = |k: &str| v[k].as_str().filter(|x| !x.is_empty()).map(str::to_string);
+    if s("state").as_deref() != Some(state) {
+        return Err(INVALID_STATE.into());
+    }
     if let Some(e) = s("error_description").or_else(|| s("error")) {
         return Err(e);
     }
     let Some(access) = s("access_token") else {
         return Err("Missing access token".into());
     };
-    if s("state").as_deref() != Some(state) {
-        return Err("Invalid OAuth state".into());
-    }
     let life = s("expires_in")
         .and_then(|e| e.parse::<u64>().ok())
         .filter(|e| *e > 0)
@@ -164,16 +172,21 @@ pub fn check(body: &str, state: &str) -> Result<(String, u64), String> {
     Ok((access, life))
 }
 
+const INVALID_STATE: &str = "Invalid OAuth state";
+
+/// How long a connection may take to send its request.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A started login: open `url`, then [`finish`].
 pub struct Login {
     pub url: String,
     pub redirect: String,
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
     state: String,
 }
 
 pub async fn start(e: &Endpoints) -> Result<Login> {
-    let listener = TcpListener::bind(("127.0.0.1", e.port)).await.map_err(|err| {
+    let listeners = super::oauth::bind_localhost(e.port).await.map_err(|err| {
         if err.kind() == std::io::ErrorKind::AddrInUse {
             anyhow!(
                 "DigitalOcean login needs local port {}, but it is already in use. Stop the process using that port and try again.",
@@ -183,7 +196,7 @@ pub async fn start(e: &Endpoints) -> Result<Login> {
             anyhow::Error::from(err)
         }
     })?;
-    let port = listener.local_addr()?.port();
+    let port = listeners[0].local_addr()?.port();
     let redirect = format!("http://localhost:{port}{CALLBACK_PATH}");
     let state = super::oauth::Pkce::new().state;
     let mut url = url::Url::parse(&e.authorize)?;
@@ -196,59 +209,74 @@ pub async fn start(e: &Endpoints) -> Result<Login> {
     Ok(Login {
         url: url.to_string(),
         redirect,
-        listener,
+        listeners,
         state,
     })
 }
 
-/// Serve the callback page until it posts the token; the listener closes
-/// when this returns.
+/// Serve the callback page until it posts the token; the listeners close
+/// when this returns. Each connection is handled on its own, with a short
+/// time to send its request, so a silent one holds up nothing; a post with
+/// another state is refused and the wait goes on.
 pub async fn finish(login: Login, timeout: Duration) -> Result<Value> {
     let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let (mut sock, _) = tokio::time::timeout_at(deadline, login.listener.accept())
-            .await
-            .map_err(|_| anyhow!("timed out waiting for the browser"))??;
-        let Some((method, path, body)) = read(&mut sock).await else {
-            continue;
-        };
-        match (method.as_str(), path.as_str()) {
-            ("GET", CALLBACK_PATH) => {
-                reply(sock, 200, "text/html; charset=utf-8", &bootstrap_page()).await
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(TcpStream, Result<(String, u64), String>)>(4);
+    let mut tasks = tokio::task::JoinSet::new();
+    let (access, life, sock) = loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(anyhow!("timed out waiting for the browser"));
             }
-            ("POST", TOKEN_PATH) => {
-                return match check(&body, &login.state) {
-                    Ok((access, life)) => {
-                        reply(
-                            sock,
-                            200,
-                            "application/json",
-                            &json!({"ok": true}).to_string(),
-                        )
-                        .await;
-                        Ok(json!({
-                            "type": "oauth",
-                            "method": METHOD,
-                            "access": access,
-                            "refresh": "",
-                            "expires": super::oauth::now_ms() + life * 1000,
-                        }))
+            Some((sock, got)) = rx.recv() => match got {
+                Ok((access, life)) => break (access, life, sock),
+                Err(e) => {
+                    reply(sock, 400, "application/json", &json!({"error": e}).to_string()).await;
+                    return Err(anyhow!(e));
+                }
+            },
+            acc = super::oauth::accept_any(&login.listeners) => {
+                let Ok(mut sock) = acc else { continue };
+                let (tx, state) = (tx.clone(), login.state.clone());
+                tasks.spawn(async move {
+                    let Ok(Some((method, path, body))) =
+                        tokio::time::timeout(READ_TIMEOUT, read(&mut sock)).await
+                    else {
+                        return;
+                    };
+                    match (method.as_str(), path.as_str()) {
+                        ("GET", CALLBACK_PATH) => {
+                            reply(sock, 200, "text/html; charset=utf-8", &bootstrap_page()).await
+                        }
+                        ("POST", TOKEN_PATH) => match check(&body, &state) {
+                            Err(e) if e == INVALID_STATE => {
+                                let body = json!({"error": e}).to_string();
+                                reply(sock, 400, "application/json", &body).await
+                            }
+                            got => {
+                                let _ = tx.send((sock, got)).await;
+                            }
+                        },
+                        _ => reply(sock, 404, "text/plain", "Not found").await,
                     }
-                    Err(e) => {
-                        reply(
-                            sock,
-                            400,
-                            "application/json",
-                            &json!({"error": e}).to_string(),
-                        )
-                        .await;
-                        Err(anyhow!(e))
-                    }
-                };
+                });
             }
-            _ => reply(sock, 404, "text/plain", "Not found").await,
         }
-    }
+    };
+    tasks.abort_all();
+    reply(
+        sock,
+        200,
+        "application/json",
+        &json!({"ok": true}).to_string(),
+    )
+    .await;
+    Ok(json!({
+        "type": "oauth",
+        "method": METHOD,
+        "access": access,
+        "refresh": "",
+        "expires": super::oauth::now_ms() + life * 1000,
+    }))
 }
 
 /// The whole browser login, saved to `file`, then the account's routers

@@ -139,6 +139,37 @@ fn query(target: &str) -> Option<(String, Params)> {
     ))
 }
 
+/// Listen on loopback `port` (0 for any free port) on both `127.0.0.1` and
+/// `[::1]`, for a redirect to `http://localhost:<port>`: a browser may
+/// resolve `localhost` to either, so leaving one free would let another
+/// local user listen there and take the redirect. Fails when either is in
+/// use; a machine without IPv6 loopback gets the IPv4 listener alone (no
+/// one can listen on `[::1]` there either). A redirect to `127.0.0.1`
+/// needs only [`TcpListener::bind`] on it.
+pub async fn bind_localhost(port: u16) -> std::io::Result<Vec<TcpListener>> {
+    let mut tries = if port == 0 { 10 } else { 1 };
+    loop {
+        let v4 = TcpListener::bind(("127.0.0.1", port)).await?;
+        let got = v4.local_addr()?.port();
+        match TcpListener::bind(("::1", got)).await {
+            Ok(v6) => return Ok(vec![v4, v6]),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrNotAvailable => return Ok(vec![v4]),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && tries > 1 => {
+                tries -= 1;
+                drop(v4);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The next connection on any of `listeners`.
+pub async fn accept_any(listeners: &[TcpListener]) -> std::io::Result<TcpStream> {
+    let accepts = listeners.iter().map(|l| Box::pin(l.accept()));
+    let (got, _, _) = futures_util::future::select_all(accepts).await;
+    got.map(|(sock, _)| sock)
+}
+
 /// A loopback listener waiting for one login's redirect.
 pub struct Callback {
     listener: Option<TcpListener>,

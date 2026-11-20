@@ -3513,7 +3513,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P loads on credential changes and clears the previous account's routers — `tests/oc_provider_logins.rs::oc_digitalocean_loads_on_credential_changes_and_clears_the_previous_accounts_routers`
 - P shows a returning account's cached routers at once and refreshes them in the background — `tests/oc_provider_logins.rs::oc_digitalocean_shows_a_returning_accounts_cached_routers_at_once` (adapted: the kept list serves at once; nothing refreshes in the background)
 - P completes browser OAuth independently of router discovery and releases the listener — `tests/oc_provider_logins.rs::oc_digitalocean_completes_browser_oauth_independently_of_router_discovery_and_releases_the_listener`
-- P rejects ${fixture.name} and releases the listener ×5 — `tests/oc_provider_logins.rs::oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener`
+- P rejects ${fixture.name} and releases the listener ×5 — `tests/oc_provider_logins.rs::oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener` (adapted: a post with another state is refused with 400 and the login keeps waiting, and the state is checked before the error)
 
 **`plugin/provider-dynamic.test.ts`**
 

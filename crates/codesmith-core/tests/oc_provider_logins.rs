@@ -1012,36 +1012,88 @@ async fn oc_digitalocean_completes_browser_oauth_independently_of_router_discove
     assert_ne!(params(&again.url)["state"], state);
 }
 
+/// Adapted: OpenCode ends the login on a post with another state; here
+/// such a post is refused and the login keeps waiting (another local
+/// program could otherwise end it), and the state is checked before the
+/// error, so a post that is not this login's cannot choose its error.
 #[tokio::test]
 async fn oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener() {
     let cases = [
+        (json!({}), "Missing access token"),
         (
-            json!({"access_token": "token", "state": "wrong"}).to_string(),
-            "Invalid OAuth state",
-        ),
-        ("{}".to_string(), "Missing access token"),
-        ("not-json".to_string(), "Missing access token"),
-        (
-            json!({"error": "access_denied", "error_description": "Denied"}).to_string(),
+            json!({"error": "access_denied", "error_description": "Denied"}),
             "Denied",
         ),
         (
-            json!({"error": "access_denied", "error_description": ""}).to_string(),
+            json!({"error": "access_denied", "error_description": ""}),
             "access_denied",
         ),
     ];
-    for (body, message) in cases {
+    for (mut body, message) in cases {
         let srv = server().await;
         let e = do_endpoints(&srv);
         let login = digitalocean::start(&e).await.unwrap();
+        let state = params(&login.url)["state"].clone();
         let redirect = login.redirect.clone();
         let port = url::Url::parse(&redirect).unwrap().port().unwrap();
         let finish = tokio::spawn(digitalocean::finish(login, WAIT));
-        assert_eq!(do_post(&redirect, &body).await.0, 400, "{body}");
+        // Another state, or none, or not JSON: refused, and still waiting.
+        let wrong = [
+            json!({"access_token": "token", "state": "wrong"}).to_string(),
+            json!({"error": "access_denied", "error_description": "Forged"}).to_string(),
+            "not-json".to_string(),
+        ];
+        for w in wrong {
+            let (code, text) = do_post(&redirect, &w).await;
+            assert_eq!(code, 400, "{w}");
+            assert!(text.contains("Invalid OAuth state"), "{text}");
+        }
+        assert!(!finish.is_finished());
+        body["state"] = json!(state);
+        assert_eq!(do_post(&redirect, &body.to_string()).await.0, 400, "{body}");
         assert_eq!(finish.await.unwrap().unwrap_err().to_string(), message);
         digitalocean::start(&digitalocean::Endpoints { port, ..e })
             .await
             .unwrap();
+    }
+}
+
+/// Not in OpenCode: the redirect names `localhost`, so the listener holds
+/// the port on `[::1]` too (where IPv6 loopback exists), and a login whose
+/// port is taken there fails rather than leave the token to whoever has it.
+/// A connection that sends nothing holds up no other.
+#[tokio::test]
+async fn digitalocean_holds_both_loopbacks_and_outlasts_a_silent_connection() {
+    let srv = server().await;
+    let e = do_endpoints(&srv);
+    let v6 = std::net::TcpListener::bind("[::1]:0").ok();
+    let login = digitalocean::start(&e).await.unwrap();
+    let redirect = login.redirect.clone();
+    let state = params(&login.url)["state"].clone();
+    let port = url::Url::parse(&redirect).unwrap().port().unwrap();
+    if v6.is_some() {
+        assert!(std::net::TcpListener::bind(("::1", port)).is_err());
+    }
+    assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err());
+    let finish = tokio::spawn(digitalocean::finish(login, WAIT));
+    let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let body = json!({"access_token": "do-token", "state": state}).to_string();
+    let posted = tokio::time::timeout(Duration::from_secs(3), do_post(&redirect, &body))
+        .await
+        .expect("a silent connection held up the login");
+    assert_eq!(posted.0, 200);
+    assert_eq!(finish.await.unwrap().unwrap()["access"], "do-token");
+
+    // Someone else on [::1] at the port: the login does not start.
+    if let Some(taken) = v6 {
+        let port = taken.local_addr().unwrap().port();
+        let err = digitalocean::start(&digitalocean::Endpoints { port, ..e })
+            .await
+            .err()
+            .expect("started with [::1] taken");
+        assert!(err.to_string().contains("already in use"), "{err}");
     }
 }
 

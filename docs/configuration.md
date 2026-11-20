@@ -549,8 +549,10 @@ The login runs as an OAuth application you register with DigitalOcean
 with the callback URL `http://localhost:1456/auth/callback`; CodeSmith
 ships none of its own (nor borrows another project's). Give its client id
 with `--client-id`, `settings.clientId` on the `digitalocean` provider, or
-`CODESMITH_DIGITALOCEAN_CLIENT_ID`. The login listens on port 1456 and says
-so if another program holds it.
+`CODESMITH_DIGITALOCEAN_CLIENT_ID`. The login listens on port 1456 on both
+`127.0.0.1` and `[::1]` (a browser may take `localhost` to either) and
+says so if another program holds it on either. A token post whose state
+is not this login's is refused and the login keeps waiting.
 
 ### GitLab sign-in
 
