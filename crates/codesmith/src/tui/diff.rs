@@ -73,10 +73,25 @@ pub fn diff(old: &str, new: &str, first: usize) -> Diff {
     out
 }
 
+/// The largest file a preview reads.
+const PREVIEW_MAX: usize = codesmith_core::tool::apply_patch::PREVIEW_MAX;
+
+/// A file's text for a preview. This runs before the call is authorized:
+/// only a bounded regular file inside the working directory is read, never
+/// what a symlink or `..` leads to outside it.
+fn current(path: &Path, cwd: &Path) -> codesmith_core::tool::Peek {
+    use codesmith_core::tool::{normalize, peek_text, real_path, Peek};
+    if real_path(&normalize(path)).starts_with(real_path(cwd)) {
+        peek_text(path, PREVIEW_MAX)
+    } else {
+        Peek::Skipped
+    }
+}
+
 /// What a `patch` call is about to do: each hunk's diff under its file.
 fn for_patch(text: &str, cwd: &Path) -> Option<Diff> {
     let mut out = Diff::default();
-    for p in codesmith_core::tool::apply_patch::preview(cwd, text) {
+    for p in codesmith_core::tool::apply_patch::preview_with(cwd, text, |p| current(p, cwd)) {
         let status = match (&p.old, &p.new) {
             (None, _) => 'A',
             (_, None) => 'D',
@@ -113,10 +128,13 @@ pub fn for_tool(name: &str, input: &Value, cwd: &Path) -> Option<Diff> {
         "edit" => {
             let (old, new) = (s("oldString")?, s("newString")?);
             // Number lines from where the text sits in the file, when found.
-            let first = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|src| src.find(old).map(|i| src[..i].matches('\n').count() + 1))
-                .unwrap_or(1);
+            let first = match current(&path, cwd) {
+                codesmith_core::tool::Peek::Text(src) => {
+                    src.find(old).map(|i| src[..i].matches('\n').count() + 1)
+                }
+                _ => None,
+            }
+            .unwrap_or(1);
             let mut old = old.to_string();
             let mut new = new.to_string();
             if !old.ends_with('\n') {
@@ -128,7 +146,11 @@ pub fn for_tool(name: &str, input: &Value, cwd: &Path) -> Option<Diff> {
             Some(diff(&old, &new, first))
         }
         "write" => {
-            let before = std::fs::read_to_string(&path).unwrap_or_default();
+            let before = match current(&path, cwd) {
+                codesmith_core::tool::Peek::Text(t) => t,
+                codesmith_core::tool::Peek::Missing => String::new(),
+                codesmith_core::tool::Peek::Skipped => return None,
+            };
             Some(diff(&before, s("content")?, 1))
         }
         _ => None,
@@ -139,6 +161,36 @@ pub fn for_tool(name: &str, input: &Value, cwd: &Path) -> Option<Diff> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // The preview runs before the call is allowed: it reads nothing a
+    // symlink leads to outside the working directory, and no FIFO.
+    #[test]
+    fn previews_read_only_files_inside_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, "a\nb\nSECRET\n").unwrap();
+        std::os::unix::fs::symlink(&secret, cwd.join("link")).unwrap();
+        let write = json!({"path": "link", "content": "x\n"});
+        assert!(for_tool("write", &write, &cwd).is_none());
+        let edit = json!({"path": "link", "oldString": "SECRET", "newString": "y"});
+        let d = for_tool("edit", &edit, &cwd).unwrap();
+        // Read, the text would be numbered from line 3.
+        assert!(d.lines.iter().all(|l| l.line == 1));
+        let patch = json!({"patchText": "*** Begin Patch\n*** Update File: link\n@@\n-SECRET\n+y\n*** End Patch"});
+        assert!(for_tool("patch", &patch, &cwd).is_none());
+        let fifo = cwd.join("pipe");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(for_tool("write", &json!({"path": "pipe", "content": "x"}), &cwd).is_none());
+        std::fs::write(cwd.join("f"), "old\n").unwrap();
+        let d = for_tool("write", &json!({"path": "f", "content": "new\n"}), &cwd).unwrap();
+        assert!(d.lines.iter().any(|l| l.text == "old"));
+    }
 
     fn kinds(d: &Diff) -> Vec<(Kind, usize, &str)> {
         d.lines

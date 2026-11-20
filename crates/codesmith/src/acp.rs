@@ -17,6 +17,7 @@ use codesmith_core::session::{Options, Session, Sink};
 use codesmith_core::store::{self, Record, Store};
 use codesmith_core::tool::shell::Jobs;
 use codesmith_core::tool::todo::{Status, Todo};
+use codesmith_core::tool::{peek_text, Peek};
 use codesmith_core::{agent, command, config};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -170,26 +171,6 @@ fn patch_files(cwd: &Path, input: &Value) -> Vec<(PathBuf, PathBuf)> {
     codesmith_core::tool::apply_patch::touched(cwd, input["patchText"].as_str().unwrap_or_default())
 }
 
-/// The files a call is about to change, each with its text now, so the
-/// change can be shown when it ends.
-fn files_before(cwd: &Path, name: &str, input: &Value) -> Vec<Before> {
-    let files = match base_name(name) {
-        "edit" | "write" => file_path(input)
-            .map(|p| absolute(cwd, p))
-            .map(|p| vec![(p.clone(), p)])
-            .unwrap_or_default(),
-        "patch" => patch_files(cwd, input),
-        _ => vec![],
-    };
-    files
-        .into_iter()
-        .map(|(path, source)| {
-            let old = std::fs::read_to_string(&source).ok();
-            (path, old)
-        })
-        .collect()
-}
-
 /// OpenCode's `toLocations`.
 fn locations(cwd: &Path, name: &str, input: &Value) -> Value {
     let path = match base_name(name) {
@@ -303,8 +284,12 @@ fn result_update(
     }
 }
 
+/// The largest file a diff reads.
+const PREVIEW_MAX: usize = codesmith_core::tool::apply_patch::PREVIEW_MAX;
+
 /// What an edit, write or patch would change, shown with its permission
-/// request: a diff per file (per hunk, for a patch).
+/// request for the call's own action (so any `external_directory` approval
+/// the paths need was given): a diff per file (per hunk, for a patch).
 fn previews(cwd: &Path, name: &str, input: &Value) -> Vec<Value> {
     if base_name(name) == "patch" {
         let text = input["patchText"].as_str().unwrap_or_default();
@@ -317,9 +302,14 @@ fn previews(cwd: &Path, name: &str, input: &Value) -> Vec<Value> {
 }
 
 /// What an edit or write would change.
+/// Only a regular file of a bounded size is read.
 fn preview(cwd: &Path, name: &str, input: &Value) -> Option<Value> {
     let path = absolute(cwd, file_path(input)?);
-    let old = std::fs::read_to_string(&path).ok();
+    let old = match peek_text(&path, PREVIEW_MAX) {
+        Peek::Missing => None,
+        Peek::Text(t) => Some(t),
+        Peek::Skipped => return None,
+    };
     let new = match base_name(name) {
         "write" => input["content"].as_str()?.to_string(),
         "edit" => {
@@ -772,9 +762,11 @@ impl Sink for AcpSink {
             name
         };
         let shown = self.client_id(id);
-        let before = files_before(&self.cwd, name, input);
+        // The text before a change comes from the engine once the call is
+        // allowed (`tool_change`): reading the model's paths here would
+        // read them before any permission check.
         self.tools
-            .insert(self.key(id), (name.into(), input.clone(), before));
+            .insert(self.key(id), (name.into(), input.clone(), vec![]));
         *self.current.lock().unwrap() = Some(Call {
             id: shown.clone(),
             name: name.to_string(),
@@ -791,6 +783,13 @@ impl Sink for AcpSink {
         running["sessionUpdate"] = json!("tool_call_update");
         running.as_object_mut().unwrap().remove("name");
         self.emit(running);
+    }
+    fn tool_change(&mut self, id: &str, path: &Path, before: Option<&str>) {
+        let key = self.key(id);
+        if let Some(call) = self.tools.get_mut(&key) {
+            call.2
+                .push((path.to_path_buf(), before.map(str::to_string)));
+        }
     }
     fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
         // Within a subagent, the call that started it is running again.
@@ -809,11 +808,11 @@ impl Sink for AcpSink {
         // A patch that failed midway changed the files it wrote first.
         if !is_error || base_name(&name) == "patch" {
             for (path, old) in before {
-                let new = match std::fs::read_to_string(&path) {
-                    Ok(new) => new,
+                let new = match peek_text(&path, PREVIEW_MAX) {
+                    Peek::Text(new) => new,
                     // Deleted (or moved away) by a patch.
-                    Err(_) if old.is_some() && !path.exists() => String::new(),
-                    Err(_) => continue,
+                    Peek::Missing if old.is_some() => String::new(),
+                    _ => continue,
                 };
                 if old.as_deref() != Some(new.as_str()) {
                     update["content"]
@@ -4604,15 +4603,6 @@ mod tests {
         assert_eq!(
             permission_title("patch", &input).as_deref(),
             Some("b.txt, new.txt, gone.txt")
-        );
-        let before = files_before(cwd, "patch", &input);
-        assert_eq!(
-            before,
-            vec![
-                (cwd.join("b.txt"), Some("one\n".to_string())),
-                (cwd.join("new.txt"), None),
-                (cwd.join("gone.txt"), Some("bye\n".to_string())),
-            ]
         );
     }
 

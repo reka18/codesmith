@@ -79,6 +79,10 @@ pub(crate) struct Disk;
 
 impl Files for Disk {
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        // A FIFO or device would block or never end; only files are patched.
+        if std::fs::metadata(path).is_ok_and(|m| !m.is_file() && !m.is_dir()) {
+            return Err(io::Error::other("not a regular file"));
+        }
         std::fs::read(path)
     }
     fn write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
@@ -305,6 +309,15 @@ pub(crate) fn run_with(ctx: &Ctx, input: &Value, files: &dyn Files) -> Outcome {
     if !early {
         ctx.ask(request)?;
     }
+    // Allowed: report each file's text before, read now, for the record.
+    let mut reported: Vec<&Path> = Vec::new();
+    for (target, move_target) in &targets {
+        let dest = move_target.as_ref().unwrap_or(target);
+        if !reported.contains(&dest.absolute.as_path()) {
+            reported.push(&dest.absolute);
+            ctx.changing_moved(&dest.absolute, &target.absolute);
+        }
+    }
 
     // Write the hunks in order; a failure names what was already done.
     let mut completed: Vec<String> = Vec::new();
@@ -453,22 +466,35 @@ pub struct Preview {
 /// What each hunk of a `patch` call would change, applied in order to the
 /// files as they are now, without asking or writing. Hunks that would not
 /// apply are left out.
+/// Files are read with [`super::peek_text`]: only bounded regular files.
 pub fn preview(cwd: &Path, patch_text: &str) -> Vec<Preview> {
+    preview_with(cwd, patch_text, |p| super::peek_text(p, PREVIEW_MAX))
+}
+
+/// The largest file [`preview`] reads.
+pub const PREVIEW_MAX: usize = 1024 * 1024;
+
+/// [`preview`] reading the files as `read` does; hunks on a file it skips
+/// are left out.
+pub fn preview_with(
+    cwd: &Path,
+    patch_text: &str,
+    read: impl Fn(&Path) -> super::Peek,
+) -> Vec<Preview> {
     let Ok(hunks) = format::parse(patch_text) else {
         return vec![];
     };
     let mut state: Vec<(PathBuf, Option<String>)> = Vec::new();
-    let current = |state: &[(PathBuf, Option<String>)], p: &Path| {
-        state
-            .iter()
-            .find(|(q, _)| q == p)
-            .map(|(_, c)| c.clone())
-            .unwrap_or_else(|| {
-                std::fs::read(p)
-                    .ok()
-                    .map(|b| String::from_utf8_lossy(&b).into_owned())
-            })
-    };
+    // `None`: the file could not be read.
+    let current =
+        |state: &[(PathBuf, Option<String>)], p: &Path| match state.iter().find(|(q, _)| q == p) {
+            Some((_, c)) => Some(c.clone()),
+            None => match read(p) {
+                super::Peek::Missing => Some(None),
+                super::Peek::Text(t) => Some(Some(t)),
+                super::Peek::Skipped => None,
+            },
+        };
     let set = |state: &mut Vec<(PathBuf, Option<String>)>, p: &Path, c: Option<String>| match state
         .iter_mut()
         .find(|(q, _)| q == p)
@@ -479,7 +505,9 @@ pub fn preview(cwd: &Path, patch_text: &str) -> Vec<Preview> {
     let mut out = Vec::new();
     for hunk in &hunks {
         let path = lexical(cwd, hunk.path());
-        let old = current(&state, &path);
+        let Some(old) = current(&state, &path) else {
+            continue;
+        };
         match hunk {
             Hunk::Add { contents, .. } => {
                 let new = if contents.is_empty() || contents.ends_with('\n') {

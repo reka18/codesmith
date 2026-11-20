@@ -1761,3 +1761,64 @@ async fn previews_each_hunk_in_order() {
     );
     assert!(preview(&env.root(), "not a patch").is_empty());
 }
+
+// ---- CodeSmith's own ----
+
+/// The changes a patch call reports, in order.
+fn reported(ctx: &mut Ctx, text: &str) -> (Outcome, Vec<super::super::Before>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    ctx.progress = Some(tx);
+    let out = run(ctx, &json!({"patchText": text}));
+    let mut seen = Vec::new();
+    while let Ok(p) = rx.try_recv() {
+        if let super::super::Progress::Change(b) = p {
+            seen.push(b);
+        }
+    }
+    (out, seen)
+}
+
+// The text before a change is read only once the patch is allowed, as the
+// file a moved one comes from, and a FIFO is never opened.
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_the_text_before_only_once_allowed() {
+    let text = "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-one\n+two\n*** Add File: new.txt\n+hi\n*** End Patch";
+    let env = Env::with_reply(Reply::Reject(None));
+    env.write("a.txt", "one\n");
+    let (out, seen) = reported(&mut env.ctx(), text);
+    assert!(out.is_err());
+    assert!(seen.is_empty(), "{seen:?}");
+
+    let env = Env::new();
+    env.write("a.txt", "one\n");
+    let (out, seen) = reported(&mut env.ctx(), text);
+    out.unwrap();
+    let root = env.root();
+    assert_eq!(
+        seen,
+        vec![
+            super::super::Before {
+                path: root.join("b.txt"),
+                text: Some("one\n".into())
+            },
+            super::super::Before {
+                path: root.join("new.txt"),
+                text: None
+            },
+        ]
+    );
+
+    #[cfg(unix)]
+    {
+        assert!(std::process::Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .unwrap()
+            .success());
+        let fifo = "*** Begin Patch\n*** Update File: pipe\n@@\n-x\n+y\n*** End Patch";
+        let (out, seen) = reported(&mut env.ctx(), fifo);
+        assert!(out.unwrap_err().contains("not a regular file"));
+        assert!(seen.is_empty());
+        assert!(preview(&root, fifo).is_empty());
+    }
+}

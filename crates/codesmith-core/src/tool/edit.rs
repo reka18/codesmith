@@ -447,6 +447,10 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     if target.absolute.is_dir() {
         return Err(format!("Path is a directory, not a file: {path}"));
     }
+    // A FIFO or device would block or never end; only files are edited.
+    if std::fs::metadata(&target.absolute).is_ok_and(|m| !m.is_file()) {
+        return Err(format!("Unable to edit {path}: not a regular file"));
+    }
     let bytes = match std::fs::read(&target.absolute) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -502,6 +506,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     } else {
         text.to_string()
     };
+    ctx.changing_from(&target.absolute, &decoded);
     std::fs::write(&target.absolute, &written)
         .map_err(|e| format!("Unable to edit {path}: {e}"))?;
     let note = ctx.format(&target.absolute, &written);
@@ -667,6 +672,24 @@ mod tests {
     #[test]
     fn no_hint_for_unrelated_text() {
         assert_eq!(miss_hint("alpha\nbeta\n", "gamma delta", "x"), None);
+    }
+
+    // A FIFO would block the read until something writes to it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refuses_what_is_not_a_regular_file() {
+        let env = Env::new();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(env.root().join("pipe"))
+            .status()
+            .unwrap()
+            .success());
+        let e = run(
+            &env.ctx(),
+            &json!({"path": "pipe", "oldString": "a", "newString": "b"}),
+        )
+        .unwrap_err();
+        assert_eq!(e, "Unable to edit pipe: not a regular file");
     }
 
     #[tokio::test(flavor = "multi_thread")]

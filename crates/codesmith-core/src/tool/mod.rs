@@ -35,6 +35,10 @@ pub enum Progress {
     Metadata(Value),
     /// Output a foreground command printed since the last report.
     Output(String),
+    /// A file an `edit`, `write` or `patch` call is about to change, with
+    /// its text now: sent once the change is allowed, just before writing,
+    /// so the session can record the change (see [`Ctx::changing`]).
+    Change(Before),
 }
 
 /// Where a call sends its [`Progress`].
@@ -64,6 +68,38 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// Report that `path` is about to change, with its text now when it is
+    /// a regular file small enough for a change record (nothing when it is
+    /// not). Call only once the change is allowed: it reads the file.
+    pub fn changing(&self, path: &Path) {
+        self.changing_moved(path, path);
+    }
+
+    /// [`Ctx::changing`] for a file moved to `path` from `source`: its text
+    /// before is the source's.
+    pub fn changing_moved(&self, path: &Path, source: &Path) {
+        let Some(p) = &self.progress else { return };
+        let text = match peek_text(source, crate::store::CHANGE_MAX) {
+            Peek::Missing => None,
+            Peek::Text(t) => Some(t),
+            Peek::Skipped => return,
+        };
+        let _ = p.send(Progress::Change(Before {
+            path: path.to_path_buf(),
+            text,
+        }));
+    }
+
+    /// [`Ctx::changing`] with the text already read (and checked).
+    pub fn changing_from(&self, path: &Path, text: &str) {
+        if let (Some(p), true) = (&self.progress, text.len() <= crate::store::CHANGE_MAX) {
+            let _ = p.send(Progress::Change(Before {
+                path: path.to_path_buf(),
+                text: Some(text.to_string()),
+            }));
+        }
+    }
+
     /// Run the formatter on a file just written. Returns a note for the
     /// model when the file changed, so it re-reads before editing again.
     pub fn format(&self, path: &std::path::Path, written: &str) -> String {
@@ -113,6 +149,13 @@ pub struct Output {
     pub media: Vec<codesmith_ai::Media>,
 }
 
+/// A file's text before a call changes it (`text: None`: it was new).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Before {
+    pub path: PathBuf,
+    pub text: Option<String>,
+}
+
 impl Output {
     pub fn text(s: impl Into<String>) -> Self {
         Output {
@@ -136,6 +179,50 @@ impl Output {
             media,
         }
     }
+}
+
+/// What [`peek_text`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Peek {
+    /// Nothing is there.
+    Missing,
+    /// A regular file of UTF-8 text.
+    Text(String),
+    /// Something that is not read: not a regular file (a FIFO, a device,
+    /// a directory), larger than the cap, not UTF-8, or unreadable.
+    Skipped,
+}
+
+/// The text of the regular file at `path` when it holds at most `cap`
+/// bytes. Never blocks on a FIFO or device and never reads more than
+/// `cap + 1` bytes, so it is safe on any path a model names.
+pub fn peek_text(path: &Path, cap: usize) -> Peek {
+    use std::io::Read;
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Peek::Missing,
+        Err(_) => return Peek::Skipped,
+        Ok(m) if !m.is_file() || m.len() > cap as u64 => return Peek::Skipped,
+        Ok(_) => {}
+    }
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    // Opening a FIFO swapped in after the check must not wait for a writer.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NONBLOCK);
+    }
+    let Ok(file) = open.open(path) else {
+        return Peek::Skipped;
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Peek::Skipped;
+    }
+    let mut bytes = Vec::new();
+    if file.take(cap as u64 + 1).read_to_end(&mut bytes).is_err() || bytes.len() > cap {
+        return Peek::Skipped;
+    }
+    String::from_utf8(bytes).map_or(Peek::Skipped, Peek::Text)
 }
 
 /// A finished tool call: its text, whether it failed, and any media.
@@ -944,6 +1031,30 @@ mod tests {
     use super::testing::Env;
     use super::*;
     use serde_json::json;
+
+    // Only a bounded regular file is read: a FIFO or a device is skipped
+    // without blocking or reading without end.
+    #[cfg(unix)]
+    #[test]
+    fn peek_reads_only_bounded_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        std::fs::write(&f, "hello").unwrap();
+        assert_eq!(peek_text(&f, 5), Peek::Text("hello".into()));
+        assert_eq!(peek_text(&f, 4), Peek::Skipped);
+        assert_eq!(peek_text(&dir.path().join("none"), 5), Peek::Missing);
+        assert_eq!(peek_text(dir.path(), 5), Peek::Skipped);
+        let fifo = dir.path().join("pipe");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(peek_text(&fifo, 5), Peek::Skipped);
+        assert_eq!(peek_text(Path::new("/dev/zero"), 5), Peek::Skipped);
+        std::fs::write(&f, [0xff, 0xfe]).unwrap();
+        assert_eq!(peek_text(&f, 5), Peek::Skipped);
+    }
 
     #[test]
     fn names_and_actions() {

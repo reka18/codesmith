@@ -36,7 +36,7 @@ use anyhow::{anyhow, Result};
 use codesmith_ai::{Event, FinishReason, Message, Part, Request, Role, Usage};
 use futures_util::StreamExt;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -60,6 +60,10 @@ pub trait Sink: Send {
     fn tool_input_end(&mut self, _id: &str, _call: Option<&str>) {}
     fn tool_start(&mut self, _id: &str, _name: &str, _input: &serde_json::Value) {}
     fn tool_end(&mut self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
+    /// A built-in `edit`, `write` or `patch` call `id` changed `path`;
+    /// `before` is its text before (`None`: it was new), read once the
+    /// change was allowed. Sent before `tool_end`, after a failed patch too.
+    fn tool_change(&mut self, _id: &str, _path: &Path, _before: Option<&str>) {}
     /// Images and PDFs a call returned, sent just before its `tool_end`.
     fn tool_media(&mut self, _id: &str, _media: &[codesmith_ai::Media]) {}
     /// A running call's metadata (OpenCode's tool progress), such as the
@@ -110,6 +114,7 @@ fn forward_progress(sink: &mut dyn Sink, id: &str, p: tool::Progress) {
     match p {
         tool::Progress::Metadata(m) => sink.tool_progress(id, &m),
         tool::Progress::Output(o) => sink.tool_output(id, &o),
+        tool::Progress::Change(_) => {}
     }
 }
 
@@ -148,6 +153,9 @@ impl Sink for ChildSink<'_> {
     }
     fn tool_media(&mut self, id: &str, media: &[codesmith_ai::Media]) {
         self.parent.tool_media(id, media);
+    }
+    fn tool_change(&mut self, id: &str, path: &Path, before: Option<&str>) {
+        self.parent.tool_change(id, path, before);
     }
     fn tool_progress(&mut self, id: &str, metadata: &serde_json::Value) {
         self.parent.tool_progress(id, metadata);
@@ -1211,7 +1219,8 @@ impl Session {
                     break;
                 }
                 self.turn.declined.store(false, Ordering::SeqCst);
-                let before = self.file_before(&name, &input);
+                // What the call reports it is about to change, once allowed.
+                let mut before: Vec<tool::Before> = Vec::new();
                 let mut media = Vec::new();
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
@@ -1266,11 +1275,17 @@ impl Session {
                             let r = loop {
                                 tokio::select! {
                                     r = &mut run => break r,
-                                    Some(p) = updates.recv() => forward_progress(sink, &id, p),
+                                    Some(p) = updates.recv() => match p {
+                                        tool::Progress::Change(b) => before.push(b),
+                                        p => forward_progress(sink, &id, p),
+                                    },
                                 }
                             };
                             while let Ok(p) = updates.try_recv() {
-                                forward_progress(sink, &id, p);
+                                match p {
+                                    tool::Progress::Change(b) => before.push(b),
+                                    p => forward_progress(sink, &id, p),
+                                }
                             }
                             r
                         };
@@ -1300,8 +1315,12 @@ impl Session {
                 }
                 // A patch that failed midway changed the files it wrote first.
                 if !is_error || name == Tool::Patch.name() {
-                    for (path, old) in before {
-                        if let Err(e) = self.record_change(&id, path, old) {
+                    for b in before {
+                        sink.tool_change(&id, &b.path, b.text.as_deref());
+                        if self.store.is_none() {
+                            continue;
+                        }
+                        if let Err(e) = self.record_change(&id, b.path, b.text) {
                             failure = Some(e);
                         }
                     }
@@ -2416,48 +2435,14 @@ impl Session {
         Ok(())
     }
 
-    /// The files a built-in edit, write or patch call is about to change,
-    /// each with its text (`None`: it does not exist yet), so the changes
-    /// can be recorded. A patch's moved file is listed at its destination
-    /// with its source's text.
-    fn file_before(&self, name: &str, input: &serde_json::Value) -> Vec<(PathBuf, Option<String>)> {
-        if self.store.is_none() {
-            return vec![];
-        }
-        let files: Vec<(PathBuf, PathBuf)> = match Tool::from_name(name) {
-            Some(Tool::Edit | Tool::Write) => {
-                let Some(p) = input["path"].as_str().or(input["filePath"].as_str()) else {
-                    return vec![];
-                };
-                let path = tool::normalize(&self.cwd.join(p));
-                vec![(path.clone(), path)]
-            }
-            Some(Tool::Patch) => tool::apply_patch::touched(
-                &self.cwd,
-                input["patchText"].as_str().unwrap_or_default(),
-            ),
-            _ => return vec![],
-        };
-        files
-            .into_iter()
-            .filter_map(|(path, source)| {
-                let old = std::fs::read_to_string(&source).ok();
-                if old.as_ref().is_some_and(|o| o.len() > store::CHANGE_MAX) {
-                    return None;
-                }
-                Some((path, old))
-            })
-            .collect()
-    }
-
     /// Record what call `id` changed in `path`, when the change is small
     /// enough to keep. A file that existed and is gone was deleted: its new
     /// text is empty.
     fn record_change(&mut self, id: &str, path: PathBuf, old: Option<String>) -> Result<()> {
-        let new = match std::fs::read_to_string(&path) {
-            Ok(new) => new,
-            Err(_) if old.is_some() && !path.exists() => String::new(),
-            Err(_) => return Ok(()),
+        let new = match tool::peek_text(&path, store::CHANGE_MAX) {
+            tool::Peek::Text(new) => new,
+            tool::Peek::Missing if old.is_some() => String::new(),
+            _ => return Ok(()),
         };
         let size = new.len() + old.as_ref().map_or(0, String::len);
         if old.as_deref() == Some(new.as_str()) || size > store::CHANGE_MAX {

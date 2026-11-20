@@ -38,6 +38,8 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
             target.resource
         ),
     })?;
+    // Read only now that the change is allowed.
+    ctx.changing(&target.absolute);
     if let Some(parent) = target.absolute.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Unable to write {path}: {e}"))?;
     }
