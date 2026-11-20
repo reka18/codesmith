@@ -58,7 +58,7 @@ permission and question ids are random.
 | `POST /sessions {agent?, model?}` | Create a session. |
 | `GET /sessions/{id}` | Session info, `messages`, and `seqs`: each message's number. |
 | `DELETE /sessions/{id}` | Delete a session. |
-| `PATCH /sessions/{id} {archived?, viewed?}` | Archive the session (`true`) or bring it back (`false`) ([archiving](sessions.md#archiving)); `viewed` is the `read.idle` time a viewer saw ([read state](#read-state)). |
+| `PATCH /sessions/{id} {archived?, viewed?, permissions?}` | Archive the session (`true`) or bring it back (`false`) ([archiving](sessions.md#archiving)); `viewed` is the `read.idle` time a viewer saw ([read state](#read-state)); `permissions` replaces the session's own [permission rules](permissions.md#session-rules). |
 | `POST /sessions/{id}/messages {text, attachments?}` | Run a turn. The response streams Server-Sent Events. |
 | `GET /sessions/{id}/events` | Follow the session: every turn's events from now on, as Server-Sent Events, including the turns the server starts itself ([background commands](#background-commands)). |
 | `POST /sessions/{id}/abort` | Stop the running turn, or the session's background commands when it is idle ([details](#aborting)). |

@@ -369,6 +369,11 @@ impl Gate {
         self.saved = saved;
     }
 
+    /// Replace the configured rules; saved approvals and the asker stay.
+    pub fn set_rules(&mut self, rules: Vec<Rule>) {
+        self.rules = rules;
+    }
+
     /// Replace who answers permission requests (rules and "always" answers stay).
     pub fn set_asker(&mut self, asker: Arc<dyn Asker>) {
         self.asker = asker;

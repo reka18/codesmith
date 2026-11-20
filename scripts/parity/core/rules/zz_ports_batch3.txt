@@ -22,3 +22,5 @@
 118 :: ported :: tests/oc_session_view.rs::oc_session_view_keeps_a_newer_completion_unread_when_the_viewed_watermark_is_stale
 150 :: ported :: tests/oc_session_view.rs::oc_session_view_rejects_an_unknown_session
 158 :: ported :: tests/oc_session_view.rs::oc_session_view_keeps_viewed_state_when_the_store_is_reopened :: adapted: no event replay; reopening the store keeps it
+@session-create.test.ts
+477 :: ported :: tests/oc_session_permissions.rs::oc_session_stores_permission_rules_inherits_them_through_children_and_forks_and_replaces_them :: adapted: kept as session meta; the rules only restrict

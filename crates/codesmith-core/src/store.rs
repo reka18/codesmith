@@ -147,6 +147,10 @@ pub const IDLE_META: &str = "idle";
 pub const VIEWED_META: &str = "viewed";
 pub const OUTCOME_META: &str = "outcome";
 
+/// Session meta key: the session's own permission rules (JSON), which a
+/// child starts with and a fork copies (see [`Store::set_permissions`]).
+pub const PERMISSIONS_META: &str = "permissions";
+
 /// How a session's last turn ended, and whether anyone has seen it since
 /// (see [`Store::view`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -981,17 +985,22 @@ impl Store {
         {
             let conn = self.conn.lock().unwrap();
             conn.execute_batch(META_TABLE)?;
-            // The parent's billing split, origin and archiving are not the fork's.
+            // The parent's billing split, origin, archiving and read state
+            // are not the fork's.
             conn.execute(
                 "INSERT INTO session_meta (session_id, key, value)
                  SELECT ?2, key, value FROM session_meta
-                 WHERE session_id = ?1 AND key NOT IN ('unbilled_usage', ?3, ?4, ?5)",
+                 WHERE session_id = ?1
+                   AND key NOT IN ('unbilled_usage', ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     from,
                     to,
                     crate::fork::ORIGIN_META,
                     crate::fork::NOTICE_META,
-                    ARCHIVED_META
+                    ARCHIVED_META,
+                    IDLE_META,
+                    VIEWED_META,
+                    OUTCOME_META
                 ],
             )?;
         }
@@ -1027,6 +1036,24 @@ impl Store {
             return Err(NotFound { session: id.into() }.into());
         }
         self.set_meta(id, ARCHIVED_META, None)
+    }
+
+    /// Replace session `id`'s own permission rules (OpenCode's
+    /// `Session.setPermissions`); an open session takes them when it is
+    /// next opened. Fails with [`NotFound`].
+    pub fn set_permissions(&self, id: &str, rules: &[crate::permission::Rule]) -> Result<()> {
+        if self.get(id)?.is_none() {
+            return Err(NotFound { session: id.into() }.into());
+        }
+        self.set_meta(id, PERMISSIONS_META, Some(&serde_json::to_string(rules)?))
+    }
+
+    /// Session `id`'s own permission rules, if it has any.
+    pub fn permissions(&self, id: &str) -> Result<Option<Vec<crate::permission::Rule>>> {
+        Ok(match self.meta(id, PERMISSIONS_META)? {
+            Some(v) => Some(serde_json::from_str(&v)?),
+            None => None,
+        })
     }
 
     /// Record that session `id`'s turn ended with `outcome` (`succeeded`,

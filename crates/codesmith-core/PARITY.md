@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 71 | 0 | 4 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 72 | 0 | 3 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1652** | **18** | **123** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1653** | **18** | **122** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (123 cases in 16 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (122 cases in 15 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -98,7 +98,6 @@ Missing features, by how many OpenCode test cases each would unlock (123 cases i
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
-| [Per-session Permission Rules](#per-session-permission-rules) | 1 | stored per-session rules inherited by children and forks |
 | [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
@@ -267,12 +266,6 @@ Missing features, by how many OpenCode test cases each would unlock (123 cases i
 1 cases.
 
 - `plugin/skill.test.ts`: registers built-in skills
-
-### Per-session Permission Rules
-
-1 cases.
-
-- `session-create.test.ts`: stores permission rules, inherits them through children and forks, and replaces them
 
 ### Session Subpath Filter
 
@@ -1547,7 +1540,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (250 of 308)</summary>
+<details><summary>Sessions and their store (251 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1588,6 +1581,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D preserves the project canonical directory when creating a session in another clone · repeat Session.create on the same location spawns no git · follows the directory's project identity established after creation · does not adopt nested repositories or sessions in another workspace — client-server: project identity across clones/workspaces
 - D stores supplied immutable create attributes · stores creation metadata and inherits it through children and forks — storage-model: immutable create attributes and creation metadata
+- P stores permission rules, inherits them through children and forks, and replaces them — `tests/oc_session_permissions.rs::oc_session_stores_permission_rules_inherits_them_through_children_and_forks_and_replaces_them` (adapted: kept as session meta; the rules only restrict)
 - P forks a session by replaying a durable fork event into copied projected rows — `tests/oc_session_fork.rs::oc_session_forks_a_session_into_copied_history` (adapted: records copied, not an event replayed)
 - P queues a fork notice after copied history and before the first prompt — `tests/oc_session_fork.rs::oc_session_queues_a_fork_notice_before_the_first_prompt`
 - P keeps a fork untitled when its parent is untitled — `tests/oc_session_fork.rs::oc_session_keeps_a_fork_untitled_when_its_parent_is_untitled`

@@ -252,7 +252,8 @@ An agent's rules are assembled in this order, and the last match wins:
 4. `agents.<id>.permissions` from config
 5. for [unattended runs](#unattended-runs) only, the unattended denies and
    then `automation.permissions`
-6. approvals saved with "always" for the project
+6. the [session's own rules](#session-rules), which only restrict
+7. approvals saved with "always" for the project
 
 Consequences:
 
@@ -271,6 +272,17 @@ Consequences:
   before you run CodeSmith in it (see the warning in
   [configuration](configuration.md#files-and-precedence)), or to set
   `CODESMITH_DISABLE_PROJECT_CONFIG=1`.
+
+### Session rules
+
+A session can carry rules of its own, set by a client of the
+[local server](local-server.md) (`PATCH /sessions/{id} {"permissions":
+[...]}`), in the same `{action, resource, effect}` form. A subagent or
+other child session starts with its parent's, and a fork copies them.
+Like a built-in agent's rules they **only restrict**: a session `deny` or
+`ask` applies, but a session `allow` never loosens a configured, built-in
+or policy rule. (OpenCode lets a session's rules override the config's;
+CodeSmith keeps the configured denies in force.)
 
 A [plugin](plugins.md) can answer a permission request in place of the
 user, but it is consulted only for requests that the rules would ask about,

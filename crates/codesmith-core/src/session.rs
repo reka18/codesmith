@@ -27,7 +27,7 @@ mod compact;
 use crate::agent::{self, Agent};
 use crate::compaction;
 use crate::config::{Loaded, ModelRef};
-use crate::permission::{Asker, Gate};
+use crate::permission::{Asker, Gate, Rule};
 use crate::snapshot::{Change, Snapshots};
 use crate::store::{self, Info, Record, Store};
 use crate::title;
@@ -317,6 +317,9 @@ pub struct Session {
     pub title: Option<String>,
     last_prompt_tokens: u64,
     gate: Gate,
+    /// How many of the agent's rules, at the end, are the session's own
+    /// (see [`Session::set_permissions`]).
+    own_rules: usize,
     shell: String,
     limits: crate::config::ToolOutputConfig,
     client: reqwest::Client,
@@ -567,7 +570,7 @@ impl Session {
                     .filter(|a| !a.is_empty())
             })
             .unwrap_or_else(|| agent::default_id(config));
-        let agent = agent::resolve(config, &agent_id).ok_or_else(|| {
+        let mut agent = agent::resolve(config, &agent_id).ok_or_else(|| {
             anyhow!(
                 "unknown agent {agent_id:?}; available: {}",
                 agent::list(config).join(", ")
@@ -663,6 +666,31 @@ impl Session {
             (Some(st), true) => stored_unbilled(st, &id, &usage),
             _ => Usage::default(),
         };
+        // The session's own rules (OpenCode's `Session.permissions`): a new
+        // child starts with its parent's. They only restrict, like a
+        // built-in agent's own rules, so they never loosen a configured,
+        // built-in or policy deny.
+        let mut own_rules = 0;
+        if let Some(st) = &store {
+            let mut own = st.permissions(&id).ok().flatten();
+            if own.is_none() && !stored {
+                if let Some(parent) = opts.parent.as_deref() {
+                    own = st.permissions(parent).ok().flatten();
+                    if let Some(rules) = &own {
+                        let _ = st.set_meta(
+                            &id,
+                            crate::store::PERMISSIONS_META,
+                            Some(&serde_json::to_string(rules)?),
+                        );
+                    }
+                }
+            }
+            let own = own.unwrap_or_default();
+            own_rules = own.len();
+            agent
+                .permissions
+                .extend(own.into_iter().map(Rule::into_builtin));
+        }
         let mut rules = agent.permissions.clone();
         crate::permission::scope_tool_output(&mut rules, &id);
         let mut gate = Gate::new(rules, watch(asker.clone(), &declined));
@@ -704,6 +732,7 @@ impl Session {
             agent_changed_files: false,
             compact: Default::default(),
             gate,
+            own_rules,
             shell,
             limits: config.tool_output,
             client: reqwest::Client::builder()
@@ -822,6 +851,51 @@ impl Session {
             role: Role::System,
             parts: vec![Part::Effort { effort, previous }],
         })
+    }
+
+    /// Whether the session's rules (and saved approvals) allow `action` on
+    /// `resource` without asking.
+    pub fn allows(&self, action: &str, resource: &str) -> bool {
+        self.gate.allows(action, &[resource.to_string()])
+    }
+
+    /// The session's own permission rules (OpenCode's
+    /// `Session.permissions`).
+    pub fn permissions(&self) -> Vec<Rule> {
+        let all = &self.agent.permissions;
+        all[all.len() - self.own_rules..]
+            .iter()
+            .cloned()
+            .map(|mut r| {
+                r.builtin = false;
+                r
+            })
+            .collect()
+    }
+
+    /// Replace the session's own permission rules (OpenCode's
+    /// `Session.setPermissions`): kept with the session, inherited by the
+    /// children it starts, copied by forks, and in force from the next
+    /// request. They only restrict: like a built-in agent's rules, they
+    /// never loosen a configured, built-in or policy rule.
+    pub fn set_permissions(&mut self, rules: Vec<Rule>) -> Result<()> {
+        if let Some(st) = &self.store {
+            st.set_meta(
+                &self.id,
+                crate::store::PERMISSIONS_META,
+                Some(&serde_json::to_string(&rules)?),
+            )?;
+        }
+        let keep = self.agent.permissions.len() - self.own_rules;
+        self.agent.permissions.truncate(keep);
+        self.own_rules = rules.len();
+        self.agent
+            .permissions
+            .extend(rules.into_iter().map(Rule::into_builtin));
+        let mut gate_rules = self.agent.permissions.clone();
+        crate::permission::scope_tool_output(&mut gate_rules, &self.id);
+        self.gate.set_rules(gate_rules);
+        Ok(())
     }
 
     /// Store the effort update of a variant switch, if there was one.

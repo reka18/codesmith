@@ -957,6 +957,33 @@ async fn update(
     if !db.get(&id)?.is_some_and(|i| st.ours(&i)) {
         return Err(not_found(&id));
     }
+    // `{permissions: [rules]}`: the session's own rules, which only
+    // restrict (an open session takes them at once).
+    if !b["permissions"].is_null() {
+        let rules: Vec<codesmith_core::permission::Rule> =
+            serde_json::from_value(b["permissions"].clone()).map_err(|e| {
+                ApiError(
+                    StatusCode::BAD_REQUEST,
+                    format!("permissions are {{action, resource, effect}} rules: {e}"),
+                )
+            })?;
+        let live = st.live.lock().await.get(&id).cloned();
+        match live {
+            Some(l) => {
+                let mut g = l.lock().await;
+                match g.session.as_mut() {
+                    Some(s) => s.set_permissions(rules)?,
+                    None => {
+                        return Err(ApiError(
+                            StatusCode::CONFLICT,
+                            "the session is running a turn".into(),
+                        ))
+                    }
+                }
+            }
+            None => db.set_permissions(&id, &rules)?,
+        }
+    }
     // `{viewed: idle}`: a viewer saw the session as of that idle time.
     match &b["viewed"] {
         Value::Null => {}
@@ -982,7 +1009,8 @@ async fn update(
         }
     }
     Ok(Json(
-        json!({"id": id, "archived": db.archived(&id)?, "read": db.read_state(&id)?}),
+        json!({"id": id, "archived": db.archived(&id)?, "read": db.read_state(&id)?,
+            "permissions": db.permissions(&id)?.unwrap_or_default()}),
     ))
 }
 
