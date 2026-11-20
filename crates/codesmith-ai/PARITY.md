@@ -212,7 +212,8 @@ Shared (`lib.rs`, `schema.rs`)
   gets an error result (`Tool result missing`) before the next assistant turn,
   user text that arrives while calls are pending moves after their results,
   empty results become `(no tool output)`, and results take the name of their
-  call.
+  call. Not in OpenCode: a second result for an already answered call is
+  dropped (the first stands), since providers reject the pair.
 - Tool schemas get an object root (`{}` becomes `{"type": "object"}`), then the
   model family's rules: Gemini normalization for `gemini` models on any
   protocol, Moonshot rules (no `$ref` siblings, typed enums, tuple items) for

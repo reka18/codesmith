@@ -2265,6 +2265,66 @@ fn tool_history() {
     ]);
 }
 
+/// Not from OpenCode: a turn stopped while it waited for permission could
+/// record the call's declined result and, on the next prompt, an
+/// "interrupted" one too. The first result stands; providers reject two.
+#[test]
+fn tool_history_drops_repeated_results() {
+    let calls = asst(vec![
+        call("x", "shell", json!({})),
+        call("y", "read", json!({})),
+    ]);
+    let got = normalize_tool_history(&[
+        user("delete it"),
+        calls.clone(),
+        results(vec![error_result("x", "shell", "declined")]),
+        results(vec![
+            error_result("x", "shell", "interrupted"),
+            result("y", "read", "ok"),
+        ]),
+        results(vec![error_result("y", "read", "interrupted")]),
+        user("next"),
+        asst(vec![Part::Text("ok".into())]),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            user("delete it"),
+            calls,
+            results(vec![error_result("x", "shell", "declined")]),
+            results(vec![result("y", "read", "ok")]),
+            user("next"),
+            asst(vec![Part::Text("ok".into())]),
+        ]
+    );
+    // An id a later turn uses again is answered again.
+    let again = vec![
+        asst(vec![call("a", "a", json!({}))]),
+        results(vec![result("a", "a", "one")]),
+        user("again"),
+        asst(vec![call("a", "a", json!({}))]),
+        results(vec![result("a", "a", "two")]),
+    ];
+    assert_eq!(normalize_tool_history(&again), again);
+    // A result arriving after the call was already filled in as missing.
+    let one = asst(vec![call("a", "a", json!({}))]);
+    let got = normalize_tool_history(&[
+        one.clone(),
+        asst(vec![Part::Text("later".into())]),
+        results(vec![result("a", "a", "late")]),
+        user("next"),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            one,
+            results(vec![missing("a")]),
+            asst(vec![Part::Text("later".into())]),
+            user("next"),
+        ]
+    );
+}
+
 #[test]
 fn http_status_errors() {
     run(&[(

@@ -739,7 +739,9 @@ const EMPTY_RESULT: &str = "(no tool output)";
 /// every call gets a result before the next assistant turn (a missing one
 /// becomes an error result), user text that arrives while calls are pending
 /// moves after their results, empty results say so, and results take their
-/// name from the matching call.
+/// name from the matching call. A call answered twice (a stopped turn whose
+/// result raced the one recorded for it later) keeps its first result only;
+/// providers reject a second.
 pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
     let mut names = std::collections::HashMap::new();
     for m in messages {
@@ -758,10 +760,14 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
     // content held back until they have one.
     let mut pending: Vec<(String, String)> = Vec::new();
     let mut deferred: Vec<Message> = Vec::new();
+    // Calls that already have a result (given, or filled in as missing).
+    let mut answered = std::collections::HashSet::new();
     let settle = |out: &mut Vec<Message>,
                   pending: &mut Vec<(String, String)>,
-                  deferred: &mut Vec<Message>| {
+                  deferred: &mut Vec<Message>,
+                  answered: &mut std::collections::HashSet<String>| {
         if !pending.is_empty() {
+            answered.extend(pending.iter().map(|(id, _)| id.clone()));
             out.push(user(
                 pending
                     .drain(..)
@@ -779,7 +785,14 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
     };
     for m in messages {
         if m.role == Role::Assistant {
-            settle(&mut out, &mut pending, &mut deferred);
+            settle(&mut out, &mut pending, &mut deferred, &mut answered);
+            // An id a later turn uses again (some providers repeat them)
+            // needs a result again.
+            for p in &m.parts {
+                if let Part::ToolCall { id, .. } = p {
+                    answered.remove(id);
+                }
+            }
             pending = m
                 .parts
                 .iter()
@@ -806,6 +819,9 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
                     is_error,
                     media,
                 } => {
+                    if names.contains_key(id) && !answered.insert(id.clone()) {
+                        continue;
+                    }
                     pending.retain(|(pid, _)| pid != id);
                     results.push(Part::ToolResult {
                         id: id.clone(),
@@ -837,7 +853,7 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
             out.append(&mut deferred);
         }
     }
-    settle(&mut out, &mut pending, &mut deferred);
+    settle(&mut out, &mut pending, &mut deferred, &mut answered);
     out
 }
 

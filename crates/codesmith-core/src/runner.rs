@@ -158,7 +158,12 @@ fn is_empty_assistant(m: &Message) -> bool {
 /// Stored history as the model should see it: empty assistant turns are
 /// left out, and a tool call left without a result (the turn was stopped
 /// while it ran) gets an error result, since providers reject unanswered calls.
+/// A result for no call, or a second result for one call (a stopped turn
+/// can record both its own result and the "interrupted" one added later),
+/// is left out too: providers reject those as well.
 pub fn model_messages(history: &[Message]) -> Vec<Message> {
+    let cleaned = settled_once(history);
+    let history = cleaned.as_deref().unwrap_or(history);
     let mut out: Vec<Message> = Vec::with_capacity(history.len());
     let mut i = 0;
     while i < history.len() {
@@ -224,6 +229,56 @@ pub fn model_messages(history: &[Message]) -> Vec<Message> {
         }
     }
     out
+}
+
+/// `history` without results that answer no earlier call or a call already
+/// answered, or `None` when there are none (the common case: no copy).
+fn settled_once(history: &[Message]) -> Option<Vec<Message>> {
+    use std::collections::HashSet;
+    // Calls made and not yet answered. An id can come back in a later turn
+    // (some providers repeat them), and then needs a result again.
+    let mut open: HashSet<&str> = HashSet::new();
+    let mut flags: Vec<Vec<bool>> = Vec::with_capacity(history.len());
+    let mut changed = false;
+    for m in history {
+        let mut f = Vec::with_capacity(m.parts.len());
+        for p in &m.parts {
+            let keep = match p {
+                Part::ToolCall { id, .. } => {
+                    open.insert(id.as_str());
+                    true
+                }
+                Part::ToolResult { id, .. } => open.remove(id.as_str()),
+                _ => true,
+            };
+            changed |= !keep;
+            f.push(keep);
+        }
+        flags.push(f);
+    }
+    if !changed {
+        return None;
+    }
+    Some(
+        history
+            .iter()
+            .zip(flags)
+            .filter_map(|(m, f)| {
+                let parts: Vec<Part> = m
+                    .parts
+                    .iter()
+                    .zip(f)
+                    .filter(|(_, k)| *k)
+                    .map(|(p, _)| p.clone())
+                    .collect();
+                // A message left empty by dropping its results goes too.
+                (!parts.is_empty() || m.parts.is_empty()).then(|| Message {
+                    role: m.role.clone(),
+                    parts,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Results for the calls of a trailing assistant message that never got
@@ -348,6 +403,50 @@ mod tests {
         );
         assert_eq!(got[4].parts[1], result("d"));
         assert!(unsettled(&history).is_none());
+    }
+
+    #[test]
+    fn repeated_and_unmatched_results_are_left_out() {
+        let declined = Part::ToolResult {
+            id: "a".into(),
+            name: "echo".into(),
+            content: "declined".into(),
+            is_error: true,
+            media: Vec::new(),
+        };
+        let user = |parts| Message {
+            role: Role::User,
+            parts,
+        };
+        // As a stopped turn leaves the store: its own result, then the
+        // "interrupted" one the next prompt added, then that prompt.
+        let mut history = vec![
+            Message::user("go"),
+            assistant(vec![call("a")]),
+            user(vec![declined.clone()]),
+        ];
+        history.push(unsettled(&history[..2]).unwrap());
+        history.push(user(vec![result("ghost")]));
+        history.push(Message::user("next"));
+        let got = model_messages(&history);
+        assert_eq!(
+            got,
+            vec![
+                Message::user("go"),
+                assistant(vec![call("a")]),
+                user(vec![declined]),
+                Message::user("next"),
+            ]
+        );
+        // An id a later turn uses again is answered again.
+        let again = vec![
+            assistant(vec![call("a")]),
+            user(vec![result("a")]),
+            Message::user("again"),
+            assistant(vec![call("a")]),
+            user(vec![result("a")]),
+        ];
+        assert_eq!(model_messages(&again), again);
     }
 
     #[test]
