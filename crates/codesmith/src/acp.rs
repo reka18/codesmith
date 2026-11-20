@@ -2621,12 +2621,11 @@ impl Agent {
         }
         let mut update =
             json!({"sessionUpdate": "usage_update", "used": total(&last), "size": size});
-        // What the provider billed when it reports that (a provider bills
-        // every step or none), else the tokens at the configured price.
-        let amount = s.usage.cost.or_else(|| {
-            let c = slot.loaded.config.cost(&s.model_spec)?;
-            Some(codesmith_core::stats::price(&s.usage, &c))
-        });
+        // What the providers billed, plus the unbilled steps' tokens at the
+        // configured price.
+        let amount = s
+            .spend()
+            .cost(slot.loaded.config.cost(&s.model_spec).as_ref());
         if let Some(amount) = amount {
             update["cost"] = json!({"amount": amount, "currency": "USD"});
         }
