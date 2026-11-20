@@ -32,14 +32,50 @@
 //! business, like running a script. Under Dash, `(( $x ))` runs `$x`
 //! unchecked.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const MAX_INPUT: usize = 64 * 1024;
 const MAX_DEPTH: usize = 32;
 const MAX_COMPOUND_DEPTH: usize = 256;
+/// Characters the scanner may look at for one [`analyze`] (or [`scan`])
+/// call, across every reading and nested scan. The scan runs synchronously
+/// in the turn, so no input may hold it for long: one past this is refused
+/// as [`TOO_COMPLEX`]. A 64 KiB script of ordinary commands reads each
+/// character a handful of times.
+const MAX_STEPS: usize = 2_000_000;
+/// The reason for input that would take the scanner too long to read.
+const TOO_COMPLEX: Opaque = "too-complex";
+
+/// A text read as Dash would, and the depth it is read at.
+type DashKey = (Vec<char>, usize);
+
+/// State every scanner of one input shares, nested scans included.
+#[derive(Default)]
+struct Shared {
+    /// Characters looked at so far (see [`MAX_STEPS`]).
+    steps: Cell<usize>,
+    /// [`Scanner::dash_reading`] results by text and depth: nested `$((`
+    /// reach the same text both as arithmetic and as Dash's subshells, so
+    /// reading each once keeps the work polynomial.
+    dash: RefCell<HashMap<DashKey, Vec<Command>>>,
+}
+
+/// Roughly the work of copying `cmd`, in characters.
+fn command_size(cmd: &Command) -> usize {
+    let words = |w: &[String]| w.iter().map(|w| w.len() + 1).sum::<usize>();
+    cmd.resource.len() + words(&cmd.words) + words(&cmd.raw_words)
+}
+
+impl Shared {
+    fn exhausted(&self) -> bool {
+        self.steps.get() > MAX_STEPS
+    }
+}
 
 /// One command the shell would run.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Command {
     /// The command's source text, including assignments and redirects.
     pub resource: String,
@@ -88,12 +124,21 @@ pub fn scan(input: &str) -> Result<Vec<Command>, Opaque> {
 
 /// [`scan`], plus whether the input evaluates text as code at run time.
 pub fn scan_all(input: &str) -> Result<Scanned, Opaque> {
+    scan_shared(input, &Shared::default())
+}
+
+fn scan_shared(input: &str, shared: &Shared) -> Result<Scanned, Opaque> {
     if input.len() > MAX_INPUT {
         return Err("invalid-structure");
     }
     let chars: Vec<char> = input.chars().collect();
-    let mut s = Scanner::new(&chars, 0);
-    let (_, stop) = s.list()?;
+    let mut s = Scanner::new(&chars, 0, shared);
+    let result = s.list();
+    if shared.exhausted() {
+        // Whatever the scan made of the input, it stopped looking early.
+        return Err(TOO_COMPLEX);
+    }
+    let (_, stop) = result?;
     match stop {
         Stop::Eof => {}
         Stop::RParen | Stop::Stray => return Err("invalid-structure"),
@@ -201,6 +246,7 @@ struct Heredoc {
 
 struct Scanner<'a> {
     s: &'a [char],
+    shared: &'a Shared,
     pos: usize,
     depth: usize,
     compound: usize,
@@ -368,9 +414,10 @@ fn is_name_char(c: char) -> bool {
 }
 
 impl<'a> Scanner<'a> {
-    fn new(s: &'a [char], depth: usize) -> Self {
+    fn new(s: &'a [char], depth: usize, shared: &'a Shared) -> Self {
         Scanner {
             s,
+            shared,
             pos: 0,
             depth,
             compound: 0,
@@ -403,7 +450,24 @@ impl<'a> Scanner<'a> {
     }
 
     fn at(&self, i: usize) -> Option<char> {
+        let steps = &self.shared.steps;
+        steps.set(steps.get() + 1);
         self.s.get(i).copied()
+    }
+
+    /// Counts `n` steps of work done without looking at characters.
+    fn charge(&self, n: usize) {
+        let steps = &self.shared.steps;
+        steps.set(steps.get().saturating_add(n));
+    }
+
+    /// Stops a scan that has used up [`MAX_STEPS`]. Called wherever the
+    /// scanner starts reading something again, so it stops soon after.
+    fn tick(&self) -> Result<(), Opaque> {
+        if self.shared.exhausted() {
+            return Err(TOO_COMPLEX);
+        }
+        Ok(())
     }
 
     fn starts(&self, i: usize, text: &str) -> bool {
@@ -442,6 +506,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn lex(&mut self, cond: bool) -> Result<Tok, Opaque> {
+        self.tick()?;
         loop {
             self.skip_blanks();
             match self.at(self.pos) {
@@ -1012,6 +1077,7 @@ impl<'a> Scanner<'a> {
         value: &mut String,
         nested: &mut Vec<Item>,
     ) -> Result<(), Opaque> {
+        self.tick()?;
         let start = self.pos;
         let c = self.at(start).unwrap();
         let continuation = |i: usize| self.at(i) == Some('\\') && self.at(i + 1) == Some('\n');
@@ -1124,7 +1190,7 @@ impl<'a> Scanner<'a> {
                     // Arithmetic expansion: bounded by its matching `))`.
                     let end = self.arithmetic_end(start + 1)?;
                     self.arithmetic(start + 3, end - 2, nested)?;
-                    let alternates = self.dash_reading(start + 3, end - 2);
+                    let alternates = self.dash_reading(start + 3, end - 2)?;
                     nested.extend(alternates);
                     self.pos = end;
                 }
@@ -1241,8 +1307,25 @@ impl<'a> Scanner<'a> {
     /// `cmd` in `$((x))`. Substitutions become commands; a variable or an
     /// expansion makes the text a sink.
     fn arithmetic(&mut self, a: usize, b: usize, nested: &mut Vec<Item>) -> Result<(), Opaque> {
+        // Arithmetic nests like a substitution: `$(( $(( 1 )) ))`.
+        if self.depth + 1 >= MAX_DEPTH {
+            return Err("arithmetic");
+        }
+        self.depth += 1;
+        let result = self.arithmetic_text(a, b, nested);
+        self.depth -= 1;
+        result
+    }
+
+    fn arithmetic_text(
+        &mut self,
+        a: usize,
+        b: usize,
+        nested: &mut Vec<Item>,
+    ) -> Result<(), Opaque> {
         let mut i = a;
         while i < b {
+            self.tick()?;
             match self.at(i) {
                 Some('\\') => {
                     if matches!(self.at(i + 1), Some('$') | Some('`')) {
@@ -1286,6 +1369,7 @@ impl<'a> Scanner<'a> {
 
     /// The body of `$(...)` or `<(...)`, starting after the `(`.
     fn substitution(&mut self, nested: &mut Vec<Item>) -> Result<(), Opaque> {
+        self.tick()?;
         if self.depth + 1 >= MAX_DEPTH {
             return Err("command-substitution");
         }
@@ -1371,6 +1455,7 @@ impl<'a> Scanner<'a> {
         }
         let body = self.pos;
         loop {
+            self.tick()?;
             match self.at(self.pos) {
                 None => return Err("unterminated-quote"),
                 Some('}') => {
@@ -1458,10 +1543,11 @@ impl<'a> Scanner<'a> {
             }
         }
         self.pos = i + 1;
+        self.tick()?;
         if self.depth + 1 >= MAX_DEPTH {
             return Err("command-substitution");
         }
-        let mut sub = Scanner::new(&inner, self.depth + 1);
+        let mut sub = Scanner::new(&inner, self.depth + 1, self.shared);
         let (_, stop) = sub.list().map_err(|_| "command-substitution")?;
         if stop != Stop::Eof || !sub.heredocs.is_empty() {
             return Err("command-substitution");
@@ -1816,17 +1902,18 @@ impl<'a> Scanner<'a> {
             span: Some((p, end)),
         });
         self.out.extend(inner);
-        let alternates = self.dash_reading(p + 2, end - 2);
+        let alternates = self.dash_reading(p + 2, end - 2)?;
         self.out.extend(alternates);
         self.trailing_redirects()
     }
 
     /// `((text))` as Dash reads it: subshells running `text`. Zsh reads
     /// `((text))` and `$((text))` that way too when `text` is not arithmetic.
-    fn dash_reading(&mut self, a: usize, b: usize) -> Vec<Item> {
-        let mut out = Vec::new();
+    fn dash_reading(&mut self, a: usize, b: usize) -> Result<Vec<Item>, Opaque> {
+        self.tick()?;
         if self.depth + 1 >= MAX_DEPTH {
-            return out;
+            // Too deep to read the subshells: refuse rather than skip them.
+            return Err("arithmetic");
         }
         // Dash removes line continuations before reading.
         let mut chars: Vec<char> = Vec::with_capacity(b - a);
@@ -1844,7 +1931,34 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
-        let mut sub = Scanner::new(&chars, self.depth + 1);
+        let key = (chars, self.depth);
+        self.charge(key.0.len());
+        if let Some(cmds) = self.shared.dash.borrow().get(&key) {
+            // Copying them is work too: nested readings copy them again.
+            self.charge(cmds.iter().map(command_size).sum());
+            self.tick()?;
+            return Ok(cmds
+                .iter()
+                .map(|cmd| Item {
+                    cmd: cmd.clone(),
+                    span: None,
+                })
+                .collect());
+        }
+        let cmds = self.dash_commands(&key.0);
+        self.tick()?;
+        self.shared.dash.borrow_mut().insert(key, cmds.clone());
+        Ok(cmds
+            .into_iter()
+            .map(|cmd| Item { cmd, span: None })
+            .collect())
+    }
+
+    /// The commands of [`Scanner::dash_reading`], each marked
+    /// [`Command::alternate`].
+    fn dash_commands(&self, chars: &[char]) -> Vec<Command> {
+        let mut out = Vec::new();
+        let mut sub = Scanner::new(chars, self.depth + 1, self.shared);
         sub.dash = true;
         if !matches!(sub.list(), Ok((_, Stop::Eof))) || !sub.heredocs.is_empty() {
             // Zsh also falls back to subshells when the text is not
@@ -1861,21 +1975,25 @@ impl<'a> Scanner<'a> {
                 if words.is_empty() {
                     continue;
                 }
-                let cmd = Command {
+                out.push(Command {
                     resource: words.join(" "),
                     raw_words: words.clone(),
                     words,
                     alternate: true,
                     ..Default::default()
-                };
-                out.push(Item { cmd, span: None });
+                });
             }
             return out;
         }
+        // Nested `$((` repeat the same alternates at every level: keep one
+        // of each, or their number doubles per level.
+        let mut seen = std::collections::HashSet::new();
         for mut cmd in sub.finish() {
             cmd.alternate = true;
             cmd.writes.clear();
-            out.push(Item { cmd, span: None });
+            if seen.insert(cmd.clone()) {
+                out.push(cmd);
+            }
         }
         out
     }
@@ -2443,9 +2561,20 @@ const CWD: [&str; 4] = ["cd", "chdir", "popd", "pushd"];
 
 /// The permission resources of `command`, or why it cannot be analyzed.
 pub fn analyze(command: &str, cwd: &Path) -> Result<Analysis, String> {
+    analyze_shared(command, cwd, &Shared::default())
+}
+
+fn analyze_shared(command: &str, cwd: &Path, shared: &Shared) -> Result<Analysis, String> {
+    let refuse = |reason: Opaque| {
+        let reason = if reason == TOO_COMPLEX {
+            "command too complex to check"
+        } else {
+            reason
+        };
+        format!("Portable shell scanner cannot analyze command: {reason}")
+    };
     let mut out = Analysis::default();
-    analyze_into(command, cwd, 0, &mut out)
-        .map_err(|reason| format!("Portable shell scanner cannot analyze command: {reason}"))?;
+    analyze_into(command, cwd, shared, 0, &mut out).map_err(refuse)?;
     if command.contains("\\\n") {
         // The shell removes line continuations before it reads anything
         // else, so `$a\<newline>[x]` and `READNUL\<newline>LCMD=rm` mean
@@ -2453,7 +2582,7 @@ pub fn analyze(command: &str, cwd: &Path) -> Result<Analysis, String> {
         // other names for what runs, everything else added.
         let joined = join_continuations(command);
         let mut alt = Analysis::default();
-        if joined != command && analyze_into(&joined, cwd, 0, &mut alt).is_ok() {
+        if joined != command && analyze_into(&joined, cwd, shared, 0, &mut alt).is_ok() {
             for entry in alt.commands.into_iter().chain(alt.delegated) {
                 if !out.commands.contains(&entry) && !out.delegated.contains(&entry) {
                     out.delegated.push(entry);
@@ -2475,6 +2604,11 @@ pub fn analyze(command: &str, cwd: &Path) -> Result<Analysis, String> {
             }
             out.unknown_cwd |= alt.unknown_cwd;
         }
+    }
+    if shared.exhausted() {
+        // A nested scan (a shell string, the joined reading) ran out of
+        // steps and was treated as unreadable: refuse the whole command.
+        return Err(refuse(TOO_COMPLEX));
     }
     let executable =
         command.contains('`') || ["$(", "<(", ">("].iter().any(|t| command.contains(t));
@@ -2519,8 +2653,14 @@ fn join_continuations(text: &str) -> String {
 
 const MAX_DELEGATION: usize = 8;
 
-fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> Result<(), Opaque> {
-    let scanned = scan_all(command)?;
+fn analyze_into(
+    command: &str,
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
+    let scanned = scan_shared(command, shared)?;
     if let Some(reason) = scanned.dynamic {
         out.dynamic.get_or_insert_with(|| reason.to_string());
     }
@@ -2562,7 +2702,14 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
             let cooked = item.words.join(" ");
             alt.delegated
                 .push((cooked.clone(), save_pattern(&item.words, &cooked)));
-            delegate(&item.raw_words, &item.words, cwd, depth + 1, &mut alt)?;
+            delegate(
+                &item.raw_words,
+                &item.words,
+                cwd,
+                shared,
+                depth + 1,
+                &mut alt,
+            )?;
             out.deny_only.extend(alt.commands);
             out.deny_only.extend(alt.delegated);
             out.deny_only.extend(alt.deny_only);
@@ -2610,7 +2757,7 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
             out.delegated
                 .push((cooked.clone(), save_pattern(&item.words, &cooked)));
         }
-        delegate(&item.raw_words, &item.words, cwd, depth, out)?;
+        delegate(&item.raw_words, &item.words, cwd, shared, depth, out)?;
     }
     Ok(())
 }
@@ -2637,6 +2784,7 @@ fn delegate(
     raw: &[String],
     cooked: &[String],
     cwd: &Path,
+    shared: &Shared,
     depth: usize,
     out: &mut Analysis,
 ) -> Result<(), Opaque> {
@@ -2677,7 +2825,7 @@ fn delegate(
         let resource = words.join(" ");
         let save = save_pattern(words, &resource);
         out.delegated.push((resource, save));
-        delegate(&raw[at..], words, cwd, depth + 1, out)
+        delegate(&raw[at..], words, cwd, shared, depth + 1, out)
     };
     if ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "ash"].contains(&base) {
         // `bash name args`: Bash looks `name` up on PATH when no such file
@@ -2692,7 +2840,7 @@ fn delegate(
     }
     if let Some(script) = shell_string(base, raw, cooked) {
         return match script {
-            Some(code) => run_string(&code, cwd, depth, out),
+            Some(code) => run_string(&code, cwd, shared, depth, out),
             None => {
                 mark_dynamic(out, "dynamic-execution");
                 Ok(())
@@ -2718,7 +2866,7 @@ fn delegate(
                     let resource = words.join(" ");
                     out.delegated
                         .push((resource.clone(), save_pattern(words, &resource)));
-                    delegate(&raw[start..end], words, cwd, depth + 1, out)?;
+                    delegate(&raw[start..end], words, cwd, shared, depth + 1, out)?;
                 }
                 i = end;
             }
@@ -2757,9 +2905,15 @@ const RESERVED: [&str; 16] = [
 ];
 
 /// Scan a static code string run by `sh -c`, `eval` or `trap`.
-fn run_string(code: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> Result<(), Opaque> {
+fn run_string(
+    code: &str,
+    cwd: &Path,
+    shared: &Shared,
+    depth: usize,
+    out: &mut Analysis,
+) -> Result<(), Opaque> {
     let mut inner = Analysis::default();
-    if analyze_into(code, cwd, depth + 1, &mut inner).is_err() {
+    if analyze_into(code, cwd, shared, depth + 1, &mut inner).is_err() {
         mark_dynamic(out, "dynamic-execution");
         return Ok(());
     }
@@ -3944,6 +4098,127 @@ mod tests {
             let start = std::time::Instant::now();
             let _ = scan(&input);
             assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        }
+    }
+
+    /// Analyzes `src` and fails unless it finishes within `limit`.
+    fn timed(src: &str, limit: std::time::Duration) -> Result<super::Analysis, String> {
+        let start = std::time::Instant::now();
+        let result = analyze(src, Path::new("/workspace"));
+        let took = start.elapsed();
+        assert!(
+            took < limit,
+            "{took:?} for {} chars: {:?}",
+            src.len(),
+            &src[..src.len().min(80)]
+        );
+        result
+    }
+
+    #[test]
+    fn sec_nested_arithmetic_in_bounded_time() {
+        // Each level was read both as arithmetic and as Dash's subshells,
+        // doubling the work per level: 51 ms at 16 levels, hours at 40.
+        let limit = std::time::Duration::from_secs(2);
+        let forms = [("$((", "))"), ("$((a[", "]))"), ("$(( (", ") ))")];
+        for (open, close) in forms {
+            for n in [16, 24, 31] {
+                let src = format!("echo {}1{}", open.repeat(n), close.repeat(n));
+                timed(&src, limit).unwrap_or_else(|e| panic!("{n} x {open}: {e}"));
+            }
+            for n in [64, 1000] {
+                let src = format!("echo {}1{}", open.repeat(n), close.repeat(n));
+                assert!(timed(&src, limit).is_err(), "{n} x {open}");
+            }
+            // The same, as an arithmetic command and behind a substitution.
+            for n in [64, 1000] {
+                let src = format!("(({}1{}))", open.repeat(n), close.repeat(n));
+                assert!(timed(&src, limit).is_err(), "(( {n} x {open}");
+                let src = format!("echo $(: {}1{})", open.repeat(n), close.repeat(n));
+                assert!(timed(&src, limit).is_err(), "$( {n} x {open}");
+            }
+        }
+        // Commands inside still count once nesting is collapsed.
+        let src = format!("echo {}$(rm -rf x){}", "$((".repeat(20), "))".repeat(20));
+        let a = timed(&src, limit).unwrap();
+        assert!(has(&a.commands, "rm -rf x"), "{a:?}");
+    }
+
+    #[test]
+    fn sec_exhausted_step_budget_is_refused() {
+        let shared = Shared::default();
+        shared.steps.set(MAX_STEPS + 1);
+        assert_eq!(scan_shared("echo ok", &shared).err(), Some(TOO_COMPLEX));
+        let e = analyze_shared("echo ok", Path::new("/workspace"), &shared).unwrap_err();
+        assert!(e.ends_with("command too complex to check"), "{e}");
+        // Running out inside a nested scan (here a shell string, whose
+        // failure alone would only mark the command dynamic) still refuses
+        // the command.
+        let src = "echo ok; sh -c 'echo a b c'";
+        let outer = Shared::default();
+        scan_shared(src, &outer).unwrap();
+        let shared = Shared::default();
+        shared.steps.set(MAX_STEPS - outer.steps.get());
+        let e = analyze_shared(src, Path::new("/workspace"), &shared).unwrap_err();
+        assert!(e.ends_with("command too complex to check"), "{e}");
+    }
+
+    #[test]
+    fn sec_random_nesting_in_bounded_time() {
+        // Every construct that reads text again (substitutions, arithmetic,
+        // subscripts, parameters, quotes, compound commands, heredocs,
+        // continuations), nested at random: each input finishes well inside
+        // the limit, read or refused.
+        const HOLES: [&str; 26] = [
+            "$(echo X)",
+            "$((X))",
+            "$((a[X]))",
+            "$(( (X) ))",
+            "((X))",
+            "$[X]",
+            "${x:-X}",
+            "${x[X]}",
+            "\"X\"",
+            "'X'",
+            "`X`",
+            "(X)",
+            "{ X; }",
+            "<(X)",
+            "a[X]=1",
+            "x=(X)",
+            "if X; then X; fi",
+            "while X; do X; done",
+            "case X in X) X;; esac",
+            "[[ X ]]",
+            "X | X",
+            "X && X",
+            "X\\\nX",
+            "$(cat <<E\nX\nE\n)",
+            "for i in X; do X; done",
+            "sh -c 'X'",
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let limit = std::time::Duration::from_secs(2);
+        for _ in 0..300 {
+            let depth = 8 + next(60);
+            let mut src = String::from("X");
+            for _ in 0..depth {
+                // Fill one `X` at random with a construct holding more.
+                let holes: Vec<usize> = src.match_indices('X').map(|(i, _)| i).collect();
+                let at = holes[next(holes.len())];
+                src.replace_range(at..at + 1, HOLES[next(HOLES.len())]);
+                if src.len() > 8_000 {
+                    break;
+                }
+            }
+            let src = format!("echo {}", src.replace('X', "1"));
+            let _ = timed(&src, limit);
         }
     }
 
