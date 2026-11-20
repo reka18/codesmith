@@ -619,6 +619,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "reqwest",
+ "rusqlite",
  "serde_json",
  "similar",
  "syntect",
