@@ -21,6 +21,8 @@ pub mod permission;
 pub mod plugin;
 pub mod prompt;
 pub mod question;
+pub mod reference;
+pub mod repository;
 pub mod retry;
 pub mod review;
 pub mod runner;

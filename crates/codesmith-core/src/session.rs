@@ -841,7 +841,8 @@ impl Session {
 
     /// The instruction sources, read fresh: most shared across sessions
     /// first (OpenCode's order), so the baseline stays a reusable cached
-    /// prefix: the Code Mode catalog, MCP server instructions, skills, instruction files, then the date and environment, and the
+    /// prefix: the Code Mode catalog, MCP server instructions, references,
+    /// skills, instruction files, then the date and environment, and the
     /// context a host attached.
     fn instruction_sources(&mut self) -> Result<crate::instruction_state::List> {
         let config = &self.loaded.config;
@@ -851,15 +852,11 @@ impl Session {
             crate::codemode_catalog::source(codemode, Some(crate::codemode_catalog::INLINE_BUDGET)),
             crate::mcp::instruction_source(&self.mcp_instructions(&code)),
         ];
+        let references = crate::reference::configured(config, &self.root);
+        crate::reference::refresh_in_background(references.clone());
+        lists.push(crate::reference::source(&references));
         if self.tools.contains(&Tool::Skill) {
-            let home = dirs::home_dir().unwrap_or_default();
-            self.skills = crate::skill::discover(&crate::skill::roots(
-                &self.cwd,
-                &self.root,
-                &paths::config_dir(),
-                &home,
-                &config.skills,
-            ));
+            self.skills = crate::skill::find(&self.cwd, &self.root, &config.skills);
             lists.push(crate::skill::source(&self.skills));
         }
         let files = instructions::discover(

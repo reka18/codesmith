@@ -186,15 +186,15 @@ impl File {
     }
 }
 
-/// Read discovered files: a file that vanished in between is skipped, one
-/// that cannot be read makes the whole source unavailable for now (its
-/// stored value stands), and none at all is a removal.
+/// Read discovered files: one that cannot be read (or vanished since it was
+/// found, as an editor's save can make it) leaves the whole source
+/// unavailable for now, so its stored value stands; none at all is a
+/// removal.
 pub fn read(files: &[PathBuf]) -> Observed<Vec<File>> {
     let mut out = Vec::new();
     for f in files {
         match std::fs::read_to_string(f) {
             Ok(t) => out.push(File::new(f.display().to_string(), t.trim_end())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Observed::Unavailable,
         }
     }

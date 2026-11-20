@@ -107,6 +107,12 @@ pub fn roots(
     out
 }
 
+/// The skills a session working in `cwd` finds.
+pub fn find(cwd: &Path, root: &Path, extra: &[String]) -> Vec<Skill> {
+    let home = dirs::home_dir().unwrap_or_default();
+    discover(&roots(cwd, root, &crate::paths::config_dir(), &home, extra))
+}
+
 /// Load every skill under `roots`; later roots override earlier ones by id.
 pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
     let mut by_id: BTreeMap<String, Skill> = BTreeMap::new();

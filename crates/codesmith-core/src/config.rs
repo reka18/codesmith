@@ -114,6 +114,12 @@ pub struct Config {
     /// The terminal UI's own settings (theme, key bindings, cursor, …),
     /// read by the UI as OpenCode reads its TUI config.
     pub tui: Value,
+
+    // --- References ---
+    /// Other directories the agent may consult, by name: a local path, or a
+    /// Git repository CodeSmith keeps a checkout of (see
+    /// [`crate::reference`]). Those with a description are listed to the model.
+    pub references: BTreeMap<String, crate::reference::Entry>,
 }
 
 /// The `catalog` key.

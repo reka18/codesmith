@@ -1300,12 +1300,13 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 &provider_id,
             );
             let tools: Vec<&str> = offered.iter().map(|t| t.name()).collect();
-            let env = prompt::environment(&prompt::Environment {
+            // The baseline a new session would make, without MCP servers.
+            let env = prompt::env_block(&prompt::Environment {
                 cwd: &cwd,
                 root: &loaded.root,
                 is_git: loaded.root.join(".git").exists(),
                 tmp: &paths::tmp_dir(),
-                date: prompt::today(),
+                date: String::new(),
             });
             let files = instructions::discover(
                 &cwd,
@@ -1313,16 +1314,32 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 &paths::config_dir(),
                 &loaded.config.instructions,
             );
-            println!(
-                "{}",
-                prompt::assemble(
-                    a.system.as_deref(),
-                    &mid,
-                    &tools,
-                    &env,
-                    &instructions::render(&files)
-                )
+            let skills = codesmith_core::skill::find(&cwd, &loaded.root, &loaded.config.skills);
+            let mut lists = vec![codesmith_core::reference::source(
+                &codesmith_core::reference::configured(&loaded.config, &loaded.root),
+            )];
+            if tools.contains(&"skill") && !skills.is_empty() {
+                lists.push(codesmith_core::skill::source(&skills));
+            }
+            lists.push(instructions::source(instructions::read(&files)));
+            lists.push(prompt::builtin_sources(prompt::today, env));
+            let list = codesmith_core::instruction_state::combine(lists)?;
+            let o = codesmith_core::instruction_state::observe(&list, None)?;
+            let text = codesmith_core::instruction_state::join(
+                &codesmith_core::instruction_state::render_initial(&list, &o.current)?,
             );
+            let base = match &a.system {
+                Some(s) => s.clone(),
+                None => prompt::base(&mid, &tools),
+            };
+            let mut parts = vec![base.as_str()];
+            if !text.is_empty() {
+                parts.push(&text);
+            }
+            if a.id == "plan" {
+                parts.push(agent::PLAN_REMINDER);
+            }
+            println!("{}", parts.join("\n\n"));
         }
     }
     Ok(())

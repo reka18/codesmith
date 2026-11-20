@@ -421,6 +421,19 @@ fn oc_instruction_files_keep_admitted_values_while_unreadable() {
     assert!(!read_update(&list, &files_values(&[("/repo/AGENTS.md", "old")])).2);
 }
 
+// instruction-discovery.test.ts: "marks a discovered file that disappears before read as unavailable"
+#[test]
+fn oc_instruction_files_that_vanish_before_the_read_are_unavailable() {
+    let d = tempfile::tempdir().unwrap();
+    let gone = d.path().join("AGENTS.md");
+    assert_eq!(
+        instructions::read(std::slice::from_ref(&gone)),
+        Observed::Unavailable
+    );
+    let list = instructions::source(instructions::read(&[gone]));
+    assert!(!read_update(&list, &files_values(&[("/repo/AGENTS.md", "old")])).2);
+}
+
 // instruction-discovery.test.ts: "renders granular instruction updates"
 #[test]
 fn oc_instruction_files_render_granular_updates() {
@@ -837,6 +850,239 @@ fn oc_codemode_catalog_falls_back_to_full_replacement() {
     let text = update(&removed, &[echo()]).unwrap();
     assert!(text.contains("This catalog supersedes the previous Code Mode tool catalog."));
     assert!(text.contains("## Code Mode tools (call only inside `execute`)"));
+}
+
+fn shown(c: &cc::Summary) -> usize {
+    c.namespaces.iter().map(|n| n.entries.len()).sum()
+}
+
+fn bare(name: &str, tools: &[&str]) -> cc::NamespaceSummary {
+    cc::NamespaceSummary {
+        name: name.into(),
+        description: None,
+        tools: tools.iter().map(|t| t.to_string()).collect(),
+        entries: vec![],
+    }
+}
+
+fn line_cost(t: &cc::Tool, description: &str) -> usize {
+    cc::cost(&format!("  - {} // {description}", t.signature))
+}
+
+// codemode/catalog.test.ts: "retains namespace inventory without retaining tools outside the inline budget"
+#[test]
+fn oc_codemode_catalog_keeps_the_inventory_without_listing_past_the_budget() {
+    let tools: Vec<cc::Tool> = (0..10_000)
+        .map(|i| entry(&format!("bulk.tool{i}"), &format!("Tool {i}")))
+        .collect();
+    let c = cc::summarize(&inv(&tools), Some(0));
+    assert_eq!(c.total, 10_000);
+    assert_eq!(c.namespaces.len(), 1);
+    assert_eq!(c.namespaces[0].tools.len(), 10_000);
+    assert!(c.namespaces[0].entries.is_empty());
+}
+
+// codemode/catalog.test.ts: "retains every namespace when no full tool listing fits"
+#[test]
+fn oc_codemode_catalog_keeps_every_namespace_when_nothing_fits() {
+    let c = cc::summarize(
+        &inv(&[
+            entry("alpha.one", "One"),
+            entry("beta.two", "Two"),
+            entry("gamma.three", "Three"),
+        ]),
+        Some(0),
+    );
+    let names: Vec<&str> = c.namespaces.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["alpha", "beta", "gamma"]);
+    assert_eq!(shown(&c), 0);
+}
+
+// codemode/catalog.test.ts: "always retains pinned tools beyond the inline budget"
+#[test]
+fn oc_codemode_catalog_always_lists_pinned_tools() {
+    let c = cc::summarize(
+        &inv(&[
+            entry_with("alpha.first", "First", None, true),
+            entry_with("beta.second", "Second", None, true),
+            entry("alpha.unpinned", "Unpinned"),
+        ]),
+        Some(0),
+    );
+    let paths: Vec<&str> = c
+        .namespaces
+        .iter()
+        .flat_map(|n| n.entries.iter().map(|e| e.path.as_str()))
+        .collect();
+    assert_eq!(paths, ["alpha.first", "beta.second"]);
+}
+
+// codemode/catalog.test.ts: "spends the budget remaining after pinned tools on unpinned tools"
+#[test]
+fn oc_codemode_catalog_spends_what_pinned_tools_leave() {
+    let pinned = entry_with("alpha.pinned", "Pinned", None, true);
+    let unpinned = entry("beta.unpinned", "Unpinned");
+    let namespaces = cc::cost(&cc::namespace_line(&bare("alpha", &["alpha.pinned"]), None))
+        + cc::cost(&cc::namespace_line(&bare("beta", &["beta.unpinned"]), None));
+    let budget = namespaces + line_cost(&pinned, "Pinned") + line_cost(&unpinned, "Unpinned");
+    let tools = inv(&[pinned, unpinned]);
+    assert_eq!(shown(&cc::summarize(&tools, Some(budget))), 2);
+    assert_eq!(shown(&cc::summarize(&tools, Some(budget - 1))), 1);
+}
+
+// codemode/catalog.test.ts: "retains only the rendered portion of inline descriptions"
+#[test]
+fn oc_codemode_catalog_keeps_only_the_first_description_line() {
+    let c = cc::summarize(
+        &inv(&[entry(
+            "alpha.one",
+            &format!("Summary\n{}", "detail".repeat(10_000)),
+        )]),
+        None,
+    );
+    assert!(c.namespaces[0].entries[0].line.ends_with("// Summary"));
+}
+
+// codemode/catalog.test.ts: "limits inline descriptions to 500 characters"
+#[test]
+fn oc_codemode_catalog_limits_descriptions_to_500_characters() {
+    let c = cc::summarize(&inv(&[entry("alpha.one", &"x".repeat(501))]), None);
+    let d = c.namespaces[0].entries[0]
+        .line
+        .split(" // ")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    assert_eq!(d.len(), 500);
+    assert!(d.ends_with("..."));
+}
+
+// codemode/catalog.test.ts: "always retains namespace descriptions and charges them before tool listings"
+#[test]
+fn oc_codemode_catalog_charges_namespace_descriptions_first() {
+    let tool = entry("alpha.one", "One");
+    let budget = line_cost(&tool, "One")
+        + cc::cost(&cc::namespace_line(&bare("alpha", &["alpha.one"]), None));
+    assert_eq!(
+        shown(&cc::summarize(
+            &inv(std::slice::from_ref(&tool)),
+            Some(budget)
+        )),
+        1
+    );
+    let description = "A namespace description that stays visible beyond the available tool budget";
+    let described = cc::Inventory {
+        tools: vec![tool],
+        descriptions: [("alpha".to_string(), description.to_string())].into(),
+    };
+    let c = cc::summarize(&described, Some(budget));
+    assert_eq!(shown(&c), 0);
+    assert_eq!(c.namespaces[0].description.as_deref(), Some(description));
+    assert!(cc::render(&c).contains(&format!("- alpha (1 tool, none shown) // {description}")));
+}
+
+// codemode/catalog.test.ts: "selects tools in path order, whatever their cost"
+#[test]
+fn oc_codemode_catalog_selects_tools_in_path_order() {
+    let costly = entry_with(
+        "alpha.a",
+        "A",
+        Some(&format!(
+            "tools.alpha.a({{\n  {}: string,\n}}): Promise<string>",
+            "long".repeat(40)
+        )),
+        false,
+    );
+    let c = cc::summarize(&inv(&[entry("alpha.b", "B"), costly]), Some(70));
+    let paths: Vec<&str> = c.namespaces[0]
+        .entries
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(paths, ["alpha.a"]);
+}
+
+fn render_with(tools: &[cc::Tool], budget: Option<usize>) -> String {
+    cc::render(&cc::summarize(&inv(tools), budget))
+}
+
+// codemode/catalog.test.ts: "inlines complete catalogs without search guidance"
+#[test]
+fn oc_codemode_catalog_inlines_a_complete_catalog_without_search() {
+    let text = render_with(&[lookup_tool()], Some(cc::INLINE_BUDGET));
+    assert!(text.contains("## Code Mode tools (call only inside `execute`)"));
+    assert!(text.contains("- orders (1 tool)"));
+    assert!(text.contains(&format!(
+        "  - {} // Look up an order by ID",
+        lookup_tool().signature
+    )));
+    assert!(!text.contains("search"));
+    assert!(text.contains("The tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`."));
+    assert!(text.contains("The catalog is complete. Do not guess tool names."));
+}
+
+// codemode/catalog.test.ts: "adds search guidance when the catalog exceeds the budget"
+#[test]
+fn oc_codemode_catalog_adds_search_guidance_past_the_budget() {
+    let text = render_with(&[lookup_tool()], Some(0));
+    assert!(text.contains("## Code Mode tools (call only inside `execute`)"));
+    assert!(text.contains("- orders (1 tool, none shown)"));
+    assert!(text.contains("The tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool."));
+    assert!(text.contains("The catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names."));
+    assert!(text.contains("- search(query: string | {"));
+    assert!(text.contains("  /** @integer @exclusiveMinimum 0 */\n  limit?: number,"));
+    assert!(text.contains("  /** @integer @minimum 0 */\n  offset?: number,"));
+    assert!(!text.contains("tools.orders.lookup("));
+}
+
+// codemode/catalog.test.ts: "budgets signatures round-robin so every namespace remains visible"
+#[test]
+fn oc_codemode_catalog_budgets_round_robin_across_namespaces() {
+    let cheap_alpha = entry("alpha.cheap", "Cheap");
+    let cheap_beta = entry("beta.cheap", "Cheap");
+    let expensive = entry_with(
+        "alpha.expensive",
+        "Expensive",
+        Some("tools.alpha.expensive({\n  aVeryLongParameterName: string,\n  anotherEvenLongerParameterName: number,\n  yetAnotherExtremelyVerboseParameterName: string,\n}): Promise<string>"),
+        false,
+    );
+    let namespaces = cc::cost(&cc::namespace_line(
+        &bare("alpha", &["alpha.cheap", "alpha.expensive"]),
+        None,
+    )) + cc::cost(&cc::namespace_line(&bare("beta", &["beta.cheap"]), None));
+    let text = render_with(
+        &[cheap_alpha.clone(), expensive, cheap_beta.clone()],
+        Some(40 + namespaces),
+    );
+    assert!(text.contains("The catalog is partial."));
+    assert!(text.contains("- alpha (2 tools, 1 shown)"));
+    assert!(text.contains(&format!("  - {} // Cheap", cheap_alpha.signature)));
+    assert!(!text.contains("tools.alpha.expensive("));
+    assert!(text.contains("- beta (1 tool)"));
+    assert!(text.contains(&format!("  - {} // Cheap", cheap_beta.signature)));
+}
+
+// codemode/catalog.test.ts: "charges inline JSDoc in signatures against the catalog token budget"
+#[test]
+fn oc_codemode_catalog_charges_jsdoc_against_the_budget() {
+    let documented = entry_with(
+        "records.lookup",
+        "Look up a record",
+        Some(&format!(
+            "tools.records.lookup({{\n  /** {} */\n  id: string,\n}}): Promise<string>",
+            "A detailed identifier description. ".repeat(20).trim()
+        )),
+        false,
+    );
+    let text = render_with(&[documented], Some(40));
+    assert!(text.contains("- records (1 tool, none shown)"));
+    assert!(!text.contains("tools.records.lookup("));
+}
+
+// codemode/catalog.test.ts: "renders only the no-tools notice for an empty catalog"
+#[test]
+fn oc_codemode_catalog_renders_only_the_notice_when_empty() {
+    assert_eq!(render_with(&[], None), cc::EMPTY);
 }
 
 /// The catalog source renders a session's Code Mode tools as the Code Mode
@@ -1291,12 +1537,24 @@ async fn oc_session_keeps_the_baseline_stable_and_narrates_an_update() {
         h.section("Changed context")
     );
     assert_eq!(h.updates(), std::slice::from_ref(&update));
+    // An observation that finds nothing new records nothing.
+    let records = h.instruction_records().len();
+    h.prompt("Again").await;
+    assert_eq!(h.instruction_records().len(), records);
     // The update is in the log, so a reopened session sees it in place.
     let id = h.s.id.clone();
     h.reopen(&id, None);
     assert_eq!(
         h.roles(),
-        ["user", "assistant", "system", "user", "assistant"]
+        [
+            "user",
+            "assistant",
+            "system",
+            "user",
+            "assistant",
+            "user",
+            "assistant"
+        ]
     );
     assert_eq!(h.updates(), [update]);
     match &h.instruction_records()[1] {
@@ -1745,4 +2003,35 @@ async fn oc_session_narrates_only_the_code_mode_tools_that_change() {
     h.prompt("Forked").await;
     assert!(h.system().contains("tools.rich.extra"));
     assert!(catalog_updates(&h).is_empty());
+}
+
+/// References with a description are listed in the system prompt, and one
+/// added to the config by the time a session is reopened is announced.
+#[tokio::test(flavor = "multi_thread")]
+async fn references_reach_the_model_and_later_ones_as_an_update() {
+    let mut h = H::with(
+        json!({"references": {"docs": {"path": "/srv/docs", "description": "Use for product documentation"}, "quiet": "/srv/quiet"}}),
+        Some(CONTEXT),
+    )
+    .await;
+    h.prompt("First").await;
+    let system = h.system();
+    assert!(
+        system.contains("<available_references>\n  <reference>\n    <name>docs</name>\n    <path>/srv/docs</path>\n    <description>Use for product documentation</description>\n  </reference>\n</available_references>"),
+        "{system}"
+    );
+    assert!(!system.contains("quiet"), "no description, not listed");
+    h.loaded.config.references.insert(
+        "examples".into(),
+        serde_json::from_value(json!({"path": "/srv/examples", "description": "Use for examples"}))
+            .unwrap(),
+    );
+    let id = h.s.id.clone();
+    h.reopen(&id, None);
+    h.prompt("Second").await;
+    assert_eq!(h.system(), system);
+    assert_eq!(
+        h.updates(),
+        ["New project references are available in addition to those previously listed:\n  <reference>\n    <name>examples</name>\n    <path>/srv/examples</path>\n    <description>Use for examples</description>\n  </reference>"]
+    );
 }
