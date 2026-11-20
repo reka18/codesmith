@@ -87,6 +87,17 @@ pub struct Compatibility {
     /// (detected: a finish reason is required).
     #[serde(alias = "require_finish_reason")]
     pub require_finish_reason: Option<bool>,
+    /// The assistant message field reasoning is read from and written to
+    /// (detected: whichever of `reasoning_content`, `reasoning`,
+    /// `reasoning_text` the model streams). Setting it makes reasoning
+    /// required unless `requireReasoning` says otherwise.
+    #[serde(alias = "reasoning_field")]
+    pub reasoning_field: Option<String>,
+    /// Anthropic Messages: whether unsigned reasoning is dropped rather than
+    /// replayed with an empty signature (detected: dropped, except on Kimi,
+    /// MiMo, Qwen and MiniMax servers).
+    #[serde(alias = "require_signature")]
+    pub require_signature: Option<bool>,
 }
 
 /// Azure OpenAI's base URL and query parameters for `model` (after OpenCode's

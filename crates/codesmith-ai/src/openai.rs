@@ -28,8 +28,12 @@ pub struct Compat {
     /// OpenAI models (direct or `openai/...` behind a gateway): tool call ids
     /// of at most 40 characters.
     pub short_ids: bool,
-    /// DeepSeek: every assistant message carries `reasoning_content`.
+    /// DeepSeek (and a configured reasoning field): every assistant message
+    /// carries a reasoning field, empty when there was none.
     pub require_reasoning: bool,
+    /// The field the model declares it reads and streams reasoning under
+    /// (OpenCode's `compatibility.reasoningField`); `None` detects it.
+    pub reasoning_field: Option<String>,
     /// Z.ai GLM models after 4.5 stream tool calls only with `tool_stream`.
     pub zai_tool_stream: bool,
     /// The server takes a body `prompt_cache_key` (OpenAI, Azure, and the
@@ -83,6 +87,7 @@ impl Compat {
             claude: id.contains("claude"),
             short_ids: openai || id.starts_with("openai/"),
             require_reasoning: url.contains("deepseek.com") || id.contains("deepseek"),
+            reasoning_field: None,
             zai_tool_stream: (url.contains("api.z.ai") || url.contains("open.bigmodel.cn"))
                 && !matches!(
                     id.as_str(),
@@ -130,6 +135,13 @@ impl Compat {
         }
         if let Some(u) = o.stream_usage {
             c.no_stream_usage = !u;
+        }
+        if p.name.eq_ignore_ascii_case("deepseek") {
+            c.require_reasoning = true;
+        }
+        if let Some(f) = o.reasoning_field.as_deref().filter(|f| !f.is_empty()) {
+            c.reasoning_field = Some(f.to_string());
+            c.require_reasoning = true;
         }
         if let Some(r) = o.require_reasoning {
             c.require_reasoning = r;
@@ -608,7 +620,11 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
             // under, else `reasoning_content`; fully structured reasoning
             // (OpenRouter) is the details list itself, but Kimi wants
             // `reasoning_content` beside its details.
+            let configured = compat.reasoning_field.as_deref();
             let field = match field {
+                _ if configured.is_some() && (compat.require_reasoning || any_reasoning) => {
+                    configured
+                }
                 _ if !any_reasoning => compat.require_reasoning.then_some("reasoning_content"),
                 Some(f) => Some(f),
                 None if !structured_only || compat.require_reasoning || kimi => {
@@ -621,11 +637,16 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
             } else {
                 Some(reasoning.as_str())
             };
-            if let Some(d) = details {
-                msg["reasoning_details"] = json!(d);
-            }
-            if let Some(o) = opaque {
-                msg["reasoning_opaque"] = json!(o);
+            // A model that declares another reasoning field reads reasoning
+            // there: structured state from earlier turns (perhaps another
+            // model's) is not sent.
+            if configured.is_none_or(|f| f == "reasoning_details") {
+                if let Some(d) = details {
+                    msg["reasoning_details"] = json!(d);
+                }
+                if let Some(o) = opaque {
+                    msg["reasoning_opaque"] = json!(o);
+                }
             }
             if let (Some(f), Some(t)) = (field.filter(|f| *f != "reasoning_details"), scalar) {
                 msg[f] = json!(t);
@@ -658,6 +679,8 @@ pub struct State {
     opaque: Option<String>,
     /// The field scalar reasoning text streamed under.
     field: Option<String>,
+    /// The field the model declares (read before the known ones).
+    configured: Option<String>,
     /// The response's one text block and one reasoning block have started.
     text: bool,
     reasoning: bool,
@@ -738,6 +761,15 @@ fn replay_detail(d: &Value) -> Value {
 }
 
 impl State {
+    /// A stream from a server with `compat`.
+    pub fn new(compat: &Compat) -> Self {
+        State {
+            configured: compat.reasoning_field.clone(),
+            optional_finish: compat.optional_finish,
+            ..Default::default()
+        }
+    }
+
     fn text(&mut self, t: &str, out: &mut Vec<Event>) {
         if !std::mem::replace(&mut self.text, true) {
             out.push(Event::TextStart("text-0".into()));
@@ -872,12 +904,17 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
             "OpenAI Chat received content after the finish reason: {v}"
         )));
     }
-    // Servers name the field differently; some send the same text under two.
-    let scalar = ["reasoning_content", "reasoning", "reasoning_text"]
+    // Servers name the field differently; some send the same text under
+    // two. A field the model declares is read first, and is the one stored.
+    let scalar = state
+        .configured
         .iter()
-        .find_map(|k| Some((*k, delta[k].as_str().filter(|s| !s.is_empty())?)));
+        .map(String::as_str)
+        .chain(["reasoning_content", "reasoning", "reasoning_text"])
+        .find_map(|k| Some((k, delta[k].as_str().filter(|s| !s.is_empty())?)));
     if let Some((k, r)) = scalar {
-        state.field.get_or_insert_with(|| k.to_string());
+        let k = state.configured.clone().unwrap_or_else(|| k.to_string());
+        state.field.get_or_insert(k);
         state.reasoning(r, &mut out);
     }
     if let Some(ds) = delta["reasoning_details"].as_array() {
@@ -900,6 +937,18 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     }
     if let Some(o) = delta["reasoning_opaque"].as_str().filter(|s| !s.is_empty()) {
         state.opaque = Some(o.to_string());
+    }
+    // Reasoning that is only state (details without text, an opaque value)
+    // still comes before the output that follows it.
+    let output = [&delta["content"], &delta["refusal"]]
+        .iter()
+        .any(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+        || delta["tool_calls"]
+            .as_array()
+            .is_some_and(|c| !c.is_empty());
+    if (state.details_seen || state.opaque.is_some()) && output && !state.reasoning {
+        state.reasoning = true;
+        out.push(Event::ReasoningStart("reasoning-0".into()));
     }
     if let Some(t) = delta["content"].as_str().filter(|s| !s.is_empty()) {
         state.text(t, &mut out);
@@ -1163,11 +1212,13 @@ pub struct Decode {
 }
 
 impl Decode {
-    /// A decoder for a server with `compat`'s stream rules.
+    /// A decoder for a server with `compat`: its stream rules and declared
+    /// reasoning field.
     pub fn new(compat: &Compat) -> Self {
-        let mut d = Decode::default();
-        d.state.optional_finish = compat.optional_finish;
-        d
+        Decode {
+            state: State::new(compat),
+            done: false,
+        }
     }
 }
 
@@ -1198,10 +1249,19 @@ pub async fn stream(
     req: &Request,
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(request(p, client, req)).await?;
-    Ok(drive(
-        resp,
-        Decode::new(&Compat::for_provider(p, &req.model)),
-    ))
+    let compat = Compat::for_provider(p, &req.model);
+    Ok(drive(resp, Decode::new(&compat)))
+}
+
+/// Compatibility overrides Chat cannot honour: a declared reasoning field
+/// that is one of the assistant message's own fields.
+pub fn check_compat(p: &Provider) -> Result<(), Error> {
+    match p.compat.reasoning_field.as_deref() {
+        Some(f @ ("role" | "content" | "refusal" | "tool_calls")) => Err(Error::Invalid(format!(
+            "{ROUTE} reasoning field conflicts with reserved field {f}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The Chat Completions request for `req`.

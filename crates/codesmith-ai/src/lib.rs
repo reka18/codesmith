@@ -925,6 +925,9 @@ pub type EventStream = BoxStream<'static, Result<Event, Error>>;
 #[derive(Debug, Clone, Default)]
 pub struct Provider {
     pub protocol: Protocol,
+    /// The configured provider id (`deepseek`, `kimi-for-coding`), for
+    /// behaviour OpenCode detects by provider; may be empty.
+    pub name: String,
     /// Base URL including the version path, e.g. `https://api.openai.com/v1`.
     pub base_url: String,
     pub api_key: Option<String>,
@@ -940,6 +943,14 @@ pub struct Provider {
 }
 
 impl Provider {
+    /// Compatibility overrides the protocol cannot honour.
+    fn check_compat(&self) -> Result<(), Error> {
+        match self.protocol {
+            Protocol::OpenaiChat => openai::check_compat(self),
+            _ => Ok(()),
+        }
+    }
+
     pub async fn stream(
         &self,
         client: &reqwest::Client,
@@ -957,6 +968,7 @@ impl Provider {
             &owned
         };
         check(self.protocol, req)?;
+        self.check_compat()?;
         match self.protocol {
             Protocol::OpenaiChat => openai::stream(self, client, req).await,
             Protocol::AnthropicMessages => anthropic::stream(self, client, req).await,
@@ -978,6 +990,7 @@ impl Provider {
             ..req.clone()
         };
         check(self.protocol, &req)?;
+        self.check_compat()?;
         let rb = match self.protocol {
             Protocol::OpenaiChat => openai::request(self, client, &req),
             Protocol::AnthropicMessages => anthropic::request(self, client, &req),
@@ -1121,8 +1134,9 @@ impl Collector {
     fn close(&mut self) {
         match self.open.take() {
             Some(Open::Text(t)) => self.parts.push(Part::text(t)),
-            // A block that opened but streamed nothing and has no state.
-            Some(Open::Reasoning(t)) if t.is_empty() => {}
+            // A block that streamed nothing yet keeps its place, for state
+            // that ends it later (Chat sends it at the end of the stream);
+            // `finish` drops it if none comes.
             Some(Open::Reasoning(t)) => {
                 self.loose = Some(self.parts.len());
                 self.parts.push(Part::Reasoning(t.into()));
@@ -1143,6 +1157,8 @@ impl Collector {
     /// The parts so far, in order.
     pub fn finish(mut self) -> Vec<Part> {
         self.close();
+        self.parts
+            .retain(|p| !matches!(p, Part::Reasoning(r) if r.text.is_empty() && r.meta.is_none()));
         self.parts
     }
 }

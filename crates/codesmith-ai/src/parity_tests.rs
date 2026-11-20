@@ -39,6 +39,9 @@ mod endpoint;
 #[path = "parity_hosted.rs"]
 mod hosted;
 
+#[path = "parity_metadata.rs"]
+mod metadata;
+
 /// Run named cases, reporting every failing name rather than the first.
 fn run(cases: &[(&str, fn())]) {
     let failed: Vec<&str> = cases
@@ -611,19 +614,22 @@ fn openai_chat_requests() {
                 }
             }
         }),
-        ("openai-compatible-chat :: requires reasoning for DeepSeek models, providers, and endpoints unless explicitly overridden (adapted: no provider-name or reasoningField cases)", || {
-            for (model, url, over, required) in [
-                ("DeepSeek-V3", COMPATIBLE, None, true),
-                ("custom-model", "https://API.DeepSeek.COM/v1", None, true),
-                ("ordinary-model", COMPATIBLE, None, false),
-                ("ordinary-model", COMPATIBLE, Some(true), true),
-                ("deepseek-chat", "https://api.deepseek.com/v1", Some(false), false),
+        ("openai-compatible-chat :: requires reasoning for DeepSeek models, providers, and endpoints unless explicitly overridden", || {
+            for (model, provider, url, over, field, required) in [
+                ("DeepSeek-V3", "custom", COMPATIBLE, None, None, true),
+                ("custom-model", "deepseek", COMPATIBLE, None, None, true),
+                ("custom-model", "custom", "https://API.DeepSeek.COM/v1", None, None, true),
+                ("ordinary-model", "custom", COMPATIBLE, None, None, false),
+                ("ordinary-model", "custom", COMPATIBLE, Some(true), Some("reasoning"), true),
+                ("deepseek-chat", "deepseek", "https://api.deepseek.com/v1", Some(false), None, false),
             ] {
                 let mut p = crate::Provider {
+                    name: provider.into(),
                     base_url: url.into(),
                     ..Default::default()
                 };
                 p.compat.require_reasoning = over;
+                p.compat.reasoning_field = field.map(str::to_string);
                 let r = req(
                     model,
                     vec![
@@ -633,11 +639,12 @@ fn openai_chat_requests() {
                     ],
                 );
                 let b = openai::body_for(&r, &openai::Compat::for_provider(&p, model));
+                let field = field.unwrap_or("reasoning_content");
                 for m in b["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "assistant") {
                     if required {
-                        assert_eq!(m["reasoning_content"], "", "{model}");
+                        assert_eq!(m[field], "", "{model}");
                     } else {
-                        assert!(m.get("reasoning_content").is_none(), "{model}");
+                        assert!(m.get(field).is_none(), "{model}");
                     }
                 }
             }

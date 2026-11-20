@@ -881,6 +881,7 @@ impl Config {
             model_id,
             provider: codesmith_ai::Provider {
                 protocol,
+                name: pid.to_string(),
                 base_url,
                 api_key,
                 headers,
@@ -1325,8 +1326,10 @@ mod tests {
             "settings": {"baseURL": "http://x/v1", "apiKey": "k",
                 "queryParams": {"api-version": "2026-01-01"}, "apiKeyHeader": "x-key",
                 "encoding": "gzip"},
-            "compatibility": {"streamUsage": false, "maxTokensField": "max_tokens"},
-            "models": {"m": {"compatibility": {"maxTokensField": "max_completion_tokens"}}}
+            "compatibility": {"streamUsage": false, "maxTokensField": "max_tokens",
+                "reasoningField": "vendor_reasoning"},
+            "models": {"m": {"compatibility": {"maxTokensField": "max_completion_tokens",
+                "requireSignature": false}}}
         }}}))
         .unwrap();
         let m = c.resolve_model("p/m").unwrap();
@@ -1337,6 +1340,13 @@ mod tests {
         assert_eq!(m.provider.auth, codesmith_ai::Auth::Header("x-key".into()));
         assert_eq!(m.provider.encoding, codesmith_ai::Encoding::Gzip);
         assert_eq!(m.provider.compat.stream_usage, Some(false));
+        assert_eq!(
+            m.provider.compat.reasoning_field.as_deref(),
+            Some("vendor_reasoning")
+        );
+        assert_eq!(m.provider.compat.require_signature, Some(false));
+        // Detection by provider (DeepSeek, Kimi) reads the provider's id.
+        assert_eq!(m.provider.name, "p");
         assert_eq!(
             m.provider.compat.max_tokens_field.as_deref(),
             Some("max_completion_tokens")
