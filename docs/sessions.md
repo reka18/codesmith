@@ -108,7 +108,9 @@ request. See [`codesmith stats`](cli.md#codesmith-stats).
 
 `codesmith -w` (or `codesmith run -w "..."`) starts the session in a new git
 worktree, so the agent works on a separate checkout while yours stays as it
-is. `-w NAME` names it, otherwise it gets a name like `swift-otter`.
+is. `-w=NAME` (or `--worktree=NAME`) names it, otherwise it gets a name
+like `swift-otter`. As in OpenCode, the name needs the `=`: in
+`codesmith run -w "fix it"`, `fix it` is the message.
 
 - New worktrees go under the data folder's `worktree/<project>/`, or under
   `worktree.directory` (an absolute path, or one relative to the project

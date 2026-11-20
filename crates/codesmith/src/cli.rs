@@ -21,8 +21,8 @@ struct Cli {
     /// Reserved; currently has no effect (CodeSmith has no log output yet).
     #[arg(long, global = true)]
     print_logs: bool,
-    /// Start in a new git worktree (optionally with this name) (interactive UI).
-    #[arg(short = 'w', long, num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
+    /// Start in a new git worktree (optionally named, as --worktree=NAME) (interactive UI).
+    #[arg(short = 'w', long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_name = "NAME")]
     worktree: Option<String>,
     /// Continue the most recent session in this directory (interactive UI).
     #[arg(short, long)]
@@ -188,8 +188,9 @@ struct RunArgs {
     /// Title for a new session (otherwise one is generated).
     #[arg(long)]
     title: Option<String>,
-    /// Run in a new git worktree, optionally with this name.
-    #[arg(short = 'w', long, num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
+    /// Run in a new git worktree, optionally named (--worktree=NAME; a
+    /// separate word is part of the message).
+    #[arg(short = 'w', long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_name = "NAME")]
     worktree: Option<String>,
 }
 
@@ -1946,3 +1947,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "cli_parity.rs"]
+mod parity;

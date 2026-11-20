@@ -43,7 +43,7 @@ async fn run_in_a_worktree_writes_only_there() {
     .await;
     e.config(&m.url, json!({}));
     let out = e
-        .run(&["run", "-w", "bump", "--format", "json", "bump the version"])
+        .run(&["run", "-w=bump", "--format", "json", "bump the version"])
         .await;
     out.ok();
     let line = out

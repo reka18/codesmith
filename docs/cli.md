@@ -30,7 +30,7 @@ Opens the [interactive UI](interactive-ui.md).
 | `-c, --continue` | Continue the most recent session in this folder. |
 | `-s, --session ID` | Continue this session. |
 | `--prompt TEXT` | Send this prompt as soon as the UI opens. |
-| `-w, --worktree [NAME]` | Start in a new git [worktree](sessions.md#worktrees). |
+| `-w, --worktree[=NAME]` | Start in a new git [worktree](sessions.md#worktrees). |
 | `--auto` | Approve every permission request that no rule denies. |
 | `--print-logs` | Accepted on every command, but has no effect yet. |
 
@@ -61,7 +61,7 @@ codesmith run --format json "list the TODOs" | jq .
 | `-c, --continue` | Continue the most recent session in this folder. |
 | `-s, --session ID` | Continue this session. |
 | `--title TEXT` | Title for a new session (otherwise one is generated). |
-| `-w, --worktree [NAME]` | Run in a new git worktree. |
+| `-w, --worktree[=NAME]` | Run in a new git worktree (a name needs the `=`). |
 
 Without `--auto`, requests that a rule marks `ask` are asked on the
 terminal. See [answering a request](permissions.md#answering-a-request). The
