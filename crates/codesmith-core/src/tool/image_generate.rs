@@ -363,7 +363,9 @@ async fn start(ctx: &Ctx<'_>, env: Env<'_>, input: &Value) -> Result<String, Str
         },
         reference: reference.clone(),
         stem: stem.clone(),
-        requested: target.as_ref().map(|t| t.absolute.clone()),
+        requested: target
+            .as_ref()
+            .map(|t| (t.absolute.clone(), t.real.clone())),
         gate: env.gate,
         cwd: ctx.cwd.clone(),
         root: ctx.root.clone(),
@@ -405,7 +407,9 @@ struct Job {
     input: generate::ImageInput,
     reference: String,
     stem: PathBuf,
-    requested: Option<PathBuf>,
+    /// The path the call asked for, as named and with symlinks resolved
+    /// when it was approved.
+    requested: Option<(PathBuf, PathBuf)>,
     gate: Gate,
     cwd: PathBuf,
     root: PathBuf,
@@ -433,26 +437,37 @@ impl Job {
             crate::media::detect(&image.data[..image.data.len().min(crate::media::SNIFF_BYTES)])
                 .unwrap_or("image/png");
         let file = PathBuf::from(format!("{}{}", self.stem.display(), extension(mime)));
-        // The edit prompt covered the requested path. Replacing another
-        // existing file needs its own approval; a new one only has to pass
-        // the deny rules.
-        if let Some(requested) = &self.requested {
-            if &file != requested {
-                let ctx = Ctx {
-                    cwd: self.cwd.clone(),
-                    root: self.root.clone(),
-                    gate: &self.gate,
-                    shell: String::new(),
-                    session_id: self.session.clone(),
-                    limits: Default::default(),
-                    client: self.client.clone(),
-                    jobs: None,
-                    websearch: None,
-                    format: None,
-                    lsp: None,
-                    progress: None,
-                };
-                let t = ctx.resolve(&file.display().to_string());
+        let ctx = Ctx {
+            cwd: self.cwd.clone(),
+            root: self.root.clone(),
+            gate: &self.gate,
+            shell: String::new(),
+            session_id: self.session.clone(),
+            limits: Default::default(),
+            client: self.client.clone(),
+            jobs: None,
+            websearch: None,
+            format: None,
+            lsp: None,
+            progress: None,
+        };
+        let t = ctx.resolve(&file.display().to_string());
+        // The edit prompt covered the requested path, where it led when it
+        // was approved. Another path (the extension changed) gets the
+        // checks a write does: outside the project it needs its own
+        // approval, and replacing an existing file asks; a new one only has
+        // to pass the deny rules.
+        match &self.requested {
+            Some((requested, real)) if &file == requested => {
+                if &t.real != real {
+                    return Err(failed(format!(
+                        "{} now leads somewhere else than when it was approved.",
+                        file.display()
+                    )));
+                }
+            }
+            Some(_) => {
+                ctx.authorize_external(&t, false).map_err(failed)?;
                 if file.exists() {
                     ctx.ask(Request {
                         action: "edit".into(),
@@ -465,18 +480,48 @@ impl Job {
                     ctx.check_not_denied("edit", &t.resources).map_err(failed)?;
                 }
             }
+            None => {}
         }
         let bytes = through_blob_store(self.store.as_deref(), &self.session, &image.data, mime);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| failed(e.to_string()))?;
         }
-        std::fs::write(&file, &bytes).map_err(|e| failed(e.to_string()))?;
+        // Checked again just before writing: what was allowed must still be
+        // where the path leads, and the file itself is never a symlink.
+        if ctx.resolve(&file.display().to_string()).real != t.real {
+            return Err(failed(format!(
+                "{} changed while the image was being written.",
+                file.display()
+            )));
+        }
+        write_no_follow(&file, &bytes).map_err(|e| failed(e.to_string()))?;
         Ok(format!(
             "Image request finished. Saved image: {} ({}).\nUse the read tool on this path to view the image.",
             file.display(),
             self.reference
         ))
     }
+}
+
+/// Create or replace the file at `path` with `data`, refusing to follow a
+/// symlink there.
+fn write_no_follow(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::other(format!(
+            "{} is a symlink; not writing through it",
+            path.display()
+        )));
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(data)
 }
 
 /// Keep `data` in the session's blob store (once, however often it is
@@ -509,6 +554,21 @@ mod url_tests {
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_image_file_is_never_written_through_a_symlink() {
+        let d = tempfile::tempdir().unwrap();
+        let victim = d.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let link = d.path().join("out.png");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(write_no_follow(&link, b"img").is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        let plain = d.path().join("plain.png");
+        write_no_follow(&plain, b"img").unwrap();
+        write_no_follow(&plain, b"i2").unwrap();
+        assert_eq!(std::fs::read(&plain).unwrap(), b"i2");
     }
 
     #[tokio::test(flavor = "multi_thread")]

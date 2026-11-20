@@ -552,6 +552,57 @@ async fn oc_image_tool_saves_with_the_extension_of_the_images_real_format() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_renamed_image_is_not_written_outside_the_project_through_a_symlink() {
+    let server = images(JPEG).await;
+    let s = Setup::new(config(
+        vec![provider(
+            "test",
+            "@opencode/ai/providers/openai/responses",
+            vec![painter("painter", &server.url, &["text"])],
+        )],
+        &["test"],
+        json!({}),
+    ));
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().canonicalize().unwrap().join("victim.jpg");
+    std::fs::write(&victim, "keep").unwrap();
+    // cat.png was approved; the real format renames it to cat.jpg, a
+    // symlink out of the project.
+    std::os::unix::fs::symlink(&victim, s.root().join("cat.jpg")).unwrap();
+    s.run(json!({"prompt": "a cat", "path": "cat.png"}))
+        .await
+        .unwrap();
+    let notice = s.notice().await;
+    assert!(notice.contains("state=\"error\""), "{notice}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+    // The renamed path got the outside-the-project check.
+    let external: Vec<Vec<String>> = s
+        .rec
+        .asked()
+        .into_iter()
+        .filter(|(a, _)| a == "external_directory")
+        .map(|(_, r)| r)
+        .collect();
+    assert!(
+        external
+            .iter()
+            .any(|r| r.iter().any(|x| x.ends_with("victim.jpg"))),
+        "{external:?}"
+    );
+
+    // Declining that check stops the job before anything is written.
+    *s.rec.deny.lock().unwrap() = Some("external_directory".into());
+    std::fs::remove_file(s.root().join("cat.jpg")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("new.jpg"), s.root().join("cat.jpg")).unwrap();
+    s.run(json!({"prompt": "a cat", "path": "cat.png"}))
+        .await
+        .unwrap();
+    let notice = s.notice().await;
+    assert!(notice.contains("state=\"error\""), "{notice}");
+    assert!(!outside.path().join("new.jpg").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn oc_image_tool_reports_a_failed_generation_in_the_completion_notice() {
     let server = serve(Arc::new(|_: &Seen| {
         (
