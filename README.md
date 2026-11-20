@@ -552,13 +552,20 @@ CodeSmith sessions. In Zed's settings:
 "agent_servers": { "CodeSmith": { "command": "codesmith", "args": ["acp"] } }
 ```
 
-Sessions stream text, reasoning, tool calls and plans (from the todo list);
-permission requests appear in the editor; agents (build, plan, …) are modes;
-slash commands, including `/review` and `/calibrate`, are offered; and
-sessions can be listed, loaded (with their history replayed), resumed,
-cancelled, closed and deleted. MCP servers the editor passes in are added to
-the session (stdio and HTTP). Sessions are the same ones the terminal UI and
-`codesmith run` use.
+Sessions stream text, reasoning (with message ids), tool calls and plans
+(from the todo list); edits and writes carry full-file diffs, also in their
+permission requests, which appear in the editor. Agents (build, plan, …) are
+modes, and the model and mode are config options the editor can switch.
+Turns end with a stop reason (`end_turn`, `max_tokens`, `refusal`,
+`max_turn_requests`, `cancelled`) and token usage, followed by the context
+window use and cost when the model's limit (and price) is configured.
+Slash commands, including `/review`, `/calibrate` and `/compact`, are
+offered. Sessions can be listed, loaded (with their whole history
+replayed), resumed, forked, cancelled, closed and deleted, and can be given
+additional directories the agent may use without asking. When the editor
+supports form elicitation, the agent can ask questions with the `question`
+tool. MCP servers the editor passes in are added to the session (stdio and
+HTTP). Sessions are the same ones the terminal UI and `codesmith run` use.
 
 ## Local server
 

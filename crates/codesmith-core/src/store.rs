@@ -305,6 +305,16 @@ impl Store {
         Ok(())
     }
 
+    /// Record a switch of agent and model, so a reopened session keeps them.
+    pub fn set_selection(&self, id: &str, agent: &str, model: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE session SET agent = ?2, model = ?3 WHERE id = ?1",
+            params![id, agent, model],
+        )?;
+        Ok(())
+    }
+
     pub fn set_usage(&self, id: &str, usage: &Usage) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
