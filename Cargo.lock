@@ -662,6 +662,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "image",
+ "libc",
  "rand 0.8.8",
  "regex",
  "reqwest",

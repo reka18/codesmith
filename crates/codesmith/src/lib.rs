@@ -31,6 +31,8 @@ pub(crate) use cli::{all_commands_with, connect_mcp};
 
 /// Run the CodeSmith command line with these plugins installed, then exit.
 pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
+    // Code Mode programs run in a child copy of this binary.
+    codesmith_core::codemode::child_main_if_requested();
     plugin::install(plugins);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

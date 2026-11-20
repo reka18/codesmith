@@ -4,14 +4,28 @@
 //! Rust JavaScript engine with no filesystem, network or process access of
 //! its own — the only way out is through the tools offered here, and every
 //! call goes through CodeSmith's permissions like a direct one.
+//!
+//! A program can still burn CPU or memory, and Boa cannot be interrupted, so
+//! when a helper is registered ([`set_helper`]; the `codesmith` binary
+//! registers itself) each execution runs in a child process: CPU-time and
+//! (on Linux) address-space rlimits, a resident-memory watchdog, and a kill
+//! on timeout bound it, and tool calls travel over the child's stdin and
+//! stdout as JSON lines. Without a helper (library users who do not call
+//! [`child_main_if_requested`]) programs run on a thread in this process with
+//! Boa's loop and recursion limits and the prelude's caps on buffer and
+//! string sizes; a runaway program there keeps its thread busy after the
+//! timeout until it ends on its own.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// One tool available inside Code Mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     /// The tool's name as the session knows it (e.g. `github_create_issue`).
     pub tool: String,
@@ -27,6 +41,16 @@ pub const MAX_TOOL_CALLS: usize = 50;
 pub const TIMEOUT: Duration = Duration::from_secs(180);
 const LOOP_LIMIT: u64 = 5_000_000;
 const RECURSION_LIMIT: usize = 400;
+/// Resident memory a helper process may reach before it is stopped.
+pub const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
+/// The address-space rlimit for a helper on Linux (virtual memory, so
+/// larger than [`MEMORY_LIMIT`]): allocations past it fail.
+#[cfg(target_os = "linux")]
+const ADDRESS_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+/// A helper exits with this code when it passes [`MEMORY_LIMIT`].
+const MEMORY_EXIT: i32 = 86;
+/// The argument that starts a program as the Code Mode helper.
+pub const CHILD_ARG: &str = "__codemode";
 
 fn is_ident(s: &str) -> bool {
     let mut c = s.chars();
@@ -206,6 +230,43 @@ pub fn program(code: &str) -> String {
     out
 }
 
+/// Size caps on what a program can allocate in one step, so the obvious
+/// memory bombs fail with a RangeError instead of taking the process down
+/// (the helper's memory watchdog covers the rest).
+const CAPS: &str = r#"(() => {
+  const MAX_BYTES = 64 * 1024 * 1024, MAX_CHARS = 16 * 1024 * 1024;
+  const bytes = (n) => { if (Number(n) > MAX_BYTES) throw new RangeError('Code Mode limits buffers to 64 MiB'); };
+  const chars = (n) => { if (Number(n) > MAX_CHARS) throw new RangeError('Code Mode limits strings to 16M characters'); };
+  const guard = (C, check) => {
+    const P = new Proxy(C, {
+      construct(t, a, nt) { check(a); return Reflect.construct(t, a, nt === P ? t : nt); },
+      apply(t, self, a) { check(a); return Reflect.apply(t, self, a); },
+    });
+    Object.defineProperty(C.prototype, 'constructor', { value: P, writable: true, configurable: true });
+    return P;
+  };
+  const buffer = (a) => { bytes(a[0]); if (a[1] && typeof a[1] === 'object') bytes(a[1].maxByteLength); };
+  globalThis.ArrayBuffer = guard(ArrayBuffer, buffer);
+  if (typeof SharedArrayBuffer === 'function') globalThis.SharedArrayBuffer = guard(SharedArrayBuffer, buffer);
+  for (const name of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Float16Array']) {
+    const T = globalThis[name];
+    if (typeof T !== 'function') continue;
+    globalThis[name] = guard(T, (a) => {
+      const x = a[0];
+      if (x === null || typeof x !== 'object') bytes(Number(x) * T.BYTES_PER_ELEMENT);
+      else if (typeof x.length === 'number') bytes(x.length * T.BYTES_PER_ELEMENT);
+    });
+  }
+  const repeat = String.prototype.repeat, padStart = String.prototype.padStart, padEnd = String.prototype.padEnd;
+  String.prototype.repeat = function (n) { chars(String(this).length * Number(n)); return repeat.call(this, n); };
+  String.prototype.padStart = function (n, f) { chars(n); return padStart.call(this, n, f); };
+  String.prototype.padEnd = function (n, f) { chars(n); return padEnd.call(this, n, f); };
+  const ArrayCtor = Array;
+  const array = (a) => { if (a.length === 1 && typeof a[0] === 'number') bytes(a[0] * 8); };
+  globalThis.Array = guard(ArrayCtor, array);
+})();
+"#;
+
 fn prelude(entries: &[Entry]) -> String {
     let mut ns: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
     for e in entries {
@@ -219,6 +280,7 @@ fn prelude(entries: &[Entry]) -> String {
             s.push_str(&format!("tools[{key}][{}] = async (input) => __call({}, input === undefined ? {{}} : input);\n", serde_json::to_string(&e.name).unwrap(), serde_json::to_string(&e.tool).unwrap()));
         }
     }
+    s.push_str(CAPS);
     s.push_str("const __logs = [];\nconst console = { log: (...a) => { __logs.push(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')); } };\nconsole.error = console.log; console.warn = console.log; console.info = console.log;\n");
     s
 }
@@ -259,17 +321,15 @@ impl Outcome {
     }
 }
 
-fn run_js(
-    code: String,
-    entries: Vec<Entry>,
-    calls: mpsc::UnboundedSender<Call>,
-    max_calls: usize,
-) -> Outcome {
+/// Runs one tool call for the program: `None` when the execution was
+/// stopped, otherwise the tool's text or error.
+type Caller = Arc<dyn Fn(String, Value) -> Option<Result<String, String>> + Send + Sync>;
+
+fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -> Outcome {
     use boa_engine::builtins::promise::PromiseState;
     use boa_engine::object::builtins::JsPromise;
     use boa_engine::{js_string, Context, JsNativeError, JsValue, NativeFunction, Source};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     let mut ctx = Context::default();
     ctx.runtime_limits_mut()
@@ -300,28 +360,15 @@ fn run_js(
                     ))
                     .into());
             }
-            let (tx, rx) = std::sync::mpsc::channel();
-            if calls
-                .send(Call {
-                    tool: tool.clone(),
-                    input,
-                    reply: tx,
-                })
-                .is_err()
-            {
-                return Err(JsNativeError::error()
-                    .with_message("the execution was stopped")
-                    .into());
-            }
-            match rx.recv() {
-                Ok(Ok(text)) => match serde_json::from_str::<Value>(&text) {
+            match caller(tool.clone(), input) {
+                Some(Ok(text)) => match serde_json::from_str::<Value>(&text) {
                     Ok(v) if v.is_object() || v.is_array() => JsValue::from_json(&v, ctx),
                     _ => Ok(JsValue::from(js_string!(text.as_str()))),
                 },
-                Ok(Err(e)) => Err(JsNativeError::error()
+                Some(Err(e)) => Err(JsNativeError::error()
                     .with_message(format!("{tool}: {e}"))
                     .into()),
-                Err(_) => Err(JsNativeError::error()
+                None => Err(JsNativeError::error()
                     .with_message("the execution was stopped")
                     .into()),
             }
@@ -377,9 +424,416 @@ fn run_js(
     }
 }
 
-/// Run a program. `exec` runs each tool call (with permissions) and
+fn timed_out(timeout: Duration, calls: usize) -> Outcome {
+    Outcome {
+        result: Err(format!("timed out after {}s", timeout.as_secs_f64())),
+        logs: vec![],
+        calls,
+    }
+}
+
+fn failed(e: String) -> Outcome {
+    Outcome {
+        result: Err(e),
+        logs: vec![],
+        calls: 0,
+    }
+}
+
+// ----- the helper process -----------------------------------------------------
+
+/// How to start the Code Mode helper: a program that calls [`child_main`]
+/// when started with these arguments and environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Helper {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    /// The helper's whole environment (it starts with an empty one).
+    pub env: Vec<(String, String)>,
+}
+
+static HELPER: RwLock<Option<Helper>> = RwLock::new(None);
+
+/// Run programs in this helper process from now on (`None`: in-process).
+pub fn set_helper(h: Option<Helper>) {
+    *HELPER.write().unwrap() = h;
+}
+
+/// The registered helper, if any.
+pub fn helper() -> Option<Helper> {
+    HELPER.read().unwrap().clone()
+}
+
+/// For a binary's `main`: serve as the helper if started as one (this does
+/// not return then), otherwise register this program as the helper.
+pub fn child_main_if_requested() {
+    if std::env::args_os().nth(1).is_some_and(|a| a == CHILD_ARG) {
+        child_main();
+    }
+    if let Ok(program) = std::env::current_exe() {
+        set_helper(Some(Helper {
+            program,
+            args: vec![CHILD_ARG.into()],
+            env: vec![],
+        }));
+    }
+}
+
+/// The first line a helper reads: what to run and its limits.
+#[derive(Serialize, Deserialize)]
+struct Job {
+    code: String,
+    entries: Vec<Entry>,
+    max_calls: usize,
+    cpu_seconds: u64,
+    memory: u64,
+}
+
+fn outcome_json(o: &Outcome) -> Value {
+    json!({
+        "done": true,
+        "result": match &o.result { Ok(v) => json!({"ok": v}), Err(e) => json!({"err": e}) },
+        "logs": o.logs,
+        "calls": o.calls,
+    })
+}
+
+fn outcome_from(v: &Value) -> Outcome {
+    let r = &v["result"];
+    Outcome {
+        result: match r.get("err").and_then(Value::as_str) {
+            Some(e) => Err(e.to_string()),
+            None => Ok(r.get("ok").cloned().unwrap_or(Value::Null)),
+        },
+        logs: serde_json::from_value(v["logs"].clone()).unwrap_or_default(),
+        calls: v["calls"].as_u64().unwrap_or(0) as usize,
+    }
+}
+
+#[cfg(unix)]
+fn limit(resource: libc::c_int, soft: u64, hard: u64) {
+    let r = libc::rlimit {
+        rlim_cur: soft as libc::rlim_t,
+        rlim_max: hard as libc::rlim_t,
+    };
+    // SAFETY: setrlimit only reads the struct.
+    unsafe {
+        libc::setrlimit(resource as _, &r);
+    }
+}
+
+/// The most resident memory this process has used, in bytes.
+#[cfg(unix)]
+fn peak_rss() -> u64 {
+    // SAFETY: getrusage fills the zeroed struct.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::getrusage(libc::RUSAGE_SELF, &mut u);
+    }
+    let v = u.ru_maxrss as u64;
+    if cfg!(target_os = "macos") {
+        v
+    } else {
+        v * 1024
+    }
+}
+
+/// Bound this helper: CPU time (the kernel stops it past the limit), the
+/// address space on Linux, and a watchdog that exits once resident memory
+/// passes `memory`.
+fn apply_limits(cpu_seconds: u64, memory: u64) {
+    #[cfg(unix)]
+    {
+        // SIGXCPU at the soft limit, SIGKILL a second later.
+        limit(
+            libc::RLIMIT_CPU as _,
+            cpu_seconds.max(1),
+            cpu_seconds.max(1) + 1,
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let address = ADDRESS_LIMIT.max(memory * 2);
+            limit(libc::RLIMIT_AS as _, address, address);
+        }
+        let _ = std::thread::Builder::new()
+            .name("codemode-watchdog".into())
+            .stack_size(64 * 1024)
+            .spawn(move || loop {
+                if peak_rss() > memory {
+                    std::process::exit(MEMORY_EXIT);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            });
+    }
+    #[cfg(not(unix))]
+    let _ = (cpu_seconds, memory);
+}
+
+/// Serve one execution over stdin and stdout, then exit. A binary calls
+/// this (usually through [`child_main_if_requested`]) when started as the
+/// helper; it reads a job line, answers each tool call it writes with the
+/// reply line it reads back, and ends with the outcome line.
+pub fn child_main() -> ! {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let mut first = String::new();
+    if stdin.lock().read_line(&mut first).is_err() {
+        std::process::exit(2);
+    }
+    let Ok(job) = serde_json::from_str::<Job>(&first) else {
+        std::process::exit(2);
+    };
+    apply_limits(job.cpu_seconds, job.memory);
+    let io = Arc::new(std::sync::Mutex::new((stdin, std::io::stdout())));
+    let line = |out: &mut std::io::Stdout, v: &Value| {
+        let mut out = out.lock();
+        writeln!(out, "{v}").and_then(|_| out.flush()).is_ok()
+    };
+    let io2 = io.clone();
+    let caller: Caller = Arc::new(move |tool, input| {
+        let mut g = io2.lock().ok()?;
+        let (stdin, stdout) = &mut *g;
+        if !line(stdout, &json!({"call": {"tool": tool, "input": input}})) {
+            return None;
+        }
+        let mut reply = String::new();
+        stdin.lock().read_line(&mut reply).ok().filter(|n| *n > 0)?;
+        let v: Value = serde_json::from_str(&reply).ok()?;
+        match (v["ok"].as_str(), v["err"].as_str()) {
+            (Some(t), _) => Some(Ok(t.to_string())),
+            (_, Some(e)) => Some(Err(e.to_string())),
+            _ => None,
+        }
+    });
+    let (code, entries, max_calls) = (job.code, job.entries, job.max_calls);
+    let out = std::thread::Builder::new()
+        .name("codemode".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || run_js(code, entries, caller, max_calls))
+        .map(|t| {
+            t.join()
+                .unwrap_or_else(|_| failed("Code Mode stopped unexpectedly".into()))
+        })
+        .unwrap_or_else(|e| failed(format!("could not start Code Mode: {e}")));
+    let mut g = io.lock().unwrap_or_else(|e| e.into_inner());
+    line(&mut g.1, &outcome_json(&out));
+    std::process::exit(0)
+}
+
+/// Helper processes started, with their programs (for tests to find theirs).
+#[cfg(test)]
+static CHILDREN: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// Why a helper ended without an outcome.
+fn exit_reason(status: std::io::Result<std::process::ExitStatus>, timeout: Duration) -> String {
+    let Ok(status) = status else {
+        return "Code Mode stopped unexpectedly".into();
+    };
+    if status.code() == Some(MEMORY_EXIT) {
+        return format!(
+            "the program used more than {} MiB of memory and was stopped",
+            MEMORY_LIMIT / (1024 * 1024)
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        match status.signal() {
+            Some(libc::SIGXCPU) | Some(libc::SIGKILL) => {
+                return format!(
+                    "the program used more than {}s of CPU time and was stopped",
+                    timeout.as_secs().max(1)
+                )
+            }
+            Some(libc::SIGABRT) | Some(libc::SIGSEGV) | Some(libc::SIGBUS) => {
+                return "the program ran out of memory and was stopped".into()
+            }
+            _ => {}
+        }
+    }
+    let _ = timeout;
+    format!("Code Mode stopped unexpectedly ({status})")
+}
+
+async fn execute_in_child<F, Fut>(
+    h: &Helper,
+    code: &str,
+    entries: &[Entry],
+    max_calls: usize,
+    timeout: Duration,
+    exec: &mut F,
+) -> Outcome
+where
+    F: FnMut(String, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut child = match tokio::process::Command::new(&h.program)
+        .args(&h.args)
+        .env_clear()
+        .envs(h.env.iter().cloned())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return failed(format!("could not start Code Mode: {e}")),
+    };
+    #[cfg(test)]
+    {
+        if let Some(pid) = child.id() {
+            CHILDREN.lock().unwrap().push((code.to_string(), pid));
+        }
+    }
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return failed("could not start Code Mode: no pipes".into());
+    };
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let job = Job {
+        code: code.into(),
+        entries: entries.to_vec(),
+        max_calls,
+        cpu_seconds: timeout.as_secs() + 1,
+        memory: MEMORY_LIMIT,
+    };
+    let job = format!("{}\n", serde_json::to_string(&job).unwrap_or_default());
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut calls = 0;
+    if stdin.write_all(job.as_bytes()).await.is_err() {
+        return failed(exit_reason(child.wait().await, timeout));
+    }
+    loop {
+        let line = tokio::select! {
+            l = lines.next_line() => l,
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                return timed_out(timeout, calls);
+            }
+        };
+        let Ok(Some(line)) = line else {
+            // It ended without an outcome: a limit stopped it, or it crashed.
+            let status = child.wait().await;
+            return Outcome {
+                calls,
+                ..failed(exit_reason(status, timeout))
+            };
+        };
+        // Anything else on stdout (a test harness's chatter) is not ours.
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v["done"] == true {
+            let _ = child.wait().await;
+            return outcome_from(&v);
+        }
+        let Some(call) = v.get("call") else { continue };
+        calls += 1;
+        let (tool, input) = (
+            call["tool"].as_str().unwrap_or_default().to_string(),
+            call["input"].clone(),
+        );
+        let r = tokio::select! {
+            r = exec(tool, input) => r,
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                return timed_out(timeout, calls);
+            }
+        };
+        let reply = match r {
+            Ok(t) => json!({"ok": t}),
+            Err(e) => json!({"err": e}),
+        };
+        if stdin
+            .write_all(format!("{reply}\n").as_bytes())
+            .await
+            .is_err()
+        {
+            let status = child.wait().await;
+            return Outcome {
+                calls,
+                ..failed(exit_reason(status, timeout))
+            };
+        }
+    }
+}
+
+// ----- in this process -------------------------------------------------------
+
+async fn execute_in_thread<F, Fut>(
+    code: &str,
+    entries: &[Entry],
+    max_calls: usize,
+    timeout: Duration,
+    exec: &mut F,
+) -> Outcome
+where
+    F: FnMut(String, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let (tx, mut rx) = mpsc::unbounded_channel::<Call>();
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<Outcome>();
+    let (code, entries) = (code.to_string(), entries.to_vec());
+    let caller: Caller = Arc::new(move |tool, input| {
+        let (reply, rx) = std::sync::mpsc::channel();
+        tx.send(Call { tool, input, reply }).ok()?;
+        rx.recv().ok()
+    });
+    let spawned = std::thread::Builder::new()
+        .name("codemode".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let _ = done_tx.send(run_js(code, entries, caller, max_calls));
+        });
+    if let Err(e) = spawned {
+        return failed(format!("could not start Code Mode: {e}"));
+    }
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut calls = 0;
+    loop {
+        tokio::select! {
+            Some(c) = rx.recv() => {
+                calls += 1;
+                let r = exec(c.tool, c.input).await;
+                let _ = c.reply.send(r);
+            }
+            out = &mut done_rx => {
+                return out.unwrap_or_else(|_| failed("Code Mode stopped unexpectedly".into()));
+            }
+            _ = &mut deadline => {
+                // Pending and later calls fail, so the program unwinds on its
+                // own if it makes one; a busy loop keeps its thread until the
+                // loop limit ends it (the helper process has no such gap).
+                drop(rx);
+                return timed_out(timeout, calls);
+            }
+        }
+    }
+}
+
+/// Run a program, in the helper process when one is registered (see
+/// [`set_helper`]). `exec` runs each tool call (with permissions) and
 /// returns its text; it is called on the current task, one call at a time.
 pub async fn execute<F, Fut>(
+    code: &str,
+    entries: &[Entry],
+    max_calls: usize,
+    timeout: Duration,
+    exec: F,
+) -> Outcome
+where
+    F: FnMut(String, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    execute_with(helper().as_ref(), code, entries, max_calls, timeout, exec).await
+}
+
+/// [`execute`] with an explicit helper (`None`: in this process).
+pub async fn execute_with<F, Fut>(
+    helper: Option<&Helper>,
     code: &str,
     entries: &[Entry],
     max_calls: usize,
@@ -390,39 +844,9 @@ where
     F: FnMut(String, Value) -> Fut,
     Fut: std::future::Future<Output = Result<String, String>>,
 {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Call>();
-    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<Outcome>();
-    let (code, entries) = (code.to_string(), entries.to_vec());
-    let spawned = std::thread::Builder::new()
-        .name("codemode".into())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(move || {
-            let _ = done_tx.send(run_js(code, entries, tx, max_calls));
-        });
-    if let Err(e) = spawned {
-        return Outcome {
-            result: Err(format!("could not start Code Mode: {e}")),
-            logs: vec![],
-            calls: 0,
-        };
-    }
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            Some(c) = rx.recv() => {
-                let r = exec(c.tool, c.input).await;
-                let _ = c.reply.send(r);
-            }
-            out = &mut done_rx => {
-                return out.unwrap_or(Outcome { result: Err("Code Mode stopped unexpectedly".into()), logs: vec![], calls: 0 });
-            }
-            _ = &mut deadline => {
-                // Pending and later calls fail, so the program unwinds on its own.
-                drop(rx);
-                return Outcome { result: Err(format!("timed out after {}s", timeout.as_secs())), logs: vec![], calls: 0 };
-            }
-        }
+    match helper {
+        Some(h) => execute_in_child(h, code, entries, max_calls, timeout, &mut exec).await,
+        None => execute_in_thread(code, entries, max_calls, timeout, &mut exec).await,
     }
 }
 
@@ -492,9 +916,45 @@ mod tests {
         assert_eq!(program("if (a) b()\nelse c()"), "if (a) b()\nelse c()");
     }
 
+    const CHILD_ENV: &str = "CODESMITH_CODEMODE_TEST_CHILD";
+
+    /// The helper for tests: this test binary, running only `helper_process`.
+    fn child() -> Helper {
+        Helper {
+            program: std::env::current_exe().unwrap(),
+            args: [
+                "codemode::tests::helper_process",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+                "-q",
+            ]
+            .map(String::from)
+            .to_vec(),
+            env: vec![(CHILD_ENV.into(), "1".into())],
+        }
+    }
+
+    #[test]
+    fn helper_process() {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            child_main();
+        }
+    }
+
+    /// Both ways of running: in a helper process and on a thread.
+    fn modes() -> [Option<Helper>; 2] {
+        [Some(child()), None]
+    }
+
     async fn run(code: &str) -> (Outcome, Vec<(String, Value)>) {
+        run_in(Some(&child()), code).await
+    }
+
+    async fn run_in(helper: Option<&Helper>, code: &str) -> (Outcome, Vec<(String, Value)>) {
         let mut seen = Vec::new();
-        let out = execute(
+        let out = execute_with(
+            helper,
             code,
             &entries(),
             3,
@@ -519,7 +979,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn tools_compose() {
-        let (out, seen) = run("const list = await tools.gh.issues({repo: 'o/r'})\nconsole.log('got', list.length)\nconst titles = list.map(i => i.title)\nconst one = await tools.gh['get-issue']({n: list[0].n})\n({ titles, one })").await;
+        for h in modes() {
+            tools_compose_in(h.as_ref()).await;
+        }
+    }
+
+    async fn tools_compose_in(h: Option<&Helper>) {
+        let (out, seen) = run_in(h, "const list = await tools.gh.issues({repo: 'o/r'})\nconsole.log('got', list.length)\nconst titles = list.map(i => i.title)\nconst one = await tools.gh['get-issue']({n: list[0].n})\n({ titles, one })").await;
         assert_eq!(
             out.result,
             Ok(json!({"titles": ["bug", "feature"], "one": "issue 1"}))
@@ -537,6 +1003,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn errors_limits_and_sandbox() {
+        for h in modes() {
+            errors_limits_and_sandbox_in(h.as_ref()).await;
+        }
+    }
+
+    async fn errors_limits_and_sandbox_in(h: Option<&Helper>) {
+        let run = |code: &'static str| run_in(h, code);
         let (out, _) = run("try { await tools.gh['get-issue']({n: 404}) } catch (e) { return 'caught: ' + e.message }").await;
         assert_eq!(out.result, Ok(json!("caught: gh_get-issue: not found")));
         let (out, _) = run("await tools.gh['get-issue']({n: 404})").await;
@@ -566,5 +1039,124 @@ mod tests {
         assert!(out.result.unwrap_err().contains("SyntaxError"));
         let (out, _) = run("const r = await Promise.allSettled([tools.gh.issues({repo: 'a'}), tools.gh['get-issue']({n: 404})])\nr.map(x => x.status)").await;
         assert_eq!(out.result, Ok(json!(["fulfilled", "rejected"])));
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: u32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runaway_programs_stop_at_the_timeout() {
+        // Exponential recursion stays under the loop and recursion limits.
+        let code =
+            "function f(n) { return n < 2 ? n : f(n - 1) + f(n - 2) }\nreturn f(60) // runaway";
+        let start = std::time::Instant::now();
+        let out = execute_with(
+            Some(&child()),
+            code,
+            &entries(),
+            3,
+            Duration::from_secs(1),
+            |_, _| async { Ok(String::new()) },
+        )
+        .await;
+        assert!(out.result.unwrap_err().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(10));
+        let pid = CHILDREN
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(c, _)| c == code)
+            .map(|(_, p)| *p)
+            .unwrap();
+        assert!(!alive(pid), "the helper is gone after the timeout");
+        // A timeout while a tool call is pending stops the helper too.
+        let code = "// pending\nawait tools.gh.issues({repo: 'slow'})";
+        let out = execute_with(
+            Some(&child()),
+            code,
+            &entries(),
+            3,
+            Duration::from_secs(3),
+            |_, _| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(String::new())
+            },
+        )
+        .await;
+        assert_eq!(out.calls, 1);
+        assert!(out.result.unwrap_err().contains("timed out"));
+        let pid = CHILDREN
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(c, _)| c == code)
+            .map(|(_, p)| *p)
+            .unwrap();
+        assert!(!alive(pid));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn big_allocations_fail_cleanly() {
+        for h in modes() {
+            for code in [
+                "new ArrayBuffer(2 ** 30)",
+                "new ArrayBuffer(8, { maxByteLength: 2 ** 31 })",
+                "new Uint8Array(2 ** 30)",
+                "new Float64Array(2 ** 25)",
+                "new (new Uint8Array(1).constructor)(2 ** 30)",
+                "'x'.repeat(2 ** 30)",
+                "'x'.padEnd(2 ** 30)",
+                "new Array(2 ** 30)",
+            ] {
+                let (out, _) = run_in(
+                    h.as_ref(),
+                    &format!("try {{ {code}; return 'allocated' }} catch (e) {{ return e.name + ': ' + e.message }}"),
+                )
+                .await;
+                let r = out.result.unwrap();
+                assert!(
+                    r.as_str()
+                        .unwrap()
+                        .starts_with("RangeError: Code Mode limits"),
+                    "{code}: {r}"
+                );
+            }
+            // Ordinary use is untouched.
+            let (out, _) = run_in(
+                h.as_ref(),
+                "class A extends Array {}\nconst b = new Uint8Array([1, 2, 3])\n[new ArrayBuffer(16).byteLength, b.length, new Uint8Array(1024).length, [1].constructor === Array, new A(3).length, Array.isArray(new A()), b.buffer instanceof ArrayBuffer, 'ab'.repeat(3), '7'.padStart(3, '0'), new Array(3).length, Array.from('ab')]",
+            )
+            .await;
+            assert_eq!(
+                out.result,
+                Ok(json!([
+                    16,
+                    3,
+                    1024,
+                    true,
+                    3,
+                    true,
+                    true,
+                    "ababab",
+                    "007",
+                    3,
+                    ["a", "b"]
+                ]))
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_helper_is_stopped_past_its_memory_limit() {
+        let (out, _) =
+            run("const a = []\nlet s = 'x'.repeat(1 << 20)\nwhile (true) { s = s + s; a.push(s) }")
+                .await;
+        let e = out.result.unwrap_err();
+        assert!(e.contains("memory"), "{e}");
     }
 }

@@ -498,7 +498,14 @@ with TypeScript-style signatures in the system prompt. Programs run in
 [Boa](https://boajs.dev), a JavaScript engine written in Rust, with no
 filesystem, network, process or timer access of their own: the only way out
 is the listed tools, each call permission-checked like a direct one, capped at
-50 calls, three minutes, and bounded loops and recursion. Set
+50 calls, three minutes, and bounded loops and recursion. Each program runs
+in a child `codesmith` process that is killed at the timeout, with a CPU-time
+limit, a 512 MiB resident-memory limit (plus an address-space limit on
+Linux), and single buffers, typed arrays and repeated strings capped so that
+`new ArrayBuffer(2**30)` fails with a RangeError. (A program embedding
+`codesmith-core` without calling `codemode::child_main_if_requested` runs
+programs on a thread instead, where only the loop, recursion and size caps
+apply.) Set
 `"codemode": false` on a server (or at the top level of the config) to offer
 its tools as direct calls instead, which suits models that write JavaScript
 poorly.
