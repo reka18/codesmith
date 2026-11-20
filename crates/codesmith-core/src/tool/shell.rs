@@ -1385,7 +1385,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
 /// The arguments before the command, as OpenCode's `ShellSelect.args`: Zsh
 /// gets `+o nomatch` so an unmatched glob reaches the command as written
 /// (as in Bash) instead of failing the whole line.
-fn shell_args(shell: &str) -> &'static [&'static str] {
+pub(crate) fn shell_args(shell: &str) -> &'static [&'static str] {
     let name = Path::new(shell)
         .file_name()
         .and_then(|n| n.to_str())

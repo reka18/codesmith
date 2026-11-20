@@ -1305,7 +1305,8 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             for id in agent::list(&loaded.config) {
                 let a = agent::resolve(&loaded.config, &id).unwrap();
                 let tools: Vec<&str> = agent::tools(&a).iter().map(|t| t.name()).collect();
-                println!("{id} ({}): {}", a.mode, a.description);
+                let hidden = if a.hidden { ", hidden" } else { "" };
+                println!("{id} ({}{hidden}): {}", a.mode, a.description);
                 println!("  tools: {}", tools.join(", "));
                 println!("  rules: {}", serde_json::to_string(&a.permissions)?);
             }
@@ -1926,10 +1927,14 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     }
     let (mut agent_arg, mut model_arg) = (args.agent, args.model);
     let mut native: Option<(String, String)> = None;
-    let mut mcp_prompt: Option<(command::Command, String)> = None;
+    let mut custom: Option<(command::Command, String)> = None;
     let mcp = connect_mcp(&loaded, args.format != Format::Json).await;
-    if let Some((name, rest)) = command::parse_invocation(&message) {
-        let all = all_commands_with(&cwd, &loaded, &mcp);
+    let all = if message.trim_start().starts_with('/') {
+        all_commands_with(&cwd, &loaded, &mcp)
+    } else {
+        Default::default()
+    };
+    if let Some((name, rest)) = command::find_invocation(&message, &all) {
         let c = all.get(&name).ok_or_else(|| {
             anyhow!(
                 "unknown command /{name}; available: {}",
@@ -1941,13 +1946,13 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         })?;
         if c.native {
             native = Some((name.clone(), rest.clone()));
-        } else if c.mcp.is_some() {
-            mcp_prompt = Some((c.clone(), rest.clone()));
         } else {
-            message = command::expand(&c.template, &rest);
+            custom = Some((c.clone(), rest.clone()));
         }
-        agent_arg = agent_arg.or(c.agent.clone());
-        model_arg = model_arg.or(c.model.clone());
+        // A subagent command leaves the session's agent and model alone.
+        let (agent, model) = c.switches(&loaded.config);
+        agent_arg = agent_arg.or(agent);
+        model_arg = model_arg.or(model);
     }
     let interactive = !args.auto
         && std::fs::OpenOptions::new()
@@ -1980,9 +1985,6 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         asker,
         db,
     )?;
-    if let Some((c, rest)) = &mcp_prompt {
-        message = session.expand_command(c, rest).await?;
-    }
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
     if !json {
@@ -2010,7 +2012,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
                 Err(e) => Err(e),
             }
         }
-        None => run_turn(&mut session, &message, media, &mut sink).await,
+        None => run_turn(&mut session, &message, custom.as_ref(), media, &mut sink).await,
     };
     sink.done(
         &session.usage,
@@ -2030,6 +2032,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
 async fn run_turn(
     session: &mut Session,
     message: &str,
+    command: Option<&(command::Command, String)>,
     media: Vec<codesmith_ai::Media>,
     sink: &mut render::Printer,
 ) -> Result<()> {
@@ -2045,7 +2048,14 @@ async fn run_turn(
     });
     let outcome = {
         let turn = async {
-            session.prompt_with(message, media, &mut *sink).await?;
+            match command {
+                Some((c, rest)) => {
+                    session
+                        .run_command(message, c, rest, media, &mut *sink)
+                        .await?
+                }
+                None => session.prompt_with(message, media, &mut *sink).await?,
+            }
             session.settle_background(&mut *sink).await
         };
         tokio::select! {

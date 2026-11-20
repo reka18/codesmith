@@ -1,18 +1,34 @@
 //! Custom commands: prompt templates run as `/name args`. Defined in config
-//! (`commands`) or as markdown files in `commands/` folders, with an
-//! optional `description`/`agent`/`model` header. `$ARGUMENTS` is the whole
-//! argument string and `$1`, `$2`… the individual arguments (the last one
-//! used takes the rest); with neither, the arguments are appended. Ported
-//! from OpenCode and pinned to its template rules by the `oc_command_*`
-//! tests (from `packages/core/test/config/command.test.ts`).
+//! (`commands`) or as Markdown files in `commands/` folders, with an
+//! optional `description`/`agent`/`model`/`subagent` header. `$ARGUMENTS`
+//! is the whole argument string and `$1`, `$2`… the individual arguments
+//! (the last one used takes the rest); with neither, the arguments are
+//! appended. Then each `` !`cmd` `` is replaced by what `cmd` prints (run
+//! with the configured shell in the session's folder). Ported from OpenCode
+//! and pinned to its template rules by the `oc_command_*` tests (from
+//! `packages/core/test/config/command.test.ts` and
+//! `config/command-subagent.test.ts`).
 //!
-//! Deliberate differences: no `` !`cmd` `` shell interpolation, command files
-//! are read from the top of each `commands/` folder only (no `nested/name`
-//! commands, since `/a/b` reads as a path), commands defined in config
-//! override command files wherever they sit, and there is no `subtask` mode.
+//! A command with an `agent` switches the session to that agent, and one
+//! with a `model` to that model, before it runs. A command with
+//! `subagent: true` (or the legacy `subtask: true`), or whose agent is a
+//! subagent, runs in a child session instead and leaves the session's own
+//! agent and model alone; `subagent: false` keeps it in the session.
+//!
+//! Command files are `commands/**/*.md` (and `command/`) in each config
+//! folder (the global one and each `.codesmith/`), read in config order with
+//! the config files, so a later definition, inline or file, replaces an
+//! earlier one whole. A nested file `commands/git/sync.md` is `/git/sync`.
+//! Claude Code's `~/.claude/commands` and `.claude/commands` are read too,
+//! below every config layer.
+//!
+//! Deliberate difference: a subagent command's child runs to completion
+//! before the command returns (OpenCode runs it in the background), and
+//! its report joins the session as an exchange.
 
 use crate::skill::frontmatter;
 use serde::Deserialize;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +40,14 @@ pub struct Command {
     pub template: String,
     pub description: Option<String>,
     pub agent: Option<String>,
+    /// `provider/model[#variant]` or `{"providerID", "model", "variant"}`.
+    #[serde(deserialize_with = "crate::config::model_selection")]
     pub model: Option<String>,
+    /// Run in a child session (`true`), or in the session even when the
+    /// agent is a subagent (`false`).
+    pub subagent: Option<bool>,
+    /// The legacy name of `subagent` (`subagent` wins when both are set).
+    pub subtask: Option<bool>,
     /// Handled by CodeSmith itself rather than expanded into a prompt
     /// (`/review`, `/calibrate`). A same-named custom command replaces it.
     #[serde(skip)]
@@ -33,6 +56,33 @@ pub struct Command {
     /// when run (`/server:prompt args`).
     #[serde(skip)]
     pub mcp: Option<(String, String)>,
+}
+
+impl Command {
+    /// Whether the command runs in a child session: `subagent` (else
+    /// `subtask`) when set, else whether its agent is a subagent.
+    pub fn runs_as_subagent(&self, config: &crate::config::Config) -> bool {
+        if self.native || self.mcp.is_some() {
+            return false;
+        }
+        self.subagent.or(self.subtask).unwrap_or_else(|| {
+            self.agent
+                .as_deref()
+                .and_then(|a| crate::agent::resolve(config, a))
+                .is_some_and(|a| a.mode == "subagent")
+        })
+    }
+}
+
+impl Command {
+    /// The agent and model the session should switch to before the
+    /// command runs: the command's own, unless it runs as a subagent.
+    pub fn switches(&self, config: &crate::config::Config) -> (Option<String>, Option<String>) {
+        if self.runs_as_subagent(config) {
+            return (None, None);
+        }
+        (self.agent.clone(), self.model.clone())
+    }
 }
 
 /// Built-in commands: `/init`, plus the native `/review` and `/calibrate`.
@@ -67,40 +117,125 @@ pub fn builtins(project: &Path) -> BTreeMap<String, Command> {
     m
 }
 
-/// Folders that may contain `<name>.md` commands, lowest precedence first.
-pub fn roots(cwd: &Path, root: &Path, config_dir: &Path, home: &Path) -> Vec<PathBuf> {
-    let claude = std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none();
-    let mut out = vec![config_dir.join("commands")];
-    if claude {
-        out.push(home.join(".claude/commands"));
+/// Claude Code's command folders, lowest precedence first: `<name>.md`
+/// files there sit below every config layer. (CodeSmith's own `commands/`
+/// folders are config layers: see [`documents`].)
+pub fn roots(cwd: &Path, root: &Path, _config_dir: &Path, home: &Path) -> Vec<PathBuf> {
+    if std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_some() {
+        return Vec::new();
     }
+    let mut out = vec![home.join(".claude/commands")];
     let mut dirs: Vec<&Path> = cwd
         .ancestors()
         .take_while(|d| d.starts_with(root))
         .collect();
     dirs.reverse();
     for d in dirs {
-        if claude {
-            out.push(d.join(".claude/commands"));
-        }
-        out.push(d.join(".codesmith/commands"));
+        out.push(d.join(".claude/commands"));
     }
     out
 }
 
-pub fn from_markdown(text: &str) -> Command {
+/// A command file: its header and its body as the template. `None` when
+/// a field has the wrong type (`subagent: maybe`).
+pub fn parse_markdown(text: &str) -> Option<Command> {
     let (meta, body) = frontmatter(text);
-    Command {
+    let flag = |k: &str| match meta.get(k).map(|v| v.trim()) {
+        None => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(_) => Err(()),
+    };
+    Some(Command {
         template: body.trim().to_string(),
         description: meta.get("description").cloned(),
         agent: meta.get("agent").cloned(),
         model: meta.get("model").cloned(),
+        subagent: flag("subagent").ok()?,
+        subtask: flag("subtask").ok()?,
         native: false,
         mcp: None,
+    })
+}
+
+pub fn from_markdown(text: &str) -> Command {
+    parse_markdown(text).unwrap_or_default()
+}
+
+/// The commands defined by files in config folder `dir`, as a config layer
+/// `{"commands": {...}}`: `command[s]/**/*.md`, named by their path below
+/// that folder without `.md` (`commands/git/sync.md` is `git/sync`), in
+/// path order. Files with a malformed header are skipped.
+pub fn documents(dir: &Path) -> Value {
+    let mut out = serde_json::Map::new();
+    for sub in ["command", "commands"] {
+        let base = dir.join(sub);
+        let mut files = Vec::new();
+        markdown_files(&base, &mut files);
+        files.sort();
+        for p in files {
+            let Some(name) = p
+                .strip_prefix(&base)
+                .ok()
+                .and_then(|r| r.with_extension("").to_str().map(|s| s.replace('\\', "/")))
+            else {
+                continue;
+            };
+            let Some(c) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| parse_markdown(&t))
+            else {
+                continue;
+            };
+            let mut v = json!({ "template": c.template });
+            for (k, f) in [
+                ("description", &c.description),
+                ("agent", &c.agent),
+                ("model", &c.model),
+            ] {
+                if let Some(f) = f {
+                    v[k] = json!(f);
+                }
+            }
+            for (k, f) in [("subagent", c.subagent), ("subtask", c.subtask)] {
+                if let Some(f) = f {
+                    v[k] = json!(f);
+                }
+            }
+            out.insert(name, v);
+        }
+    }
+    if out.is_empty() {
+        json!({})
+    } else {
+        json!({ "commands": out })
     }
 }
 
-/// Every command: built-ins, then markdown folders, then config (highest).
+fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let Ok(meta) = std::fs::metadata(&p) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if !matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("node_modules" | ".git")
+            ) {
+                markdown_files(&p, out);
+            }
+        } else if p.extension().and_then(|x| x.to_str()) == Some("md") {
+            out.push(p);
+        }
+    }
+}
+
+/// Every command: built-ins, then Claude Code's command files, then config
+/// (its inline commands and command files in config order; highest).
 pub fn discover(
     builtins: BTreeMap<String, Command>,
     roots: &[PathBuf],
@@ -119,8 +254,11 @@ pub fn discover(
             let Some(name) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
                 continue;
             };
-            if let Ok(text) = std::fs::read_to_string(&p) {
-                all.insert(name, from_markdown(&text));
+            if let Some(c) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| parse_markdown(&t))
+            {
+                all.insert(name, c);
             }
         }
     }
@@ -179,6 +317,68 @@ pub fn expand(template: &str, args: &str) -> String {
         })
         .trim()
         .to_string()
+}
+
+/// Replace each `` !`cmd` `` in `text` with what `cmd` prints (stdout and
+/// stderr together), run with `shell` in `cwd` with no input, two at a
+/// time, as OpenCode's command templates do. Runs after argument
+/// expansion, so arguments can supply commands, as in OpenCode: a command
+/// is the user's own, and runs without a permission prompt. A command that
+/// cannot start fails the whole template.
+pub async fn interpolate_shell(text: &str, shell: &str, cwd: &Path) -> anyhow::Result<String> {
+    let re = regex::Regex::new(r"!`([^`]+)`").unwrap();
+    let sources: Vec<String> = re.captures_iter(text).map(|c| c[1].to_string()).collect();
+    if sources.is_empty() {
+        return Ok(text.to_string());
+    }
+    let run = |source: String| async move {
+        let out = tokio::process::Command::new(shell)
+            .args(crate::tool::shell::shell_args(shell))
+            .arg(&source)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .env_remove(crate::SERVER_TOKEN_VAR)
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("Shell interpolation failed for {source:?}: {e}"))?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        anyhow::Ok(text)
+    };
+    let mut outputs = Vec::with_capacity(sources.len());
+    let mut pending = sources.into_iter();
+    loop {
+        let batch: Vec<String> = pending.by_ref().take(2).collect();
+        if batch.is_empty() {
+            break;
+        }
+        for r in futures_util::future::join_all(batch.into_iter().map(run)).await {
+            outputs.push(r?);
+        }
+    }
+    let mut outputs = outputs.into_iter();
+    Ok(re
+        .replace_all(text, |_: &regex::Captures| {
+            outputs.next().unwrap_or_default()
+        })
+        .into_owned())
+}
+
+/// A command invocation in `message` naming one of `known`: as
+/// [`parse_invocation`], and also a nested command (`/git/sync args`),
+/// which only counts when it exists, so a path stays a message.
+pub fn find_invocation<T>(message: &str, known: &BTreeMap<String, T>) -> Option<(String, String)> {
+    if let Some(found) = parse_invocation(message) {
+        return Some(found);
+    }
+    let m = message.trim_start().strip_prefix('/')?;
+    let (name, rest) = match m.find(char::is_whitespace) {
+        Some(i) => (&m[..i], m[i..].trim()),
+        None => (m, ""),
+    };
+    known
+        .contains_key(name)
+        .then(|| (name.to_string(), rest.to_string()))
 }
 
 /// `/name rest` → (name, rest), if the message is a command invocation.
@@ -365,6 +565,8 @@ mod tests {
                 description: Some("Run tests".into()),
                 agent: Some("build".into()),
                 model: None,
+                subagent: None,
+                subtask: None,
                 native: false,
                 mcp: None,
             }

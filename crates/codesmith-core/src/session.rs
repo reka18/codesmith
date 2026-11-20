@@ -372,6 +372,27 @@ fn resume_backoff(failures: u32) -> Duration {
         .min(RESUME_BACKOFF_MAX)
 }
 
+/// Put the agent's request headers and body fields over the model's: a
+/// numeric `temperature` sets the request's temperature, and the rest go
+/// into the body as they are.
+fn apply_agent_request(model: &mut ModelRef, agent: &Agent) {
+    for (k, v) in &agent.request.headers {
+        model
+            .provider
+            .headers
+            .retain(|(h, _)| !h.eq_ignore_ascii_case(k));
+        model.provider.headers.push((k.clone(), v.clone()));
+    }
+    for (k, v) in &agent.request.body {
+        match (k.as_str(), v.as_f64()) {
+            ("temperature", Some(t)) => model.temperature = Some(t as f32),
+            _ => {
+                model.body.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
 /// Passes permission questions through and notes a plain decline, which ends
 /// the turn (OpenCode interrupts the run on one).
 struct DeclineWatch {
@@ -427,8 +448,7 @@ impl Session {
         let agent_id = opts
             .agent
             .or_else(|| resumed.as_ref().map(|r| r.0.agent.clone()))
-            .or_else(|| config.default_agent.clone())
-            .unwrap_or_else(|| "build".into());
+            .unwrap_or_else(|| agent::default_id(config));
         let agent = agent::resolve(config, &agent_id).ok_or_else(|| {
             anyhow!(
                 "unknown agent {agent_id:?}; available: {}",
@@ -441,7 +461,8 @@ impl Session {
             .or_else(|| agent.model.clone())
             .or_else(|| config.model.clone())
             .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in codesmith.json"))?;
-        let model = config.resolve_model(&model_spec)?;
+        let mut model = config.resolve_model(&model_spec)?;
+        apply_agent_request(&mut model, &agent);
         let subagents = agent::subagents(config);
         let home = dirs::home_dir().unwrap_or_default();
         let skills = crate::skill::discover(&crate::skill::roots(
@@ -1880,8 +1901,57 @@ impl Session {
     pub async fn expand_command(&self, c: &crate::command::Command, args: &str) -> Result<String> {
         match &c.mcp {
             Some((server, name)) => self.mcp.prompt_text(server, name, args).await,
-            None => Ok(crate::command::expand(&c.template, args)),
+            None => {
+                let text = crate::command::expand(&c.template, args);
+                crate::command::interpolate_shell(&text, &self.shell, &self.cwd).await
+            }
         }
+    }
+
+    /// Run a custom or MCP command, shown in the history as `shown`: its
+    /// prompt sent in this session, or, for a subagent command (see
+    /// [`crate::command::Command::runs_as_subagent`]), sent to a child
+    /// session of the command's agent (else this session's) on the
+    /// command's model (else that agent's, else this session's), whose
+    /// report then joins this session as an exchange. Switching this
+    /// session's agent and model for other commands is the caller's (it
+    /// builds the session).
+    pub async fn run_command(
+        &mut self,
+        shown: &str,
+        c: &crate::command::Command,
+        args: &str,
+        media: Vec<codesmith_ai::Media>,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
+        let text = self.expand_command(c, args).await?;
+        if !c.runs_as_subagent(&self.loaded.config) {
+            return self.prompt_with(&text, media, sink).await;
+        }
+        let agent_id = c.agent.clone().unwrap_or_else(|| self.agent.id.clone());
+        let target = agent::resolve(&self.loaded.config, &agent_id)
+            .ok_or_else(|| anyhow!("unknown agent {agent_id:?}"))?;
+        let model = c
+            .model
+            .clone()
+            .or(target.model)
+            .unwrap_or_else(|| self.model_spec.clone());
+        let name = shown
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let label = c.description.clone().unwrap_or(name);
+        let store = self.child_store().map_err(|e| anyhow!(e))?;
+        let task = format!("{}\n{text}", tool::subagent::PREAMBLE);
+        let report = match self
+            .spawn_child(agent_id, Some(model), label, task, None, store, sink)
+            .await
+        {
+            Ok(r) | Err(r) => r,
+        };
+        self.append_exchange(shown, &report, &Usage::default())
     }
 
     fn codemode_on(&self) -> bool {
@@ -2254,8 +2324,8 @@ impl Session {
         let agent_id = s("agent").ok_or("Missing required string parameter `agent`")?;
         let task = s("prompt").ok_or("Missing required string parameter `prompt`")?;
         let label = s("description").unwrap_or_else(|| agent_id.clone());
-        let available = agent::subagents(&self.loaded.config);
-        if !available.iter().any(|(id, _)| *id == agent_id) {
+        if !agent::delegable(&self.loaded.config, &agent_id) {
+            let available = agent::subagents(&self.loaded.config);
             let names: Vec<&str> = available.iter().map(|a| a.0.as_str()).collect();
             return Err(format!(
                 "Unknown subagent {agent_id:?}. Available: {}",
@@ -2271,10 +2341,7 @@ impl Session {
             &agent_id,
             format!("Run the {agent_id} agent: {label}"),
         )?;
-        let store = match self.store.as_ref().and_then(|st| st.path()) {
-            Some(p) => Some(Store::open(&p).map_err(|e| format!("{e:#}"))?),
-            None => None,
-        };
+        let store = self.child_store()?;
         // Only this session's own children can be continued.
         let resume = s("sessionID");
         if let Some(id) = &resume {
@@ -2292,11 +2359,35 @@ impl Session {
             Some(_) => task,
             None => format!("{}\n{task}", tool::subagent::PREAMBLE),
         };
+        self.spawn_child(agent_id, s("model"), label, task, resume, store, sink)
+            .await
+    }
+
+    fn child_store(&self) -> Result<Option<Store>, String> {
+        match self.store.as_ref().and_then(|st| st.path()) {
+            Some(p) => Ok(Some(Store::open(&p).map_err(|e| format!("{e:#}"))?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Run `task` in a child session of `agent_id` to completion, and its
+    /// report (`Err` when it failed or was cancelled).
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_child(
+        &mut self,
+        agent_id: String,
+        model: Option<String>,
+        label: String,
+        task: String,
+        resume: Option<String>,
+        store: Option<Store>,
+        sink: &mut dyn Sink,
+    ) -> Result<String, String> {
         let opts = Options {
             questioner: None,
             mcp: Some(self.mcp.clone()),
             agent: Some(agent_id.clone()),
-            model: s("model"),
+            model,
             resume,
             title: Some(label.clone()),
             parent: Some(self.id.clone()),

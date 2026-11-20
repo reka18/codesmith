@@ -14,6 +14,7 @@ pub mod format;
 pub mod instruction_state;
 pub mod instructions;
 pub mod lsp;
+pub mod markdown;
 pub mod mcp;
 pub mod media;
 pub mod paths;

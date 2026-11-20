@@ -189,7 +189,8 @@ impl Runner {
         Ok(())
     }
 
-    /// Run an MCP prompt command: fetch the prompt, then send it.
+    /// Run a custom or MCP command: its prompt (an MCP prompt fetched
+    /// first, `` !`cmd` `` output filled in) sent, or run in a child session.
     fn submit_command(&mut self, shown: String, c: command::Command, args: String) {
         if self.app.busy {
             self.app
@@ -200,17 +201,16 @@ impl Runner {
             self.app.error("no session");
             return;
         };
-        self.app.entries.push(Entry::User(shown));
+        self.app.entries.push(Entry::User(shown.clone()));
         self.app.busy = true;
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
             let mut sink = ChanSink::new(tx.clone(), cwd);
-            let result = match s.expand_command(&c, &args).await {
-                Ok(text) => s.prompt(&text, &mut sink).await,
-                Err(e) => Err(e),
-            }
-            .map_err(|e| format!("{e:#}"));
+            let result = s
+                .run_command(&shown, &c, &args, vec![], &mut sink)
+                .await
+                .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Ev::Done {
                 result,
                 session: Box::new(s),
@@ -576,11 +576,14 @@ impl Runner {
             return Ok(());
         }
         let mut rebuild = false;
-        if c.agent.is_some() && c.agent != self.agent {
+        // A subagent command runs in a child session and leaves this one's
+        // agent and model alone.
+        let child = c.runs_as_subagent(&self.loaded.config);
+        if !child && c.agent.is_some() && c.agent != self.agent {
             self.agent = c.agent.clone();
             rebuild = true;
         }
-        if c.model.is_some() && c.model != self.model {
+        if !child && c.model.is_some() && c.model != self.model {
             self.model = c.model.clone();
             rebuild = true;
         }
@@ -592,11 +595,7 @@ impl Runner {
         } else {
             format!("/{other} {args}")
         };
-        if c.mcp.is_some() {
-            self.submit_command(shown, c, args.to_string());
-        } else {
-            self.submit(shown, command::expand(&c.template, args), vec![]);
-        }
+        self.submit_command(shown, c, args.to_string());
         Ok(())
     }
 
@@ -663,7 +662,7 @@ impl Runner {
         let primary: Vec<String> = agent::list(&self.loaded.config)
             .into_iter()
             .filter(|id| {
-                agent::resolve(&self.loaded.config, id).is_some_and(|a| a.mode != "subagent")
+                agent::resolve(&self.loaded.config, id).is_some_and(|a| agent::selectable(&a))
             })
             .collect();
         if primary.len() < 2 {

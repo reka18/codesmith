@@ -2745,8 +2745,12 @@ impl Agent {
         attached: Vec<Media>,
         sink: &mut AcpSink,
     ) -> Result<()> {
-        if let Some((name, args)) = command::parse_invocation(text) {
-            let all = crate::all_commands_with(&slot.cwd, &slot.loaded, &slot.mcp);
+        let all = if text.trim_start().starts_with('/') {
+            crate::all_commands_with(&slot.cwd, &slot.loaded, &slot.mcp)
+        } else {
+            Default::default()
+        };
+        if let Some((name, args)) = command::find_invocation(text, &all) {
             if let Some(c) = all.get(&name) {
                 if c.native {
                     let env = codesmith_core::review::Env::new(
@@ -2769,8 +2773,7 @@ impl Agent {
                     sink.text(&report);
                     return s.append_exchange(text, &report, &usage);
                 }
-                let text = s.expand_command(c, &args).await?;
-                return s.prompt_with(&text, attached, sink).await;
+                return s.run_command(text, c, &args, attached, sink).await;
             }
             if name == "compact" {
                 sink.manual = true;

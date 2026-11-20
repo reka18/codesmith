@@ -566,16 +566,72 @@ pub struct ModelLimit {
     pub output: Option<u32>,
 }
 
+/// An agent in config (`agents.<id>`) or an agent file (see
+/// [`crate::agent::from_markdown`]). Fields set in a later layer replace
+/// earlier ones; `permissions` append and `request` maps merge key by key.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
     pub description: Option<String>,
+    /// `provider/model[#variant]`, or `{"providerID", "model", "variant"}`.
+    #[serde(deserialize_with = "model_selection")]
     pub model: Option<String>,
     pub system: Option<String>,
     pub mode: Option<String>,
+    /// Kept out of the subagent list and never the default agent; it can
+    /// still be chosen by name.
+    pub hidden: Option<bool>,
+    /// A `#rrggbb` color for front ends; anything else (such as an
+    /// OpenCode theme token) is ignored.
+    #[serde(deserialize_with = "hex_color")]
+    pub color: Option<String>,
     pub steps: Option<u32>,
     pub disabled: bool,
     pub permissions: Vec<Rule>,
+    /// Extra request `headers` and `body` fields for this agent's model
+    /// calls (`temperature`, `top_p`, provider options), over the model's.
+    pub request: AgentRequest,
+}
+
+/// `agents.<id>.request`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct AgentRequest {
+    pub headers: BTreeMap<String, String>,
+    pub body: Map<String, Value>,
+}
+
+/// A model selection: `provider/model[#variant]` or OpenCode's structured
+/// `{"providerID", "model", "variant"}`, as a spec string.
+pub fn model_selection<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    use serde::de::Error;
+    match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Object(o)) => {
+            let get = |k: &str| o.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
+            let (Some(p), Some(m)) = (get("providerID"), get("model")) else {
+                return Err(D::Error::custom(
+                    "a model selection needs \"providerID\" and \"model\"",
+                ));
+            };
+            Ok(Some(match get("variant") {
+                Some(v) => format!("{p}/{m}#{v}"),
+                None => format!("{p}/{m}"),
+            }))
+        }
+        Some(_) => Err(D::Error::custom(
+            "a model is \"provider/model\" or {\"providerID\", \"model\"}",
+        )),
+    }
+}
+
+fn hex_color<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<Value>::deserialize(d)?
+        .and_then(|v| v.as_str().map(str::to_string))
+        .filter(|s| {
+            s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+        }))
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -647,9 +703,35 @@ pub fn candidates(cwd: &Path, root: &Path) -> Vec<PathBuf> {
 /// folder's `.codesmith/codesmith.json[c]` in the same order (as OpenCode
 /// ranks its `.opencode/` folders above all plain project files).
 pub fn candidates_from(cwd: &Path, root: &Path, sources: &Sources) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = NAMES.iter().map(|n| sources.global_dir.join(n)).collect();
+    layers(cwd, root, sources)
+        .into_iter()
+        .filter_map(|l| match l {
+            Layer::File(p) => Some(p),
+            Layer::Dir(_) => None,
+        })
+        .collect()
+}
+
+/// One source of config, lowest precedence first: a config file, or a
+/// config folder whose `agents/`, `modes/` and `commands/` files are read
+/// (OpenCode's directory entries).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Layer {
+    File(PathBuf),
+    Dir(PathBuf),
+}
+
+/// Every layer: the global files and then the global folder, the explicit
+/// file, every folder's `codesmith.json[c]`, then each folder's
+/// `.codesmith/codesmith.json[c]` followed by its `.codesmith/` folder.
+pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
+    let mut out: Vec<Layer> = NAMES
+        .iter()
+        .map(|n| Layer::File(sources.global_dir.join(n)))
+        .collect();
+    out.push(Layer::Dir(sources.global_dir.clone()));
     if let Some(p) = &sources.file {
-        out.push(p.clone());
+        out.push(Layer::File(p.clone()));
     }
     if sources.project {
         let mut dirs: Vec<&Path> = cwd
@@ -659,13 +741,14 @@ pub fn candidates_from(cwd: &Path, root: &Path, sources: &Sources) -> Vec<PathBu
         dirs.reverse();
         for d in &dirs {
             for n in NAMES {
-                out.push(d.join(n));
+                out.push(Layer::File(d.join(n)));
             }
         }
         for d in &dirs {
             for n in NAMES {
-                out.push(d.join(".codesmith").join(n));
+                out.push(Layer::File(d.join(".codesmith").join(n)));
             }
+            out.push(Layer::Dir(d.join(".codesmith")));
         }
     }
     out
@@ -686,10 +769,21 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     let mut merged = Value::Object(Map::new());
     let mut files: Vec<PathBuf> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
-    for path in candidates_from(cwd, &root, sources) {
-        if !path.is_file() {
-            continue;
-        }
+    for layer in layers(cwd, &root, sources) {
+        let path = match layer {
+            Layer::File(p) if p.is_file() => p,
+            Layer::Dir(d) if d.is_dir() => {
+                let canonical = d.canonicalize().unwrap_or_else(|_| d.clone());
+                if seen.contains(&canonical) {
+                    continue;
+                }
+                seen.push(canonical);
+                merge_layer(&mut merged, crate::agent::documents(&d));
+                merge_layer(&mut merged, crate::command::documents(&d));
+                continue;
+            }
+            _ => continue,
+        };
         // A file reached twice (the project walk passing through the global
         // folder, or `$CODESMITH_CONFIG` naming a project file) loads once.
         let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -701,11 +795,11 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
             .with_context(|| format!("reading {}", path.display()))?;
         let v = parse(&text, path.parent().unwrap_or(Path::new(".")))
             .with_context(|| format!("in {}", path.display()))?;
-        merge(&mut merged, v);
+        merge_layer(&mut merged, v);
         files.push(path);
     }
     if let Some(text) = &sources.content {
-        merge(
+        merge_layer(
             &mut merged,
             parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?,
         );
@@ -836,6 +930,23 @@ pub fn strip_jsonc(text: &str) -> String {
 }
 
 const APPEND: [&str; 2] = ["permissions", "instructions"];
+
+/// Merge one layer over the layers below it: as [`merge`], except that a
+/// command a later layer defines replaces the earlier definition whole
+/// (OpenCode's commands), where agents merge field by field.
+pub fn merge_layer(base: &mut Value, mut top: Value) {
+    let commands = top.as_object_mut().and_then(|t| t.remove("commands"));
+    match (base.get_mut("commands"), commands) {
+        (Some(Value::Object(b)), Some(Value::Object(t))) => b.extend(t),
+        (_, Some(c)) => {
+            if let Value::Object(b) = base {
+                b.insert("commands".into(), c);
+            }
+        }
+        _ => {}
+    }
+    merge(base, top);
+}
 
 /// Deep-merge `top` into `base`.
 pub fn merge(base: &mut Value, top: Value) {
