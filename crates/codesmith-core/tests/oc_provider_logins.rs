@@ -563,3 +563,228 @@ fn oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry() 
     .unwrap();
     assert_eq!(r.api_key.as_deref(), Some("manual-key"));
 }
+
+// plugin/provider-snowflake-cortex.test.ts
+
+use codesmith_ai::Authorizer;
+use codesmith_core::providers::snowflake;
+
+fn snowflake_endpoints(srv: &Server) -> snowflake::Endpoints {
+    snowflake::Endpoints {
+        account: "myorg-myaccount".into(),
+        issuer: srv.url.clone(),
+        client_id: snowflake::LOCAL_APPLICATION.into(),
+    }
+}
+
+/// The `authorization` header the authorizer puts on a request.
+async fn authorized(a: &dyn Authorizer) -> String {
+    let client = reqwest::Client::new();
+    let mut req = client.get("http://127.0.0.1:9/x").build().unwrap();
+    a.authorize(&client, &mut req).await.unwrap();
+    req.headers()["authorization"].to_str().unwrap().to_string()
+}
+
+const ENDPOINT: &str = "https://myorg-myaccount.snowflakecomputing.com";
+
+#[tokio::test]
+async fn oc_snowflake_browser_oauth_supplies_the_native_endpoint_token_and_refreshes_a_rejected_token_once(
+) {
+    assert_eq!(
+        snowflake::normalize_account(&format!("{ENDPOINT}///")),
+        "myorg-myaccount"
+    );
+    let srv = server().await;
+    let e = snowflake_endpoints(&srv);
+    let login = snowflake::start(&e, Some("My Role")).await.unwrap();
+    let url = login.url.clone();
+    assert!(url.starts_with(&format!("{}/oauth/authorize?", srv.url)));
+    let p = params(&url);
+    assert_eq!(p["scope"], "refresh_token session:role-encoded:My%20Role");
+    assert_eq!(p["client_id"], "LOCAL_APPLICATION");
+    srv.push(reply(
+        200,
+        json!({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
+            .to_string(),
+    ));
+    let client = reqwest::Client::new();
+    let to = redirect(&url, &[]);
+    let (saved, page) = tokio::join!(snowflake::finish(&client, login, None, WAIT), browse(&to));
+    let saved = saved.unwrap();
+    assert_eq!(page.unwrap().0, 200);
+    let seen = srv.seen();
+    assert_eq!(seen[0].path, "/oauth/token-request");
+    use base64::Engine;
+    assert_eq!(
+        seen[0].headers["authorization"],
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("LOCAL_APPLICATION:LOCAL_APPLICATION")
+        )
+    );
+    let form = seen[0].form();
+    assert_eq!(form["grant_type"], "authorization_code");
+    assert_eq!(form["code"], "auth-code");
+    assert_eq!(form["redirect_uri"], p["redirect_uri"]);
+    assert_eq!(
+        codesmith_core::mcp::oauth::challenge(&form["code_verifier"]),
+        p["code_challenge"]
+    );
+    assert_eq!(saved["metadata"]["account"], "myorg-myaccount");
+
+    // The login authorizes requests; a rejected token is refreshed once,
+    // keeping the refresh token when the answer has none.
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let a = snowflake::Refreshing::new(saved, e, file.clone());
+    assert_eq!(authorized(&a).await, "Bearer access");
+    srv.push(reply(
+        200,
+        json!({"access_token": "renewed", "refresh_token": "", "expires_in": 3600}).to_string(),
+    ));
+    assert!(a.rejected(&client).await);
+    let refresh = srv.seen()[1].form();
+    assert_eq!(refresh["grant_type"], "refresh_token");
+    assert_eq!(refresh["refresh_token"], "refresh");
+    assert_eq!(authorized(&a).await, "Bearer renewed");
+    let kept = codesmith_core::auth::entry_in(&file, "snowflake-cortex").unwrap();
+    assert_eq!(kept["access"], "renewed");
+    assert_eq!(kept["refresh"], "refresh");
+    // The route for the saved login is the account's Cortex API.
+    let s = Default::default();
+    let r = providers::route(&input("snowflake-cortex", &s, Some(kept), None, env(&[])))
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.base_url, format!("{ENDPOINT}/api/v2/cortex/v1"));
+    assert!(matches!(r.auth, codesmith_ai::Auth::Dynamic(_)));
+}
+
+#[test]
+fn oc_snowflake_manual_pat_uses_its_account_and_native_compatibility_rather_than_an_sdk_request_rewrite(
+) {
+    assert_eq!(snowflake::key_form().label, "Paste PAT or bearer token");
+    assert_eq!(snowflake::key_form().fields[0].key, "account");
+    let mut c: codesmith_core::config::Config = serde_json::from_value(json!({
+        "providers": {"snowflake-cortex": {
+            "protocol": "openai-chat",
+            "settings": {"account": format!("{ENDPOINT}/"), "token": "pat"},
+        }}
+    }))
+    .unwrap();
+    c.models_dev = Some(Arc::new(codesmith_core::catalog::ModelsDev::fixed(
+        (*codesmith_core::catalog::bundled()).clone(),
+    )));
+    let m = c
+        .resolve_model("snowflake-cortex/claude-sonnet-4-6")
+        .unwrap();
+    assert_eq!(m.provider.base_url, format!("{ENDPOINT}/api/v2/cortex/v1"));
+    assert_eq!(m.provider.api_key.as_deref(), Some("pat"));
+    assert_eq!(m.provider.auth, codesmith_ai::Auth::Bearer);
+    assert_eq!(
+        m.provider.compat.max_tokens_field.as_deref(),
+        Some("max_completion_tokens")
+    );
+    assert_eq!(m.options.str("cacheFormat"), Some("anthropic"));
+}
+
+#[tokio::test]
+async fn oc_snowflake_rejects_a_mismatched_callback_state_before_token_exchange() {
+    let srv = server().await;
+    let login = snowflake::start(&snowflake_endpoints(&srv), None)
+        .await
+        .unwrap();
+    assert_eq!(params(&login.url)["scope"], "refresh_token");
+    let to = redirect(&login.url, &[("state", "wrong"), ("code", "forged")]);
+    let client = reqwest::Client::new();
+    let (done, page) = tokio::join!(snowflake::finish(&client, login, None, WAIT), browse(&to));
+    assert_eq!(page.unwrap().0, 400);
+    assert_eq!(done.unwrap_err().to_string(), "Invalid OAuth state");
+    assert!(srv.seen().is_empty());
+}
+
+#[test]
+fn oc_snowflake_uses_environment_tokens_rather_than_the_account_identifier_and_bypasses_expired_stored_oauth(
+) {
+    let e = env(&[
+        (
+            "SNOWFLAKE_ACCOUNT",
+            "https://myorg-myaccount.snowflakecomputing.com/",
+        ),
+        ("SNOWFLAKE_CORTEX_TOKEN", "env-token"),
+        ("SNOWFLAKE_CORTEX_PAT", "env-pat"),
+    ]);
+    let s = Default::default();
+    let expired = json!({"type": "oauth", "method": "browser", "access": "expired", "refresh": "revoked-refresh", "expires": 1, "metadata": {"account": "other-account"}});
+    for stored in [None, Some(expired)] {
+        let r = providers::route(&input("snowflake-cortex", &s, stored, None, e.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.base_url, format!("{ENDPOINT}/api/v2/cortex/v1"));
+        assert_eq!(r.api_key.as_deref(), Some("env-token"));
+        assert_eq!(r.auth, codesmith_ai::Auth::Bearer);
+    }
+}
+
+#[test]
+fn oc_snowflake_requires_a_token_separately_from_the_account_and_supports_environment_pats() {
+    let s = Default::default();
+    let e = providers::route(&input(
+        "snowflake-cortex",
+        &s,
+        None,
+        None,
+        env(&[("SNOWFLAKE_ACCOUNT", "myorg-myaccount")]),
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("needs a token"), "{e}");
+    let r = providers::route(&input(
+        "snowflake-cortex",
+        &s,
+        None,
+        None,
+        env(&[
+            ("SNOWFLAKE_ACCOUNT", "myorg-myaccount"),
+            ("SNOWFLAKE_CORTEX_PAT", "env-pat"),
+        ]),
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(r.api_key.as_deref(), Some("env-pat"));
+}
+
+#[tokio::test]
+async fn oc_snowflake_refreshes_expired_oauth_during_native_model_resolution_and_persists_rotated_credentials(
+) {
+    let srv = server().await;
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let expired = json!({"type": "oauth", "method": "browser", "access": "expired", "refresh": "refresh", "expires": 1, "metadata": {"account": "myorg-myaccount"}});
+    let a = snowflake::Refreshing::new(expired, snowflake_endpoints(&srv), file.clone());
+    srv.push(reply(
+        200,
+        json!({"access_token": "renewed", "refresh_token": "rotated-refresh", "expires_in": 3600})
+            .to_string(),
+    ));
+    assert_eq!(authorized(&a).await, "Bearer renewed");
+    let seen = srv.seen();
+    assert_eq!(seen[0].path, "/oauth/token-request");
+    assert_eq!(
+        seen[0].form(),
+        [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", "refresh"),
+            ("client_id", "LOCAL_APPLICATION"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect::<HashMap<_, _>>()
+    );
+    let kept = codesmith_core::auth::entry_in(&file, "snowflake-cortex").unwrap();
+    assert_eq!(kept["access"], "renewed");
+    assert_eq!(kept["refresh"], "rotated-refresh");
+    assert_eq!(kept["metadata"]["account"], "myorg-myaccount");
+    // Still fresh: no second refresh.
+    assert_eq!(authorized(&a).await, "Bearer renewed");
+    assert_eq!(srv.seen().len(), 1);
+}

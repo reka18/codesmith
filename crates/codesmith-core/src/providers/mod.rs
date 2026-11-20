@@ -11,6 +11,7 @@ pub mod copilot;
 pub mod gateways;
 pub mod oauth;
 pub mod poe;
+pub mod snowflake;
 pub mod vertex;
 
 use codesmith_ai::{Auth, Protocol};
@@ -54,6 +55,10 @@ pub struct Settings {
     /// Cloudflare AI Gateway: the gateway id (default `default`).
     #[serde(alias = "gatewayId")]
     pub gateway_id: Option<String>,
+    /// Snowflake Cortex: the account (`myorg-myaccount`).
+    pub account: Option<String>,
+    /// Snowflake Cortex: a programmatic access or bearer token.
+    pub token: Option<String>,
 }
 
 /// What a provider plugin is given.
@@ -117,8 +122,30 @@ pub fn key_form(
     match id {
         cloudflare::GATEWAY => Some(cloudflare::gateway_form(settings, env)),
         cloudflare::WORKERS => Some(cloudflare::workers_form(settings, env)),
+        snowflake::ID => Some(snowflake::key_form()),
         _ => None,
     }
+}
+
+/// Compatibility settings and provider options a plugin gives a model, under
+/// the configured ones.
+pub fn defaults(
+    provider_id: &str,
+    model_id: &str,
+) -> (
+    serde_json::Map<String, Value>,
+    serde_json::Map<String, Value>,
+) {
+    let (mut compat, mut options) = (serde_json::Map::new(), serde_json::Map::new());
+    if provider_id == snowflake::ID {
+        compat.insert("maxTokensField".into(), "max_completion_tokens".into());
+        // Cortex Chat Completions caches Claude only at explicit
+        // Anthropic-style breakpoints.
+        if model_id.contains("claude") {
+            options.insert("cacheFormat".into(), "anthropic".into());
+        }
+    }
+    (compat, options)
 }
 
 /// An answer saved with a key login (`{"type": "api", "key", "metadata"}`).
@@ -195,6 +222,9 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         &["CLOUDFLARE_API_TOKEN", "CF_AIG_TOKEN"],
     ),
     (poe::ID, "Poe", &["POE_API_KEY"]),
+    // SNOWFLAKE_ACCOUNT, which models.dev lists too, names the endpoint;
+    // the token variables are read by the plugin, ahead of a saved login.
+    (snowflake::ID, "Snowflake Cortex", &[]),
     (
         cloudflare::WORKERS,
         "Cloudflare Workers AI",
@@ -232,6 +262,7 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
         cloudflare::GATEWAY => return cloudflare::gateway(input).map(Some),
         cloudflare::WORKERS => return cloudflare::workers(input).map(Some),
         poe::ID => return poe::route(input).map(Some),
+        snowflake::ID => return snowflake::route(input).map(Some),
         _ => {}
     }
     Ok(None)
@@ -250,6 +281,10 @@ pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
             vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
         }
         poe::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
+        snowflake::ID => {
+            snowflake::env_token(env).is_some()
+                || crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth")
+        }
         _ => false,
     }
 }
@@ -303,6 +338,19 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
                 }
             };
             Some(format!("project {project} in {location}, {creds}"))
+        }
+        snowflake::ID => {
+            let env = process_env();
+            if let Some(v) = snowflake::TOKEN_VARS.iter().find(|v| env(v).is_some()) {
+                return Some(format!("${v}"));
+            }
+            let s = stored?;
+            (s["type"] == "oauth").then(|| {
+                format!(
+                    "saved Snowflake login ({})",
+                    s["metadata"]["account"].as_str().unwrap_or("?")
+                )
+            })
         }
         poe::ID => {
             let s = stored?;

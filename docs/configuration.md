@@ -137,6 +137,7 @@ from `settings.apiKey` in config.
 | `cloudflare-ai-gateway` | per model: OpenAI Responses, Anthropic Messages or OpenAI Chat | `CLOUDFLARE_API_TOKEN`, `CF_AIG_TOKEN` (and the account and gateway ids); see [Cloudflare](#cloudflare-ai-gateway-and-workers-ai) |
 | `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) |
 | `poe` | OpenAI Chat | `POE_API_KEY`, or `codesmith auth login poe --oauth`; see [Poe](#poe) |
+| `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -489,6 +490,31 @@ public client (PKCE, scope `apikey:create`, redirect URI
 `--client-id`, `settings.clientId` on the `poe` provider, or
 `CODESMITH_POE_CLIENT_ID`, in that order.
 
+### Snowflake Cortex
+
+`snowflake-cortex` uses the account's Cortex REST API
+(`https://<account>.snowflakecomputing.com/api/v2/cortex/v1`). The account
+comes from `SNOWFLAKE_ACCOUNT`, else the saved login, else
+`settings.account` (an account identifier such as `myorg-myaccount`, or its
+URL). The token comes from `SNOWFLAKE_CORTEX_TOKEN` or `SNOWFLAKE_CORTEX_PAT`,
+else `settings.token`, else the saved key or login; an environment token wins
+even over an expired login.
+
+- `codesmith auth login snowflake-cortex` saves a programmatic access token
+  (or other bearer token) and asks for the account.
+- `codesmith auth login snowflake-cortex --oauth [--field account=… --field role=…]`
+  signs in in the browser with Snowflake OAuth (PKCE, scope `refresh_token`,
+  and `session:role:<role>` when a role is given). The access token is
+  refreshed when it expires, or once when Cortex rejects it, and the
+  rotated tokens are saved. The login uses Snowflake's built-in OAuth client
+  for local applications, `LOCAL_APPLICATION`, as Snowflake's own drivers
+  do; `--client-id` or `settings.clientId` names a security integration of
+  your own instead.
+
+Models get `max_completion_tokens` for the output limit, and Claude models
+explicit Anthropic-style cache breakpoints (`cacheFormat: anthropic`), which
+is how Cortex caches them.
+
 ### Responses over WebSocket
 
 As in OpenCode, an `openai-responses` provider can carry a session's steps
@@ -708,7 +734,8 @@ of a key; `auth logout` removes those too. Some key logins ask for more than the
 account and gateway ids of [Cloudflare](#cloudflare-ai-gateway-and-workers-ai)):
 they are asked in the terminal after the key, or given with
 `--field KEY=VALUE`, and saved with it. `--oauth` logs in through a
-provider's browser OAuth instead of a key ([Poe](#poe)).
+provider's browser OAuth instead of a key ([Poe](#poe),
+[Snowflake Cortex](#snowflake-cortex)).
 
 ## Instructions
 

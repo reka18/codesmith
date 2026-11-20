@@ -62,6 +62,15 @@ pub trait Authorizer: Send + Sync + std::fmt::Debug {
     fn describe(&self) -> String {
         "dynamic credentials".into()
     }
+
+    /// The provider rejected the credentials (401): true when they were
+    /// renewed, so the request is sent once more.
+    fn rejected<'a>(
+        &'a self,
+        _client: &'a reqwest::Client,
+    ) -> futures_util::future::BoxFuture<'a, bool> {
+        Box::pin(async { false })
+    }
 }
 
 /// The request body's content encoding (OpenCode's `RequestEncoding`).
@@ -290,7 +299,14 @@ pub(crate) async fn send(
     rb: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, Error> {
     let (client, req) = p.authorized(rb).await?;
-    let resp = client.execute(req).await?;
+    let again = req.try_clone();
+    let mut resp = client.execute(req).await?;
+    if let (Auth::Dynamic(a), Some(mut again)) = (&p.auth, again) {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && a.rejected(&client).await {
+            a.authorize(&client, &mut again).await?;
+            resp = client.execute(again).await?;
+        }
+    }
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
@@ -300,4 +316,97 @@ pub(crate) async fn send(
         });
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Hands out `token-<n>`, renewing when rejected.
+    #[derive(Debug, Default)]
+    struct Renewing(AtomicUsize);
+
+    impl Authorizer for Renewing {
+        fn authorize<'a>(
+            &'a self,
+            _client: &'a reqwest::Client,
+            req: &'a mut reqwest::Request,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), Error>> {
+            let n = self.0.load(Ordering::SeqCst);
+            req.headers_mut().insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer token-{n}").parse().unwrap(),
+            );
+            Box::pin(async { Ok(()) })
+        }
+        fn rejected<'a>(
+            &'a self,
+            _client: &'a reqwest::Client,
+        ) -> futures_util::future::BoxFuture<'a, bool> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { true })
+        }
+    }
+
+    /// Answers 401 until it sees `token-1`.
+    async fn server() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let auth = req
+                    .lines()
+                    .find_map(|l| l.strip_prefix("authorization: ").map(str::to_string))
+                    .unwrap_or_default();
+                log.lock().unwrap().push(auth.clone());
+                let status = if auth == "bearer token-1" { 200 } else { 401 };
+                let _ = s
+                    .write_all(
+                        format!("HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}")
+                            .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_rejected_dynamic_credential_is_renewed_and_the_request_sent_once_more() {
+        let (url, seen) = server().await;
+        let p = Provider {
+            protocol: Protocol::OpenaiChat,
+            name: String::new(),
+            base_url: url,
+            api_key: None,
+            headers: vec![],
+            query: vec![],
+            auth: Auth::Dynamic(std::sync::Arc::new(Renewing::default())),
+            encoding: Encoding::None,
+            compat: Compatibility::default(),
+        };
+        let client = reqwest::Client::new();
+        let resp = send(&p, client.post(p.url("x")).body("{}")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(*seen.lock().unwrap(), ["bearer token-0", "bearer token-1"]);
+        // Rejected again after the renewal: no third try.
+        let (url, seen) = server().await;
+        let p = Provider {
+            base_url: url,
+            auth: Auth::Dynamic(std::sync::Arc::new(Renewing(AtomicUsize::new(5)))),
+            ..p
+        };
+        let e = send(&p, client.post(p.url("x")).body("{}"))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::Status { status: 401, .. }), "{e:?}");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
 }

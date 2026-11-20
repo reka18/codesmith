@@ -1359,6 +1359,8 @@ impl Config {
                 compat.insert("maxTokensField".into(), f.clone().into());
             }
         }
+        let (plugin_compat, plugin_options) = crate::providers::defaults(pid, &model_id);
+        compat.extend(plugin_compat);
         compat.extend(p.compatibility.clone());
         if let Some(f) = m.interleaved.as_ref().and_then(interleaved_field) {
             compat.insert("reasoningField".into(), f.into());
@@ -1386,7 +1388,8 @@ impl Config {
             body.extend(b.clone());
         }
         body.extend(m.body.clone());
-        let mut options = codesmith_ai::Options::from_map(p.options.clone());
+        let mut options = codesmith_ai::Options::from_map(plugin_options);
+        options.merge(&codesmith_ai::Options::from_map(p.options.clone()));
         options.merge(&codesmith_ai::Options::from_map(m.options.clone()));
         let cache = cache_setting(&p, &m)
             .map(|v| {

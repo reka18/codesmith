@@ -505,7 +505,7 @@ enum AuthCmd {
         #[arg(long)]
         client_id: Option<String>,
         /// Log in through the provider's browser OAuth instead of pasting a
-        /// key (poe).
+        /// key (poe, snowflake-cortex).
         #[arg(long)]
         oauth: bool,
         /// google-vertex: use Application Default Credentials in this project.
@@ -1425,6 +1425,18 @@ fn stdin_has_input() -> bool {
     true
 }
 
+/// `--field KEY=VALUE` answers.
+fn parse_fields(fields: &[String]) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let mut given = serde_json::Map::new();
+    for f in fields {
+        let (k, v) = f
+            .split_once('=')
+            .ok_or_else(|| anyhow!("--field takes KEY=VALUE, got {f:?}"))?;
+        given.insert(k.trim().to_string(), v.trim().into());
+    }
+    Ok(given)
+}
+
 /// A line typed in the terminal; `None` when stdin is not one.
 fn read_line(prompt: &str) -> Result<Option<String>> {
     if !std::io::stdin().is_terminal() {
@@ -1470,6 +1482,7 @@ struct PluginLogin {
     location: Option<String>,
     client_id: Option<String>,
     oauth: bool,
+    fields: Vec<String>,
     cwd: PathBuf,
 }
 
@@ -1486,10 +1499,11 @@ async fn plugin_login(
         location,
         client_id,
         oauth,
+        fields,
         cwd,
     } = login;
     if oauth {
-        return browser_login(file, provider, client_id.as_deref(), &cwd)
+        return browser_login(file, provider, client_id.as_deref(), &fields, &cwd)
             .await
             .map(Some);
     }
@@ -1588,9 +1602,17 @@ async fn browser_login(
     file: &std::path::Path,
     provider: &str,
     client_id: Option<&str>,
+    fields: &[String],
     cwd: &std::path::Path,
 ) -> Result<String> {
     use codesmith_core::providers;
+    let answers = parse_fields(fields)?;
+    let answer = |key: &str, title: &str| -> Result<Option<String>> {
+        if let Some(v) = answers.get(key).and_then(|v| v.as_str()) {
+            return Ok(Some(v.to_string()));
+        }
+        Ok(read_line(&format!("{title}: "))?.filter(|a| !a.is_empty()))
+    };
     let loaded = config::load(cwd)?;
     let settings = loaded
         .config
@@ -1619,7 +1641,23 @@ async fn browser_login(
             )
             .await?;
         }
-        p => return Err(anyhow!("{p} has no browser login; --oauth is for poe")),
+        providers::snowflake::ID => {
+            let account = answer("account", "Snowflake account (myorg-myaccount)")?
+                .or_else(|| env("SNOWFLAKE_ACCOUNT"))
+                .or(settings.plugin.account.clone())
+                .ok_or_else(|| anyhow!("Snowflake account is required: pass --field account=…"))?;
+            let role = answer("role", "Snowflake role (optional)")?;
+            let e = providers::snowflake::Endpoints::for_account(
+                &account,
+                client_id.or(settings.plugin.client_id.as_deref()),
+            );
+            providers::snowflake::login(&client, file, &e, role.as_deref(), open).await?;
+        }
+        p => {
+            return Err(anyhow!(
+                "{p} has no browser login; --oauth is for poe and snowflake-cortex"
+            ))
+        }
     }
     Ok(format!(
         "Logged in to {provider}; the login is saved in {}",
@@ -1648,6 +1686,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 location,
                 client_id,
                 oauth,
+                fields: fields.clone(),
                 cwd: cwd.to_path_buf(),
             };
             if let Some(done) = plugin_login(&file, &provider, login).await? {
@@ -1664,13 +1703,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                     .settings,
                 &codesmith_core::providers::process_env(),
             );
-            let mut given = serde_json::Map::new();
-            for f in &fields {
-                let (k, v) = f
-                    .split_once('=')
-                    .ok_or_else(|| anyhow!("--field takes KEY=VALUE, got {f:?}"))?;
-                given.insert(k.trim().to_string(), v.trim().into());
-            }
+            let mut given = parse_fields(&fields)?;
             if form.is_none() && !given.is_empty() {
                 return Err(anyhow!(
                     "{provider}'s login asks for nothing beside the key"

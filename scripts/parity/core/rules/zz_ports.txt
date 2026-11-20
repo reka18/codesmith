@@ -382,3 +382,10 @@
 280 :: ported :: tests/oc_provider_logins.rs::oc_poe_preserves_the_active_connection_after_a_failed_token_exchange :: adapted: a failed login leaves the saved key
 299 :: ported :: tests/oc_provider_logins.rs::oc_poe_waits_for_the_token_exchange_and_consumes_the_callback_once
 337 :: ported :: tests/oc_provider_logins.rs::oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry
+@plugin/provider-snowflake-cortex.test.ts
+104 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_browser_oauth_supplies_the_native_endpoint_token_and_refreshes_a_rejected_token_once :: adapted: a 401 asks the login's authorizer to refresh, then the request is sent once more (codesmith-ai endpoint test); OpenCode's "Conversation complete" 400 rewrite is not ported
+168 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_manual_pat_uses_its_account_and_native_compatibility_rather_than_an_sdk_request_rewrite :: adapted: asserts the resolved model's compatibility and cacheFormat
+201 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_rejects_a_mismatched_callback_state_before_token_exchange
+220 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_uses_environment_tokens_rather_than_the_account_identifier_and_bypasses_expired_stored_oauth
+252 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_requires_a_token_separately_from_the_account_and_supports_environment_pats
+269 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_refreshes_expired_oauth_during_native_model_resolution_and_persists_rotated_credentials
