@@ -38,7 +38,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use codesmith_ai::Usage;
+use codesmith_ai::{FinishReason, Usage};
 use codesmith_core::config::Loaded;
 use codesmith_core::permission::{Approvals, Asker, Fixed, Reply, Request};
 use codesmith_core::question::{Prompt, Questioner};
@@ -234,8 +234,8 @@ impl Sink for JsonSink {
     fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
         self.send(json!({"type": "tool_end", "id": id, "name": name, "output": output, "error": is_error}));
     }
-    fn step_end(&mut self, reason: &str, usage: &Usage) {
-        self.send(json!({"type": "step_end", "reason": reason, "usage": usage}));
+    fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
+        self.send(json!({"type": "step_end", "reason": reason.normalized, "finish": reason, "usage": usage}));
     }
     fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
         self.send(json!({"type": "retry", "attempt": attempt, "error": error, "wait_ms": wait.as_millis() as u64}));

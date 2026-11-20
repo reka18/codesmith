@@ -6,8 +6,9 @@
 
 use crate::{
     all_media, drive_resuming, inline_required, merge_body, normalize_tool_history, schema, sse,
-    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, Media, MediaKind,
-    Message, Part, Protocol, Provider, ReasoningMeta, Reopen, Request, Role, ToolChoice, Usage,
+    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, FinishReason, Media,
+    MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta, Reopen, Request, Role,
+    ToolChoice, Usage,
 };
 use futures_util::FutureExt;
 use serde_json::{json, Map, Value};
@@ -285,18 +286,53 @@ fn thinking_config(t: &Map<String, Value>, max_tokens: Option<u32>) -> Value {
     Value::Object(out)
 }
 
+/// One request's `usageMetadata`: the prompt with tool-use prompt, cached,
+/// visible output, thoughts, total, billed cost (absent counts stay absent), and the
+/// object as it came.
+#[derive(Debug, Clone, Default)]
+struct RequestUsage {
+    prompt: Option<u64>,
+    cached: u64,
+    visible: Option<u64>,
+    thoughts: u64,
+    total: Option<u64>,
+    /// The cost the request reports billed (each request is billed on its
+    /// own).
+    cost: Option<f64>,
+    raw: Value,
+}
+
+impl RequestUsage {
+    fn of(u: &Value) -> Self {
+        let n = |k: &str| u[k].as_u64();
+        let prompt = match (n("promptTokenCount"), n("toolUsePromptTokenCount")) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        RequestUsage {
+            prompt,
+            cached: n("cachedContentTokenCount").unwrap_or(0),
+            visible: n("candidatesTokenCount"),
+            thoughts: n("thoughtsTokenCount").unwrap_or(0),
+            total: n("totalTokenCount"),
+            cost: crate::billing::billed(u, &[]),
+            raw: u.clone(),
+        }
+    }
+
+    fn output(&self) -> u64 {
+        self.visible.unwrap_or(0) + self.thoughts
+    }
+}
+
 #[derive(Default)]
 pub struct State {
-    /// This request's usage (prompt with tool-use prompt, cached, output),
-    /// and that of the earlier requests of a continued response.
-    usage: Option<(u64, u64, u64)>,
-    continued: Vec<(u64, u64, u64)>,
-    /// The cost this request reports billed, and the sum the earlier
-    /// requests of a continued response reported (each is billed on its own).
-    cost: Option<f64>,
-    continued_cost: Option<f64>,
+    /// This request's usage, and that of the earlier requests of a
+    /// continued response.
+    usage: Option<RequestUsage>,
+    continued: Vec<RequestUsage>,
     ids: Vec<String>,
-    finish: Option<String>,
+    finish: Option<FinishReason>,
     /// The open thought block's id, and the signature it has so far.
     reasoning: Option<String>,
     signature: Option<String>,
@@ -351,20 +387,71 @@ impl State {
     }
 
     /// The response's usage: the first request's input (later requests are
-    /// billed for the same prompt again) with every request's output.
-    fn usage(&self) -> Usage {
-        let cur = self.usage.unwrap_or_default();
-        let first = self.continued.first().copied().unwrap_or(cur);
-        let output = self.continued.iter().map(|u| u.2).sum::<u64>() + cur.2;
-        Usage {
-            input: first.0.saturating_sub(first.1),
-            output,
-            cache_read: first.1,
-            cache_write: 0,
-            cost: add_cost(self.continued_cost, self.cost),
+    /// billed for the same prompt again) with every request's output. The
+    /// total is left out when neither the prompt nor the visible output was
+    /// reported.
+    fn usage(&self) -> (Usage, Option<Value>) {
+        let cur = self.usage.clone();
+        let all: Vec<&RequestUsage> = self.continued.iter().chain(cur.as_ref()).collect();
+        let Some(first) = all.first() else {
+            return (Usage::default(), None);
+        };
+        let prompt = first.prompt.unwrap_or(0);
+        let output = all.iter().map(|u| u.output()).sum::<u64>();
+        let known = first.prompt.is_some() || all.iter().any(|u| u.visible.is_some());
+        let total = match all.as_slice() {
+            [one] => one.total,
+            _ => None,
         }
+        .or(known.then_some(prompt + output));
+        let usage = Usage {
+            input: prompt.saturating_sub(first.cached),
+            output,
+            cache_read: first.cached,
+            cache_write: 0,
+            cost: all.iter().fold(None, |sum, u| add_cost(sum, u.cost)),
+            reasoning: all.iter().map(|u| u.thoughts).sum(),
+            total,
+        };
+        // A continued response's raw usage sums every request's counts.
+        let raw = match all.as_slice() {
+            [one] => one.raw.clone(),
+            many => {
+                let mut sum = Map::new();
+                for k in [
+                    "promptTokenCount",
+                    "toolUsePromptTokenCount",
+                    "cachedContentTokenCount",
+                    "candidatesTokenCount",
+                    "thoughtsTokenCount",
+                    "totalTokenCount",
+                ] {
+                    let counts: Vec<u64> = many.iter().filter_map(|u| u.raw[k].as_u64()).collect();
+                    if !counts.is_empty() {
+                        sum.insert(k.into(), json!(counts.iter().sum::<u64>()));
+                    }
+                }
+                sum.insert("requests".into(), json!(many.len()));
+                Value::Object(sum)
+            }
+        };
+        (usage, Some(raw))
     }
 }
+
+/// Finish reasons that mean a safety filter withheld the output.
+const CONTENT_FILTERED: [&str; 10] = [
+    "IMAGE_SAFETY",
+    "RECITATION",
+    "SAFETY",
+    "BLOCKLIST",
+    "PROHIBITED_CONTENT",
+    "SPII",
+    "MODEL_ARMOR",
+    "IMAGE_PROHIBITED_CONTENT",
+    "IMAGE_RECITATION",
+    "LANGUAGE",
+];
 
 /// Finish reasons that mean the output is unusable; the first three are
 /// worth a retry.
@@ -397,13 +484,7 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
     if let Some(u) = v.get("usageMetadata").filter(|u| u.is_object()) {
         // Tool-use prompt tokens are input too.
-        let prompt = u["promptTokenCount"].as_u64().unwrap_or(0)
-            + u["toolUsePromptTokenCount"].as_u64().unwrap_or(0);
-        let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
-        let output = u["candidatesTokenCount"].as_u64().unwrap_or(0)
-            + u["thoughtsTokenCount"].as_u64().unwrap_or(0);
-        state.usage = Some((prompt, cached, output));
-        state.cost = crate::billing::billed(u, &[]);
+        state.usage = Some(RequestUsage::of(u));
     }
     let Some(c) = v["candidates"].get(0) else {
         if let Some(r) = v["promptFeedback"]["blockReason"].as_str() {
@@ -482,11 +563,13 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
                 retryable: FAILED[..3].contains(&f),
             });
         }
-        state.finish = Some(match f {
-            "STOP" => "stop".into(),
-            "MAX_TOKENS" => "length".into(),
-            other => other.to_lowercase(),
-        });
+        let normalized = match f {
+            "STOP" => Reason::Stop,
+            "MAX_TOKENS" => Reason::Length,
+            _ if CONTENT_FILTERED.contains(&f) => Reason::ContentFilter,
+            _ => Reason::Unknown,
+        };
+        state.finish = Some(FinishReason::new(normalized, f));
     }
     Ok(out)
 }
@@ -501,8 +584,7 @@ pub fn resume(state: &mut State, dropped: bool) -> Result<Option<String>, Error>
     match token {
         Some(token) if unfinished => {
             // Usage is cumulative within one request; the next counts anew.
-            state.continued.push(state.usage.take().unwrap_or_default());
-            state.continued_cost = add_cost(state.continued_cost, state.cost.take());
+            state.continued.extend(state.usage.take());
             state.blocked = None;
             Ok(Some(token))
         }
@@ -523,14 +605,16 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
     state.end_thinking(&mut out);
     state.end_text(&mut out);
-    let reason = if !state.ids.is_empty() {
-        "tool_calls".to_string()
-    } else {
-        state.finish.take().unwrap_or_else(|| "stop".into())
-    };
+    // Gemini finishes a turn of calls with `STOP`.
+    let mut reason = state.finish.take().unwrap_or_default();
+    if !state.ids.is_empty() && matches!(reason.normalized, Reason::Stop) {
+        reason.normalized = Reason::ToolCalls;
+    }
+    let (usage, raw_usage) = state.usage();
     out.push(Event::Finish {
         reason,
-        usage: state.usage(),
+        usage,
+        raw_usage,
     });
     Ok(out)
 }
@@ -700,14 +784,19 @@ mod tests {
         assert_eq!(
             finish(&mut s).unwrap().pop().unwrap(),
             Event::Finish {
-                reason: "tool_calls".into(),
+                reason: FinishReason::new(Reason::ToolCalls, "STOP"),
                 usage: Usage {
                     input: 30,
                     output: 10,
                     cache_read: 20,
                     cache_write: 0,
+                    reasoning: 3,
+                    total: Some(60),
                     ..Default::default()
-                }
+                },
+                raw_usage: Some(
+                    json!({"promptTokenCount": 50, "cachedContentTokenCount": 20, "candidatesTokenCount": 7, "thoughtsTokenCount": 3})
+                ),
             }
         );
         assert_eq!(split_id("call_0~S1"), ("call_0", Some("S1")));
@@ -731,7 +820,7 @@ mod tests {
         let mut s = State::default();
         handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"text": "x"}]}, "finishReason": "MAX_TOKENS"}]})).unwrap();
         assert!(
-            matches!(finish(&mut s).unwrap().pop().unwrap(), Event::Finish { reason, .. } if reason == "length")
+            matches!(finish(&mut s).unwrap().pop().unwrap(), Event::Finish { reason, .. } if reason.is_length())
         );
     }
 }

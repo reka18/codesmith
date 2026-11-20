@@ -223,12 +223,12 @@ fn summarize(events: &[Event]) -> Result<Summary, String> {
                 }
                 s.tools.push((name.clone(), input.clone()));
             }
-            Event::Finish { reason, usage } => {
+            Event::Finish { reason, usage, .. } => {
                 finishes += 1;
                 if i + 1 != events.len() {
                     return Err("events after Finish".into());
                 }
-                s.finish = normalize(reason);
+                s.finish = reason.normalized.as_str().to_string();
                 s.usage = *usage;
             }
             _ => {}
@@ -243,14 +243,18 @@ fn summarize(events: &[Event]) -> Result<Summary, String> {
     Ok(s)
 }
 
-/// OpenCode's normalized finish reasons.
+/// OpenCode's normalized finish reasons, for the reference decoders.
 fn normalize(raw: &str) -> String {
     match raw {
-        "stop" | "end_turn" | "stop_sequence" | "pause_turn" | "STOP" => "stop",
+        "stop" | "end" | "end_turn" | "stop_sequence" | "pause_turn" | "STOP" => "stop",
         "tool_calls" | "tool_use" | "function_call" => "tool-calls",
-        "length" | "max_tokens" | "max_output_tokens" | "MAX_TOKENS" => "length",
-        "content_filter" | "refusal" | "safety" | "SAFETY" => "content-filter",
-        other => other,
+        "length"
+        | "max_tokens"
+        | "max_output_tokens"
+        | "model_context_window_exceeded"
+        | "MAX_TOKENS" => "length",
+        "content_filter" | "refusal" | "SAFETY" => "content-filter",
+        _ => "unknown",
     }
     .to_string()
 }
@@ -359,6 +363,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                     cache_read: cached,
                     cache_write: write,
                     cost: billed(&u),
+                    ..Default::default()
                 };
             }
             s.finish = normalize(finish.as_deref().unwrap_or("stop"));
@@ -428,6 +433,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                 cache_read: n(&u["cache_read_input_tokens"]).unwrap_or(0),
                 cache_write: n(&u["cache_creation_input_tokens"]).unwrap_or(0),
                 cost: billed(&u),
+                ..Default::default()
             };
             s.finish = normalize(stop.as_deref().unwrap_or("end_turn"));
         }
@@ -493,6 +499,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                 cache_read: cached,
                 cache_write: written,
                 cost: billed(u),
+                ..Default::default()
             };
             s.finish = if !s.tools.is_empty() {
                 "tool-calls".into()
@@ -514,6 +521,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                         cache_read: cached,
                         cache_write: 0,
                         cost: billed(u),
+                        ..Default::default()
                     };
                 }
                 let c = &v["candidates"][0];
@@ -749,10 +757,20 @@ fn golden(c: &Cassette, call: usize, s: &Summary) -> Option<Result<(), String>> 
     })
 }
 
-/// `reasoningTokens` assertions are skipped: CodeSmith's `Usage` has no
-/// reasoning breakdown (reasoning is counted inside `output`).
+/// The token counts the reference decoders compute (reasoning and totals
+/// are checked against the fixtures' expectations instead).
+fn counts(u: &Usage) -> Usage {
+    Usage {
+        reasoning: 0,
+        total: None,
+        ..*u
+    }
+}
+
 fn expected_usage(spec: &Value, s: &Summary) -> Result<(), String> {
     let fields = [
+        ("reasoningTokens", s.usage.reasoning),
+        ("totalTokens", s.usage.total.unwrap_or(0)),
         ("outputTokens", s.usage.output),
         ("cacheReadInputTokens", s.usage.cache_read),
         ("cacheWriteInputTokens", s.usage.cache_write),
@@ -905,7 +923,7 @@ fn opencode_recordings_replay() {
                 name,
                 i,
                 "usage",
-                got.usage == want.usage,
+                counts(&got.usage) == counts(&want.usage),
                 format!("{:?} != {:?}", got.usage, want.usage),
             );
             if let Some(Err(e)) = golden(c, i, &got) {

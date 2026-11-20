@@ -668,6 +668,7 @@ async fn oc_session_projects_content_filter_finishes_as_visible_terminal_failure
         Usage {
             input: 8,
             output: 3,
+            total: Some(11),
             ..Default::default()
         }
     );

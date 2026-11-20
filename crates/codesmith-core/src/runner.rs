@@ -77,6 +77,21 @@ pub const OUTPUT_LIMIT_CONTINUATIONS: u32 = 2;
 /// The turn's error when the provider's filter stopped the response.
 pub const CONTENT_FILTERED: &str = "Provider blocked the response";
 
+/// The error for a response a content filter stopped, naming the policy
+/// area and the provider's explanation when it gave them (OpenCode's
+/// `contentFilterError`).
+pub fn content_filtered(reason: &codesmith_ai::FinishReason) -> String {
+    let mut m = match &reason.category {
+        Some(c) => format!("{CONTENT_FILTERED} ({c})"),
+        None => CONTENT_FILTERED.to_string(),
+    };
+    if let Some(e) = &reason.explanation {
+        m.push_str(": ");
+        m.push_str(e);
+    }
+    m
+}
+
 /// The result of a tool call the user declined.
 pub const DECLINED: &str = "The user declined this tool call";
 
@@ -124,30 +139,6 @@ pub fn invalid_json(input: &Value) -> Option<&str> {
     input
         .get("__invalid_json")
         .map(|v| v.as_str().unwrap_or_default())
-}
-
-/// A finish reason meaning the output token limit cut the response off.
-pub fn is_length(reason: &str) -> bool {
-    matches!(
-        reason,
-        "length" | "max_tokens" | "max_output_tokens" | "model_length"
-    )
-}
-
-/// A finish reason meaning the provider's safety filter stopped the response.
-pub fn is_content_filter(reason: &str) -> bool {
-    matches!(
-        reason.to_ascii_lowercase().as_str(),
-        "content_filter"
-            | "content-filter"
-            | "refusal"
-            | "safety"
-            | "recitation"
-            | "prohibited_content"
-            | "blocklist"
-            | "spii"
-            | "image_safety"
-    )
 }
 
 /// An assistant message with nothing to replay.
@@ -505,16 +496,27 @@ mod tests {
         assert_eq!(invalid_input("", false), INPUT_MALFORMED);
     }
 
+    // session-runner-tool-events.test.ts: "content-filter failure explains the refusal when the provider gives a reason"
     #[test]
-    fn finish_reasons() {
-        for r in ["length", "max_tokens"] {
-            assert!(is_length(r));
-        }
-        assert!(!is_length("stop"));
-        for r in ["content_filter", "refusal", "safety", "SAFETY"] {
-            assert!(is_content_filter(r), "{r}");
-        }
-        assert!(!is_content_filter("end_turn"));
+    fn oc_content_filter_failure_explains_the_refusal() {
+        use codesmith_ai::{FinishReason, Reason};
+        let plain = FinishReason::new(Reason::ContentFilter, "refusal");
+        assert_eq!(content_filtered(&plain), "Provider blocked the response");
+        let explained = FinishReason {
+            category: Some("cyber".into()),
+            explanation: Some(
+                "This request was declined because it could enable cyber harm.".into(),
+            ),
+            ..plain
+        };
+        assert_eq!(
+            content_filtered(&explained),
+            "Provider blocked the response (cyber): This request was declined because it could enable cyber harm."
+        );
+    }
+
+    #[test]
+    fn unavailable_tool() {
         assert_eq!(
             unavailable("missing"),
             "No tool named \"missing\" is currently available. Please use a tool from the available tool list."

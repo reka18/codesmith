@@ -416,6 +416,8 @@ pub enum ToolChoice {
     Tool(String),
 }
 
+/// Token counts for a response (or a sum of them). `input` is the
+/// non-cached prompt; `output` includes reasoning.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub input: u64,
@@ -427,6 +429,152 @@ pub struct Usage {
     /// one. On a total, the sum of the steps that reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<f64>,
+    /// The part of `output` spent on hidden reasoning, when reported.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reasoning: u64,
+    /// The provider's total, or the sum of the reported counts; `None` when
+    /// the provider reported neither input nor output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Usage {
+    /// Every token counted: the provider's total, or the sum of the counts.
+    pub fn tokens(&self) -> u64 {
+        self.total
+            .unwrap_or(self.input + self.cache_read + self.cache_write + self.output)
+    }
+
+    /// Add another response's counts and billed cost. The total stays
+    /// unknown while both are; otherwise a side without one counts its
+    /// tokens.
+    pub fn add(&mut self, u: &Usage) {
+        self.total = match (self.total, u.total) {
+            (None, None) => None,
+            _ => Some(self.tokens() + u.tokens()),
+        };
+        self.input += u.input;
+        self.output += u.output;
+        self.cache_read += u.cache_read;
+        self.cache_write += u.cache_write;
+        self.reasoning += u.reasoning;
+        if let Some(c) = u.cost {
+            self.cost = Some(self.cost.unwrap_or(0.0) + c);
+        }
+    }
+}
+
+/// OpenCode's finish-reason algebra: what every protocol's reasons
+/// normalize to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reason {
+    #[default]
+    Stop,
+    /// The output token limit (or the context window) cut the response off.
+    Length,
+    ToolCalls,
+    /// A safety filter or refusal stopped the response.
+    ContentFilter,
+    Error,
+    /// A reason the protocol does not know.
+    Unknown,
+}
+
+impl Reason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reason::Stop => "stop",
+            Reason::Length => "length",
+            Reason::ToolCalls => "tool-calls",
+            Reason::ContentFilter => "content-filter",
+            Reason::Error => "error",
+            Reason::Unknown => "unknown",
+        }
+    }
+}
+
+/// Why a response finished: the normalized reason, the provider's own, and
+/// for a content-filter finish the policy area and explanation the provider
+/// gave (OpenCode's `FinishReasonDetails`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishReason {
+    pub normalized: Reason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+impl FinishReason {
+    /// `normalized` with the provider's reason `raw`.
+    pub fn new(normalized: Reason, raw: impl Into<String>) -> Self {
+        FinishReason {
+            normalized,
+            raw: Some(raw.into()),
+            ..Default::default()
+        }
+    }
+
+    /// A reason inferred rather than reported.
+    pub fn inferred(normalized: Reason) -> Self {
+        FinishReason {
+            normalized,
+            ..Default::default()
+        }
+    }
+
+    /// The output token limit cut the response off.
+    pub fn is_length(&self) -> bool {
+        self.normalized == Reason::Length
+    }
+
+    /// A safety filter or refusal stopped the response.
+    pub fn is_content_filter(&self) -> bool {
+        self.normalized == Reason::ContentFilter
+    }
+
+    /// The provider's reason, or the normalized one when it gave none.
+    pub fn as_str(&self) -> &str {
+        self.raw.as_deref().unwrap_or(self.normalized.as_str())
+    }
+}
+
+impl From<Reason> for FinishReason {
+    fn from(r: Reason) -> Self {
+        FinishReason::inferred(r)
+    }
+}
+
+/// The first entry of `sources` (JSON objects) naming a filter that fired:
+/// `{"name": {"filtered": true}}`, or any truthy value (OpenCode's
+/// `contentFilterCategory`).
+pub(crate) fn filter_category(sources: &[&Value]) -> Option<String> {
+    sources
+        .iter()
+        .filter_map(|s| s.as_object())
+        .flatten()
+        .find(|(_, v)| match v.as_object() {
+            Some(o) if o.contains_key("filtered") => o["filtered"] == true,
+            _ => truthy(v),
+        })
+        .map(|(k, _)| k.clone())
+}
+
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
 }
 
 /// One piece of a streamed response.
@@ -469,8 +617,11 @@ pub enum Event {
         input: Value,
     },
     Finish {
-        reason: String,
+        reason: FinishReason,
         usage: Usage,
+        /// The provider's usage payload as it came, for counts CodeSmith
+        /// does not normalize (OpenCode's `usage.providerMetadata`).
+        raw_usage: Option<Value>,
     },
 }
 
@@ -755,10 +906,12 @@ pub fn collect<'a>(events: impl IntoIterator<Item = &'a Event>) -> Vec<Part> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Response {
     pub parts: Vec<Part>,
-    /// The finish reason as the provider gave it; `"error"` for the partial
-    /// output of a failed stream.
-    pub reason: String,
+    /// Why the response finished; [`Reason::Error`] for the partial output
+    /// of a failed stream.
+    pub reason: FinishReason,
     pub usage: Usage,
+    /// The provider's usage payload as it came.
+    pub raw_usage: Option<Value>,
 }
 
 impl Response {
@@ -802,9 +955,9 @@ impl Response {
 pub struct Failure {
     pub error: Error,
     /// What streamed before the failure, if anything did: its text,
-    /// reasoning and complete tool calls, with the reason `"error"`. Tool
-    /// calls whose arguments were still streaming are left out. Boxed to
-    /// keep the error small.
+    /// reasoning and complete tool calls, with the reason [`Reason::Error`].
+    /// Tool calls whose arguments were still streaming are left out. Boxed
+    /// to keep the error small.
     pub partial: Option<Box<Response>>,
 }
 
@@ -835,36 +988,45 @@ pub async fn assemble(
 ) -> Result<Response, Failure> {
     use futures_util::StreamExt;
     let mut parts = Collector::default();
-    let mut finish: Option<(String, Usage)> = None;
-    let fail = |error: Error, parts: Collector, finish: Option<(String, Usage)>| {
-        let parts = parts.finish();
-        Failure {
-            error,
-            partial: (!parts.is_empty()).then(|| {
-                Box::new(Response {
-                    parts,
-                    reason: "error".into(),
-                    usage: finish.map(|f| f.1).unwrap_or_default(),
-                })
-            }),
-        }
-    };
+    let mut finish: Option<(FinishReason, Usage, Option<Value>)> = None;
+    let fail =
+        |error: Error, parts: Collector, finish: Option<(FinishReason, Usage, Option<Value>)>| {
+            let parts = parts.finish();
+            let (usage, raw_usage) = finish.map(|f| (f.1, f.2)).unwrap_or_default();
+            Failure {
+                error,
+                partial: (!parts.is_empty()).then(|| {
+                    Box::new(Response {
+                        parts,
+                        reason: Reason::Error.into(),
+                        usage,
+                        raw_usage,
+                    })
+                }),
+            }
+        };
     while let Some(ev) = stream.next().await {
         let ev = match ev {
             Ok(ev) => ev,
             Err(e) => return Err(fail(e, parts, finish)),
         };
         each(&ev);
-        if let Event::Finish { reason, usage } = &ev {
-            finish = Some((reason.clone(), *usage));
+        if let Event::Finish {
+            reason,
+            usage,
+            raw_usage,
+        } = &ev
+        {
+            finish = Some((reason.clone(), *usage, raw_usage.clone()));
         }
         parts.push(&ev);
     }
     match finish {
-        Some((reason, usage)) => Ok(Response {
+        Some((reason, usage, raw_usage)) => Ok(Response {
             parts: parts.finish(),
             reason,
             usage,
+            raw_usage,
         }),
         None => Err(fail(
             Error::Transport("the response stream ended before the model finished".into()),

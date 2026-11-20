@@ -772,7 +772,7 @@ fn openai_responses_reasoning_replay() {
             assert_eq!(reasoning_ends(&evs), [&resp_meta(Some("rs_1"), None)]);
             let o = out(Ok(evs));
             assert_eq!(o.inputs(), [("lookup", &json!({"query": "weather"}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("openai-responses :: reconciles reasoning summaries that arrive only as finals", || {
             let evs = events(resp(&sse(&[

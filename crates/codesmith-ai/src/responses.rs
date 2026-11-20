@@ -5,8 +5,8 @@ use crate::cache;
 use crate::gemini::split_id;
 use crate::{
     drive, merge_body, normalize_tool_history, schema, sse, stream_error, system_text, Decoder,
-    Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta,
-    Request, Role, ToolChoice, Usage,
+    Error, Event, EventStream, FinishReason, Media, MediaKind, Message, Part, Protocol, Provider,
+    Reason, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -449,6 +449,30 @@ fn failure(e: &Value, raw: &Value, bare_is_transient: bool) -> Error {
     )
 }
 
+/// The rule that blocked a response, from GitHub Copilot's list of the
+/// filters that ran: the blocking completion filter's `BLOCK` rule, or the
+/// filter that fired in its `content_filter_results`.
+fn filter_category(filters: &Value) -> Option<String> {
+    let blocked: Vec<&Value> = filters
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["blocked"] == true)
+        .collect();
+    let f = blocked
+        .iter()
+        .find(|f| f["source_type"] == "completion")
+        .or(blocked.first())?;
+    f["content_filter_raw"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|r| r["action"] == "BLOCK" && r["result"] == true)
+        .and_then(|r| r["label"].as_str())
+        .map(str::to_string)
+        .or_else(|| crate::filter_category(&[&f["content_filter_results"]]))
+}
+
 pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
     match kind {
@@ -641,26 +665,44 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
             let details = &u["input_tokens_details"];
             let cached = details["cached_tokens"].as_u64().unwrap_or(0);
             let written = details["cache_write_tokens"].as_u64().unwrap_or(0);
+            let reported = (u["input_tokens"].as_u64(), u["output_tokens"].as_u64());
             let usage = Usage {
-                input: u["input_tokens"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    .saturating_sub(cached + written),
-                output: u["output_tokens"].as_u64().unwrap_or(0),
+                input: reported.0.unwrap_or(0).saturating_sub(cached + written),
+                output: reported.1.unwrap_or(0),
                 cache_read: cached,
                 cache_write: written,
                 // Copilot reports its billing beside `response`.
                 cost: crate::billing::billed(u, &[v]),
+                reasoning: u["output_tokens_details"]["reasoning_tokens"]
+                    .as_u64()
+                    .unwrap_or(0),
+                total: u["total_tokens"].as_u64().or(match reported {
+                    (None, None) => None,
+                    (i, o) => Some(i.unwrap_or(0) + o.unwrap_or(0)),
+                }),
             };
-            let reason = match r["incomplete_details"]["reason"].as_str() {
-                Some("max_output_tokens") => "length".to_string(),
-                Some(other) => other.to_string(),
-                None if state.calls > 0 => "tool_calls".into(),
-                None if complete => "stop".into(),
-                None => "incomplete".into(),
+            let raw = r["incomplete_details"]["reason"].as_str();
+            let normalized = match raw {
+                Some("max_output_tokens") => Reason::Length,
+                Some("content_filter") => Reason::ContentFilter,
+                _ if state.calls > 0 => Reason::ToolCalls,
+                None if complete => Reason::Stop,
+                _ => Reason::Unknown,
             };
+            let mut reason = FinishReason {
+                normalized,
+                raw: raw.map(str::to_string),
+                ..Default::default()
+            };
+            if reason.is_content_filter() {
+                reason.category = filter_category(&r["content_filters"]);
+            }
             state.done = true;
-            out.push(Event::Finish { reason, usage });
+            out.push(Event::Finish {
+                reason,
+                usage,
+                raw_usage: u.is_object().then(|| u.clone()),
+            });
         }
         "response.failed" => {
             let r = &v["response"];
@@ -856,14 +898,19 @@ mod tests {
                     input: json!({"path": "a"})
                 },
                 Event::Finish {
-                    reason: "tool_calls".into(),
+                    reason: Reason::ToolCalls.into(),
                     usage: Usage {
                         input: 60,
                         output: 9,
                         cache_read: 40,
                         cache_write: 0,
+                        reasoning: 0,
+                        total: Some(109),
                         ..Default::default()
-                    }
+                    },
+                    raw_usage: Some(
+                        json!({"input_tokens": 100, "output_tokens": 9, "input_tokens_details": {"cached_tokens": 40}})
+                    ),
                 },
             ]
         );
@@ -871,10 +918,38 @@ mod tests {
     }
 
     #[test]
+    fn content_filter_names_the_blocking_rule() {
+        let category = |filters: Value| {
+            let mut s = State::default();
+            let ev = handle(&mut s, "response.incomplete", &json!({"response": {"incomplete_details": {"reason": "content_filter"}, "content_filters": filters}})).unwrap();
+            match ev.last() {
+                Some(Event::Finish { reason, .. }) => reason.category.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            category(json!([
+                {"source_type": "prompt", "blocked": false},
+                {"source_type": "completion", "blocked": true, "content_filter_raw": [
+                    {"action": "ALLOW", "label": "other", "result": true},
+                    {"action": "BLOCK", "label": "copyright", "result": true}]}
+            ])),
+            Some("copyright".into())
+        );
+        assert_eq!(
+            category(
+                json!([{"blocked": true, "content_filter_results": {"hate": {"filtered": true}}}])
+            ),
+            Some("hate".into())
+        );
+        assert_eq!(category(json!(null)), None);
+    }
+
+    #[test]
     fn incomplete_and_failures() {
         let mut s = State::default();
         let ev = handle(&mut s, "response.incomplete", &json!({"response": {"incomplete_details": {"reason": "max_output_tokens"}, "usage": {}}})).unwrap();
-        assert!(matches!(&ev[0], Event::Finish { reason, .. } if reason == "length"));
+        assert!(matches!(&ev[0], Event::Finish { reason, .. } if reason.is_length()));
         assert!(handle(
             &mut s,
             "response.failed",

@@ -7,8 +7,8 @@ use crate::options::{claude_version, field, fit_budget, number};
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
     stream_error, system_text, unsupported_media, wrap_system_update, Decoder, Error, Event,
-    EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta, Request, Role,
-    ToolChoice, Usage,
+    EventStream, FinishReason, Media, MediaKind, Message, Part, Protocol, Provider, Reason,
+    ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -605,7 +605,9 @@ fn close_block(b: &mut Block, i: usize) -> Vec<Event> {
 pub struct State {
     /// Content blocks by index.
     blocks: Vec<Option<Block>>,
-    reason: Option<String>,
+    reason: Option<FinishReason>,
+    /// The usage objects merged, as they came.
+    raw_usage: Option<Map<String, Value>>,
     usage: Usage,
     pub done: bool,
 }
@@ -644,6 +646,40 @@ fn failure(v: &Value) -> Error {
     stream_error(e["type"].as_str(), e["message"].as_str(), v, false)
 }
 
+/// A Messages stop reason in the common algebra; a refusal carries the
+/// category and explanation its `stop_details` give.
+fn finish_reason(raw: &str, details: &Value) -> FinishReason {
+    let normalized = match raw {
+        "end_turn" | "stop_sequence" | "pause_turn" => Reason::Stop,
+        "max_tokens" | "model_context_window_exceeded" => Reason::Length,
+        "tool_use" => Reason::ToolCalls,
+        "refusal" => Reason::ContentFilter,
+        _ => Reason::Unknown,
+    };
+    let text = |k: &str| {
+        details[k]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    FinishReason {
+        category: text("category"),
+        explanation: text("explanation"),
+        ..FinishReason::new(normalized, raw)
+    }
+}
+
+impl State {
+    fn merge_usage(&mut self, u: &Value) {
+        if let Some(o) = u.as_object() {
+            let raw = self.raw_usage.get_or_insert_with(Map::new);
+            for (k, v) in o {
+                raw.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
 pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
     match event {
@@ -653,6 +689,7 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
             state.usage.cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
             state.usage.cache_write = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
             state.usage.output = u["output_tokens"].as_u64().unwrap_or(0);
+            state.merge_usage(u);
         }
         "content_block_start" => {
             let i = v["index"].as_u64().unwrap_or(0) as usize;
@@ -731,7 +768,7 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
         }
         "message_delta" => {
             if let Some(r) = v["delta"]["stop_reason"].as_str() {
-                state.reason = Some(r.to_string());
+                state.reason = Some(finish_reason(r, &v["delta"]["stop_details"]));
             }
             // The final delta carries authoritative totals; some
             // Anthropic-compatible servers only report input here.
@@ -750,6 +787,7 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
             if let Some(c) = crate::billing::billed(u, &[v]) {
                 state.usage.cost = Some(c);
             }
+            state.merge_usage(u);
         }
         "message_stop" => {
             // Blocks whose stop never came settle here.
@@ -759,9 +797,19 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
                 }
             }
             state.done = true;
+            let raw_usage = state.raw_usage.take().map(Value::Object);
+            let mut usage = state.usage;
+            if let Some(u) = &raw_usage {
+                usage.reasoning = u["output_tokens_details"]["thinking_tokens"]
+                    .as_u64()
+                    .unwrap_or(0);
+                usage.total =
+                    Some(usage.input + usage.cache_read + usage.cache_write + usage.output);
+            }
             out.push(Event::Finish {
-                reason: state.reason.take().unwrap_or_else(|| "end_turn".into()),
-                usage: state.usage,
+                reason: state.reason.take().unwrap_or_else(|| Reason::Stop.into()),
+                usage,
+                raw_usage,
             });
         }
         "error" => return Err(failure(v)),
@@ -954,14 +1002,19 @@ mod tests {
             vec![
                 Event::TextEnd("text-0".into()),
                 Event::Finish {
-                    reason: "tool_use".into(),
+                    reason: FinishReason::new(Reason::ToolCalls, "tool_use"),
                     usage: Usage {
                         input: 12,
                         output: 40,
                         cache_read: 5,
                         cache_write: 0,
+                        reasoning: 0,
+                        total: Some(57),
                         ..Default::default()
-                    }
+                    },
+                    raw_usage: Some(
+                        json!({"input_tokens": 12, "cache_read_input_tokens": 5, "output_tokens": 40})
+                    ),
                 }
             ]
         );
@@ -980,14 +1033,19 @@ mod tests {
         assert_eq!(
             handle(&mut s, "message_stop", &json!({})).unwrap(),
             vec![Event::Finish {
-                reason: "end_turn".into(),
+                reason: FinishReason::new(Reason::Stop, "end_turn"),
                 usage: Usage {
                     input: 290,
                     output: 27,
                     cache_read: 114,
                     cache_write: 0,
+                    reasoning: 0,
+                    total: Some(431),
                     ..Default::default()
-                }
+                },
+                raw_usage: Some(
+                    json!({"input_tokens": 290, "cache_read_input_tokens": 114, "output_tokens": 27})
+                ),
             }]
         );
     }

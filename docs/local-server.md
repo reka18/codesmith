@@ -67,7 +67,7 @@ Each Server-Sent Event is a JSON object with a `type`:
 | `reasoning` | `delta` |
 | `tool_start` | `id`, `name`, `input` |
 | `tool_end` | `id`, `name`, `output`, `error` |
-| `step_end` | `reason`, `usage` |
+| `step_end` | `reason` (`stop`, `length`, `tool-calls`, `content-filter`, `error` or `unknown`), `finish` (`normalized`, the providers `raw` reason and, for a content filter, its `category` and `explanation`), `usage` |
 | `retry` | `attempt`, `error`, `wait_ms` |
 | `compacted` | `before`, `after` |
 | `todos` | `todos` |

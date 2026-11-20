@@ -16,8 +16,8 @@
 
 use crate::{
     anthropic, check, decode_all, gemini, normalize_tool_history, openai, responses, schema, Cache,
-    CacheMessages, CachePlacement, Error, Event, Media, Message, Part, Protocol, Request, Role,
-    ToolChoice, ToolSpec, Usage,
+    CacheMessages, CachePlacement, Error, Event, FinishReason, Media, Message, Part, Protocol,
+    Reason, Request, Role, ToolChoice, ToolSpec, Usage,
 };
 use serde_json::{json, Value};
 
@@ -206,8 +206,13 @@ struct Out {
     text: String,
     reasoning: String,
     calls: Vec<(String, String, Value)>,
+    /// The normalized finish reason.
     finish: String,
+    reason: FinishReason,
     usage: Usage,
+    /// The usage as decoded, with reasoning and total.
+    full_usage: Usage,
+    raw_usage: Option<Value>,
 }
 
 impl Out {
@@ -233,9 +238,22 @@ fn out(events: Result<Vec<Event>, Error>) -> Out {
             Event::TextDelta(t) => o.text.push_str(&t),
             Event::ReasoningDelta(t) => o.reasoning.push_str(&t),
             Event::ToolCall { id, name, input } => o.calls.push((id, name, input)),
-            Event::Finish { reason, usage } => {
-                o.finish = reason;
-                o.usage = usage;
+            Event::Finish {
+                reason,
+                usage,
+                raw_usage,
+            } => {
+                o.finish = reason.normalized.as_str().to_string();
+                o.reason = reason;
+                o.full_usage = usage;
+                o.raw_usage = raw_usage;
+                // The counts only; reasoning and totals are checked on
+                // their own.
+                o.usage = Usage {
+                    reasoning: 0,
+                    total: None,
+                    ..usage
+                };
             }
             _ => {}
         }
@@ -633,6 +651,52 @@ fn openai_chat_streams() {
                 );
             }
         }),
+        ("openai-chat :: uses the configured provider metadata namespace for reasoning and usage (adapted)", || {
+            // (adapted) CodeSmith keeps one provider per stream, so provider
+            // state is not keyed by a namespace: the reasoning keeps its
+            // details and field, and the usage payload is kept as it came.
+            let details = json!([{"type": "reasoning.text", "text": "thinking", "signature": "signed"}]);
+            let u = json!({"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7});
+            let events = chat(&sse_done(&[
+                json!({"choices": [{"delta": {"reasoning": "thinking", "reasoning_details": details}}]}),
+                delta(json!({"content": "Hello"})),
+                delta_finish(json!({}), "stop"),
+                json!({"choices": [], "usage": u}),
+            ]))
+            .unwrap();
+            let o = out(Ok(events.clone()));
+            assert_eq!(o.raw_usage, Some(u));
+            assert_eq!((o.full_usage.total, o.full_usage.reasoning), (Some(7), 0));
+            let replay = openai::body(&req("m", vec![asst(crate::collect(&events))]));
+            assert_eq!(
+                replay["messages"],
+                json!([{"role": "assistant", "content": "Hello", "reasoning": "thinking", "reasoning_details": details}])
+            );
+        }),
+        ("openai-chat :: falls back to the selected provider for the metadata namespace (adapted)", || {
+            let u = json!({"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7});
+            let events = chat(&sse_done(&[
+                delta(json!({"reasoning_content": "thinking"})),
+                delta(json!({"content": "Hello"})),
+                delta_finish(json!({}), "stop"),
+                json!({"choices": [], "usage": u}),
+            ]))
+            .unwrap();
+            assert_eq!(out(Ok(events.clone())).raw_usage, Some(u));
+            let replay = chat_at("https://api.deepseek.com/v1", &req("deepseek-chat", vec![asst(crate::collect(&events))]));
+            assert_eq!(
+                replay["messages"],
+                json!([{"role": "assistant", "content": "Hello", "reasoning_content": "thinking"}])
+            );
+        }),
+        ("openai-chat :: counts reasoning tokens and the total", || {
+            let o = out(chat(&sse_done(&[
+                delta_finish(json!({"content": "Hi"}), "stop"),
+                json!({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 9,
+                    "completion_tokens_details": {"reasoning_tokens": 6}}}),
+            ])));
+            assert_eq!((o.full_usage.reasoning, o.full_usage.total), (6, Some(14)));
+        }),
         ("openai-chat :: reads top-level reasoning tokens whether or not completion tokens include them", || {
             let output = |u: Value| {
                 out(chat(&sse_done(&[delta_finish(json!({"content": "Hi"}), "stop"), json!({"choices": [], "usage": u})])))
@@ -649,7 +713,7 @@ fn openai_chat_streams() {
                 delta_finish(json!({}), "tool_calls"),
             ])));
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({"query": "weather"}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("openai-chat :: preserves Gemini thought signatures on streamed parallel tool calls", || {
             // Gemini's OpenAI endpoint omits `index` and signs only the first call.
@@ -677,7 +741,7 @@ fn openai_chat_streams() {
                 delta_finish(json!({}), "content_filter"),
             ])));
             assert!(o.calls.is_empty());
-            assert_eq!(o.finish, "content_filter");
+            assert_eq!(o.finish, "content-filter");
             let o = out(chat(&sse_done(&[
                 delta(json!({"tool_calls": [{"index": 0, "id": "call_2", "function": {"arguments": "{}"}}]})),
                 delta_finish(json!({}), "content_filter"),
@@ -694,7 +758,7 @@ fn openai_chat_streams() {
         }),
         ("openai-chat :: maps unknown finish reasons to unknown and keeps the raw value (raw)", || {
             let o = out(chat(&sse_done(&[delta(json!({"content": "Hello"})), delta_finish(json!({}), "future_reason")])));
-            assert_eq!((o.text.as_str(), o.finish.as_str()), ("Hello", "future_reason"));
+            assert_eq!((o.text.as_str(), o.finish.as_str()), ("Hello", "unknown"));
         }),
         ("openai-chat :: ignores empty identity fields on later tool call deltas", || {
             let o = out(chat(&sse_done(&[
@@ -773,7 +837,28 @@ fn openai_chat_streams() {
             assert!(m.contains("network error") && retry, "{m}");
             let (m, retry) = provider_err(chat(&sse_done(&[delta_finish(json!({}), "error")])));
             assert!(m.contains("finish_reason: error") && !retry, "{m}");
-            assert_eq!(out(chat(&sse_done(&[delta_finish(json!({}), "future_reason")]))).finish, "future_reason");
+            assert_eq!(out(chat(&sse_done(&[delta_finish(json!({}), "future_reason")]))).finish, "unknown");
+        }),
+        ("openai-compatible-chat :: normalizes the end finish reason to stop", || {
+            let o = out(chat(&sse(&[delta(json!({"content": "Hello"})), delta_finish(json!({}), "end")])));
+            assert_eq!(o.reason, FinishReason::new(Reason::Stop, "end"));
+        }),
+        ("openai-compatible-chat :: preserves content-filter finishes in the common reason algebra", || {
+            let o = out(chat(&sse(&[delta_finish(json!({}), "content_filter")])));
+            assert_eq!(o.reason, FinishReason::new(Reason::ContentFilter, "content_filter"));
+        }),
+        ("openai-compatible-chat :: names the content filter that blocked a response", || {
+            let finish = |choice: Value| {
+                let mut c = json!({"finish_reason": "content_filter"});
+                for (k, v) in choice.as_object().unwrap() {
+                    c[k] = v.clone();
+                }
+                out(chat(&sse(&[json!({"id": "chatcmpl_fixture", "choices": [c]})]))).reason
+            };
+            let r = finish(json!({"delta": {"copilot_annotations": {"TextCopyright": [{"id": 1}]}}}));
+            assert_eq!((r.normalized, r.category.as_deref()), (Reason::ContentFilter, Some("TextCopyright")));
+            let r = finish(json!({"delta": {}, "content_filter_results": {"hate": {"filtered": false}, "violence": {"filtered": true}}}));
+            assert_eq!((r.normalized, r.category.as_deref()), (Reason::ContentFilter, Some("violence")));
         }),
         ("openai-compatible-chat :: preserves explicit provider error events", || {
             let (m, retry) = provider_err(chat(&sse(&[json!({"id": "chatcmpl_error",
@@ -796,7 +881,7 @@ fn openai_chat_streams() {
             ])));
             assert_eq!(o.text, "Hello world (refusal)");
             assert_eq!(o.reasoning, "First then more thoughts");
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({}))]);
             assert_eq!(o.usage, usage(11, 7, 0, 0));
         }),
@@ -988,12 +1073,22 @@ fn openai_responses_streams() {
         }),
         ("openai-responses :: maps incomplete response reasons (raw)", || {
             let finish = |d: Value| {
-                out(resp(&sse(&[json!({"type": "response.incomplete", "response": {"id": "resp_incomplete", "incomplete_details": d}})]))).finish
+                out(resp(&sse(&[json!({"type": "response.incomplete", "response": {"id": "resp_incomplete", "incomplete_details": d}})]))).reason
             };
-            assert_eq!(finish(json!({"reason": "max_output_tokens"})), "length");
-            assert_eq!(finish(json!({"reason": "content_filter"})), "content_filter");
-            assert_eq!(finish(json!({})), "incomplete");
-            assert_eq!(finish(json!({"reason": "provider_limit"})), "provider_limit");
+            assert_eq!(
+                [
+                    finish(json!({"reason": "max_output_tokens"})),
+                    finish(json!({"reason": "content_filter"})),
+                    finish(json!({})),
+                    finish(json!({"reason": "provider_limit"})),
+                ],
+                [
+                    FinishReason::new(Reason::Length, "max_output_tokens"),
+                    FinishReason::new(Reason::ContentFilter, "content_filter"),
+                    Reason::Unknown.into(),
+                    FinishReason::new(Reason::Unknown, "provider_limit"),
+                ]
+            );
         }),
         ("openai-responses :: assembles streamed function call input", || {
             let o = out(resp(&sse(&[
@@ -1004,7 +1099,7 @@ fn openai_responses_streams() {
                 json!({"type": "response.completed", "response": {"usage": {"input_tokens": 5, "output_tokens": 1}}}),
             ])));
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({"query": "weather"}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
             assert_eq!(o.usage, usage(5, 1, 0, 0));
         }),
         ("openai-responses :: emits only missing function arguments from the arguments done event", || {
@@ -1020,7 +1115,7 @@ fn openai_responses_streams() {
         ("openai-responses :: streams complete function arguments supplied only by the arguments done event", || {
             let o = out(resp(&sse(&[added_call("fc_item_1", "call_1", "lookup"), args_done("fc_item_1", "{\"query\":\"weather\"}"), completed()])));
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({"query": "weather"}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("openai-responses :: does not repeat function arguments already supplied by deltas", || {
             let o = out(resp(&sse(&[
@@ -1066,7 +1161,7 @@ fn openai_responses_streams() {
                     {"type": "function_call", "id": "fc_item_1", "call_id": "call_1", "name": "lookup", "arguments": "{\"query\":\"weather\"}"}]}}),
             ])));
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({"query": "weather"}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("openai-responses :: lets completed response output override arguments done", || {
             let o = out(resp(&sse(&[
@@ -1111,7 +1206,7 @@ fn openai_responses_streams() {
                 json!({"type": "response.completed", "response": {"usage": {"input_tokens": 5, "output_tokens": 1}}}),
             ])));
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("openai-responses :: rejects authoritative incomplete final function arguments (kept for repair)", || {
             let o = out(resp(&sse(&[
@@ -1125,7 +1220,7 @@ fn openai_responses_streams() {
         ("openai-responses :: rejects incomplete function arguments when output_item.added is absent (kept for repair)", || {
             let o = out(resp(&sse(&[done_call("fc_item_1", "call_1", "lookup", "{\"query\":\"partial"), completed()])));
             assert_eq!(o.inputs(), [("lookup", &json!({"__invalid_json": "{\"query\":\"partial"}))]);
-            assert_eq!(o.finish, "tool_calls");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("openai-responses :: retains function call item metadata when output_item.added is absent", || {
             let o = out(resp(&sse(&[done_call("fc_item_1", "call_1", "lookup", "{\"query\":\"weather\"}"), completed()])));
@@ -1420,7 +1515,7 @@ fn anthropic_messages_streams() {
                 json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": "\n\nHuman:"}, "usage": {"output_tokens": 2}}),
                 stop(),
             ])));
-            assert_eq!((o.text.as_str(), o.reasoning.as_str(), o.finish.as_str()), ("Hello!", "thinking", "end_turn"));
+            assert_eq!((o.text.as_str(), o.reasoning.as_str(), o.finish.as_str()), ("Hello!", "thinking", "stop"));
             assert_eq!(o.usage, usage(5, 2, 1, 0));
         }),
         ("anthropic-messages :: preserves terminal state across usage-only message deltas", || {
@@ -1430,8 +1525,39 @@ fn anthropic_messages_streams() {
                 json!({"type": "message_delta", "delta": {}, "usage": {"output_tokens": 10}}),
                 stop(),
             ])));
-            assert_eq!(o.finish, "end_turn");
+            assert_eq!(o.finish, "stop");
             assert_eq!(o.usage, usage(5, 10, 0, 0));
+        }),
+        ("anthropic-messages :: maps context-window truncation to length", || {
+            let o = out(anth(&sse(&[start(5), message_delta("model_context_window_exceeded", 1), stop()])));
+            assert_eq!(o.reason, FinishReason::new(Reason::Length, "model_context_window_exceeded"));
+        }),
+        ("anthropic-messages :: preserves pause_turn while normalizing it to stop", || {
+            let o = out(anth(&sse(&[start(5), message_delta("pause_turn", 1), stop()])));
+            assert_eq!(o.reason, FinishReason::new(Reason::Stop, "pause_turn"));
+        }),
+        ("anthropic-messages :: carries a refusal's category and explanation on the content-filter finish", || {
+            let refusal = |details: Value| {
+                out(anth(&sse(&[
+                    start(5),
+                    json!({"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": details}, "usage": {"output_tokens": 0}}),
+                    stop(),
+                ])))
+                .reason
+            };
+            assert_eq!(
+                refusal(json!({"type": "refusal", "category": "cyber",
+                    "explanation": "This request was declined because it could enable cyber harm."})),
+                FinishReason {
+                    category: Some("cyber".into()),
+                    explanation: Some("This request was declined because it could enable cyber harm.".into()),
+                    ..FinishReason::new(Reason::ContentFilter, "refusal")
+                }
+            );
+            assert_eq!(
+                refusal(json!({"type": "refusal", "category": null, "explanation": null})),
+                FinishReason::new(Reason::ContentFilter, "refusal")
+            );
         }),
         ("anthropic-messages :: requires message_stop before completing a streamed message", || {
             let r = anth(&sse(&[
@@ -1457,7 +1583,7 @@ fn anthropic_messages_streams() {
             ]
             .concat();
             let o = out(anth(&body));
-            assert_eq!((o.text.as_str(), o.finish.as_str()), ("Hello", "end_turn"));
+            assert_eq!((o.text.as_str(), o.finish.as_str()), ("Hello", "stop"));
         }),
         ("anthropic-messages :: ignores unknown content block and delta variants", || {
             let o = out(anth(&sse(&[
@@ -1510,7 +1636,7 @@ fn anthropic_messages_streams() {
                 stop(),
             ])));
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({"query": "weather"}))]);
-            assert_eq!(o.finish, "tool_use");
+            assert_eq!(o.finish, "tool-calls");
         }),
         ("anthropic-messages :: ignores tool input deltas without a matching tool start", || {
             let o = out(anth(&sse(&[
@@ -1888,7 +2014,7 @@ fn gemini_streams() {
                 c["usageMetadata"] = json!({"promptTokenCount": 5, "candidatesTokenCount": 1});
                 let o = out(gem(&sse(&[c])));
                 assert_eq!(o.inputs(), [("lookup", &json!({"query": "weather"}))]);
-                assert_eq!(o.finish, "tool_calls");
+                assert_eq!(o.finish, "tool-calls");
                 assert_eq!(o.usage, usage(5, 1, 0, 0));
             },
         ),
@@ -1909,7 +2035,7 @@ fn gemini_streams() {
                     json!([{"functionCall": {"name": "lookup", "args": {"query": "weather"}}}]),
                     finish,
                 )])));
-                assert_eq!(o.finish, "tool_calls");
+                assert_eq!(o.finish, "tool-calls");
             }
         }),
         (
@@ -1955,24 +2081,24 @@ fn gemini_streams() {
                     "length"
                 );
                 assert_eq!(
-                    out(gem(&sse(&[candidate(json!([]), Some("SAFETY"))]))).finish,
-                    "safety"
+                    out(gem(&sse(&[candidate(json!([]), Some("SAFETY"))]))).reason,
+                    FinishReason::new(Reason::ContentFilter, "SAFETY")
                 );
             },
         ),
         (
             "gemini :: preserves blocking finishes and rejects invalid-output finish reasons",
             || {
-                for raw in [
-                    "MODEL_ARMOR",
-                    "IMAGE_PROHIBITED_CONTENT",
-                    "IMAGE_RECITATION",
-                    "LANGUAGE",
-                    "IMAGE_OTHER",
+                for (raw, normalized) in [
+                    ("MODEL_ARMOR", Reason::ContentFilter),
+                    ("IMAGE_PROHIBITED_CONTENT", Reason::ContentFilter),
+                    ("IMAGE_RECITATION", Reason::ContentFilter),
+                    ("LANGUAGE", Reason::ContentFilter),
+                    ("IMAGE_OTHER", Reason::Unknown),
                 ] {
                     assert_eq!(
-                        out(gem(&sse(&[candidate(json!([]), Some(raw))]))).finish,
-                        raw.to_lowercase()
+                        out(gem(&sse(&[candidate(json!([]), Some(raw))]))).reason,
+                        FinishReason::new(normalized, raw)
                     );
                 }
                 for raw in [
@@ -1999,6 +2125,16 @@ fn gemini_streams() {
                 }
             },
         ),
+        (
+            "gemini :: leaves total usage undefined when component counts are missing",
+            || {
+                let o = out(gem(&sse(&[
+                    json!({"usageMetadata": {"thoughtsTokenCount": 1}}),
+                ])));
+                assert_eq!(o.full_usage.reasoning, 1);
+                assert_eq!(o.full_usage.total, None);
+            },
+        ),
         ("gemini :: survives explicit null usage counts", || {
             let o = out(gem(&sse(&[
                 candidate(json!([{"text": "Hi"}]), None),
@@ -2006,6 +2142,7 @@ fn gemini_streams() {
             ])));
             assert_eq!(o.text, "Hi");
             assert_eq!(o.usage, usage(0, 5, 0, 0));
+            assert_eq!((o.full_usage.total, o.full_usage.reasoning), (Some(5), 0));
         }),
         (
             "gemini :: survives null candidates, content, parts, and finish reason",

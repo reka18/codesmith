@@ -7,7 +7,7 @@
 //! edit diffs, replay, config options and elicitation.
 
 use anyhow::{anyhow, Result};
-use codesmith_ai::{Media, Message, Part, Role, Usage};
+use codesmith_ai::{FinishReason, Media, Message, Part, Reason, Role, Usage};
 use codesmith_core::config::Loaded;
 use codesmith_core::mcp::{Mcp, ServerConfig};
 use codesmith_core::media::{self, ImageLimits};
@@ -339,11 +339,11 @@ fn usage_json(u: &Usage) -> Value {
     v
 }
 
-/// OpenCode's `resolveStopReason`, over provider finish reasons.
-fn stop_reason(finish: Option<&str>) -> &'static str {
+/// OpenCode's `resolveStopReason`, over the last step's finish reason.
+fn stop_reason(finish: Option<Reason>) -> &'static str {
     match finish {
-        Some("length" | "max_tokens" | "max_output_tokens" | "MAX_TOKENS") => "max_tokens",
-        Some("content_filter" | "content-filter" | "refusal" | "safety" | "SAFETY") => "refusal",
+        Some(Reason::Length) => "max_tokens",
+        Some(Reason::ContentFilter) => "refusal",
         _ => "end_turn",
     }
 }
@@ -353,7 +353,7 @@ fn stop_reason(finish: Option<&str>) -> &'static str {
 struct TurnStats {
     usage: Option<Usage>,
     last: Option<Usage>,
-    finish: Option<String>,
+    finish: Option<Reason>,
 }
 
 /// The tool call that is running, so permission requests can point at it.
@@ -477,17 +477,13 @@ impl Sink for AcpSink {
     fn todos(&mut self, todos: &[Todo]) {
         self.conn.update(&self.session, plan(todos));
     }
-    fn step_end(&mut self, reason: &str, usage: &Usage) {
+    fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
         self.settle_retry();
         {
             let mut st = self.stats.lock().unwrap();
-            let sum = st.usage.get_or_insert_with(Usage::default);
-            sum.input += usage.input;
-            sum.output += usage.output;
-            sum.cache_read += usage.cache_read;
-            sum.cache_write += usage.cache_write;
+            st.usage.get_or_insert_with(Usage::default).add(usage);
             st.last = Some(*usage);
-            st.finish = Some(reason.to_string());
+            st.finish = Some(reason.normalized);
         }
         self.message = unique("msg");
         self.reasoning = 0;
@@ -1798,7 +1794,7 @@ impl Agent {
                 me.conn.respond(&rpc, r)
             };
             match result {
-                Ok(()) => response(stop_reason(stats.finish.as_deref())),
+                Ok(()) => response(stop_reason(stats.finish)),
                 Err(e)
                     if e.to_string()
                         .contains(codesmith_core::runner::OUTPUT_LIMIT_EXHAUSTED) =>
@@ -4406,9 +4402,10 @@ mod tests {
         assert_eq!(tool_kind("edit"), "edit");
         assert_eq!(tool_kind("explore › grep"), "search");
         assert_eq!(tool_kind("github_search"), "other");
-        assert_eq!(stop_reason(Some("max_tokens")), "max_tokens");
-        assert_eq!(stop_reason(Some("content_filter")), "refusal");
-        assert_eq!(stop_reason(Some("stop")), "end_turn");
+        assert_eq!(stop_reason(Some(Reason::Length)), "max_tokens");
+        assert_eq!(stop_reason(Some(Reason::ContentFilter)), "refusal");
+        assert_eq!(stop_reason(Some(Reason::Stop)), "end_turn");
+        assert_eq!(stop_reason(None), "end_turn");
         let p = plan(&[
             Todo {
                 content: "a".into(),

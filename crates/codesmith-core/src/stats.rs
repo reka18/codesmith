@@ -110,13 +110,7 @@ fn total(u: &Usage) -> u64 {
 
 /// Add `b` to the total `a`, billed costs included.
 pub fn add(a: &mut Usage, b: &Usage) {
-    a.input += b.input;
-    a.output += b.output;
-    a.cache_read += b.cache_read;
-    a.cache_write += b.cache_write;
-    if let Some(c) = b.cost {
-        a.cost = Some(a.cost.unwrap_or(0.0) + c);
-    }
+    a.add(b);
 }
 
 /// The tokens of `u` at the configured price (any billed cost aside).

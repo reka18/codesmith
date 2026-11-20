@@ -1,7 +1,7 @@
 //! Printing a run: streamed text on stdout, tool activity on stderr, or
 //! one JSON object per event line with `--format json`.
 
-use codesmith_ai::Usage;
+use codesmith_ai::{FinishReason, Usage};
 use codesmith_core::session::Sink;
 use serde_json::{json, Value};
 use std::io::Write;
@@ -150,9 +150,9 @@ impl Sink for Printer {
         }
     }
 
-    fn step_end(&mut self, reason: &str, usage: &Usage) {
+    fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
         if self.json {
-            self.emit(json!({"type": "step", "reason": reason, "usage": usage_json(usage)}));
+            self.emit(json!({"type": "step", "reason": reason.normalized, "finish": reason, "usage": usage_json(usage)}));
         }
     }
 

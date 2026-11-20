@@ -2,7 +2,7 @@
 //! The session's sink, permission asker and questioner all turn into
 //! messages; prompts carry a reply channel the UI answers on.
 
-use codesmith_ai::Usage;
+use codesmith_ai::{FinishReason, Usage};
 use codesmith_core::permission::{Asker, Reply, Request};
 use codesmith_core::question::{Prompt, Questioner};
 use codesmith_core::session::{Session, Sink};
@@ -88,7 +88,7 @@ impl Sink for ChanSink {
             error: is_error,
         });
     }
-    fn step_end(&mut self, _reason: &str, usage: &Usage) {
+    fn step_end(&mut self, _reason: &FinishReason, usage: &Usage) {
         let _ = self.tx.send(Ev::StepEnd(*usage));
     }
     fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {

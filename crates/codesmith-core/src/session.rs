@@ -33,7 +33,7 @@ use crate::tool::todo::Todo;
 use crate::tool::{self, Ctx, Tool};
 use crate::{instructions, paths, prompt, retry, runner};
 use anyhow::{anyhow, Result};
-use codesmith_ai::{Event, Message, Part, Request, Role, Usage};
+use codesmith_ai::{Event, FinishReason, Message, Part, Request, Role, Usage};
 use futures_util::StreamExt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -53,7 +53,7 @@ pub trait Sink: Send {
     fn tool_end(&mut self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
     /// Images and PDFs a call returned, sent just before its `tool_end`.
     fn tool_media(&mut self, _id: &str, _media: &[codesmith_ai::Media]) {}
-    fn step_end(&mut self, _reason: &str, _usage: &Usage) {}
+    fn step_end(&mut self, _reason: &FinishReason, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     fn compacted(&mut self, _before: u64, _after: u64) {}
     fn todos(&mut self, _todos: &[Todo]) {}
@@ -799,7 +799,7 @@ impl Session {
                     usage: &usage,
                 },
             );
-            if runner::is_content_filter(&reason) {
+            if reason.is_content_filter() {
                 // Keep what was shown, but no calls: the response was blocked.
                 let kept: Vec<Part> = parts
                     .into_iter()
@@ -809,9 +809,9 @@ impl Session {
                     role: Role::Assistant,
                     parts: kept,
                 })?;
-                return Err(anyhow!(runner::CONTENT_FILTERED));
+                return Err(anyhow!(runner::content_filtered(&reason)));
             }
-            let length = runner::is_length(&reason);
+            let length = reason.is_length();
             truncated = if length { truncated + 1 } else { 0 };
             let calls: Vec<(String, String, serde_json::Value)> = parts
                 .iter()
@@ -2023,7 +2023,7 @@ impl Session {
         &mut self,
         sink: &mut dyn Sink,
         final_step: bool,
-    ) -> Result<(Vec<Part>, String, Usage)> {
+    ) -> Result<(Vec<Part>, FinishReason, Usage)> {
         // Pick up tool and prompt lists a server announced as changed.
         self.mcp.refresh().await;
         let mut req = self.request();
@@ -2067,7 +2067,7 @@ impl Session {
         &self,
         req: &Request,
         sink: &mut dyn Sink,
-    ) -> Result<(Vec<Part>, String, Usage), codesmith_ai::Failure> {
+    ) -> Result<(Vec<Part>, FinishReason, Usage), codesmith_ai::Failure> {
         let stream = self
             .model
             .provider

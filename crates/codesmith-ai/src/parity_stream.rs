@@ -9,6 +9,7 @@ use crate::{
     assemble, collect, drive, drive_resuming, gemini, openai, Collector, Error, Event, Part,
     Protocol, Reasoning, ReasoningMeta, Reopen, Response, Usage,
 };
+use crate::{FinishReason, Reason};
 use futures_util::{FutureExt, StreamExt};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -48,7 +49,7 @@ fn tool_events(events: &[Event]) -> Vec<Event> {
 
 fn reason(events: &[Event]) -> String {
     match events.last() {
-        Some(Event::Finish { reason, .. }) => reason.clone(),
+        Some(Event::Finish { reason, .. }) => reason.normalized.as_str().to_string(),
         other => panic!("no finish: {other:?}"),
     }
 }
@@ -180,7 +181,7 @@ fn block_lifecycle() {
                         },
                     ]
                 );
-                assert_eq!(reason(&evs), "tool_calls");
+                assert_eq!(reason(&evs), "tool-calls");
             },
         ),
         (
@@ -348,7 +349,7 @@ fn block_lifecycle() {
                         Part::Text("after".into()),
                     ]
                 );
-                assert_eq!(reason(&evs), "tool_calls");
+                assert_eq!(reason(&evs), "tool-calls");
             },
         ),
     ]);
@@ -480,8 +481,9 @@ async fn error_partial() {
             Ok(ts("text-0")),
             Ok(t("Partial answer")),
             Ok(Event::Finish {
-                reason: "stop".into(),
+                reason: FinishReason::new(Reason::Stop, "stop"),
                 usage,
+                raw_usage: None,
             }),
             Err(overloaded()),
         ])
@@ -492,7 +494,7 @@ async fn error_partial() {
     assert_eq!(partial.text(), "Partial answer");
     assert_eq!(partial.parts, [Part::Text("Partial answer".into())]);
     assert_eq!(partial.usage.output, 2);
-    assert_eq!(partial.reason, "error");
+    assert_eq!(partial.reason.normalized, Reason::Error);
 
     // error-partial :: generate keeps the same error when the failure comes before any output
     let f = assemble(scripted(vec![Err(overloaded())]), |_| {})
@@ -534,8 +536,9 @@ async fn error_partial() {
         scripted(vec![
             Ok(t("Done")),
             Ok(Event::Finish {
-                reason: "stop".into(),
+                reason: FinishReason::new(Reason::Stop, "stop"),
                 usage,
+                raw_usage: None,
             }),
         ]),
         |_| {},
@@ -546,8 +549,9 @@ async fn error_partial() {
         r,
         Response {
             parts: vec![Part::Text("Done".into())],
-            reason: "stop".into(),
-            usage
+            reason: FinishReason::new(Reason::Stop, "stop"),
+            usage,
+            raw_usage: None,
         }
     );
 }
@@ -663,7 +667,9 @@ fn with_usage(mut v: Value, usage: Value) -> Value {
 
 fn finish_of(c: &Continued) -> (String, Usage) {
     match c.events.last() {
-        Some(Event::Finish { reason, usage }) => (reason.clone(), *usage),
+        Some(Event::Finish { reason, usage, .. }) => {
+            (reason.normalized.as_str().to_string(), *usage)
+        }
         other => panic!("no finish: {other:?} ({:?})", c.error),
     }
 }
@@ -753,7 +759,7 @@ async fn gemini_response_continuation() {
         .events
         .iter()
         .any(|e| matches!(e, Event::ToolCall { id, .. } if id == "call_1~call_sig")));
-    assert_eq!(finish_of(&c).0, "tool_calls");
+    assert_eq!(finish_of(&c).0, "tool-calls");
 
     // gemini :: forgets a block once the resumed request finishes
     let c = continued(vec![
@@ -803,9 +809,20 @@ async fn gemini_response_continuation() {
         Usage {
             input: 142,
             output: 32868,
+            total: Some(33010),
             ..Default::default()
         }
     );
+    // Complete billed counts stay in the raw usage.
+    assert!(matches!(
+        c.events.last(),
+        Some(Event::Finish { raw_usage: Some(raw), .. }) if *raw == json!({
+            "promptTokenCount": 33052,
+            "candidatesTokenCount": 32868,
+            "totalTokenCount": 65920,
+            "requests": 2,
+        })
+    ));
 
     // gemini :: continues a stream that ends at a checkpoint without finishing
     let c = continued(vec![
@@ -884,9 +901,21 @@ async fn gemini_response_continuation() {
         Usage {
             input: 147,
             output: 105561,
+            total: Some(105708),
             ..Default::default()
         }
     );
+    assert!(matches!(
+        c.events.last(),
+        Some(Event::Finish { raw_usage: Some(raw), .. }) if *raw == json!({
+            "promptTokenCount": 197176,
+            "toolUsePromptTokenCount": 12,
+            "cachedContentTokenCount": 98590,
+            "candidatesTokenCount": 105561,
+            "totalTokenCount": 302749,
+            "requests": 4,
+        })
+    ));
     assert_eq!(c.text(), "ab");
 }
 

@@ -4,8 +4,9 @@ use crate::cache;
 use crate::gemini::split_id;
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
-    stream_error, unsupported_media, wrap_system_update, Decoder, Error, Event, EventStream, Media,
-    MediaKind, Message, Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    stream_error, unsupported_media, wrap_system_update, Decoder, Error, Event, EventStream,
+    FinishReason, Media, MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta,
+    Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -634,8 +635,9 @@ struct Call {
 #[derive(Debug, Default)]
 pub struct State {
     calls: Vec<Call>,
-    finish: Option<String>,
+    finish: Option<FinishReason>,
     usage: Usage,
+    raw_usage: Option<Value>,
     /// `reasoning_details` seen so far (merged), and whether any came.
     details: Vec<Value>,
     details_seen: bool,
@@ -760,6 +762,7 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
         state.usage = usage(u);
         state.usage.cost = crate::billing::billed(u, &[v]);
+        state.raw_usage = Some(u.clone());
     }
     let Some(choice) = v["choices"].get(0) else {
         return out;
@@ -868,7 +871,9 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     }
     // The first finish reason stands; some servers send late chunks after it.
     if let Some(f) = choice["finish_reason"].as_str().filter(|f| !f.is_empty()) {
-        state.finish.get_or_insert_with(|| f.to_string());
+        if state.finish.is_none() {
+            state.finish = Some(finish_reason(choice, f));
+        }
     }
     out
 }
@@ -885,29 +890,67 @@ fn usage(u: &Value) -> Usage {
     let cache_write = n(&u["prompt_tokens_details"]["cache_write_tokens"])
         .or(n(&u["cache_created_input_tokens"]))
         .unwrap_or(0);
-    let prompt = n(&u["prompt_tokens"]).unwrap_or(0);
-    let completion = n(&u["completion_tokens"]).unwrap_or(0);
+    let reported = (n(&u["prompt_tokens"]), n(&u["completion_tokens"]));
+    let prompt = reported.0.unwrap_or(0);
+    let completion = reported.1.unwrap_or(0);
+    let reasoning = n(&u["completion_tokens_details"]["reasoning_tokens"]);
     // A top-level `reasoning_tokens` (GitHub Copilot) is outside
     // `completion_tokens` when the total counts it separately.
     let extra = match (n(&u["reasoning_tokens"]), n(&u["total_tokens"])) {
         (Some(r), Some(total)) if total >= prompt + completion + r => r,
         _ => 0,
     };
+    let output = completion + extra;
     Usage {
         input: prompt.saturating_sub(cache_read + cache_write),
-        output: completion + extra,
+        output,
         cache_read,
         cache_write,
         cost: None,
+        reasoning: reasoning.or(n(&u["reasoning_tokens"])).unwrap_or(0),
+        total: n(&u["total_tokens"]).or(match reported {
+            (None, None) => None,
+            _ => Some(prompt + output),
+        }),
     }
+}
+
+/// A Chat finish reason in the common algebra. Servers' aliases for the
+/// output limit (`max_tokens`, vLLM's `model_length`) count as length too.
+/// A content-filter finish names the filter that fired, when the chunk says
+/// (GitHub Copilot's `copilot_annotations`, Azure's
+/// `content_filter_results`).
+fn finish_reason(choice: &Value, raw: &str) -> FinishReason {
+    let normalized = match raw {
+        "stop" | "end" => Reason::Stop,
+        "length" | "max_tokens" | "max_output_tokens" | "model_length" => Reason::Length,
+        "content_filter" => Reason::ContentFilter,
+        "function_call" | "tool_calls" => Reason::ToolCalls,
+        // Failures, raised when the stream ends.
+        "error" | "network_error" => return FinishReason::new(Reason::Error, raw),
+        _ => Reason::Unknown,
+    };
+    let native = choice["native_finish_reason"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(raw);
+    let mut r = FinishReason::new(normalized, native);
+    if raw == "content_filter" {
+        r.category = crate::filter_category(&[
+            &choice["delta"]["copilot_annotations"],
+            &choice["content_filter_results"],
+        ]);
+    }
+    r
 }
 
 /// Events at end of stream: the accumulated tool calls, then `Finish`.
 /// Calls cut off by the token limit or a content filter are dropped, and a
 /// finish reason that reports a provider failure is an error.
 pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
-    let reason = state.finish.take().unwrap_or_else(|| "stop".into());
-    match reason.as_str() {
+    let reason = state.finish.take().unwrap_or_else(|| Reason::Stop.into());
+    let failed = reason.normalized == Reason::Error;
+    match reason.raw.as_deref().filter(|_| failed).unwrap_or("") {
         "network_error" => {
             return Err(Error::Provider {
                 message: "provider reported a network error (finish_reason: network_error)".into(),
@@ -941,7 +984,7 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
         out.push(Event::ReasoningEnd(meta));
     }
     let calls = std::mem::take(&mut state.calls);
-    let keep = !matches!(reason.as_str(), "length" | "content_filter");
+    let keep = !reason.is_length() && !reason.is_content_filter();
     for c in calls {
         if let Some(id) = &c.streaming {
             out.push(Event::ToolInputEnd { id: id.clone() });
@@ -971,6 +1014,7 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
     out.push(Event::Finish {
         reason,
         usage: state.usage,
+        raw_usage: state.raw_usage.take(),
     });
     Ok(out)
 }
@@ -1178,14 +1222,19 @@ mod tests {
         assert_eq!(
             crate::content(finish(&mut s).unwrap()),
             vec![Event::Finish {
-                reason: "stop".into(),
+                reason: FinishReason::new(Reason::Stop, "stop"),
                 usage: Usage {
                     input: 6,
                     output: 3,
                     cache_read: 4,
                     cache_write: 0,
+                    reasoning: 0,
+                    total: Some(13),
                     ..Default::default()
-                }
+                },
+                raw_usage: Some(
+                    json!({"prompt_tokens": 10, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 4}})
+                ),
             }]
         );
     }
@@ -1202,6 +1251,8 @@ mod tests {
                 output: 4,
                 cache_read: 0,
                 cache_write: 5759,
+                reasoning: 0,
+                total: Some(5766),
                 ..Default::default()
             }
         );
@@ -1212,6 +1263,8 @@ mod tests {
                 output: 9,
                 cache_read: 101,
                 cache_write: 0,
+                reasoning: 0,
+                total: Some(110),
                 ..Default::default()
             }
         );
@@ -1224,6 +1277,8 @@ mod tests {
                 output: 1,
                 cache_read: 8,
                 cache_write: 2,
+                reasoning: 0,
+                total: Some(21),
                 ..Default::default()
             }
         );
@@ -1279,7 +1334,7 @@ mod tests {
                 input: json!({})
             }
         );
-        assert!(matches!(&ev[2], Event::Finish { reason, .. } if reason == "tool_calls"));
+        assert!(matches!(&ev[2], Event::Finish { reason, .. } if reason.as_str() == "tool_calls"));
     }
 
     #[test]
