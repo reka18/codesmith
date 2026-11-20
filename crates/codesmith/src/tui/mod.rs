@@ -172,6 +172,8 @@ struct Runner {
     history: history::Store,
     /// Model favourites, recents and variants.
     models: models::Repository,
+    /// The model each agent had in each session.
+    selections: models::Selections,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -221,6 +223,7 @@ impl Runner {
 
     /// Install a session and refresh the header (and transcript when continuing).
     fn install(&mut self, s: Session, replay: bool) {
+        self.selections.record(&s.id, &s.agent.id, &s.model_spec);
         self.app.header.agent = s.agent.name.clone();
         self.app.header.model = format!("{}/{}", s.model.provider_id, s.model.model_id);
         self.app.header.session = s.id.clone();
@@ -821,8 +824,19 @@ impl Runner {
 
     fn set_agent(&mut self, id: &str) -> Result<()> {
         let prev = self.agent.replace(id.to_string());
+        // The agent's model in this session, else its configured one.
+        let configured =
+            codesmith_core::agent::resolve(&self.loaded.config, id).and_then(|a| a.model);
+        let model = self
+            .selections
+            .for_agent(&self.session_id, id, configured.as_deref());
+        let prev_model = match model {
+            Some(m) => self.model.replace(m),
+            None => self.model.clone(),
+        };
         if let Err(e) = self.reload() {
             self.agent = prev;
+            self.model = prev_model;
             return Err(e);
         }
         self.app.notice(format!("agent: {id}"));
@@ -1742,6 +1756,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         tabs,
         history: history::Store::default(),
         models: models::Repository::new(models::Repository::default_file()),
+        selections: Default::default(),
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),

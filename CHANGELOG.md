@@ -95,6 +95,8 @@ replays of its recorded provider traffic.
   opens a command's live output, as OpenCode's composer panel does.
 - **Toasts:** copied IDs and links, and failures in other tabs, show as
   OpenCode's toasts at the top right.
+- **Models by agent:** switching agents brings back the model each had in
+  the session, else the agent's configured one.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

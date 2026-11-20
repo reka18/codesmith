@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 448 | 106 | 668 | 13 |
+| tui: main UI | 1250 | 15 | 451 | 100 | 671 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **724** | **542** | **2368** | **259** |
+| **Total** | **4637** | **744** | **727** | **536** | **2371** | **259** |
 
 ## Fixes made while porting
 
@@ -280,6 +280,9 @@ Where the tests live:
   in the transcript. Toasts now show at the top right, queued one at a
   time (`+N more`) for five seconds; one about a session outside the shown
   one's family is titled with it, and one over the cursor hides it.
+- **Models by agent** (`context/local-selection`): switching agents kept
+  the session's model. Each agent now takes the model and variant it last
+  had in the session, else its configured model.
 
 ## Differences found but not fixed
 
@@ -776,6 +779,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/composer-keymap` | shell output respects a configured binding with a focused textarea | after a fix | oc_shell_output_respects_a_configured_binding |
 | `tui/test/cli/tui/toast` | toast hides only the terminal cursor it covers, until dismissed | after a fix | oc_toast_hides_only_the_terminal_cursor_it_covers_until_dismissed (adapted: the prompt's cursor) |
 | `tui/test/plugin-toast` | toast for %s's family shows as-is while %s is open (3 cases) | after a fix | oc_toast_for_a_family_shows_as_is |
+| `tui/test/context/local-selection` | switching agents restores their model and variant within the session | after a fix | oc_switching_agents_restores_their_model_and_variant_within_the_session (adapted: the runner's selection memory) |
+| `tui/test/context/local-selection` | agent and model drafts are isolated across sessions and survive navigation | after a fix | oc_agent_and_model_drafts_are_isolated_across_sessions (adapted: the agent is saved with the session) |
+| `tui/test/context/local-selection` | retains an unavailable saved session model instead of selecting a fallback | after a fix | oc_retains_an_unavailable_saved_session_model (adapted) |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -936,16 +942,10 @@ transport and its tool presentation.
 - `tui/test/prompt/jsonl`: stash JSONL skips corruption and retains newest entries
 - `tui/test/prompt/jsonl`: frecency JSONL skips corruption, keeps latest path state, and limits entries
 
-### tui: per-agent and per-session model selection (8)
+### tui: per-agent and per-session model selection, the rest (2)
 
-- `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents
-- `tui/test/context/local-selection`: switching agents restores their model and variant within the session
-- `tui/test/context/local-selection`: agent and model drafts are isolated across sessions and survive navigation
-- `tui/test/context/local-selection`: retains an unavailable saved session model instead of selecting a fallback
-- `tui/test/context/local-selection`: new-session fallback still skips unavailable CLI and recent models
-- `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit
-- `tui/test/context/local-selection`: a late inactive-agent acknowledgment preserves its choice after the active agent commits
-- `tui/test/context/local-selection`: same-model agent switches clear drafts without a model acknowledgment
+- `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents (the object form of `model` with a variant)
+- `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit (no runner-level test harness yet)
 
 ### tui: goal in the prompt footer (1)
 

@@ -342,7 +342,7 @@ and `opencode` is used.
 | `/sessions` | Pick a session in this folder to continue; it opens in a tab (or its tab is shown). |
 | `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input (after anything typed there). The fork opens in a tab of its own. See [sessions](sessions.md#forking). |
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
-| `/agent [id]` | Switch agent, or pick one. |
+| `/agent [id]` | Switch agent, or pick one. As in OpenCode, an agent takes the model (and variant) it last had in this session, else its configured model, else the session's. |
 | `/model [provider/model]` | Switch model, or pick one. |
 | `/variant [name]` | Switch to the model's next [variant](configuration.md#provider-options-and-variants), or to the one named; `/variant default` drops it. |
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |

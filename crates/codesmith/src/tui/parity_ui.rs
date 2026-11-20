@@ -834,3 +834,79 @@ mod toasts {
         assert!(matches!(m.entries.last(), Some(Entry::Notice(n)) if n == "in mini"));
     }
 }
+
+// ----- per-agent and per-session model selection (context/local-selection) --
+
+mod selection {
+    use super::super::models::Selections;
+
+    /// What the runner does on a switch to `agent` in `session`: the model
+    /// it takes there, else the one the session has.
+    fn switch(
+        s: &mut Selections,
+        session: &str,
+        agent: &str,
+        configured: Option<&str>,
+        now: &str,
+    ) -> String {
+        let m = s
+            .for_agent(session, agent, configured)
+            .unwrap_or_else(|| now.to_string());
+        s.record(session, agent, &m);
+        m
+    }
+
+    // local-selection.test.tsx: "switching agents restores their model and variant within the session"
+    // (adapted) to the runner's selection memory.
+    #[test]
+    fn oc_switching_agents_restores_their_model_and_variant_within_the_session() {
+        let mut s = Selections::default();
+        let build = Some("provider/first#high");
+        let plan = Some("provider/second#low");
+        // The session was saved on build with first#low.
+        s.record("ses_first", "build", "provider/first#low");
+        let now = switch(&mut s, "ses_first", "plan", plan, "provider/first#low");
+        assert_eq!(now, "provider/second#low");
+        s.record("ses_first", "plan", "provider/third#high");
+        let now = switch(&mut s, "ses_first", "build", build, "provider/third#high");
+        assert_eq!(now, "provider/first#low");
+        let now = switch(&mut s, "ses_first", "plan", plan, &now);
+        assert_eq!(now, "provider/third#high");
+    }
+
+    // local-selection.test.tsx: "agent and model drafts are isolated across sessions and survive navigation"
+    // (adapted) a session's agent is saved with it; its models by agent are kept here.
+    #[test]
+    fn oc_agent_and_model_drafts_are_isolated_across_sessions() {
+        let mut s = Selections::default();
+        s.record("ses_first", "build", "provider/first#low");
+        s.record("ses_second", "plan", "provider/second#high");
+        s.record("ses_first", "plan", "provider/second#low");
+        assert_eq!(
+            s.for_agent("ses_second", "plan", None).as_deref(),
+            Some("provider/second#high")
+        );
+        assert_eq!(
+            s.for_agent("ses_first", "plan", None).as_deref(),
+            Some("provider/second#low")
+        );
+        assert_eq!(
+            s.for_agent("ses_first", "build", None).as_deref(),
+            Some("provider/first#low")
+        );
+    }
+
+    // local-selection.test.tsx: "retains an unavailable saved session model instead of selecting a fallback"
+    // (adapted) the session's saved model is what it runs on; nothing
+    // swaps in another for a model the catalog lacks.
+    #[test]
+    fn oc_retains_an_unavailable_saved_session_model() {
+        let mut s = Selections::default();
+        s.record("ses_first", "build", "provider/missing#high");
+        assert_eq!(
+            s.for_agent("ses_first", "build", Some("provider/first#low"))
+                .as_deref(),
+            Some("provider/missing#high")
+        );
+    }
+}

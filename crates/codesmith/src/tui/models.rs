@@ -10,6 +10,38 @@ use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// The model each agent had in each session, until the UI exits, as
+/// OpenCode keeps a session's agent and model drafts: switching agents
+/// within a session brings back the model (and variant) the agent had
+/// there; an agent not used there yet takes its configured model.
+#[derive(Debug, Default)]
+pub struct Selections(std::collections::HashMap<String, std::collections::HashMap<String, String>>);
+
+impl Selections {
+    /// `session` runs `agent` on `model` (`provider/model#variant`).
+    pub fn record(&mut self, session: &str, agent: &str, model: &str) {
+        self.0
+            .entry(session.to_string())
+            .or_default()
+            .insert(agent.to_string(), model.to_string());
+    }
+
+    /// The model `agent` takes in `session`: the one it had there, else
+    /// its `configured` one; `None` keeps the session's current model.
+    pub fn for_agent(
+        &self,
+        session: &str,
+        agent: &str,
+        configured: Option<&str>,
+    ) -> Option<String> {
+        self.0
+            .get(session)
+            .and_then(|m| m.get(agent))
+            .cloned()
+            .or_else(|| configured.map(str::to_string))
+    }
+}
+
 /// A model: its provider and ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
