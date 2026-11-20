@@ -19,7 +19,9 @@ use codesmith_core::tool::todo::{Status, Todo};
 use codesmith_core::{agent, command, config};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -710,12 +712,32 @@ impl Questioner for AcpQuestioner {
     }
 }
 
+/// What holds a slot's session while a turn runs.
+#[derive(Debug, PartialEq)]
+enum Running {
+    /// A `session/prompt`, by JSON-RPC id: answered when the turn ends.
+    Prompt(Value),
+    /// A turn the agent started itself, for background commands that
+    /// finished while the session was idle: it has no request to answer.
+    Resumed,
+}
+
 struct Slot {
     id: String,
     session: tokio::sync::Mutex<Option<Session>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// The JSON-RPC id of the running `session/prompt`.
-    prompt: Mutex<Option<Value>>,
+    /// Whose turn `task` runs; taken by whoever settles it (the turn
+    /// ending, or a cancel), so only one of them answers.
+    running: Mutex<Option<Running>>,
+    /// While idle: waits for a background command to finish, to resume
+    /// the session. A prompt cancels it and reports the command itself.
+    waiter: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// A `session/prompt` waiting for a resumed turn to end.
+    queued: Mutex<Option<Value>>,
+    /// Notified when a turn gives the session back or is stopped.
+    idle: tokio::sync::Notify,
+    /// Closed, deleted or replaced: never resume it again.
+    closed: AtomicBool,
     current: Current,
     stats: Arc<Mutex<TurnStats>>,
     loaded: Loaded,
@@ -1291,7 +1313,11 @@ impl Agent {
             id: id.to_string(),
             session: tokio::sync::Mutex::new(None),
             task: Mutex::new(None),
-            prompt: Mutex::new(None),
+            running: Mutex::new(None),
+            waiter: Mutex::new(None),
+            queued: Mutex::new(None),
+            idle: tokio::sync::Notify::new(),
+            closed: AtomicBool::new(false),
             current: Default::default(),
             stats: Default::default(),
             loaded,
@@ -1710,13 +1736,10 @@ impl Agent {
         let sid = p["sessionId"].as_str().unwrap_or("").to_string();
         let slot = self.slot(&sid).await?;
         let (text, attached) = prompt_content(&p["prompt"], &slot.loaded.config.media.image)?;
-        let mut s = slot.session.lock().await.take().ok_or_else(|| {
-            internal(
-                format!("Session already has an active ACP prompt: {sid}"),
-                json!({"service": "session"}),
-            )
-        })?;
-        *slot.prompt.lock().unwrap() = Some(rpc.clone());
+        let Some(mut s) = self.acquire(&slot, &rpc).await? else {
+            // Cancelled while queued: the cancel answered.
+            return Ok(());
+        };
         *slot.stats.lock().unwrap() = TurnStats::default();
         let compaction = self.client_has("/session/compaction");
         let (me, slot2) = (self.clone(), slot.clone());
@@ -1727,8 +1750,9 @@ impl Agent {
                 .run_turn(&mut s, &slot2, &text, attached, &mut sink)
                 .await;
             // A cancel took the request: it answers, and reloads the session.
-            let Some(rpc) = slot2.prompt.lock().unwrap().take() else {
-                return;
+            let rpc = match slot2.running.lock().unwrap().take() {
+                Some(Running::Prompt(rpc)) => rpc,
+                _ => return,
             };
             if s.title != title_before {
                 me.conn.update(
@@ -1748,6 +1772,7 @@ impl Agent {
                 *slot2.session.lock().await = Some(s);
             }
             slot2.task.lock().unwrap().take();
+            // Answered before a resumed turn can start streaming.
             let response = |reason: &str| {
                 let mut r = json!({"stopReason": reason});
                 if let Some(u) = &stats.usage {
@@ -1783,9 +1808,127 @@ impl Agent {
                     me.conn.error(&rpc, &err)
                 }
             }
+            me.clone().wake(slot2).await;
         });
         *slot.task.lock().unwrap() = Some(task);
         Ok(())
+    }
+
+    /// Take the session for the prompt `rpc`. A prompt while the session
+    /// waits for a background command cancels the wait (its turn reports
+    /// the command); one while a resumed turn runs waits for that turn to
+    /// end, then runs (OpenCode steers it into the running turn). `None`:
+    /// cancelled while waiting, and already answered.
+    async fn acquire(&self, slot: &Slot, rpc: &Value) -> Result<Option<Session>, RpcError> {
+        if let Some(w) = slot.waiter.lock().unwrap().take() {
+            w.abort();
+        }
+        let busy = || {
+            internal(
+                format!("Session already has an active ACP prompt: {}", slot.id),
+                json!({"service": "session"}),
+            )
+        };
+        let mut waited = false;
+        loop {
+            let idle = slot.idle.notified();
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            {
+                let mut g = slot.session.lock().await;
+                let mut queued = slot.queued.lock().unwrap();
+                let ours = queued.as_ref() == Some(rpc);
+                if waited && !ours {
+                    return Ok(None);
+                }
+                if queued.is_some() && !ours {
+                    return Err(busy());
+                }
+                if let Some(s) = g.take() {
+                    *queued = None;
+                    *slot.running.lock().unwrap() = Some(Running::Prompt(rpc.clone()));
+                    return Ok(Some(s));
+                }
+                if *slot.running.lock().unwrap() != Some(Running::Resumed) {
+                    return Err(busy());
+                }
+                *queued = Some(rpc.clone());
+                waited = true;
+            }
+            idle.await;
+        }
+    }
+
+    /// The session is idle: if one of its background commands finished,
+    /// resume it as a turn of its own, streamed as `session/update`s with
+    /// no request to answer (OpenCode wakes an idle session with each
+    /// finished command's notice); if one still runs, wait for it and come
+    /// back here.
+    fn wake(self: Arc<Self>, slot: Arc<Slot>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let mut g = slot.session.lock().await;
+            if slot.closed.load(Ordering::SeqCst) || slot.queued.lock().unwrap().is_some() {
+                return;
+            }
+            let Some(s) = g.as_ref() else { return };
+            if s.background_finished() > 0 {
+                let s = g.take().unwrap();
+                *slot.running.lock().unwrap() = Some(Running::Resumed);
+                let task = tokio::spawn(self.clone().resumed(slot.clone(), s));
+                *slot.task.lock().unwrap() = Some(task);
+            } else if s.background_running() > 0 {
+                let (reaper, slot2) = (s.reaper(), slot.clone());
+                let waiter = tokio::spawn(async move {
+                    reaper.wait_any().await;
+                    // From here a prompt no longer cancels the wake: it
+                    // waits for the turn this may start.
+                    slot2.waiter.lock().unwrap().take();
+                    self.wake(slot2).await;
+                });
+                if let Some(old) = slot.waiter.lock().unwrap().replace(waiter) {
+                    old.abort();
+                }
+            }
+        })
+    }
+
+    /// Run the turn that reports `s`'s finished background commands, then
+    /// give the session back and wake it again for those still running.
+    async fn resumed(self: Arc<Self>, slot: Arc<Slot>, mut s: Session) {
+        *slot.stats.lock().unwrap() = TurnStats::default();
+        let compaction = self.client_has("/session/compaction");
+        let mut sink = AcpSink::new(self.conn.clone(), &slot.id, &slot, compaction);
+        let title_before = s.title.clone();
+        if let Err(e) = s.resume_background(&mut sink).await {
+            eprintln!("acp: resuming session {}: {e:#}", slot.id);
+        }
+        {
+            let mut g = slot.session.lock().await;
+            // A cancel took the turn: it reloads the session.
+            if slot.running.lock().unwrap().take() != Some(Running::Resumed) {
+                return;
+            }
+            if s.title != title_before {
+                self.conn.update(
+                    &slot.id,
+                    json!({"sessionUpdate": "session_info_update", "title": s.title}),
+                );
+            }
+            let stats = std::mem::take(&mut *slot.stats.lock().unwrap());
+            self.usage_update(&slot.id, &s, &slot, &stats);
+            if slot.stale.swap(false, Ordering::SeqCst) {
+                drop(s);
+                match self.build(&slot) {
+                    Ok(fresh) => *g = Some(fresh),
+                    Err(e) => eprintln!("acp: could not apply the new selection: {e:#}"),
+                }
+            } else {
+                *g = Some(s);
+            }
+            slot.task.lock().unwrap().take();
+        }
+        slot.idle.notify_waiters();
+        self.wake(slot).await;
     }
 
     /// Context use after a turn, when the model's window is known.
@@ -1855,31 +1998,47 @@ impl Agent {
         s.prompt_with(text, attached, sink).await
     }
 
-    /// Stop a running turn and answer its prompt with `cancelled`. The
-    /// request is taken first, so a turn finishing meanwhile cannot answer
-    /// or put its session back; with `reload` the session reloads from the
-    /// store.
+    /// Stop a running turn, a prompt or a resumed one, and answer its
+    /// prompt (and one queued behind a resumed turn) with `cancelled`. The
+    /// turn is taken first, so one finishing meanwhile cannot answer or put
+    /// its session back; with `reload` the session reloads from the store.
+    /// Without it (close, delete, replacement) the slot is done: its wait
+    /// for background commands stops and it is never resumed again. A
+    /// cancel leaves an idle session's wait alone, as OpenCode's does.
     async fn stop(&self, sid: &str, slot: &Slot, reload: bool) {
+        if !reload {
+            slot.closed.store(true, Ordering::SeqCst);
+            if let Some(w) = slot.waiter.lock().unwrap().take() {
+                w.abort();
+            }
+        }
+        let queued = slot.queued.lock().unwrap().take();
+        // A wake holds the session while it starts a turn: let it finish,
+        // so that turn is the one stopped here.
+        drop(slot.session.lock().await);
         let task = slot.task.lock().unwrap().take();
-        let Some(task) = task else { return };
-        let rpc = slot.prompt.lock().unwrap().take();
-        task.abort();
-        // Unblocks a tool waiting on the client; the abort lands at its next await.
-        self.conn.drop_pending(sid);
-        let _ = task.await;
-        // The turn had already ended and answered.
-        let Some(rpc) = rpc else { return };
-        if let Some((id, name, input)) = slot.current.lock().unwrap().take() {
-            self.conn.update(
-                sid,
-                result_update(&slot.cwd, &id, &name, &input, "Cancelled", true, &[]),
-            );
+        if let Some(task) = task {
+            let running = slot.running.lock().unwrap().take();
+            task.abort();
+            // Unblocks a tool waiting on the client; the abort lands at its next await.
+            self.conn.drop_pending(sid);
+            let _ = task.await;
+            // `None`: the turn had already ended (and answered).
+            if let Some(running) = running {
+                self.cancelled(sid, slot, running, reload).await;
+            }
         }
-        let stats = std::mem::take(&mut *slot.stats.lock().unwrap());
-        let mut response = json!({"stopReason": "cancelled"});
-        if let Some(u) = &stats.usage {
-            response["usage"] = usage_json(u);
+        slot.idle.notify_waiters();
+        // Last, so a client acting on it finds the session reloaded.
+        if let Some(rpc) = queued {
+            self.conn.respond(&rpc, json!({"stopReason": "cancelled"}));
         }
+    }
+
+    /// Settle a stopped turn: with `reload` the session reloads, then its
+    /// call in flight fails and its prompt is answered (a resumed turn's
+    /// failed call is the last the client hears of it).
+    async fn cancelled(&self, sid: &str, slot: &Slot, running: Running, reload: bool) {
         if reload {
             slot.stale.store(false, Ordering::SeqCst);
             match self.build(slot) {
@@ -1887,7 +2046,20 @@ impl Agent {
                 Err(e) => eprintln!("acp: could not reload session {sid}: {e:#}"),
             }
         }
-        self.conn.respond(&rpc, response);
+        if let Some((id, name, input)) = slot.current.lock().unwrap().take() {
+            self.conn.update(
+                sid,
+                result_update(&slot.cwd, &id, &name, &input, "Cancelled", true, &[]),
+            );
+        }
+        let stats = std::mem::take(&mut *slot.stats.lock().unwrap());
+        if let Running::Prompt(rpc) = running {
+            let mut response = json!({"stopReason": "cancelled"});
+            if let Some(u) = &stats.usage {
+                response["usage"] = usage_json(u);
+            }
+            self.conn.respond(&rpc, response);
+        }
     }
 
     async fn notification(self: &Arc<Self>, method: &str, p: Value) {
@@ -1907,8 +2079,19 @@ impl Agent {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                let id = &p["requestId"];
                 for (sid, slot) in slots {
-                    let ours = slot.prompt.lock().unwrap().as_ref() == Some(&p["requestId"]);
+                    // A prompt queued behind a resumed turn just stops waiting.
+                    let queued = {
+                        let mut q = slot.queued.lock().unwrap();
+                        q.take_if(|q| q == id)
+                    };
+                    if let Some(rpc) = queued {
+                        self.conn.respond(&rpc, json!({"stopReason": "cancelled"}));
+                        slot.idle.notify_waiters();
+                        continue;
+                    }
+                    let ours = matches!(slot.running.lock().unwrap().as_ref(), Some(Running::Prompt(r)) if r == id);
                     if ours {
                         self.stop(&sid, &slot, true).await;
                     }
@@ -2016,10 +2199,11 @@ pub async fn run() -> Result<()> {
 ///   references them in the text, for `read` and its permission checks);
 /// - non-image media in tool results (ACP tool content carries images;
 ///   a PDF a tool returned reaches the model but not the client);
-/// - child-session updates (`opencode/child-session-updates`), background
-///   turns woken by shells or subagents after `end_turn`, and
-///   `_session/steering`: subagents run inside the parent's turn and their
-///   tool calls stream into it;
+/// - child-session updates (`opencode/child-session-updates`), turns woken
+///   by subagents after `end_turn`, and `_session/steering`: subagents run
+///   inside the parent's turn and their tool calls stream into it (turns
+///   woken by background shells are ported; a prompt during one waits for
+///   it instead of steering into it);
 /// - terminal auth (`--login`) and the auth-required mapping from a server
 ///   event (provider HTTP 401/403 errors map to -32000 instead);
 /// - streamed compaction (`in_progress` and `compaction_summary_chunk`):
@@ -2059,6 +2243,15 @@ mod tests {
     }
 
     static FLAKY: AtomicUsize = AtomicUsize::new(0);
+    /// The background command notices the model answered, by marker.
+    static WOKE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    const MARKERS: [&str; 5] = [
+        "done-wake",
+        "done-prompt",
+        "done-cancel",
+        "done-queue",
+        "done-close",
+    ];
     /// Requests whose prompt carried attachments.
     static MEDIA_REQUESTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
@@ -2106,7 +2299,44 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             let after = format!("done: {last}");
-            let chunks = if prompt.contains("effort?") {
+            let chunks = if prompt.starts_with("<shell ") {
+                // A background command's notice: a resumed turn, or one
+                // reported within a prompt's turn.
+                let marker = MARKERS.iter().find(|m| prompt.contains(*m)).unwrap();
+                match done {
+                    0 if prompt.contains("ask-again") => call(
+                        7,
+                        "shell",
+                        json!({"command": "echo again", "description": "again"}),
+                    ),
+                    0 => {
+                        WOKE.lock().unwrap().push(marker.to_string());
+                        reply(&format!("woke: {marker}"))
+                    }
+                    _ => {
+                        WOKE.lock().unwrap().push(marker.to_string());
+                        reply(&format!("woke again: {marker}"))
+                    }
+                }
+            } else if let Some(command) = prompt.strip_prefix("background ") {
+                match done {
+                    0 => call(
+                        1,
+                        "shell",
+                        json!({"command": command, "description": "bg", "background": true}),
+                    ),
+                    _ => reply("started"),
+                }
+            } else if prompt.contains("slow") {
+                match done {
+                    0 => call(
+                        3,
+                        "shell",
+                        json!({"command": "sleep 2", "description": "slow"}),
+                    ),
+                    _ => reply(&after),
+                }
+            } else if prompt.contains("effort?") {
                 reply(&format!("effort: {}", b["reasoning_effort"]))
             } else if prompt.contains("describe") {
                 reply("described")
@@ -3809,6 +4039,183 @@ mod tests {
     }
 
     const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    /// The text of a message's `agent_message_chunk` update, if it is one.
+    fn chunk_text(m: &Value) -> Option<&str> {
+        let u = &m["params"]["update"];
+        (m["method"] == "session/update" && u["sessionUpdate"] == "agent_message_chunk")
+            .then(|| u["content"]["text"].as_str())
+            .flatten()
+    }
+
+    fn woke(marker: &str) -> usize {
+        WOKE.lock().unwrap().iter().filter(|m| *m == marker).count()
+    }
+
+    /// Start `command` in the background and end the turn while it runs.
+    async fn launch(c: &mut Client, sid: &str, command: &str) -> Vec<Value> {
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": format!("background {command}")}]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, allow_once).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        let text: String = seen.iter().filter_map(chunk_text).collect();
+        assert_eq!(text, "started");
+        seen
+    }
+
+    /// OpenCode's background-turn test: a background command finishing
+    /// after `end_turn` wakes the idle session, and the model's reaction
+    /// streams as agent-initiated `session/update`s (a new message, no
+    /// request to answer); the session then takes prompts as usual.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_background_shell_wakes_the_session() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        let seen = launch(&mut c, &sid, "sleep 1; echo done-wake").await;
+        let launched = seen
+            .iter()
+            .find(|m| chunk_text(m).is_some())
+            .map(|m| m["params"]["update"]["messageId"].clone())
+            .unwrap();
+        let (m, before) = c
+            .wait(|m| chunk_text(m).is_some_and(|t| t.contains("woke")))
+            .await;
+        assert_eq!(chunk_text(&m), Some("woke: done-wake"));
+        assert_eq!(m["params"]["sessionId"], sid.as_str());
+        assert_ne!(m["params"]["update"]["messageId"], launched);
+        assert!(
+            before.iter().all(|m| m.get("id").is_none()),
+            "no request or response: {before:?}"
+        );
+        assert_eq!(woke("done-wake"), 1);
+        let r = c
+            .request(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        assert_eq!(r["result"]["stopReason"], "end_turn", "{r}");
+        assert_eq!(woke("done-wake"), 1, "reported once");
+    }
+
+    /// A prompt sent while the session waits for its background command
+    /// takes over: its turn reports the command, once, and no resumed turn
+    /// follows.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_prompt_during_the_wait_reports_the_command_once() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        launch(&mut c, &sid, "sleep 1; echo done-prompt").await;
+        // Its foreground `sleep 2` outlasts the background command.
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "slow"}]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, allow_once).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        let text: String = seen.iter().filter_map(chunk_text).collect();
+        assert_eq!(text, "woke: done-prompt");
+        assert_eq!(woke("done-prompt"), 1);
+        // Nothing wakes the session again.
+        let more = tokio::time::timeout(Duration::from_millis(1500), c.recv()).await;
+        assert!(more.is_err(), "{more:?}");
+        assert_eq!(woke("done-prompt"), 1);
+    }
+
+    /// The resumed turn asks permission through the client as usual;
+    /// `session/cancel` stops it (withdrawing the request and failing the
+    /// call) and answers a prompt queued behind it with `cancelled`. The
+    /// session reloads and takes prompts again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_cancel_stops_a_resumed_turn() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        launch(&mut c, &sid, "sleep 1; echo ask-again done-cancel").await;
+        let (ask, _) = c
+            .wait(|m| m["method"] == "session/request_permission")
+            .await;
+        assert_eq!(ask["params"]["sessionId"], sid.as_str());
+        assert_eq!(ask["params"]["toolCall"]["toolCallId"], "c7");
+        let queued = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        // The prompt waits for the resumed turn rather than failing.
+        let early = tokio::time::timeout(Duration::from_millis(300), c.recv()).await;
+        assert!(early.is_err(), "{early:?}");
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        let (done, seen) = c.until(queued, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "cancelled", "{seen:?}");
+        let failed = seen.iter().any(|m| {
+            m["params"]["update"]["toolCallId"] == "c7"
+                && m["params"]["update"]["status"] == "failed"
+        });
+        assert!(failed, "{seen:?}");
+        let withdrawn = seen
+            .iter()
+            .any(|m| m["method"] == "$/cancel_request" && m["params"]["requestId"] == ask["id"]);
+        assert!(withdrawn, "{seen:?}");
+        let r = c
+            .request(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        assert_eq!(r["result"]["stopReason"], "end_turn", "{r}");
+        assert_eq!(woke("done-cancel"), 0);
+    }
+
+    /// Closing a session that waits for a background command stops the
+    /// wait (and the command): nothing wakes it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_a_waiting_session_stops_its_wake() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        launch(&mut c, &sid, "sleep 1; echo done-close").await;
+        let r = c.request("session/close", json!({"sessionId": sid})).await;
+        assert_eq!(r["result"], json!({}), "{r}");
+        let more = tokio::time::timeout(Duration::from_millis(1800), c.recv()).await;
+        assert!(more.is_err(), "{more:?}");
+        assert_eq!(woke("done-close"), 0);
+    }
+
+    /// A prompt sent during a resumed turn waits for it to end, then runs
+    /// (the closest to OpenCode steering it into the running turn).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_prompt_during_a_resumed_turn_runs_after_it() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        launch(&mut c, &sid, "sleep 1; echo ask-again done-queue").await;
+        let (ask, _) = c
+            .wait(|m| m["method"] == "session/request_permission")
+            .await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        c.send(json!({"jsonrpc": "2.0", "id": ask["id"], "result": allow_once(&ask)}))
+            .await;
+        let (done, seen) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        let text: String = seen.iter().filter_map(chunk_text).collect();
+        assert_eq!(text, "woke again: done-queuedescribed");
+        assert_eq!(woke("done-queue"), 1);
+    }
 
     #[test]
     fn content_and_servers() {

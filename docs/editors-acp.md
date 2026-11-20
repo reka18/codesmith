@@ -38,6 +38,8 @@ the terminal (see [configuration](configuration.md)).
   price are configured.
 - **Commands.** Slash commands, including `/review`, `/calibrate` and
   `/compact`, are offered.
+- **Background commands** wake the idle session when they finish (see
+  below).
 - **Sessions** can be listed, loaded (with their whole history replayed),
   resumed, forked, cancelled, closed and deleted. They can be given
   additional directories the agent may use without asking. They are the same
@@ -46,6 +48,33 @@ the terminal (see [configuration](configuration.md)).
   questions with the `question` tool.
 - **MCP servers** the editor passes in are added to the session (stdio and
   HTTP).
+
+## Background commands
+
+A shell command started with `background: true` keeps running after the
+model answers, and the prompt ends with `end_turn` while it runs (see
+[background commands](sessions.md#background-commands)). When it finishes
+and the session is idle, the agent wakes the session by itself, as
+OpenCode's does:
+
+- The model's reaction streams as ordinary `session/update` notifications
+  for the session (`agent_message_chunk` under a new `messageId`,
+  `tool_call`, `tool_call_update`, `plan`, ...), with no `session/prompt` to
+  answer and no marker for its start or end; a `usage_update` follows when
+  the context window is known. Its permission requests and questions go to
+  the editor as usual.
+- A prompt sent while the session waits takes over: its turn reports the
+  command (once), and the session is not woken for it again.
+- A prompt sent while a woken turn runs waits for that turn to end, then
+  runs as usual. OpenCode steers such a prompt into the running turn; here
+  it starts the next one. A second prompt meanwhile is refused as busy.
+- `session/cancel` stops a woken turn like any other: its open permission
+  request is withdrawn, its call in flight fails, the session reloads, and a
+  prompt waiting behind it is answered with `cancelled`. A cancel while the
+  session is idle leaves the wait alone.
+- Closing, deleting or reopening the session stops the wait and its
+  commands. A cancelled turn, or a mode or model switch, also stops the
+  session's commands, as in the terminal UI.
 
 ## Images and resources
 
