@@ -150,7 +150,8 @@ Beyond the commands as written, CodeSmith also checks:
   or a module (`python3 -m pytest`) adds no `code:` resource.
 - **Redirects.** A file that a redirect writes to (`>`, `>>`, `&>`, `>|`,
   `<>`), or that a program writes by name (`awk '{print > "f"}'`, `sed 'w
-  f'`, `find -fprint f`, `flock`'s lock file, `script`'s typescript), is
+  f'`, `sed -i` and its backup, `find -fprint f`, `flock`'s lock file,
+  `script`'s typescript), is
   checked like a `write`: `external_directory` if it is outside the
   project, then `edit` on the path. Under the `plan` agent,
   `echo x > notes.md` is refused because `edit` is denied.
