@@ -279,7 +279,7 @@ OpenCode's `effort-updates.test.ts`, not counted above)
   trailing update. A session writes one (stored) when its variant changes
   between turns on the same model, from one effort name or the default to
   another, as OpenCode lowers its `model-switched` message
-  (`codesmith-core/tests/effort_session.rs`).
+  (`codesmith-core/tests/oc_effort_switch.rs`).
 
 Prompt caching (`cache.rs`, every protocol), on by default as in OpenCode
 - `Request.cache` is OpenCode's cache policy: `auto` (the default), off, or

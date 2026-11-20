@@ -1,3 +1,6 @@
+//! Ported from OpenCode's `session-runner-message.test.ts` and
+//! `session-runner.test.ts` (MIT).
+//!
 //! Variant switches in a running session become stored effort updates (as
 //! OpenCode's session lowers a `model-switched` message), against a scripted
 //! Anthropic model that takes them natively: the request's top-level
@@ -183,7 +186,7 @@ fn without_date(body: &Value) -> Vec<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_variant_switch_is_an_effort_update_and_keeps_the_top_level_effort() {
+async fn oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update() {
     let t = T::new().await;
     let id = t.turn("fake/claude-opus-5#high", None, "one").await;
     let first = t.last_request();
@@ -221,7 +224,7 @@ async fn a_variant_switch_is_an_effort_update_and_keeps_the_top_level_effort() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn other_switches_make_no_effort_update() {
+async fn oc_session_ignores_switches_that_are_not_effort_changes_on_the_requested_model() {
     let t = T::new().await;
     let id = t.turn("fake/claude-opus-5#high", None, "one").await;
     // A variant that is not an effort name.
@@ -237,7 +240,7 @@ async fn other_switches_make_no_effort_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn switching_back_and_forth_between_turns_writes_nothing() {
+async fn oc_session_switching_back_and_forth_between_turns_writes_nothing() {
     let t = T::new().await;
     let id = t.turn("fake/claude-opus-5#high", None, "one").await;
     // Switched away and back before the next turn: nothing changed.
@@ -254,7 +257,7 @@ async fn switching_back_and_forth_between_turns_writes_nothing() {
 // The update is stored before the turn's model call, so a turn that made
 // no step still counts: reopening the session does not write it again.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_update_is_written_once_even_when_its_turn_fails() {
+async fn oc_session_an_effort_update_is_written_once_even_when_its_turn_fails() {
     let t = T::new().await;
     let id = t.turn("fake/claude-opus-5#high", None, "one").await;
     let mut s = t.session("fake/claude-opus-5#low", Some(&id));
@@ -269,4 +272,22 @@ async fn an_update_is_written_once_even_when_its_turn_fails() {
     let r = t.last_request();
     assert_eq!(r["output_config"]["effort"], "high");
     assert_eq!(native_updates(&r), [json!("low")]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_maps_the_default_variant_and_no_variant_to_the_model_default_effort() {
+    let t = T::new().await;
+    // No variant before: the update has no previous effort.
+    let id = t.turn("fake/claude-opus-5", None, "one").await;
+    let s = t.session("fake/claude-opus-5#low", Some(&id));
+    let m = s.effort_switch().unwrap();
+    assert!(matches!(m.parts.as_slice(),
+        [Part::Effort { effort, previous }] if effort.as_deref() == Some("low") && previous.is_none()));
+    drop(s);
+    // `default` names the model's default effort, as no variant does.
+    let id = t.turn("fake/claude-opus-5#high", None, "one").await;
+    let s = t.session("fake/claude-opus-5#default", Some(&id));
+    let m = s.effort_switch().unwrap();
+    assert!(matches!(m.parts.as_slice(),
+        [Part::Effort { effort, previous }] if effort.is_none() && previous.as_deref() == Some("high")));
 }

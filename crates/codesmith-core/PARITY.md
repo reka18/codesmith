@@ -17,13 +17,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 121 | 9 | 3 | 193 | 67 | 0 |
+| Session runner | 393 | 122 | 9 | 2 | 193 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 60 | 0 | 15 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 63 | 0 | 12 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1640** | **18** | **135** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1644** | **18** | **131** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (135 cases in 19 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (131 cases in 18 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -93,7 +93,6 @@ Missing features, by how many OpenCode test cases each would unlock (135 cases i
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
-| [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
@@ -232,15 +231,6 @@ Missing features, by how many OpenCode test cases each would unlock (135 cases i
 - `plugin/plan.test.ts`: allows external directories without asking
 - `plugin/plan.test.ts`: rewrites blocked mutation failures with the Plan directory
 - `plugin/plan.test.ts`: preserves mutation failures unrelated to permissions
-
-### Mid-session Effort Switch
-
-4 cases.
-
-- `session-runner-message.test.ts`: records a same-model effort switch as an effort update
-- `session-runner-message.test.ts`: maps the default variant and no variant to the model default effort
-- `session-runner-message.test.ts`: ignores switches that are not effort changes on the requested model
-- `session-runner.test.ts`: records a same-model effort switch as a cache-preserving effort update
 
 ### Provider State Across Model Switches
 
@@ -1193,7 +1183,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (323 of 393)</summary>
+<details><summary>Session runner (324 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1273,6 +1263,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P accepts API instruction entries up to 256 KiB — `tests/oc_instruction_state.rs::oc_store_accepts_context_entries_up_to_256_kib`
 - P rejects API instruction entries larger than 256 KiB — `tests/oc_instruction_state.rs::oc_store_rejects_context_entries_over_256_kib`
 - P keeps initial instructions and chronological updates after a model switch — `tests/oc_instruction_state.rs::oc_session_keeps_instructions_and_updates_after_a_model_switch` (adapted: the session reopened on another model)
+- P records a same-model effort switch as a cache-preserving effort update — `tests/oc_effort_switch.rs::oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update`
 - P preserves instruction values while a source is temporarily unavailable — `tests/oc_instruction_state.rs::oc_session_keeps_values_while_a_source_is_unreadable`
 - P narrates only the Code Mode tools that change, through compaction and fork — `tests/oc_instruction_state.rs::oc_session_narrates_only_the_code_mode_tools_that_change` (adapted: an MCP server that grows a tool when one is called)
 - P moves the epoch at compaction and narrates later changes — `tests/oc_instruction_state.rs::oc_session_moves_the_epoch_at_compaction_and_narrates_later_changes`
@@ -1576,7 +1567,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (239 of 308)</summary>
+<details><summary>Sessions and their store (242 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1711,6 +1702,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P omits empty assistant turns — `src/runner.rs::oc_session_message_omits_empty_assistant_turns`
 - D maps every top-level Session message type — storage-model: maps OpenCode's stored message types
 - D leaves out the recent context of a checkpoint that kept none — deliberate: compaction.rs: the kept tail stays as real messages
+- P records a same-model effort switch as an effort update — `tests/oc_effort_switch.rs::oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update` (adapted: through a session's stored update, not the lowering function)
+- P maps the default variant and no variant to the model default effort — `tests/oc_effort_switch.rs::oc_session_maps_the_default_variant_and_no_variant_to_the_model_default_effort`
+- P ignores switches that are not effort changes on the requested model — `tests/oc_effort_switch.rs::oc_session_ignores_switches_that_are_not_effort_changes_on_the_requested_model`
 - P lowers each prepared skill once before the prompt — `tests/oc_session_skill_mention.rs::oc_session_lowers_each_mentioned_skill_once_before_the_prompt`
 - P does not inject skill content for reference-only attachments — `tests/oc_session_skill_mention.rs::oc_session_does_not_inject_skill_content_for_mere_references` (adapted: a reference is an @word that is not a mention)
 - P exposes admitted local image source paths before provider media — `tests/oc_attachments.rs::oc_runner_message_exposes_admitted_local_image_source_paths_before_provider_media` (adapted: the announcement is part of the stored user message (`Session::prompt_attached`; the server's path attachments))

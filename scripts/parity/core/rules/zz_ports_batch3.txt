@@ -6,3 +6,9 @@
 645 :: fixed :: tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections :: a provider's 400 was reported as a local invalid request, without its status
 657 :: ported :: tests/oc_decisions.rs::oc_generate_returns_a_typed_error_for_an_invalid_request_instead_of_crashing
 668 :: fixed :: tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models :: text from an unknown model of a catalog provider was sent to the provider instead of failing as not found
+@session-runner-message.test.ts
+250 :: ported :: tests/oc_effort_switch.rs::oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update :: adapted: through a session's stored update, not the lowering function
+256 :: ported :: tests/oc_effort_switch.rs::oc_session_maps_the_default_variant_and_no_variant_to_the_model_default_effort
+263 :: ported :: tests/oc_effort_switch.rs::oc_session_ignores_switches_that_are_not_effort_changes_on_the_requested_model
+@session-runner.test.ts
+2427 :: ported :: tests/oc_effort_switch.rs::oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update
