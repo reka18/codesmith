@@ -1263,6 +1263,8 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
     for m in messages {
         for p in &m.parts {
             match (&m.role, p) {
+                // The engine's own notes (the compaction continue note).
+                (Role::System, _) => {}
                 (Role::User, Part::Text(t)) if t.starts_with("<conversation-checkpoint>") => {
                     out.push(Entry::Notice("(earlier conversation summarized)".into()));
                 }
@@ -1350,6 +1352,8 @@ mod replay_tests {
                 }],
             },
             Message::user("<shell id=\"shell_1\" state=\"completed\" command=\"x\">\nok\n</shell>"),
+            Message::system("Continue the task from where it left off."),
+            Message::user(codesmith_core::runner::CONTINUE_AFTER_OUTPUT_LIMIT),
             Message {
                 role: Role::Assistant,
                 parts: vec![Part::Text("Fixed.".into())],

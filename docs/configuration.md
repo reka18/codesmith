@@ -233,6 +233,14 @@ reasoning, Gemini thought signatures), so thinking models keep their
 reasoning across tool calls. Sessions that contain signed reasoning can't be
 opened by CodeSmith builds older than this feature.
 
+CodeSmith's own instructions to the model in the middle of a conversation
+(carry on after a compaction, answer in text on the last allowed step) are
+system updates, sent as OpenCode does: native `system` messages on Claude
+Opus 4.8, Claude 5 and later on Anthropic Messages, `developer` messages on
+Responses, and `<system-update>` text in a user message elsewhere. Set
+`"systemUpdates": true` (or `false`) in a model's `options` to override the
+Anthropic Messages detection, for example for a gateway's model alias.
+
 ### Prompt caching
 
 Prompt caching is on by default, as in OpenCode, so a long session pays the

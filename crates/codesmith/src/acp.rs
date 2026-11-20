@@ -1436,6 +1436,8 @@ impl Agent {
             let mut reasoning = 0;
             for p in &m.parts {
                 match (&m.role, p) {
+                    // The engine's own notes are not the user's prompts.
+                    (Role::System, _) => {}
                     (Role::User, Part::Text(t)) if is_prompt(t) => {
                         self.conn.update(id, chunk("user_message_chunk", mid, t))
                     }

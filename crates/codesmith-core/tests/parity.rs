@@ -375,6 +375,34 @@ async fn oc_compaction_an_overflow_compacts_and_retries() {
     assert!(text_of(&s.messages[0]).starts_with("<conversation-checkpoint>"));
 }
 
+/// Not from OpenCode: when the current turn itself was summarized, the
+/// engine's note to carry on is a system update, which Chat receives as
+/// `<system-update>` text on the checkpoint's user message.
+#[tokio::test(flavor = "multi_thread")]
+async fn compaction_of_the_current_turn_continues_with_a_system_update() {
+    let (mut s, script, _d) =
+        session(json!({"compaction": {"keep": {"tokens": 1}}}), Some("t")).await;
+    s.prompt("one", &mut Quiet).await.unwrap();
+    script.lock().unwrap().overflow = 1;
+    s.prompt("a second prompt too long to keep", &mut Quiet)
+        .await
+        .unwrap();
+    assert_eq!(requests(&script, Kind::Summary).len(), 1);
+    assert!(text_of(&s.messages[0]).starts_with("<conversation-checkpoint>"));
+    assert_eq!(
+        s.messages[1],
+        codesmith_ai::Message::system(compaction::CONTINUE)
+    );
+    let main = requests(&script, Kind::Main);
+    let last = main.last().unwrap()["messages"].as_array().unwrap().clone();
+    let checkpoint = last[1]["content"].as_str().unwrap();
+    assert!(checkpoint.starts_with("<conversation-checkpoint>"));
+    assert!(checkpoint.ends_with(&format!(
+        "\n<system-update>\n{}\n</system-update>",
+        compaction::CONTINUE
+    )));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_compaction_overflow_is_left_to_the_user_when_auto_is_disabled() {
     let (mut s, script, _d) = session(json!({"compaction": {"auto": false}}), Some("t")).await;

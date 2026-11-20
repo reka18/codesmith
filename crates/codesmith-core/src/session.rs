@@ -1937,7 +1937,7 @@ impl Session {
         self.seqs = seqs;
         if !kept_all_turn {
             // The current turn itself was summarized; tell the model to carry on.
-            self.push(Message::user(compaction::CONTINUE))?;
+            self.push(Message::system(compaction::CONTINUE))?;
         }
         self.last_prompt_tokens = 0;
         sink.compacted(before, self.estimate_prompt());
@@ -2016,7 +2016,7 @@ impl Session {
         let mut req = self.request();
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
         if final_step {
-            req.messages.push(Message::user(runner::MAX_STEPS_PROMPT));
+            req.messages.push(Message::system(runner::MAX_STEPS_PROMPT));
             // The tool definitions stay, so the cached prefix does too.
             req.tool_choice = Some(codesmith_ai::ToolChoice::None);
         }

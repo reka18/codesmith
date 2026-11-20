@@ -88,6 +88,12 @@ Run `/compact` (**Ctrl+X c**) to do it now. Compaction needs the model's
 `limit.context` to know when to start. See
 [compaction settings](configuration.md#compaction).
 
+When the turn in progress is summarized too, CodeSmith tells the model to
+carry on with a system update (see
+[provider options](configuration.md#provider-options-and-variants)); it is
+not shown or counted as a prompt. Sessions that contain one can't be opened
+by CodeSmith builds older than this feature.
+
 Images are large, so once a conversation's images pass 25 MiB, the oldest
 are replaced by a note until 15 MiB remain.
 

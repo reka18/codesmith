@@ -316,8 +316,10 @@ pub fn is_overflow(error: &str) -> bool {
         || e.contains("http 413")
 }
 
-/// After compaction mid-turn, tells the model to carry on.
-pub const CONTINUE: &str = "<system-reminder>\nThe conversation above was compacted into a checkpoint. Continue the task from where it left off.\n</system-reminder>";
+/// After compaction mid-turn, tells the model to carry on. Sent as a system
+/// update; sessions from before the system role stored it as user text
+/// wrapped in `<system-reminder>`.
+pub const CONTINUE: &str = "The conversation above was compacted into a checkpoint. Continue the task from where it left off.";
 
 #[cfg(test)]
 mod tests {

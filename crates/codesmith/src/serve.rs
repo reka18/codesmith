@@ -440,17 +440,12 @@ impl Server {
     }
 }
 
-/// Messages as a client shows them: without the user-role messages the
-/// engine wrote itself (output-limit nudges), as in the TUI and ACP replay.
+/// Messages as a client shows them: without the ones the engine wrote
+/// itself (system updates, output-limit nudges), as in the TUI and ACP replay.
 fn transcript(messages: &[codesmith_ai::Message]) -> Vec<&codesmith_ai::Message> {
     messages
         .iter()
-        .filter(|m| {
-            m.role != codesmith_ai::Role::User
-                || !m.parts.iter().all(|p| {
-                    matches!(p, codesmith_ai::Part::Text(t) if codesmith_core::runner::is_engine_message(t))
-                })
-        })
+        .filter(|m| !codesmith_core::runner::is_engine(m))
         .collect()
 }
 

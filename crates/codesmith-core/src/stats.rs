@@ -814,6 +814,15 @@ mod tests {
             day(11, 9),
         )
         .unwrap();
+        // A system update (the compaction continue note) is not a prompt.
+        db.append_at(
+            "a",
+            &Record::Message {
+                message: Message::system("Continue the task."),
+            },
+            day(11, 9),
+        )
+        .unwrap();
         db.append_at(
             "a",
             &Record::Message {

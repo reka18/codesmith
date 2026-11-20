@@ -45,10 +45,12 @@ pub fn messages(body: &Value) -> &[Value] {
         .unwrap_or(&[])
 }
 
-/// Whether a user message is one the engine wrote (a continuation nudge or
-/// the final-step instruction), not the user's prompt.
+/// Whether a user message is one the engine wrote (a continuation nudge, or
+/// a system update such as the final-step instruction, which Chat receives
+/// as `<system-update>` user text), not the user's prompt.
 fn engine(m: &Value) -> bool {
-    codesmith::core::runner::is_engine_message(&content(m))
+    let text = content(m);
+    text.starts_with("<system-update>") || codesmith::core::runner::is_engine_message(&text)
 }
 
 /// The latest user prompt: the last user-role message the engine did not write.

@@ -5,9 +5,10 @@
 //! `session.rs` applies them and `tests/runner_parity.rs` pins the behaviour.
 //!
 //! Deliberate differences from OpenCode:
-//! - The final-step instruction (`MAX_STEPS_PROMPT`) is sent as a user
-//!   message, not an assistant one: several providers reject or misread a
-//!   trailing assistant message (prefill), and CodeSmith speaks to many.
+//! - The final-step instruction (`MAX_STEPS_PROMPT`) is sent as a system
+//!   update, not an assistant message: several providers reject or misread
+//!   a trailing assistant message (prefill), and CodeSmith speaks to many.
+//!   Models without native system updates see it as wrapped user text.
 //! - Agents without a `steps` setting still stop at `DEFAULT_MAX_STEPS`
 //!   (OpenCode has no limit); the final step is forced to text either way.
 //! - Tools run after the model's stream ends rather than while it streams,
@@ -40,12 +41,30 @@ pub const TOOLS_DISABLED: &str = "Tools are disabled after the maximum agent ste
 /// Sent after a response cut off by the output token limit.
 pub const CONTINUE_AFTER_OUTPUT_LIMIT: &str = "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces.";
 
-/// Whether a user-role message is one the engine wrote itself (an
-/// output-limit nudge, the final-step instruction), not something the user
-/// typed; views of a conversation leave these out.
+/// Whether user-role text is a note the engine wrote itself (the
+/// output-limit nudge, which OpenCode also sends as user text), not
+/// something the user typed; views of a conversation leave these out. The
+/// final-step instruction is a system update now, but older builds sent it
+/// as user text.
 pub fn is_engine_message(text: &str) -> bool {
     let t = text.trim();
     t == CONTINUE_AFTER_OUTPUT_LIMIT || t == MAX_STEPS_PROMPT.trim()
+}
+
+/// Whether a stored message is the engine's, not the user's: a system update
+/// (the compaction continue note), or user text the engine wrote
+/// ([`is_engine_message`]). It is never shown or counted as a prompt.
+pub fn is_engine(m: &Message) -> bool {
+    match m.role {
+        Role::System => true,
+        Role::Assistant => false,
+        Role::User => {
+            !m.parts.is_empty()
+                && m.parts
+                    .iter()
+                    .all(|p| matches!(p, Part::Text(t) if is_engine_message(t)))
+        }
+    }
 }
 
 /// The turn's error after three truncated responses in a row.
@@ -449,6 +468,26 @@ mod tests {
             assistant(vec![Part::Text("done".into())]),
         ];
         assert_eq!(model_messages(&history), history);
+    }
+
+    #[test]
+    fn engine_messages_are_system_updates_or_engine_text() {
+        assert!(is_engine(&Message::system("Continue.")));
+        assert!(is_engine(&Message::user(CONTINUE_AFTER_OUTPUT_LIMIT)));
+        // Older builds stored the final-step instruction as user text.
+        assert!(is_engine(&Message::user(MAX_STEPS_PROMPT)));
+        assert!(!is_engine(&Message::user("fix it")));
+        assert!(!is_engine(&assistant(vec![Part::Text(
+            CONTINUE_AFTER_OUTPUT_LIMIT.into()
+        )])));
+        let mixed = Message {
+            role: Role::User,
+            parts: vec![
+                Part::Text(CONTINUE_AFTER_OUTPUT_LIMIT.into()),
+                Part::Text("and this".into()),
+            ],
+        };
+        assert!(!is_engine(&mixed));
     }
 
     // publish-llm-event.ts INPUT_FAILURES
