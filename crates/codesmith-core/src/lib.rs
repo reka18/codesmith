@@ -10,6 +10,8 @@ pub mod codemode_catalog;
 pub mod command;
 pub mod compaction;
 pub mod config;
+#[cfg(unix)]
+pub mod daemon;
 pub mod format;
 pub mod instruction_state;
 pub mod instructions;

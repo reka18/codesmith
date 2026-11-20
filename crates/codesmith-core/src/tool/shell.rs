@@ -18,6 +18,7 @@
 //! that does not fit the limits is shown from its end, like OpenCode's. A
 //! command stopped at its timeout gets SIGTERM, then SIGKILL after 3 s.
 
+use super::shell_proc::{Proc, StopReason};
 use super::{opt_bool, opt_str, opt_u64, shell_scan, str_arg, Ctx, Outcome, Output};
 use crate::config::ToolOutputConfig;
 use crate::permission::{Denied, Effect, Reply, Request, Rule};
@@ -76,6 +77,8 @@ pub enum Ending {
     Signaled(i32),
     /// Stopped at its timeout; how the stopped process ended, when known.
     TimedOut(Option<Box<Ending>>),
+    /// Lost with the shell daemon that ran it (killed with it).
+    Lost,
 }
 
 /// The exit status as OpenCode words it: the code, or 128 + the signal and
@@ -88,7 +91,7 @@ fn exit_code(ending: Option<&Ending>) -> String {
             None => "unknown".into(),
         },
         Some(Ending::TimedOut(inner)) => exit_code(inner.as_deref()),
-        None => "unknown".into(),
+        Some(Ending::Lost) | None => "unknown".into(),
     }
 }
 
@@ -97,6 +100,7 @@ pub fn notice(ending: &Ending, timeout_ms: u64) -> Option<String> {
     match ending {
         Ending::Exited(0) => None,
         Ending::Exited(_) | Ending::Signaled(_) => Some(format!("Exit code: {}", exit_code(Some(ending)))),
+        Ending::Lost => Some(super::shell_proc::LOST.into()),
         Ending::TimedOut(inner) => Some(format!(
             "Command timed out{}. If it needs longer and isn't waiting for input, rerun with a larger timeout.\nExit code: {}",
             if timeout_ms > 0 {
@@ -345,6 +349,22 @@ struct Shared {
     /// The session's environment (OpenCode's `SessionEnvironment`): when
     /// set, commands run with these variables instead of the process's.
     environment: Mutex<Option<BTreeMap<String, String>>>,
+    /// The server's shell daemon, when commands run there.
+    #[cfg(unix)]
+    daemon: Mutex<Option<DaemonCtx>>,
+    /// The daemon's id of each command it runs, by shell ID, until the
+    /// command is reported and the daemon forgets it.
+    #[cfg(unix)]
+    remote: Mutex<HashMap<String, u64>>,
+}
+
+/// Where a session's commands run when a server has a shell daemon.
+#[cfg(unix)]
+#[derive(Clone)]
+struct DaemonCtx {
+    client: Arc<crate::daemon::Client>,
+    /// The server's directory: which commands are its own.
+    directory: String,
 }
 
 impl Shared {
@@ -388,18 +408,46 @@ impl Shared {
             .is_some_and(|tx| tx.send(c).is_ok())
     }
 
-    /// Process groups of every command still running.
+    /// Process groups of every command still running, except those the
+    /// next server takes over (a handoff is prepared).
     fn groups(&self) -> Vec<u32> {
         let mut groups: Vec<u32> = self
             .jobs
             .lock()
             .unwrap()
             .iter()
-            .filter(|j| j.ending.is_none())
+            .filter(|j| j.ending.is_none() && !self.handed_over(&j.id))
             .filter_map(|j| j.pid)
             .collect();
-        groups.extend(self.foreground.lock().unwrap().iter().filter_map(|r| r.pid));
+        groups.extend(
+            self.foreground
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| !self.handed_over(&r.id))
+                .filter_map(|r| r.pid),
+        );
         groups
+    }
+
+    /// Whether command `id` runs in a daemon this server is handing over:
+    /// it must keep running.
+    fn handed_over(&self, id: &str) -> bool {
+        #[cfg(unix)]
+        {
+            let prepared = self
+                .daemon
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|d| d.client.handoff_prepared());
+            prepared && self.remote.lock().unwrap().contains_key(id)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = id;
+            false
+        }
     }
 }
 
@@ -519,7 +567,8 @@ impl Jobs {
         self.shared.foreground.lock().unwrap().clone()
     }
 
-    /// Finished jobs not yet reported, marked as reported.
+    /// Finished jobs not yet reported, marked as reported. The daemon
+    /// forgets the ones it ran: no later server needs them.
     pub fn take_finished(&self) -> Vec<Job> {
         let mut out = Vec::new();
         for j in self.shared.jobs.lock().unwrap().iter_mut() {
@@ -527,6 +576,10 @@ impl Jobs {
                 j.notified = true;
                 out.push(j.clone());
             }
+        }
+        #[cfg(unix)]
+        for j in &out {
+            self.forget_id(&j.id);
         }
         out
     }
@@ -642,6 +695,246 @@ impl Jobs {
         }
     }
 
+    /// Run this session's commands in the server's shell daemon from now
+    /// on, as commands of `directory`. Commands already running stay where
+    /// they are.
+    #[cfg(unix)]
+    pub fn use_daemon(&self, client: Arc<crate::daemon::Client>, directory: impl Into<String>) {
+        *self.shared.daemon.lock().unwrap() = Some(DaemonCtx {
+            client,
+            directory: directory.into(),
+        });
+    }
+
+    /// Start a command: in the daemon when there is one, else (or when it
+    /// cannot be reached, so the command certainly did not start there) as
+    /// a child of this process. A command the daemon refused fails.
+    async fn spawn_proc(
+        &self,
+        shell: &str,
+        sc: &crate::plugin::ShellCommand,
+        file: &Path,
+        environment: Option<&BTreeMap<String, String>>,
+        #[allow(unused_mut)] mut meta: super::shell_proc::Meta,
+    ) -> Result<Proc, String> {
+        #[cfg(unix)]
+        {
+            let ctx = self.shared.daemon.lock().unwrap().clone();
+            if let Some(ctx) = ctx {
+                use crate::daemon::protocol::{Request, Response};
+                meta.directory = ctx.directory.clone();
+                let mut args: Vec<String> =
+                    shell_args(shell).iter().map(|a| a.to_string()).collect();
+                args.push(sc.command.clone());
+                let req = Request::CreatePipe {
+                    program: program(shell).display().to_string(),
+                    args,
+                    cwd: sc.cwd.display().to_string(),
+                    env: command_env(sc, environment),
+                    group_id: ctx.directory.clone(),
+                    output_path: file.display().to_string(),
+                    metadata: Value::Object(meta.to_map()),
+                };
+                match ctx.client.call(req, true).await {
+                    Ok(Response::Created { process }) => {
+                        self.shared
+                            .remote
+                            .lock()
+                            .unwrap()
+                            .insert(meta.id.clone(), process.id);
+                        let pid = process.pid.unwrap_or(0);
+                        return Ok(Proc::Daemon(super::shell_proc::Remote::new(
+                            ctx.client.clone(),
+                            process.id,
+                            pid,
+                            meta.to_map(),
+                        )));
+                    }
+                    Ok(other) => {
+                        return Err(format!(
+                            "Unable to run {shell}: unexpected shell daemon response {}",
+                            other.kind()
+                        ))
+                    }
+                    // The daemon may have run it: never run it again here.
+                    Err(e) if !e.unsent() => return Err(format!("Unable to run {shell}: {e}")),
+                    // It certainly did not run: spawn it here instead.
+                    Err(_) => {}
+                }
+            }
+        }
+        let _ = &meta;
+        spawn(shell, sc, file, environment).map(Proc::Local)
+    }
+
+    /// A foreground command ended and its call has its result: the daemon
+    /// may forget it.
+    fn forget(&self, id: &str, child: &Proc) {
+        let _ = child;
+        #[cfg(unix)]
+        self.forget_id(id);
+        let _ = id;
+    }
+
+    #[cfg(unix)]
+    fn forget_id(&self, id: &str) {
+        let Some(rid) = self.shared.remote.lock().unwrap().remove(id) else {
+            return;
+        };
+        if let Some(ctx) = self.shared.daemon.lock().unwrap().as_ref() {
+            super::shell_proc::forget(&ctx.client, rid);
+        }
+    }
+
+    /// Take this session's commands back from the daemon after a restart
+    /// (OpenCode's `Shell.Daemon.at` recovery): every command the previous
+    /// server ran for `session` in this directory becomes a background job
+    /// again, reported when it ends. A finished one is reported as it
+    /// ended; one being stopped is stopped (with SIGKILL straight away);
+    /// one whose timeout passed while no server ran is stopped as timed
+    /// out; one a call was waiting on runs on without a timeout. Never
+    /// starts the daemon. Returns how many it took back.
+    #[cfg(unix)]
+    pub async fn adopt(&self, session: &str) -> usize {
+        use super::shell_proc::{Meta, Remote};
+        use crate::daemon::protocol::{Lifecycle, Mode, Request, Response};
+        let Some(ctx) = self.shared.daemon.lock().unwrap().clone() else {
+            return 0;
+        };
+        let c = ctx.client.clone();
+        let listed = tokio::task::spawn_blocking(move || {
+            c.request_if_running(&Request::List { mode: Mode::Pipe })
+        })
+        .await;
+        let Ok(Ok(Some(Response::Processes { processes }))) = listed else {
+            return 0;
+        };
+        let mut taken = 0;
+        for p in processes {
+            let Some(meta) = Meta::from_value(&p.metadata) else {
+                continue;
+            };
+            if meta.session_id != session || meta.directory != ctx.directory {
+                continue;
+            }
+            let known = self
+                .shared
+                .jobs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|j| j.id == meta.id)
+                || self.shared.remote.lock().unwrap().contains_key(&meta.id);
+            if known {
+                continue;
+            }
+            if let Some(n) = meta
+                .id
+                .strip_prefix("shell_")
+                .and_then(|n| n.parse::<u32>().ok())
+            {
+                self.next.fetch_max(n, Ordering::SeqCst);
+            }
+            self.shared
+                .remote
+                .lock()
+                .unwrap()
+                .insert(meta.id.clone(), p.id);
+            let reason = match meta.stop_reason.as_deref() {
+                Some("timeout") => Some(StopReason::Timeout),
+                Some("killed") => Some(StopReason::Killed),
+                _ => None,
+            };
+            let job = Job {
+                id: meta.id.clone(),
+                command: meta.command.clone(),
+                file: PathBuf::from(&meta.file),
+                pid: p.pid,
+                timeout_ms: meta.timeout_ms,
+                ending: None,
+                notified: false,
+                cancelled: false,
+            };
+            self.add(job);
+            taken += 1;
+            let remote = Remote::new(ctx.client.clone(), p.id, p.pid.unwrap_or(0), meta.to_map());
+            if let Lifecycle::Exited { exit_code, signal } = &p.lifecycle {
+                let ended = super::shell_proc::ending_of_exit(&crate::daemon::protocol::Exited {
+                    exit_code: *exit_code,
+                    signal: signal.clone(),
+                    final_offset: p.output_tail,
+                    output_lines: p.output_lines,
+                    output_error: p.output_error.clone(),
+                    exited_at: p.exited_at.unwrap_or(0),
+                });
+                let (ending, cancelled) = match reason {
+                    Some(StopReason::Timeout) => (Ending::TimedOut(Some(Box::new(ended))), false),
+                    Some(StopReason::Killed) => (ended, true),
+                    None => (ended, false),
+                };
+                self.shared.finish(&meta.id, ending, cancelled);
+                continue;
+            }
+            if matches!(p.lifecycle, Lifecycle::Failed { .. }) {
+                self.shared.finish(&meta.id, Ending::Lost, false);
+                continue;
+            }
+            let mut child = Proc::Daemon(remote);
+            let control = tokio::sync::mpsc::unbounded_channel();
+            if let Some(reason) = reason {
+                // A stop the restart interrupted: SIGTERM was sent already.
+                self.watch_from(meta.id.clone(), child, None, control, Some((reason, true)));
+                continue;
+            }
+            if meta.waited {
+                // A restart moves a waited-on command to the background,
+                // so its call's timeout is not kept.
+                child.backgrounded();
+                self.watch(meta.id.clone(), child, None, control);
+                continue;
+            }
+            match meta.timeout_deadline {
+                Some(at) if at <= super::shell_proc::now_ms() => {
+                    child.stopping("timeout");
+                    self.watch_from(
+                        meta.id.clone(),
+                        child,
+                        None,
+                        control,
+                        Some((StopReason::Timeout, false)),
+                    );
+                }
+                Some(at) => {
+                    let left = Duration::from_millis(at - super::shell_proc::now_ms());
+                    self.watch(meta.id.clone(), child, Some(left), control);
+                }
+                None => self.watch(meta.id.clone(), child, None, control),
+            }
+        }
+        taken
+    }
+
+    /// The sessions with commands in the daemon for `directory`: what a
+    /// server that inherited a daemon takes back first.
+    #[cfg(unix)]
+    pub fn daemon_sessions(client: &crate::daemon::Client, directory: &str) -> Vec<String> {
+        use crate::daemon::protocol::{Mode, Request, Response};
+        let Ok(Some(Response::Processes { processes })) =
+            client.request_if_running(&Request::List { mode: Mode::Pipe })
+        else {
+            return vec![];
+        };
+        let mut out: Vec<String> = Vec::new();
+        for p in processes {
+            if let Some(m) = super::shell_proc::Meta::from_value(&p.metadata) {
+                if m.directory == directory && !out.contains(&m.session_id) {
+                    out.push(m.session_id);
+                }
+            }
+        }
+        out
+    }
+
     /// A handle that can kill these commands but does not own them.
     pub fn reaper(&self) -> Reaper {
         Reaper(self.shared.clone())
@@ -653,9 +946,23 @@ impl Jobs {
     fn watch(
         &self,
         id: String,
-        mut child: tokio::process::Child,
+        child: Proc,
+        stop_after: Option<Duration>,
+        control: (ControlTx, ControlRx),
+    ) {
+        self.watch_from(id, child, stop_after, control, None);
+    }
+
+    /// [`Jobs::watch`], first stopping the command when `stop` says so: as
+    /// timed out, or as cancelled; `kill` skips SIGTERM (a stop a restart
+    /// interrupted).
+    fn watch_from(
+        &self,
+        id: String,
+        mut child: Proc,
         stop_after: Option<Duration>,
         (tx, mut rx): (ControlTx, ControlRx),
+        stop: Option<(StopReason, bool)>,
     ) {
         self.shared.controls.lock().unwrap().insert(id.clone(), tx);
         // Only the shared state: a watcher must not keep the owner alive.
@@ -664,19 +971,34 @@ impl Jobs {
             let mut stop_at = stop_after.map(|d| tokio::time::Instant::now() + d);
             let mut cancelled = false;
             let ending = loop {
+                if let Some((reason, kill)) = stop {
+                    let ended = child.stop_now(KILL_GRACE, kill).await;
+                    break match reason {
+                        StopReason::Timeout => Ending::TimedOut(ended.map(Box::new)),
+                        StopReason::Killed => {
+                            cancelled = true;
+                            ended.unwrap_or(Ending::Exited(-1))
+                        }
+                    };
+                }
                 tokio::select! {
                     status = child.wait() => {
-                        break status.map(ending_of).unwrap_or(Ending::Exited(-1));
+                        break status.unwrap_or(Ending::Exited(-1));
                     }
                     _ = sleep_until(stop_at) => {
-                        break Ending::TimedOut(stop(&mut child).await.map(Box::new));
+                        child.stopping("timeout");
+                        break Ending::TimedOut(child.stop(KILL_GRACE).await.map(Box::new));
                     }
                     Some(c) = rx.recv() => match c {
                         Control::Cancel => {
                             cancelled = true;
-                            break stop(&mut child).await.unwrap_or(Ending::Exited(-1));
+                            child.stopping("killed");
+                            break child.stop(KILL_GRACE).await.unwrap_or(Ending::Exited(-1));
                         }
-                        Control::Timeout(ms) => stop_at = deadline(ms),
+                        Control::Timeout(ms) => {
+                            stop_at = deadline(ms);
+                            child.set_timeout(ms);
+                        }
                         Control::Background => {}
                     },
                 }
@@ -746,8 +1068,14 @@ impl GroupGuard {
 
 impl Drop for GroupGuard {
     fn drop(&mut self) {
+        let handed_over = self
+            .id
+            .as_deref()
+            .is_some_and(|id| self.shared.handed_over(id));
         if let Some(p) = self.untrack() {
-            terminate_groups(vec![p]);
+            if !handed_over {
+                terminate_groups(vec![p]);
+            }
         }
     }
 }
@@ -809,7 +1137,7 @@ impl Tail {
 
 /// How a foreground command's wait ended.
 enum Wait {
-    Exited(std::io::Result<std::process::ExitStatus>),
+    Exited(std::io::Result<Ending>),
     /// Its call's timeout passed (true) or the user moved it (false).
     Background(bool),
     /// Its stop timeout ([`Jobs::set_timeout`]) passed, after this many ms.
@@ -1262,7 +1590,23 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         super::unique_id()
     ));
     let environment = jobs.environment();
-    let mut child = spawn(&ctx.shell, &sc, &file, environment.as_ref())?;
+    let meta = super::shell_proc::Meta {
+        id: id.clone(),
+        command: command.to_string(),
+        shell: ctx.shell.clone(),
+        file: file.display().to_string(),
+        session_id: ctx.session_id.clone(),
+        directory: String::new(),
+        timeout_ms: timeout.unwrap_or(0),
+        timeout_deadline: timeout
+            .filter(|t| background && *t > 0)
+            .map(|t| super::shell_proc::now_ms() + t),
+        waited: !background,
+        stop_reason: None,
+    };
+    let mut child = jobs
+        .spawn_proc(&ctx.shell, &sc, &file, environment.as_ref(), meta)
+        .await?;
     let mut job = Job {
         id: id.clone(),
         command: command.to_string(),
@@ -1319,7 +1663,10 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             Some(c) = rx.recv() => match c {
                 Control::Background => break Wait::Background(false),
                 Control::Cancel => break Wait::Cancelled,
-                Control::Timeout(ms) => stop_at = deadline(ms).map(|t| (t, ms)),
+                Control::Timeout(ms) => {
+                    stop_at = deadline(ms).map(|t| (t, ms));
+                    child.set_timeout(ms);
+                }
             },
             _ = tick.tick(), if tail.is_some() => report(&mut tail),
         }
@@ -1328,12 +1675,8 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     let (ending, limit) = match wait {
         Wait::Exited(status) => {
             guard.disarm();
-            (
-                status
-                    .map(ending_of)
-                    .map_err(|e| format!("Command failed: {e}"))?,
-                limit,
-            )
+            jobs.forget(&id, &child);
+            (status.map_err(|e| format!("Command failed: {e}"))?, limit)
         }
         Wait::Background(timed_out) if ctx.jobs.is_some() => {
             guard.disarm();
@@ -1350,6 +1693,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             jobs.add(job.clone());
             // In the background it runs until it ends: moving it clears
             // any stop timeout, as OpenCode's `shell.timeout(id, 0)` does.
+            child.backgrounded();
             jobs.watch(id, child, None, (tx, rx));
             return Ok(Output::bounded(background_text(
                 &job,
@@ -1357,19 +1701,25 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             )));
         }
         Wait::Background(_) => {
-            let ending = Ending::TimedOut(stop(&mut child).await.map(Box::new));
+            child.stopping("timeout");
+            let ending = Ending::TimedOut(child.stop(KILL_GRACE).await.map(Box::new));
             guard.disarm();
+            jobs.forget(&id, &child);
             (ending, limit)
         }
         Wait::TimedOut(ms) => {
-            let ending = Ending::TimedOut(stop(&mut child).await.map(Box::new));
+            child.stopping("timeout");
+            let ending = Ending::TimedOut(child.stop(KILL_GRACE).await.map(Box::new));
             guard.disarm();
+            jobs.forget(&id, &child);
             (ending, ms)
         }
         Wait::Cancelled => {
             // The output file is kept, as OpenCode keeps a cancelled command's.
-            let _ = stop(&mut child).await;
+            child.stopping("killed");
+            let _ = child.stop(KILL_GRACE).await;
             guard.disarm();
+            jobs.forget(&id, &child);
             return Err("Command cancelled".into());
         }
     };
@@ -1408,6 +1758,41 @@ fn program(shell: &str) -> PathBuf {
                 .find(|p| p.is_file())
         })
         .unwrap_or_else(|| PathBuf::from(shell))
+}
+
+/// A daemon-run command's whole environment: what [`spawn`] gives a
+/// child (the session's environment, else this process's, with the
+/// plugins' additions and the agent markers, without the server token),
+/// spelled out, since the daemon passes on exactly what it is sent.
+/// Variables that are not UTF-8 are left out.
+#[cfg(unix)]
+fn command_env(
+    sc: &crate::plugin::ShellCommand,
+    environment: Option<&BTreeMap<String, String>>,
+) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> = match environment {
+        Some(vars) => vars.clone(),
+        None => std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect(),
+    };
+    let outer = env.get("AI_AGENT").cloned();
+    let ai_agent = outer
+        .filter(|v| !v.is_empty())
+        .or_else(|| sc.env.get("AI_AGENT").filter(|v| !v.is_empty()).cloned())
+        .unwrap_or_else(|| "codesmith".into());
+    env.extend(sc.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    // `cd` must resolve as the scan resolved it (see `shell_scan`).
+    env.remove("CDPATH");
+    env.remove("OLDPWD");
+    // The local server's token would let a command drive the server (as
+    // OpenCode keeps its server password out of sessions).
+    env.remove(crate::SERVER_TOKEN_VAR);
+    env.insert("AGENT".into(), "1".into());
+    env.insert("CODESMITH".into(), "1".into());
+    env.insert("AI_AGENT".into(), ai_agent);
+    env.insert("CODESMITH_SESSION_ID".into(), sc.session_id.clone());
+    env
 }
 
 /// Start the command under `shell -c` with stdout and stderr appended to
@@ -1460,7 +1845,7 @@ fn spawn(
         .map_err(|e| format!("Unable to run {shell}: {e}"))
 }
 
-fn ending_of(status: std::process::ExitStatus) -> Ending {
+pub(super) fn ending_of(status: std::process::ExitStatus) -> Ending {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -1478,8 +1863,11 @@ fn ending_of(status: std::process::ExitStatus) -> Ending {
 const KILL_GRACE: Duration = Duration::from_secs(3);
 
 /// Stop the command's process group: SIGTERM, then SIGKILL if it is still
-/// running after a grace period. Returns how it ended.
-async fn stop(child: &mut tokio::process::Child) -> Option<Ending> {
+/// running after `grace`. Returns how it ended.
+pub(super) async fn stop_child(
+    child: &mut tokio::process::Child,
+    grace: Duration,
+) -> Option<Ending> {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         let signal = |sig: &'static str| {
@@ -1491,7 +1879,7 @@ async fn stop(child: &mut tokio::process::Child) -> Option<Ending> {
                 .status()
         };
         let _ = signal("-TERM").await;
-        if let Ok(Ok(status)) = tokio::time::timeout(KILL_GRACE, child.wait()).await {
+        if let Ok(Ok(status)) = tokio::time::timeout(grace, child.wait()).await {
             return Some(ending_of(status));
         }
         let _ = signal("-KILL").await;

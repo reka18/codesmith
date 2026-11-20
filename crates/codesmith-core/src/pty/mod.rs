@@ -5,9 +5,10 @@
 //! of what it kept, then live output) and removes it. Terminals are not
 //! offered to the model; `codesmith serve` exposes them to its clients.
 //!
-//! Unlike OpenCode's persistent terminals, which a separate daemon keeps
-//! running across server restarts, these live in the process that made
-//! them: when it ends, the kernel hangs their terminals up.
+//! Terminals live in the process that made them (when it ends, the kernel
+//! hangs them up), or, made with [`Ptys::remote`], in the server's shell
+//! daemon (see [`crate::daemon`]), which keeps them running across a
+//! server restart that hands it over, as OpenCode's persistent terminals.
 //!
 //! Limits, so terminals cannot take the machine down:
 //!
@@ -28,6 +29,7 @@
 //! foreground group (see [`sys`]).
 
 pub mod protocol;
+mod remote;
 mod sys;
 pub mod ticket;
 
@@ -145,7 +147,7 @@ pub struct UpdateInput {
 }
 
 /// What [`Ptys::events`] publishes.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Event {
     #[serde(rename = "pty.created")]
@@ -206,7 +208,7 @@ impl std::error::Error for PtyError {}
 
 /// What a session's current terminal shows, for
 /// [`Ptys::read`]: its last lines with control sequences taken out.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadResult {
     #[serde(rename = "ptyID")]
@@ -216,7 +218,7 @@ pub struct ReadResult {
     pub screen: Screen,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Screen {
     pub text: String,
     pub cols: u16,
@@ -294,6 +296,10 @@ impl Drop for Shared {
 #[derive(Clone)]
 pub struct Ptys {
     shared: Arc<Shared>,
+    /// Set for terminals that live in the shell daemon.
+    remote: Option<Arc<remote::Remote>>,
+    /// Alive while any clone is: the daemon event forwarder stops with it.
+    alive: Arc<()>,
 }
 
 impl Ptys {
@@ -309,6 +315,8 @@ impl Ptys {
     ) -> Ptys {
         let (events, _) = broadcast::channel(256);
         Ptys {
+            remote: None,
+            alive: Arc::new(()),
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
                     terms: BTreeMap::new(),
@@ -320,6 +328,30 @@ impl Ptys {
                 directory: directory.into(),
                 shell: shell.into(),
             }),
+        }
+    }
+
+    /// Terminals that live in `client`'s daemon, started in `directory`
+    /// with `shell` by default. The daemon is started by the first
+    /// [`Ptys::create`]; terminals it already runs (handed over by a
+    /// previous server) are listed and attached to as they are.
+    pub fn remote(
+        client: Arc<crate::daemon::Client>,
+        directory: impl Into<PathBuf>,
+        shell: impl Into<String>,
+    ) -> Ptys {
+        let directory = directory.into();
+        let shell = shell.into();
+        let mut p = Ptys::new(directory.clone(), shell.clone());
+        p.remote = Some(Arc::new(remote::Remote::new(client, directory, shell)));
+        p.follow();
+        p
+    }
+
+    /// Republish the daemon's events, when it runs.
+    fn follow(&self) {
+        if let Some(r) = &self.remote {
+            r.follow(self.shared.events.clone(), Arc::downgrade(&self.alive));
         }
     }
 
@@ -349,6 +381,9 @@ impl Ptys {
     /// Every terminal (of `session` when given), oldest first, exited ones
     /// included.
     pub fn list(&self, session: Option<&str>) -> Vec<Info> {
+        if let Some(r) = &self.remote {
+            return r.list(session);
+        }
         let st = self.shared.state.lock().unwrap();
         st.terms
             .values()
@@ -358,10 +393,18 @@ impl Ptys {
     }
 
     pub fn get(&self, id: &str) -> Result<Info, PtyError> {
+        if let Some(r) = &self.remote {
+            return r.get(id);
+        }
         Ok(self.term(id)?.data.lock().unwrap().info.clone())
     }
 
     pub fn create(&self, input: CreateInput) -> Result<Info, PtyError> {
+        if let Some(r) = &self.remote {
+            let info = r.create(input)?;
+            self.follow();
+            return Ok(info);
+        }
         let sh = &self.shared;
         let command = input
             .command
@@ -452,6 +495,9 @@ impl Ptys {
     }
 
     pub fn update(&self, id: &str, input: UpdateInput) -> Result<Info, PtyError> {
+        if let Some(r) = &self.remote {
+            return r.update(id, input.title, input.size);
+        }
         let t = self.term(id)?;
         if let Some(size) = input.size {
             if size.cols == 0 || size.rows == 0 {
@@ -504,6 +550,9 @@ impl Ptys {
     /// Type `data` into the terminal; nothing once its program has exited.
     /// Blocks while the program is not reading, for a few seconds at most.
     pub fn write(&self, id: &str, data: &str) -> Result<(), PtyError> {
+        if let Some(r) = &self.remote {
+            return r.write(id, data);
+        }
         let t = self.term(id)?;
         let info = t.data.lock().unwrap().info.clone();
         self.select(&info);
@@ -512,6 +561,9 @@ impl Ptys {
 
     /// Stop the terminal (if it runs) and forget it.
     pub fn remove(&self, id: &str) -> Result<(), PtyError> {
+        if let Some(r) = &self.remote {
+            return r.remove(id);
+        }
         let t = {
             let mut st = self.shared.state.lock().unwrap();
             let t = st
@@ -532,6 +584,9 @@ impl Ptys {
 
     /// Remove every terminal of `session` (it was deleted).
     pub fn remove_session(&self, session: &str) {
+        if let Some(r) = &self.remote {
+            return r.remove_session(session);
+        }
         for info in self.list(Some(session)) {
             let _ = self.remove(&info.id);
         }
@@ -548,6 +603,9 @@ impl Ptys {
     /// Follow the terminal's output: what it kept from `cursor` on (`None`:
     /// all of it; `Some(-1)`: none, only what comes next), then live output.
     pub fn attach(&self, id: &str, cursor: Option<i64>) -> Result<Attachment, PtyError> {
+        if let Some(r) = &self.remote {
+            return r.attach(id, cursor);
+        }
         let t = self.term(id)?;
         let (tx, rx) = mpsc::unbounded_channel();
         let pending = Arc::new(AtomicUsize::new(0));
@@ -586,6 +644,7 @@ impl Ptys {
             rx,
             pending,
             term: Arc::downgrade(&t),
+            remote: None,
         })
     }
 
@@ -594,6 +653,13 @@ impl Ptys {
     /// has none. Unlike OpenCode, which reads a terminal emulator's screen,
     /// this reads the kept output, so full-screen programs read roughly.
     pub fn read(&self, session: &str, lines: Option<u32>) -> Result<Option<ReadResult>, PtyError> {
+        if let Some(r) = self
+            .remote
+            .as_ref()
+            .filter(|_| lines.is_none_or(|n| n > 0 && n <= READ_LINES))
+        {
+            return r.read(session, lines);
+        }
         if lines.is_some_and(|n| n == 0 || n > READ_LINES) {
             return Err(PtyError::Invalid(format!(
                 "lines must be an integer between 1 and {READ_LINES}"
@@ -666,6 +732,14 @@ pub struct Attachment {
     rx: mpsc::UnboundedReceiver<Output>,
     pending: Arc<AtomicUsize>,
     term: Weak<Term>,
+    remote: Option<RemoteAttachment>,
+}
+
+/// An attachment to a terminal in the daemon: its stream, closed on drop.
+struct RemoteAttachment {
+    stream: std::os::unix::net::UnixStream,
+    client: Arc<crate::daemon::Client>,
+    id: String,
 }
 
 impl Attachment {
@@ -692,6 +766,17 @@ impl Attachment {
 
     /// Type into the terminal.
     pub fn write(&self, data: &str) -> Result<(), PtyError> {
+        if let Some(r) = &self.remote {
+            let req = crate::daemon::protocol::Request::WritePty {
+                id: r.id.clone(),
+                data: data.into(),
+            };
+            return r
+                .client
+                .request(&req, false)
+                .map(|_| ())
+                .map_err(|e| PtyError::Spawn(e.message));
+        }
         match self.term.upgrade() {
             Some(t) => write_term(&t, data),
             None => Ok(()),
@@ -704,6 +789,9 @@ impl Attachment {
 
 impl Drop for Attachment {
     fn drop(&mut self) {
+        if let Some(r) = &self.remote {
+            let _ = r.stream.shutdown(std::net::Shutdown::Both);
+        }
         if let Some(t) = self.term.upgrade() {
             t.data.lock().unwrap().subs.remove(&self.sub);
         }
@@ -888,7 +976,11 @@ fn finish(t: &Arc<Term>, status: std::process::ExitStatus, shared: &Weak<Shared>
     let Some(shared) = shared.upgrade() else {
         return;
     };
-    let ptys = Ptys { shared };
+    let ptys = Ptys {
+        shared,
+        remote: None,
+        alive: Arc::new(()),
+    };
     let evict: Vec<String> = {
         let mut st = ptys.shared.state.lock().unwrap();
         if !st.terms.contains_key(&t.id) {

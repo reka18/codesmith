@@ -10,6 +10,7 @@ mod lsp;
 pub mod patch;
 pub(crate) mod read;
 pub mod shell;
+pub(crate) mod shell_proc;
 pub mod shell_scan;
 pub mod subagent;
 pub mod todo;

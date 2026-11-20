@@ -26,6 +26,13 @@ pub fn data_dir() -> PathBuf {
     xdg("XDG_DATA_HOME", ".local/share").join("codesmith")
 }
 
+/// `$XDG_STATE_HOME/codesmith`, else `~/.local/state/codesmith`: state
+/// that outlives a process but is not worth backing up (the shell
+/// daemon's runtime directories).
+pub fn state_dir() -> PathBuf {
+    xdg("XDG_STATE_HOME", ".local/state").join("codesmith")
+}
+
 /// `$XDG_CACHE_HOME/codesmith`, else `~/.cache/codesmith`: things that can
 /// be fetched again, such as the models.dev catalog.
 pub fn cache_dir() -> PathBuf {

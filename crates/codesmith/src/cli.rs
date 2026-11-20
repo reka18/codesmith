@@ -1184,7 +1184,22 @@ async fn run(cli: Cli) -> Result<()> {
             };
             let loaded = config::load(&cwd)?;
             let mcp = connect_mcp(&loaded, true).await;
-            let st = serve::Server::new(loaded, cwd, store::default_path(), auto, token, mcp);
+            #[cfg(unix)]
+            let daemon = codesmith_core::daemon::enabled().then(|| {
+                let inherited = SHELL_HANDOFF.get().cloned();
+                std::sync::Arc::new(codesmith_core::daemon::for_server(inherited))
+            });
+            #[cfg(not(unix))]
+            let daemon = None;
+            let st = serve::Server::with_daemon(
+                loaded,
+                cwd,
+                store::default_path(),
+                auto,
+                token,
+                mcp,
+                daemon,
+            );
             serve::run(st, &host, port).await
         }
         Some(Command::Session { what }) => session_cmd(cwd, what),
@@ -1920,6 +1935,27 @@ pub(crate) fn all_commands_with(
 
 /// `$CODESMITH_SERVER_TOKEN`, taken out of the environment at startup.
 static ENV_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The shell daemon a previous server handed over (see
+/// `codesmith_core::daemon`), taken out of the environment at startup.
+#[cfg(unix)]
+static SHELL_HANDOFF: std::sync::OnceLock<codesmith_core::daemon::Handoff> =
+    std::sync::OnceLock::new();
+
+/// Take `CODESMITH_SHELLD_HANDOFF` out of the environment before any thread
+/// starts, so no command inherits it.
+pub(crate) fn take_shell_handoff() {
+    #[cfg(unix)]
+    match codesmith_core::daemon::take_handoff() {
+        Ok(Some(h)) => {
+            let _ = SHELL_HANDOFF.set(h);
+        }
+        Ok(None) => {}
+        Err(_) => eprintln!(
+            "ignoring an invalid shell daemon handoff; commands and terminals start fresh"
+        ),
+    }
+}
 
 /// Move `$CODESMITH_SERVER_TOKEN` out of this process's environment, where
 /// every child would inherit it, to where only `serve` reads it. Call it

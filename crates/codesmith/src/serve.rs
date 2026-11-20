@@ -396,7 +396,17 @@ pub struct Server {
     /// Tickets for opening a terminal's WebSocket.
     #[cfg(unix)]
     tickets: codesmith_core::pty::ticket::Tickets,
+    /// The shell daemon that runs this server's commands and terminals,
+    /// so they survive a restart that hands it over; none when they live
+    /// in this process.
+    daemon: Option<Daemon>,
 }
+
+/// A server's shell daemon client.
+#[cfg(unix)]
+pub type Daemon = Arc<codesmith_core::daemon::Client>;
+#[cfg(not(unix))]
+pub type Daemon = ();
 
 /// The server's file watches and where their changes go.
 struct Watching {
@@ -465,6 +475,7 @@ fn busy() -> ApiError {
 }
 
 impl Server {
+    #[cfg(test)]
     pub fn new(
         loaded: Loaded,
         cwd: PathBuf,
@@ -472,6 +483,19 @@ impl Server {
         auto: bool,
         token: String,
         mcp: Arc<codesmith_core::mcp::Mcp>,
+    ) -> Arc<Server> {
+        Server::with_daemon(loaded, cwd, db, auto, token, mcp, None)
+    }
+
+    /// [`Server::new`], running commands and terminals in `daemon`.
+    pub fn with_daemon(
+        loaded: Loaded,
+        cwd: PathBuf,
+        db: PathBuf,
+        auto: bool,
+        token: String,
+        mcp: Arc<codesmith_core::mcp::Mcp>,
+        daemon: Option<Daemon>,
     ) -> Arc<Server> {
         #[cfg(unix)]
         let ptys = {
@@ -481,9 +505,13 @@ impl Server {
                 .clone()
                 .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
                 .unwrap_or_else(|| "/bin/sh".into());
-            codesmith_core::pty::Ptys::new(cwd.clone(), shell)
+            match &daemon {
+                Some(d) => codesmith_core::pty::Ptys::remote(d.clone(), cwd.clone(), shell),
+                None => codesmith_core::pty::Ptys::new(cwd.clone(), shell),
+            }
         };
         Arc::new(Server {
+            daemon,
             #[cfg(unix)]
             ptys,
             #[cfg(unix)]
@@ -554,6 +582,11 @@ impl Server {
             asker,
             Some(self.store()?),
         )?;
+        #[cfg(unix)]
+        if let Some(d) = &self.daemon {
+            s.jobs()
+                .use_daemon(d.clone(), self.cwd.display().to_string());
+        }
         Ok(Live {
             jobs: s.jobs(),
             approvals: s.approvals(),
@@ -607,7 +640,31 @@ impl Server {
             None,
         )?));
         map.insert(id.to_string(), l.clone());
+        drop(map);
+        // Commands a previous server ran for it in the daemon are its
+        // background jobs again; wait for them as for any.
+        #[cfg(unix)]
+        if self.daemon.is_some() {
+            let mut g = l.lock().await;
+            if g.jobs.adopt(id).await > 0 {
+                wake(&l, &mut g);
+            }
+        }
         Ok(l)
+    }
+
+    /// After a handoff: load every session with commands in the daemon, so
+    /// each takes them back and hears when they end.
+    #[cfg(unix)]
+    async fn recover(&self) {
+        let Some(d) = self.daemon.clone() else { return };
+        let dir = self.cwd.display().to_string();
+        let ids = tokio::task::spawn_blocking(move || Jobs::daemon_sessions(&d, &dir))
+            .await
+            .unwrap_or_default();
+        for id in ids {
+            let _ = self.live(&id).await;
+        }
     }
 }
 
@@ -742,12 +799,58 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/jobs/{jid}/cancel", post(cancel_job))
         .route("/sessions/{id}/undo", post(undo))
         .route("/sessions/{id}/redo", post(redo))
+        .route("/shell-daemon/handoff", post(daemon_handoff))
+        .route("/shell-daemon/shutdown", post(daemon_shutdown))
         .route("/events", get(fs_events))
         .route("/fs/watch", post(fs_watch))
         .route("/fs/unwatch", post(fs_unwatch))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn_with_state(st.clone(), guard))
         .with_state(st)
+}
+
+/// A graceful restart's first step (OpenCode's `persistentPty.handoff`
+/// followed by its service stopping): prepare a handoff of the shell
+/// daemon and answer `{handoff}`, then exit, leaving the daemon's commands
+/// and terminals running for the next server, started with the handoff as
+/// JSON in `CODESMITH_SHELLD_HANDOFF` within two minutes. `{handoff:
+/// null}` (and no exit) when there is nothing to hand over.
+async fn daemon_handoff(State(st): State<St>) -> Result<Json<Value>, ApiError> {
+    #[cfg(unix)]
+    if let Some(d) = st.daemon.clone() {
+        let handoff = tokio::task::spawn_blocking(move || d.handoff())
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e.message))?;
+        if let Some(h) = handoff {
+            // Commands that run in this process cannot be handed over.
+            for l in st.live.lock().await.values() {
+                if let Ok(g) = l.try_lock() {
+                    g.jobs.reaper().kill_all();
+                }
+            }
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                std::process::exit(0);
+            });
+            return Ok(Json(json!({"handoff": h})));
+        }
+    }
+    let _ = &st;
+    Ok(Json(json!({"handoff": null})))
+}
+
+/// Stop the shell daemon and every command and terminal it runs.
+async fn daemon_shutdown(State(st): State<St>) -> Result<StatusCode, ApiError> {
+    #[cfg(unix)]
+    if let Some(d) = st.daemon.clone() {
+        tokio::task::spawn_blocking(move || d.shutdown())
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e.message))?;
+    }
+    let _ = &st;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn health(State(st): State<St>) -> Json<Value> {
@@ -1390,6 +1493,12 @@ pub async fn serve_on(st: St, listener: tokio::net::TcpListener, host: &str) -> 
     let _ = st.hosts.set(allowed_hosts(host, listener.local_addr()?));
     // Cheap: the branch watch finds its target in the background.
     st.watching();
+    // Take back what a previous server handed over (never starts a daemon).
+    #[cfg(unix)]
+    {
+        let st = st.clone();
+        tokio::spawn(async move { st.recover().await });
+    }
     axum::serve(listener, router(st)).await?;
     Ok(())
 }
