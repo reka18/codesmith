@@ -350,6 +350,87 @@ impl Runner {
         }));
     }
 
+    /// Send prompt `t` with its pasted files `pending`. If they cannot be
+    /// read, the prompt comes back to fix and resend: as the draft, or
+    /// after it for a prompt that was `queued`.
+    fn send_prompt(
+        &mut self,
+        t: String,
+        pending: Vec<attach::Pending>,
+        queued: bool,
+    ) -> Result<()> {
+        let limits = self.loaded.config.media.image;
+        match attach::load(&pending, &t, &limits) {
+            Ok(pasted) => {
+                let mut e = attach::expand(&t, &self.cwd, &limits);
+                e.media.extend(pasted);
+                let mut names = e.files;
+                names.extend(
+                    pending
+                        .iter()
+                        .filter(|p| t.contains(&p.label))
+                        .map(|p| p.label.clone()),
+                );
+                self.submit(t, e.text, e.media);
+                if !names.is_empty() {
+                    self.app.notice(format!("attached {}", names.join(", ")));
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if queued {
+                    self.app.restore_prompt(&t);
+                    self.app.attachments.extend(pending);
+                } else {
+                    self.app.input.set(t);
+                    self.app.attachments = pending;
+                }
+                Err(anyhow::anyhow!(err))
+            }
+        }
+    }
+
+    /// Send mini mode's oldest pending prompt once the session is idle
+    /// (see `mini::queue`): before an idle wake, which the prompt reports
+    /// itself.
+    fn pump_queue(&mut self) {
+        if self.app.busy
+            || self.stopping
+            || self.session.is_none()
+            || self.app.modal.is_some()
+            || self.app.quit
+        {
+            return;
+        }
+        let Some(q) = self.app.queue.next() else {
+            return;
+        };
+        let result = if let Some((name, args)) = command::parse_invocation(&q.text) {
+            self.slash(&name, &args)
+        } else if let Some(c) = user_command(&q.text) {
+            self.user_shell(c.to_string());
+            Ok(())
+        } else {
+            self.send_prompt(q.text, q.files, true)
+        };
+        if let Err(e) = result {
+            self.app.error(format!("{e:#}"));
+        }
+    }
+
+    /// The turn was interrupted or failed: mini mode's pending prompts
+    /// wait to be let go.
+    fn hold_queue(&mut self) {
+        if self.app.queue.hold() {
+            let n = self.app.queue.len();
+            self.app.notice(format!(
+                "{n} pending prompt{} held: press enter on an empty prompt to send {}",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "it" } else { "the next" },
+            ));
+        }
+    }
+
     /// Run `!command` as the user (OpenCode's shell mode): shown as a shell
     /// row, recorded for the model's next step, no model call.
     fn user_shell(&mut self, command: String) {
@@ -492,6 +573,7 @@ impl Runner {
         if let Err(e) = self.reload() {
             self.app.error(format!("{e:#}"));
         }
+        self.hold_queue();
         // The user stopped the turn: commands that already finished wait
         // for the next prompt (or another to finish) instead of resuming
         // the session at once, which after an interrupted resume would
@@ -1398,32 +1480,8 @@ impl Runner {
                         Ok(())
                     }
                     Some(Action::Submit(t)) => {
-                        let limits = self.loaded.config.media.image;
                         let pending = std::mem::take(&mut self.app.attachments);
-                        match attach::load(&pending, &t, &limits) {
-                            Ok(pasted) => {
-                                let mut e = attach::expand(&t, &self.cwd, &limits);
-                                e.media.extend(pasted);
-                                let mut names = e.files;
-                                names.extend(
-                                    pending
-                                        .iter()
-                                        .filter(|p| t.contains(&p.label))
-                                        .map(|p| p.label.clone()),
-                                );
-                                self.submit(t, e.text, e.media);
-                                if !names.is_empty() {
-                                    self.app.notice(format!("attached {}", names.join(", ")));
-                                }
-                                Ok(())
-                            }
-                            Err(err) => {
-                                // Keep the prompt and its attachments to fix and resend.
-                                self.app.input.set(t);
-                                self.app.attachments = pending;
-                                Err(anyhow::anyhow!(err))
-                            }
-                        }
+                        self.send_prompt(t, pending, false)
                     }
                     Some(Action::Slash { name, args }) => self.slash(&name, &args),
                     Some(Action::Interrupt) => {
@@ -1523,7 +1581,10 @@ impl Runner {
                 self.app.end_turn(false);
                 match (result, self.shell_command.take()) {
                     (Err(e), Some(command)) => self.app.shell_failed(&command, &e),
-                    (Err(e), None) => self.app.error(e),
+                    (Err(e), None) => {
+                        self.app.error(e);
+                        self.hold_queue();
+                    }
                     _ => {}
                 }
                 self.install(*session, false);
@@ -1929,6 +1990,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     spawn_input(tx);
     let result: Result<()> = async {
         loop {
+            r.pump_queue();
             r.watch_all();
             r.sync_tabs();
             r.attend();

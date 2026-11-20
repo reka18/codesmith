@@ -15,6 +15,7 @@ pub enum Id {
     Status,
     Escape,
     Queued,
+    Background,
     Subagents,
     Agent,
     Model,
@@ -25,11 +26,12 @@ pub enum Id {
 }
 
 /// Placement order.
-const ORDER: [Id; 11] = [
+const ORDER: [Id; 12] = [
     Id::Spinner,
     Id::Status,
     Id::Escape,
     Id::Queued,
+    Id::Background,
     Id::Subagents,
     Id::Agent,
     Id::Model,

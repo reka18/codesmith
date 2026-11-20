@@ -152,3 +152,103 @@ async fn mini_takes_piped_input_as_its_first_prompt() {
     ui.quit_reading().await;
     m.assert_done();
 }
+
+// mini/runtime.queue.test.ts: "durably admits in-flight follow-ups in
+// submission order": prompts sent while a turn runs wait in the footer
+// (`2 pending`), nothing in the scrollback, and run one after another
+// once it ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_mini_queues_follow_ups_and_sends_them_in_order() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Queue")
+            .then(
+                "first",
+                M::tools().and(M::prompt("first")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 3", "description": "Wait"}),
+                ),
+            )
+            .then(
+                "first done",
+                M::tools().and(M::prompt("first")).and(M::step(1)),
+                Reply::text("First done."),
+            )
+            .then(
+                "second",
+                M::tools().and(M::prompt("second")),
+                Reply::text("Second done."),
+            )
+            .then(
+                "third",
+                M::tools().and(M::prompt("third")),
+                Reply::text("Third done."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "mini --auto --prompt first") else {
+        return;
+    };
+    ui.wait_for("Running command").await;
+    ui.send(b"second\r").await;
+    ui.send(b"third\r").await;
+    ui.wait_for("2 pending").await;
+    ui.wait_for("Third done.").await;
+    ui.quit_reading().await;
+    let rows = history(&mut ui.term);
+    let at = |s: &str| {
+        rows.iter()
+            .position(|r| r.contains(s))
+            .unwrap_or_else(|| panic!("{s:?} is not on the terminal:\n{}", rows.join("\n")))
+    };
+    // Each prompt is written when it is sent, after the turn before it.
+    assert!(at("First done.") < at("› second"));
+    assert!(at("› second") < at("Second done."));
+    assert!(at("Second done.") < at("› third"));
+    let list = e.store().list(None, false).unwrap();
+    assert_eq!(
+        user_texts(&e.history(&list[0].id)),
+        ["first", "second", "third"]
+    );
+    m.assert_done();
+}
+
+// mini/runtime.queue.test.ts: "shell mode does not append a synthetic
+// user row" and "shell mode does not emit a turn duration summary" (a
+// `!command` writes its shell row only), then "preserves whitespace for
+// initial input" (`--prompt` is sent as given).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_mini_shell_mode_writes_no_user_row_or_turn_summary() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Spaces").then(
+        "spaces",
+        M::tools().and(M::f(|b| crate::model::prompt(b) == "  hello  ")),
+        Reply::text("Spaces kept."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "mini --prompt '  hello  '") else {
+        return;
+    };
+    ui.wait_for("Spaces kept.").await;
+    ui.send(b"!echo user-shell-output\r").await;
+    ui.wait_for("user-shell-output").await;
+    ui.quit_reading().await;
+    let rows = history(&mut ui.term);
+    let summaries = rows
+        .iter()
+        .filter(|r| r.starts_with("Build · fake/m · "))
+        .count();
+    assert_eq!(summaries, 1, "only the model turn's:\n{}", rows.join("\n"));
+    assert!(
+        !rows.iter().any(|r| r.contains("› !echo")),
+        "no user row for the command:\n{}",
+        rows.join("\n")
+    );
+    let list = e.store().list(None, false).unwrap();
+    assert_eq!(user_texts(&e.history(&list[0].id))[0], "  hello  ");
+    m.assert_done();
+}

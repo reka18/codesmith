@@ -441,6 +441,8 @@ pub struct App {
     pub diff_prefs_changed: bool,
     /// Mini mode's settings, in mini mode.
     pub mini: Option<super::mini::Settings>,
+    /// Mini mode's pending prompts (sent while a turn ran).
+    pub queue: super::mini::queue::Queue,
     /// Entries before this one are in the terminal's scrollback (mini
     /// mode) and are left as they are.
     pub sealed: usize,
@@ -1631,6 +1633,10 @@ impl App {
                 return Some(Some(Action::Run(super::keymap::static_id(id)?)));
             }
             "app.clear" if self.mini.is_some() => return Some(Some(Action::Run("app.clear"))),
+            "session.queued_prompts" if self.mini.is_some() && self.open_queue() => {
+                return Some(None)
+            }
+            "prompt.queue" if self.mini.is_some() => return Some(self.submit_queued()),
             "agent.cycle" => return Some(Some(Action::CycleAgent(1))),
             "agent.cycle.reverse" => return Some(Some(Action::CycleAgent(-1))),
             "agent.list" => return Self::slash("agent"),
@@ -1805,6 +1811,10 @@ impl App {
         if self.modal.is_some() && !(diff && asking) {
             return self.modal_key(k, ctrl);
         }
+        if self.queue.menu.is_some() {
+            self.queue_key(k);
+            return None;
+        }
         if diff {
             return self.diff_key(k);
         }
@@ -1921,10 +1931,12 @@ impl App {
         }
     }
 
-    fn submit(&mut self) -> Option<Action> {
+    pub(crate) fn submit(&mut self) -> Option<Action> {
         let text = self.input.text().trim().to_string();
         self.popup = None;
         if text.is_empty() {
+            // A held queue goes on (mini mode).
+            self.queue.held = false;
             return None;
         }
         let files: Vec<super::attach::Pending> = self
@@ -1960,8 +1972,18 @@ impl App {
                 args: String::new(),
             });
         }
+        let queue = self.busy && self.mini.is_some();
         if let Some((name, args)) = codesmith_core::command::parse_invocation(&text) {
+            if queue && super::mini::queue::queues_command(&name, &args) {
+                self.enqueue(text);
+                return None;
+            }
             return Some(Action::Slash { name, args });
+        }
+        if queue {
+            let sent = self.expand_pasted(&text);
+            self.enqueue(sent);
+            return None;
         }
         if self.busy {
             self.notice("A turn is still running. Press Esc to interrupt it first.");

@@ -230,7 +230,7 @@ fn oc_the_turn_summary_starts_at_the_left_edge() {
         ..Settings::default()
     });
     a.entries.push(Entry::User("hi".into()));
-    a.busy = true;
+    a.start_turn();
     let mut t = Term::new();
     t.frame(&mut a);
     a.entries.push(Entry::Assistant("Hello.".into()));
@@ -473,6 +473,44 @@ fn oc_shell_output_shows_only_when_asked() {
         };
         assert_eq!(s.output, "test result: ok");
     }
+    // A `!command` the user ran shows with its output, whatever the
+    // settings.
+    let mut a = app_with(Settings {
+        tools: false,
+        shell_output: false,
+        splash: false,
+        turn_summary: false,
+        ..Settings::default()
+    });
+    let mut direct = tool("shell", "pwd", Some("/tmp/demo"));
+    direct.id = "user-shell-1".into();
+    a.entries.push(Entry::Tool(direct));
+    let mut t = Term::new();
+    t.frame(&mut a);
+    let text = t.written_text();
+    assert!(text.contains("pwd") && text.contains("/tmp/demo"), "{text}");
+}
+
+// mini/runtime.queue.test.ts: "shell mode does not emit a turn duration
+// summary": a `!command` is no model turn.
+#[test]
+fn oc_shell_mode_writes_no_turn_summary() {
+    let mut a = app_with(Settings {
+        splash: false,
+        ..Settings::default()
+    });
+    // The runner marks a shell run busy without starting a turn.
+    a.busy = true;
+    let mut t = Term::new();
+    t.frame(&mut a);
+    let mut direct = tool("shell", "ls", Some("a.txt"));
+    direct.id = "user-shell-1".into();
+    a.entries.push(Entry::Tool(direct));
+    a.busy = false;
+    t.frame(&mut a);
+    let text = t.written_text();
+    assert!(text.contains("a.txt"), "{text}");
+    assert!(!text.contains("fake/model"), "{text}");
 }
 
 // mini/footer.responsive.test.tsx: "ctrl+l clears the split-footer screen
@@ -812,4 +850,307 @@ fn oc_commits_come_before_the_footer_in_a_frame() {
         1,
         "one frame, one write"
     );
+}
+
+// ---- Pending prompts (`mini::queue`) ----
+
+fn press(a: &mut App, code: ratatui::crossterm::event::KeyCode) -> Option<crate::tui::app::Action> {
+    a.on_key(ratatui::crossterm::event::KeyEvent::new(
+        code,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ))
+}
+
+fn ctrl(a: &mut App, c: char) -> Option<crate::tui::app::Action> {
+    a.on_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char(c),
+        ratatui::crossterm::event::KeyModifiers::CONTROL,
+    ))
+}
+
+fn type_text(a: &mut App, s: &str) {
+    for c in s.chars() {
+        press(a, ratatui::crossterm::event::KeyCode::Char(c));
+    }
+}
+
+/// Type `s` and press enter.
+fn send(a: &mut App, s: &str) -> Option<crate::tui::app::Action> {
+    type_text(a, s);
+    press(a, ratatui::crossterm::event::KeyCode::Enter)
+}
+
+fn queued(a: &App) -> Vec<&str> {
+    a.queue.items.iter().map(|q| q.text.as_str()).collect()
+}
+
+/// `ctrl+x q`: the pending-prompt menu.
+fn open_queue(a: &mut App) {
+    ctrl(a, 'x');
+    press(a, ratatui::crossterm::event::KeyCode::Char('q'));
+}
+
+// mini/runtime.queue.test.ts: "durably admits in-flight follow-ups in
+// submission order" (adapted: CodeSmith queues every follow-up; it has no
+// steering) and "runs and queues image-only prompts without optimistic
+// image rows": nothing reaches the scrollback until a prompt is sent.
+#[test]
+fn oc_follow_ups_wait_in_submission_order() {
+    let mut a = app();
+    a.busy = true;
+    assert_eq!(send(&mut a, "two"), None);
+    assert_eq!(send(&mut a, "three"), None);
+    // A pasted image alone still queues, its file with it.
+    a.attachments.push(crate::tui::attach::Pending {
+        label: "[Image 1]".into(),
+        path: "/tmp/i.png".into(),
+    });
+    a.input.set("[Image 1]");
+    assert_eq!(
+        press(&mut a, ratatui::crossterm::event::KeyCode::Enter),
+        None
+    );
+    assert_eq!(queued(&a), ["two", "three", "[Image 1]"]);
+    assert_eq!(a.queue.items[2].files.len(), 1);
+    assert!(a.attachments.is_empty());
+    assert!(a.input.is_empty());
+    let mut t = Term::new();
+    t.frame(&mut a);
+    assert!(!t.written_text().contains("two"), "{}", t.written_text());
+    // They go in order once the turn is over.
+    a.busy = false;
+    assert_eq!(a.queue.next().unwrap().text, "two");
+    assert_eq!(a.queue.next().unwrap().text, "three");
+}
+
+// mini/runtime.queue.test.ts: "keeps prompts submitted after an in-flight
+// /compact behind the compaction barrier", "treats /new as a local
+// session command" and "treats %s as a close command" (/exit, /quit, /q,
+// :q): `/compact` and custom commands wait their turn; the UI's own
+// commands act at once.
+#[test]
+fn oc_compact_waits_its_turn_and_local_commands_act_at_once() {
+    use crate::tui::app::Action;
+    let mut a = app();
+    let slash = |name: &str| {
+        Some(Action::Slash {
+            name: name.into(),
+            args: String::new(),
+        })
+    };
+    // Idle, `/compact` is the local command.
+    assert_eq!(send(&mut a, "/compact"), slash("compact"));
+    a.busy = true;
+    assert_eq!(send(&mut a, "/compact"), None);
+    assert_eq!(send(&mut a, "later"), None);
+    assert_eq!(queued(&a), ["/compact", "later"]);
+    assert_eq!(send(&mut a, "/new"), slash("new"));
+    for (cmd, name) in [
+        ("/exit", "exit"),
+        ("/quit", "quit"),
+        ("/q", "q"),
+        (":q", "quit"),
+    ] {
+        assert_eq!(send(&mut a, cmd), slash(name), "{cmd}");
+    }
+    assert_eq!(queued(&a), ["/compact", "later"]);
+}
+
+// mini/runtime.queue.test.ts: "shell mode submits /exit as a shell
+// command" and "shell mode submits /new instead of creating a session"
+// (adapted: shell mode is a `!` prompt).
+#[test]
+fn oc_shell_mode_sends_slash_text_as_a_command() {
+    use crate::tui::app::Action;
+    let mut a = app();
+    assert_eq!(
+        send(&mut a, "!/exit"),
+        Some(Action::Submit("!/exit".into()))
+    );
+    assert_eq!(send(&mut a, "!/new"), Some(Action::Submit("!/new".into())));
+    assert!(!a.quit);
+    a.busy = true;
+    assert_eq!(send(&mut a, "!/new"), None);
+    assert_eq!(queued(&a), ["!/new"]);
+}
+
+// mini/footer.view.test.tsx: "direct footer toggles and deletes pending
+// %s prompts" (queue; adapted: enter sends the prompt next instead of
+// steering it) and "direct footer counts queued and steering work while
+// running".
+#[test]
+fn oc_the_footer_lists_and_deletes_pending_prompts() {
+    let mut a = app();
+    a.busy = true;
+    send(&mut a, "follow up");
+    send(&mut a, "another one");
+    let mut t = Term::sized(100, ROWS, 0);
+    t.frame(&mut a);
+    let status = t.footer().last().cloned().unwrap();
+    assert!(status.contains("ctrl+x q 2 pending"), "{status}");
+    // Down does not open it.
+    press(&mut a, ratatui::crossterm::event::KeyCode::Down);
+    t.frame(&mut a);
+    assert!(!t.footer().join("\n").contains("Pending prompts"));
+    open_queue(&mut a);
+    assert!(!a.quit, "ctrl+x q opens the menu while prompts wait");
+    t.frame(&mut a);
+    let f = t.footer().join("\n");
+    assert!(f.contains("Pending prompts"), "{f}");
+    assert!(f.contains("follow up") && f.contains("queued"), "{f}");
+    assert!(
+        f.contains("enter next · ctrl+d delete · ctrl+u undo"),
+        "{f}"
+    );
+    assert!(!f.contains('┌') && !f.contains('┃'), "{f}");
+    // Enter sends the second one first.
+    press(&mut a, ratatui::crossterm::event::KeyCode::Down);
+    press(&mut a, ratatui::crossterm::event::KeyCode::Enter);
+    assert_eq!(queued(&a), ["another one", "follow up"]);
+    assert!(a.queue.menu.is_none());
+    open_queue(&mut a);
+    ctrl(&mut a, 'd');
+    assert_eq!(queued(&a), ["follow up"]);
+    ctrl(&mut a, 'd');
+    assert!(a.queue.is_empty());
+    t.frame(&mut a);
+    let f = t.footer().join("\n");
+    assert!(
+        !f.contains("Pending prompts") && !f.contains("pending"),
+        "{f}"
+    );
+    // With nothing waiting, `ctrl+x q` is the exit binding again.
+    open_queue(&mut a);
+    assert!(a.quit);
+}
+
+// mini/footer.view.test.tsx: "undo appends a pending prompt to the
+// draft", "undo retains mentioned files when the prompt is sent again"
+// and "an undone chip deletion keeps the chip's file".
+#[test]
+fn oc_undo_takes_a_pending_prompt_back_into_the_draft() {
+    use crate::tui::app::Action;
+    let mut a = app();
+    a.busy = true;
+    a.attachments.push(crate::tui::attach::Pending {
+        label: "[Image 1]".into(),
+        path: "/tmp/i.png".into(),
+    });
+    send(&mut a, "look at [Image 1]");
+    type_text(&mut a, "existing draft");
+    open_queue(&mut a);
+    ctrl(&mut a, 'u');
+    assert!(a.queue.is_empty() && a.queue.menu.is_none());
+    assert_eq!(a.input.text(), "existing draft\n\nlook at [Image 1]");
+    assert_eq!(a.attachments.len(), 1, "its file comes back");
+    let mut t = Term::new();
+    t.frame(&mut a);
+    assert!(!t.footer().join("\n").contains("Pending prompts"));
+    // Undoing the draft's deletion keeps the file.
+    ctrl(&mut a, 'u');
+    a.on_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('z'),
+        ratatui::crossterm::event::KeyModifiers::SUPER,
+    ));
+    assert_eq!(a.input.text(), "existing draft\n\nlook at [Image 1]");
+    assert_eq!(a.attachments.len(), 1);
+    a.busy = false;
+    assert_eq!(
+        press(&mut a, ratatui::crossterm::event::KeyCode::Enter),
+        Some(Action::Submit("existing draft\n\nlook at [Image 1]".into()))
+    );
+}
+
+// mini/footer.view.test.tsx: "undo leaves the queue and input alone when
+// cancellation fails" (adapted: nothing can fail; Escape closes the menu
+// and the prompt stays queued) and "direct footer closes settings with
+// ctrl-c instead of arming exit".
+#[test]
+fn oc_escape_and_ctrl_c_close_the_menu_and_keep_the_queue() {
+    let mut a = app();
+    a.busy = true;
+    send(&mut a, "still queued");
+    for close in [
+        ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Esc),
+        ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('c'),
+            ratatui::crossterm::event::KeyModifiers::CONTROL,
+        ),
+    ] {
+        open_queue(&mut a);
+        assert!(a.queue.menu.is_some());
+        a.on_key(close);
+        assert!(a.queue.menu.is_none());
+        assert!(!a.quit);
+        assert!(a.busy, "the turn is not interrupted");
+        assert_eq!(queued(&a), ["still queued"]);
+    }
+}
+
+// mini/footer.view.test.tsx: "direct footer preserves steer and queue
+// submission shortcuts while busy" (adapted: both queue) and "direct
+// footer rejects local commands submitted with the queue shortcut".
+#[test]
+fn oc_the_queue_shortcut_queues_and_rejects_local_commands() {
+    let mut a = app();
+    a.busy = true;
+    send(&mut a, "steer now");
+    type_text(&mut a, "queue later");
+    ctrl(&mut a, 'x');
+    press(&mut a, ratatui::crossterm::event::KeyCode::Enter);
+    assert_eq!(queued(&a), ["steer now", "queue later"]);
+    type_text(&mut a, "/themes ");
+    ctrl(&mut a, 'x');
+    press(&mut a, ratatui::crossterm::event::KeyCode::Enter);
+    assert_eq!(queued(&a), ["steer now", "queue later"]);
+    assert!(a
+        .entries
+        .iter()
+        .any(|e| matches!(e, Entry::Notice(n) if n == "this prompt cannot be queued")));
+    assert_eq!(a.input.text(), "/themes ");
+}
+
+// mini/footer.view.test.tsx: "direct footer steers the oldest queued
+// prompt from an empty composer" (adapted: after an interrupted or
+// failed turn the queue is held, and enter on an empty prompt lets it go)
+// and "direct footer does not steer queued work on a double submit".
+#[test]
+fn oc_enter_on_an_empty_prompt_lets_a_held_queue_go() {
+    let mut a = app();
+    a.busy = true;
+    send(&mut a, "first");
+    send(&mut a, "second");
+    a.busy = false;
+    assert!(a.queue.hold());
+    assert_eq!(a.queue.next(), None, "held");
+    let mut t = Term::sized(100, ROWS, 0);
+    t.frame(&mut a);
+    let status = t.footer().last().cloned().unwrap();
+    assert!(status.contains("2 pending (held)"), "{status}");
+    // A prompt typed now goes at once, and does not let the queue go.
+    assert!(send(&mut a, "now").is_some());
+    assert_eq!(a.queue.next(), None);
+    assert_eq!(
+        press(&mut a, ratatui::crossterm::event::KeyCode::Enter),
+        None
+    );
+    assert_eq!(a.queue.next().unwrap().text, "first");
+}
+
+// Untrusted prompt text in the menu is one line with no control
+// characters.
+#[test]
+fn the_pending_prompt_menu_strips_control_characters() {
+    let mut a = app();
+    a.busy = true;
+    a.queue.items.push(super::queue::Queued {
+        text: "evil\x1b[2J\x07 text\nmore".into(),
+        files: vec![],
+    });
+    open_queue(&mut a);
+    let mut t = Term::new();
+    t.frame(&mut a);
+    assert!(!String::from_utf8_lossy(t.bytes()).contains("\x1b[2J"));
+    let f = t.footer().join("\n");
+    assert!(f.contains("evil [2J text more"), "{f}");
 }

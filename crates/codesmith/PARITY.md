@@ -106,13 +106,13 @@ Where the tests live:
 | cli | 269 | 40 | 19 | 45 | 165 | 0 |
 | cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 |
 | tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
-| tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
+| tui: mini mode | 425 | 13 | 79 | 291 | 42 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **763** | **748** | **491** | **2376** | **259** |
+| **Total** | **4637** | **773** | **762** | **459** | **2384** | **259** |
 
 ## Fixes made while porting
 
@@ -388,13 +388,34 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/mini/scrollback.surface` | finalizes markdown tables for streamed and coalesced input | after a fix | oc_tables_render_the_same_streamed_or_whole |
 | `tui/test/mini/scrollback.surface` | renders monochrome scrollback as ASCII markdown | after a fix | oc_monochrome_scrollback_is_ascii (adapted: CodeSmith's renderer with ASCII symbols) |
 | `tui/test/mini/entry.body` | keeps running subagent tool state out of scrollback | after a fix | oc_a_running_subagent_stays_out_of_the_scrollback |
-| `tui/test/mini/entry.body` | hides shell tool output but not direct shell output | after a fix | oc_shell_output_shows_only_when_asked (adapted: no direct shell rows yet) |
+| `tui/test/mini/entry.body` | hides shell tool output but not direct shell output | after a fix | oc_shell_output_shows_only_when_asked (adapted: CodeSmith's rows; a `!command` is written whole) |
 | `tui/test/mini/stream` | delivers commits before ordered footer updates | after a fix | oc_commits_come_before_the_footer_in_a_frame |
 | `tui/test/mini/runtime.boot` | preserves shared config while resolving independent Mini defaults | after a fix | oc_mini_defaults_resolve_independently_of_the_shared_config (adapted) |
 | `tui/test/config-v2` | validates mini replay and work spinner settings | after a fix | oc_validates_mini_replay_and_work_spinner_settings |
 | `tui/test/mini/prompt.shared` | recognizes exit commands | after a fix | oc_exit_commands_ignore_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes the new-session command | after a fix | oc_the_new_session_command_ignores_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes only the compact command | after a fix | oc_only_the_compact_command_compacts |
+| `tui/test/mini/runtime.queue` | runs and queues image-only prompts without optimistic image rows | after a fix | oc_follow_ups_wait_in_submission_order (adapted: a pasted image's label) |
+| `tui/test/mini/runtime.queue` | treats %s as a close command (4 cases) | already passing | oc_compact_waits_its_turn_and_local_commands_act_at_once (also while a turn runs) |
+| `tui/test/mini/runtime.queue` | treats /new as a local session command | already passing | oc_compact_waits_its_turn_and_local_commands_act_at_once |
+| `tui/test/mini/runtime.queue` | treats /compact as a local compaction command | already passing | oc_compact_waits_its_turn_and_local_commands_act_at_once |
+| `tui/test/mini/runtime.queue` | keeps prompts submitted after an in-flight /compact behind the compaction barrier | after a fix | oc_compact_waits_its_turn_and_local_commands_act_at_once |
+| `tui/test/mini/runtime.queue` | shell mode submits /exit as a shell command | already passing | oc_shell_mode_sends_slash_text_as_a_command (adapted: shell mode is a `!` prompt) |
+| `tui/test/mini/runtime.queue` | shell mode submits /new instead of creating a session | already passing | oc_shell_mode_sends_slash_text_as_a_command (adapted) |
+| `tui/test/mini/runtime.queue` | shell mode does not append a synthetic user row | already passing | oc_mini_shell_mode_writes_no_user_row_or_turn_summary (e2e) |
+| `tui/test/mini/runtime.queue` | shell mode does not emit a turn duration summary | after a fix | oc_shell_mode_writes_no_turn_summary; oc_mini_shell_mode_writes_no_user_row_or_turn_summary (e2e) |
+| `tui/test/mini/runtime.queue` | preserves whitespace for initial input | already passing | oc_mini_shell_mode_writes_no_user_row_or_turn_summary (e2e) |
+| `tui/test/mini/runtime.queue` | durably admits in-flight follow-ups in submission order | after a fix | oc_follow_ups_wait_in_submission_order; oc_mini_queues_follow_ups_and_sends_them_in_order (e2e) (adapted: every follow-up queues; no steering) |
+| `tui/test/mini/footer.view` | direct footer toggles and deletes pending %s prompts (queue) | after a fix | oc_the_footer_lists_and_deletes_pending_prompts (adapted: enter sends the prompt next instead of steering it) |
+| `tui/test/mini/footer.view` | undo appends a pending prompt to the draft | after a fix | oc_undo_takes_a_pending_prompt_back_into_the_draft |
+| `tui/test/mini/footer.view` | undo leaves the queue and input alone when cancellation fails | after a fix | oc_escape_and_ctrl_c_close_the_menu_and_keep_the_queue (adapted: an undo cannot fail; Escape leaves the queue alone) |
+| `tui/test/mini/footer.view` | undo retains mentioned files when the prompt is sent again | after a fix | oc_undo_takes_a_pending_prompt_back_into_the_draft (adapted: a pasted file) |
+| `tui/test/mini/footer.view` | an undone chip deletion keeps the chip's file | after a fix | oc_undo_takes_a_pending_prompt_back_into_the_draft |
+| `tui/test/mini/footer.view` | direct footer steers the oldest queued prompt from an empty composer | after a fix | oc_enter_on_an_empty_prompt_lets_a_held_queue_go (adapted: enter on an empty prompt lets a held queue go) |
+| `tui/test/mini/footer.view` | direct footer preserves steer and queue submission shortcuts while busy | after a fix | oc_the_queue_shortcut_queues_and_rejects_local_commands (adapted: both queue) |
+| `tui/test/mini/footer.view` | direct footer does not steer queued work on a double submit | after a fix | oc_enter_on_an_empty_prompt_lets_a_held_queue_go (adapted) |
+| `tui/test/mini/footer.view` | direct footer rejects local commands submitted with the queue shortcut | after a fix | oc_the_queue_shortcut_queues_and_rejects_local_commands |
+| `tui/test/mini/footer.view` | direct footer counts queued and steering work while running | after a fix | oc_the_footer_lists_and_deletes_pending_prompts (adapted: `ctrl+x q 2 pending`, no steering) |
 | `tui/test/theme/v2/resolve` | orders light hues dark-to-light and dark hues light-to-dark | after a fix | oc_orders_light_hues_dark_to_light_and_dark_hues_light_to_dark |
 | `tui/test/theme/v2/resolve` | resolves complete one-mode documents in the available mode | after a fix | oc_resolves_complete_one_mode_documents_in_the_available_mode |
 | `tui/test/theme/v2/resolve` | rejects theme documents without a mode | after a fix | oc_rejects_theme_documents_without_a_mode |
@@ -930,18 +951,17 @@ Missing features, largest first, with the OpenCode tests that would come
 with each (every test for groups up to 30 cases; by file, with examples,
 for larger ones).
 
-### tui: mini mode, the rest (323)
+### tui: mini mode, the rest (291)
 
 `codesmith mini` writes the scrollback and draws its footer (see
 [ported tests](#ported-tests)); these need what OpenCode's mini footer has
-beyond that: image paste previews, queued prompts, the command and
-settings menu, subagent panels, rich question forms, OpenCode's V2 event
-transport and its tool presentation.
+beyond that: image paste previews, the command and settings menu,
+subagent panels, rich question forms, OpenCode's V2 event transport and
+its tool presentation.
 
-- `tui/test/mini/footer.view` (81): e.g. "mini pastes, previews, submits, and recalls an image ($"; "mini waits for image paste before submitting and drops a paste after editing the draft"
+- `tui/test/mini/footer.view` (70): e.g. "mini pastes, previews, submits, and recalls an image ($"; "mini waits for image paste before submitting and drops a paste after editing the draft"
 - `tui/test/mini/stream-v2.transport` (70): e.g. "cancels the first local %s after attaching while busy"; "renders user content once (%s first)"
 - `tui/test/mini/blocker.responsive` (39): e.g. "roomy question forms retain the established spacing and inline descriptions"; "complete questions and distinct option details remain r"
-- `tui/test/mini/runtime.queue` (21): e.g. "runs and queues image-only prompts without optimistic image rows"; "treats %s as a close command"
 - `tui/test/mini/scrollback.surface` (18): e.g. "turn summary starts at the left edge"; "theme swaps restyle active reasoning without resetting the stream"
 - `tui/test/mini/entry.body` (17): e.g. "renders a failed direct shell as an error instead of completed success"; "renders assistant, reasoning, and user entries in their display formats"
 - `tui/test/mini/footer.responsive` (14): e.g. "production footer confirms exit with a visible menu hint a"; "production statusline restores identity and trailing me"
@@ -1043,6 +1063,7 @@ transport and its tool presentation.
 | acp: child sessions | by design | 13 | 3 | subagents run inside the parent turn; subagents run inside the parent turn; no steering |
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
 | tui: session tabs: mouse, motion and server sync | by design | 33 | 7 | no mouse: clicks, middle-click closing, drags, the tab menu and its recently closed list, opening a tab in the background, the compact rail reached by narrowing the column; no motion: width seeding, the completion reveal and running pulses; one UI running its sessions in-process: no server viewed times, terminal focus or acknowledgement retries, no other UI sharing the list, no session moves or per-tab locations and branches, no queued prompt pulses, new sessions start in the UI's folder; subagents have no transcript of their own; no home page footer |
+| tui: mini queue: steering and durable admission | by design | 8 | 2 | no steering (a prompt joined to the running turn): every pending prompt is queued; pending prompts live in the UI, not in a durable server inbox, so there is no admission to fail or abort, and quitting drops them; closing aborts any running turn; a failed turn is an error row and holds the queue; no demo commands |
 | tui: mini themes and permission prompt | by design | 32 | 2 | mini mode draws with the full UI's themes (its tests are ported there), not a separate mini theme resolver; its permission prompt is the full UI's dialog (y, a, n, typed feedback; `always` is for the session and asks no confirmation) |
 | tui: attachments | by design | 10 | 2 | attachments are read on send by path; SVG is not media; no remote server; every attachment has its label in the prompt (no mentionless ones to keep), and the transcript shows a prompt's labels, not image cards to deduplicate |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |

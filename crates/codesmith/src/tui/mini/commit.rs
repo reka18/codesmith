@@ -37,8 +37,9 @@ pub struct Committer {
     blank: bool,
     /// What kind of row was written last.
     last: Option<Kind>,
-    /// When the running turn started, and with which agent.
-    turn: Option<(Instant, String)>,
+    /// When the running turn started, its agent, and whether it gets a
+    /// summary (a `!command` the user runs does not).
+    turn: Option<(Instant, String, bool)>,
     /// `/clear`: the screen should be cleared.
     pub clear: bool,
 }
@@ -183,7 +184,7 @@ impl Committer {
     /// The entries of a row that the scrollback shows.
     fn shown(app: &App, s: &Settings, r: Range<usize>) -> Vec<usize> {
         r.filter(|&i| match &app.entries[i] {
-            Entry::Tool(t) => s.tools || t.base().eq_ignore_ascii_case("question"),
+            Entry::Tool(t) => s.tools || t.base().eq_ignore_ascii_case("question") || direct(t),
             Entry::Reasoning(_) => app.show_reasoning,
             _ => true,
         })
@@ -215,17 +216,26 @@ impl Committer {
         if !s.shell_output {
             for &i in ids {
                 if let Entry::Tool(t) = &mut app.entries[i] {
-                    if is_shell(t.base()) && t.result.as_ref().is_some_and(|(_, err)| !err) {
+                    if is_shell(t.base())
+                        && !direct(t)
+                        && t.result.as_ref().is_some_and(|(_, err)| !err)
+                    {
                         hidden.push((i, std::mem::take(&mut t.output)));
                     }
                 }
             }
         }
-        // Shown thoughts are written in full, not summed up in a group.
+        // Shown thoughts and the user's own commands are written in full,
+        // not summed up in a group.
         let mut lines = Vec::new();
         let mut run: Vec<usize> = Vec::new();
         for &i in ids {
-            if matches!(app.entries[i], Entry::Reasoning(_)) {
+            let whole = match &app.entries[i] {
+                Entry::Reasoning(_) => true,
+                Entry::Tool(t) => direct(t),
+                _ => false,
+            };
+            if whole {
                 lines.extend(view::entries_lines(app, &std::mem::take(&mut run), w, true));
                 lines.extend(view::entry_rows(app, i, w));
             } else {
@@ -281,7 +291,8 @@ impl Committer {
         }
         self.session = Some(session);
         if app.busy && self.turn.is_none() {
-            self.turn = Some((Instant::now(), app.header.agent.clone()));
+            let model_turn = app.recorder.is_some();
+            self.turn = Some((Instant::now(), app.header.agent.clone(), model_turn));
         }
         self.sealed = self.sealed.min(app.entries.len());
         let rows = rows(app, self.sealed);
@@ -320,8 +331,8 @@ impl Committer {
         }
         if !app.busy {
             self.sealed = app.entries.len();
-            if let Some((start, agent)) = self.turn.take() {
-                if s.turn_summary {
+            if let Some((start, agent, model_turn)) = self.turn.take() {
+                if s.turn_summary && model_turn {
                     let line = Line::from(Span::styled(
                         format!(
                             "{agent} \u{b7} {} \u{b7} {}{}",
@@ -390,8 +401,14 @@ impl Committer {
 
     /// When the running turn started.
     pub fn turn_started(&self) -> Option<Instant> {
-        self.turn.as_ref().map(|(t, _)| *t)
+        self.turn.as_ref().map(|(t, ..)| *t)
     }
+}
+
+/// A `!command` the user ran (shell mode): its row and output are always
+/// written, as OpenCode's direct shell.
+fn direct(t: &crate::tui::app::Tool) -> bool {
+    t.id.starts_with("user-shell-")
 }
 
 /// A turn's length: `850ms`, `12.3s`, `4m 05s`, `1h 02m`.

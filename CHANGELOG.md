@@ -122,7 +122,9 @@ replays of its recorded provider traffic.
   resumes replay the history (`tui.mini.replay`, `replay_limit`); entry
   and exit banners, turn summaries, `tui.mini` knobs with OpenCode's
   quiet/default/everything presets, monochrome output, and synchronized
-  output frames.
+  output frames. Prompts sent while a turn runs wait and are sent in order
+  once it ends (`ctrl+x q` lists them to reorder, delete or take back into
+  the draft); a `!command` is written with its output and no turn summary.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
   web search, todos, questions, and image, PDF and video input (video only
   for models that take it).

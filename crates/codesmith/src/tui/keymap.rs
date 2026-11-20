@@ -1529,6 +1529,8 @@ pub mod scope {
         "prompt.stash",
         "prompt.stash.pop",
         "mcp.list",
+        "session.queued_prompts",
+        "prompt.queue",
         "app.exit",
         "terminal.suspend",
         "terminal.title.toggle",
@@ -1648,6 +1650,8 @@ pub mod scope {
         "composer.shell.kill",
         "dialog.mcp.toggle",
     ];
+    /// Mini mode's pending-prompt menu.
+    pub const QUEUE: &[&str] = &["queued_prompt.delete", "queued_prompt.undo"];
     pub const ALL: &[&[&str]] = &[
         AUTOCOMPLETE,
         PROMPT,
@@ -1656,6 +1660,7 @@ pub mod scope {
         QUESTION,
         PERMISSION,
         PANEL,
+        QUEUE,
     ];
 }
 

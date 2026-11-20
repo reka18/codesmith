@@ -24,11 +24,13 @@ pub struct Parts {
     pub input: u16,
     pub status: u16,
     pub modal: u16,
+    /// The pending-prompt menu, in place of the prompt.
+    pub menu: u16,
 }
 
 impl Parts {
     pub fn height(&self) -> u16 {
-        self.live + self.popup + self.input + self.status + self.modal
+        self.live + self.popup + self.input + self.status + self.modal + self.menu
     }
 }
 
@@ -88,6 +90,17 @@ pub fn parts(app: &App, live: usize, cols: u16, rows: u16) -> Parts {
             ..Default::default()
         };
     }
+    let menu = app.queue.menu_rows().min(rows.saturating_sub(1).max(1));
+    if menu > 0 {
+        let status = 1.min(rows.saturating_sub(menu));
+        let room = rows.saturating_sub(menu + status);
+        return Parts {
+            live: (live as u16).min(live_max).min(room),
+            menu,
+            status,
+            ..Default::default()
+        };
+    }
     let input = view::input_height(app, cols).min(rows.saturating_sub(1).max(1));
     let status = 1.min(rows.saturating_sub(input));
     let popup = app
@@ -102,6 +115,7 @@ pub fn parts(app: &App, live: usize, cols: u16, rows: u16) -> Parts {
         input,
         status,
         modal: 0,
+        menu: 0,
     }
 }
 
@@ -131,9 +145,12 @@ pub fn status(
     if !s.footer {
         return input;
     }
+    if let Some(a) = super::queue::status_action(app) {
+        input.work.push((Id::Queued, a));
+    }
     if app.background > 0 {
         input.work.push((
-            Id::Queued,
+            Id::Background,
             width::Action {
                 key: String::new(),
                 label: format!("{} bg", app.background),
@@ -217,6 +234,14 @@ pub fn draw(
     }
     if let Some(m) = &app.modal {
         view::draw_modal(f, row(y, parts.modal), m, app);
+        return;
+    }
+    if parts.menu > 0 {
+        super::queue::draw(f, app, row(y, parts.menu));
+        y += parts.menu;
+        if parts.status > 0 {
+            f.render_widget(Paragraph::new(status_line(status)), row(y, parts.status));
+        }
         return;
     }
     let popup = row(y, parts.popup);

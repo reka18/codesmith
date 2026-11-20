@@ -11,6 +11,7 @@
 
 pub mod commit;
 pub mod footer;
+pub mod queue;
 pub mod settings;
 pub mod splash;
 pub mod surface;

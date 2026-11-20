@@ -648,6 +648,24 @@ It needs a terminal for its output; piped stdin becomes the first prompt
   Once answered they are gone; the call they asked about is written with
   its result. The diff viewer (`/diff`) is full screen and borrows the
   alternate screen while it is open; the footer comes back as it was.
+- **Pending prompts.** A prompt sent while a turn runs is not refused: it
+  waits, nothing of it written yet, and the status line counts it
+  (`ctrl+x q 2 pending`). Once the turn is over the oldest is sent, then
+  the next, each written when it goes. `/compact` and custom or MCP
+  commands wait their turn too; the UI's own commands (`/new`, `/exit`,
+  `/themes`, …) act at once, and `prompt.queue` (**ctrl+x enter**) says
+  they cannot be queued. `session.queued_prompts` (**ctrl+x q**, while
+  prompts wait; otherwise it is the exit binding) lists them: **enter**
+  sends one next, `queued_prompt.delete` (**ctrl+d**) drops it and
+  `queued_prompt.undo` (**ctrl+u**) takes it back into the prompt, after
+  what is typed, with its pasted files. An interrupted or failed turn
+  holds the queue (`2 pending (held)`); **enter** on an empty prompt lets
+  it go again. Pending prompts live in the UI: quitting drops them. There
+  is no steering (OpenCode's enter while busy, which joins the running
+  turn at its next step): every pending prompt is a queued one.
+- **Shell mode.** A `!command` is written with its output whatever the
+  `tools` and `shell_output` settings, with no prompt row and no turn
+  summary (it is not a model turn).
 - **Keys.** Every binding is the full UI's, through the keymap. `app.clear`
   (**ctrl+l**) clears the screen without losing anything: the rows on it
   scroll up into the scrollback. Scrolling keys do nothing here; the
