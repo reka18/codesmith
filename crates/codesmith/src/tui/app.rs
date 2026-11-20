@@ -487,6 +487,10 @@ pub struct App {
     /// The subagent panel lists the inactive subagents (ctrl+a), kept
     /// until the UI exits as OpenCode keeps its filter.
     pub panel_inactive: bool,
+    /// The toasts.
+    pub toasts: super::toast::Toasts,
+    /// The session's parent, for a subagent's session.
+    pub parent: Option<String>,
 }
 
 /// How a turn ended.
@@ -1564,7 +1568,10 @@ impl App {
             }
             "session.copy.id" if !self.header.session.is_empty() => {
                 self.clipboard = Some(self.header.session.clone());
-                self.notice("Session ID copied to clipboard!");
+                self.toast(super::toast::Toast::new(
+                    super::toast::Variant::Success,
+                    "Session ID copied to clipboard!",
+                ));
                 return Some(None);
             }
             "diff.open" => return Self::slash("diff"),
@@ -1889,6 +1896,38 @@ impl App {
         self.edited();
     }
 
+    /// Show a toast (or queue it behind the one shown).
+    pub fn toast(&mut self, t: super::toast::Toast) {
+        // Mini mode draws no overlay: a toast is a notice there.
+        if self.mini.is_some() {
+            let text = match &t.title {
+                Some(title) => format!("{title}: {}", t.message),
+                None => t.message,
+            };
+            self.notice(text);
+            return;
+        }
+        self.toasts.show(t, Instant::now());
+    }
+
+    /// A toast about `session`: as it is for the shown session's family
+    /// (itself, its parent and its subagents); for another session it is
+    /// titled with that session's title, as OpenCode's plugin toasts are.
+    pub fn toast_for(&mut self, session: &str, title: Option<String>, mut t: super::toast::Toast) {
+        let family = session == self.header.session
+            || self.parent.as_deref() == Some(session)
+            || self.subagents().iter().any(|s| s.id == session);
+        if !family {
+            if let Some(title) = title {
+                t.title = Some(match t.title.take() {
+                    Some(what) => format!("{title} · {what}"),
+                    None => title,
+                });
+            }
+        }
+        self.toast(t);
+    }
+
     /// The session's subagents, from its transcript: those the session
     /// ran and, under each, the ones it ran.
     pub fn subagents(&self) -> Vec<super::panel::Subagent> {
@@ -2188,7 +2227,10 @@ impl App {
                     Outcome::Cancel => self.dismiss_form(),
                     Outcome::Copy(url) => {
                         self.clipboard = Some(url);
-                        self.notice("Copied URL to clipboard");
+                        self.toast(super::toast::Toast::new(
+                            super::toast::Variant::Info,
+                            "Copied URL to clipboard",
+                        ));
                     }
                     Outcome::Open(url) => return Some(Action::OpenUrl(url)),
                 }

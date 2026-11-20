@@ -45,6 +45,8 @@ pub struct Outside {
     title: Option<String>,
     status: ProgramStatus,
     notifier: Notifier,
+    /// Failures to show as toasts, for the runner to take.
+    pub toasts: Vec<attention::Toast>,
     seen: HashMap<u64, Seen>,
     /// Subagent sessions, by ID, with their titles.
     children: HashMap<String, String>,
@@ -93,6 +95,7 @@ impl Outside {
             title: None,
             status: ProgramStatus::default(),
             notifier: Notifier::default(),
+            toasts: Vec::new(),
             seen: HashMap::new(),
             children: HashMap::new(),
             out: String::new(),
@@ -168,7 +171,7 @@ impl Outside {
             };
             self.notifier.on(&known, ev);
         }
-        self.notifier.toasts.clear();
+        self.toasts.append(&mut self.notifier.toasts);
         for req in std::mem::take(&mut self.notifier.notifications) {
             let o = attention::decide(&req, &self.attention, self.focus, self.protocol, self.tmux);
             if let Some(n) = o.notification {

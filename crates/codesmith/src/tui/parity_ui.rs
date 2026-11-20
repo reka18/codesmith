@@ -600,9 +600,10 @@ fn oc_copy_session_id_from_ctrl_p() {
     assert_eq!(palette(&mut a, "Copy session ID"), None);
     assert!(a.modal.is_none(), "the palette closes");
     assert_eq!(a.clipboard.as_deref(), Some("ses_copy_id"));
-    assert!(
-        matches!(a.entries.last(), Some(super::app::Entry::Notice(n)) if n == "Session ID copied to clipboard!")
-    );
+    assert!(a
+        .toasts
+        .current()
+        .is_some_and(|t| t.message == "Session ID copied to clipboard!"));
     assert_eq!(
         super::term::copy("ses_copy_id"),
         "\x1b]52;c;c2VzX2NvcHlfaWQ=\x07"
@@ -738,4 +739,98 @@ fn shell_mode_completes_directories() {
     a.input.set("!c");
     a.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     assert!(a.popup.is_none());
+}
+
+// ----- toasts (tui/test/cli/tui/toast, plugin-toast) -------------------------
+
+mod toasts {
+    use super::super::app::{App, Entry, Sub, Tool};
+    use super::super::toast::{self, Toast, Variant};
+    use ratatui::layout::{Position, Rect};
+    use std::time::{Duration, Instant};
+
+    // toast.test.tsx: "toast hides only the terminal cursor it covers, until dismissed"
+    // (adapted) the prompt's cursor stands for the embedded terminal's.
+    #[test]
+    fn oc_toast_hides_only_the_terminal_cursor_it_covers_until_dismissed() {
+        let mut a = App::new();
+        let area = Rect::new(0, 0, 60, 12);
+        let now = Instant::now();
+        let mut t = Toast::new(Variant::Info, "Copied to clipboard");
+        t.duration = Duration::from_secs(60);
+        a.toasts.show(t, now);
+        assert!(!toast::covers(&a.toasts, area, Position::new(1, 2)));
+        assert!(toast::covers(&a.toasts, area, Position::new(52, 2)));
+        a.toasts.dismiss(now);
+        assert!(!toast::covers(&a.toasts, area, Position::new(52, 2)));
+    }
+
+    fn family_app(routed: &str) -> App {
+        let mut a = App::new();
+        a.header.session = routed.into();
+        if routed == "child" {
+            a.parent = Some("parent".into());
+        } else {
+            let mut s = Sub::default();
+            s.session = "child".into();
+            a.entries.push(Entry::Tool(Tool {
+                name: "subagent".into(),
+                sub: Some(Box::new(s)),
+                ..Default::default()
+            }));
+        }
+        a
+    }
+
+    // plugin-toast.test.tsx: "toast for %s's family shows as-is while %s is open" (3 cases)
+    #[test]
+    fn oc_toast_for_a_family_shows_as_is() {
+        for (target, routed) in [
+            ("parent", "parent"),
+            ("parent", "child"),
+            ("child", "parent"),
+        ] {
+            let mut a = family_app(routed);
+            a.toast_for(
+                target,
+                Some("Other session".into()),
+                Toast::new(Variant::Info, "done"),
+            );
+            let t = a.toasts.current().unwrap();
+            assert_eq!(
+                (t.title.as_deref(), t.message.as_str(), t.variant),
+                (None, "done", Variant::Info)
+            );
+            assert_eq!(t.duration, toast::DURATION);
+        }
+    }
+
+    // (not in OpenCode's test) A toast about another session is titled
+    // with it; toasts queue, say how many wait, and go when their time is up.
+    #[test]
+    fn toasts_queue_and_expire() {
+        let mut a = family_app("parent");
+        a.toast_for(
+            "other",
+            Some("Other session".into()),
+            Toast::new(Variant::Error, "failed"),
+        );
+        assert_eq!(
+            a.toasts.current().unwrap().title.as_deref(),
+            Some("Other session")
+        );
+        let now = Instant::now();
+        a.toasts.show(Toast::new(Variant::Info, "next"), now);
+        assert_eq!(a.toasts.pending(), 1);
+        let later = now + Duration::from_secs(6);
+        assert!(a.toasts.tick(later).is_some());
+        assert_eq!(a.toasts.current().unwrap().message, "next");
+        assert_eq!(a.toasts.tick(later + Duration::from_secs(6)), None);
+        assert!(a.toasts.current().is_none());
+        let mut m = App::new();
+        m.mini = Some(Default::default());
+        m.toast(Toast::new(Variant::Info, "in mini"));
+        assert!(m.toasts.current().is_none());
+        assert!(matches!(m.entries.last(), Some(Entry::Notice(n)) if n == "in mini"));
+    }
 }

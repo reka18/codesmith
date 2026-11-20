@@ -523,6 +523,13 @@ the `terminal.title.toggle` command (unbound by default) switches it off
 and on. The title is cleared on exit, and when the terminal hangs up
 (`SIGHUP`) the UI closes as on exit.
 
+Short messages (a copied session ID or link, a turn that failed in another
+tab) show as toasts at the top right, as in OpenCode, for five seconds; one
+shows at a time, with `+N more` waiting behind it. A toast about another
+session than the shown one (or its parent or subagents) carries that
+session's title. A toast over the cursor hides it. Mini mode shows them as
+notices.
+
 With `tui.attention` (see
 [configuration](configuration.md#notifications-and-sounds-tuiattention)),
 the UI tells you when a session needs you: a permission request, a

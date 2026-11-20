@@ -60,6 +60,7 @@ mod tabs;
 mod tabs_host;
 mod term;
 pub(crate) mod theme;
+mod toast;
 mod turn;
 mod usage;
 mod view;
@@ -223,6 +224,7 @@ impl Runner {
         self.app.header.agent = s.agent.name.clone();
         self.app.header.model = format!("{}/{}", s.model.provider_id, s.model.model_id);
         self.app.header.session = s.id.clone();
+        self.app.parent = s.parent().map(str::to_string);
         self.app.header.title = s.title.clone();
         self.app.header.context_limit = s.model.context;
         self.app.header.cost = self.loaded.config.cost(&self.app.header.model);
@@ -1244,7 +1246,20 @@ impl Runner {
         }
         let views = self.tab_views();
         let title = self.app.header.title.clone();
-        self.outside.observe(views, title.as_deref());
+        self.outside.observe(views.clone(), title.as_deref());
+        for t in std::mem::take(&mut self.outside.toasts) {
+            let title = views
+                .iter()
+                .find(|v| v.session == t.session)
+                .and_then(|v| v.title.clone());
+            let toast = toast::Toast {
+                title: Some(t.title),
+                message: t.message,
+                variant: toast::Variant::Error,
+                duration: toast::DURATION,
+            };
+            self.app.toast_for(&t.session, title, toast);
+        }
         for (_, file) in std::mem::take(&mut self.outside.sounds) {
             match file {
                 Some(f) => outside::play(f, self.outside.attention.volume),
@@ -1830,10 +1845,14 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             r.attend();
             r.keep_history();
             let following = r.sync_shells();
+            let toast = r.app.toasts.tick(std::time::Instant::now());
             let tick = match &mut screen {
                 Screen::Full(t) => {
                     t.draw(|f| view::draw(f, &r.app))?;
-                    following.then_some(SHELL_POLL)
+                    match (following.then_some(SHELL_POLL), toast) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    }
                 }
                 Screen::Mini(m) => {
                     m.draw(&mut r.app)?;

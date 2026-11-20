@@ -968,6 +968,11 @@ impl Session {
 
     /// The store sequence number of each of [`Session::messages`] (`None`
     /// for a checkpoint): a message's id, as a fork boundary takes it.
+    /// The session that ran this one, for a subagent's session.
+    pub fn parent(&self) -> Option<&str> {
+        self.parent.as_deref()
+    }
+
     pub fn seqs(&self) -> &[Option<i64>] {
         &self.seqs
     }

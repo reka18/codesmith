@@ -93,6 +93,8 @@ replays of its recorded provider traffic.
 - **Subagent and shell panel:** ↓ on an empty prompt lists the session's
   subagents (nested, with a finished filter) and background commands, and
   opens a command's live output, as OpenCode's composer panel does.
+- **Toasts:** copied IDs and links, and failures in other tabs, show as
+  OpenCode's toasts at the top right.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

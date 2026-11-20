@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 444 | 116 | 662 | 13 |
+| tui: main UI | 1250 | 15 | 448 | 106 | 668 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **720** | **552** | **2362** | **259** |
+| **Total** | **4637** | **744** | **724** | **542** | **2368** | **259** |
 
 ## Fixes made while porting
 
@@ -275,6 +275,11 @@ Where the tests live:
   says when the file cannot be read or is gone. Differences: ↓ opens the
   panel only when it has something to list; interrupting a subagent
   interrupts its turn (subagents run inside it); no mouse.
+- **Toasts** (`cli/tui/toast`, `plugin-toast`): the failures OpenCode shows
+  as session-scoped toasts were worked out and dropped, and copies said so
+  in the transcript. Toasts now show at the top right, queued one at a
+  time (`+N more`) for five seconds; one about a session outside the shown
+  one's family is titled with it, and one over the cursor hides it.
 
 ## Differences found but not fixed
 
@@ -769,6 +774,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/composer-keymap` | configured composer bindings work with a focused textarea | after a fix | oc_configured_composer_bindings_work_with_a_draft (adapted: a draft in the prompt) |
 | `tui/test/cli/tui/composer-keymap` | ctrl+c closes the active composer | after a fix | oc_ctrl_c_closes_the_active_composer |
 | `tui/test/cli/tui/composer-keymap` | shell output respects a configured binding with a focused textarea | after a fix | oc_shell_output_respects_a_configured_binding |
+| `tui/test/cli/tui/toast` | toast hides only the terminal cursor it covers, until dismissed | after a fix | oc_toast_hides_only_the_terminal_cursor_it_covers_until_dismissed (adapted: the prompt's cursor) |
+| `tui/test/plugin-toast` | toast for %s's family shows as-is while %s is open (3 cases) | after a fix | oc_toast_for_a_family_shows_as_is |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -923,15 +930,6 @@ transport and its tool presentation.
 - `cli/test/acp/translate`: skips a running compaction on replay
 - `cli/test/acp/translate`: replays a compaction as a marker when the client lacks the capability
 
-### tui: toasts and completion notices (10)
-
-- `tui/test/completion-notices`: shell completion notices do not navigate at width %s (2 cases)
-- `tui/test/completion-notices`: subagent completion notices navigate to the child session (2 cases)
-- `tui/test/plugin-toast`: toast for %s's family shows as-is while %s is open (3 cases)
-- `tui/test/cli/tui/toast`: activation runs an action and keeps a queued toast paused
-- `tui/test/cli/tui/toast`: activation dismisses a toast without an action
-- `tui/test/cli/tui/toast`: toast hides only the terminal cursor it covers, until dismissed
-
 ### tui: prompt stash, path frecency and appended prompts (4)
 
 - `tui/test/prompt/history`: appends a prompt and shifts ranges by the %s offset (2 cases)
@@ -1051,6 +1049,7 @@ transport and its tool presentation.
 | util: titles | by design | 4 | 1 | CodeSmith keeps untitled sessions untitled until a title is generated |
 | tui: diff viewer: mouse, images and routes | by design | 33 | 5 | no mouse: OpenCode's right-click file menu, clicked folders and source label; no image previews in the terminal; the viewer is always a session's panel (no standalone route, session tabs or plugin to disable, one kind of panel); the file tree's unused list layout, and its loading and empty states, which the viewer never shows |
 | tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
+| tui: toasts and completion notices | by design | 6 | 2 | no mouse: a toast is not clicked to run its action or dismissed early, nor paused while hovered; completion notices are not clicked (subagents run inside the turn, so no background subagent sends one) |
 | tui: group disclosure | by design | 3 | 1 | no mouse: ctrl+o opens every group, so the rows above an opened group move when scrolled up |
 | server: API command | by design | 3 | 1 | no `api` command for a server |
 | tui: model notices | by design | 3 | 1 | model switch notices are worded differently |

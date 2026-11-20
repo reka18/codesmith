@@ -1331,6 +1331,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let Some(v) = &app.diff else {
         let main = tab_strip(f, app, full);
         draw_main(f, app, main);
+        super::toast::draw(f.buffer_mut(), full, &app.toasts);
         return;
     };
     // The diff viewer: docked on the right of the session, or over it
@@ -1595,7 +1596,10 @@ pub(super) fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     if app.modal.is_none() && !app.diff_focused() && inner.height > 0 {
         let y = inner.y + (crow - top).min(height.saturating_sub(1)) as u16;
         let x = inner.x + (ccol as u16).min(inner.width.saturating_sub(1));
-        f.set_cursor_position((x, y));
+        // A toast over the cursor hides it (the terminal draws it on top).
+        if !super::toast::covers(&app.toasts, f.area(), (x, y).into()) {
+            f.set_cursor_position((x, y));
+        }
     }
 }
 
