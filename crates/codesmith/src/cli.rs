@@ -166,8 +166,8 @@ struct RunArgs {
     /// Agent to use (default: build).
     #[arg(long)]
     agent: Option<String>,
-    /// Attach a file (repeatable): text is added to the message, images and
-    /// PDFs are sent for the model to see.
+    /// Attach a file (repeatable): text is added to the message, images,
+    /// PDFs and videos are sent for the model to see.
     #[arg(short, long = "file")]
     files: Vec<PathBuf>,
     /// Output format.
@@ -1595,7 +1595,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             use std::io::Read;
             std::fs::File::open(f)
                 .with_context(|| format!("reading {}", f.display()))?
-                .take(16)
+                .take(codesmith_core::media::SNIFF_BYTES as u64)
                 .read_to_end(&mut head)?;
         }
         if codesmith_core::media::detect(&head).is_some() {
@@ -1626,7 +1626,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         let name = f.display().to_string();
         match codesmith_core::media::attachment(f, &name, &loaded.config.media.image) {
             Ok(Some(m)) => media.push(m),
-            Ok(None) => return Err(anyhow!("{name} is not an image or PDF")),
+            Ok(None) => return Err(anyhow!("{name} is not an image, PDF or video")),
             Err(e) => return Err(anyhow!(e)),
         }
     }

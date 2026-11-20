@@ -132,21 +132,16 @@ fn read_target(display: &str, target: &super::Target, page: Page) -> Result<Outp
                 "Media exceeds {max} byte ingestion limit: {resource}"
             )));
         }
-        let text = if mime == "application/pdf" {
-            "PDF read successfully"
-        } else {
-            "Image read successfully"
-        };
         let m = codesmith_ai::Media::base64(mime, crate::media::base64(&bytes)).named(display);
-        return Ok(Output::media(text, vec![m]));
+        return Ok(Output::media(crate::media::read_note(&m), vec![m]));
     }
     let text = text_page(&bytes, page)
         .ok_or_else(|| Miss::Fail(format!("Cannot read binary file: {resource}")))?;
     Ok(Output::bounded(model_text(display, page.offset, &text)))
 }
 
-/// The media type OpenCode attaches natively, detected from the bytes
-/// (OpenCode's `Mime.detectMedia`, limited to its `MEDIA_MIMES`).
+/// The media type attached natively, detected from the bytes (see
+/// `media::detect`).
 pub fn media(b: &[u8]) -> Option<&'static str> {
     crate::media::detect(b)
 }

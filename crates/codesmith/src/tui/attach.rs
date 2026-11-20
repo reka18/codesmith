@@ -97,7 +97,7 @@ pub struct Expanded {
 }
 
 /// The prompt as sent: the text followed by each mentioned file's contents;
-/// mentioned images and PDFs are attached as media (and say so in the text).
+/// mentioned images, PDFs and videos are attached as media (and say so in the text).
 /// Returns the text unchanged when nothing is mentioned.
 pub fn expand(text: &str, cwd: &Path, limits: &ImageLimits) -> Expanded {
     let found = mentions(text, cwd);
@@ -134,11 +134,7 @@ pub fn attachment(
     } else if abs.is_dir() {
         listing(abs)
     } else if let Ok(Some(file)) = attached {
-        let note = if file.kind() == codesmith_ai::MediaKind::Pdf {
-            "PDF read successfully"
-        } else {
-            "Image read successfully"
-        };
+        let note = codesmith_core::media::read_note(&file);
         media.push(file);
         note.to_string()
     } else {
@@ -164,7 +160,8 @@ pub struct Pending {
     pub path: PathBuf,
 }
 
-/// Images and PDFs, by extension, as OpenCode decides for pasted paths.
+/// Images, PDFs and video, by extension, as OpenCode decides for pasted
+/// paths (it takes no video there).
 fn is_media_path(p: &Path) -> bool {
     let ext = p
         .extension()
@@ -172,7 +169,7 @@ fn is_media_path(p: &Path) -> bool {
         .unwrap_or_default();
     matches!(
         ext.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf"
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf" | "mp4" | "mov" | "webm"
     )
 }
 
@@ -249,13 +246,18 @@ pub fn pasted_files(text: &str, cwd: &Path) -> Option<Vec<PathBuf>> {
     (!files.is_empty() && files.iter().all(|f| f.is_file() && is_media_path(f))).then_some(files)
 }
 
-/// The placeholder for the next attachment of `path`'s kind: `[Image N]` or
-/// `[PDF N]`, numbered after those already pending.
+/// The placeholder for the next attachment of `path`'s kind: `[Image N]`,
+/// `[PDF N]` or `[Video N]`, numbered after those already pending.
 pub fn label(pending: &[Pending], path: &Path) -> String {
-    let pdf = path
+    let ext = path
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
-    let kind = if pdf { "PDF" } else { "Image" };
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let kind = match ext.as_str() {
+        "pdf" => "PDF",
+        "mp4" | "mov" | "webm" => "Video",
+        _ => "Image",
+    };
     let n = pending
         .iter()
         .filter(|p| p.label.starts_with(&format!("[{kind} ")))
@@ -274,7 +276,7 @@ pub fn load(pending: &[Pending], text: &str, limits: &ImageLimits) -> Result<Vec
             .unwrap_or_else(|| p.path.display().to_string());
         match codesmith_core::media::attachment(&p.path, &name, limits)? {
             Some(m) => out.push(m),
-            None => return Err(format!("{name} is not an image or PDF")),
+            None => return Err(format!("{name} is not an image, PDF or video")),
         }
     }
     Ok(out)
@@ -392,5 +394,26 @@ mod tests {
         .unwrap();
         assert_eq!(media.len(), 2, "[Image 2] was deleted from the prompt");
         assert_eq!(media[0].filename.as_deref(), Some("my shot.png"));
+    }
+
+    #[test]
+    fn videos_are_attached_by_mention_and_paste() {
+        let d = tempfile::tempdir().unwrap();
+        let mp4 = b"\0\0\0\x18ftypisom\0\0\x02\0isommp41";
+        std::fs::write(d.path().join("clip.mp4"), mp4).unwrap();
+        let e = expand("watch @clip.mp4", d.path(), &ImageLimits::default());
+        assert_eq!(e.media.len(), 1);
+        assert_eq!(e.media[0].mime, "video/mp4");
+        assert!(e.text.contains("Video read successfully"));
+
+        let path = d.path().join("clip.mp4");
+        assert_eq!(pasted_files("clip.mp4", d.path()), Some(vec![path.clone()]));
+        let pending = vec![Pending {
+            label: label(&[], &path),
+            path,
+        }];
+        assert_eq!(pending[0].label, "[Video 1]");
+        let media = load(&pending, "see [Video 1]", &ImageLimits::default()).unwrap();
+        assert_eq!(media[0].mime, "video/mp4");
     }
 }

@@ -245,11 +245,24 @@ impl ModelConfig {
     }
 }
 
-/// Input modalities for models known to take text only, when the config
-/// says nothing: DeepSeek's chat and reasoning models.
+/// Input modalities for models whose inputs are known, when the config says
+/// nothing: DeepSeek's chat and reasoning models take text only, and
+/// Gemini's chat models take text, images, audio, video and PDFs (as
+/// models.dev lists them).
 fn known_input(model: &str) -> Option<Vec<String>> {
     let m = model.to_ascii_lowercase();
-    (m.contains("deepseek") && !m.contains("vl")).then(|| vec!["text".into()])
+    if m.contains("deepseek") && !m.contains("vl") {
+        return Some(vec!["text".into()]);
+    }
+    let gemini = m.rsplit('/').next().unwrap_or(&m).starts_with("gemini-")
+        && !["embedding", "tts", "image", "live"]
+            .iter()
+            .any(|x| m.contains(x));
+    gemini.then(|| {
+        ["text", "image", "audio", "video", "pdf"]
+            .map(String::from)
+            .to_vec()
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
@@ -959,6 +972,37 @@ fn cache_setting(p: &ProviderConfig, m: &ModelConfig) -> Option<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn known_inputs_cover_deepseek_and_gemini() {
+        let all = Some(
+            ["text", "image", "audio", "video", "pdf"]
+                .map(String::from)
+                .to_vec(),
+        );
+        assert_eq!(known_input("deepseek-chat"), Some(vec!["text".into()]));
+        assert_eq!(known_input("deepseek-vl2"), None);
+        assert_eq!(known_input("gemini-2.5-pro"), all);
+        assert_eq!(known_input("google/gemini-2.5-flash"), all);
+        for m in [
+            "gemini-embedding-001",
+            "gemini-2.5-flash-image",
+            "gemma-3",
+            "x-gemini-1",
+        ] {
+            assert_eq!(known_input(m), None, "{m}");
+        }
+        // Configured modalities win.
+        let c: Config = serde_json::from_value(json!({"providers": {"google": {"models": {
+            "gemini-2.5-pro": {"modalities": {"input": ["text"]}}}}}}))
+        .unwrap();
+        let m = c.resolve_model("google/gemini-2.5-pro").unwrap();
+        assert_eq!(m.input, Some(vec!["text".into()]));
+        assert_eq!(
+            c.resolve_model("google/gemini-2.5-flash").unwrap().input,
+            all
+        );
+    }
 
     #[test]
     fn jsonc_comments_and_trailing_commas() {

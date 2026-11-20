@@ -1298,8 +1298,8 @@ fn uri_name(uri: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Base64 prompt data as media when its bytes are an image or PDF, fitted
-/// to `limits`; `Ok(None)` for other data. Bad base64 or an image that
+/// Base64 prompt data as media when its bytes are an image, PDF or video
+/// (images fitted to `limits`); `Ok(None)` for other data. Bad base64 or an image that
 /// cannot be fitted is an invalid prompt.
 fn prompt_media(
     data: &str,

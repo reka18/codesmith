@@ -179,10 +179,10 @@ curl -N -H "$H" -H 'Content-Type: application/json' \
 
 ## Attachments
 
-`attachments` sends images or PDFs with the message. Each one is either
+`attachments` sends images, PDFs or videos with the message. Each one is either
 inline, `{"data": "<base64>", "mime": "image/png", "name": "shot.png"}`, or
 by path, `{"path": "screenshots/shot.png"}`. The bytes decide the type, and
-anything that isn't an image or PDF is refused. Images are fitted to the
+anything that isn't an image, PDF or video is refused. Images are fitted to the
 [`media` limits](configuration.md#media-limits).
 
 A path goes through the same checks as the `read` tool: `external_directory`

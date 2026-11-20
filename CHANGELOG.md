@@ -38,7 +38,8 @@ replays of its recorded provider traffic.
   HTTP server. Tool calls appear in the UI and over ACP while their
   arguments are still streaming.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
-  web search, todos, questions, and image and PDF input.
+  web search, todos, questions, and image, PDF and video input (video only
+  for models that take it).
 - **Shell:** background commands that report back when they finish,
   timeouts that move a foreground command to the background, moving a
   turn's commands to the background (**Ctrl+X b**, or the server's
@@ -71,9 +72,9 @@ replays of its recorded provider traffic.
 - **Language servers and formatters:** OpenCode's built-in lists, off by
   default.
 - **Plugins:** native Rust plugins compiled into your own build.
-- **Provider library:** `codesmith-ai` also carries video input, per-part
-  media options, per-message effort changes and tool namespaces, which
-  sessions do not use yet.
+- **Provider library:** `codesmith-ai` also carries per-part media options,
+  per-message effort changes and tool namespaces, which sessions do not use
+  yet.
 - **Distribution:** signed and notarized macOS binaries (Apple Silicon and
   Intel), static musl Linux binaries (x86_64 and arm64), `install.sh` and a
   Homebrew formula.

@@ -102,13 +102,13 @@ and **Esc** closes the list.
 
 Each `@path` in a message that names a file is attached to the message as a
 `read` result, as in OpenCode, so the model sees it without a round trip. A
-directory is attached as its listing, and an image or PDF as itself.
+directory is attached as its listing, and an image, PDF or video as itself.
 
 ## Attaching images and PDFs
 
-Paste the path of an image or PDF (dragging a file into most terminals
-pastes its path). The path is replaced by an `[Image 1]` or `[PDF 1]`
-placeholder, and the file is attached when you send the prompt. Delete the
+Paste the path of an image, PDF or video (`.mp4`, `.mov`, `.webm`;
+dragging a file into most terminals pastes its path). The path is replaced
+by an `[Image 1]`, `[PDF 1]` or `[Video 1]` placeholder, and the file is attached when you send the prompt. Delete the
 placeholder to drop it. See [images and PDFs](tools.md#images-and-pdfs) for
 the formats and limits.
 

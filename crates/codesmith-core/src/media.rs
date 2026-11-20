@@ -1,5 +1,5 @@
-//! Images and PDFs for the model: detection, resizing to provider limits,
-//! and what a model that cannot see them gets instead.
+//! Images, PDFs and video for the model: detection, resizing images to
+//! provider limits, and what a model that cannot take them gets instead.
 //!
 //! Ported from OpenCode (MIT): `core/src/image/photon-normalize.ts` (resize
 //! and transcode), `core/src/tool.ts` (`normalizeImages`),
@@ -48,8 +48,15 @@ pub struct MediaConfig {
     pub image: ImageLimits,
 }
 
+/// How many leading bytes `detect` needs to tell every type apart (a WebM
+/// file names its doctype a few dozen bytes in).
+pub const SNIFF_BYTES: usize = 64;
+
 /// The media type sent natively, detected from the bytes (OpenCode's
-/// `Mime.detectMedia`, limited to its `MEDIA_MIMES`).
+/// `Mime.detectMedia`, limited to its `MEDIA_MIMES`, plus the video its
+/// models take: MP4 and QuickTime by their `ftyp` box, WebM by its EBML
+/// doctype). AVIF, HEIC and M4A share MP4's container and are not media
+/// here. Give it at least the first `SNIFF_BYTES` bytes.
 pub fn detect(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
         Some("image/png")
@@ -61,8 +68,32 @@ pub fn detect(b: &[u8]) -> Option<&'static str> {
         Some("application/pdf")
     } else if b.starts_with(b"RIFF") && b.len() >= 12 && &b[8..12] == b"WEBP" {
         Some("image/webp")
+    } else if b.len() >= 12 && &b[4..8] == b"ftyp" {
+        // The major brand tells the ISO media files apart (OpenCode's rule).
+        match &b[8..12] {
+            b"avif" | b"avis" | b"mif1" | b"msf1" | b"heic" | b"heix" | b"hevc" | b"hevx" => None,
+            b"M4A " => None,
+            b"qt  " => Some("video/quicktime"),
+            _ => Some("video/mp4"),
+        }
+    } else if b.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        // Matroska and WebM share EBML; only WebM is taken.
+        let head = &b[..b.len().min(SNIFF_BYTES)];
+        head.windows(4)
+            .any(|w| w == b"webm")
+            .then_some("video/webm")
     } else {
         None
+    }
+}
+
+/// What `read` (and an attachment read as if by `read`) tells the model
+/// along with `m`, as OpenCode words it.
+pub fn read_note(m: &Media) -> &'static str {
+    match m.kind() {
+        MediaKind::Pdf => "PDF read successfully",
+        MediaKind::Video => "Video read successfully",
+        _ => "Image read successfully",
     }
 }
 
@@ -290,13 +321,13 @@ pub fn fit_tool_media(media: Vec<Media>, limits: &ImageLimits) -> (Vec<Media>, V
     (kept, notes)
 }
 
-/// A file attached to a prompt, as media when its bytes say it is an image
-/// or PDF; `Ok(None)` for anything else (attached as text). Images are
-/// fitted to `limits`; one that cannot be is an error, as in OpenCode.
+/// A file attached to a prompt, as media when its bytes say it is an image,
+/// PDF or video; `Ok(None)` for anything else (attached as text). Images
+/// are fitted to `limits`; one that cannot be is an error, as in OpenCode.
 pub fn attachment(path: &Path, name: &str, limits: &ImageLimits) -> Result<Option<Media>, String> {
     let meta =
         std::fs::metadata(path).map_err(|e| format!("Unable to read attachment {name}: {e}"))?;
-    let mut head = [0u8; 16];
+    let mut head = [0u8; SNIFF_BYTES];
     let n = {
         use std::io::Read;
         let mut f = std::fs::File::open(path)
@@ -337,17 +368,25 @@ fn modality(m: &Media) -> Option<&'static str> {
 
 /// The note that replaces media a model cannot take, or `None` when it can.
 /// `input` is the model's input modalities; `None` means unknown, which is
-/// taken as able.
+/// taken as able for images, PDFs and audio. Video goes only to models
+/// whose modalities list it: no common model takes it, and a provider that
+/// refuses it would fail every later turn.
 pub fn unsupported_note(m: &Media, input: Option<&[String]>) -> Option<String> {
-    let input = input?;
     let modality = modality(m)?;
-    if input.iter().any(|i| i.starts_with(modality)) {
-        return None;
-    }
     let what = match &m.filename {
         Some(n) => format!("\"{n}\""),
         None => modality.to_string(),
     };
+    let Some(input) = input else {
+        return (modality == "video").then(|| {
+            format!(
+                "ERROR: Cannot read {what} (this model is not known to support video input; list \"video\" in its modalities.input to send it). Inform the user."
+            )
+        });
+    };
+    if input.iter().any(|i| i.starts_with(modality)) {
+        return None;
+    }
     Some(format!(
         "ERROR: Cannot read {what} (this model does not support {modality} input). Inform the user."
     ))
@@ -411,7 +450,7 @@ fn replace_media(
 
 /// History as sent to a model with `input` modalities (OpenCode's
 /// `unsupportedParts` then `boundImages`): media the model cannot take
-/// becomes a note telling it to say so, and once the inline images pass
+/// (see `unsupported_note`) becomes a note telling it to say so, and once the inline images pass
 /// 25 MiB the oldest are dropped down to 15 MiB. The stored history keeps
 /// everything, so switching to a model that can see them restores them.
 pub fn sendable(messages: &[Message], input: Option<&[String]>) -> Vec<Message> {
@@ -519,6 +558,91 @@ mod tests {
         assert_eq!(detect(b"RIFF\x10\0\0\0WEBPVP8 "), Some("image/webp"));
         assert_eq!(detect(b"%PDF-1.7"), Some("application/pdf"));
         assert_eq!(detect(b"plain text"), None);
+    }
+
+    /// An ISO media file's leading `ftyp` box with `brand`.
+    fn ftyp(brand: &[u8; 4]) -> Vec<u8> {
+        let mut b = vec![0, 0, 0, 0x18];
+        b.extend(b"ftyp");
+        b.extend(brand);
+        b.extend([0, 0, 2, 0]);
+        b.extend(b"isommp41");
+        b
+    }
+
+    #[test]
+    fn detects_video_by_bytes() {
+        assert_eq!(detect(&ftyp(b"isom")), Some("video/mp4"));
+        assert_eq!(detect(&ftyp(b"mp42")), Some("video/mp4"));
+        assert_eq!(detect(&ftyp(b"qt  ")), Some("video/quicktime"));
+        // Images and audio in the same container are not video.
+        for brand in [b"avif", b"heic", b"mif1", b"M4A "] {
+            assert_eq!(detect(&ftyp(brand)), None, "{brand:?}");
+        }
+        // EBML with the webm doctype; Matroska is not taken.
+        let ebml = |doctype: &[u8]| {
+            let mut b = vec![0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01];
+            b.extend([
+                0x42,
+                0xf7,
+                0x81,
+                0x01,
+                0x42,
+                0x82,
+                0x80 | doctype.len() as u8,
+            ]);
+            b.extend(doctype);
+            b
+        };
+        assert_eq!(detect(&ebml(b"webm")), Some("video/webm"));
+        assert_eq!(detect(&ebml(b"matroska")), None);
+        assert_eq!(detect(b"\0\0\0\x18ftyp"), None, "too short for a brand");
+    }
+
+    #[test]
+    fn video_goes_only_to_models_that_list_it() {
+        let v = Media::base64("video/mp4", "AAAA").named("clip.mp4");
+        let msgs = vec![Message {
+            role: Role::User,
+            parts: vec![Part::Media(v.clone())],
+        }];
+        // Unknown capabilities: images are sent, video is not.
+        let out = sendable(&msgs, None);
+        assert_eq!(
+            out[0].parts[0],
+            Part::Text("ERROR: Cannot read \"clip.mp4\" (this model is not known to support video input; list \"video\" in its modalities.input to send it). Inform the user.".into())
+        );
+        let vision = vec!["text".to_string(), "image".to_string()];
+        assert_eq!(
+            sendable(&msgs, Some(&vision))[0].parts[0],
+            Part::Text("ERROR: Cannot read \"clip.mp4\" (this model does not support video input). Inform the user.".into())
+        );
+        let video = vec!["text".to_string(), "video".to_string()];
+        assert_eq!(sendable(&msgs, Some(&video)), msgs);
+    }
+
+    #[test]
+    fn video_attachments_are_taken_whole_within_the_ingest_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let mov = d.path().join("clip.mov");
+        let mut bytes = ftyp(b"qt  ");
+        bytes.extend([0u8; 100]);
+        std::fs::write(&mov, &bytes).unwrap();
+        let m = attachment(&mov, "clip.mov", &ImageLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.mime, "video/quicktime");
+        assert_eq!(m.inline(), Some(base64(&bytes).as_str()));
+        assert_eq!(read_note(&m), "Video read successfully");
+        let big = d.path().join("big.mp4");
+        let f = std::fs::File::create(&big).unwrap();
+        use std::io::Write;
+        (&f).write_all(&ftyp(b"isom")).unwrap();
+        f.set_len(MAX_INGEST_BYTES + 1).unwrap();
+        assert_eq!(
+            attachment(&big, "big.mp4", &ImageLimits::default()).unwrap_err(),
+            format!("Attachment exceeds the {MAX_INGEST_BYTES} byte limit: big.mp4")
+        );
     }
 
     // Ported from OpenCode's packages/core/test/tool-read.test.ts (MIT):

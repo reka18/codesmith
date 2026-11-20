@@ -80,24 +80,27 @@ denied host can't be reached through a redirect.
 
 ## Images and PDFs
 
-PNG, JPEG, GIF, WebP and PDF files are sent to the model natively. CodeSmith
-recognizes them by their bytes, not their names. They arrive through:
+PNG, JPEG, GIF, WebP and PDF files, and MP4, QuickTime (`.mov`) and WebM
+video, are sent to the model natively. CodeSmith recognizes them by their
+bytes, not their names. They arrive through:
 
 - `read` on the file,
 - `@path` mentions and pasted paths in the [UI](interactive-ui.md#attaching-images-and-pdfs),
 - `codesmith run -f FILE`,
 - `attachments` on the [local server](local-server.md#attachments), ACP
-  prompts, and images that MCP tools return.
+  prompts, and images, PDFs and videos that MCP tools return.
 
 Each provider gets its native form: image and document blocks on Anthropic;
 `image_url` and `file` parts on OpenAI Chat (where media from a tool result
 follows the tool messages as a user message, since Chat has no images in tool
 results); `input_image` and `input_file` on Responses; `inlineData` on
-Gemini.
+Gemini. Video goes as `video_url` on Chat, `input_video` on Responses and
+`inlineData` on Gemini.
 
 Limits:
 
-- Files over 20 MiB are refused.
+- Files over 20 MiB are refused. Videos are sent as they are, never
+  re-encoded.
 - Images are fitted to 2000×2000 pixels and 5 MiB of base64 before they are
   sent. Larger ones are scaled down, and opaque screenshots are re-encoded as
   JPEG when that is smaller. An image that can't be decoded or fitted is
@@ -119,3 +122,9 @@ OpenCode:
 The model then gets `ERROR: Cannot read "shot.png" (this model does not
 support image input). Inform the user.` in place of the file. The session
 keeps the file, so switching to a vision model shows it again.
+
+Video is different: it goes only to a model whose input modalities list
+`video`, since most models refuse it. Gemini models (`gemini-*`, other than
+embedding, image, live and TTS ones) are known to take it; for any other
+model that does, add `"video"` to its `modalities.input`. Other models get
+a note in place of the video saying it can't be read.

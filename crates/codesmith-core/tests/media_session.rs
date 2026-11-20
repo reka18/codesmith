@@ -1,9 +1,10 @@
-//! Images and PDFs through a session, against a scripted OpenAI Chat model:
+//! Images, PDFs and video through a session, against a scripted OpenAI Chat
+//! model:
 //! `read` on an image reaches the next request as vision input, a model
 //! configured without image input gets a note instead, attachments ride on
 //! the user message, MCP tool images reach the model too, images a Gemini
 //! model generates are kept and sent back, and all of it survives the
-//! session store.
+//! session store. Video goes only to a model that lists it.
 
 use codesmith_ai::{Media, Part};
 use codesmith_core::config::{Config, Loaded};
@@ -56,13 +57,18 @@ async fn model(log: Arc<Mutex<Vec<Value>>>) -> String {
                 log.lock().unwrap().push(body.clone());
                 let msgs = body["messages"].as_array().unwrap();
                 let asks = msgs.iter().rev().find(|m| m["role"] == "user").unwrap();
+                let clip = asks["content"] == "read the clip"
+                    && !msgs.iter().any(|m| m["role"] == "tool")
+                    && body.get("tools").is_some();
                 let read = asks["content"] == "read it"
                     && !msgs.iter().any(|m| m["role"] == "tool")
                     && body.get("tools").is_some();
                 let mcp = asks["content"] == "mcp it"
                     && !msgs.iter().any(|m| m["role"] == "tool")
                     && body.get("tools").is_some();
-                let chunk = if read {
+                let chunk = if clip {
+                    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "read", "arguments": "{\"path\": \"clip.mp4\"}"}}]}, "finish_reason": "tool_calls"}]})
+                } else if read {
                     json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "read", "arguments": "{\"path\": \"pixel.png\"}"}}]}, "finish_reason": "tool_calls"}]})
                 } else if mcp {
                     json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "fake_echo", "arguments": "{\"text\": \"pixel\"}"}}]}, "finish_reason": "tool_calls"}]})
@@ -382,5 +388,62 @@ async fn generated_images_are_kept_and_sent_back() {
             {"text": "Here it is."},
             {"inlineData": {"mimeType": "image/png", "data": PIXEL}, "thoughtSignature": "sig_1"},
         ]})
+    );
+}
+
+/// The start of an MP4 file.
+const MP4: &[u8] = b"\0\0\0\x18ftypisom\0\0\x02\0isommp41\0\0\0\x08free";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_video_reaches_only_models_that_take_video() {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(MP4);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("clip.mp4"), MP4).unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let base = model(log.clone()).await;
+
+    let video = json!({"modalities": {"input": ["text", "image", "video"], "output": ["text"]}});
+    let mut s = session(dir.path(), &base, video, None);
+    s.prompt("read the clip", &mut Quiet).await.unwrap();
+    let req = log.lock().unwrap().last().unwrap().clone();
+    let msgs = req["messages"].as_array().unwrap();
+    assert!(msgs.contains(
+        &json!({"role": "tool", "tool_call_id": "c1", "content": "Video read successfully"})
+    ));
+    assert_eq!(
+        msgs.last().unwrap(),
+        &json!({"role": "user", "content": [{"type": "video_url", "video_url": {"url": format!("data:video/mp4;base64,{data}")}}]})
+    );
+
+    // A model whose inputs are unknown gets a note, not the video.
+    let mut s = session(dir.path(), &base, json!({}), None);
+    s.prompt("read the clip", &mut Quiet).await.unwrap();
+    let req = log.lock().unwrap().last().unwrap().clone();
+    assert!(!req.to_string().contains(&data));
+    let tool = req["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        tool["content"],
+        "Video read successfully\nERROR: Cannot read \"clip.mp4\" (this model is not known to support video input; list \"video\" in its modalities.input to send it). Inform the user."
+    );
+}
+
+#[test]
+fn mcp_video_resources_become_media() {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(MP4);
+    let result = json!({"content": [
+        {"type": "resource", "resource": {"uri": "file:///tmp/clip.mp4", "mimeType": "video/mp4", "blob": data}},
+    ]});
+    let (_, _, media) = codesmith_core::mcp::result_content(&result);
+    assert_eq!(
+        media,
+        vec![Media::base64("video/mp4", data).named("clip.mp4")]
     );
 }

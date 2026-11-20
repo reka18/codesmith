@@ -2043,8 +2043,8 @@ impl Session {
 
     /// A file attached to a prompt by path, as `read` would see it: the path
     /// is checked with the same `external_directory` and `read` permission
-    /// requests, then taken as media when it is an image or PDF (`Ok(None)`
-    /// for anything else).
+    /// requests, then taken as media when it is an image, PDF or video
+    /// (`Ok(None)` for anything else).
     pub fn attach(&self, path: &str) -> std::result::Result<Option<codesmith_ai::Media>, String> {
         let ctx = Ctx {
             cwd: self.cwd.clone(),

@@ -175,8 +175,9 @@ When a connected server has resources, the model gets two tools:
 { "action": "read_mcp_resource", "resource": "docs:secret://*", "effect": "deny" }
 ```
 
-Images and PDFs embedded in a resource or tool result are sent to the model as
-media, fitted to the same [limits](tools.md#images-and-pdfs) as `read`.
+Images, PDFs and videos embedded in a resource or tool result are sent to the
+model as media, fitted to the same [limits](tools.md#images-and-pdfs) as
+`read` (video only to models that take it).
 
 ## Prompts
 

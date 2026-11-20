@@ -54,7 +54,7 @@ codesmith run --format json "list the TODOs" | jq .
 |---|---|
 | `-m, --model provider/model` | Model to use. |
 | `--agent ID` | Agent to use (default `build`). `plan` is read-only. |
-| `-f, --file PATH` | Attach a file (repeatable). Text goes into the message, and images and PDFs are sent for the model to see. |
+| `-f, --file PATH` | Attach a file (repeatable). Text goes into the message, and images, PDFs and videos are sent for the model to see. |
 | `--format default\|json` | `json` prints one JSON object per event, for scripts. |
 | `--auto` | Approve every permission request that no rule denies. |
 | `--thinking` | Show the model's reasoning. |

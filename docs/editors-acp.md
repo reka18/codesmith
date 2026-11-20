@@ -133,7 +133,7 @@ Prompts can carry images (the agent advertises `promptCapabilities.image`)
 and embedded resources:
 
 - Text resources join the message.
-- Image or PDF blobs, recognized by their bytes, are sent to the model as
+- Image, PDF or video blobs, recognized by their bytes, are sent to the model as
   attachments, fitted to the [`media` limits](configuration.md#media-limits).
   An image that can't be fitted refuses the prompt.
 - Local files linked (a `resource_link` or an image given only by a
@@ -142,12 +142,12 @@ and embedded resources:
   them: each goes through `read`'s permission checks (and
   `external_directory` outside the project, asked through the editor),
   then joins the message as the Read tool's output, or as an attachment
-  for images and PDFs. A file that can't be attached (missing, or
+  for images, PDFs and videos. A file that can't be attached (missing, or
   refused) is noted in the message instead. A loaded session replays them
   as the resource links they came as.
 - Other links are referenced in the message (`[name](uri)`).
-- Images a tool returns appear in its `tool_call_update` content, and PDFs
-  as embedded binary resources (OpenCode sends images only). A loaded
+- Images a tool returns appear in its `tool_call_update` content, and PDFs and
+  videos as embedded binary resources (OpenCode sends images only). A loaded
   session replays the prompt's images too.
 
 Permission requests go to the editor, which shows the same allow once,

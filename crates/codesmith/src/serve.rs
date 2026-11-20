@@ -689,7 +689,7 @@ async fn message(
                 Attachment::Path(p) => match s.attach(&p) {
                     Ok(Some(m)) => media.push(m),
                     Ok(None) => {
-                        failed = Some(format!("attachment {p} is not an image or PDF"));
+                        failed = Some(format!("attachment {p} is not an image, PDF or video"));
                         break;
                     }
                     Err(e) => {
@@ -843,7 +843,7 @@ fn attachments(
                 let bytes = media::unbase64(data.trim())
                     .ok_or_else(|| bad(format!("attachment {i}: \"data\" is not base64")))?;
                 let mime = media::detect(&bytes)
-                    .ok_or_else(|| bad(format!("attachment {i}: not an image or PDF")))?;
+                    .ok_or_else(|| bad(format!("attachment {i}: not an image, PDF or video")))?;
                 let mut m = codesmith_ai::Media::base64(mime, data.trim());
                 if mime.starts_with("image/") {
                     match media::normalize(mime, data.trim(), limits) {
@@ -2067,7 +2067,7 @@ mod tests {
         assert!(ev.last().unwrap()["error"]
             .as_str()
             .unwrap()
-            .contains("not an image or PDF"));
+            .contains("not an image, PDF or video"));
         for body in [
             json!({"text": "x", "attachments": [{"data": "bm90IGFuIGltYWdl"}]}),
             json!({"text": "x", "attachments": [{"data": "%%%"}]}),
