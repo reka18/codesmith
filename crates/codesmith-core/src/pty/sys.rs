@@ -87,7 +87,8 @@ pub(super) fn spawn(
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut ws,
+            // `*const` on Linux, `*mut` on macOS.
+            std::ptr::addr_of_mut!(ws) as _,
         )
     })?;
     // SAFETY: openpty just returned these descriptors; nothing else owns them.
