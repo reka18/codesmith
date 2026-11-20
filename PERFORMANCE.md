@@ -10,6 +10,10 @@ measure it.
 # (CODESMITH_PERF_FILES sets the count), or searches CODESMITH_PERF_TREE.
 cargo bench -p codesmith-core --bench perf [name-filter]
 
+# File watching only: start-up, idle CPU and a burst of writes.
+# CODESMITH_PERF_IDLE sets the idle seconds (default 10).
+cargo bench -p codesmith-core --bench perf watch
+
 # TUI transcript drawing and @ completion (CODESMITH_PERF_TREE for the index).
 cargo test --release -p codesmith tui::bench -- --ignored --nocapture
 ```
@@ -68,6 +72,35 @@ Trees used:
 | `@` query | 100k | 0.1–2.1 | 0.2–2.9 |
 
 For reference, `rg -c needle_marker` takes about 690 ms on the 100k tree.
+
+## File watching
+
+What a watch of a whole tree costs (the language-server forwarder's watch;
+the branch and `/fs/watch` watches are single files). "Start" is from
+subscribing until the native watch is armed; "idle" is the process's CPU
+time over 10 s with nothing changing; "burst" is 1,000 new files until the
+1,000th update arrives. Release builds; macOS on the M5 Pro (FSEvents, one
+recursive watch), Linux in a Docker container on the same machine (inotify,
+one watch per directory not ignored).
+
+| Tree | Backend | Directories watched | Start | Idle CPU (10 s) | Burst |
+|---|---|---:|---:|---:|---:|
+| 100k | FSEvents | 1 | 2.4 ms | 0.08 ms | 66 ms |
+| 20k | FSEvents | 1 | 2.6 ms | 0.2 ms | 85 ms |
+| this repository | FSEvents | 1 | 2.6 ms | 0.08 ms | 43 ms |
+| 100k | inotify | 10,521 | 376 ms | 0.22 ms | 24 ms |
+| 20k | inotify | 2,521 | 77 ms | 0.31 ms | 23 ms |
+| this repository | inotify | 83 | 8 ms | 0.28 ms | 22 ms |
+
+Idle cost is under 0.01% of a core everywhere: the platform delivers
+events and nothing polls. Nothing is watched at startup: the
+language-server watch starts when the first server is ready, the server's
+branch watch in the background, and inotify's directory walk runs off the
+async runtime. On inotify the walk skips ignored directories (the 100k
+tree's 2,000-file `build/` and anything `.gitignore`d), and at most half of
+`fs.inotify.max_user_watches` directories are watched. The burst gives
+more updates than files on macOS, as FSEvents reports a creation and a
+modification separately.
 
 ## What changed
 

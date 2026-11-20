@@ -437,15 +437,118 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
-    let needs_tree = ["grep", "glob", "resolve", "read", "snapshot"]
+    let needs_tree = ["grep", "glob", "resolve", "read", "snapshot", "watch"]
         .iter()
         .any(|k| k.contains(filter.as_str()) || filter.contains(k));
     if needs_tree {
         let root = tree(scratch.path());
         bench_tools(&root, &rt, &filter);
         bench_snapshot(&root, &scratch.path().join("snap"), &filter);
+        bench_watch(&root, &rt, &filter);
     }
     bench_store(scratch.path(), &filter);
+}
+
+/// CPU time used by this process so far.
+#[cfg(unix)]
+fn cpu_time() -> Duration {
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+    let t = |v: libc::timeval| Duration::new(v.tv_sec as u64, v.tv_usec as u32 * 1000);
+    t(u.ru_utime) + t(u.ru_stime)
+}
+
+#[cfg(not(unix))]
+fn cpu_time() -> Duration {
+    Duration::ZERO
+}
+
+/// Watching the whole tree as the language-server forwarder does: how long
+/// the native watch takes to start, the CPU it uses while nothing changes
+/// (`CODESMITH_PERF_IDLE` seconds, default 10), and a burst of 1,000
+/// writes.
+fn bench_watch(root: &Path, rt: &tokio::runtime::Runtime, filter: &str) {
+    use codesmith_core::watch::native::{Mode, Notify};
+    use codesmith_core::watch::{default_log, WatchInput, Watcher};
+    if !"watch".contains(filter) && !filter.contains("watch") {
+        return;
+    }
+    let idle = std::env::var("CODESMITH_PERF_IDLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10u64);
+    // The platform's own mode (per directory only on inotify).
+    let mode = Mode::platform();
+    {
+        rt.block_on(async {
+            let native = Arc::new(Notify::with(mode, default_log()));
+            let watcher = Watcher::new(native.clone());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let mut updates = watcher.subscribe(
+                WatchInput::Directory {
+                    path: root.to_path_buf(),
+                    ignore: vec![],
+                },
+                Some(Box::pin(async move {
+                    let _ = tx.send(());
+                })),
+            );
+            let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = seen.clone();
+            let t = Instant::now();
+            let consumer = tokio::spawn(async move {
+                while updates.recv().await.is_some() {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+            rx.await.unwrap();
+            let started = t.elapsed();
+            let (dirs, _) = native.counts();
+            report(
+                &format!("watch: start ({mode:?})"),
+                vec![started],
+                &format!("{dirs} directories watched"),
+            );
+
+            let cpu = cpu_time();
+            let wall = Instant::now();
+            tokio::time::sleep(Duration::from_secs(idle)).await;
+            let used = cpu_time() - cpu;
+            println!(
+                "{:<34} {:.3} ms CPU over {:.0} s idle ({:.4}% of a core)",
+                format!("watch: idle ({mode:?})"),
+                used.as_secs_f64() * 1e3,
+                wall.elapsed().as_secs_f64(),
+                100.0 * used.as_secs_f64() / wall.elapsed().as_secs_f64()
+            );
+
+            let dir = root.join("watch-bench-burst");
+            std::fs::create_dir_all(&dir).unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            seen.store(0, std::sync::atomic::Ordering::Relaxed);
+            let t = Instant::now();
+            for i in 0..1000 {
+                std::fs::write(dir.join(format!("burst{i}.tmp")), "x").unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while seen.load(std::sync::atomic::Ordering::Relaxed) < 1000
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            report(
+                &format!("watch: 1k writes seen ({mode:?})"),
+                vec![t.elapsed()],
+                &format!(
+                    "{} updates",
+                    seen.load(std::sync::atomic::Ordering::Relaxed)
+                ),
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            watcher.shutdown();
+            let _ = consumer.await;
+        });
+    }
 }
 
 /// The tree to search: `CODESMITH_PERF_TREE`, or a new one under `scratch`.
