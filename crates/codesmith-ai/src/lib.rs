@@ -6,6 +6,7 @@ pub mod aws;
 pub mod bedrock;
 mod billing;
 mod cache;
+pub mod copilot;
 mod endpoint;
 mod gemini;
 pub mod google;
@@ -675,6 +676,23 @@ pub struct Request {
     /// Whether the model may call several tools in one turn; `None` keeps
     /// the provider default. A `parallelToolCalls` option wins over it.
     pub parallel_tool_calls: Option<bool>,
+    /// What kind of step this is, for providers that bill or route by it
+    /// (GitHub Copilot's `X-Interaction-Type`).
+    pub interaction: Interaction,
+}
+
+/// What kind of step a request is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Interaction {
+    /// A step of the main agent loop.
+    #[default]
+    Agent,
+    /// A step of a child (subagent) session.
+    Subagent,
+    /// A side request such as the session title.
+    Background,
+    /// A compaction summary.
+    Compaction,
 }
 
 /// OpenCode's `toolChoice`.
@@ -1106,12 +1124,14 @@ impl Provider {
         };
         check(self.protocol, req)?;
         self.check_compat()?;
-        match self.protocol {
-            Protocol::OpenaiChat => openai::stream(self, client, req).await,
-            Protocol::AnthropicMessages => anthropic::stream(self, client, req).await,
-            Protocol::OpenaiResponses => responses::stream(self, client, req).await,
-            Protocol::GoogleGemini => gemini::stream(self, client, req).await,
-            Protocol::BedrockConverse => bedrock::stream(self, client, req).await,
+        let p = self.for_request(req);
+        let p = p.as_ref();
+        match p.protocol {
+            Protocol::OpenaiChat => openai::stream(p, client, req).await,
+            Protocol::AnthropicMessages => anthropic::stream(p, client, req).await,
+            Protocol::OpenaiResponses => responses::stream(p, client, req).await,
+            Protocol::GoogleGemini => gemini::stream(p, client, req).await,
+            Protocol::BedrockConverse => bedrock::stream(p, client, req).await,
         }
     }
 
@@ -1129,14 +1149,31 @@ impl Provider {
         };
         check(self.protocol, &req)?;
         self.check_compat()?;
-        let rb = match self.protocol {
-            Protocol::OpenaiChat => openai::request(self, client, &req),
-            Protocol::AnthropicMessages => anthropic::request(self, client, &req),
-            Protocol::OpenaiResponses => responses::request(self, client, &req),
-            Protocol::GoogleGemini => gemini::request(self, client, &req),
-            Protocol::BedrockConverse => bedrock::request(self, client, &req)?,
+        let p = self.for_request(&req);
+        let p = p.as_ref();
+        let rb = match p.protocol {
+            Protocol::OpenaiChat => openai::request(p, client, &req),
+            Protocol::AnthropicMessages => anthropic::request(p, client, &req),
+            Protocol::OpenaiResponses => responses::request(p, client, &req),
+            Protocol::GoogleGemini => gemini::request(p, client, &req),
+            Protocol::BedrockConverse => bedrock::request(p, client, &req)?,
         };
         Ok(rb.build()?)
+    }
+
+    /// The provider with the headers this step adds (GitHub Copilot's
+    /// interaction type), under the configured ones.
+    fn for_request(&self, req: &Request) -> std::borrow::Cow<'_, Provider> {
+        if self.name != copilot::ID {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut p = self.clone();
+        for (k, v) in copilot::step_headers(req) {
+            if !p.headers.iter().any(|(h, _)| h.eq_ignore_ascii_case(&k)) {
+                p.headers.push((k, v));
+            }
+        }
+        std::borrow::Cow::Owned(p)
     }
 }
 

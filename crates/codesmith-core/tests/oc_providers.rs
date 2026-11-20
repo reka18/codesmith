@@ -558,3 +558,556 @@ fn vertex_catalog_models_send_vertex_requests() {
     );
     assert_eq!(http.headers()["authorization"], "Bearer tok");
 }
+
+// plugin/provider-github-copilot.test.ts
+
+use codesmith_core::providers::copilot;
+use std::sync::Mutex;
+
+/// A local server answering each path with a JSON body, recording the
+/// requests (head and body) it got.
+struct Fixture {
+    url: String,
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+async fn fixture(routes: Vec<(&'static str, Vec<(u16, String)>)>) -> Fixture {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let routes = Arc::new(Mutex::new(routes));
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = l.accept().await {
+            let mut buf = Vec::new();
+            let mut chunk = vec![0u8; 65536];
+            loop {
+                let n = s.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some(i) = text.find("\r\n\r\n") {
+                    let len = text[..i]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= i + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let text = String::from_utf8_lossy(&buf).to_string();
+            log.lock().unwrap().push(text.clone());
+            let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+            let (status, body) = {
+                let mut r = routes.lock().unwrap();
+                match r.iter_mut().find(|(p, _)| path.starts_with(p)) {
+                    Some((_, answers)) if answers.len() > 1 => answers.remove(0),
+                    Some((_, answers)) => answers[0].clone(),
+                    None => (404, "{}".to_string()),
+                }
+            };
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = s.write_all(resp.as_bytes()).await;
+        }
+    });
+    Fixture { url, seen }
+}
+
+fn copilot_case(stored: Value) -> Case {
+    let mut c = Case::new("github-copilot", json!({}));
+    c.stored = Some(stored);
+    c
+}
+
+fn login(token: &str, metadata: Value) -> Value {
+    json!({"type": "oauth", "method": "device", "access": token, "refresh": token, "expires": 0, "metadata": metadata})
+}
+
+#[test]
+fn oc_copilot_prefers_the_account_specific_copilot_api_endpoint() {
+    let c = copilot_case(login(
+        "gho_x",
+        json!({"apiEndpoint": "https://api.individual.githubcopilot.com/"}),
+    ));
+    assert_eq!(c.ok().base_url, "https://api.individual.githubcopilot.com");
+}
+
+#[test]
+fn oc_copilot_rejects_accounts_without_copilot_chat_access() {
+    assert!(copilot::entitlement_error(
+        &json!({"chat_enabled": false, "can_signup_for_limited": true})
+    )
+    .unwrap()
+    .contains("not signed up for GitHub Copilot"));
+    assert!(copilot::entitlement_error(&json!({"chat_enabled": false}))
+        .unwrap()
+        .contains("does not have GitHub Copilot access"));
+}
+
+#[test]
+fn oc_copilot_only_blocks_on_an_explicit_entitlement_denial() {
+    assert_eq!(copilot::entitlement_error(&json!({})), None);
+    assert_eq!(
+        copilot::entitlement_error(&json!({"chat_enabled": true})),
+        None
+    );
+    assert_eq!(copilot::entitlement_error(&Value::Null), None);
+}
+
+#[test]
+fn oc_copilot_serves_an_enterprise_login_from_its_own_host_until_the_first_model_list_arrives() {
+    let r = copilot_case(login("gho_x", json!({"enterpriseUrl": "company.ghe.com"}))).ok();
+    assert_eq!(r.base_url, "https://copilot-api.company.ghe.com");
+    assert_eq!(
+        copilot::user_url(Some("https://company.ghe.com/")),
+        "https://api.company.ghe.com/copilot_internal/user"
+    );
+}
+
+#[test]
+fn oc_copilot_serves_a_login_from_the_endpoint_saved_with_it_until_the_first_model_list_arrives() {
+    let mut c = copilot_case(login(
+        "gho_x",
+        json!({"apiEndpoint": "https://api.business.githubcopilot.com"}),
+    ));
+    c.model = "claude-opus-4.8";
+    c.package = Some("@opencode/ai/providers/anthropic");
+    let r = c.ok();
+    assert_eq!(r.protocol, Protocol::AnthropicMessages);
+    assert_eq!(r.base_url, "https://api.business.githubcopilot.com/v1");
+}
+
+#[test]
+fn oc_copilot_removes_the_generic_key_method_and_reads_copilot_github_token_instead_of_github_token(
+) {
+    assert_eq!(
+        providers::builtin("github-copilot").unwrap().env,
+        ["COPILOT_GITHUB_TOKEN"]
+    );
+    // An environment token serves without a login.
+    let mut c = Case::new("github-copilot", json!({}));
+    c.key = Some("env-token");
+    assert_eq!(c.ok().base_url, "https://api.githubcopilot.com");
+    let e = Case::new("github-copilot", json!({}))
+        .route()
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("codesmith auth login github-copilot"), "{e}");
+}
+
+#[test]
+fn oc_copilot_ignores_other_providers_model_requests() {
+    assert!(Case::new("openai", json!({})).route().unwrap().is_none());
+}
+
+#[test]
+fn oc_copilot_routes_models_dev_fallback_models_to_native_copilot_apis() {
+    use copilot::fallback_protocol as f;
+    assert_eq!(f("gpt-5.4"), Protocol::OpenaiResponses);
+    assert_eq!(f("gpt-6-sol"), Protocol::OpenaiResponses);
+    assert_eq!(f("gpt-5-mini"), Protocol::OpenaiChat);
+    assert_eq!(f("gpt-4.1"), Protocol::OpenaiChat);
+    assert_eq!(f("grok-code-fast-1"), Protocol::OpenaiResponses);
+    assert_eq!(f("mai-code-1"), Protocol::OpenaiResponses);
+    assert_eq!(f("gemini-3-pro"), Protocol::OpenaiChat);
+    // With a catalog package, the package decides.
+    let mut c = copilot_case(login("t", json!({})));
+    c.model = "gpt-6-sol";
+    c.package = Some("@opencode/ai/providers/openai/responses");
+    assert_eq!(c.ok().protocol, Protocol::OpenaiResponses);
+    c.package = Some("@opencode/ai/providers/openai-compatible");
+    assert_eq!(c.ok().protocol, Protocol::OpenaiChat);
+}
+
+#[test]
+fn oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection() {
+    assert!(copilot::hidden("gpt-5-chat-latest"));
+    assert!(!copilot::hidden("gpt-5"));
+}
+
+#[test]
+fn copilot_catalog_models_take_the_catalog_route_on_the_account_root() {
+    let c = bundled(json!({}));
+    let route = |model: &str| {
+        let m = c.resolve_model(&format!("github-copilot/{model}"));
+        m.map(|m| (m.provider.protocol, m.provider.base_url))
+    };
+    // Resolving needs a login or COPILOT_GITHUB_TOKEN; without one it says so.
+    if std::env::var("COPILOT_GITHUB_TOKEN").is_err()
+        && codesmith_core::auth::entry("github-copilot").is_none()
+    {
+        assert!(route("claude-opus-4.8")
+            .unwrap_err()
+            .to_string()
+            .contains("auth login github-copilot"));
+        return;
+    }
+    let (p, url) = route("claude-opus-4.8").unwrap();
+    assert_eq!(p, Protocol::AnthropicMessages);
+    assert!(url.ends_with("/v1"), "{url}");
+}
+
+async fn step(
+    f: &Fixture,
+    protocol: Protocol,
+    req: codesmith_ai::Request,
+    stored: Value,
+) -> String {
+    let mut c = copilot_case(stored);
+    c.model = "m";
+    let mut r = c.ok();
+    r.protocol = protocol;
+    let base = match protocol {
+        Protocol::AnthropicMessages => format!("{}/v1", f.url),
+        _ => f.url.clone(),
+    };
+    let p = codesmith_ai::Provider {
+        protocol,
+        name: "github-copilot".into(),
+        base_url: base,
+        auth: r.auth,
+        api_key: Some("not-sent".into()),
+        ..Default::default()
+    };
+    let _ = p.stream(&reqwest::Client::new(), &req).await;
+    let seen = f.seen.lock().unwrap();
+    seen.last().unwrap().clone()
+}
+
+fn user_step(text: &str) -> codesmith_ai::Request {
+    codesmith_ai::Request {
+        model: "gpt-5.4".into(),
+        messages: vec![codesmith_ai::Message::user(text)],
+        prompt_cache_key: Some("ses_42".into()),
+        ..Default::default()
+    }
+}
+
+fn header(head: &str, name: &str) -> Option<String> {
+    head.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| v.trim().to_string())
+    })
+}
+
+#[tokio::test]
+async fn oc_copilot_adds_copilot_authentication_and_request_metadata_headers_to_openai_requests() {
+    let f = fixture(vec![]).await;
+    // A configured endpoint, so no account lookup runs.
+    let mut stored = login("gho_token", json!({}));
+    stored["metadata"]["apiEndpoint"] = f.url.clone().into();
+    let head = step(&f, Protocol::OpenaiResponses, user_step("hi"), stored).await;
+    assert!(head.starts_with("POST /responses"), "{head}");
+    assert_eq!(
+        header(&head, "authorization").as_deref(),
+        Some("Bearer gho_token")
+    );
+    assert_eq!(
+        header(&head, "openai-intent").as_deref(),
+        Some("conversation-edits")
+    );
+    assert_eq!(
+        header(&head, "x-github-api-version").as_deref(),
+        Some("2026-08-01")
+    );
+    assert_eq!(header(&head, "x-initiator").as_deref(), Some("user"));
+    assert_eq!(
+        header(&head, "x-interaction-type").as_deref(),
+        Some("conversation-agent")
+    );
+    assert_eq!(header(&head, "x-interaction-id").as_deref(), Some("ses_42"));
+    assert!(header(&head, "user-agent")
+        .unwrap()
+        .starts_with("codesmith/"));
+    assert!(!head.contains("not-sent"));
+}
+
+#[tokio::test]
+async fn oc_copilot_adds_copilot_authentication_to_native_anthropic_requests() {
+    let f = fixture(vec![]).await;
+    let mut stored = login("gho_token", json!({}));
+    stored["metadata"]["apiEndpoint"] = f.url.clone().into();
+    let mut req = user_step("hi");
+    req.model = "claude-opus-4.8".into();
+    let head = step(&f, Protocol::AnthropicMessages, req, stored).await;
+    assert!(head.starts_with("POST /v1/messages"), "{head}");
+    assert_eq!(
+        header(&head, "authorization").as_deref(),
+        Some("Bearer gho_token")
+    );
+    assert_eq!(header(&head, "x-api-key"), None);
+}
+
+#[tokio::test]
+async fn oc_copilot_classifies_steps_by_kind() {
+    use codesmith_ai::Interaction;
+    let f = fixture(vec![]).await;
+    let mut stored = login("gho_token", json!({}));
+    stored["metadata"]["apiEndpoint"] = f.url.clone().into();
+    for (kind, name) in [
+        (Interaction::Agent, "conversation-agent"),
+        (Interaction::Subagent, "conversation-subagent"),
+        (Interaction::Background, "conversation-background"),
+        (Interaction::Compaction, "conversation-compaction"),
+    ] {
+        let mut req = user_step("hi");
+        req.interaction = kind;
+        let head = step(&f, Protocol::OpenaiChat, req, stored.clone()).await;
+        assert_eq!(header(&head, "x-interaction-type").as_deref(), Some(name));
+        // A declared agent step stays agent-initiated whatever its body says.
+        let initiator = if kind == Interaction::Agent {
+            "user"
+        } else {
+            "agent"
+        };
+        assert_eq!(
+            header(&head, "x-initiator").as_deref(),
+            Some(initiator),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn oc_copilot_flags_images_returned_by_tools_in_responses_requests() {
+    let f = fixture(vec![]).await;
+    let mut stored = login("gho_token", json!({}));
+    stored["metadata"]["apiEndpoint"] = f.url.clone().into();
+    let mut req = user_step("look");
+    req.messages.push(codesmith_ai::Message {
+        role: codesmith_ai::Role::Assistant,
+        parts: vec![codesmith_ai::Part::tool_call("c1", "read", json!({}))],
+    });
+    req.messages.push(codesmith_ai::Message {
+        role: codesmith_ai::Role::User,
+        parts: vec![codesmith_ai::Part::ToolResult {
+            id: "c1".into(),
+            name: "read".into(),
+            content: "image".into(),
+            is_error: false,
+            media: vec![codesmith_ai::Media::base64("image/png", "aGk=")],
+        }],
+    });
+    let head = step(&f, Protocol::OpenaiResponses, req.clone(), stored.clone()).await;
+    assert_eq!(
+        header(&head, "copilot-vision-request").as_deref(),
+        Some("true")
+    );
+    assert_eq!(header(&head, "x-initiator").as_deref(), Some("agent"));
+    // Chat moves the tool image into a user message after the tool message;
+    // that is still the agent's turn.
+    let head = step(&f, Protocol::OpenaiChat, req, stored).await;
+    assert_eq!(
+        header(&head, "copilot-vision-request").as_deref(),
+        Some("true")
+    );
+    assert_eq!(header(&head, "x-initiator").as_deref(), Some("agent"));
+}
+
+#[tokio::test]
+async fn oc_copilot_refreshes_the_account_api_endpoint_instead_of_keeping_the_one_stored_at_login()
+{
+    let f = fixture(vec![]).await;
+    let account = fixture(vec![(
+        "/copilot_internal/user",
+        vec![(
+            200,
+            json!({"endpoints": {"api": format!("{}/", f.url)}}).to_string(),
+        )],
+    )])
+    .await;
+    let authorizer = codesmith_ai::copilot::Copilot::new(
+        "gho_token".into(),
+        "https://api.githubcopilot.com".into(),
+        Some(format!("{}/copilot_internal/user", account.url)),
+    );
+    let p = codesmith_ai::Provider {
+        protocol: Protocol::OpenaiChat,
+        name: "github-copilot".into(),
+        base_url: "https://api.githubcopilot.com".into(),
+        auth: Auth::Dynamic(Arc::new(authorizer)),
+        ..Default::default()
+    };
+    let _ = p.stream(&reqwest::Client::new(), &user_step("hi")).await;
+    let _ = p.stream(&reqwest::Client::new(), &user_step("again")).await;
+    assert_eq!(
+        f.seen.lock().unwrap().len(),
+        2,
+        "both steps reach the account endpoint"
+    );
+    let lookups = account.seen.lock().unwrap();
+    assert_eq!(lookups.len(), 1, "looked up once");
+    assert_eq!(
+        header(&lookups[0], "authorization").as_deref(),
+        Some("Bearer gho_token")
+    );
+    assert_eq!(
+        header(&lookups[0], "x-github-api-version").as_deref(),
+        Some("2025-04-01")
+    );
+}
+
+#[tokio::test]
+async fn oc_copilot_keeps_the_stored_endpoint_when_the_account_lookup_fails() {
+    let f = fixture(vec![]).await;
+    let account = fixture(vec![("/copilot_internal/user", vec![(500, "{}".into())])]).await;
+    let authorizer = codesmith_ai::copilot::Copilot::new(
+        "gho_token".into(),
+        f.url.clone(),
+        Some(format!("{}/copilot_internal/user", account.url)),
+    );
+    let p = codesmith_ai::Provider {
+        protocol: Protocol::OpenaiChat,
+        name: "github-copilot".into(),
+        base_url: f.url.clone(),
+        auth: Auth::Dynamic(Arc::new(authorizer)),
+        ..Default::default()
+    };
+    let _ = p.stream(&reqwest::Client::new(), &user_step("hi")).await;
+    assert_eq!(f.seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn oc_copilot_registers_github_copilot_device_oauth() {
+    let f = fixture(vec![
+        (
+            "/login/device/code",
+            vec![(200, json!({"verification_uri": "https://github.com/login/device", "user_code": "ABCD-1234", "device_code": "dev-code", "interval": 1}).to_string())],
+        ),
+        (
+            "/login/oauth/access_token",
+            vec![
+                (200, json!({"error": "authorization_pending"}).to_string()),
+                (200, json!({"access_token": "gho_new"}).to_string()),
+            ],
+        ),
+        (
+            "/copilot_internal/user",
+            vec![(200, json!({"chat_enabled": true, "endpoints": {"api": "https://api.individual.githubcopilot.com"}}).to_string())],
+        ),
+    ])
+    .await;
+    let e = copilot::Endpoints {
+        client_id: "Iv1.test-client".into(),
+        device: format!("{}/login/device/code", f.url),
+        token: format!("{}/login/oauth/access_token", f.url),
+        user: format!("{}/copilot_internal/user", f.url),
+    };
+    let client = reqwest::Client::new();
+    let code = copilot::start(&client, &e).await.unwrap();
+    assert_eq!(code.user_code, "ABCD-1234");
+    assert_eq!(code.verification_uri, "https://github.com/login/device");
+    let saved = copilot::finish(
+        &client,
+        &e,
+        &code,
+        Some("https://company.ghe.com/"),
+        std::time::Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        saved,
+        json!({"type": "oauth", "method": "device", "access": "gho_new", "refresh": "gho_new", "expires": 0,
+               "metadata": {"enterpriseUrl": "company.ghe.com", "apiEndpoint": "https://api.individual.githubcopilot.com"}})
+    );
+    let seen = f.seen.lock().unwrap();
+    assert!(
+        seen[0].contains("\"client_id\":\"Iv1.test-client\""),
+        "{}",
+        seen[0]
+    );
+    assert!(seen[0].contains("\"scope\":\"read:user\""));
+    assert!(seen[1].contains("urn:ietf:params:oauth:grant-type:device_code"));
+    // The saved login routes to its endpoint.
+    let r = copilot_case(saved).ok();
+    assert_eq!(r.base_url, "https://api.individual.githubcopilot.com");
+}
+
+#[tokio::test]
+async fn copilot_device_login_fails_on_a_denial_or_without_entitlement() {
+    let f = fixture(vec![
+        (
+            "/login/device/code",
+            vec![(200, json!({"verification_uri": "u", "user_code": "c", "device_code": "d", "interval": 1}).to_string())],
+        ),
+        ("/login/oauth/access_token", vec![(200, json!({"access_token": "gho_x"}).to_string())]),
+        ("/copilot_internal/user", vec![(200, json!({"chat_enabled": false}).to_string())]),
+    ])
+    .await;
+    let e = copilot::Endpoints {
+        client_id: "Iv1.test-client".into(),
+        device: format!("{}/login/device/code", f.url),
+        token: format!("{}/login/oauth/access_token", f.url),
+        user: format!("{}/copilot_internal/user", f.url),
+    };
+    let client = reqwest::Client::new();
+    let code = copilot::start(&client, &e).await.unwrap();
+    let err = copilot::finish(&client, &e, &code, None, std::time::Duration::ZERO)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("does not have GitHub Copilot access"), "{err}");
+    let denied = fixture(vec![(
+        "/login/oauth/access_token",
+        vec![(200, json!({"error": "access_denied"}).to_string())],
+    )])
+    .await;
+    let e = copilot::Endpoints {
+        token: format!("{}/login/oauth/access_token", denied.url),
+        ..e
+    };
+    let err = copilot::finish(&client, &e, &code, None, std::time::Duration::ZERO)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, "Device authorization failed: access_denied");
+}
+#[test]
+fn copilot_login_needs_a_client_id_of_your_own() {
+    let s = Settings::default();
+    let e = copilot::client_id(None, &s, &env(&[]))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("Enable Device Flow"), "{e}");
+    assert!(
+        e.contains("CODESMITH_COPILOT_CLIENT_ID") && e.contains("COPILOT_GITHUB_TOKEN"),
+        "{e}"
+    );
+    assert_eq!(
+        copilot::client_id(
+            None,
+            &s,
+            &env(&[("CODESMITH_COPILOT_CLIENT_ID", "from-env")])
+        )
+        .unwrap(),
+        "from-env"
+    );
+    let configured: ProviderSettings = settings(json!({"clientId": "from-config"}));
+    assert_eq!(
+        copilot::client_id(
+            None,
+            &configured.plugin,
+            &env(&[("CODESMITH_COPILOT_CLIENT_ID", "from-env")])
+        )
+        .unwrap(),
+        "from-config"
+    );
+    assert_eq!(
+        copilot::client_id(Some("from-flag"), &configured.plugin, &env(&[])).unwrap(),
+        "from-flag"
+    );
+}

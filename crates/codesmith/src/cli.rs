@@ -500,6 +500,9 @@ enum AuthCmd {
         /// github-copilot: log in to this GitHub Enterprise host (company.ghe.com).
         #[arg(long)]
         enterprise: Option<String>,
+        /// github-copilot: the client id of your GitHub OAuth app (device flow enabled).
+        #[arg(long)]
+        client_id: Option<String>,
         /// google-vertex: use Application Default Credentials in this project.
         #[arg(long)]
         project: Option<String>,
@@ -1001,6 +1004,11 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("{id}/*  ({name}; `codesmith models {id}` lists its models)");
                 }
                 for m in models {
+                    if id == codesmith_core::providers::copilot::ID
+                        && codesmith_core::providers::copilot::hidden(&m)
+                    {
+                        continue;
+                    }
                     println!("{id}/{m}");
                 }
             }
@@ -1433,6 +1441,8 @@ struct PluginLogin {
     enterprise: Option<String>,
     project: Option<String>,
     location: Option<String>,
+    client_id: Option<String>,
+    cwd: PathBuf,
 }
 
 async fn plugin_login(
@@ -1446,7 +1456,12 @@ async fn plugin_login(
         enterprise,
         project,
         location,
+        client_id,
+        cwd,
     } = login;
+    if client_id.is_some() && provider != providers::copilot::ID {
+        return Err(anyhow!("--client-id is for github-copilot"));
+    }
     if location.is_some() && project.is_none() {
         return Err(anyhow!("--location goes with --project"));
     }
@@ -1493,7 +1508,40 @@ async fn plugin_login(
             file.display()
         )));
     }
-    if enterprise.is_some() && provider != "github-copilot" {
+    if provider == providers::copilot::ID {
+        let loaded = config::load(&cwd)?;
+        let settings = loaded
+            .config
+            .provider(provider)
+            .unwrap_or_default()
+            .settings
+            .plugin;
+        let id = providers::copilot::client_id(
+            client_id.as_deref(),
+            &settings,
+            &providers::process_env(),
+        )?;
+        providers::copilot::login(
+            &reqwest::Client::new(),
+            file,
+            &id,
+            enterprise.as_deref(),
+            |code| {
+                eprintln!(
+                    "Open {} and enter the code {}\nWaiting for authorization…",
+                    code.verification_uri, code.user_code
+                );
+                codesmith_core::mcp::oauth::open_browser(&code.verification_uri);
+            },
+        )
+        .await?;
+        return Ok(Some(format!(
+            "Logged in to GitHub Copilot{}; the login is saved in {}",
+            enterprise.map(|e| format!(" on {e}")).unwrap_or_default(),
+            file.display()
+        )));
+    }
+    if enterprise.is_some() {
         return Err(anyhow!("--enterprise is for github-copilot"));
     }
     Ok(None)
@@ -1509,12 +1557,15 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             enterprise,
             project,
             location,
+            client_id,
         } => {
             let login = PluginLogin {
                 profile,
                 enterprise,
                 project,
                 location,
+                client_id,
+                cwd: cwd.to_path_buf(),
             };
             if let Some(done) = plugin_login(&file, &provider, login).await? {
                 println!("{done}");

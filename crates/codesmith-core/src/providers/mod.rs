@@ -6,6 +6,7 @@
 //! the API that serves it.
 
 pub mod bedrock;
+pub mod copilot;
 pub mod vertex;
 
 use codesmith_ai::{Auth, Protocol};
@@ -39,6 +40,10 @@ pub struct Settings {
     /// Google Vertex AI: an OAuth access token to use instead of ADC.
     #[serde(alias = "accessToken")]
     pub access_token: Option<String>,
+    /// GitHub Copilot: the client id of the GitHub OAuth app that
+    /// `codesmith auth login github-copilot` logs in as.
+    #[serde(alias = "clientId")]
+    pub client_id: Option<String>,
 }
 
 /// What a provider plugin is given.
@@ -92,6 +97,13 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         "Google Vertex AI (Anthropic)",
         &[],
     ),
+    // GITHUB_TOKEN, which models.dev lists, is usually set by git and CI
+    // without Copilot access; GitHub's Copilot CLI reads this one.
+    (
+        "github-copilot",
+        "GitHub Copilot",
+        &["COPILOT_GITHUB_TOKEN"],
+    ),
 ];
 
 /// The provider config a plugin provider starts from.
@@ -112,6 +124,9 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
     if vertex::owns(input) {
         return vertex::route(input).map(Some);
     }
+    if copilot::owns(input) {
+        return copilot::route(input).map(Some);
+    }
     Ok(None)
 }
 
@@ -120,6 +135,10 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
 pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
     match id {
         "amazon-bedrock" => bedrock::available(settings, crate::auth::entry(id).as_ref(), env),
+        copilot::ID => {
+            env("COPILOT_GITHUB_TOKEN").is_some()
+                || crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth")
+        }
         vertex::ID | vertex::ANTHROPIC_ID => {
             vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
         }
@@ -155,6 +174,13 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
             } else {
                 None
             }
+        }
+        copilot::ID => {
+            let s = stored?;
+            (s["type"] == "oauth").then(|| match s["metadata"]["enterpriseUrl"].as_str() {
+                Some(e) => format!("saved GitHub login ({e})"),
+                None => "saved GitHub login".to_string(),
+            })
         }
         vertex::ID | vertex::ANTHROPIC_ID => {
             let env = process_env();

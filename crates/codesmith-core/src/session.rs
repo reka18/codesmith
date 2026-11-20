@@ -832,6 +832,10 @@ impl Session {
             prompt_cache_key: Some(self.id.clone()),
             tool_choice: None,
             parallel_tool_calls: None,
+            interaction: match self.parent {
+                Some(_) => codesmith_ai::Interaction::Subagent,
+                None => codesmith_ai::Interaction::Agent,
+            },
         }
     }
 
@@ -2927,6 +2931,12 @@ async fn complete_streaming(
         },
         body: model.body.clone(),
         cache: model.cache.clone(),
+        // Capped side requests are titles; the others summarize.
+        interaction: if max_tokens.is_some() {
+            codesmith_ai::Interaction::Background
+        } else {
+            codesmith_ai::Interaction::Compaction
+        },
         ..Default::default()
     };
     loop {
