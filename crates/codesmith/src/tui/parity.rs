@@ -431,3 +431,64 @@ fn oc_unsupported_or_incomplete_drops_are_plain_text() {
         assert_eq!(attach::pasted_files(&input, dir.path()), None, "{input:?}");
     }
 }
+
+/// The built-in command a prompt runs, as the UI dispatches it.
+fn builtin_of(a: &mut App, s: &str) -> Option<&'static str> {
+    match send(a, s)? {
+        Action::Slash { name, args } => super::builtin(&name, &args),
+        _ => None,
+    }
+}
+
+// mini/prompt.shared.test.ts: "recognizes exit commands".
+#[test]
+fn oc_exit_commands_ignore_case_and_space_but_not_arguments() {
+    let mut a = App::new();
+    assert_eq!(builtin_of(&mut a, "/exit"), Some("exit"));
+    assert_eq!(builtin_of(&mut a, " /Quit "), Some("quit"));
+    assert_eq!(builtin_of(&mut a, "/quit now"), None);
+    assert_eq!(builtin_of(&mut a, "/EXIT"), Some("exit"));
+    assert_eq!(builtin_of(&mut a, "/q"), Some("q"));
+    assert_eq!(builtin_of(&mut a, ":q"), Some("quit"));
+}
+
+// mini/prompt.shared.test.ts: "recognizes the new-session command".
+#[test]
+fn oc_the_new_session_command_ignores_case_and_space_but_not_arguments() {
+    let mut a = App::new();
+    assert_eq!(builtin_of(&mut a, "/new"), Some("new"));
+    assert_eq!(builtin_of(&mut a, " /NEW "), Some("new"));
+    assert_eq!(builtin_of(&mut a, "/new now"), None);
+}
+
+// mini/prompt.shared.test.ts: "recognizes only the compact command".
+#[test]
+fn oc_only_the_compact_command_compacts() {
+    let mut a = App::new();
+    assert_eq!(builtin_of(&mut a, "/compact"), Some("compact"));
+    assert_eq!(builtin_of(&mut a, " /COMPACT "), Some("compact"));
+    assert_eq!(builtin_of(&mut a, "/summarize"), None);
+    assert_eq!(builtin_of(&mut a, "/compact now"), None);
+}
+
+// The same rules for every built-in (adapted): names ignore case; those
+// that take an argument keep it, the others are only themselves without one.
+#[test]
+fn oc_builtin_commands_ignore_case_and_take_arguments_only_where_they_can() {
+    for n in [
+        "help", "clear", "thinking", "sessions", "undo", "redo", "exit", "quit", "q", "new",
+        "compact",
+    ] {
+        assert_eq!(super::builtin(&n.to_uppercase(), ""), Some(n));
+        assert_eq!(super::builtin(n, "x"), None, "/{n} x");
+    }
+    for n in ["agent", "model", "variant"] {
+        assert_eq!(super::builtin(&n.to_uppercase(), ""), Some(n));
+        assert_eq!(super::builtin(n, "x"), Some(n), "/{n} x");
+    }
+    assert_eq!(
+        super::builtin("review", ""),
+        None,
+        "commands are not built-ins"
+    );
+}

@@ -409,6 +409,9 @@ impl Runner {
     }
 
     fn slash(&mut self, name: &str, args: &str) -> Result<()> {
+        let Some(name) = builtin(name, args) else {
+            return self.command(name, args);
+        };
         match name {
             "exit" | "quit" | "q" => self.app.quit = true,
             "help" => self.app.modal = Some(Modal::Help),
@@ -519,40 +522,47 @@ impl Runner {
                     });
                 }));
             }
-            "new" | "sessions" | "undo" | "redo" | "agent" | "model" | "variant" | "compact" => {}
-            other => {
-                let all = crate::all_commands_with(&self.cwd, &self.loaded, &self.mcp);
-                let c = all
-                    .get(other)
-                    .ok_or_else(|| anyhow!("unknown command /{other}; /help lists commands"))?
-                    .clone();
-                if c.native {
-                    self.native(other, args);
-                    return Ok(());
-                }
-                let mut rebuild = false;
-                if c.agent.is_some() && c.agent != self.agent {
-                    self.agent = c.agent.clone();
-                    rebuild = true;
-                }
-                if c.model.is_some() && c.model != self.model {
-                    self.model = c.model.clone();
-                    rebuild = true;
-                }
-                if rebuild {
-                    self.reload()?;
-                }
-                let shown = if args.is_empty() {
-                    format!("/{other}")
-                } else {
-                    format!("/{other} {args}")
-                };
-                if c.mcp.is_some() {
-                    self.submit_command(shown, c, args.to_string());
-                } else {
-                    self.submit(shown, command::expand(&c.template, args), vec![]);
-                }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Run a custom, native or MCP command. Their names, unlike the
+    /// built-ins', are matched exactly, as in OpenCode.
+    fn command(&mut self, other: &str, args: &str) -> Result<()> {
+        let all = crate::all_commands_with(&self.cwd, &self.loaded, &self.mcp);
+        let c = match all.get(other) {
+            Some(c) => c.clone(),
+            None if builtin(other, "").is_some() => {
+                return Err(anyhow!("/{other} takes no arguments"));
             }
+            None => return Err(anyhow!("unknown command /{other}; /help lists commands")),
+        };
+        if c.native {
+            self.native(other, args);
+            return Ok(());
+        }
+        let mut rebuild = false;
+        if c.agent.is_some() && c.agent != self.agent {
+            self.agent = c.agent.clone();
+            rebuild = true;
+        }
+        if c.model.is_some() && c.model != self.model {
+            self.model = c.model.clone();
+            rebuild = true;
+        }
+        if rebuild {
+            self.reload()?;
+        }
+        let shown = if args.is_empty() {
+            format!("/{other}")
+        } else {
+            format!("/{other} {args}")
+        };
+        if c.mcp.is_some() {
+            self.submit_command(shown, c, args.to_string());
+        } else {
+            self.submit(shown, command::expand(&c.template, args), vec![]);
         }
         Ok(())
     }
@@ -927,4 +937,33 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         );
     }
     result
+}
+
+/// The UI's own commands, and whether each takes an argument.
+const BUILTINS: &[(&str, bool)] = &[
+    ("exit", false),
+    ("quit", false),
+    ("q", false),
+    ("help", false),
+    ("clear", false),
+    ("thinking", false),
+    ("new", false),
+    ("sessions", false),
+    ("undo", false),
+    ("redo", false),
+    ("compact", false),
+    ("agent", true),
+    ("model", true),
+    ("variant", true),
+];
+
+/// The built-in command `/name args` invokes, if any. As in OpenCode
+/// (`mini/prompt.shared`), a built-in's name ignores case, and one that
+/// takes no argument is only itself without one: `/Quit` quits, `/quit now`
+/// does not.
+pub(crate) fn builtin(name: &str, args: &str) -> Option<&'static str> {
+    BUILTINS
+        .iter()
+        .find(|(n, takes)| n.eq_ignore_ascii_case(name) && (*takes || args.is_empty()))
+        .map(|(n, _)| *n)
 }

@@ -1018,6 +1018,13 @@ impl App {
         self.hist = None;
         self.input.clear();
         self.scroll = 0;
+        if text == ":q" || text == ":Q" {
+            // OpenCode's `isExitCommand` takes Vim's `:q` too.
+            return Some(Action::Slash {
+                name: "quit".into(),
+                args: String::new(),
+            });
+        }
         if let Some((name, args)) = codesmith_core::command::parse_invocation(&text) {
             return Some(Action::Slash { name, args });
         }

@@ -62,13 +62,13 @@ Where the tests live:
 | cli | 269 | 37 | 5 | 63 | 163 | 1 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
 | tui: main UI | 1250 | 13 | 7 | 718 | 496 | 16 |
-| tui: mini mode | 425 | 3 | 0 | 417 | 2 | 3 |
+| tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 0 | 267 | 537 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **12** | **1504** | **2113** | **266** |
+| **Total** | **4637** | **742** | **15** | **1504** | **2113** | **263** |
 
 ## Fixes made while porting
 
@@ -95,17 +95,23 @@ Where the tests live:
   with a `# comment` line (as some terminals send for dropped files) was not
   recognized. The whole paste is tried as one path first, and comment lines
   are skipped.
+- **Built-in command names and arguments** (`mini/prompt.shared`): `/quit
+  now` quit, and `/Quit` or `/EXIT` were unknown commands. As in OpenCode,
+  the UI's built-in commands ignore case and surrounding space, and those
+  that take no argument (`/exit`, `/quit`, `/q`, `/new`, `/compact`,
+  `/help`, `/clear`, `/thinking`, `/sessions`, `/undo`, `/redo`) are only
+  themselves without one; `/agent`, `/model` and `/variant` keep theirs.
+  Vim's `:q` quits too, as OpenCode's `isExitCommand` allows. Custom
+  commands still match their name exactly, as in OpenCode. One difference
+  stays: OpenCode sends `/quit now` to the model as a prompt (it sends any
+  slash text that is not a command), while CodeSmith reports `/quit takes no
+  arguments`, as it reports unknown commands rather than sending them.
 
 ## Differences found but not fixed
 
 These are in files other work in progress owns, so they are recorded here
 rather than changed:
 
-- `tui/mod.rs`: `/quit now` quits (OpenCode treats it as a prompt), and
-  `/Quit` or `/EXIT` are unknown commands (OpenCode ignores case and
-  surrounding space); likewise `/new` and `/compact`
-  (`mini/prompt.shared`: "recognizes exit commands", "the new-session
-  command", "only the compact command").
 - `tui/view.rs`: `tokens(999_950)` is `1000K` where OpenCode rolls over to
   `1.0M` (`util/locale`: "rolls the compact form over at the rounding
   boundary"), and `cut(s, 0)` returns `…` where OpenCode returns an empty
@@ -137,6 +143,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/local-attachment` | parses multi-file drops from POSIX, URI-list, and Windows terminals | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
 | `tui/test/prompt/local-attachment` | resolves a single image path before splitting spaces | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
 | `tui/test/prompt/local-attachment` | resolves quoted paths and URI lists as ordered attachments | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
+| `tui/test/mini/prompt.shared` | recognizes exit commands | after a fix | oc_exit_commands_ignore_case_and_space_but_not_arguments |
+| `tui/test/mini/prompt.shared` | recognizes the new-session command | after a fix | oc_the_new_session_command_ignores_case_and_space_but_not_arguments |
+| `tui/test/mini/prompt.shared` | recognizes only the compact command | after a fix | oc_only_the_compact_command_compacts |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -776,14 +785,6 @@ CodeSmith draws the calendar in stats.rs (private helpers)
 - `util/src/activity-calendar`: ranks distinct activity counts in four levels
 - `util/src/activity-calendar`: keeps intensity relative to the requested range when older weeks are clipped
 - `util/src/activity-calendar`: returns an empty calendar for an empty range
-
-### tui: slash commands (3)
-
-/quit now quits and "/Quit" is unknown; the dispatcher is in tui/mod.rs
-
-- `tui/test/mini/prompt.shared`: recognizes exit commands
-- `tui/test/mini/prompt.shared`: recognizes the new-session command
-- `tui/test/mini/prompt.shared`: recognizes only the compact command
 
 ### cli: stats (1)
 
