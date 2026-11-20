@@ -290,6 +290,20 @@ impl Server {
     }
 }
 
+/// Messages as a client shows them: without the user-role messages the
+/// engine wrote itself (output-limit nudges), as in the TUI and ACP replay.
+fn transcript(messages: &[codesmith_ai::Message]) -> Vec<&codesmith_ai::Message> {
+    messages
+        .iter()
+        .filter(|m| {
+            m.role != codesmith_ai::Role::User
+                || !m.parts.iter().all(|p| {
+                    matches!(p, codesmith_ai::Part::Text(t) if codesmith_core::runner::is_engine_message(t))
+                })
+        })
+        .collect()
+}
+
 fn summary(s: &Session) -> Value {
     json!({"id": s.id, "title": s.title, "agent": s.agent.name, "model": s.model_spec, "usage": s.usage, "directory": s.cwd})
 }
@@ -435,7 +449,7 @@ async fn show(State(st): State<St>, UrlPath(id): UrlPath<String>) -> Result<Json
     match &g.session {
         Some(s) => {
             let mut v = summary(s);
-            v["messages"] = json!(s.messages);
+            v["messages"] = json!(transcript(&s.messages));
             v["todos"] = json!(s.todos);
             v["busy"] = json!(false);
             Ok(Json(v))
@@ -443,7 +457,7 @@ async fn show(State(st): State<St>, UrlPath(id): UrlPath<String>) -> Result<Json
         None => {
             let info = st.store()?.get(&id)?.ok_or_else(|| not_found(&id))?;
             Ok(Json(
-                json!({"id": info.id, "title": info.title, "agent": info.agent, "model": info.model, "usage": info.usage, "messages": st.store()?.history(&id)?, "busy": true}),
+                json!({"id": info.id, "title": info.title, "agent": info.agent, "model": info.model, "usage": info.usage, "messages": transcript(&st.store()?.history(&id)?), "busy": true}),
             ))
         }
     }
