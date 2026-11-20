@@ -532,21 +532,32 @@ fn calendar(s: &Stats, color: bool, width: usize) -> Vec<String> {
         weeks = max_weeks;
     }
     let max = s.activity.values().copied().max().unwrap_or(0);
-    let mut months = String::new();
-    let mut last_month = 0;
+    // As in OpenCode's `activityCalendar`, a week belongs to the month of
+    // its Thursday (kept inside the range, so a partial first or last week
+    // is labelled by the days shown), and a label is drawn where it fits in
+    // its month's weeks, or for the last month.
+    let mut spans: Vec<(String, usize)> = Vec::new();
     for w in 0..weeks {
-        let d = origin + Duration::weeks(w as i64);
-        if d.month() != last_month && months.chars().count() <= w {
-            let label = d.format("%b").to_string();
-            while months.chars().count() < w {
-                months.push(' ');
-            }
-            if w + 3 <= weeks || months.trim().is_empty() {
-                months.push_str(&label);
-            }
-            last_month = d.month();
+        let thursday = (origin + Duration::days(w as i64 * 7 + 3)).clamp(first, last);
+        let label = thursday.format("%b").to_string();
+        match spans.last_mut() {
+            Some((l, span)) if *l == label => *span += 1,
+            _ => spans.push((label, 1)),
         }
     }
+    let n = spans.len();
+    let months: String = spans
+        .iter()
+        .enumerate()
+        .map(|(i, (label, span))| {
+            let shown = if i + 1 == n || label.len() <= *span {
+                label.as_str()
+            } else {
+                ""
+            };
+            format!("{shown:<span$}")
+        })
+        .collect();
     let mut out = vec![
         style(
             &if clipped {

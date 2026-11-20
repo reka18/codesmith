@@ -183,3 +183,20 @@ fn oc_stats_labels_activity_when_the_width_truncates_the_range() {
     );
     assert!(out.contains("activity · last 16 weeks"), "{out}");
 }
+
+// "renders shared intensity levels and partial month labels" (adapted: no
+// blank rows between the days).
+#[test]
+fn oc_stats_labels_only_the_months_a_partial_range_shows() {
+    let s = Stats {
+        from: ms(2026, 4, 29),
+        to: ms(2026, 5, 20),
+        activity: [("2026-04-29".to_string(), 1)].into(),
+        ..stats()
+    };
+    let out = render(&s, &options());
+    assert!(out.contains("    May"), "{out}");
+    assert!(!out.contains("Apr"), "{out}");
+    let we = out.lines().find(|l| l.starts_with("We ")).unwrap();
+    assert!(we.contains('\u{2588}'), "{out}");
+}

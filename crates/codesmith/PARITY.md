@@ -59,7 +59,7 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 37 | 5 | 63 | 163 | 1 |
+| cli | 269 | 37 | 6 | 63 | 163 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
 | tui: main UI | 1250 | 13 | 10 | 718 | 496 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
@@ -68,7 +68,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **18** | **1504** | **2113** | **260** |
+| **Total** | **4637** | **742** | **19** | **1504** | **2113** | **259** |
 
 ## Fixes made while porting
 
@@ -112,16 +112,17 @@ Where the tests live:
   OpenCode's `1.0M` is `1M`). Cutting text to width 0 gave `…` rather than
   nothing, and cutting could split a grapheme (an emoji family, a letter
   with a combining mark); it now keeps whole graphemes.
+- **Calendar month labels** (`cli/test/stats`): the calendar labelled a
+  partial first month (`Apr` for a range starting on April 29). As in
+  OpenCode's `activityCalendar`, a week now belongs to the month of its
+  Thursday, kept inside the range, and a label is drawn only where it fits
+  in its month's weeks, or for the last month.
 
 ## Differences found but not fixed
 
 These are in files other work in progress owns, so they are recorded here
 rather than changed:
 
-- `codesmith-core/src/stats.rs`: the calendar labels a partial first month
-  (`Apr` for a range that starts on April 29) where OpenCode shows only
-  `May` (`cli/test/stats`: "renders shared intensity levels and partial
-  month labels").
 - Shell commands no longer see the server token, but local MCP servers and
   language servers still inherit it.
 
@@ -170,6 +171,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/mini` | merges non-interactive argument and stdin input | already passing | run_cli.rs piped_stdin_attached_files_and_titles |
 | `cli/test/mini` | parses model variants from the model reference | already passing | oc_model_references_carry_nested_ids_and_variants |
 | `cli/test/mini` | keeps option-like prompt text after the argument separator | already passing | oc_option_like_prompt_text_after_the_separator_is_the_message |
+| `cli/test/stats` | renders shared intensity levels and partial month labels | after a fix | oc_stats_labels_only_the_months_a_partial_range_shows (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -787,12 +789,6 @@ CodeSmith draws the calendar in stats.rs (private helpers)
 - `util/src/activity-calendar`: ranks distinct activity counts in four levels
 - `util/src/activity-calendar`: keeps intensity relative to the requested range when older weeks are clipped
 - `util/src/activity-calendar`: returns an empty calendar for an empty range
-
-### cli: stats (1)
-
-CodeSmith labels a partial first month; a fix belongs in stats.rs
-
-- `cli/test/stats`: renders shared intensity levels and partial month labels
 
 ### tui: tool output (1)
 
