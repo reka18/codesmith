@@ -1539,8 +1539,10 @@ impl Session {
     }
 
     fn jobs_pending(&self) -> usize {
-        // Finished but not yet reported jobs (peek without taking).
-        self.jobs.running_or_unreported() - self.jobs.running()
+        // Finished but not yet reported jobs (peek without taking), counted
+        // under one lock: the difference of two counts taken apart
+        // underflowed when a job started in between.
+        self.jobs.finished().len()
     }
 
     /// Tell the model about background commands that finished since its last step.
