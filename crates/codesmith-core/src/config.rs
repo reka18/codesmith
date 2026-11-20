@@ -80,6 +80,10 @@ pub struct Config {
     pub snapshots: Option<bool>,
     /// Extra folders containing `<id>/SKILL.md` skills.
     pub skills: Vec<String>,
+    /// Offer the skills shipped with CodeSmith (`codesmith`, for questions
+    /// about CodeSmith itself, and `report`, for filing an issue). Off by
+    /// default, so sessions' prompts stay as they were.
+    pub builtin_skills: bool,
     /// Format files after edits: `true` for the built-in formatters, or an
     /// object of per-formatter overrides. Off when unset.
     pub formatter: Option<crate::format::Setting>,

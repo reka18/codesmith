@@ -30,3 +30,5 @@
 169 :: ported :: tests/oc_session_list.rs::oc_session_searches_titles_case_insensitively_beyond_ascii_and_keeps_like_wildcard_semantics
 @session-model-request.test.ts
 62 :: ported :: tests/oc_image_eviction.rs::oc_replaces_images_xai_cannot_decode_and_keeps_png_jpeg_and_webp :: adapted: a replaced tool-result image's note joins the result's text
+@plugin/skill.test.ts
+22 :: ported :: tests/oc_builtin_skills.rs::oc_skill_registers_built_in_skills :: adapted: `codesmith` for `opencode`, and only with builtin_skills on

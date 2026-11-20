@@ -587,13 +587,16 @@ impl Session {
         apply_agent_request(&mut model, &agent);
         let subagents = agent::subagents(config);
         let home = dirs::home_dir().unwrap_or_default();
-        let skills = crate::skill::discover(&crate::skill::roots(
+        let mut skills = crate::skill::discover(&crate::skill::roots(
             &cwd,
             &loaded.root,
             &paths::config_dir(),
             &home,
             &config.skills,
         ));
+        if config.builtin_skills {
+            skills = crate::skill::with_builtin(skills, env!("CARGO_PKG_VERSION"));
+        }
         let mut tools = agent::tools(&agent);
         if subagents.is_empty() {
             tools.retain(|t| *t != Tool::Subagent);

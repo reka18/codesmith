@@ -23,6 +23,68 @@ pub struct Skill {
     pub content: String,
 }
 
+/// The description of the built-in `codesmith` skill.
+pub const CODESMITH_DESCRIPTION: &str = "Use this skill for any question about CodeSmith itself: how it works, installing, using or configuring it, troubleshooting it, and its agents, commands, skills, tools, permissions, MCP servers, providers, models, sessions, automations, the CLI, the terminal UI, the local server and editors over ACP.";
+const REPORT_DESCRIPTION: &str = "Use when the user wants to report a CodeSmith issue or bug. Collect standard diagnostics, add user-specific reproduction context, and publish the issue with GitHub CLI.";
+
+/// The skills shipped with CodeSmith (OpenCode's built-in `opencode` and
+/// `report` skills, as `codesmith` and `report`), offered only when the
+/// config's `builtin_skills` is on so every other session's prompt stays
+/// as it was. Their paths are `skill://<id>/SKILL.md`: they have no folder.
+/// The report skill ends with the diagnostics of this run.
+pub fn builtin(version: &str) -> Vec<Skill> {
+    let term = ["TERM_PROGRAM", "TERM"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|t| !t.is_empty()))
+        .unwrap_or_else(|| "Unavailable: TERM is not set".into());
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "Unavailable: SHELL is not set".into());
+    let report = [
+        include_str!("skill_builtin/report.md").trim_end(),
+        "",
+        "## Runtime Diagnostics Snapshot",
+        "",
+        "These values were captured when the built-in report skill was loaded. Verify them before publishing.",
+        "",
+        &format!("- CodeSmith version: {version}"),
+        &format!(
+            "- OS: {} ({})",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ),
+        &format!("- Terminal: {term}"),
+        &format!("- Shell: {shell}"),
+    ]
+    .join("\n");
+    vec![
+        Skill {
+            id: "codesmith".into(),
+            name: "CodeSmith".into(),
+            description: CODESMITH_DESCRIPTION.into(),
+            path: PathBuf::from("skill://codesmith/SKILL.md"),
+            content: include_str!("skill_builtin/codesmith.md").into(),
+        },
+        Skill {
+            id: "report".into(),
+            name: "Report".into(),
+            description: REPORT_DESCRIPTION.into(),
+            path: PathBuf::from("skill://report/SKILL.md"),
+            content: report,
+        },
+    ]
+}
+
+/// Add the built-in skills `skills` does not already have (a skill of
+/// the user's with the same id wins), keeping the list in id order.
+pub fn with_builtin(mut skills: Vec<Skill>, version: &str) -> Vec<Skill> {
+    for b in builtin(version) {
+        if !skills.iter().any(|s| s.id == b.id) {
+            skills.push(b);
+        }
+    }
+    skills.sort_by(|a, b| a.id.cmp(&b.id));
+    skills
+}
+
 /// Split `---\nkey: value\n---\nbody` into the header map and the body.
 pub fn frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let mut map = BTreeMap::new();

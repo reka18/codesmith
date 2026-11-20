@@ -91,6 +91,7 @@ is parsed:
 | `instructions` | `[]` | Extra instruction files or globs. See [Instructions](#instructions). |
 | `references` | `{}` | Other folders or Git repositories the agent may consult, by name. See [References](#references). |
 | `skills` | `[]` | Extra folders of skills (relative to the project root). See [skills](skills-and-commands.md#skills). |
+| `builtin_skills` | `false` | Offer the skills shipped with CodeSmith (`codesmith`, `report`). See [built-in skills](skills-and-commands.md#built-in-skills). |
 | `commands` | `{}` | Inline commands: `{"name": {"template": "...", "description", "agent", "model"}}`. See [commands](skills-and-commands.md#commands). |
 | `snapshots` | `true` | Snapshot files at each turn so turns can be undone. See [undo](sessions.md#undo-and-redo). |
 | `subagent_depth` | `1` | How deep subagents may nest. `1` lets the main session start subagents, but a subagent cannot start its own. |

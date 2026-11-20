@@ -64,6 +64,20 @@ replaces the cached copy only when all of them arrived, so a failed update
 keeps the old one and files the new version no longer lists are removed. A
 catalog that cannot be reached adds no skills, and the others still load.
 
+### Built-in skills
+
+CodeSmith ships two skills, as OpenCode does: `codesmith`, an index of this
+guide for questions about CodeSmith itself, and `report`, which drafts a
+GitHub issue with the run's diagnostics (version, OS, terminal, shell) and
+files it with `gh` once you confirm. They are off by default, so they add
+nothing to a session's prompt; turn them on with
+
+```json
+{ "builtin_skills": true }
+```
+
+A skill of your own with the same id replaces the built-in one.
+
 ## Commands
 
 Commands are prompt templates. Run them as `/name args` in the

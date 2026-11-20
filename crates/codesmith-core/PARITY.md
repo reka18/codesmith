@@ -40,7 +40,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
-| Skills and commands | 59 | 26 | 0 | 1 | 21 | 11 | 0 |
+| Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
 | MCP | 212 | 17 | 0 | 13 | 61 | 121 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1657** | **18** | **118** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1658** | **18** | **117** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (118 cases in 11 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (117 cases in 10 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -97,7 +97,6 @@ Missing features, by how many OpenCode test cases each would unlock (118 cases i
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
-| [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
 
 ### ChatGPT Subscription Login
 
@@ -256,12 +255,6 @@ Missing features, by how many OpenCode test cases each would unlock (118 cases i
 
 - `session-model-request-hooks.test.ts`: advertises only supported freeform formats without removing tools or changing the shared definitions
 - `tool-execute.test.ts`: execute takes raw code as freeform text, and Code Mode calls freeform tools with a string
-
-### Built-in Skills
-
-1 cases.
-
-- `plugin/skill.test.ts`: registers built-in skills
 
 ## Porting backlog
 
@@ -2595,7 +2588,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Skills and commands (47 of 59)</summary>
+<details><summary>Skills and commands (48 of 59)</summary>
 
 
 **`command.test.ts`**
@@ -2631,6 +2624,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`plugin/skill.test.ts`**
 
+- P registers built-in skills — `tests/oc_builtin_skills.rs::oc_skill_registers_built_in_skills` (adapted: `codesmith` for `opencode`, and only with builtin_skills on)
 - D reports canonical configured plugin sources with existing labels and ordering — effect-internal: plugin source labels
 
 **`skill-discovery.test.ts`**
