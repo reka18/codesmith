@@ -1,0 +1,81 @@
+# Ports written for this inventory (tests/oc_*.rs). Later files override earlier line rules.
+@tool-search.test.ts
+78 :: fixed :: tests/oc_tools.rs::oc_search_distinguishes_a_malformed_glob_from_an_empty_search :: the glob error read "Invalid glob in pattern error parsing glob ..."
+104 :: ported :: tests/oc_tools.rs::oc_search_glob_honors_hidden_before_limit
+141 :: ported :: tests/oc_tools.rs::oc_search_bounds_omitted_glob_and_grep_limits
+176 :: ported :: tests/oc_tools.rs::oc_search_rejects_an_empty_grep_pattern :: adapted: no argument-validation envelope
+193 :: ported :: tests/oc_tools.rs::oc_search_handles_explicit_grep_file_and_directory_paths
+230 :: ported :: tests/oc_tools.rs::oc_search_reports_no_grep_matches
+247 :: ported :: tests/oc_tools.rs::oc_search_reports_invalid_grep_regex_details
+264 :: ported :: tests/oc_tools.rs::oc_search_external_grep_needs_external_directory_approval :: adapted: a file is named, its folder saved
+311 :: fixed :: tests/oc_tools.rs::oc_search_reports_a_missing_search_path :: glob said "not a directory", grep "Unable to grep for ..."
+329 :: ported :: tests/oc_tools.rs::oc_search_reports_a_file_used_as_the_glob_search_path
+347 :: ported :: tests/oc_tools.rs::oc_search_external_glob_path_needs_external_directory_approval
+376 :: design :: deliberate :: CodeSmith follows the link and asks external_directory for its target (tests/oc_tools.rs::oc_search_globs_through_an_in_location_symlink_after_external_approval pins it)
+@ripgrep.test.ts
+23 :: ported :: tests/oc_tools.rs::oc_ripgrep_keeps_matches_despite_a_malformed_ignore_glob_and_a_broken_symlink
+40 :: ported :: tests/oc_tools.rs::oc_search_glob_honors_hidden_before_limit :: through the glob tool
+70 :: ported :: tests/oc_tools.rs::oc_ripgrep_globs_files
+84 :: ported :: tests/oc_tools.rs::oc_ripgrep_greps_files_with_include_filtering
+107 :: fixed :: tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8 :: grep dropped every line of a file with invalid UTF-8; now decoded lossily
+126 :: ported :: tests/oc_tools.rs::oc_ripgrep_keeps_ignored_files_out_of_catch_all_results
+145 :: ported :: tests/oc_tools.rs::oc_ripgrep_never_includes_git_metadata
+182 :: design :: other :: the `exclude` option of OpenCode's internal find (home scans); the tools have no such input
+205,230 :: ported :: tests/oc_tools.rs::oc_ripgrep_bounds_previews_of_oversized_lines_on_whole_characters :: adapted: 2,000 characters and "…"
+@tool-write.test.ts
+116 :: ported :: tests/oc_tools.rs::oc_write_creates_a_relative_file_and_its_parents
+176 :: ported :: tests/oc_tools.rs::oc_write_overwrites_an_existing_file
+211 :: fixed :: tests/oc_tools.rs::oc_write_preserves_exactly_one_bom :: overwriting a file dropped its byte order mark
+242 :: ported :: tests/oc_tools.rs::oc_write_accepts_an_absolute_path_inside_the_project
+298 :: ported :: tests/oc_tools.rs::oc_write_approves_an_external_path_before_edit :: adapted: names the file, saves its folder
+369 :: ported :: tests/oc_tools.rs::oc_write_does_not_write_when_denied
+263 :: design :: deliberate :: CodeSmith follows the link and asks external_directory for its target (tests/oc_tools.rs::oc_write_external_symlink_target_needs_external_approval pins it)
+335 :: feature :: Repository-scoped External Approvals :: external approval saved at the nearest project directory
+156 :: portable :: tool::write + format :: the committed file is formatted (S)
+408 :: design :: effect-internal :: tracing spans and post-write reads
+@tool-read-filesystem.test.ts
+141 :: ported :: tests/oc_tools.rs::oc_read_text_serialization
+250 :: ported :: tests/oc_tools.rs::oc_read_reads_malformed_utf8_lossily_and_rejects_binary
+267 :: ported :: tests/oc_tools.rs::oc_read_reads_text_despite_a_binary_extension
+311 :: ported :: tests/oc_tools.rs::oc_read_returns_the_last_lines_when_the_offset_is_past_the_end
+338 :: ported :: tests/oc_tools.rs::oc_read_returns_the_last_lines_of_a_large_file_past_the_end
+399 :: ported :: tests/oc_tools.rs::oc_read_starts_a_negative_offset_that_many_lines_before_the_end
+442 :: ported :: tests/oc_tools.rs::oc_read_starts_a_negative_offset_from_the_end_of_a_large_file :: without the 300 KB last-line case
+491 :: ported :: tests/oc_tools.rs::oc_read_reads_the_end_of_a_file_many_chunks_long
+551 :: ported :: tests/oc_tools.rs::oc_read_pages_text_with_one_based_offsets
+566 :: ported :: tests/oc_tools.rs::oc_read_truncates_long_lines
+@session-runner.test.ts
+6516 :: ported :: tests/oc_runner.rs::oc_session_retries_an_incomplete_stream_cleanly_from_the_prompt
+6614 :: ported :: tests/oc_runner.rs::oc_session_retries_after_an_unrecognized_mid_stream_failure
+6644 :: ported :: tests/oc_runner.rs::oc_session_drops_interrupted_reasoning_and_retries_cleanly
+6810 :: ported :: tests/oc_runner.rs::oc_session_stops_incomplete_stream_retries_once_the_allowance_is_spent
+6053,6071 :: ported :: tests/oc_runner.rs::oc_session_projects_provider_errors_as_terminal_failures :: adapted: the prompt stays in history for the next turn
+6156 :: ported :: tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure
+5511 :: ported :: tests/oc_runner.rs::oc_session_returns_tool_failures_to_the_model_and_continues :: adapted: a failing tool call stands in for a tool defect
+7320 :: ported :: tests/oc_runner.rs::oc_session_does_not_continue_after_a_provider_error_follows_a_tool_call
+2207 :: ported :: tests/oc_runner.rs::oc_session_fails_before_the_model_request_when_the_agent_is_unavailable
+6347,6553 :: bug :: session.rs :: an "unknown" finish reason ends the turn as a normal stop; OpenCode retries it before (or after text from) a step that ran no tool
+6184 :: design :: differs :: CodeSmith compacts and retries a context overflow even after partial output; OpenCode fails the step
+2915 :: ported :: tests/oc_compaction.rs::oc_compaction_preserves_provider_errors_from_manual_compaction
+3197 :: bug :: session.rs :: compaction ignores the summary's finish reason, so a summary blocked by the provider is not reported as blocked (with partial text it is committed)
+3265 :: bug :: session.rs :: a summary cut short by the output limit or a content filter is committed (tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it, ignored)
+4072 :: design :: differs :: when recovery summarization fails, the summary's error is reported instead of the original overflow (tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails, ignored)
+3971 :: ported :: tests/oc_compaction.rs::oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn
+3938,3989 :: ported :: tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries :: the scripted model has no configured limit and fails with a raw overflow
+@agent.test.ts
+170 :: ported :: tests/oc_config.rs::oc_agent_explore_is_read_only_and_asks_for_env_files :: the explore rules; CodeSmith has no compaction/summary/title agents
+220 :: ported :: tests/oc_config.rs::oc_agent_built_in_subagents_deny_the_subagent_tool
+@config/agent.test.ts
+417 :: ported :: tests/oc_config.rs::oc_agent_a_built_in_agent_disabled_by_config_is_removed
+265 :: ported :: tests/oc_config.rs::oc_agent_global_permissions_come_before_agent_specific_ones :: without the later-document removal and model fields
+@shell.test.ts
+54 :: fixed :: tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command :: POSIX families; Zsh now gets `+o nomatch`
+69 :: fixed :: tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command :: an unmatched glob failed the whole Zsh line
+@config/policy.test.ts
+85,104,161,180,189,198 :: feature :: Tool-use Policies :: a deny-only policy layer over permissions (an allow never grants)
+@formatter.test.ts
+181 :: ported :: tests/oc_tools.rs::oc_format_matches_files_against_configured_extensions
+197 :: ported :: tests/oc_tools.rs::oc_format_skips_disabled_formatters
+214 :: ported :: tests/oc_tools.rs::oc_format_returns_none_when_no_formatter_runs
+246 :: ported :: tests/oc_tools.rs::oc_format_stops_after_the_first_formatter_that_succeeds :: adapted: configured formatters run in key order
+278 :: ported :: tests/oc_tools.rs::oc_format_tries_the_next_formatter_when_the_first_fails

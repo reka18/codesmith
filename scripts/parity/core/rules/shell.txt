@@ -1,0 +1,142 @@
+@persistent-pty-daemon.test.ts
+* :: feature :: PTY Sessions :: persistent PTY daemon
+@persistent-pty-session.test.ts
+* :: feature :: PTY Sessions :: persistent terminals
+@pty/info-schema.test.ts
+* :: feature :: PTY Sessions :: PTY info schema
+@pty/protocol.test.ts
+* :: feature :: PTY Sessions :: PTY wire protocol
+@pty/pty-session.test.ts
+* :: feature :: PTY Sessions :: PTY sessions and attachments
+@pty/ticket.test.ts
+* :: feature :: PTY Sessions :: PTY access tickets
+
+@process/process.test.ts
+* :: design :: effect-internal :: OpenCode's Effect process wrapper (CodeSmith uses tokio::process directly)
+
+@shell-cleanup.test.ts
+* :: portable :: tool::shell output files :: expired output files removed across projects (S)
+
+@shell-daemon.test.ts
+* :: feature :: Shell Daemon :: commands that outlive the server process in a daemon
+
+@shell-restart.test.ts
+* :: feature :: Shell Daemon :: foreground calls settled across a server restart
+
+@shell-result.test.ts
+17,28,37,51 :: portable :: tool::shell::notice / result :: output file and shell named, truncated tail notice, no-output wording, killed without exit code (S)
+60 :: design :: storage-model :: removed command rows
+
+@shell-retention.test.ts
+21 :: feature :: Shell Daemon :: eviction of retained shells
+107 :: design :: client-server :: workspace-backed Locations
+
+@shell-parse-compatibility.test.ts
+248:28 :: portable :: shell_scan::scan :: resources, saved prefixes and directories table (POSIX rows) (M)
+248:10 :: design :: platform :: PowerShell rows
+284 :: portable :: shell_scan::scan :: prefix for long argument lists (S)
+290,321 :: design :: platform :: PowerShell
+435 :: portable :: shell_scan::scan :: the shared directory command set (S)
+
+@shell-parse-parity.test.ts
+8 :: portable :: shell_scan::scan :: generated supported syntax has valid saved prefixes (M)
+24:22 :: portable :: shell_scan::scan :: resources/prefixes/directories in bash and zsh (M)
+24:5 :: design :: platform :: PowerShell rows
+58 :: ported :: src/tool/shell_scan.rs::oc_scan_assignment_only_input_has_no_command
+66 :: portable :: shell_scan::scan :: commandless redirects keep matching saved prefixes (S)
+77:6 :: ported :: src/tool/shell_scan.rs::oc_scan_malformed_structure_is_opaque :: POSIX rows
+77:3 :: design :: platform :: PowerShell rows
+
+@shell-parse-syntax.test.ts
+7,15,182 :: design :: platform :: PowerShell
+30 :: portable :: shell_scan::scan :: bash/zsh ordinary syntax table extracts commands (M)
+72,84 :: portable :: shell_scan::scan :: heredoc bodies and spans stay with their commands (S)
+134 :: portable :: shell_scan::scan :: zsh glob qualifiers / parameter flags / disown; code qualifiers rejected (S)
+169 :: portable :: shell_scan::scan :: variable sinks with substitution-built subscripts rejected (S)
+
+@shell-parse.test.ts
+55 :: ported :: src/tool/shell_scan.rs::oc_shell_parse_heredoc_resource_is_the_whole_command
+73 :: ported :: src/tool/shell_scan.rs::oc_shell_parse_declarations_keep_nested_commands
+101,111,230 :: design :: platform :: PowerShell
+133 :: ported :: src/tool/shell_scan.rs::oc_shell_parse_static_directory_targets
+
+@shell-scan/adversarial.test.ts
+5 :: portable :: shell_scan::scan :: visible Bash command positions table (M)
+80 :: portable :: shell_scan::scan :: repeated zsh q flags in bounded time (S)
+87,109 :: design :: platform :: PowerShell
+
+@shell-scan/arithmetic.test.ts
+119 :: portable :: tests/shell_differential.rs :: arithmetic rows checked against real bash/zsh (M)
+* :: portable :: shell_scan::scan :: arithmetic tables: kept unevaluated, explicit commands found, malformed rejected, bounded (M)
+
+@shell-scan/bash-safety.test.ts
+* :: portable :: shell_scan::scan :: Bash safety tables: whitespace, fd prefixes, commandless redirects, group redirects, delimiter confusion (M)
+
+@shell-scan/bash-syntax.test.ts
+94,112,286 :: portable :: tests/shell_differential.rs :: the fixtures run in real bash/zsh (add them to the differential corpus) (M)
+* :: portable :: shell_scan::scan :: Bash/Zsh syntax tables: command nodes, ANSI-C quoting, heredoc delimiters, dialect differences (M)
+
+@shell-scan/closure.test.ts
+* :: portable :: shell_scan::scan :: single quotes suppress active syntax (S)
+
+@shell-scan/compound-parity.test.ts
+107 :: portable :: tests/shell_differential.rs :: loops checked against real bash/zsh (M)
+* :: portable :: shell_scan::scan :: function bodies and shorthand loops in every context (M)
+
+@shell-scan/generated.test.ts
+104,127,143,156,180 :: design :: platform :: PowerShell
+* :: portable :: shell_scan::scan :: generated combinations of commands and separators; malformed mutations fail closed (M)
+
+@shell-scan/mutation.test.ts
+5 :: ported :: src/tool/shell_scan.rs::oc_scan_malformed_structure_is_opaque :: malformed Bash input stays opaque
+12 :: design :: platform :: PowerShell
+
+@shell-scan/oracle.test.ts
+* :: ported :: tests/shell_differential.rs :: real-shell oracle (CodeSmith's differential runner checks the scanner against Bash, Zsh, sh, Dash and Bash 3.2)
+
+@shell-scan/parity-regressions.test.ts
+78 :: portable :: tests/shell_differential.rs :: the extracted command really executes (M)
+* :: portable :: shell_scan::scan :: regression table: function definitions, continuations, comments, zsh anonymous functions, process substitutions (M)
+
+@shell-scan/powershell-runtime.test.ts
+* :: design :: platform :: PowerShell
+@shell-scan/powershell-safety.test.ts
+* :: design :: platform :: PowerShell
+@shell-scan/powershell-syntax.test.ts
+* :: design :: platform :: PowerShell
+
+@shell-scan/redirect.test.ts
+
+@shell-scan/scan.test.ts
+122 :: ported :: src/tool/shell_scan.rs::oc_scan_keeps_dynamic_command_names
+250 :: ported :: src/tool/shell_scan.rs::oc_scan_lexical_provenance_quotes_assignments_and_redirects
+* :: design :: platform :: PowerShell
+
+@shell.test.ts
+27,35,40,49,77,93 :: feature :: Shell Resolution Rules :: shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh)
+54 :: portable :: tool::shell :: POSIX shell args (`-c`; zsh `+o nomatch`) (S)
+69 :: portable :: tool::shell :: an unmatched zsh glob is passed through (S)
+* :: design :: platform :: Windows / Git Bash / PowerShell / app execution aliases
+
+@tool-shell-target-environment.test.ts
+* :: design :: client-server :: target environments
+
+@tool-shell.test.ts
+510 :: ported :: src/tool/shell.rs::oc_shell_numeric_symlink_operand_enforces_external_deny
+543 :: ported :: src/tool/shell.rs::oc_shell_continued_directory_operand_enforces_external_deny
+670 :: ported :: src/tool/shell.rs::oc_shell_compound_syntax_approval_compatibility
+735:10 :: ported :: src/tool/shell.rs::oc_shell_ordinary_syntax_reuses_existing_approvals :: bash and zsh rows
+735:4 :: design :: platform :: PowerShell rows
+804,833 :: design :: platform :: PowerShell
+866,898 :: portable :: codemode + tool::shell :: parallel shells from one Code Mode program (M)
+1119 :: ported :: src/tool/shell.rs::oc_shell_permissions_compound_commands_separately
+1622 :: ported :: src/tool/shell.rs::oc_shell_truncates_overflowing_output_from_the_end
+1791 :: design :: effect-internal :: tracing spans
+1831,2433,2517 :: design :: client-server :: Location reload / daemon hand-off
+1996 :: ported :: src/tool/shell.rs::oc_shell_reports_a_silent_background_command
+2250,2283,2316,2338,2357,2408,2564 :: portable :: tool::shell::Jobs::cancel :: a user stop ends the call with the tail, file and shell ID, before or while it starts; SIGTERM-ignoring commands (M)
+2472 :: design :: deliberate :: tool/shell.rs: commands never outlive the session (no daemon hand-off)
+2535 :: portable :: plugin::Plugin::tool_after :: an after hook replaces a stopped call's failure (S)
+
+@shell-parse-compatibility.test.ts
+427 :: portable :: shell_scan::scan :: former tree-sitter gaps table (S)

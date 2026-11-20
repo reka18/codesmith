@@ -1,0 +1,181 @@
+@bus-session-routing.test.ts
+* :: design :: storage-model :: OpenCode's event bus routing of sessions between Locations
+
+@generate.test.ts
+92,209 :: design :: platform :: dynamic AI SDK models
+104,139,158,170,190,224 :: feature :: Stateless Generate API :: one-shot model calls outside a session with their own retry rules
+454,473,486 :: feature :: Image Generation :: image entrypoint
+494,518,598,617,645,657,668 :: feature :: Decision Models :: keyless decision/classifier model calls
+
+@plugin/session-compact.test.ts
+* :: feature :: Plugin Session API :: plugins admitting compaction
+@plugin/session-instructions.test.ts
+* :: feature :: Plugin Session API :: plugin-managed session instruction entries
+@plugin/session-list.test.ts
+* :: feature :: Plugin Session API :: plugins listing sessions
+@plugin/session-remove.test.ts
+* :: feature :: Plugin Session API :: plugins removing sessions
+
+@session-activation.test.ts
+* :: design :: client-server :: cold Location activation
+
+@session-archive.test.ts
+* :: feature :: Session Archiving :: archive / unarchive sessions
+
+@session-background.test.ts
+* :: design :: deliberate :: session.rs: no background subagents
+
+@session-checkpoint-transport.test.ts
+* :: feature :: Responses Checkpoint Continuation :: WebSocket continuation checkpoints for compaction triggers
+@session-compaction-transport.test.ts
+* :: feature :: Responses Checkpoint Continuation :: compaction across WebSocket recovery without stale response IDs
+
+@session-create.test.ts
+133,160,194,308 :: design :: client-server :: project identity across clones/workspaces
+346 :: portable :: store::Store :: a missing title stays unset until generated or supplied (S)
+367,390,981,1002 :: portable :: store::Store::create :: fresh ID when omitted; a retried ID returns the original (S)
+379 :: portable :: store::Store::list :: a trailing-slash directory lists with the same sessions (S)
+403,423 :: design :: storage-model :: immutable create attributes and creation metadata
+477 :: feature :: Per-session Permission Rules :: stored per-session rules inherited by children and forks
+503,513 :: portable :: store::Store :: children inherit the parent's directory; a missing parent is rejected (S)
+524,582 :: portable :: store::Store::list :: root sessions filtered before the page limit; direct children by parent (S)
+558 :: portable :: store::Store::list :: sessions ordered by latest activity (S)
+595 :: feature :: Session Subpath Filter :: project sessions filtered by subpath
+615,676,701,718,753,807,855,898,910 :: feature :: Session Forking :: fork a session at a message boundary
+1014,1032,1044,1058,1088,1167 :: design :: storage-model :: projector created events and replay
+1178,1203 :: feature :: User Shell Commands :: shell command run as a session message
+1222,1239,1253,1282,1299,1317 :: portable :: store::Store::set_selection :: agent/model switches stored; unchanged model ignored; missing session rejected (S)
+1338,1376 :: portable :: store::Store::export / import :: only settled messages exported and imported (S)
+1470,1590,1622 :: design :: storage-model :: aggregate sequences, watermarks and bound-parameter limits
+1577 :: portable :: store::Store::import :: importing over an existing session ID is rejected without changing it (S)
+
+@session-diff.test.ts
+* :: portable :: snapshot::Snapshots::diff :: diff of the busy period containing a user message (M)
+
+@session-environment.test.ts
+11 :: ported :: src/tool/shell.rs::oc_session_environment_stores_replacement_snapshots_by_session
+
+@session-generate.test.ts
+* :: feature :: Stateless Generate API :: generate from settled session context without changing history
+
+@session-instructions.test.ts
+139,199,224,251,287,318 :: feature :: Nested Instructions on Read :: AGENTS.md above a read file injected once
+340 :: portable :: instructions::load :: instructions load without any read (S)
+362 :: design :: storage-model :: synthetic metadata stripping
+
+@session-list.test.ts
+* :: design :: storage-model :: cursor paging of the session list (CodeSmith lists in full)
+
+@session-log.test.ts
+* :: design :: storage-model :: public session event log replay
+
+@session-model-request-hooks.test.ts
+44 :: feature :: Freeform Tool Formats :: custom/freeform tool definitions
+80,120,168,203 :: feature :: HTTP Request Hooks :: plugin hooks on raw HTTP requests/responses
+
+@session-model-request.test.ts
+8,27,107,112,132 :: portable :: runner history :: unsupported media replaced with a visible error, including in tool results (M)
+62 :: feature :: Provider Media Capabilities :: per-provider image formats (xAI)
+182,187,207,222 :: feature :: Old Image Eviction :: oldest images replaced to cap the retained payload
+
+@session-model-transport-live.test.ts
+67,234,258 :: ported :: tests/websocket_session.rs :: one connection for the whole turn (see also codesmith-ai src/parity_ws.rs)
+* :: design :: other :: WebSocket edge cases are covered at the provider layer (codesmith-ai/src/parity_ws.rs) or not reproduced
+
+@session-model-transport.test.ts
+376 :: ported :: tests/websocket_session.rs :: one physical connection for sequential calls
+* :: design :: other :: WebSocket connection pool internals (affinity, rotation, poisoning); the provider layer covers the protocol in codesmith-ai/src/parity_ws.rs
+
+@session-move.test.ts
+* :: design :: deliberate :: session.rs: no moving sessions between Locations
+
+@session-native-compaction.test.ts
+* :: feature :: Native Provider Compaction :: provider-native compaction endpoints
+
+@session-native.test.ts
+* :: feature :: Native Provider Compaction :: native windows and legacy checkpoint formats
+
+@session-owned.test.ts
+* :: design :: client-server :: session handles, inbox ownership and Location placement
+
+@session-projector.test.ts
+1121,1302,1391,1446,1469,1565,1584,1617,1651,1697,1964,2172,2226,2384 :: feature :: Media Blob Store :: media stored once as blobs and referenced
+* :: design :: storage-model :: OpenCode's event projector rows
+
+@session-prompt.test.ts
+288,296,308,322,338 :: design :: effect-internal :: execution delegation
+348,1345 :: design :: storage-model :: inbox admission before promotion
+371,404 :: portable :: tests/runner_parity.rs :: a new prompt after undo drops the undone turns (M)
+433,462,493,518,550 :: portable :: session prompt with attachments :: attachment MIME, file content and images materialized at admission (M)
+590,631,645,658,681,714,747 :: feature :: Media Blob Store :: media refs
+795,824,841 :: portable :: media::prepare_image :: large images normalized; undecodable images passed through; data URL content sniffed (S)
+870,893 :: portable :: media :: malformed or oversized inline attachments rejected without echoing bytes (S)
+916,948,969,984,1004,1024,1041,1061,1085,1110,1130,1156,1213,1241,1322,1387 :: design :: storage-model :: idempotent prompt admission and event streams
+1276,1290,1308 :: design :: client-server :: resume flag on the prompt API
+1410,1436,1476,1506,1522,1557 :: design :: deliberate :: session.rs: no steers or queues
+1467 :: portable :: session :: prompting an unknown session fails (S)
+
+@session-remove.test.ts
+60 :: portable :: store::Store::delete :: deleting a session removes its children (S)
+85 :: design :: client-server :: removal without an instance
+106 :: portable :: store::Store::delete :: deleting a missing session reports it (S)
+
+@session-revert.test.ts
+43 :: ported :: tests/runner_parity.rs::oc_session_revert_undoes_and_restores_a_file_rename_without_losing_either_path
+
+@session-stats.test.ts
+49 :: portable :: stats :: activity and tool reliability aggregated over a range (M)
+* :: design :: storage-model :: OpenCode's part-row layouts and parameter limits
+
+@session-store.test.ts
+169 :: feature :: Session Title Search :: case-insensitive title search
+* :: design :: storage-model :: OpenCode's message paging and part-row hydration
+
+@session-system-prompt.test.ts
+* :: portable :: prompt::system :: renders the default system prompt (S)
+
+@session-usage.test.ts
+* :: portable :: stats / usage cost :: catalog price when the endpoint reports none; reported cost wins; reported zero kept (S)
+
+@session-view.test.ts
+* :: feature :: Session Read State :: viewed/unread watermarks
+
+@session-wait.test.ts
+* :: design :: effect-internal :: awaitIdle delegation
+
+@session-compact.test.ts
+* :: design :: storage-model :: coalescing manual compaction requests in the inbox
+
+@config/compaction.test.ts
+58 :: ported :: src/config.rs::oc_config_compaction_buffer_shares_and_invalid_values :: merge half; reload is not supported (no live reload)
+
+@session-compaction.test.ts
+130 :: ported :: src/compaction.rs::oc_compaction_prompt_preserves_detailed_work_state_and_relevant_files
+140 :: portable :: compaction::transcript :: tool media described without base64 (S)
+158 :: ported :: src/compaction.rs::oc_compaction_truncation_does_not_split_characters
+173,209,233,270,303 :: design :: deliberate :: compaction.rs: the kept tail stays as real messages (no kept-message references or forks)
+359 :: ported :: src/compaction.rs::oc_compaction_prompt_requires_the_checkpoint_headings_in_order
+375 :: ported :: src/compaction.rs::oc_compaction_update_prompt_has_no_legacy_rewrite :: deliberate: no legacy rewrite variant
+382 :: ported :: src/compaction.rs::oc_compaction_prompts_prohibit_task_execution
+387 :: ported :: src/compaction.rs::oc_compaction_auto_ceiling_and_buffers :: cases without input-only limits
+652 :: ported :: tests/parity.rs::oc_compaction_manual_compaction_summarizes_short_context
+763 :: ported :: tests/parity.rs::oc_compaction_updates_an_existing_checkpoint :: model-request half; no compaction hooks
+806,828,856,879 :: design :: deliberate :: compaction.rs: a summary request is not shrunk and retried; the kept tail is real messages
+899 :: feature :: Compaction Hooks :: a hook supplies the summary
+950 :: feature :: Native Provider Compaction :: routes that cannot compact natively
+980,1057,1090,1104,1130,1152,1180 :: feature :: Compaction Prompt-cache Prefix :: summary requests reuse the session's cache prefix and measured input
+* :: feature :: Background Compaction Summaries :: precomputed summaries swapped in at compaction
+
+@session-title.test.ts
+208 :: ported :: tests/parity.rs::oc_title_generates_a_title_from_the_sole_user_message
+241 :: portable :: title :: commentary (non-final response phase) excluded from titles (S)
+284,317 :: ported :: tests/parity.rs::oc_title_uses_a_given_title_without_a_model_request :: adapted: a caller-given title, no title hooks
+340,358,425,438,453,462,475 :: design :: deliberate :: title.rs: titles use the session's own model (no small model or variant selection)
+484 :: ported :: tests/parity.rs::oc_title_generates_from_the_first_user_message_only_once
+503 :: design :: storage-model :: legacy persisted fallback titles
+520 :: portable :: tests/parity.rs :: explicitly requested child sessions get titles (S)
+554 :: portable :: agent config :: no title when the title agent is disabled (S)
+570,615,637,683,741 :: design :: deliberate :: title.rs: no regeneration from later history
+663 :: ported :: src/title.rs::oc_title_clips_a_long_title_without_splitting_an_emoji
+700 :: ported :: tests/parity.rs::oc_title_a_failed_request_falls_back_to_the_first_line :: deliberate: falls back instead of retrying
+719 :: portable :: tests/parity.rs :: a failed title stream does not rename (S)

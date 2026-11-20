@@ -1,0 +1,198 @@
+@session-error.test.ts
+30 :: design :: client-server :: maps AI error reasons onto OpenCode's wire error schema
+70 :: ported :: src/retry.rs::oc_session_error_separates_quota_caps_from_rate_limits :: quota vs rate limit only; the OpenCode Free/Go plan limits are cloud
+138 :: design :: cloud :: OpenCode Console model budgets
+183,196 :: feature :: ChatGPT Subscription Login :: typed ChatGPT (workspace) usage limits need the ChatGPT OAuth provider
+206,222,263,271,296,309 :: design :: client-server :: which error fields OpenCode's API exposes
+353 :: portable :: retry::classify :: accepted transport reads retry, accepted writes and rejected requests do not (S)
+410 :: design :: deliberate :: retry.rs: retry-after / x-should-retry headers are not kept, so not honoured
+
+@session-execution.test.ts
+50,63 :: design :: effect-internal :: execution terminal classification and owner-scope interruption
+/steer|continue|queued|control item/ :: design :: deliberate :: session.rs: no steers or queues
+* :: design :: deliberate :: session.rs: subagents run inside the tool call; no background-subagent reports, job claims or restart recovery
+
+@session-live-tool-metadata.test.ts
+* :: portable :: tool::Progress via Sink :: running tool progress reaches the front end until the call settles (S)
+
+@session-run-coordinator.test.ts
+* :: design :: effect-internal :: execution coordinator (wake/join/interrupt fibers)
+
+@session-runner-message.test.ts
+23 :: feature :: User Shell Commands :: user-run (`!`) background shells entering context via a completion notice
+86 :: design :: storage-model :: maps OpenCode's stored message types
+205 :: design :: deliberate :: compaction.rs: the kept tail stays as real messages
+250,256,263 :: feature :: Mid-session Effort Switch :: recording an effort change as a model-visible update
+272,434,470 :: portable :: session prompt with attachments :: text attachments follow the prompt in one user message, order kept, empty prompt text omitted (S)
+306,343 :: feature :: Skill Mentions :: prepared skills attached to a prompt
+369 :: portable :: session prompt with attachments :: inline text attachment content is decoded (S)
+399 :: feature :: References :: reference directories in model context
+498,719 :: portable :: tests/media_session.rs :: image/PDF attachments and tool media sent as provider media, not base64 text (M)
+528,558,596 :: feature :: Attachment Source Paths :: local source paths announced next to provider media
+624,673 :: feature :: Attachment Deduplication :: durable attachment references deduplicate provider media
+869 :: portable :: runner history :: OpenAI encrypted reasoning metadata replayed on the next request (M)
+900 :: design :: cloud :: OpenCode hosted model route key
+929 :: design :: deliberate :: runner.rs: tools run after the stream ends, a failed stream is retried from the prompt
+1109,1200,1231,1599 :: feature :: Provider State Across Model Switches :: provider metadata kept for the same model, dropped after a switch/abort/failure
+1562 :: design :: storage-model :: V1-migrated tool rows
+
+@session-runner-recorded.test.ts
+* :: design :: other :: OpenCode's recorded-HTTP transport harness (CodeSmith replays recordings in codesmith-ai/src/replay_tests.rs)
+
+@session-runner-retry.test.ts
+123 :: portable :: retry::message :: the error names the network when the host is unreachable (S)
+
+@session-runner-tool-events.test.ts
+88 :: portable :: tests/media_session.rs :: tool media serialized once (S)
+116,140,533,574 :: feature :: Hosted (Provider-executed) Tools in Sessions :: provider-executed tool results in the session
+223,264,277,289 :: design :: storage-model :: progress/failure snapshots of OpenCode's tool parts
+235,252 :: portable :: tests/runner_parity.rs :: an interrupted subagent's failure names its child session; other tools' progress IDs are not exposed (M)
+299,312,489 :: design :: storage-model :: provider metadata flattening and reasoning-state merging in event rows
+340,363,396,438,464,512,591,605 :: design :: storage-model :: event batching/publishing order of the projector
+566 :: design :: storage-model :: binary failure events
+614,670 :: portable :: tests/runner_parity.rs :: a content-filter finish keeps the partial text and fails the step (S)
+
+@session-runner.test.ts
+159,186,209 :: portable :: stats / usage cost :: step cost from the matching context tier; malformed cost fields ignored; no tier without base price (S)
+1036,1062 :: portable :: tests/parity.rs :: the title is generated while the first step runs, once per session (M)
+1050 :: portable :: tests/parity.rs :: an existing title is not replaced (S)
+1095 :: design :: deliberate :: title.rs: a failed title falls back to the first line instead of retrying
+1132,1454,1538 :: design :: client-server :: Location tool registry / registry reload
+1185,1203,1231 :: feature :: Session Context Hooks :: plugin hook that rewrites the model context
+1249,1289,1302,1347 :: portable :: plugin::Plugin::idle :: the idle hook can admit input and runs once the session would go idle (M)
+1378,1414,1440 :: design :: deliberate :: session.rs: no moves or queued input
+1502,1513 :: design :: storage-model :: default prompt recording / synthetic input
+1552,1569,1597,1625,1664,1697,1743,1776,1820,1890,1937,1961,1987,2045,2059,2076,2291,2303,2354,2375,2384,2396,2459,2478,2547,4126 :: feature :: Instruction State Tracking :: chronological instruction/context updates (moves, forks, reverts, API context entries)
+2099,2113 :: portable :: prompt::system :: the model-family prompt is used when the agent has no (or an empty) prompt override (S)
+2134,2154,2180 :: portable :: prompt::system :: the selected/default agent's system prompt comes before durable context (S)
+2207 :: portable :: session::Session :: an unavailable agent fails before any model request (S)
+2228 :: portable :: tests/runner_parity.rs :: skills listed for the newly selected agent after an agent switch (M)
+2251,2272 :: design :: effect-internal :: selection sampled once during observation
+2427 :: feature :: Mid-session Effort Switch :: effort switch recorded as a cache-preserving update
+2575,2617,2642,2665,2697,2721,2754,2795 :: design :: deliberate :: session.rs: no steers or queues, so no compaction priority against them
+2829 :: ported :: tests/parity.rs::oc_compaction_nothing_to_compact_in_an_empty_session
+2848,2867,2893 :: design :: deliberate :: session.rs: manual compaction runs between turns, not at a step boundary
+2915 :: portable :: tests/parity.rs :: provider errors from manual compaction are reported (S)
+2932 :: feature :: Compaction Prompt-cache Prefix :: summary request keeps the session request prefix
+3046:3 :: ported :: tests/parity.rs::oc_compaction_nudges_a_reply_without_the_template
+3046:3 :: portable :: tests/parity.rs :: compaction stops after the one template reminder fails (S)
+3102 :: design :: effect-internal :: plugin activation waits
+3122,3168 :: portable :: tests/parity.rs :: compaction drafts retried after transient failures, bounded across a template correction (M)
+3197 :: portable :: tests/parity.rs :: a compaction refused by the provider is explained (S)
+3224 :: design :: deliberate :: retry.rs: retry headers and retry hooks not honoured
+3265 :: portable :: tests/parity.rs :: a rejected compaction response is not retried or committed (S)
+3287,3315,3349,3373,3395,3427,3450,3493,3534 :: design :: deliberate :: compaction.rs: a summary request is not shrunk and retried
+3561,3588,3610 :: portable :: tests/parity.rs :: cancelled/failed manual compaction recorded without a model call (S)
+3634 :: ported :: tests/parity.rs::oc_compaction_auto_compacts_past_the_buffered_ceiling
+3698,3750 :: feature :: Native Provider Compaction :: provider-native context windows
+3780 :: portable :: compaction::should_compact :: the advertised output limit alone does not trigger compaction (S)
+3794 :: portable :: tests/parity.rs :: a required automatic compaction that fails stops the turn (S)
+3819 :: ported :: tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries
+3842 :: design :: deliberate :: session.rs: no queued input to promote
+3912 :: ported :: tests/parity.rs::oc_compaction_overflow_is_left_to_the_user_when_auto_is_disabled
+3938,3955,3971,3989 :: portable :: tests/parity.rs :: overflow recovery without a configured limit, before an undersized limit, once only, from a raw overflow (M)
+4014,4027,4035,4054 :: portable :: compaction :: output limit fitted to the prompt / capped / summary keeps its room (S)
+4072,4098 :: portable :: tests/parity.rs :: the original overflow is reported when recovery fails; interrupting recovery (M)
+4147 :: design :: storage-model :: projection-only replay of events
+4230,4261,4284,4558 :: portable :: tests/runner_parity.rs :: continue after settling a local tool; full stream consumed before tools settle (S)
+4353,4418,4466 :: portable :: tests/runner_parity.rs :: reasoning/text provider metadata replayed in the next request (M)
+4508 :: feature :: Hosted (Provider-executed) Tools in Sessions :: provider-executed results replayed inline
+4606 :: portable :: runner history :: repeated tool-call IDs settle against their own assistant message (M)
+4631,5417,5465 :: design :: effect-internal :: concurrent resume joining / run fan-out
+4654,4670,4689,4711,4747,4774,4801,4817,4831,4852,4869,4887,4929,4948,5333,5351,5371,6027 :: design :: deliberate :: session.rs: no steers, queues or inbox
+4965,5017,5150 :: design :: deliberate :: session.rs: no restart recovery of compactions
+5037 :: ported :: tests/runner_parity.rs::oc_session_durably_fails_local_tools_left_running_by_a_prior_process_before_continuing
+5084 :: design :: deliberate :: session.rs: subagents run inside the tool call
+5256,5304 :: portable :: tests/runner_parity.rs :: hosted tools / pending tool input left by a prior process are failed before continuing (M)
+5381,5395,5440 :: feature :: Session Request Headers and Cache Keys :: session correlation headers, parent cache affinity, bounded prompt cache keys
+5486 :: ported :: tests/runner_parity.rs::oc_session_durably_settles_local_tool_failures_before_continuing
+5511,5574 :: portable :: tests/runner_parity.rs :: tool defects and policy blocks returned to the model, which continues (S)
+5537 :: design :: effect-internal :: Promise hook failures
+5608 :: ported :: tests/runner_parity.rs::oc_session_interrupts_runner_continuation_on_a_decline_after_settling_an_ordinary_tool_error
+5669 :: ported :: tests/runner_parity.rs::oc_session_returns_permission_corrections_to_the_model_and_continues
+5703 :: ported :: tests/runner_parity.rs::oc_session_returns_configured_permission_denials_to_the_model_and_continues
+5733 :: ported :: tests/runner_parity.rs::oc_session_interrupts_runner_continuation_when_a_question_is_cancelled
+5769,5803,5849,5868,5941 :: design :: deliberate :: runner.rs: tools run after the stream ends, so none is in flight when it fails or is interrupted
+5994 :: ported :: tests/runner_parity.rs::oc_session_forces_a_text_response_on_an_agents_configured_final_step
+6053,6071,6087,6203 :: portable :: tests/runner_parity.rs :: provider errors (before or after step start, raw stream failures) end the step as a visible failure (S)
+6114 :: ported :: tests/runner_parity.rs::oc_session_projects_content_filter_finishes_as_visible_terminal_failures
+6156,6184 :: portable :: tests/runner_parity.rs :: a local tool settles before a content-filter failure; no overflow recovery after output (S)
+6216 :: ported :: src/retry.rs::oc_session_retry_keeps_the_general_allowance_for_other_transient_failures :: backoff schedule bounds
+6251 :: portable :: tests/runner_parity.rs :: no new attempt after interruption during backoff (M)
+6267,6281 :: design :: other :: explicit continuation rejection is a Responses-WebSocket transport detail (tests/websocket_session.rs covers the transport)
+6291 :: ported :: tests/runner_parity.rs::oc_session_retries_an_incomplete_stream_before_output
+6322 :: design :: effect-internal :: tracing span attributes
+6347,6516,6553,6614,6644,6673 :: portable :: tests/runner_parity.rs :: unknown finishes, incomplete streams and mid-stream failures retried cleanly from the prompt (S)
+6370,6385,6582 :: design :: deliberate :: retry.rs: retry-after not honoured
+6401 :: ported :: tests/runner_parity.rs::oc_session_continues_text_after_an_output_token_limit
+6444 :: ported :: tests/runner_parity.rs::oc_session_compacts_when_the_provider_cuts_an_oversized_prompt_to_its_window_and_replies_with_nothing
+6468 :: ported :: tests/runner_parity.rs::oc_session_caps_output_token_limit_continuations_and_resets_for_new_input
+6714,6741 :: design :: deliberate :: runner.rs: a failed stream is retried from the prompt, never resumed from a tool
+6771 :: portable :: tests/runner_parity.rs :: retries share one retry allowance and one assistant identity (M)
+6810 :: portable :: tests/runner_parity.rs :: incomplete-stream retries stop once the allowance is spent (S)
+6842 :: ported :: tests/runner_parity.rs::oc_session_stops_once_the_retry_allowance_is_spent
+6882 :: ported :: tests/runner_parity.rs::oc_session_retries_a_model_call_without_consuming_the_logical_agent_step
+6923 :: ported :: tests/runner_parity.rs::oc_session_does_not_retry_non_eligible_provider_failures
+6932 :: ported :: tests/runner_parity.rs::oc_session_records_a_usage_limit_429_without_retrying :: adapted: a provider usage limit, not OpenCode Console's
+6970 :: portable :: tests/runner_parity.rs :: malformed streamed tool input settles before the provider failure (S)
+7005 :: ported :: tests/runner_parity.rs::oc_session_settles_unfinished_tool_input_after_an_output_limit
+7053 :: ported :: src/runner.rs::oc_session_invalid_tool_input_explains_and_quotes_the_input :: the excerpt text; tests/runner_parity.rs covers the continuation
+7156,7189 :: portable :: tests/runner_parity.rs :: a valid sibling call runs before malformed input is recovered (S)
+7226 :: feature :: Hosted (Provider-executed) Tools in Sessions :: malformed provider-executed input
+7248,7320 :: portable :: tests/runner_parity.rs :: provider failure after malformed input or a local tool call is recorded, no automatic continuation (S)
+7272 :: ported :: tests/runner_parity.rs::oc_session_continues_after_repeated_malformed_tool_input
+7295 :: ported :: tests/runner_parity.rs::oc_session_does_not_continue_malformed_tool_input_past_the_agent_step_limit
+7348,7424,7451,7469,7505 :: feature :: Hosted (Provider-executed) Tools in Sessions :: unresolved hosted tool settlement
+7374,7397 :: portable :: tests/runner_parity.rs :: a tool defect / output persistence failure is kept alongside the provider failure (M)
+7537,7550,7570,7610,7619,7637 :: design :: storage-model :: streamed part ordering in OpenCode's event model
+7601 :: ported :: tests/runner_parity.rs::oc_session_durably_closes_partial_text_when_the_provider_stream_fails :: text, reasoning and tool input cases
+7605 :: portable :: tests/runner_parity.rs :: partial text/reasoning/tool input closed when the stream is interrupted (M)
+* :: design :: other :: unclassified
+
+@session-shell.test.ts
+127,216 :: portable :: tool::shell::Jobs :: background shells run alongside the model and finish on their own (M)
+169 :: design :: deliberate :: session.rs: no session moves
+240,313,379,399 :: feature :: User Shell Commands :: user shell outputs admitted as completions without waking the model
+348 :: design :: effect-internal :: tracing spans
+
+@session-skill.test.ts
+* :: feature :: Skill Mentions :: skill mentions materialized on their prompt
+
+@session-step.test.ts
+43 :: portable :: tests/runner_parity.rs :: each finish reason settles with the requested tool choice (S)
+164 :: portable :: stats :: the endpoint-reported cost wins over the catalog price (S)
+* :: design :: deliberate :: runner.rs: tools run after the stream; stop/shutdown hand-off semantics of OpenCode's daemon
+
+@session-tool-progress.test.ts
+* :: design :: storage-model :: live-only progress vs durable settlement rows
+
+@subagent-completion.test.ts
+20 :: ported :: src/tool/subagent.rs::oc_subagent_report_format
+* :: design :: deliberate :: session.rs: no background work runs past a subagent's report
+
+@subagent-idle-e2e.test.ts
+* :: design :: deliberate :: session.rs: subagents run inside the tool call (no background reports or restart replay)
+
+@subagent-lifetime.test.ts
+* :: design :: deliberate :: session.rs: no session moves or background subagents
+
+@subagent-report.test.ts
+43 :: ported :: tests/runner_parity.rs::oc_subagent_starts_a_child_session_and_returns_its_report :: adapted: reported when the tool call returns
+335 :: ported :: tests/runner_parity.rs::oc_subagent_reports_failures
+* :: design :: deliberate :: session.rs: subagents run inside the tool call (no idle reports, claims or outbox)
+
+@tool-subagent.test.ts
+226,541,591,811,935,995 :: design :: deliberate :: session.rs: subagents run inside the tool call (no background steering or notices)
+312 :: design :: client-server :: global registration across Locations
+344 :: ported :: tests/runner_parity.rs::oc_subagent_prevents_subagents_from_launching_subagents_by_default
+380 :: ported :: tests/runner_parity.rs::oc_subagent_allows_nested_subagents_up_to_the_configured_depth
+422 :: ported :: tests/runner_parity.rs::oc_subagent_starts_a_child_session_and_returns_its_report :: adapted: returns the report, not a running handle
+484 :: ported :: tests/runner_parity.rs::oc_subagent_continues_an_existing_child_session
+646 :: ported :: tests/runner_parity.rs::oc_subagent_rejects_unrelated_children
+741 :: portable :: tests/runner_parity.rs :: the child runs on an explicitly requested model (S)
+914 :: ported :: tests/runner_parity.rs::oc_subagent_starts_a_child_session_and_returns_its_report
+965 :: ported :: tests/runner_parity.rs::oc_subagent_reports_failures
+
+@session-runner-message.test.ts
+55 :: ported :: src/runner.rs::oc_session_message_omits_empty_assistant_turns
+1078 :: ported :: src/runner.rs::oc_session_message_omits_reasoning_only_assistant_turns

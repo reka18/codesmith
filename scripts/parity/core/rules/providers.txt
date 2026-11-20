@@ -1,0 +1,200 @@
+@aisdk-native.test.ts
+* :: design :: platform :: AI SDK npm packages (CodeSmith implements the wire protocols natively in codesmith-ai)
+@aisdk.test.ts
+* :: design :: platform :: AI SDK bridging (CodeSmith implements the wire protocols natively in codesmith-ai)
+@provider.test.ts
+* :: design :: platform :: bundled AI SDK / native package entrypoints
+
+@catalog.test.ts
+533,640 :: portable :: config::resolve_model :: default model when none is configured; a disabled provider's default ignored (S)
+562,586 :: design :: cloud :: OpenCode free models
+665,696 :: design :: deliberate :: title.rs: no small model
+* :: feature :: Model Catalog (models.dev) :: OpenCode's editable provider/model catalog and its events
+
+@config/provider-options.test.ts
+* :: portable :: codesmith_ai options :: provider/model/variant options split into settings and body (S)
+
+@config/provider.test.ts
+346,373,400,544 :: portable :: config providers :: key auth for custom providers, default custom model metadata, model types (S)
+82,136,201,244,1180 :: portable :: config providers :: provider and model compatibility precedence and later overrides (S)
+790 :: portable :: config providers :: a configured baseURL overrides model URLs (S)
+1088,1137 :: portable :: config variants :: configured variant bodies kept unchanged (S)
+598,713,737,768 :: design :: deliberate :: config.rs: no v1 format migration
+* :: feature :: Model Catalog (models.dev) :: catalog capabilities, packages and generated variants
+
+@config/warming.test.ts
+* :: feature :: Prompt-cache Warming :: keeping provider caches warm
+
+@credential-refresh.test.ts
+* :: feature :: OAuth Provider Logins :: refreshable provider credentials
+@credential.test.ts
+20 :: portable :: auth :: store, update, list and remove saved keys (S)
+* :: feature :: OAuth Provider Logins :: multiple credentials per integration
+
+@github-copilot/models.test.ts
+* :: feature :: Provider Plugins :: GitHub Copilot
+@modal/models.test.ts
+* :: feature :: Provider Plugins :: Modal
+
+@model-free.test.ts
+* :: design :: cloud :: OpenCode free models
+
+@model-plugins.test.ts
+* :: feature :: Model Catalog (models.dev) :: plugin-edited model catalogs
+
+@model-resolver.test.ts
+66,734 :: portable :: config providers (azure) :: Azure deployment routing (S)
+175,204,226,244,1199 :: feature :: Provider Plugins :: Bedrock Mantle / Vertex Anthropic routes
+262,304,454,501,515,537,608,631,648,688,711 :: portable :: config::resolve_model :: API model IDs, empty keys omitted, env templates, unresolved variables rejected, variant overlays, stored vs configured credentials (S)
+585 :: portable :: codesmith_ai options :: xAI Responses effort with reasoning summaries (S)
+1246,1277 :: portable :: config providers :: OpenRouter / Mistral headers and body (S)
+* :: design :: platform :: AI SDK / native package routing and loaders
+
+@model.test.ts
+* :: ported :: src/config.rs::oc_config_normalizes_short_model_selections :: model selection parsing
+
+@models.test.ts
+* :: feature :: Model Catalog (models.dev) :: fetching and caching the models.dev catalog
+
+@network-guard.test.ts
+* :: design :: platform :: Bun network guard for tests
+
+@npm-config.test.ts
+* :: design :: platform :: npm configuration
+@npm.test.ts
+* :: design :: platform :: npm package installs
+
+@oauth-page.test.ts
+* :: feature :: OAuth Provider Logins :: OAuth callback page
+
+@plugin-failure.test.ts
+* :: design :: deliberate :: plugin.rs: plugins are compiled in, not loaded at runtime
+@plugin.test.ts
+537 :: feature :: Plugin Session API :: plugins creating child sessions
+604,674 :: feature :: OAuth Provider Logins :: plugin credential activation
+* :: design :: deliberate :: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
+@plugin/host-model.test.ts
+* :: design :: deliberate :: plugin.rs: compiled-in plugins
+@plugin/identity.test.ts
+* :: design :: deliberate :: plugin.rs: compiled-in plugins
+@plugin/internal-flag.test.ts
+* :: design :: deliberate :: plugin.rs: compiled-in plugins
+@plugin/module.test.ts
+* :: design :: deliberate :: plugin.rs: compiled-in plugins (no module loading)
+@plugin/supervisor.test.ts
+* :: design :: deliberate :: plugin.rs: compiled-in plugins (no plugin supervisor process)
+@plugin/supervisor-reload.test.ts
+* :: design :: deliberate :: plugin.rs: compiled-in plugins (no plugin supervisor process)
+@plugin/promise-tool.test.ts
+* :: design :: platform :: Promise (JS) plugin tools
+@plugin/promise-tool-cancel.test.ts
+* :: design :: platform :: Promise (JS) plugin tools
+@plugin/models-dev.test.ts
+* :: feature :: Model Catalog (models.dev) :: models.dev provider plugin
+@plugin/warming.test.ts
+* :: feature :: Prompt-cache Warming :: keeping provider caches warm
+@plugin/vcs-init.test.ts
+* :: design :: client-server :: VCS init plugin RPC
+@plugin/worktree.test.ts
+* :: design :: client-server :: worktree plugin RPC (CodeSmith's worktrees are a CLI flag)
+
+@plugin/tool-input-repair.test.ts
+240 :: portable :: tool::repair :: numeric and boolean strings coerced (S)
+73 :: portable :: tool::repair :: a stringified root object parsed (S)
+* :: feature :: Tool Input Repair :: schema-guided repair of nested containers, nulls, unions, tuples and dictionaries
+@plugin/tool-input-repair-integration.test.ts
+* :: feature :: Tool Input Repair :: repair before validation, other harnesses' tool names, Code Mode calls
+
+@plugin/provider-azure.test.ts
+716 :: portable :: config providers (azure) :: provider and model resource URLs expanded (S)
+* :: feature :: Provider Plugins :: Azure (CLI auth, deployment discovery, WebSockets)
+@plugin/provider-openrouter.test.ts
+25 :: portable :: config providers :: OpenRouter referer headers (S)
+* :: feature :: Provider Plugins :: OpenRouter legacy behaviour
+@plugin/provider-ollama.test.ts
+* :: feature :: Local Model Discovery :: discovering local Ollama models and metadata
+@plugin/provider-lmstudio.test.ts
+* :: feature :: Local Model Discovery :: discovering LM Studio models and context
+@plugin/provider-vllm.test.ts
+* :: feature :: Local Model Discovery :: discovering vLLM models
+@plugin/provider-openai.test.ts
+292 :: portable :: session request :: no default output limit sent to OpenAI (S)
+317 :: ported :: tests/websocket_session.rs :: WebSocket only from explicit policy
+* :: feature :: ChatGPT Subscription Login :: ChatGPT OAuth and codex catalog
+@plugin/provider-openai-context-caps.test.ts
+* :: feature :: ChatGPT Subscription Login :: ChatGPT context caps
+@plugin/provider-chatgpt.test.ts
+* :: feature :: ChatGPT Subscription Login :: ChatGPT provider
+@plugin/provider-xai.test.ts
+* :: feature :: OAuth Provider Logins :: xAI device OAuth
+@plugin/provider-cerebras.test.ts
+* :: feature :: Provider Plugins :: Cerebras integration header
+@plugin/provider-github-copilot.test.ts
+* :: feature :: Provider Plugins :: GitHub Copilot
+@plugin/provider-gitlab.test.ts
+* :: feature :: Provider Plugins :: GitLab Duo
+@plugin/provider-gitlab-oauth.test.ts
+* :: feature :: Provider Plugins :: GitLab Duo OAuth
+@plugin/provider-amazon-bedrock.test.ts
+* :: feature :: Provider Plugins :: Amazon Bedrock
+@plugin/provider-google-vertex.test.ts
+* :: feature :: Provider Plugins :: Google Vertex
+@plugin/provider-cloudflare-ai-gateway.test.ts
+* :: feature :: Provider Plugins :: Cloudflare AI Gateway
+@plugin/provider-cloudflare-workers-ai.test.ts
+* :: feature :: Provider Plugins :: Cloudflare Workers AI
+@plugin/provider-databricks.test.ts
+* :: feature :: Provider Plugins :: Databricks
+@plugin/provider-digitalocean.test.ts
+* :: feature :: Provider Plugins :: DigitalOcean
+@plugin/provider-dynamic.test.ts
+* :: feature :: Provider Plugins :: dynamic providers
+@plugin/provider-kilo.test.ts
+* :: feature :: Provider Plugins :: Kilo
+@plugin/provider-llmgateway.test.ts
+* :: feature :: Provider Plugins :: LLM Gateway
+@plugin/provider-nvidia.test.ts
+* :: feature :: Provider Plugins :: NVIDIA
+@plugin/provider-poe.test.ts
+* :: feature :: Provider Plugins :: Poe
+@plugin/provider-sap-ai-core.test.ts
+* :: feature :: Provider Plugins :: SAP AI Core
+@plugin/provider-snowflake-cortex.test.ts
+* :: feature :: Provider Plugins :: Snowflake Cortex
+@plugin/provider-zenmux.test.ts
+* :: feature :: Provider Plugins :: ZenMux
+@plugin/provider-opencode.test.ts
+* :: design :: cloud :: OpenCode Zen / hosted provider
+@plugin/provider-opencode-watches.test.ts
+* :: design :: cloud :: OpenCode hosted watches
+@plugin/provider-opencode-artifacts.test.ts
+* :: design :: cloud :: OpenCode hosted artifacts
+
+@usage-limits.test.ts
+* :: design :: cloud :: OpenCode Console usage limits
+@plugin/provider/claude-agent/claude/branches.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/probe.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/recorder.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/session.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/sessions.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/status.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/sync.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/claude/tools.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/language-model/convert.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/language-model/error.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/plugin.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/sync/sync.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync
+@plugin/provider/claude-agent/tools/tools.test.ts
+* :: feature :: Claude Agent SDK Provider :: Claude Code (Agent SDK) as a provider, with its sessions, tools and sync

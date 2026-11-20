@@ -1,0 +1,160 @@
+@agent.test.ts
+30,54,90,110,123 :: design :: effect-internal :: agent service events and replayable transforms
+45,139 :: portable :: agent::resolve :: no custom agents / runtime defaults for created agents (S)
+70 :: portable :: agent::list :: the selected default agent is listed first (S)
+170 :: portable :: agent::resolve :: built-in agents allow external directories without opting into shell (S)
+220 :: portable :: agent::resolve :: built-in subagents are denied the subagent tool (S)
+
+@command.test.ts
+11,48 :: feature :: Callback Commands :: plugin commands that run code
+36 :: portable :: command::load :: later command definitions replace earlier ones (S)
+
+@config/agent.test.ts
+35 :: portable :: agent config :: named color tokens ignored (S)
+41,124,134,438,524 :: feature :: Markdown Agent Files :: agents defined as Markdown files with frontmatter (and legacy fields)
+93 :: feature :: Markdown Agent Files :: Markdown agent fields
+145,265 :: portable :: agent::resolve :: home-relative permission paths; global permissions before agent-specific (S)
+158 :: design :: platform :: Windows paths
+175 :: design :: cloud :: remote (well-known) permission defaults
+355 :: portable :: agent::resolve :: configured agent fields mapped; unspecified variant kept (S)
+417 :: portable :: agent::resolve :: a built-in agent disabled by config is removed (S)
+578,613,650,674 :: design :: deliberate :: config.rs: no live reload or file watching
+
+@config/command-subagent.test.ts
+* :: design :: deliberate :: command.rs: no subtask/subagent mode for commands
+
+@config/command.test.ts
+158 :: portable :: command::load :: inline and file commands in config order (S)
+* :: design :: deliberate :: config.rs: no live reload or file watching
+
+@config/config.test.ts
+98,186,743 :: feature :: Config Source Toggles :: disabling the global config / home-level .claude and agents directories
+141 :: portable :: config::load :: .claude directories skipped when Claude Code compatibility is off (S)
+221 :: portable :: config::load :: unreadable discovery roots treated as absent (S)
+292,354,367,374,427,509,563,1044,1138 :: design :: deliberate :: config.rs: no system, MDM, well-known or integration config
+709,772,823,870,914,955,1007,1689 :: design :: deliberate :: config.rs: no live reload or file watching
+1277 :: design :: other :: OpenCode's source-aware config diagnostics logging
+1369,1404,1423,1427,1434,1442,1459,1484,1533,1552,1566,1581,1602,1628,2063,2096 :: design :: deliberate :: config.rs: no v1 format migration
+1386 :: design :: deliberate :: config.rs: named maps ordered by key, not source order
+1664 :: portable :: config::load :: global ecosystem directories found twice load once (S)
+2280 :: design :: deliberate :: config.rs: an invalid file is an error naming it (src/config.rs::oc_config_an_invalid_file_is_an_error_naming_it pins the difference)
+
+@config/discovery.test.ts
+* :: design :: effect-internal :: filesystem probe minimization during discovery
+
+@config/entry-observer.test.ts
+* :: design :: deliberate :: config.rs: no live reload
+@config/image.test.ts
+* :: design :: deliberate :: config.rs: no live reload (image limits merge is covered by read/media tests)
+@config/snapshot.test.ts
+* :: design :: deliberate :: config.rs: no live reload
+@config/tool-output.test.ts
+* :: design :: deliberate :: config.rs: no live reload
+@config/shell.test.ts
+* :: design :: deliberate :: config.rs: no live reload
+@config/websearch.test.ts
+* :: design :: deliberate :: config.rs: no live reload
+@config/watch.test.ts
+* :: design :: deliberate :: config.rs: no file watching
+@config/reload.test.ts
+* :: design :: deliberate :: config.rs: no live reload
+
+@config/markdown.test.ts
+10,16 :: ported :: src/skill.rs::oc_skill_frontmatter_values_with_colons_and_brackets
+22,30 :: design :: deliberate :: skill.rs: frontmatter is read as flat key: value lines, so nothing fails to parse
+36 :: portable :: skill frontmatter :: plain content without frontmatter (S)
+
+@config/model.test.ts
+23 :: portable :: config::split_variant :: malformed selections and reserved fragments rejected (S)
+
+@config/normalization.test.ts
+* :: design :: deliberate :: config.rs: no v1 format migration or normalization layer
+
+@config/policy.test.ts
+85,104,161,180,189,198 :: portable :: permission::evaluate :: last-match precedence, case-insensitive files, ask-to-deny but never grant, later allow lifts deny, bare wildcard (S)
+134 :: design :: deliberate :: config.rs: project rules come after (and so override) global ones
+* :: design :: cloud :: organization / Console / integration policies
+
+@config/skill.test.ts
+128 :: design :: deliberate :: skill.rs: disable-model-invocation not supported
+140 :: ported :: src/skill.rs::oc_skill_ids_come_from_the_folder_and_name_defaults_to_it
+180,254 :: portable :: skill::discover :: config entry types map to skill directories; a worktree copy beats the parent checkout's (S)
+216,288 :: feature :: Remote Skills :: downloaded and URL skill sources
+306,340,367,408,432 :: design :: deliberate :: config.rs: no file watching
+
+@flag.test.ts
+* :: design :: deliberate :: CodeSmith has no OPENCODE_FLAGS experimental-flag system; features are config settings
+
+@instruction-discovery.test.ts
+124,145,158 :: feature :: Instruction State Tracking :: ordered instruction values and granular updates
+388 :: design :: deliberate :: instructions.rs: configured URLs are not fetched
+601 :: design :: platform :: Windows drive letters
+646 :: portable :: instructions::load :: one failing source does not fail the rest (S)
+676 :: design :: deliberate :: instructions.rs: files read once per session
+711 :: design :: client-server :: sandbox-denied files
+743 :: portable :: instructions::load :: canonical boundaries and project opt-out (S)
+
+@instruction-state.test.ts
+* :: design :: deliberate :: instructions.rs: files read once per session, no change or removal notices
+
+@instructions/builtins.test.ts
+37 :: portable :: prompt::system :: environment and date instructions (S)
+60,73 :: feature :: Instruction State Tracking :: daily date updates mid-session
+
+@instructions/index.test.ts
+* :: feature :: Instruction State Tracking :: instruction source deltas
+
+@permission.test.ts
+218,244 :: portable :: permission + agent :: omitted agent uses build's rules; no default agent denies (S)
+343,358 :: design :: client-server :: pending-request rows and JSON encoding
+385 :: ported :: src/permission.rs::oc_permission_declining_fails_the_request
+403 :: portable :: session :: a rejection also rejects sibling requests of the same step (M)
+422,454 :: feature :: Saved Approvals Management :: listing, editing and removing saved approvals per project
+487 :: portable :: permission :: pending auto-approval skipped after an "always" for a guarded request (S)
+730:72 :: ported :: src/permission.rs::oc_permission_shell_scanner_impact :: Bash/Zsh fixtures
+730:24 :: design :: platform :: PowerShell fixtures
+860:5 :: ported :: src/permission.rs::oc_permission_always_covers_repeats_and_narrows_prefix_scope :: Bash fixtures
+860:2 :: design :: platform :: PowerShell fixtures
+
+@plugin/command.test.ts
+* :: portable :: command::builtin :: built-in init and review commands registered (S)
+
+@plugin/optimize.test.ts
+* :: feature :: Model-lab Prompt Plugins :: per-model prompt optimization plugins
+
+@plugin/permission-assert.test.ts
+* :: feature :: Plugin Permission API :: plugins asserting permissions
+
+@plugin/plan.test.ts
+159 :: portable :: agent::PLAN_REMINDER :: plan reminder injected on switching to plan (S)
+* :: feature :: Plan Mode Plugin (Plan Directory) :: plan files in a Plan directory, enter/leave reminders reconciled with history
+
+@plugin/skill.test.ts
+22 :: feature :: Built-in Skills :: skills shipped with the app
+59 :: design :: effect-internal :: plugin source labels
+
+@plugin/verbosity.test.ts
+* :: portable :: codesmith_ai options :: OpenAI Responses verbosity defaults (S)
+
+@reference-instructions.test.ts
+* :: feature :: References :: reference sources listed in instructions
+@reference.test.ts
+* :: feature :: References :: reference sources (Git repositories)
+
+@skill-discovery.test.ts
+* :: feature :: Remote Skills :: downloaded skills
+
+@skill.test.ts
+35,212 :: portable :: skill + permission :: denied skills hidden and refused (S)
+105 :: design :: cloud :: organization policy
+77,122,141,157,177,195 :: design :: effect-internal :: skill registry transforms and events
+225 :: ported :: src/tool/read.rs::oc_read_virtual_skill_paths
+
+@skill/instructions.test.ts
+48 :: portable :: skill::instructions :: described skills rendered into the prompt (S)
+83,120 :: feature :: Instruction State Tracking :: skill list deltas
+144,155,169,185 :: portable :: skill + permission :: skill list follows the agent's skill rules (S)
+
+@variant.test.ts
+17,205 :: portable :: codesmith_ai::options::builtin_variants :: Messages and Chat Completions variants for direct providers (S)
+* :: feature :: Provider Plugins :: provider-specific variant spellings (gateways, Bedrock, Workers AI, Cohere, GitLab, Mantle, ...)

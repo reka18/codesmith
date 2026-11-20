@@ -1,0 +1,147 @@
+@file-access-path.test.ts
+242 :: feature :: Repository-scoped External Approvals :: an "always" external approval saved at the enclosing repository
+262 :: design :: client-server :: Location Environment driver
+289 :: design :: effect-internal :: schema input decoding
+305 :: design :: platform :: Windows drive paths
+* :: portable :: tool read/write/edit external_directory checks :: path resolution (relative, prospective, symlinked, tilde) and which targets need external_directory (S)
+
+@file-access.test.ts
+49 :: design :: effect-internal :: invocation identity on the assertion
+* :: portable :: tool external_directory checks :: external directory authorized before the file's own rules; denial stops; first-seen order (S)
+
+@file-mutation.test.ts
+73 :: design :: other :: append API of OpenCode's FileMutation service (no tool appends)
+174,203,225 :: design :: effect-internal :: transaction locks across service instances
+* :: portable :: tool::write :: writes create parents, keep one BOM, external targets, concurrent writes serialize (S)
+
+@filesystem/search.test.ts
+147 :: portable :: tool::glob :: wildcard directory rules from .gitignore are honoured (S)
+238 :: portable :: tool::glob :: a scan from home is bounded (S)
+* :: design :: other :: OpenCode's fff/ripgrep index layers; CodeSmith walks the tree per call
+
+@formatter.test.ts
+181 :: portable :: format::builtins :: formatter extension matching table (S)
+197,214,246,278 :: portable :: format::Formatter::file :: disabled formatters skipped; no formatter -> unformatted; first success stops; next tried on failure (S)
+224,305,335 :: design :: deliberate :: config.rs: no live reload (formatter state is per session)
+
+@image-photon.test.ts
+* :: design :: platform :: Photon WASM worker pool (CodeSmith resizes in-process with the image crate)
+
+@mime.test.ts
+* :: portable :: media::detect :: byte sniffing: text fallback, BM text, BMP prefixes, ISO-BMFF brands (S)
+
+@patch.test.ts
+* :: feature :: Patch Tool (apply_patch) :: the apply_patch format parser
+
+@tool-patch.test.ts
+* :: feature :: Patch Tool (apply_patch) :: the apply_patch tool OpenCode offers GPT-5+ models
+
+@tool-model-policy.test.ts
+50,58,100 :: feature :: Patch Tool (apply_patch) :: patch instead of edit/write per model
+* :: feature :: Code Mode Tool Placement Policy :: per-model direct vs Code Mode tool placement under full_codemode
+
+@plugin/websearch.test.ts
+* :: design :: deliberate :: tool/websearch.rs: self-hosted SearXNG only, no hosted search providers
+
+@websearch.test.ts
+* :: design :: deliberate :: tool/websearch.rs: one SearXNG backend, no provider registry, consent or failover
+
+@tool-websearch.test.ts
+101 :: portable :: tool::websearch :: permission asked before searching (S)
+144 :: portable :: tool::websearch :: flat results (S)
+185 :: portable :: tool::websearch :: the no-results fallback text (S)
+431 :: portable :: tool::websearch :: HTTP failures reported safely (S)
+* :: design :: deliberate :: tool/websearch.rs: no provider consent forms, provider choice or failover
+
+@ripgrep.test.ts
+258,262 :: design :: platform :: downloading a pinned ripgrep binary (CodeSmith links ripgrep's crates)
+* :: portable :: tool::glob / tool::grep :: broken symlinks and bad ignore globs, hidden before limit, include filters, non-UTF-8 lines, ignored files, no .git, bounded long-line previews (S)
+
+@tool-edit.test.ts
+651 :: ported :: src/tool/edit.rs::oc_edit_refuses_invalid_utf8
+677 :: ported :: src/tool/edit.rs::oc_edit_mixed_endings_keep_each_regions_endings
+
+@tool-execute.test.ts
+75,176,180,188,195,217,227,252,286,311,403,442,473 :: design :: platform :: Bun/Node globals and fetch body internals (CodeSmith's Code Mode runs in Boa without them)
+35 :: feature :: Freeform Tool Formats :: execute taking raw code as freeform text
+676 :: design :: effect-internal :: shared prepared runtime
+759,788 :: feature :: Code Mode Progress :: execute progress rows
+* :: portable :: codemode::execute :: Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, fetch through webfetch rules, namespaces, nested call IDs (M)
+
+@tool-html-markdown-budget.test.ts
+
+@tool-image-generate.test.ts
+* :: feature :: Image Generation :: image_generate tool
+
+@tool-video-generate.test.ts
+* :: feature :: Video Generation :: video_generate tool
+@video-generation.test.ts
+* :: feature :: Video Generation :: video jobs
+@voice.test.ts
+* :: feature :: Voice :: voice models / GPT-Live
+
+@tool-media-target-environment.test.ts
+* :: feature :: Image Generation :: media tools in a target environment
+
+@tool-opencode.test.ts
+* :: feature :: OpenCode Self-management Tool :: the `opencode` tool (models, worktrees, session moves)
+
+@tool-output.test.ts
+51 :: ported :: src/tool/mod.rs::oc_tool_output_keeps_the_preview_when_saving_fails
+146,223,248,267,279 :: design :: other :: multi-part tool results (CodeSmith tool output is one string)
+318 :: ported :: src/tool/mod.rs::oc_tool_output_cleans_up_by_modification_time
+
+@tool-question.test.ts
+73 :: portable :: question schema :: one item schema for the questions array (S)
+101 :: portable :: permission + question :: a denied question is not offered (S)
+130 :: portable :: question :: answers returned to the model without a permission prompt (S)
+209 :: design :: storage-model :: tool ownership metadata
+239 :: portable :: question :: dismissed questions stay out of model-facing output (S)
+
+@tool-read-filesystem.test.ts
+227 :: design :: client-server :: Environment not-found error
+726 :: ported :: src/tool/read.rs::oc_read_pdfs_as_media
+* :: portable :: tool::read :: paging, past-end and negative offsets, long lines, byte budgets, NUL detection, lossy UTF-8, symlinks, directory listings (S)
+
+@tool-read.test.ts
+220 :: ported :: src/tool/read.rs::oc_read_code_mode_placement
+599 :: ported :: src/tool/read.rs::oc_read_pdfs_as_media
+675 :: ported :: src/tool/read.rs::oc_read_binary_failure_returned_to_model
+822 :: ported :: src/tool/read.rs::oc_read_suggests_close_names_from_same_folder
+891 :: ported :: src/tool/read.rs::oc_read_suggests_close_folder_names
+1097 :: ported :: src/tool/read.rs::oc_read_pagination_with_continuation
+1171 :: ported :: src/tool/read.rs::oc_read_virtual_skill_paths
+
+@tool-registry.test.ts
+96,102,742,993 :: portable :: tool registry + codemode :: execute offered only with Code Mode; tools direct when execute is denied (S)
+1011 :: portable :: tool registry :: disabled tools with edit aliases and ordered wildcard precedence (S)
+1209,1234,1280,1311 :: portable :: plugin::Plugin::tool_before :: a hook renaming a call, including inside Code Mode (M)
+1341 :: ported :: src/tool/read.rs::oc_read_drops_undecodable_image_data :: image normalization through read
+* :: design :: effect-internal :: OpenCode's tool registry overlays, transforms, scopes and codecs
+
+@tool-schema.test.ts
+245,330,389,436,494,518,559 :: portable :: tool schema validation :: JSON-schema validation of tool input and readable failures (S)
+* :: design :: effect-internal :: Effect/Zod schema projection
+
+@tool-search-target-environment.test.ts
+* :: design :: client-server :: target environments
+
+@tool-search.test.ts
+* :: portable :: tool::glob / tool::grep :: malformed globs vs empty results, hidden before limit, default limits, empty pattern, explicit paths, no matches, bad regex, external_directory, missing paths (S)
+
+@tool-skill.test.ts
+34 :: portable :: tool skill + permission :: a denied skill is refused before loading (S)
+69 :: portable :: tool skill :: lists skills and loads the chosen one's content (S)
+
+@tool-target-environment.test.ts
+* :: design :: client-server :: target environments
+
+@tool-todo.test.ts
+38 :: design :: deliberate :: todowrite is always on in CodeSmith
+45 :: portable :: tool::todo :: todowrite summarizes the update (S)
+
+@tool-write.test.ts
+* :: portable :: tool::write :: create/overwrite relative and absolute files, formatter, BOM, external approvals and denials (S)
+
+@formatter.test.ts
+156 :: portable :: format::builtins :: per-formatter detection table (S)

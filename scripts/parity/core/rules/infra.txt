@@ -1,0 +1,149 @@
+@app.test.ts
+* :: design :: effect-internal :: app layer
+@boot-work.test.ts
+* :: design :: effect-internal :: boot work
+@effect-app-node-platform.test.ts
+* :: design :: effect-internal :: Effect platform layer
+@effect-simplification-types.test.ts
+* :: design :: effect-internal :: Effect type tests
+@effect/keyed-mutex.test.ts
+* :: design :: effect-internal :: keyed mutex
+@effect/layer-node/layer-node-types.test.ts
+* :: design :: effect-internal :: layer graph types
+@effect/layer-node/layer-node.test.ts
+* :: design :: effect-internal :: layer graph
+@effect/layer-node/node-build.test.ts
+* :: design :: effect-internal :: layer graph builds
+@effect/observability.test.ts
+* :: design :: effect-internal :: OpenTelemetry wiring
+@effect/cross-spawn-spawner.test.ts
+* :: design :: effect-internal :: process spawner
+@instance-vanilla.test.ts
+* :: design :: effect-internal :: instance bootstrap
+@preload.test.ts
+* :: design :: effect-internal :: module preload
+@rpc-handler-errors.test.ts
+* :: design :: client-server :: RPC handler errors
+@shared-schema.test.ts
+* :: design :: effect-internal :: shared schema
+@logging.test.ts
+* :: design :: effect-internal :: logger layer
+@event-logger.test.ts
+* :: design :: effect-internal :: event logger
+@bus.test.ts
+* :: design :: storage-model :: OpenCode's event bus
+@bus-unpersisted.test.ts
+* :: design :: storage-model :: OpenCode's event bus
+@database.test.ts
+* :: design :: storage-model :: OpenCode's database layer
+@database-drizzle.test.ts
+* :: design :: storage-model :: drizzle ORM
+@database-migration.test.ts
+* :: design :: storage-model :: OpenCode's schema migrations
+@sqlite-bundle.test.ts
+* :: design :: platform :: bundled SQLite driver
+@sqlite-interrupt.test.ts
+* :: design :: storage-model :: SQLite interruption in Effect
+@sqlite-node.test.ts
+* :: design :: platform :: node SQLite driver
+@sqlite-workerd.test.ts
+* :: design :: platform :: workerd SQLite driver
+@state.test.ts
+* :: design :: storage-model :: event-sourced state
+@state-group.test.ts
+* :: design :: storage-model :: event-sourced state groups
+@state-replay.test.ts
+* :: design :: storage-model :: event replay
+@storage-failure.test.ts
+* :: design :: storage-model :: storage failure handling
+@kv.test.ts
+* :: design :: storage-model :: OpenCode's KV table
+@v1-migration.test.ts
+* :: design :: storage-model :: migrating OpenCode v1 storage
+@shared-cache.test.ts
+* :: design :: effect-internal :: shared cache with retries
+
+@location.test.ts
+* :: design :: client-server :: Locations
+@location-activity.test.ts
+* :: design :: client-server :: Locations
+@location-filesystem.test.ts
+* :: design :: client-server :: Locations
+@location-layer.test.ts
+* :: design :: client-server :: Locations
+@location-missing-project.test.ts
+* :: design :: client-server :: Locations
+@location-retain.test.ts
+* :: design :: client-server :: Locations
+@project-activate.test.ts
+* :: design :: client-server :: project registry
+@project-icon.test.ts
+* :: design :: client-server :: project icons for the desktop/web app
+@workspace.test.ts
+* :: feature :: Workspaces :: OpenCode workspaces (remote/sandboxed environments)
+@environment.test.ts
+* :: design :: client-server :: Location environments (memory/local/GNU exec)
+@artifact.test.ts
+* :: design :: cloud :: hosted artifacts
+@browser-attach.test.ts
+* :: feature :: Browser Attachment :: attaching a browser to a session
+@browser-idle.test.ts
+* :: feature :: Browser Attachment :: attaching a browser to a session
+@wellknown.test.ts
+* :: design :: cloud :: well-known remote config
+@form.test.ts
+* :: feature :: MCP Elicitation :: forms behind elicitation and questions (conditional fields)
+
+@filesystem/filesystem.test.ts
+* :: design :: effect-internal :: OpenCode's FSUtil service
+@filesystem/file-watch.test.ts
+* :: feature :: File Watching :: watching files for changes
+@filesystem/watcher.test.ts
+* :: feature :: File Watching :: watching files for changes
+@filesystem/location-watcher-policy.test.ts
+* :: feature :: File Watching :: watching files for changes
+
+@project.test.ts
+465,481,498,513,529,541,567,642 :: portable :: worktree::project_id :: project identity from the repository (root commit / remote), nested dirs resolve to the root, linked worktrees (S)
+580,593,611,629 :: feature :: Mercurial VCS :: Mercurial project markers
+* :: design :: client-server :: OpenCode's project registry (list, archive, activity)
+
+@repository.test.ts
+* :: feature :: References :: Git repository references and their cache
+@repository-cache.test.ts
+* :: feature :: References :: Git repository reference cache
+
+@git.test.ts
+78,102 :: portable :: worktree :: create/list/remove linked worktrees; unborn repositories (S)
+* :: design :: other :: OpenCode's Git service (clone/fetch, tree capture with a private index); CodeSmith shells out per feature
+
+@snapshot.test.ts
+82,271,347,401 :: portable :: snapshot::Snapshots :: capture/restore, restoring many files and removing absent ones, partial failure, unavailable outside Git (S)
+124,195,219,246,313,414 :: portable :: snapshot::Snapshots :: corrupt index / stale lock, odd directory names, symlinked or case-different paths, long selections, per-worktree indexes (M)
+17,152,379 :: design :: effect-internal :: lazy discovery, cross-process capture, availability transforms
+
+@vcs.test.ts
+525,552,575,811,836,857,875,895,913,937,966,985,1001,1024,1065,1091,1114,1165,1199,1254,1294,1355,1376 :: portable :: review::target::resolve :: review diffs: working copy, before first commit, feature branch vs default, staged/untracked, explicit and missing bases (M)
+* :: design :: client-server :: OpenCode's VCS provider service, streams and branch watching
+
+@vcs-hg.test.ts
+* :: feature :: Mercurial VCS :: Mercurial support
+
+@worktree.test.ts
+213,247,365,389,409,463,516,545 :: portable :: worktree::create / remove :: create and remove, default directory and suffixes, from a branch, branch not read as an option, missing source, dirty needs force, conflicts (S)
+271 :: portable :: worktree::create :: the setup (start) command runs with worktree paths (S)
+* :: design :: client-server :: OpenCode's worktree inventory, strategies and refresh
+
+@util/effect-flock.test.ts
+* :: design :: effect-internal :: file locks (CodeSmith uses the session store's leases)
+@util/flock.test.ts
+* :: design :: effect-internal :: file locks (CodeSmith uses the session store's leases)
+@util/error-summary.test.ts
+* :: design :: effect-internal :: error cause chains
+@util/fs-util.test.ts
+* :: design :: effect-internal :: FSUtil realPath
+@util/git-executable.test.ts
+* :: design :: platform :: locating git on macOS/Windows
+@util/which.test.ts
+45,49,58,70 :: portable :: format::which :: PATH lookup (S)
+* :: design :: platform :: Windows PATHEXT / aliases

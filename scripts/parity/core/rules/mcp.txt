@@ -1,0 +1,83 @@
+@automation-event.test.ts
+290,512 :: design :: client-server :: Location retention and prompt-preparation hooks
+314,469,547 :: feature :: Automation Durable Handoffs :: checkpointed handoffs settled across pauses and expiry
+363,395,415 :: feature :: Automation Event Stream Recovery :: reconnect with replay from the last committed cursor, pause after repeated failures
+* :: portable :: tests/automation.rs :: MCP event watches: terminal events, timers on a running watch, nonterminal errors, pause/resume/delete, argument and permission validation, quoted untrusted fields, oversized prompts, stop reasons (M)
+
+@automation.test.ts
+421,1586 :: design :: storage-model :: agent switches during the model request / inbox IDs
+525,712,780,1017,1092,1117,1564,1618 :: design :: deliberate :: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+859,872 :: design :: deliberate :: automations are not behind an experimental flag
+1362,1391,1409,1431,1495,1530 :: feature :: Automation Durable Handoffs :: failed checks handed to a quiet child
+1788 :: design :: effect-internal :: plugin activation
+* :: portable :: tests/automation.rs :: at/cron scheduling, zones and DST, create/list/pause/resume/delete, targets, child sessions, expiry, late runs after downtime, skip while unconsumed, backoff, program state, permissions extracted at creation (M)
+
+@codemode.test.ts
+18 :: design :: effect-internal :: registration ownership
+55 :: portable :: codemode::execute :: a nested call's stop does not replace the execute result (S)
+89 :: design :: effect-internal :: Effect number rendering
+
+@codemode/catalog.test.ts
+224,239,247,256,264,271,276,290,302,312 :: feature :: Instruction State Tracking :: Code Mode catalog deltas
+* :: portable :: codemode catalog :: inline budget, pinned tools, description limits, path order, search guidance, round-robin namespaces, empty catalog notice (M)
+
+@codemode/instructions.test.ts
+27 :: portable :: codemode instructions :: no execute while the catalog is empty (S)
+* :: feature :: Instruction State Tracking :: Code Mode catalog snapshots and deltas
+
+@integration-refresh.test.ts
+* :: design :: cloud :: OpenCode integrations
+@integration.test.ts
+* :: design :: cloud :: OpenCode integrations (key/command/OAuth credential connections); CodeSmith's `auth login` covers keys
+
+@job.test.ts
+* :: design :: deliberate :: session.rs: background work is the shell tool's Jobs; no durable job table, outbox or background subagents
+
+@mcp-attach.test.ts
+* :: feature :: Client-attached MCP Servers :: MCP servers attached by a client (ACP/SDK) over the session
+
+@mcp-events.test.ts
+* :: portable :: mcp::events :: event extension discovery, ordered streams, termination, cancellation, idle timeout, no events offered (M)
+
+@mcp-import-boundary.test.ts
+* :: design :: effect-internal :: lazy SDK import
+
+@mcp-instructions.test.ts
+175 :: feature :: Instruction State Tracking :: MCP instruction deltas
+* :: portable :: mcp instructions :: server instructions rendered; Code Mode vs direct listings (S)
+
+@mcp-oauth.test.ts
+* :: portable :: mcp::oauth :: loopback callback, pasted redirects, discovery via 401/metadata, CIMD/dynamic registration, refresh and sign-out rules (M)
+
+@mcp-socket-client.test.ts
+* :: design :: other :: OpenCode's WebSocket MCP transport (CodeSmith speaks stdio and Streamable HTTP/SSE)
+
+@mcp-stdio.test.ts
+15 :: portable :: mcp stdio :: cwd resolved, ~ expanded (S)
+* :: portable :: mcp stdio framing :: frames up to 16 MiB, CRLF/blank lines/split UTF-8, oversize line closes (S)
+
+@mcp.test.ts
+849,877,3358,3377,3388,3412,3438,3473,3499,3530,3545,3557,3575,3630,3687,3709,3790,3814,3833,3862,3915 :: design :: client-server :: MCP connections pooled across Locations
+1994,2047,2082,2109,2142,2177,2270,2339,2400,2446,2505,2537,2562,2707 :: design :: effect-internal :: scoped MCP config transforms and lifecycle serialization
+3168,3204 :: design :: cloud :: integration/organization policy
+1541,1560,1587,1613 :: feature :: MCP Elicitation :: elicitation forms and URL elicitations
+1171 :: portable :: mcp config :: remote MCP Code Mode preference table (S)
+1204 :: portable :: mcp :: no retry beyond the query fallback (S)
+4294,4316 :: design :: deliberate :: MCP events are not behind a flag
+* :: portable :: mcp :: tool naming, pagination, output schemas, prompts, timeouts, resources, session expiry reconnects, runtime add/disconnect, Code Mode results, isError, media, permissions, events (M)
+
+@plugin/goal-watchdog.test.ts
+* :: feature :: Goal Plugin :: goal watchdog
+@plugin/goal.test.ts
+* :: feature :: Goal Plugin :: /goal loop with a reviewer
+
+@plugin/mcp-codemode-defaults.test.ts
+* :: portable :: mcp config :: Code Mode defaults for known servers unless configured (S)
+
+@tool-automation.test.ts
+161,238 :: design :: deliberate :: automations are not behind an experimental flag
+* :: portable :: tests/automation.rs :: automation tool: event-watch call, create/list/pause/resume/delete, /automation command, validation, listing text, other projects' automations missing (M)
+
+@tool-mcp-events.test.ts
+74 :: design :: deliberate :: MCP events are not behind a flag
+* :: portable :: mcp events tool :: list a server's push events after permission; fail for a server without events (S)
