@@ -1267,7 +1267,9 @@ impl Runner {
                 e.context(TurnFailed)
             }
         };
-        s.prompt(prompt, &mut out).await.map_err(turn_failed)?;
+        s.prompt_from(crate::session::Origin::Engine, prompt, vec![], &mut out)
+            .await
+            .map_err(turn_failed)?;
         // The session is dropped next, which would stop its background commands.
         s.settle_background(&mut out).await.map_err(turn_failed)?;
         Ok((s.id.clone(), out.0))

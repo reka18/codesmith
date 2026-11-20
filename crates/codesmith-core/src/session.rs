@@ -255,6 +255,19 @@ pub struct Options {
     pub questioner: Option<Arc<dyn crate::question::Questioner>>,
 }
 
+/// Who wrote a prompt's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// The user typed it (the TUI, `codesmith run`, a served or ACP
+    /// client's message): its `@skill` mentions bring the skills in,
+    /// asked for as the skill tool would.
+    User,
+    /// Anything else: a subagent task the model wrote, an automation's or
+    /// Code Mode's prompt, an MCP server's prompt or event, a command's
+    /// expanded text. `@skill` in it is plain text.
+    Engine,
+}
+
 pub struct Session {
     /// Change it with [`Session::set_id`], which moves the session's
     /// tool-output allowance along.
@@ -815,7 +828,8 @@ impl Session {
     }
 
     /// The content of the skills `text` mentions (see
-    /// [`crate::skill_mention`]); fails for one the rules deny.
+    /// [`crate::skill_mention`]), asked for like the skill tool's: fails
+    /// for one the rules deny or the user refuses.
     fn mentioned_skills(&self, text: &str) -> Result<Vec<String>> {
         use crate::skill_mention as sm;
         let mentioned = sm::mentions(text, &self.skills, &self.cwd);
@@ -830,6 +844,11 @@ impl Session {
                 }
                 .into());
             }
+        }
+        for m in &mentioned {
+            let title = format!("Load the {} skill", m.skill);
+            self.allowed("skill", &m.skill, title)
+                .map_err(|e| anyhow!(e))?;
         }
         Ok(sm::contents(&mentioned, &self.skills))
     }
@@ -1310,26 +1329,43 @@ impl Session {
     ///
     /// Boxed with an explicit `Send` bound: a subagent's turn runs inside its
     /// parent's, and naming the type breaks that recursive future.
+    ///
+    /// The text is the user's own: its `@skill` mentions are applied (see
+    /// [`Origin`]). A prompt written by anything else goes through
+    /// [`Session::prompt_from`] with [`Origin::Engine`].
     pub fn prompt<'a>(
         &'a mut self,
         text: &'a str,
         sink: &'a mut dyn Sink,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prompt_inner(text, vec![], sink))
+        Box::pin(self.prompt_inner(Origin::User, text, vec![], sink))
     }
 
-    /// A user turn with images or PDFs attached after the text.
+    /// A user turn with images or PDFs attached after the text; the text is
+    /// the user's own, as for [`Session::prompt`].
     pub fn prompt_with<'a>(
         &'a mut self,
         text: &'a str,
         media: Vec<codesmith_ai::Media>,
         sink: &'a mut dyn Sink,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prompt_inner(text, media, sink))
+        Box::pin(self.prompt_inner(Origin::User, text, media, sink))
+    }
+
+    /// A turn whose text comes from `origin`.
+    pub fn prompt_from<'a>(
+        &'a mut self,
+        origin: Origin,
+        text: &'a str,
+        media: Vec<codesmith_ai::Media>,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.prompt_inner(origin, text, media, sink))
     }
 
     async fn prompt_inner(
         &mut self,
+        origin: Origin,
         text: &str,
         media: Vec<codesmith_ai::Media>,
         sink: &mut dyn Sink,
@@ -1345,13 +1381,14 @@ impl Session {
             id: self.id.clone(),
             finished: false,
         };
-        let r = self.turn_inner(text, media, sink).await;
+        let r = self.turn_inner(origin, text, media, sink).await;
         stop.finished = true;
         r
     }
 
     async fn turn_inner(
         &mut self,
+        origin: Origin,
         text: &str,
         media: Vec<codesmith_ai::Media>,
         sink: &mut dyn Sink,
@@ -1378,9 +1415,13 @@ impl Session {
         } else {
             text
         };
-        // A denied skill mention refuses the prompt before anything is
-        // written (mentions in the text as the prompt hooks left it).
-        let skills = self.mentioned_skills(text)?;
+        // A denied or refused skill mention refuses the prompt before
+        // anything is written (mentions in the text as the prompt hooks
+        // left it). Only the user's own prompts mention skills.
+        let skills = match origin {
+            Origin::User => self.mentioned_skills(text)?,
+            Origin::Engine => Vec::new(),
+        };
         // What changed since the last turn comes before the new prompt; a
         // baseline that cannot be made yet leaves the prompt unsent.
         self.mcp.refresh().await;
@@ -2350,14 +2391,14 @@ impl Session {
                 media: media.clone(),
             };
             return match found.execute(ctx).await {
-                Ok(Some(text)) => self.prompt_with(&text, media, sink).await,
+                Ok(Some(text)) => self.prompt_from(Origin::Engine, &text, media, sink).await,
                 Ok(None) => Ok(()),
                 Err(e) => Err(anyhow!("{e}")),
             };
         }
         let text = self.expand_command(c, args).await?;
         if !c.runs_as_subagent(&self.loaded.config) {
-            return self.prompt_with(&text, media, sink).await;
+            return self.prompt_from(Origin::Engine, &text, media, sink).await;
         }
         let agent_id = c.agent.clone().unwrap_or_else(|| self.agent.id.clone());
         let target = agent::resolve(&self.loaded.config, &agent_id)
@@ -2850,7 +2891,10 @@ impl Session {
         // The child is dropped (stopping its commands) once it reports, so
         // it waits for its background commands first. OpenCode reports at
         // once and resumes the child later; a child here cannot be resumed.
-        let outcome = match child.prompt(&task, &mut csink).await {
+        let outcome = match child
+            .prompt_from(Origin::Engine, &task, vec![], &mut csink)
+            .await
+        {
             Ok(()) => child.settle_background(&mut csink).await,
             Err(e) => Err(e),
         };

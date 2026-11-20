@@ -131,7 +131,9 @@ impl Env {
             )))),
             store,
         )?;
-        let r = s.prompt(&prompt, &mut Quiet).await;
+        let r = s
+            .prompt_from(crate::session::Origin::Engine, &prompt, vec![], &mut Quiet)
+            .await;
         let answer = s
             .messages
             .iter()

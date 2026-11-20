@@ -181,3 +181,44 @@ async fn oc_session_activates_a_skill_with_its_raw_content_without_the_model() {
     assert!(h.requests().is_empty(), "no model call");
     assert!(!skill_mention::is_content(&text(&history[0])));
 }
+
+/// Not in OpenCode: only the user's own prompts mention skills. A prompt
+/// the engine sends (a subagent task the model wrote, an automation's, an
+/// MCP server's) keeps `@effect` as plain text.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_engine_prompt_mentions_no_skills() {
+    use codesmith_core::session::Origin;
+    let mut h = with_skills(json!({
+        "permissions": [{"action": "skill", "resource": "effect", "effect": "deny"}]
+    }))
+    .await;
+    h.s.prompt_from(
+        Origin::Engine,
+        "Apply @api-design and @effect",
+        vec![],
+        &mut support::Quiet,
+    )
+    .await
+    .unwrap();
+    assert_eq!(prompt_parts(&h), ["Apply @api-design and @effect"]);
+}
+
+/// Not in OpenCode: a skill the rules leave to ask is asked for, as the
+/// skill tool asks; refused, the prompt is not sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mention_of_a_skill_left_to_ask_asks() {
+    use codesmith_core::permission::{Fixed, Reply};
+    let ask = json!({
+        "permissions": [{"action": "skill", "resource": "*", "effect": "ask"}]
+    });
+    let mut h = with_skills(ask.clone()).await;
+    h.s.set_asker(std::sync::Arc::new(Fixed(Reply::Reject(None))));
+    assert!(h.s.prompt("@effect", &mut support::Quiet).await.is_err());
+    assert!(h.s.messages.is_empty());
+    assert!(h.requests().is_empty());
+
+    let mut h = with_skills(ask).await;
+    h.s.set_asker(std::sync::Arc::new(Fixed(Reply::Once)));
+    h.prompt("@effect").await;
+    assert_eq!(prompt_parts(&h).len(), 2);
+}
