@@ -99,6 +99,8 @@ pub fn main(args: &[String]) -> ! {
         eprintln!("codesmith __shelld: invalid runtime directory or name");
         std::process::exit(2);
     }
+    // Hold no directory open; every command names its own.
+    let _ = std::env::set_current_dir("/");
     let code = match run(Options::new(Path::new(&dir).join(name))) {
         Ok(()) => 0,
         Err(e) => {
@@ -460,8 +462,12 @@ fn sweep(parent: &Path, own: &Path) {
             fs::read_registration(&dir).is_ok_and(|r| !fs::alive(r.pid))
         };
         if abandoned {
-            if let Ok(r) = fs::read_registration(&dir) {
-                let _ = std::fs::remove_file(&r.socket);
+            // Its socket, if it is one of ours.
+            if let (Ok(r), Ok(sockets)) = (fs::read_registration(&dir), fs::socket_dir()) {
+                let socket = PathBuf::from(&r.socket);
+                if socket.parent() == Some(sockets.as_path()) {
+                    let _ = std::fs::remove_file(&socket);
+                }
             }
             let _ = std::fs::remove_file(dir.join(fs::REGISTRATION));
             let _ = std::fs::remove_file(dir.join(fs::LOCK));
