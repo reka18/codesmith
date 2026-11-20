@@ -69,22 +69,26 @@ fn ignores_case(action: &str) -> bool {
 /// none. When built-in agent rules are present, the stricter of that and the
 /// same evaluation without them.
 pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
+    evaluate_layers(action, resource, &[rules])
+}
+
+/// `evaluate` over `layers` concatenated in order, without copying them.
+fn evaluate_layers(action: &str, resource: &str, layers: &[&[Rule]]) -> Effect {
     let ic = ignores_case(action);
     let hit = |r: &&Rule| {
         wildcard::matches(action, &r.action, false) && wildcard::matches(resource, &r.resource, ic)
     };
-    let all = rules
-        .iter()
-        .rev()
+    let newest_first = || layers.iter().rev().flat_map(|l| l.iter().rev());
+    let all = newest_first()
         .find(hit)
         .map(|r| r.effect)
         .unwrap_or(Effect::Ask);
-    if !rules.iter().any(|r| r.builtin) {
+    // Built-in agent rules only restrict: take the stricter of the result
+    // with them and without them.
+    if !layers.iter().any(|l| l.iter().any(|r| r.builtin)) {
         return all;
     }
-    let others = rules
-        .iter()
-        .rev()
+    let others = newest_first()
         .filter(|r| !r.builtin)
         .find(hit)
         .map(|r| r.effect)
@@ -99,9 +103,13 @@ pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
 /// Combined effect for a request over several resources: any deny denies,
 /// otherwise any ask asks.
 pub fn evaluate_all(action: &str, resources: &[String], rules: &[Rule]) -> Effect {
+    evaluate_all_layers(action, resources, &[rules])
+}
+
+fn evaluate_all_layers(action: &str, resources: &[String], layers: &[&[Rule]]) -> Effect {
     let effects: Vec<Effect> = resources
         .iter()
-        .map(|r| evaluate(action, r, rules))
+        .map(|r| evaluate_layers(action, r, layers))
         .collect();
     if effects.contains(&Effect::Deny) {
         Effect::Deny
@@ -236,7 +244,8 @@ impl Gate {
 
     /// Allowed by rules alone, without asking.
     pub fn allows(&self, action: &str, resources: &[String]) -> bool {
-        evaluate_all(action, resources, &self.rules()) == Effect::Allow
+        let saved = self.saved.lock().unwrap();
+        evaluate_all_layers(action, resources, &[&self.rules, &saved]) == Effect::Allow
     }
 
     /// Refuse only when a configured rule denies the request; never asks.

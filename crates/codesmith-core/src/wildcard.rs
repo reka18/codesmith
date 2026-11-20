@@ -2,8 +2,47 @@
 //! `?` matches one, and a pattern ending in ` *` also matches the bare command
 //! (so `git *` matches `git`). Ported from OpenCode's `Wildcard.match`.
 
+use std::sync::Arc;
+
 pub fn matches(input: &str, pattern: &str, ignore_case: bool) -> bool {
-    let input = input.replace('\\', "/");
+    // `*` alone matches everything; skip the regex.
+    if pattern == "*" {
+        return true;
+    }
+    let input = if input.contains('\\') {
+        std::borrow::Cow::Owned(input.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(input)
+    };
+    compiled(pattern, ignore_case).is_some_and(|r| r.is_match(&input))
+}
+
+/// The regex for a pattern. Permission checks run once per file a search
+/// visits, so compiled patterns are kept (a project has few distinct ones);
+/// one map per case setting, so a lookup needs no allocation. They are
+/// shared, not cloned: a cloned `Regex` starts with empty match caches.
+fn compiled(pattern: &str, ignore_case: bool) -> Option<Arc<regex::Regex>> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Cache = [HashMap<String, Option<Arc<regex::Regex>>>; 2];
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+    const MAX: usize = 1024;
+    let i = usize::from(ignore_case);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = &mut guard.get_or_insert_with(Default::default)[i];
+    if let Some(r) = cache.get(pattern) {
+        return r.clone();
+    }
+    // Compiling under the lock is fine: it happens once per pattern.
+    let r = build(pattern, ignore_case).map(Arc::new);
+    if cache.len() >= MAX {
+        cache.clear();
+    }
+    cache.insert(pattern.to_string(), r.clone());
+    r
+}
+
+fn build(pattern: &str, ignore_case: bool) -> Option<regex::Regex> {
     let mut re = String::from("^");
     let pat = pattern.replace('\\', "/");
     let (body, optional_tail) = match pat.strip_suffix(" *") {
@@ -25,8 +64,7 @@ pub fn matches(input: &str, pattern: &str, ignore_case: bool) -> bool {
         .dot_matches_new_line(true)
         .case_insensitive(ignore_case || cfg!(windows))
         .build()
-        .map(|r| r.is_match(&input))
-        .unwrap_or(false)
+        .ok()
 }
 
 #[cfg(test)]
@@ -79,5 +117,22 @@ mod tests {
     #[test]
     fn multiline_resources() {
         assert!(matches("echo a\necho b", "echo *", false));
+    }
+
+    #[test]
+    fn cached_patterns_keep_their_case_setting() {
+        // The same pattern compiled with and without case folding is two
+        // cache entries; neither answers for the other.
+        assert!(matches("README.md", "readme.*", true));
+        assert!(!matches("README.md", "readme.*", false));
+        assert!(matches("README.md", "readme.*", true));
+        assert!(matches("a\\b", "a/*", false));
+        assert!(matches("a\nb", "*", false), "a lone star matches anything");
+        // Far more patterns than the cache holds still match correctly.
+        for i in 0..3000 {
+            let p = format!("dir{i}/*");
+            assert!(matches(&format!("dir{i}/x"), &p, false));
+            assert!(!matches(&format!("dir{i}x/x"), &p, false));
+        }
     }
 }
