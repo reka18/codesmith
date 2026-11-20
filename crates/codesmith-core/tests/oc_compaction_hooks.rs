@@ -244,3 +244,35 @@ async fn oc_compaction_summary_resends_as_text_when_a_hook_makes_the_request_lar
         .to_string()
         .contains("Plugin guidance"));
 }
+
+/// session-native-compaction.test.ts: "compaction hooks supply the summary
+/// instead of provider compaction" (adapted: the supplied summary becomes a
+/// summary checkpoint; there is no plugin native state).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_compaction_hooks_supply_the_summary_instead_of_provider_compaction() {
+    let (mut s, script, _d) = session_on(
+        "openai-responses",
+        "gpt-5.4-mini",
+        WINDOW,
+        32_000,
+        json!({"providers": {"fake": {"models": {"gpt-5.4-mini": {"compaction": {"type": "native"}}}}}}),
+    )
+    .await;
+    hooked(
+        &s.id,
+        Behavior {
+            supply: Some("## Objective\n- hooked summary".into()),
+            ..Default::default()
+        },
+    );
+    s.prompt("Original user", &mut Quiet).await.unwrap();
+    s.compact(&mut Quiet).await.unwrap();
+    assert!(
+        requests(&script, Kind::Native).is_empty(),
+        "no provider call"
+    );
+    assert!(requests(&script, Kind::Summary).is_empty());
+    let checkpoint = format!("{:?}", s.messages[0]);
+    assert!(checkpoint.contains("<conversation-checkpoint>"));
+    assert!(checkpoint.contains("hooked summary"));
+}

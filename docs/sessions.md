@@ -120,6 +120,10 @@ than 40% of the budget) or fails is replaced from a newer response, at
 most twice between compactions. Turn it off with `"compaction":
 {"background": false}`.
 
+Models whose provider compacts conversations itself (OpenAI Responses) can
+use that instead of a summary: see [native
+compaction](configuration.md#native-compaction).
+
 When the turn in progress is summarized too, CodeSmith tells the model to
 carry on with a system update (see
 [provider options](configuration.md#provider-options-and-variants)); it is

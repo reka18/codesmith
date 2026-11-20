@@ -6,6 +6,8 @@ pub mod aws;
 pub mod bedrock;
 mod billing;
 mod cache;
+#[cfg(test)]
+mod compaction_tests;
 pub mod copilot;
 mod endpoint;
 mod gemini;
@@ -85,6 +87,10 @@ pub enum Part {
     /// A tool the provider ran itself (web search, code execution, …),
     /// with its result: shown, stored and replayed, never run locally.
     Hosted(Hosted),
+    /// A checkpoint the provider's own compaction made (an OpenAI Responses
+    /// `compaction` item): it stands for the history it replaced, and only
+    /// replays on the protocol that made it; the others leave it out.
+    Compaction(Compaction),
     /// A reasoning effort change from this point of the conversation on
     /// (OpenCode's `Message.effort`): the only part of a [`Role::System`]
     /// message. Routes with a native per-message update (Claude Opus 5 and
@@ -99,6 +105,35 @@ pub enum Part {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         previous: Option<String>,
     },
+}
+
+/// An opaque compaction checkpoint (see [`Part::Compaction`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Compaction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The provider's encrypted content.
+    pub encrypted: String,
+}
+
+/// How a provider compacts a conversation itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactMechanism {
+    /// The conversation is sent with a trigger, and the reply is one
+    /// checkpoint standing for all of it (Responses `compaction_trigger`).
+    Trigger,
+    /// A separate endpoint returns the whole replacement window (Responses
+    /// `/responses/compact`).
+    Endpoint,
+}
+
+/// What a provider's compaction returned: the messages that replace the
+/// conversation (for a trigger, one assistant message holding the
+/// checkpoint), and the call's usage.
+#[derive(Debug, Clone, Default)]
+pub struct Compacted {
+    pub window: Vec<Message>,
+    pub usage: Usage,
 }
 
 impl Part {
@@ -918,6 +953,8 @@ pub enum Event {
     /// state needed to replay it (Gemini's `thoughtSignature` under
     /// `google`): it becomes an assistant [`Part::Media`].
     Media(Media),
+    /// A compaction checkpoint the response returned.
+    Compaction(Compaction),
     /// Provider state for the text block or tool call that just ended (a
     /// Responses item id and phase): it joins the latest text or tool-call
     /// part.
@@ -1135,6 +1172,48 @@ impl Provider {
         }
     }
 
+    /// Whether this provider compacts conversations itself through
+    /// `mechanism`: OpenAI Responses (Azure through the endpoint only).
+    pub fn can_compact(&self, mechanism: CompactMechanism) -> bool {
+        match self.protocol {
+            Protocol::OpenaiResponses => {
+                mechanism == CompactMechanism::Endpoint
+                    || !self.base_url.to_ascii_lowercase().contains("azure")
+            }
+            _ => false,
+        }
+    }
+
+    /// Compact `req`'s conversation with the provider's own compaction.
+    pub async fn compact(
+        &self,
+        client: &reqwest::Client,
+        req: &Request,
+        mechanism: CompactMechanism,
+    ) -> Result<Compacted, Error> {
+        if !self.can_compact(mechanism) {
+            return Err(Error::Invalid(format!(
+                "{} does not support {} compaction",
+                self.protocol.route(),
+                match mechanism {
+                    CompactMechanism::Trigger => "trigger",
+                    CompactMechanism::Endpoint => "endpoint",
+                }
+            )));
+        }
+        let defaults = options::defaults(self.protocol, &self.base_url, &req.model);
+        let req = Request {
+            options: defaults.merged(&req.options),
+            ..req.clone()
+        };
+        check(self.protocol, &req)?;
+        let p = self.for_request(&req);
+        match mechanism {
+            CompactMechanism::Trigger => responses::compact_trigger(&p, client, &req).await,
+            CompactMechanism::Endpoint => responses::compact_endpoint(&p, client, &req).await,
+        }
+    }
+
     /// The HTTP request `stream` would send for `req`, without sending it
     /// (for `debug` output and tests).
     pub fn prepare(
@@ -1296,6 +1375,10 @@ impl Collector {
             Event::Media(m) => {
                 self.close();
                 self.parts.push(Part::Media(m.clone()));
+            }
+            Event::Compaction(c) => {
+                self.close();
+                self.parts.push(Part::Compaction(c.clone()));
             }
             Event::PartMeta(meta) => {
                 if matches!(self.open, Some(Open::Text(_))) {

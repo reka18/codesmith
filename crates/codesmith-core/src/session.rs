@@ -441,7 +441,10 @@ impl Session {
                 seen = entries.last().map_or(0, |e| e.seq);
                 ran_with = last_step_model(&entries);
                 instruction = crate::instruction_state::fold(&entries);
-                Some((info, store::history_with_seqs(&entries)))
+                // A native window replays only on the model that made it.
+                let model = opts.model.as_deref().unwrap_or(&info.model);
+                let history = store::history_for(&entries, Some(model));
+                Some((info, history))
             }
             (Some(_), None) => {
                 return Err(anyhow!(
@@ -650,7 +653,9 @@ impl Session {
             let last = st.last_seq(&self.id)?;
             if self.shared.stale || last > self.shared.seen {
                 let entries = st.entries(&self.id)?;
-                let (seqs, messages) = store::history_with_seqs(&entries).into_iter().unzip();
+                let (seqs, messages) = store::history_for(&entries, Some(&self.model_spec))
+                    .into_iter()
+                    .unzip();
                 self.messages = messages;
                 self.seqs = seqs;
                 self.ran_with = last_step_model(&entries);

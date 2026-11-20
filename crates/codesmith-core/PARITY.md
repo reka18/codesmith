@@ -17,11 +17,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 76 | 7 | 53 | 190 | 67 | 0 |
+| Session runner | 393 | 79 | 7 | 50 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
-| Compaction | 51 | 36 | 0 | 6 | 8 | 1 | 0 |
+| Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
-| Model requests and transport | 68 | 4 | 0 | 23 | 36 | 5 | 0 |
+| Model requests and transport | 68 | 6 | 0 | 16 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
 | Sessions and their store | 308 | 10 | 0 | 76 | 168 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1321** | **15** | **506** | **2350** | **1396** | **0** |
+| **Total** | **5588** | **1332** | **15** | **490** | **2354** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (506 cases in 55 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (490 cases in 54 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -93,7 +93,6 @@ Missing features, by how many OpenCode test cases each would unlock (506 cases i
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
 | [Tool Input Repair](#tool-input-repair) | 17 | repair before validation, other harnesses' tool names, Code Mode calls; schema-guided repair of nested containers, nulls, unions, tuples and dictionaries |
 | [MCP Elicitation](#mcp-elicitation) | 16 | forms behind elicitation and questions (conditional fields); elicitation forms and URL elicitations |
-| [Native Provider Compaction](#native-provider-compaction) | 16 | routes that cannot compact natively; provider-native compaction endpoints; … |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
@@ -470,27 +469,6 @@ Missing features, by how many OpenCode test cases each would unlock (506 cases i
 - `mcp.test.ts`: acknowledges completed MCP URL elicitations without returning internal content
 - `mcp.test.ts`: cancels MCP elicitation forms when the server gives up on them
 - `mcp.test.ts`: settles modern MCP URL elicitations when the user confirms
-
-### Native Provider Compaction
-
-16 cases.
-
-- `session-compaction.test.ts`: native compaction fails without a model call on a route that cannot compact
-- `session-native-compaction.test.ts`: manual trigger persists and continues, retains earlier users repeatedly, and preserves context on failure/cancellation
-- `session-native-compaction.test.ts`: manual and automatic endpoint compaction keep the provider replacement unchanged
-- `session-native-compaction.test.ts`: automatic native failures, interruptions, and overflows retain the checkpoint
-- `session-native-compaction.test.ts`: compaction hooks supply the summary instead of provider compaction
-- `session-native-compaction.test.ts`: retained user budget counts attachments and drops whole oldest messages
-- `session-native.test.ts`: reads pre-2.0.15 checkpoint media without rewriting the stored payload
-- `session-native.test.ts`: reads mixed legacy and current media without overriding an existing asset
-- `session-native.test.ts`: loads and replays a pre-v2.1 providerContext checkpoint with pre-2.0.15 media
-- `session-native.test.ts`: a native window round-trips tools, opaque checkpoints and binary media through JSON
-- `session-native.test.ts`: advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches
-- `session-native.test.ts`: falls back to an earlier compatible native or local checkpoint
-- `session-native.test.ts`: skips a malformed native window and replays the history before it
-- `session-runner.test.ts`: restores installed native context with auto disabled and preserves it across fork and revert
-- `session-runner.test.ts`: automatically persists native windows, retains earlier users, and waits for fresh usage
-- `session-runner.test.ts`: recovers an overflowing native window with another native compaction
 
 ### Stateless Generate API
 
@@ -902,7 +880,7 @@ Missing features, by how many OpenCode test cases each would unlock (506 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -1021,7 +999,7 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
 - a failed title stream does not rename (S) — `tests/parity.rs`
   - `session-title.test.ts`: does not rename after a failed title stream
 
-### Model requests and transport (5)
+### Model requests and transport (6)
 
 - unsupported media replaced with a visible error, including in tool results (M) — `runner history`
   - `session-model-request.test.ts`: replaces unsupported user media with a visible error
@@ -1029,6 +1007,8 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
   - `session-model-request.test.ts`: preserves supported media
   - `session-model-request.test.ts`: returns the same messages when nothing is unsupported
   - `session-model-request.test.ts`: rebuilds only messages with unsupported media
+- native instruction epochs after durable replay and provider switches — `store::history_for`
+  - `session-native.test.ts`: advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches
 
 ### Snapshots and undo (11)
 
@@ -1756,7 +1736,7 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 546 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 327 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 331 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
@@ -1766,7 +1746,7 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (273 of 393)</summary>
+<details><summary>Session runner (276 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1803,6 +1783,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P marks the initial instruction sync as baseline metadata — `tests/oc_instruction_state.rs::oc_session_marks_the_initial_instruction_sync_as_the_baseline`
 - P retries the first request after system context becomes available — `tests/oc_instruction_state.rs::oc_session_retries_the_first_request_once_context_is_readable` (adapted: the prompt fails before anything is recorded and is sent again)
 - D preserves instruction state and interrupts the source Location runner after a Session moves · settles compaction and delivers a move while initial instructions are unavailable · delivers a queued move atomically at the idle boundary · preserves a tool continuation and step allowance across chained moves (${delivery}) ×2 · keeps queued input parked across a mid-turn move · runs a queued control on Location entry before a carried continuation — client-server: a Session moving between Locations
+- P restores installed native context with auto disabled and preserves it across fork and revert — `tests/oc_native_compaction.rs::oc_native_restores_installed_native_context_with_auto_disabled_and_across_a_fork` (adapted: resumed and forked with the store; no revert)
 - P seeds a fork with the parent's newest instruction values — `tests/oc_instruction_state.rs::oc_session_seeds_a_fork_with_the_newest_values` (adapted: Store::fork copies the whole session)
 - P keeps nested forks self-contained — `tests/oc_instruction_state.rs::oc_session_keeps_nested_forks_self_contained`
 - P re-establishes a fresh baseline when instruction state is missing — `tests/oc_instruction_state.rs::oc_session_makes_a_fresh_baseline_when_the_state_is_missing` (adapted: a log without instruction records)
@@ -1833,6 +1814,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - F rejects compaction ${response} without retrying or committing its draft ×2 — `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it` (the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history)
 - D stops after four smaller compaction inputs overflow · resends compaction as text after payload too large, then shrinks later rejections · shortens the only exchange's user text when it does not fit · shrinks after payload too large on a compaction already sent as text · does not resend a rejected conversation unchanged when compacting · aims the first overflow compaction below the rejected context · serializes history without tools or media after a summary input overflow · drops tool output in serialized compaction history before omitting exchanges · fits serialized compaction history by omitting oldest exchanges — deliberate: compaction.rs: a summary request is not shrunk and retried
 - P automatically compacts into a completed summary and retained recent turn — `tests/parity.rs::oc_compaction_auto_compacts_past_the_buffered_ceiling`
+- P automatically persists native windows, retains earlier users, and waits for fresh usage — `tests/oc_native_compaction.rs::oc_native_automatically_persists_windows_retains_users_and_waits_for_fresh_usage` (adapted: one compaction, then none until measured)
+- P recovers an overflowing native window with another native compaction — `tests/oc_native_compaction.rs::oc_native_recovers_an_overflowing_native_window_with_another_native_compaction`
 - P forces one compaction and retries after provider context overflow — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries`
 - D refreshes preparation after overflow compaction without promoting new input — deliberate: session.rs: no queued input to promote
 - P does not recover provider context overflow when automatic compaction is disabled — `tests/parity.rs::oc_compaction_overflow_is_left_to_the_user_when_auto_is_disabled`
@@ -1954,7 +1937,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Compaction (44 of 51)</summary>
+<details><summary>Compaction (50 of 51)</summary>
 
 
 **`config/compaction.test.ts`**
@@ -1981,6 +1964,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P compaction lowers the output limit when it sends a request it could not shrink — `tests/oc_compaction_cache.rs::oc_compaction_lowers_the_output_limit_when_it_sends_a_request_it_could_not_shrink`
 - P compaction keeps the output limit for a request that fits its target — `tests/oc_compaction_cache.rs::oc_compaction_keeps_the_output_limit_for_a_request_that_fits_its_target`
 - P compaction hooks can supply the summary instead of the model — `tests/oc_compaction_hooks.rs::oc_compaction_hooks_can_supply_the_summary_instead_of_the_model`
+- P native compaction fails without a model call on a route that cannot compact — `tests/oc_native_compaction.rs::oc_native_compaction_fails_without_a_model_call_on_a_route_that_cannot_compact`
 - P forked session compaction reuses the fork root prompt cache key — `tests/oc_compaction_cache.rs::oc_compaction_summary_request_reuses_the_session_prompt_cache_key` (adapted: no forks; the session's own key)
 - P summary cache prefix uses measured input with old reasoning (background=${background}) — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning` (background=false)
 - P summary cache prefix uses measured input with old reasoning (background=${background}) — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning_in_the_background` (background=true)
@@ -2004,6 +1988,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P a background summary starts on a window whose threshold is under 64k — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_on_a_window_whose_threshold_is_under_64k`
 - P a background summary waits for a response whose prompt is still cached — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_waits_for_a_response_whose_prompt_is_still_cached` (adapted: a 32s cache cold after two seconds)
 
+**`session-native-compaction.test.ts`**
+
+- P manual trigger persists and continues, retains earlier users repeatedly, and preserves context on failure/cancellation — `tests/oc_native_compaction.rs::oc_native_manual_trigger_persists_continues_retains_users_and_preserves_context` (adapted: no synthetic messages or retry hook)
+- P manual and automatic endpoint compaction keep the provider replacement unchanged — `tests/oc_native_compaction.rs::oc_native_manual_and_automatic_endpoint_compaction_keep_the_replacement_unchanged` (adapted: the endpoint chosen with mechanism)
+- P automatic native failures, interruptions, and overflows retain the checkpoint — `tests/oc_native_compaction.rs::oc_native_automatic_failures_interruptions_and_overflows_retain_the_checkpoint` (adapted: no interruption of an automatic compaction)
+- P compaction hooks supply the summary instead of provider compaction — `tests/oc_compaction_hooks.rs::oc_compaction_hooks_supply_the_summary_instead_of_provider_compaction` (adapted: a summary checkpoint, no plugin native state)
+- P retained user budget counts attachments and drops whole oldest messages — `tests/oc_native_compaction.rs::oc_native_retained_user_budget_counts_attachments_and_drops_whole_oldest_messages`
+
 </details>
 
 <details><summary>Titles (21 of 26)</summary>
@@ -2025,7 +2017,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (40 of 68)</summary>
+<details><summary>Model requests and transport (46 of 68)</summary>
 
 
 **`session-model-transport-live.test.ts`**
@@ -2041,6 +2033,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D exposes response metadata once the lazy connection opens · commits checkpoints only after successful outer completion · selects the connection from the handshake and reopens when it changes · sends the frame the send tap returns and observes the frame the receive tap returns · does not carry a checkpoint across physical connection rotation · clears a rejected checkpoint before the runner retries full · rotates after the provider rejects the connection generation · closes the connection after a provider error frame so the next call reconnects — other: WebSocket connection pool internals (affinity, rotation, poisoning); the provider layer covers the protocol in codesmith-ai/src/parity_ws.rs
 - P reuses one physical connection for sequential Session calls — `tests/websocket_session.rs` (one physical connection for sequential calls)
 - D serializes concurrent calls for one Session · isolates connections and permits concurrency across Sessions · cancels a queued call without affecting the active exchange · closes the connection when an active exchange is interrupted · classifies active and queued close (observed: %s) ×2 · times out a hanging connect and falls back to http · times out an idle accepted request and poisons its socket · disables the idle timeout when chunkTimeout is false · closes a newly opened connection when request creation is interrupted · closes a connection returned after its owner closes during setup · falls back when connection setup fails and keeps the Session on HTTP · keeps the Session on HTTP after repeated mid-stream socket losses · falls back to HTTP after close code 1009 and keeps the Session on HTTP · preserves ${fromConnection ? "connection" : "error"} HTTP context on an ambiguous send failure without fallback ×2 · rotates when refreshed authorization changes handshake affinity · rotates when the connection exceeds its requested age limit · poisons a socket that receives data while idle · buffers a synchronous burst of frames larger than any fixed capacity · poisons unsupported binary frames after provider observation · closes individual and all owned connections · closes owned connections when the Location scope ends · records metadata-only lifecycle metrics — other: WebSocket connection pool internals (affinity, rotation, poisoning); the provider layer covers the protocol in codesmith-ai/src/parity_ws.rs
+
+**`session-native.test.ts`**
+
+- D reads pre-2.0.15 checkpoint media without rewriting the stored payload · reads mixed legacy and current media without overriding an existing asset · loads and replays a pre-v2.1 providerContext checkpoint with pre-2.0.15 media — storage-model: legacy checkpoint and media formats (CodeSmith's native windows are new)
+- P a native window round-trips tools, opaque checkpoints and binary media through JSON — `../codesmith-ai/src/compaction_tests.rs::oc_native_window_round_trips_tools_checkpoints_and_media_through_json` (adapted: serde of the window's messages)
+- P falls back to an earlier compatible native or local checkpoint — `tests/oc_native_compaction.rs::oc_native_falls_back_to_an_earlier_compatible_checkpoint` (adapted: on resume with another model)
+- D skips a malformed native window and replays the history before it — storage-model: records are typed: a window that does not decode is not a native record
 
 </details>
 

@@ -157,6 +157,9 @@ pub struct ProviderConfig {
     /// Prompt caching for every model of this provider (see
     /// [`ModelConfig::cache`]).
     pub cache: Option<Value>,
+    /// How every model of this provider compacts (see
+    /// [`ModelConfig::compaction`]).
+    pub compaction: Option<Value>,
     /// Overrides of detected OpenAI Chat behaviour for every model of this
     /// provider (see [`ModelConfig::compatibility`]).
     pub compatibility: Map<String, Value>,
@@ -238,6 +241,11 @@ pub struct ModelConfig {
     /// `messages` choose breakpoints exactly. Also read from `options`
     /// (`settings`), OpenCode's place for it. Variants cannot change it.
     pub cache: Option<Value>,
+    /// How the model's sessions compact: `{"type": "summary"}` (the
+    /// default) or `{"type": "native"}`, the provider's own compaction
+    /// (OpenAI Responses), optionally with `"mechanism": "trigger"` or
+    /// `"endpoint"`. Overrides the provider's.
+    pub compaction: Option<Value>,
     /// Overrides of what OpenAI Chat detects from the endpoint and model id
     /// (OpenCode's `compatibility`): `maxTokensField`, `streamUsage`,
     /// `requireReasoning`, `requireAssistantAfterTool`. Merged over the
@@ -1063,6 +1071,10 @@ pub struct ModelRef {
     /// The WebSocket route session steps take (`settings.transport`), or
     /// `None` for HTTP.
     pub websocket: Option<codesmith_ai::ws::Route>,
+    /// `Some` when the provider compacts the conversation itself
+    /// (`compaction: {"type": "native"}`), with the mechanism to use when
+    /// one was chosen.
+    pub native_compaction: Option<Option<codesmith_ai::CompactMechanism>>,
 }
 
 /// Built-in providers: (id, name, protocol, base URL, key variables).
@@ -1247,6 +1259,7 @@ impl Config {
                 body: c.body,
                 options: c.options,
                 cache: c.cache,
+                compaction: c.compaction.or(b.compaction),
                 compatibility: c.compatibility,
                 models: c.models,
             }),
@@ -1519,6 +1532,7 @@ impl Config {
             codesmith_ai::Auth::Dynamic(_) => None,
             _ => websocket_route(pid, protocol, &p.settings, &base_url)?,
         };
+        let native_compaction = native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id: wire_model,
@@ -1544,6 +1558,7 @@ impl Config {
             input,
             cache,
             websocket,
+            native_compaction,
         })
     }
 }
@@ -1558,6 +1573,20 @@ fn live_model(
     crate::providers::live::models(pid, None, templates)
         .into_iter()
         .find(|m| m.id == id)
+}
+
+/// A `compaction` setting of a provider or model: `Some` for
+/// `{"type": "native"}`, with its `mechanism` when given.
+fn native_compaction(v: Option<&Value>) -> Option<Option<codesmith_ai::CompactMechanism>> {
+    let v = v?;
+    if v.get("type").and_then(Value::as_str) != Some("native") {
+        return None;
+    }
+    Some(match v.get("mechanism").and_then(Value::as_str) {
+        Some("trigger") => Some(codesmith_ai::CompactMechanism::Trigger),
+        Some("endpoint") => Some(codesmith_ai::CompactMechanism::Endpoint),
+        _ => None,
+    })
 }
 
 /// The key of a provider: configured, from its key variables, or saved.

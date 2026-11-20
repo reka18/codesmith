@@ -183,6 +183,13 @@ fn assistant_items(m: &Message, input: &mut Vec<Value>, video: VideoAs) {
             Part::Media(media) => input.push(
                 json!({"type": "message", "role": "user", "content": [lower_media(media, video)]}),
             ),
+            Part::Compaction(c) => {
+                let mut item = json!({"type": "compaction", "encrypted_content": c.encrypted});
+                if let Some(id) = &c.id {
+                    item["id"] = json!(id);
+                }
+                input.push(item);
+            }
             Part::Hosted(h) => input.extend(crate::hosted::responses_replay(h, &mut hosted, |m| {
                 lower_media(m, video)
             })),
@@ -554,6 +561,8 @@ pub struct State {
     /// text for a concluded item is dropped.
     messages: Vec<String>,
     concluded: Vec<String>,
+    /// Compaction checkpoints already delivered, by encrypted content.
+    compactions: Vec<String>,
     /// Blocks started, for ids of blocks without an item id.
     blocks: usize,
     /// The item id first added at each output index: an event's output
@@ -964,6 +973,14 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 ..Default::default()
             });
         }
+        "response.output_item.done" if v["item"]["type"] == "compaction" => {
+            if let Some(c) = compaction_item(&v["item"]) {
+                if !state.compactions.contains(&c.encrypted) {
+                    state.compactions.push(c.encrypted.clone());
+                    out.push(Event::Compaction(c));
+                }
+            }
+        }
         "response.output_item.done" if v["item"]["type"] == "reasoning" => {
             let it = &v["item"];
             if state.thinking.is_none() {
@@ -1101,6 +1118,18 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                     .unwrap_or_else(|| p.name.clone());
                 state.call(&p.stream_id, &p.item_id, &name, args, &mut out);
             }
+            // A checkpoint the stream did not deliver as an item.
+            for c in r["output"].as_array().into_iter().flatten() {
+                if c["type"] != "compaction" {
+                    continue;
+                }
+                if let Some(c) = compaction_item(c) {
+                    if !state.compactions.contains(&c.encrypted) {
+                        state.compactions.push(c.encrypted.clone());
+                        out.push(Event::Compaction(c));
+                    }
+                }
+            }
             let u = &r["usage"];
             let details = &u["input_tokens_details"];
             let cached = details["cached_tokens"].as_u64().unwrap_or(0);
@@ -1215,6 +1244,156 @@ pub async fn stream(
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(p, request(p, client, req)).await?;
     Ok(drive(resp, Decode::default()))
+}
+
+/// A `compaction` output item as a checkpoint.
+fn compaction_item(item: &Value) -> Option<crate::Compaction> {
+    Some(crate::Compaction {
+        id: item["id"].as_str().map(String::from),
+        encrypted: item["encrypted_content"].as_str()?.to_string(),
+    })
+}
+
+/// Usage from a Responses `usage` object.
+fn usage_of(u: &Value) -> Usage {
+    let details = &u["input_tokens_details"];
+    let cached = details["cached_tokens"].as_u64().unwrap_or(0);
+    let written = details["cache_write_tokens"].as_u64().unwrap_or(0);
+    let input = u["input_tokens"].as_u64();
+    let output = u["output_tokens"].as_u64();
+    Usage {
+        input: input.unwrap_or(0).saturating_sub(cached + written),
+        output: output.unwrap_or(0),
+        cache_read: cached,
+        cache_write: written,
+        reasoning: u["output_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .unwrap_or(0),
+        total: u["total_tokens"].as_u64().or_else(|| {
+            (input.is_some() || output.is_some()).then(|| input.unwrap_or(0) + output.unwrap_or(0))
+        }),
+        ..Default::default()
+    }
+}
+
+/// Trigger compaction (OpenCode's `ResponsesCheckpoint`): the whole
+/// conversation, as every step sends it, with a `compaction_trigger` item
+/// after it; the response is one checkpoint standing for all of it.
+pub(crate) async fn compact_trigger(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> Result<crate::Compacted, Error> {
+    let mut body = body_for(req, &p.base_url);
+    if let Some(input) = body["input"].as_array_mut() {
+        input.push(json!({"type": "compaction_trigger"}));
+    }
+    let rb = p.json_post(client, "responses", crate::openai::headers(p, req), &body);
+    let resp = crate::endpoint::send(p, rb).await?;
+    let r = crate::assemble(drive(resp, Decode::default()), |_| {})
+        .await
+        .map_err(|f| f.error)?;
+    let parts: Vec<Part> = r
+        .parts
+        .into_iter()
+        .filter(|p| matches!(p, Part::Compaction(_)))
+        .collect();
+    if parts.is_empty() {
+        return Err(Error::Decode(
+            "the compaction response returned no checkpoint".into(),
+        ));
+    }
+    Ok(crate::Compacted {
+        window: vec![Message {
+            role: Role::Assistant,
+            parts,
+        }],
+        usage: r.usage,
+    })
+}
+
+/// Endpoint compaction (OpenCode's `ResponsesCompaction`): `/compact` takes
+/// the conversation with the request controls it accepts and returns the
+/// whole replacement window, which replays unchanged. The echoed system
+/// prompt is left out; the next request leads with its own.
+pub(crate) async fn compact_endpoint(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> Result<crate::Compacted, Error> {
+    let full = body_for(req, &p.base_url);
+    let mut body = serde_json::Map::new();
+    for k in [
+        "model",
+        "input",
+        "instructions",
+        "previous_response_id",
+        "service_tier",
+        "reasoning",
+        "text",
+        "include",
+        "parallel_tool_calls",
+        "tools",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "prompt_cache_options",
+    ] {
+        if let Some(v) = full.get(k).filter(|v| !v.is_null()) {
+            body.insert(k.into(), v.clone());
+        }
+    }
+    let rb = p.json_post(
+        client,
+        "responses/compact",
+        crate::openai::headers(p, req),
+        &Value::Object(body),
+    );
+    let resp = crate::endpoint::send(p, rb).await?;
+    let text = resp.text().await.map_err(Error::from)?;
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Decode(format!("compaction response: {e}")))?;
+    let invalid = || {
+        Error::Decode(format!(
+            "unexpected compaction response: {}",
+            crate::redact_urls(&text.chars().take(500).collect::<String>())
+        ))
+    };
+    let mut window = Vec::new();
+    for item in v["output"].as_array().ok_or_else(invalid)? {
+        match (item["type"].as_str(), item["role"].as_str()) {
+            (Some("compaction"), _) => window.push(Message {
+                role: Role::Assistant,
+                parts: vec![Part::Compaction(compaction_item(item).ok_or_else(invalid)?)],
+            }),
+            (Some("message"), Some(role @ ("user" | "assistant"))) => {
+                let parts: Vec<Part> = item["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|c| c["text"].as_str())
+                    .map(Part::text)
+                    .collect();
+                if parts.is_empty() {
+                    return Err(invalid());
+                }
+                window.push(Message {
+                    role: if role == "user" {
+                        Role::User
+                    } else {
+                        Role::Assistant
+                    },
+                    parts,
+                });
+            }
+            // The system prompt sent as a developer message, echoed back;
+            // reasoning items replay only with their output.
+            _ => {}
+        }
+    }
+    Ok(crate::Compacted {
+        window,
+        usage: usage_of(&v["usage"]),
+    })
 }
 
 /// The Responses request for `req`.

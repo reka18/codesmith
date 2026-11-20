@@ -56,3 +56,22 @@
 289 :: ported :: src/warming.rs::oc_warming_doesnt_ping_during_a_running_compaction
 302 :: ported :: src/warming.rs::oc_warming_stops_warming_a_deleted_session :: adapted: a session's warming stops when it is closed
 313 :: ported :: src/warming.rs::oc_warming_stops_every_loop_when_the_plugin_closes :: adapted: per session; dropping its warmer
+# Native provider compaction (tests/oc_native_compaction.rs, codesmith-ai src/compaction_tests.rs).
+@session-compaction.test.ts
+950 :: ported :: tests/oc_native_compaction.rs::oc_native_compaction_fails_without_a_model_call_on_a_route_that_cannot_compact
+@session-native-compaction.test.ts
+248 :: ported :: tests/oc_native_compaction.rs::oc_native_manual_trigger_persists_continues_retains_users_and_preserves_context :: adapted: no synthetic messages or retry hook
+328 :: ported :: tests/oc_native_compaction.rs::oc_native_manual_and_automatic_endpoint_compaction_keep_the_replacement_unchanged :: adapted: the endpoint chosen with mechanism
+345 :: ported :: tests/oc_native_compaction.rs::oc_native_automatic_failures_interruptions_and_overflows_retain_the_checkpoint :: adapted: no interruption of an automatic compaction
+377 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_hooks_supply_the_summary_instead_of_provider_compaction :: adapted: a summary checkpoint, no plugin native state
+404 :: ported :: tests/oc_native_compaction.rs::oc_native_retained_user_budget_counts_attachments_and_drops_whole_oldest_messages
+@session-native.test.ts
+64,85,153 :: design :: storage-model :: legacy checkpoint and media formats (CodeSmith's native windows are new)
+199 :: ported :: ../codesmith-ai/src/compaction_tests.rs::oc_native_window_round_trips_tools_checkpoints_and_media_through_json :: adapted: serde of the window's messages
+224 :: portable :: store::history_for :: native instruction epochs after durable replay and provider switches
+312 :: ported :: tests/oc_native_compaction.rs::oc_native_falls_back_to_an_earlier_compatible_checkpoint :: adapted: on resume with another model
+345 :: design :: storage-model :: records are typed: a window that does not decode is not a native record
+@session-runner.test.ts
+1820 :: ported :: tests/oc_native_compaction.rs::oc_native_restores_installed_native_context_with_auto_disabled_and_across_a_fork :: adapted: resumed and forked with the store; no revert
+3698 :: ported :: tests/oc_native_compaction.rs::oc_native_automatically_persists_windows_retains_users_and_waits_for_fresh_usage :: adapted: one compaction, then none until measured
+3750 :: ported :: tests/oc_native_compaction.rs::oc_native_recovers_an_overflowing_native_window_with_another_native_compaction

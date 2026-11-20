@@ -498,7 +498,7 @@ pub fn fold(entries: &[Entry]) -> Option<State> {
                     }
                 }
             }
-            Record::Checkpoint { .. } => {
+            Record::Checkpoint { .. } | Record::Native { .. } => {
                 if let Some(s) = &mut state {
                     s.advance(e.seq);
                 }

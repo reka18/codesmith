@@ -18,6 +18,8 @@ pub enum Kind {
     Title,
     Summary,
     Main,
+    /// A provider compaction (trigger or endpoint).
+    Native,
 }
 
 /// A main reply: its text, reasoning, and the prompt tokens it reports.
@@ -52,6 +54,13 @@ pub struct Script {
     pub fail_summaries: usize,
     /// Main requests this rejects as too long first.
     pub overflow: usize,
+    /// Native compactions this fails (400), rate-limits (429, then
+    /// succeeds), or rejects as too long.
+    pub native_fail: usize,
+    pub native_flaky: usize,
+    pub native_overflow: bool,
+    /// Native compactions wait for a permit here, when set.
+    pub native_hold: Option<Arc<tokio::sync::Semaphore>>,
     pub log: Vec<(Kind, Value)>,
 }
 
@@ -172,7 +181,11 @@ pub async fn model(script: Shared) -> String {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                let kind = if system == title::SYSTEM {
+                let kind = if line.contains("/compact ")
+                    || body.to_string().contains("compaction_trigger")
+                {
+                    Kind::Native
+                } else if system == title::SYSTEM {
                     Kind::Title
                 } else if is_summary(&body) {
                     Kind::Summary
@@ -182,10 +195,10 @@ pub async fn model(script: Shared) -> String {
                 let hold = {
                     let mut sc = script.lock().unwrap();
                     sc.log.push((kind, body.clone()));
-                    if kind == Kind::Summary {
-                        sc.hold.clone()
-                    } else {
-                        None
+                    match kind {
+                        Kind::Summary => sc.hold.clone(),
+                        Kind::Native => sc.native_hold.clone(),
+                        _ => None,
                     }
                 };
                 if let Some(h) = hold {
@@ -193,7 +206,34 @@ pub async fn model(script: Shared) -> String {
                 }
                 let resp = {
                     let mut sc = script.lock().unwrap();
+                    let natives = sc.log.iter().filter(|(k, _)| *k == Kind::Native).count();
                     match kind {
+                        Kind::Native if sc.native_fail > 0 => {
+                            sc.native_fail -= 1;
+                            error(400, "fixture failure")
+                        }
+                        Kind::Native if sc.native_flaky > 0 => {
+                            sc.native_flaky -= 1;
+                            let b = json!({"error": {"message": "fixture rate limit", "type": "rate_limit_error"}}).to_string();
+                            format!("HTTP/1.1 429 Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len())
+                        }
+                        Kind::Native if sc.native_overflow => {
+                            error(400, "Your input exceeds the context window of this model")
+                        }
+                        Kind::Native if line.contains("/compact ") => {
+                            let b = json!({"id": "compact_endpoint", "object": "response.compaction", "output": [
+                                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "endpoint retained"}]},
+                                {"type": "compaction", "id": format!("cmp_{natives}"), "encrypted_content": format!("encrypted_{natives}")},
+                            ], "usage": {"input_tokens": 20, "output_tokens": 4, "total_tokens": 24}}).to_string();
+                            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len())
+                        }
+                        Kind::Native => {
+                            let e = json!({"type": "response.completed", "response": {"id": format!("resp_{natives}"), "status": "completed",
+                                "output": [{"type": "compaction", "id": format!("cmp_{natives}"), "encrypted_content": format!("encrypted_{natives}")}],
+                                "usage": {"input_tokens": 20, "output_tokens": 4, "total_tokens": 24}}});
+                            let b = format!("data: {e}\n\n");
+                            format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len())
+                        }
                         Kind::Title => stream(wire, "", "Title", 0, 0),
                         Kind::Summary if sc.reject.as_ref().is_some_and(|r| r(&body)) => {
                             error(400, "This model's maximum context length is 32768 tokens")
@@ -252,6 +292,20 @@ pub async fn session_on(
     let dir = tempfile::tempdir().unwrap();
     let script: Shared = Arc::default();
     let base = model(script.clone()).await;
+    let l = loaded(dir.path(), &base, protocol, id, context, output, extra);
+    (open(&l, dir.path(), None, None), script, dir)
+}
+
+/// The config of a session on the scripted model at `base`.
+pub fn loaded(
+    dir: &std::path::Path,
+    base: &str,
+    protocol: &str,
+    id: &str,
+    context: u64,
+    output: u32,
+    extra: Value,
+) -> Loaded {
     let mut v = json!({
         "model": format!("fake/{id}"), "snapshots": false,
         "providers": {"fake": {"protocol": protocol,
@@ -259,30 +313,39 @@ pub async fn session_on(
             "models": {id: {"limit": {"context": context, "output": output}}}}},
     });
     merge(&mut v, &extra);
-    let l = Loaded {
+    Loaded {
         config: serde_json::from_value::<Config>(v).unwrap(),
         files: vec![],
-        root: dir.path().to_path_buf(),
-    };
+        root: dir.to_path_buf(),
+    }
+}
+
+/// A session with `l`, stored in `store` (continuing `resume`) when given.
+pub fn open(
+    l: &Loaded,
+    dir: &std::path::Path,
+    store: Option<codesmith_core::store::Store>,
+    resume: Option<String>,
+) -> Session {
     let opts = Options {
         agent: None,
         model: None,
-        resume: None,
+        resume,
         title: Some("t".into()),
         parent: None,
         questioner: None,
         mcp: None,
     };
     let mut s = Session::new(
-        &l,
-        dir.path().to_path_buf(),
+        l,
+        dir.to_path_buf(),
         opts,
         Arc::new(Fixed(Reply::Reject(None))),
-        None,
+        store,
     )
     .unwrap();
     s.set_retry_scale(0.0);
-    (s, script, dir)
+    s
 }
 
 pub fn requests(script: &Shared, kind: Kind) -> Vec<Value> {

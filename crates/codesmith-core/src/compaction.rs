@@ -212,7 +212,8 @@ fn estimate_one(m: &Message) -> u64 {
                         })
                         .sum::<usize>()
             }
-            Part::Effort { .. } => 0,
+            // An encrypted provider checkpoint has no measurable size.
+            Part::Effort { .. } | Part::Compaction(_) => 0,
         })
         .sum();
     (chars as u64).div_ceil(4)
@@ -585,7 +586,7 @@ pub fn flatten(req: &codesmith_ai::Request, target: u64) -> Option<codesmith_ai:
     let lead_len = req
         .messages
         .iter()
-        .rposition(is_checkpoint)
+        .rposition(|m| is_checkpoint(m) || m.parts.iter().any(|p| matches!(p, Part::Compaction(_))))
         .map_or(0, |i| i + 1);
     let lead = &req.messages[..lead_len];
     // A real user message and everything after it, up to the next one, is
@@ -681,6 +682,28 @@ pub fn flatten(req: &codesmith_ai::Request, target: u64) -> Option<codesmith_ai:
         messages,
         ..req.clone()
     })
+}
+
+/// The newest whole, real user messages (no tool results or checkpoints)
+/// within `keep` tokens, attachments counted, oldest first: what a trigger
+/// compaction keeps before the provider's checkpoint. OpenCode's
+/// `recentUserMessages`.
+pub fn recent_users(messages: &[Message], keep: u64) -> Vec<Message> {
+    let users: Vec<&Message> = messages
+        .iter()
+        .filter(|m| starts_turn(m) && !is_checkpoint(m))
+        .collect();
+    let mut total = 0;
+    let mut start = users.len();
+    while start > 0 {
+        let next = total + estimate_one(users[start - 1]);
+        if next > keep {
+            break;
+        }
+        total = next;
+        start -= 1;
+    }
+    users[start..].iter().map(|m| (*m).clone()).collect()
 }
 
 #[cfg(test)]

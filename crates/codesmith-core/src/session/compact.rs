@@ -18,6 +18,10 @@
 //! just cached), and held. Compaction swaps it in, keeping what came after
 //! it verbatim, instead of waiting for a summary, as long as that tail is
 //! short. OpenCode's `SessionCompaction.precompute`.
+//!
+//! Native compaction (`compaction: {"type": "native"}` on a model): the
+//! provider compacts the conversation itself (OpenAI Responses), and its
+//! window replaces the history; see [`Session::compact_natively`].
 
 use super::{Session, Sink};
 use crate::compaction::{self, Estimate};
@@ -57,6 +61,8 @@ pub(super) struct State {
     snapshot: Arc<Mutex<Option<Request>>>,
     /// Usage of pings not counted yet.
     pings: Arc<Mutex<Vec<Usage>>>,
+    /// How many messages at the start of the history are a native window.
+    native_len: usize,
 }
 
 /// What a summary request came to: the summary, and the usage of each call.
@@ -137,6 +143,13 @@ pub(super) struct Plan {
     retry_scale: f64,
     /// A summary a compaction hook supplied.
     supplied: Option<crate::plugin::Summary>,
+}
+
+/// What a native compaction produced.
+enum Native {
+    Window(Vec<Message>),
+    /// A compaction hook supplied a summary instead.
+    Summary(String),
 }
 
 /// A summary request that came back unusable, or a provider error.
@@ -274,7 +287,7 @@ impl Session {
     /// replaced from a newer response when it failed or fell too far behind.
     pub(super) fn precompute(&mut self) {
         let settings = self.loaded.config.compaction.clone();
-        if !settings.background() || !settings.auto() {
+        if !settings.background() || !settings.auto() || self.model.native_compaction.is_some() {
             return;
         }
         let Some(window) = self.model.context.filter(|w| *w > 0) else {
@@ -368,7 +381,8 @@ impl Session {
         let held = self.compact.held.take()?;
         let tail = compaction::estimate(&self.messages[held.keep.min(self.messages.len())..]);
         let limit = (budget as f64 * compaction::PRECOMPUTED_TAIL_SHARE) as u64;
-        if !self.held_valid(&held) || tail > limit {
+        // A session that switched to native compaction compacts natively.
+        if !self.held_valid(&held) || tail > limit || self.model.native_compaction.is_some() {
             self.compact.held = Some(held);
             self.discard_held();
             return None;
@@ -404,6 +418,9 @@ impl Session {
     }
 
     pub(super) async fn compact_for(&mut self, sink: &mut dyn Sink, reason: Reason) -> Result<()> {
+        if self.model.native_compaction.is_some() {
+            return self.compact_natively(sink, reason).await;
+        }
         let before = self.estimate_prompt();
         let k = compaction::split(&self.messages, self.loaded.config.compaction.keep());
         if k == 0 || self.messages.is_empty() {
@@ -445,6 +462,141 @@ impl Session {
             self.count_side_call(u)?;
         }
         result
+    }
+
+    /// Compact with the provider's own compaction (OpenCode's
+    /// `compactNatively`): with a trigger, the conversation goes out as a
+    /// step would send it, and the newest real user messages within `keep`
+    /// plus the one checkpoint the provider returns replace it; with the
+    /// endpoint, the provider's replacement window does, unchanged. A
+    /// compaction hook may supply a summary instead. Failures leave the
+    /// history as it was.
+    async fn compact_natively(&mut self, sink: &mut dyn Sink, reason: Reason) -> Result<()> {
+        // Only a native window (or nothing) left: nothing new to compact.
+        // A resumed window is the messages without sequence numbers.
+        let stored_window = self.stored && self.seqs.iter().all(Option::is_none);
+        if self.messages.len() <= self.compact.native_len || stored_window {
+            return Err(anyhow!("nothing to compact yet"));
+        }
+        let before = self.estimate_prompt();
+        sink.compaction_start();
+        self.warm_send(None);
+        let result = self.native_window(reason).await;
+        self.warm_end();
+        match result {
+            Ok(Native::Window(window)) => {
+                sink.compaction_end(Ok(""));
+                self.keep_native(window, reason)?;
+                sink.compacted(before, self.estimate_prompt());
+                Ok(())
+            }
+            Ok(Native::Summary(summary)) => {
+                sink.compaction_end(Ok(&summary));
+                let k = self.messages.len();
+                self.keep_summary(summary, k)?;
+                sink.compacted(before, self.estimate_prompt());
+                Ok(())
+            }
+            Err(e) => {
+                sink.compaction_end(Err(&format!("{e:#}")));
+                Err(e)
+            }
+        }
+    }
+
+    /// The window the provider's compaction returns (or a hook's summary).
+    async fn native_window(&mut self, reason: Reason) -> Result<Native> {
+        let end = self.messages.len();
+        let plan = self.plan_on(end, reason, end, None);
+        if let Some(s) = plan.supplied {
+            if let Some(u) = s.usage {
+                self.count_side_call(u)?;
+            }
+            return Ok(Native::Summary(s.summary));
+        }
+        use codesmith_ai::CompactMechanism::{Endpoint, Trigger};
+        let provider = &self.model.provider;
+        let mechanism = match self.model.native_compaction.flatten() {
+            Some(m) if provider.can_compact(m) => Some(m),
+            Some(_) => None,
+            None => [Trigger, Endpoint]
+                .into_iter()
+                .find(|m| provider.can_compact(*m)),
+        };
+        let Some(mechanism) = mechanism else {
+            return Err(anyhow!(
+                "Native compaction is not supported for {}/{}",
+                self.model.provider_id,
+                provider.protocol.route()
+            ));
+        };
+        let mut req = plan.request;
+        req.max_tokens = self.model.max_output;
+        let mut policy = retry::Policy::default();
+        let compacted = loop {
+            match provider.compact(&self.client, &req, mechanism).await {
+                Ok(c) => break c,
+                Err(e) if retry::classify(&e) == retry::Class::ContextOverflow => {
+                    return Err(anyhow!(
+                        "compaction failed: the provider rejected the conversation as too long to compact ({e})"
+                    ));
+                }
+                Err(e) => match policy.next(&e, Instant::now()) {
+                    Some(wait) => tokio::time::sleep(wait.mul_f64(self.turn.retry_scale)).await,
+                    None => return Err(anyhow!("{e}")),
+                },
+            }
+        };
+        self.count_side_call(compacted.usage)?;
+        Ok(Native::Window(match mechanism {
+            Trigger => {
+                let keep = self.loaded.config.compaction.keep();
+                let mut window = compaction::recent_users(&self.messages, keep);
+                window.extend(compacted.window);
+                window
+            }
+            Endpoint => compacted.window,
+        }))
+    }
+
+    /// Replace the whole history with a native `window`.
+    fn keep_native(&mut self, window: Vec<Message>, reason: Reason) -> Result<()> {
+        let keep_from = self.seqs.iter().flatten().max().copied().unwrap_or(0) + 1;
+        let mut at = 0;
+        if let (Some(s), true) = (&self.store, self.stored) {
+            at = s.append(
+                &self.id,
+                &Record::Native {
+                    window: window.clone(),
+                    model: crate::config::split_variant(&self.model_spec).0.to_string(),
+                    keep_from,
+                },
+            )?;
+        }
+        if let Some(state) = &mut self.instruction {
+            state.advance(at);
+        }
+        self.seqs = vec![None; window.len()];
+        self.messages = window;
+        self.reset_cycle();
+        self.compact.native_len = self.messages.len();
+        if reason != Reason::Manual {
+            // The current turn was compacted; tell the model to carry on.
+            self.push(Message::system(compaction::CONTINUE))?;
+        }
+        Ok(())
+    }
+
+    /// A compaction replaced the history: what was measured or held no
+    /// longer applies. An encrypted native window estimates as nothing, so
+    /// the next compaction waits for a response to measure it.
+    fn reset_cycle(&mut self) {
+        self.compact.native_len = 0;
+        self.last_prompt_tokens = 0;
+        self.compact.anchor = None;
+        self.compact.cycle_start = None;
+        *self.compact.snapshot.lock().unwrap() = None;
+        self.discard_held();
     }
 
     /// The size a summary request aims for.
@@ -587,12 +739,7 @@ impl Session {
             // The current turn itself was summarized; tell the model to carry on.
             self.push(Message::system(compaction::CONTINUE))?;
         }
-        self.last_prompt_tokens = 0;
-        self.compact.anchor = None;
-        self.compact.cycle_start = None;
-        // The latest request no longer matches the history.
-        *self.compact.snapshot.lock().unwrap() = None;
-        self.discard_held();
+        self.reset_cycle();
         Ok(())
     }
 }

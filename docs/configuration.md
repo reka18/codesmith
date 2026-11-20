@@ -307,6 +307,7 @@ Provider fields:
 | `body` | Extra request-body fields for every model of this provider, merged into each request. |
 | `options` | [Provider options](#provider-options-and-variants) for every model of this provider. |
 | `cache` | [Prompt caching](#prompt-caching) for every model of this provider (`settings.cache` also works). |
+| `compaction` | How every model of this provider [compacts](#native-compaction): `{"type": "native"}` for the provider's own compaction. |
 | `models` | Per-model settings, keyed by the id you use in `provider/model`. |
 
 Model fields:
@@ -325,6 +326,7 @@ Model fields:
 | `modalities` | `{"input": [...], "output": [...]}`, as in OpenCode and models.dev. See [images and PDFs](tools.md#images-and-pdfs). |
 | `attachment` | OpenCode's older flag: `false` means text input only. |
 | `cache` | [Prompt caching](#prompt-caching) for this model, over the provider's (`options.cache` also works). |
+| `compaction` | `{"type": "native"}`: [the provider compacts](#native-compaction) this model's sessions. Overrides the provider's. |
 | `compatibility` | [Compatibility overrides](#compatibility-overrides) for this model, over the provider's. |
 | `capabilities` | OpenCode's capabilities, merged field by field over the catalog's: `input` and `output` modalities, `tools`, `temperature`, and `reasoning` (`{"supported": true, "effort": ["low", "high"]}`, `"toggle": true`, `"budget": {"min": 1024}`), which regenerates the reasoning variants. |
 | `type` | `chat` (the default), or `image`, `video` or `decision`; only chat models are offered for sessions. Unset keeps the catalog's. |
@@ -1001,6 +1003,27 @@ first response, everything is estimated.
 The summary request reuses the session's prompt cache; see [long
 sessions](sessions.md#long-sessions-compaction). Its output limit is the
 model's `limit.output`, lowered to the room the request leaves in the window.
+
+### Native compaction
+
+OpenAI's Responses API can compact a conversation itself, into an
+encrypted checkpoint that only that model reads. Turn it on per model (or
+provider) instead of summaries:
+
+```jsonc
+"providers": { "openai": { "models": { "gpt-5.4": { "compaction": { "type": "native" } } } } }
+```
+
+CodeSmith then sends the conversation, as a step would, with a compaction
+trigger, and keeps the newest of your own messages (within `keep.tokens`)
+followed by the provider's checkpoint. `"mechanism": "endpoint"` uses
+`/responses/compact` instead, which returns the whole replacement window
+(Azure supports only this one); by default the trigger is used where it is
+available. Compaction otherwise works as usual (`/compact`, `auto`, an
+overflow), but there are no background summaries. On a route that cannot
+compact natively, compaction fails without calling the model. A session
+continued with another model replays from the latest summary before the
+checkpoint (or from the start), with the messages it stood for.
 
 Without `limit.context`, CodeSmith cannot tell when the window is nearly
 full. Compaction then happens only when you run `/compact`, or when the

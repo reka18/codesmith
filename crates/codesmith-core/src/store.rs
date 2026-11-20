@@ -36,6 +36,14 @@ pub enum Record {
         summary: String,
         keep_from: i64,
     },
+    /// The provider's own compaction (see [`codesmith_ai::Part::Compaction`]):
+    /// `window` replaces everything before `keep_from`, and replays only on
+    /// `model` (its spec without the variant), the model that made it.
+    Native {
+        window: Vec<Message>,
+        model: String,
+        keep_from: i64,
+    },
     /// The project's files (a snapshot tree) at the start of a turn.
     Snapshot {
         tree: String,
@@ -824,14 +832,34 @@ pub fn history_of(entries: &[Entry]) -> Vec<Message> {
 /// The model's view of a log, each message with its sequence number (`None`
 /// for the checkpoint that opens it).
 pub fn history_with_seqs(entries: &[Entry]) -> Vec<(Option<i64>, Message)> {
+    history_for(entries, None)
+}
+
+/// [`history_with_seqs`] for `model` (a model spec): a native window
+/// another model made cannot be replayed, so history then starts from the
+/// latest checkpoint that can (an earlier native window of this model, or a
+/// summary), with the original messages the skipped window stood for.
+pub fn history_for(entries: &[Entry], model: Option<&str>) -> Vec<(Option<i64>, Message)> {
     let hidden = hidden_ranges(entries);
     let visible = |seq: i64| !hidden.iter().any(|(from, to)| seq >= *from && seq < *to);
+    let base = model.map(|m| crate::config::split_variant(m).0);
+    let usable = |r: &Record| match r {
+        Record::Checkpoint { .. } => true,
+        Record::Native { model: made, .. } => base.is_none_or(|b| b == made),
+        _ => false,
+    };
     let last_checkpoint = entries
         .iter()
-        .rposition(|e| matches!(e.record, Record::Checkpoint { .. }) && visible(e.seq));
+        .rposition(|e| usable(&e.record) && visible(e.seq));
     let (mut out, keep_from) = match last_checkpoint.map(|i| &entries[i].record) {
         Some(Record::Checkpoint { summary, keep_from }) => (
             vec![(None, Message::user(checkpoint_text(summary)))],
+            *keep_from,
+        ),
+        Some(Record::Native {
+            window, keep_from, ..
+        }) => (
+            window.iter().map(|m| (None, m.clone())).collect(),
             *keep_from,
         ),
         _ => (Vec::new(), 0),
@@ -933,7 +961,9 @@ pub fn redo_target(entries: &[Entry]) -> Option<(i64, String)> {
         .collect();
     for e in entries.iter().rev() {
         match &e.record {
-            Record::Message { .. } | Record::Checkpoint { .. } => return None,
+            Record::Message { .. } | Record::Checkpoint { .. } | Record::Native { .. } => {
+                return None
+            }
             Record::Revert { after, .. } if !redone.contains(&e.seq) => {
                 return Some((e.seq, after.clone()))
             }
