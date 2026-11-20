@@ -59,7 +59,7 @@ The built-in providers are `anthropic`, `openai`, `google`, `azure`,
 and `cerebras`. See [providers](configuration.md#built-in-providers) for their
 key variables (`azure` also needs its resource name).
 
-Three more sign in their own way:
+Several sign in their own way:
 
 ```sh
 export CODESMITH_COPILOT_CLIENT_ID=Iv1.…          # your GitHub OAuth app, device flow on
@@ -79,6 +79,33 @@ none); [GitHub Copilot](configuration.md#github-copilot) says how to register
 one. See [Amazon Bedrock](configuration.md#amazon-bedrock),
 [Google Vertex AI](configuration.md#google-vertex-ai) and
 [GitHub Copilot](configuration.md#github-copilot).
+
+Others take a key plus an account or resource, or a browser login:
+
+```sh
+codesmith auth login cloudflare-ai-gateway       # token, then account and gateway ids
+codesmith -m cloudflare-ai-gateway/anthropic/claude-sonnet-4.6
+
+az login && codesmith auth login azure --cli --field resourceName=my-resource
+codesmith models azure                            # lists the resource's deployments
+codesmith -m azure/my-deployment
+
+export SNOWFLAKE_ACCOUNT=myorg-myaccount SNOWFLAKE_CORTEX_PAT=...
+codesmith -m snowflake-cortex/claude-sonnet-4-6
+
+codesmith auth login poe --oauth --client-id <your Poe OAuth client>
+```
+
+Browser logins for Poe, DigitalOcean and GitLab run as an OAuth
+application you register yourself (CodeSmith ships none); each section of
+[the configuration guide](configuration.md#providers-and-models) says how:
+[Cloudflare](configuration.md#cloudflare-ai-gateway-and-workers-ai),
+[Azure](configuration.md#azure-openai), [Poe](configuration.md#poe),
+[DigitalOcean](configuration.md#digitalocean),
+[GitLab](configuration.md#gitlab-sign-in),
+[Snowflake Cortex](configuration.md#snowflake-cortex),
+[SAP AI Core](configuration.md#sap-ai-core) and
+[Modal](configuration.md#live-model-lists-modal-github-copilot-azure).
 
 **A local server.** `ollama`, `lmstudio` and `llamacpp` are built in at their
 default ports, with no key:
