@@ -51,8 +51,8 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Providers, models and credentials | 796 | 56 | 0 | 385 | 317 | 38 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
-| Runtime, locations and filesystem | 242 | 0 | 0 | 27 | 211 | 4 | 0 |
-| **Total** | **5588** | **858** | **15** | **985** | **2326** | **1404** | **0** |
+| Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
+| **Total** | **5588** | **882** | **15** | **961** | **2326** | **1404** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (985 cases in 67 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (961 cases in 66 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -87,7 +87,6 @@ Missing features, by how many OpenCode test cases each would unlock (985 cases i
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [PTY Sessions](#pty-sessions) | 38 | persistent PTY daemon; persistent terminals; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
-| [File Watching](#file-watching) | 24 | watching files for changes |
 | [Shell Daemon](#shell-daemon) | 23 | commands that outlive the server process in a daemon; foreground calls settled across a server restart; … |
 | [Markdown Agent Files](#markdown-agent-files) | 22 | agents defined as Markdown files with frontmatter (and legacy fields); Markdown agent fields |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
@@ -611,35 +610,6 @@ Missing features, by how many OpenCode test cases each would unlock (985 cases i
 - `plugin/provider-openai.test.ts`: reloads providers on a switch only when the ChatGPT login changes
 - `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
 - `session-error.test.ts`: types the ChatGPT workspace usage limit
-
-### File Watching
-
-24 cases.
-
-- `filesystem/file-watch.test.ts`: shares one watch per file and resubscribes after unwatch
-- `filesystem/file-watch.test.ts`: expires a watch after 24 hours unless it is watched again
-- `filesystem/file-watch.test.ts`: evicts the watch closest to expiring when a location is full
-- `filesystem/file-watch.test.ts`: publishes filesystem.changed on the watch's location
-- `filesystem/file-watch.test.ts`: starts a new watch when the previous one ended
-- `filesystem/file-watch.test.ts`: starts a new watch when the previous one failed
-- `filesystem/file-watch.test.ts`: fails watch requests
-- `filesystem/file-watch.test.ts`: FileWatch native
-- `filesystem/location-watcher-policy.test.ts`: reads batched registrations and disposals before notifying observers
-- `filesystem/location-watcher-policy.test.ts`: passes the latest policy to later observers after a reentrant registration
-- `filesystem/watcher.test.ts`: ends the stream without logging an error when the watched directory is missing
-- `filesystem/watcher.test.ts`: still logs an error when watching fails for a reason other than ENOENT
-- `filesystem/watcher.test.ts`: signals readiness after acquisition and buffers updates published by the ready callback
-- `filesystem/watcher.test.ts`: does not signal readiness for an unavailable native watch
-- `filesystem/watcher.test.ts`: watches only named immediate entries, including missing directories
-- `filesystem/watcher.test.ts`: interrupting a consumer interrupts a pending acquisition
-- `filesystem/watcher.test.ts`: shares equivalent entry sets and releases exactly once after the final consumer
-- `filesystem/watcher.test.ts`: scope shutdown releases an active subscription exactly once
-- `filesystem/watcher.test.ts`: watches only exact Git branch metadata
-- `filesystem/watcher.test.ts`: watches only exact Hg branch metadata
-- `filesystem/watcher.test.ts`: reconciles config without duplicate subscriptions
-- `filesystem/watcher.test.ts`: uses the policy changed while target discovery was suspended
-- `filesystem/watcher.test.ts`: does not start before configured policy is ready
-- `filesystem/watcher.test.ts`: LocationWatcher
 
 ### Shell Daemon
 
@@ -3855,7 +3825,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Runtime, locations and filesystem (211 of 242)</summary>
+<details><summary>Runtime, locations and filesystem (235 of 242)</summary>
 
 
 **`app.test.ts`**
@@ -3910,9 +3880,42 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D logs explicitly listed updated events — effect-internal: event logger
 
+**`filesystem/file-watch.test.ts`**
+
+- P shares one watch per file and resubscribes after unwatch — `tests/oc_watch.rs::oc_file_watch_shares_one_watch_per_file_and_resubscribes_after_unwatch`
+- P expires a watch after 24 hours unless it is watched again — `tests/oc_watch.rs::oc_file_watch_expires_a_watch_after_24_hours_unless_watched_again`
+- P evicts the watch closest to expiring when a location is full — `tests/oc_watch.rs::oc_file_watch_evicts_the_watch_closest_to_expiring_when_a_location_is_full`
+- P publishes filesystem.changed on the watch's location — `tests/oc_watch.rs::oc_file_watch_publishes_filesystem_changed_on_the_watchs_location`
+- P starts a new watch when the previous one ended — `tests/oc_watch.rs::oc_file_watch_starts_a_new_watch_when_the_previous_one_ended`
+- P starts a new watch when the previous one failed — `tests/oc_watch.rs::oc_file_watch_starts_a_new_watch_when_the_previous_one_failed` (adapted: the failure is a panicking native acquisition)
+- P fails watch requests — `tests/oc_watch.rs::oc_file_watch_disabled_fails_watch_requests`
+- P FileWatch native — `tests/oc_watch.rs::oc_file_watch_native_reports_in_place_edits_and_atomic_saves`
+
 **`filesystem/filesystem.test.ts`**
 
 - D returns true for directories · returns false for files · returns false for non-existent paths · returns true for files · returns false for directories · returns file contents when file exists · returns undefined for missing file (NotFound) · round-trips JSON data · fails invalid JSON through the error channel · creates nested directories · is idempotent · creates parent directories if missing · writes directly when parent exists · writes Uint8Array content · finds target in start directory · finds target in parent directories · returns empty array when not found · finds multiple targets walking up · stops at the first match when requested · finds files matching pattern · supports absolute paths · matches patterns · finds files walking up directories · exists works · remove works · mimeType returns correct types · contains checks path containment · overlaps detects overlapping paths — effect-internal: OpenCode's FSUtil service
+
+**`filesystem/location-watcher-policy.test.ts`**
+
+- P reads batched registrations and disposals before notifying observers — `tests/oc_watch.rs::oc_policy_reads_batched_registrations_and_disposals_before_notifying_observers`
+- P passes the latest policy to later observers after a reentrant registration — `tests/oc_watch.rs::oc_policy_passes_the_latest_policy_to_later_observers_after_a_reentrant_registration`
+
+**`filesystem/watcher.test.ts`**
+
+- P ends the stream without logging an error when the watched directory is missing — `tests/oc_watch.rs::oc_watcher_ends_the_stream_without_logging_an_error_when_the_directory_is_missing`
+- P still logs an error when watching fails for a reason other than ENOENT — `tests/oc_watch.rs::oc_watcher_still_logs_an_error_when_watching_fails_for_another_reason`
+- P signals readiness after acquisition and buffers updates published by the ready callback — `tests/oc_watch.rs::oc_watcher_signals_readiness_after_acquisition_and_buffers_updates_published_by_the_ready_callback`
+- P does not signal readiness for an unavailable native watch — `tests/oc_watch.rs::oc_watcher_does_not_signal_readiness_for_an_unavailable_native_watch`
+- P watches only named immediate entries, including missing directories — `tests/oc_watch.rs::oc_watcher_watches_only_named_immediate_entries_including_missing_directories`
+- P interrupting a consumer interrupts a pending acquisition — `tests/oc_watch.rs::oc_watcher_interrupting_a_consumer_interrupts_a_pending_acquisition` (adapted: interrupting is aborting the consumer's task)
+- P shares equivalent entry sets and releases exactly once after the final consumer — `tests/oc_watch.rs::oc_watcher_shares_equivalent_entry_sets_and_releases_exactly_once_after_the_final_consumer`
+- P scope shutdown releases an active subscription exactly once — `tests/oc_watch.rs::oc_watcher_shutdown_releases_an_active_subscription_exactly_once` (adapted: scope shutdown is Watcher::shutdown)
+- P watches only exact Git branch metadata — `tests/oc_watch.rs::oc_location_watcher_watches_only_exact_git_branch_metadata`
+- P watches only exact Hg branch metadata — `tests/oc_watch.rs::oc_location_watcher_watches_only_exact_hg_branch_metadata`
+- P reconciles config without duplicate subscriptions — `tests/oc_watch.rs::oc_location_watcher_reconciles_config_without_duplicate_subscriptions` (adapted: config entries are a transform replayed on reload)
+- P uses the policy changed while target discovery was suspended — `tests/oc_watch.rs::oc_location_watcher_uses_the_policy_changed_while_target_discovery_was_suspended` (adapted: discovery is suspended through an injected discover function)
+- P does not start before configured policy is ready — `tests/oc_watch.rs::oc_location_watcher_does_not_start_before_configured_policy_is_ready` (adapted: the policy is seeded by the activation future)
+- P LocationWatcher — `tests/oc_watch.rs::oc_location_watcher_native_publishes_git_head_events` (with the symlinked .git, .hg/branch, exact-target and missing-directory tests beside it; adapted: waits for the change, as FSEvents may report a recent creation in the same event)
 
 **`instance-vanilla.test.ts`**
 
