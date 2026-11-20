@@ -86,7 +86,7 @@ impl Scripted {
 
 struct ScriptOut {
     script: Scripted,
-    tx: Option<mpsc::UnboundedSender<Result<Frame, WsError>>>,
+    tx: Option<mpsc::Sender<Result<Frame, WsError>>>,
 }
 
 impl Outbound for ScriptOut {
@@ -99,7 +99,7 @@ impl Outbound for ScriptOut {
         if let Some(r) = s.replies.pop_front() {
             if let Some(tx) = &self.tx {
                 for f in r.frames {
-                    let _ = tx.send(f);
+                    let _ = tx.try_send(f);
                 }
             }
             if r.end {
@@ -122,7 +122,7 @@ impl Connector for Scripted {
         let result = match s.open_errors.pop_front() {
             Some(e) => Err(e),
             None => {
-                let (tx, inbound) = mpsc::unbounded_channel();
+                let (tx, inbound) = mpsc::channel(1024);
                 Ok(Connection {
                     outbound: Box::new(ScriptOut {
                         script: self.clone(),
@@ -1384,4 +1384,31 @@ fn converts_http_urls_to_websocket_urls() {
     let e = ws::to_websocket_url("ftp://a.test/x").unwrap_err();
     assert_eq!(e.code.as_deref(), Some("invalid-url"));
     assert_eq!(e.phase, Phase::Prepare);
+}
+
+// CodeSmith's own: the reader of a real connection does not run ahead of
+// its consumer, so a fast server cannot queue frames (up to 16 MiB each)
+// without end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connections_reader_waits_for_its_consumer() {
+    let frames: Vec<Value> = (0..100).map(|i| json!({"type": "x", "i": i})).collect();
+    let (base, _, _) = ws_server(vec![frames]).await;
+    let url = ws::to_websocket_url(&format!("{base}/responses")).unwrap();
+    let mut conn = ws::Tungstenite::default()
+        .open(Handshake {
+            url,
+            headers: vec![],
+        })
+        .await
+        .unwrap();
+    conn.outbound.send_text("{}".into()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(conn.inbound.max_capacity(), ws::INBOUND_FRAMES);
+    assert!(conn.inbound.len() <= ws::INBOUND_FRAMES);
+    for i in 0..100 {
+        let Some(Ok(Frame::Text(t))) = conn.inbound.recv().await else {
+            panic!("frame {i}")
+        };
+        assert_eq!(serde_json::from_str::<Value>(&t).unwrap()["i"], i);
+    }
 }

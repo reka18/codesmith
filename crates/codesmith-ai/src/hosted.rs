@@ -297,6 +297,16 @@ pub(crate) fn responses_item(item: &Value) -> Result<Option<Hosted>, Error> {
     let call = Hosted::call(Protocol::OpenaiResponses, id, name, responses_input(item));
     let error = item.get("error").filter(|e| !e.is_null());
     let result = match (kind, item["result"].as_str().filter(|r| !r.is_empty())) {
+        ("image_generation_call", Some(data))
+            if crate::oversized_media("image", data).is_some() =>
+        {
+            // Too large to keep: a note in its place, replayed as text.
+            HostedResult {
+                is_error: true,
+                value: json!({"message": crate::oversized_media("image", data)}),
+                media: vec![],
+            }
+        }
         ("image_generation_call", Some(data)) => {
             if base64::engine::general_purpose::STANDARD
                 .decode(data)

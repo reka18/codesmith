@@ -674,10 +674,19 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
         if let Some(d) = p.get("inlineData").filter(|d| d.is_object()) {
             state.end_thinking(&mut out);
             state.end_text(&mut out);
-            let mut media = Media::base64(
+            let (mime, data) = (
                 d["mimeType"].as_str().unwrap_or_default(),
                 d["data"].as_str().unwrap_or_default(),
             );
+            // Too large to keep: a note in its place.
+            if let Some(note) = crate::oversized_media(mime, data) {
+                let id = state.next_id(true);
+                out.push(Event::TextStart(id.clone()));
+                state.text = Some(id);
+                out.push(Event::TextDelta(note));
+                continue;
+            }
+            let mut media = Media::base64(mime, data);
             if let Some(s) = p["thoughtSignature"].as_str().filter(|s| !s.is_empty()) {
                 media = media.with_meta("google", json!({"thoughtSignature": s}));
             }

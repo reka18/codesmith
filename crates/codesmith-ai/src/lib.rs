@@ -987,6 +987,28 @@ impl From<reqwest::Error> for Error {
     }
 }
 
+/// The largest generated image or file (decoded) a response may carry, as
+/// for attachments; a larger one is dropped with a note.
+pub const GENERATED_MEDIA_MAX: usize = 20 * 1024 * 1024;
+
+/// A note in place of generated media whose `base64` data decodes to more
+/// than [`GENERATED_MEDIA_MAX`] bytes, or `None` when it fits.
+pub fn oversized_media(mime: &str, base64: &str) -> Option<String> {
+    let bytes = base64.trim_end_matches('=').len() / 4 * 3;
+    (bytes > GENERATED_MEDIA_MAX).then(|| {
+        let mime: String = mime
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '+' | '-'))
+            .take(64)
+            .collect();
+        format!(
+            "[generated {mime} dropped: about {} MiB, over the {} MiB limit]",
+            bytes / (1024 * 1024),
+            GENERATED_MEDIA_MAX / (1024 * 1024)
+        )
+    })
+}
+
 /// The most of a provider's payload an error message quotes.
 pub const QUOTE_MAX: usize = 2048;
 

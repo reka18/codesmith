@@ -136,8 +136,13 @@ pub trait Outbound: Send {
 /// order, until it closes (a close or failure ends with an error).
 pub struct Connection {
     pub outbound: Box<dyn Outbound>,
-    pub inbound: mpsc::UnboundedReceiver<Result<Frame, WsError>>,
+    /// Bounded (see [`INBOUND_FRAMES`]): a reader ahead of the consumer
+    /// waits instead of queueing frames of up to 16 MiB without end.
+    pub inbound: mpsc::Receiver<Result<Frame, WsError>>,
 }
+
+/// How many inbound frames a connection holds before its reader waits.
+pub const INBOUND_FRAMES: usize = 16;
 
 /// Opens connections.
 pub trait Connector: Send + Sync {
@@ -578,7 +583,7 @@ impl Connector for Tungstenite {
             .await
             .map_err(|e| connect_error(e, &url))?;
             let (sink, mut stream) = socket.split();
-            let (tx, inbound) = mpsc::unbounded_channel();
+            let (tx, inbound) = mpsc::channel(INBOUND_FRAMES);
             let reader_url = url.clone();
             let reader = tokio::spawn(async move {
                 use tokio_tungstenite::tungstenite::Message as M;
@@ -605,7 +610,7 @@ impl Connector for Tungstenite {
                         Some(Err(e)) => Err(read_error(e, &reader_url)),
                     };
                     let end = next.is_err();
-                    if tx.send(next).is_err() || end {
+                    if tx.send(next).await.is_err() || end {
                         return;
                     }
                 }
