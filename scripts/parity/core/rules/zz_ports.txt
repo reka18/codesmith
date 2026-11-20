@@ -398,3 +398,8 @@
 @plugin/provider-openrouter.test.ts
 46 :: ported :: tests/oc_providers.rs::oc_openrouter_filters_openrouters_gpt_5_chat_alias :: adapted: left out of `codesmith models`
 69 :: ported :: tests/oc_providers.rs::oc_openrouter_does_not_disable_gpt_5_chat_latest_for_non_openrouter_providers
+@modal/models.test.ts
+15 :: ported :: tests/oc_providers.rs::oc_modal_modal_plugin_is_registered :: adapted: `codesmith models modal` fetches and keeps the live list
+28 :: ported :: tests/oc_providers.rs::oc_modal_maps_live_modal_models_onto_catalog_templates
+101 :: ported :: tests/oc_providers.rs::oc_modal_keeps_template_cost_and_limits_when_the_proxy_omits_them
+131 :: ported :: tests/oc_providers.rs::oc_modal_throws_on_proxy_failure_so_the_plugin_can_fail_soft

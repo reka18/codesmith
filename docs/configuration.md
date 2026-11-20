@@ -540,6 +540,17 @@ deployment itself, which suits deployments that serve that API (OpenAI
 models; set `"protocol"` for others). Without a service key the deployment
 settings are not used and `settings.baseURL` takes a plain key.
 
+### Live model lists (Modal)
+
+Some providers serve a model list of their own for your account.
+`codesmith models <provider>` fetches it and keeps it in the data folder's
+`live-models.json`, and from then on those models resolve with what the
+list says (limits, prices, modalities, reasoning variants) over the
+catalog's; nothing is fetched in the background. For `modal` the list is the
+proxy's `<baseURL>/models` (with `MODAL_PROXY_TOKEN` or a saved key), each
+live model built on the catalog model of its base model (`base_model_id`,
+else `hugging_face_id`), as in OpenCode. Run it again to pick up changes.
+
 ### Responses over WebSocket
 
 As in OpenCode, an `openai-responses` provider can carry a session's steps

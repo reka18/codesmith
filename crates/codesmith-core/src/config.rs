@@ -427,6 +427,16 @@ impl Config {
                 out.push(id.clone());
             }
         }
+        let templates = catalog
+            .as_ref()
+            .and_then(|c| c.provider(provider))
+            .map(|p| p.models.as_slice())
+            .unwrap_or(&[]);
+        for m in crate::providers::live::models(provider, None, templates) {
+            if !configured.contains_key(&m.id) && !out.contains(&m.id) {
+                out.push(m.id);
+            }
+        }
         if let Some(p) = catalog.as_ref().and_then(|c| c.provider(provider)) {
             for m in &p.models {
                 if !configured.contains_key(&m.id)
@@ -1246,10 +1256,14 @@ impl Config {
         // The catalog's model, found by the configured model id, then the key.
         let catalog = self.models_dev.as_ref().map(|c| c.catalog());
         let cp = catalog.as_ref().and_then(|c| c.provider(pid));
-        let cm = catalog.as_ref().and_then(|c| {
-            m.id.as_deref()
-                .and_then(|id| c.model(pid, id))
-                .or_else(|| c.model(pid, mid))
+        // A model of the provider's kept live list wins over the catalog's.
+        let live = live_model(cp, pid, m.id.as_deref().unwrap_or(mid));
+        let cm = live.as_ref().or_else(|| {
+            catalog.as_ref().and_then(|c| {
+                m.id.as_deref()
+                    .and_then(|id| c.model(pid, id))
+                    .or_else(|| c.model(pid, mid))
+            })
         });
         let catalog_package = cm
             .and_then(|cm| cm.package.as_deref())
@@ -1492,6 +1506,18 @@ impl Config {
             websocket,
         })
     }
+}
+
+/// A model of a provider's kept live list (see [`crate::providers::live`]).
+fn live_model(
+    cp: Option<&crate::catalog::Snapshot>,
+    pid: &str,
+    id: &str,
+) -> Option<crate::catalog::Model> {
+    let templates = cp.map(|p| p.models.as_slice()).unwrap_or(&[]);
+    crate::providers::live::models(pid, None, templates)
+        .into_iter()
+        .find(|m| m.id == id)
 }
 
 /// The key of a provider: configured, from its key variables, or saved.

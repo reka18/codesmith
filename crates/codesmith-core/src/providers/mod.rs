@@ -9,6 +9,8 @@ pub mod bedrock;
 pub mod cloudflare;
 pub mod copilot;
 pub mod gateways;
+pub mod live;
+pub mod modal;
 pub mod oauth;
 pub mod poe;
 pub mod sap;

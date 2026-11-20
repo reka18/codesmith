@@ -961,6 +961,21 @@ async fn run(cli: Cli) -> Result<()> {
         }) => {
             let loaded = config::load(&cwd)?;
             let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
+            let client = reqwest::Client::new();
+            // Providers with a live list keep it for model resolution.
+            if let Some(ids) = codesmith_core::providers::live::refresh(
+                &client,
+                &pid,
+                &m.provider.base_url,
+                m.provider.api_key.as_deref(),
+            )
+            .await
+            {
+                for id in ids? {
+                    println!("{pid}/{id}");
+                }
+                return Ok(());
+            }
             let ids = m
                 .provider
                 .list_models(&reqwest::Client::new())

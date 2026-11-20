@@ -1686,3 +1686,179 @@ fn oc_openrouter_does_not_disable_gpt_5_chat_latest_for_non_openrouter_providers
     assert!(!providers::hidden("custom-openrouter", "gpt-5-chat-latest"));
     assert!(!providers::hidden("openrouter", "gpt-5-chat-latest"));
 }
+
+// modal/models.test.ts
+
+use codesmith_core::providers::{live, modal};
+
+fn modal_template(id: &str) -> codesmith_core::catalog::Model {
+    let c = codesmith_core::catalog::bundled();
+    let mut m = c.iter().find(|p| p.info.id == "modal").unwrap().models[0].clone();
+    m.id = id.to_string();
+    m.model_id = id.to_string();
+    m.name = format!("{id} catalog");
+    m.family = Some("catalog-family".into());
+    m.variants = vec![];
+    m.compatibility = None;
+    m.cost = vec![];
+    m.limit = Default::default();
+    m.capabilities.input = vec!["text".into()];
+    m
+}
+
+#[tokio::test]
+async fn oc_modal_modal_plugin_is_registered() {
+    let f = fixture(vec![(
+        "/v1/models",
+        vec![(200, json!({"data": [{"id": "a"}]}).to_string())],
+    )])
+    .await;
+    let d = tempfile::tempdir().unwrap();
+    // `codesmith models modal` fetches and keeps the list.
+    let raw = modal::load(&reqwest::Client::new(), &format!("{}/v1", f.url), "k")
+        .await
+        .unwrap();
+    live::save_in(
+        &d.path().join("live.json"),
+        "modal",
+        "acct",
+        "https://x/v1",
+        raw,
+    )
+    .unwrap();
+    let kept = live::load_in(&d.path().join("live.json"), "modal").unwrap();
+    let models = live::derive("modal", &kept, &[]);
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "a");
+    assert!(codesmith_core::catalog::bundled()
+        .iter()
+        .any(|p| p.info.id == "modal"));
+}
+
+#[tokio::test]
+async fn oc_modal_maps_live_modal_models_onto_catalog_templates() {
+    let f = fixture(vec![(
+        "/v1/models",
+        vec![(
+            200,
+            json!({"data": [
+                {
+                    "id": "live-model",
+                    "base_model_id": "base-model",
+                    "name": "Live Model",
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"],
+                    "context_length": 128000,
+                    "max_output_length": 8192,
+                    "pricing": {"prompt": "0.000001", "completion": 0.000002, "input_cache_read": "0.0000002"},
+                    "supported_sampling_parameters": ["temperature"],
+                    "supported_features": ["tools", "reasoning"],
+                    "reasoning_options": [{"type": "effort", "values": ["low", "high", null]}],
+                    "interleaved": {"field": "reasoning_content"},
+                },
+                {"id": "standalone", "context_length": 64000},
+                {"id": "malformed", "context_length": "huge"},
+            ]})
+            .to_string(),
+        )],
+    )])
+    .await;
+    let base = format!("{}/v1", f.url);
+    let raw = modal::load(&reqwest::Client::new(), &base, "test-key")
+        .await
+        .unwrap();
+    let seen = f.seen.lock().unwrap().clone();
+    assert!(seen[0].starts_with("GET /v1/models "));
+    assert!(seen[0]
+        .to_ascii_lowercase()
+        .contains("authorization: bearer test-key"));
+    let models = modal::derive(
+        &base,
+        &modal::parse(&raw),
+        &[modal_template("base-model"), modal_template("stale")],
+    );
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["live-model", "standalone"],
+        "no stale or malformed models"
+    );
+    let m = &models[0];
+    assert_eq!(m.name, "Live Model");
+    assert_eq!(m.family.as_deref(), Some("catalog-family"));
+    assert_eq!(m.provider_id, "modal");
+    assert_eq!(m.model_id, "live-model");
+    assert_eq!(
+        m.package.as_deref(),
+        Some("@opencode/ai/providers/openai-compatible")
+    );
+    assert_eq!(
+        m.settings.as_ref().unwrap().base_url.as_deref(),
+        Some(base.as_str())
+    );
+    assert_eq!(
+        m.compatibility.as_ref().unwrap().reasoning_field.as_deref(),
+        Some("reasoning_content")
+    );
+    assert!(m.capabilities.tools);
+    assert_eq!(m.capabilities.input, ["text", "image"]);
+    assert_eq!(m.capabilities.output, ["text"]);
+    assert!((m.cost[0].input - 1.0).abs() < 1e-9);
+    assert!((m.cost[0].output - 2.0).abs() < 1e-9);
+    assert!((m.cost[0].cache.read - 0.2).abs() < 1e-9);
+    assert_eq!(m.cost[0].cache.write, 0.0);
+    assert_eq!((m.limit.context, m.limit.output), (128000, 8192));
+    let v: Vec<&str> = m.variants.iter().map(|v| v.id.as_str()).collect();
+    assert_eq!(v, ["low", "high", "none"]);
+    assert_eq!(
+        m.variants[0].settings.as_ref().unwrap()["reasoningEffort"],
+        "low"
+    );
+    assert_eq!(m.status, "active");
+    let fresh = &models[1];
+    assert_eq!(fresh.name, "standalone");
+    assert_eq!(fresh.family, None);
+    assert!(fresh.capabilities.tools);
+    assert_eq!(fresh.capabilities.input, ["text"]);
+    assert!(fresh.variants.is_empty());
+    assert_eq!((fresh.limit.context, fresh.limit.output), (64000, 0));
+}
+
+#[test]
+fn oc_modal_keeps_template_cost_and_limits_when_the_proxy_omits_them() {
+    let mut base = modal_template("hf-base");
+    base.cost = vec![codesmith_core::catalog::Cost {
+        tier: None,
+        input: 5.0,
+        output: 10.0,
+        cache: codesmith_core::catalog::CacheCost {
+            read: 1.0,
+            write: 2.0,
+        },
+    }];
+    base.limit = codesmith_core::catalog::Limit {
+        context: 1000,
+        input: Some(500),
+        output: 250,
+    };
+    let remote = modal::parse(&[json!({"id": "sparse", "hugging_face_id": "hf-base"})]);
+    let m = &modal::derive("https://proxy", &remote, &[base])[0];
+    assert_eq!(m.name, "hf-base catalog");
+    let c = m.cost[0];
+    assert_eq!(
+        (c.input, c.output, c.cache.read, c.cache.write),
+        (5.0, 10.0, 1.0, 2.0)
+    );
+    assert_eq!(
+        (m.limit.context, m.limit.input, m.limit.output),
+        (1000, Some(500), 250)
+    );
+}
+
+#[tokio::test]
+async fn oc_modal_throws_on_proxy_failure_so_the_plugin_can_fail_soft() {
+    let f = fixture(vec![("/models", vec![(500, "nope".into())])]).await;
+    assert!(modal::load(&reqwest::Client::new(), &f.url, "test-key")
+        .await
+        .is_err());
+}
