@@ -328,6 +328,23 @@ pub(crate) async fn send(
     p: &Provider,
     rb: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, Error> {
+    let resp = execute(p, rb).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(Error::Status {
+            status: status.as_u16(),
+            body: crate::redact_urls(&text.chars().take(2000).collect::<String>()),
+        });
+    }
+    Ok(resp)
+}
+
+/// [`send`] without the status check: the response whatever its status.
+pub(crate) async fn execute(
+    p: &Provider,
+    rb: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, Error> {
     let (client, mut req) = p.authorized(rb).await?;
     let again = req.try_clone();
     if let Some(h) = &p.hooks {
@@ -345,14 +362,6 @@ pub(crate) async fn send(
     }
     if let Some(h) = &p.hooks {
         h.0.response(&mut resp);
-    }
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Status {
-            status: status.as_u16(),
-            body: crate::redact_urls(&text.chars().take(2000).collect::<String>()),
-        });
     }
     Ok(resp)
 }

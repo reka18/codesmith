@@ -443,7 +443,6 @@ pub struct ImageResult {
 /// [`MAX_BYTES`]), with its type read from the bytes when they tell.
 pub async fn materialize(
     p: &Provider,
-    client: &reqwest::Client,
     out: Output,
 ) -> Result<(String, Vec<u8>), codesmith_ai::Error> {
     let (mime, data) = match out {
@@ -461,7 +460,7 @@ pub async fn materialize(
                     codesmith_ai::Error::Decode("a generated data URL is not valid base64".into())
                 })?
             } else {
-                generation::download(p, client, &url, authorized, MAX_BYTES).await?
+                generation::download(p, &url, authorized, MAX_BYTES).await?
             };
             (mime, data)
         }
@@ -507,7 +506,7 @@ pub async fn image(
         .map_err(|e| provider_error(&model.provider_id, &e))?;
     let mut images = Vec::new();
     for out in response.images {
-        let (mime, data) = materialize(p, client, out)
+        let (mime, data) = materialize(p, out)
             .await
             .map_err(|e| provider_error(&model.provider_id, &e))?;
         images.push(Image { mime, data });

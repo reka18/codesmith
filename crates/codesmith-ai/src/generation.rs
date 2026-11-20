@@ -921,33 +921,94 @@ pub async fn video_cancel(
     }
 }
 
-/// Download a generated file, up to `max` bytes; `authorized` sends the
-/// provider's key (a Google Files API URI).
+/// The most redirects a download follows.
+const MAX_REDIRECTS: usize = 10;
+
+/// The client downloads use: it never follows redirects itself, so each hop
+/// is followed by hand and credentials go only to the provider's origin.
+fn download_client() -> Result<&'static reqwest::Client, Error> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("unable to create the HTTP client".into()))
+}
+
+/// Whether `url` has the same scheme, host and port as `base`.
+fn same_origin(url: &reqwest::Url, base: &str) -> bool {
+    let Ok(base) = reqwest::Url::parse(base) else {
+        return false;
+    };
+    url.scheme() == base.scheme()
+        && url.host_str().is_some()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default()
+}
+
+/// Download a generated file, up to `max` bytes. `authorized` sends the
+/// provider's key (a Google Files API URI), but only to the provider's own
+/// origin (scheme, host and port of its base URL): a URL or redirect hop
+/// anywhere else is fetched without credentials. Redirects are followed by
+/// hand, at most [`MAX_REDIRECTS`].
 pub async fn download(
     p: &Provider,
-    client: &reqwest::Client,
     url: &str,
     authorized: bool,
     max: usize,
 ) -> Result<Vec<u8>, Error> {
-    let mut resp = if authorized {
-        let mut rb = client.get(url);
-        for (k, v) in p.auth_headers(p.headers.clone()) {
-            rb = rb.header(k, v);
+    let client = download_client()?;
+    let mut current = reqwest::Url::parse(url)
+        .map_err(|e| Error::Invalid(format!("the generated file's URL is invalid: {e}")))?;
+    let mut redirects = 0;
+    let mut resp = loop {
+        if !matches!(current.scheme(), "http" | "https") {
+            return Err(Error::Invalid(
+                "the generated file's URL must use http:// or https://".into(),
+            ));
         }
-        crate::endpoint::send(p, rb).await?
-    } else {
-        // A public URL never gets the provider's credentials.
-        let resp = client.get(url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
+        let resp = if authorized && same_origin(&current, &p.base_url) {
+            let mut rb = client.get(current.clone());
+            for (k, v) in p.auth_headers(p.headers.clone()) {
+                rb = rb.header(k, v);
+            }
+            crate::endpoint::execute(p, rb).await?
+        } else {
+            // Anywhere else never gets the provider's credentials.
+            client.get(current.clone()).send().await?
+        };
+        let status = resp.status();
+        if status.is_redirection() {
+            if let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            {
+                if redirects >= MAX_REDIRECTS {
+                    return Err(Error::Invalid(format!(
+                        "the generated file's URL redirects more than {MAX_REDIRECTS} times"
+                    )));
+                }
+                current = current.join(location).map_err(|e| {
+                    Error::Invalid(format!("the generated file's redirect is invalid: {e}"))
+                })?;
+                redirects += 1;
+                continue;
+            }
+        }
+        if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(Error::Status {
-                status,
+                status: status.as_u16(),
                 body: crate::redact_urls(&text.chars().take(2000).collect::<String>()),
             });
         }
-        resp
+        break resp;
     };
     if resp.content_length().is_some_and(|n| n as usize > max) {
         return Err(Error::Invalid(format!(
@@ -1015,5 +1076,126 @@ mod tests {
         assert_eq!(xai_resolution("1K"), "1k");
         assert_eq!(xai_resolution("4k"), "2k");
         assert_eq!(xai_resolution("0.5k"), "1k");
+    }
+
+    /// Serves `reply(path)` (status, extra headers) and records each
+    /// request's path and `x-goog-api-key`.
+    async fn recorder(
+        reply: fn(&str) -> (u16, String),
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split(' ').nth(1).unwrap_or("").to_string();
+                let key = req.lines().find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("x-goog-api-key")
+                        .then(|| v.trim().to_string())
+                });
+                log.lock().unwrap().push((path.clone(), key));
+                let (status, headers) = reply(&path);
+                let _ = s
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} X\r\n{headers}content-length: 4\r\nconnection: close\r\n\r\nmp4!"
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        (url, seen)
+    }
+
+    fn google(base: &str) -> Provider {
+        Provider {
+            protocol: crate::Protocol::GoogleGemini,
+            base_url: format!("{base}/v1beta"),
+            api_key: Some("secret-key".into()),
+            ..Provider::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn authorized_downloads_send_the_key_only_to_the_providers_origin() {
+        let (other, other_seen) = recorder(|_| (200, String::new())).await;
+        let (base, base_seen) = recorder(|_| (200, String::new())).await;
+        let p = google(&base);
+        // The provider's own origin gets the key.
+        let got = download(&p, &format!("{base}/v1beta/files/a:download"), true, 1024)
+            .await
+            .unwrap();
+        assert_eq!(got, b"mp4!");
+        assert_eq!(
+            base_seen.lock().unwrap()[0].1.as_deref(),
+            Some("secret-key")
+        );
+        // A job result naming another origin is fetched without it.
+        let got = download(&p, &format!("{other}/steal"), true, 1024)
+            .await
+            .unwrap();
+        assert_eq!(got, b"mp4!");
+        assert_eq!(other_seen.lock().unwrap()[0], ("/steal".to_string(), None));
+        // So is the same host on another scheme.
+        let https = base.replacen("http://", "https://", 1);
+        assert!(!same_origin(
+            &reqwest::Url::parse(&format!("{https}/x")).unwrap(),
+            &p.base_url
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_authorized_download_drops_the_key_on_a_redirect_off_origin() {
+        static OTHER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let (other, other_seen) = recorder(|_| (200, String::new())).await;
+        OTHER.set(other).unwrap();
+        let (base, base_seen) = recorder(|path| {
+            if path == "/v1beta/files/a" {
+                (302, "location: /v1beta/files/b\r\n".into())
+            } else if path == "/v1beta/files/b" {
+                (
+                    302,
+                    format!("location: {}/landed\r\n", OTHER.get().unwrap()),
+                )
+            } else {
+                (404, String::new())
+            }
+        })
+        .await;
+        let p = google(&base);
+        let got = download(&p, &format!("{base}/v1beta/files/a"), true, 1024)
+            .await
+            .unwrap();
+        assert_eq!(got, b"mp4!");
+        let base_seen = base_seen.lock().unwrap().clone();
+        assert_eq!(base_seen.len(), 2);
+        assert!(base_seen
+            .iter()
+            .all(|(_, k)| k.as_deref() == Some("secret-key")));
+        assert_eq!(
+            other_seen.lock().unwrap().clone(),
+            vec![("/landed".to_string(), None)]
+        );
+    }
+
+    #[tokio::test]
+    async fn downloads_stop_after_too_many_redirects() {
+        let (base, seen) = recorder(|_| (302, "location: /again\r\n".into())).await;
+        let p = google(&base);
+        let err = download(&p, &format!("{base}/start"), false, 1024)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("redirects"), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), MAX_REDIRECTS + 1);
     }
 }

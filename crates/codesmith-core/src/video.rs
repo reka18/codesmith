@@ -345,7 +345,7 @@ impl Videos<'_> {
         let mut blobs = Vec::new();
         let result: Result<(), GenerateError> = async {
             for out in outputs {
-                let (mime, data) = generate::materialize(&m.provider, self.client, out)
+                let (mime, data) = generate::materialize(&m.provider, out)
                     .await
                     .map_err(|e| fail(&e))?;
                 if data.is_empty() {
