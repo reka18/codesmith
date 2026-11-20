@@ -406,7 +406,11 @@ async fn oc_video_tool_is_offered_only_with_a_video_model_and_off_with_experimen
 ) {
     let state = Arc::new(Mutex::new(State::default()));
     let server = google(state).await;
-    let on = setup_config(&server.url, GOOGLE, "test");
+    // Adapted: CodeSmith keeps video generation opt-in (OpenCode turns it
+    // on only in dev builds), so it is off until config turns it on.
+    let mut on = setup_config(&server.url, GOOGLE, "test");
+    assert!(!tool::offered(&on), "off by default");
+    on.experimental.video_generate = Some(json!(true));
     assert!(tool::offered(&on));
     let mut off = on.clone();
     off.experimental.video_generate = Some(json!(false));
