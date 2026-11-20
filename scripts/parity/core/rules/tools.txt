@@ -30,14 +30,7 @@
 @mime.test.ts
 * :: portable :: media::detect :: byte sniffing: text fallback, BM text, BMP prefixes, ISO-BMFF brands (S)
 
-@patch.test.ts
-* :: feature :: Patch Tool (apply_patch) :: the apply_patch format parser
-
-@tool-patch.test.ts
-* :: feature :: Patch Tool (apply_patch) :: the apply_patch tool OpenCode offers GPT-5+ models
-
 @tool-model-policy.test.ts
-50,58,100 :: feature :: Patch Tool (apply_patch) :: patch instead of edit/write per model
 * :: feature :: Code Mode Tool Placement Policy :: per-model direct vs Code Mode tool placement under full_codemode
 
 @plugin/websearch.test.ts

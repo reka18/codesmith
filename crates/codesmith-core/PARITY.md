@@ -27,13 +27,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
-| Tool: apply_patch | 90 | 0 | 0 | 90 | 0 | 0 | 0 |
+| Tool: apply_patch | 90 | 90 | 0 | 0 | 0 | 0 | 0 |
 | Tools: glob and grep | 39 | 21 | 5 | 0 | 11 | 2 | 0 |
 | Tool: webfetch | 100 | 100 | 0 | 0 | 0 | 0 | 0 |
 | Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
-| Tool registry, schemas, placement | 100 | 1 | 0 | 25 | 53 | 21 | 0 |
+| Tool registry, schemas, placement | 100 | 4 | 0 | 22 | 53 | 21 | 0 |
 | Media tools | 39 | 0 | 0 | 24 | 9 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
 | Shell tool and runtime | 207 | 118 | 2 | 6 | 66 | 15 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1176** | **15** | **647** | **2354** | **1396** | **0** |
+| **Total** | **5588** | **1269** | **15** | **554** | **2354** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,11 +78,10 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (647 cases in 60 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (554 cases in 59 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
@@ -142,103 +141,6 @@ Missing features, by how many OpenCode test cases each would unlock (647 cases i
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 | [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
-
-### Patch Tool (apply_patch)
-
-93 cases.
-
-- `patch.test.ts`: parses add, update, and delete hunks
-- `patch.test.ts`: parses an empty patch
-- `patch.test.ts`: ignores a Codex environment preamble
-- `patch.test.ts`: parses an update followed by an add
-- `patch.test.ts`: parses a file move
-- `patch.test.ts`: identifies the missing patch boundary
-- `patch.test.ts`: allows whitespace after the end marker
-- `patch.test.ts`: strips a heredoc wrapper
-- `patch.test.ts`: strips a heredoc wrapper without cat
-- `patch.test.ts`: strips quoted heredoc wrappers
-- `patch.test.ts`: rejects malformed heredoc wrappers
-- `patch.test.ts`: parses a whitespace-padded hunk header
-- `patch.test.ts`: parses leading and trailing whitespace around patch markers
-- `patch.test.ts`: parses whitespace on the inner sides of patch marker lines
-- `patch.test.ts`: parses relative and absolute hunk paths
-- `patch.test.ts`: strips one carriage return from CRLF patch lines
-- `patch.test.ts`: preserves an extra carriage return in CRLF patch lines
-- `patch.test.ts`: preserves the end-of-file marker
-- `patch.test.ts`: allows an end-of-file marker before an explicit chunk
-- `patch.test.ts`: allows an end-of-file marker before an implicit chunk and move
-- `patch.test.ts`: derives fuzzy line updates while preserving BOM
-- `patch.test.ts`: derives multiple update chunks
-- `patch.test.ts`: appends a pure-addition chunk to a nonempty file
-- `patch.test.ts`: preserves equal-offset insertion order and frozen chunks for %j (2 cases)
-- `patch.test.ts`: applies a pure-addition chunk after an earlier replacement
-- `patch.test.ts`: applies a deletion-only update chunk
-- `patch.test.ts`: updates empty files and adds a trailing newline
-- `patch.test.ts`: disambiguates updates with change context
-- `patch.test.ts`: matches leading, trailing, and Unicode punctuation differences
-- `patch.test.ts`: matches Unicode minus signs and spaces
-- `patch.test.ts`: does not normalize ellipses
-- `patch.test.ts`: prefers a later exact match over an earlier normalized match
-- `patch.test.ts`: matches EOF-anchored chunks from the end
-- `patch.test.ts`: does not fall back to a non-EOF match
-- `patch.test.ts`: identifies a missing blank line
-- `patch.test.ts`: parses an update without an explicit first chunk header
-- `patch.test.ts`: keeps indented update markers as context lines
-- `patch.test.ts`: keeps indented move and EOF markers as context lines
-- `patch.test.ts`: preserves update context indentation
-- `patch.test.ts`: preserves bare empty update lines as context
-- `patch.test.ts`: rejects invalid add and delete lines
-- `patch.test.ts`: rejects an empty update hunk
-- `patch.test.ts`: rejects an empty update chunk
-- `patch.test.ts`: rejects an invalid update line
-- `patch.test.ts`: rejects invalid and pathless hunk headers
-- `tool-model-policy.test.ts`: gives GPT-5+ patch and leaves file tools, shell, and websearch in Code Mode when fullCodeMode is on
-- `tool-model-policy.test.ts`: keeps edit and write instead of patch for gpt-4 and gpt-oss models
-- `tool-model-policy.test.ts`: needs no demotion when fullCodeMode is off while still applying patch and websearch rules
-- `tool-patch.test.ts`: registers and sequentially applies add, update, and delete hunks
-- `tool-patch.test.ts`: replaces a file with a directory containing an added file
-- `tool-patch.test.ts`: counts deleted lines with and without a trailing newline
-- `tool-patch.test.ts`: serializes concurrent patch transactions
-- `tool-patch.test.ts`: returns file diffs for final formatted content
-- `tool-patch.test.ts`: moves and updates a file
-- `tool-patch.test.ts`: moves a file over an existing destination
-- `tool-patch.test.ts`: moves a file without changing its contents
-- `tool-patch.test.ts`: refuses to rewrite a file that is not valid UTF-8 and applies none of the patch
-- `tool-patch.test.ts`: renames a file when the move only changes its case
-- `tool-patch.test.ts`: moves into a directory whose name differs only in case
-- `tool-patch.test.ts`: moves a symlink without deleting its target
-- `tool-patch.test.ts`: includes move file info in metadata
-- `tool-patch.test.ts`: includes the move destination in edit permission resources
-- `tool-patch.test.ts`: uses Location-relative resources for move targets in a nested Location
-- `tool-patch.test.ts`: inserts lines with an insert-only hunk
-- `tool-patch.test.ts`: rejects deleting a directory
-- `tool-patch.test.ts`: rejects a missing second chunk context
-- `tool-patch.test.ts`: requires patchText
-- `tool-patch.test.ts`: rejects invalid patch format
-- `tool-patch.test.ts`: rejects an empty patch
-- `tool-patch.test.ts`: rejects an invalid hunk header
-- `tool-patch.test.ts`: applies successive update operations to one file
-- `tool-patch.test.ts`: preserves files across self-moves and multi-hunk moves in one patch
-- `tool-patch.test.ts`: does not invent a first-line diff for BOM files
-- `tool-patch.test.ts`: rejects an update with missing context
-- `tool-patch.test.ts`: rejects an update when the target file is missing
-- `tool-patch.test.ts`: identifies a directory used as an update target
-- `tool-patch.test.ts`: identifies a missing delete target
-- `tool-patch.test.ts`: reports the failing destination and filesystem error
-- `tool-patch.test.ts`: reports the successful prefix and filesystem error
-- `tool-patch.test.ts`: reports a destination written before move removal fails
-- `tool-patch.test.ts`: approves an external directory before reading and requests edit permission afterward
-- `tool-patch.test.ts`: does not inspect an external file when external permission is denied
-- `tool-patch.test.ts`: preserves edit permission rejection
-- `tool-patch.test.ts`: treats a sibling path inside the project worktree as internal
-- `tool-patch.test.ts`: follows an internal symlink to an external file without external permission
-- `tool-patch.test.ts`: approves a relative external target before reading and requests edit permission afterward
-- `tool-patch.test.ts`: uses canonical external permissions and resources for a move destination
-- `tool-patch.test.ts`: approves each external file under the same parent
-- `tool-patch.test.ts`: rejects invalid later update before applying an earlier add
-- `tool-patch.test.ts`: adds files by overwriting existing targets
-- `tool-patch.test.ts`: overwrites an add target that appears during permission approval
-- `tool-patch.test.ts`: preserves a later commit defect after earlier sequential applications
 
 ### Claude Agent SDK Provider
 
@@ -2417,6 +2319,107 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
+<details><summary>Tool: apply_patch (90 of 90)</summary>
+
+
+**`patch.test.ts`**
+
+- P parses add, update, and delete hunks — `src/tool/apply_patch_tests.rs::oc_patch_parses_add_update_and_delete_hunks`
+- P parses an empty patch — `src/tool/apply_patch_tests.rs::oc_patch_parses_an_empty_patch`
+- P ignores a Codex environment preamble — `src/tool/apply_patch_tests.rs::oc_patch_ignores_a_codex_environment_preamble`
+- P parses an update followed by an add — `src/tool/apply_patch_tests.rs::oc_patch_parses_an_update_followed_by_an_add`
+- P parses a file move — `src/tool/apply_patch_tests.rs::oc_patch_parses_a_file_move`
+- P identifies the missing patch boundary — `src/tool/apply_patch_tests.rs::oc_patch_identifies_the_missing_patch_boundary`
+- P allows whitespace after the end marker — `src/tool/apply_patch_tests.rs::oc_patch_allows_whitespace_after_the_end_marker`
+- P strips a heredoc wrapper — `src/tool/apply_patch_tests.rs::oc_patch_strips_a_heredoc_wrapper`
+- P strips a heredoc wrapper without cat — `src/tool/apply_patch_tests.rs::oc_patch_strips_a_heredoc_wrapper_without_cat`
+- P strips quoted heredoc wrappers — `src/tool/apply_patch_tests.rs::oc_patch_strips_quoted_heredoc_wrappers`
+- P rejects malformed heredoc wrappers — `src/tool/apply_patch_tests.rs::oc_patch_rejects_malformed_heredoc_wrappers`
+- P parses a whitespace-padded hunk header — `src/tool/apply_patch_tests.rs::oc_patch_parses_a_whitespace_padded_hunk_header`
+- P parses leading and trailing whitespace around patch markers — `src/tool/apply_patch_tests.rs::oc_patch_parses_leading_and_trailing_whitespace_around_patch_markers`
+- P parses whitespace on the inner sides of patch marker lines — `src/tool/apply_patch_tests.rs::oc_patch_parses_whitespace_on_the_inner_sides_of_patch_marker_lines`
+- P parses relative and absolute hunk paths — `src/tool/apply_patch_tests.rs::oc_patch_parses_relative_and_absolute_hunk_paths`
+- P strips one carriage return from CRLF patch lines — `src/tool/apply_patch_tests.rs::oc_patch_strips_one_carriage_return_from_crlf_patch_lines`
+- P preserves an extra carriage return in CRLF patch lines — `src/tool/apply_patch_tests.rs::oc_patch_preserves_an_extra_carriage_return_in_crlf_patch_lines`
+- P preserves the end-of-file marker — `src/tool/apply_patch_tests.rs::oc_patch_preserves_the_end_of_file_marker`
+- P allows an end-of-file marker before an explicit chunk — `src/tool/apply_patch_tests.rs::oc_patch_allows_an_end_of_file_marker_before_an_explicit_chunk`
+- P allows an end-of-file marker before an implicit chunk and move — `src/tool/apply_patch_tests.rs::oc_patch_allows_an_end_of_file_marker_before_an_implicit_chunk_and_move`
+- P derives fuzzy line updates while preserving BOM — `src/tool/apply_patch_tests.rs::oc_patch_derives_fuzzy_line_updates_while_preserving_bom`
+- P derives multiple update chunks — `src/tool/apply_patch_tests.rs::oc_patch_derives_multiple_update_chunks`
+- P appends a pure-addition chunk to a nonempty file — `src/tool/apply_patch_tests.rs::oc_patch_appends_a_pure_addition_chunk_to_a_nonempty_file`
+- P preserves equal-offset insertion order and frozen chunks for %j — `src/tool/apply_patch_tests.rs::oc_patch_preserves_equal_offset_insertion_order_and_frozen_chunks_for_empty`
+- P preserves equal-offset insertion order and frozen chunks for %j — `src/tool/apply_patch_tests.rs::oc_patch_preserves_equal_offset_insertion_order_and_frozen_chunks_for_original`
+- P applies a pure-addition chunk after an earlier replacement — `src/tool/apply_patch_tests.rs::oc_patch_applies_a_pure_addition_chunk_after_an_earlier_replacement`
+- P applies a deletion-only update chunk — `src/tool/apply_patch_tests.rs::oc_patch_applies_a_deletion_only_update_chunk`
+- P updates empty files and adds a trailing newline — `src/tool/apply_patch_tests.rs::oc_patch_updates_empty_files_and_adds_a_trailing_newline`
+- P disambiguates updates with change context — `src/tool/apply_patch_tests.rs::oc_patch_disambiguates_updates_with_change_context`
+- P matches leading, trailing, and Unicode punctuation differences — `src/tool/apply_patch_tests.rs::oc_patch_matches_leading_trailing_and_unicode_punctuation_differences`
+- P matches Unicode minus signs and spaces — `src/tool/apply_patch_tests.rs::oc_patch_matches_unicode_minus_signs_and_spaces`
+- P does not normalize ellipses — `src/tool/apply_patch_tests.rs::oc_patch_does_not_normalize_ellipses`
+- P prefers a later exact match over an earlier normalized match — `src/tool/apply_patch_tests.rs::oc_patch_prefers_a_later_exact_match_over_an_earlier_normalized_match`
+- P matches EOF-anchored chunks from the end — `src/tool/apply_patch_tests.rs::oc_patch_matches_eof_anchored_chunks_from_the_end`
+- P does not fall back to a non-EOF match — `src/tool/apply_patch_tests.rs::oc_patch_does_not_fall_back_to_a_non_eof_match`
+- P identifies a missing blank line — `src/tool/apply_patch_tests.rs::oc_patch_identifies_a_missing_blank_line`
+- P parses an update without an explicit first chunk header — `src/tool/apply_patch_tests.rs::oc_patch_parses_an_update_without_an_explicit_first_chunk_header`
+- P keeps indented update markers as context lines — `src/tool/apply_patch_tests.rs::oc_patch_keeps_indented_update_markers_as_context_lines`
+- P keeps indented move and EOF markers as context lines — `src/tool/apply_patch_tests.rs::oc_patch_keeps_indented_move_and_eof_markers_as_context_lines`
+- P preserves update context indentation — `src/tool/apply_patch_tests.rs::oc_patch_preserves_update_context_indentation`
+- P preserves bare empty update lines as context — `src/tool/apply_patch_tests.rs::oc_patch_preserves_bare_empty_update_lines_as_context`
+- P rejects invalid add and delete lines — `src/tool/apply_patch_tests.rs::oc_patch_rejects_invalid_add_and_delete_lines`
+- P rejects an empty update hunk — `src/tool/apply_patch_tests.rs::oc_patch_rejects_an_empty_update_hunk`
+- P rejects an empty update chunk — `src/tool/apply_patch_tests.rs::oc_patch_rejects_an_empty_update_chunk`
+- P rejects an invalid update line — `src/tool/apply_patch_tests.rs::oc_patch_rejects_an_invalid_update_line`
+- P rejects invalid and pathless hunk headers — `src/tool/apply_patch_tests.rs::oc_patch_rejects_invalid_and_pathless_hunk_headers`
+
+**`tool-patch.test.ts`**
+
+- P registers and sequentially applies add, update, and delete hunks — `src/tool/apply_patch_tests.rs::oc_tool_patch_registers_and_sequentially_applies_add_update_and_delete_hunks`
+- P replaces a file with a directory containing an added file — `src/tool/apply_patch_tests.rs::oc_tool_patch_replaces_a_file_with_a_directory_containing_an_added_file`
+- P counts deleted lines with and without a trailing newline — `src/tool/apply_patch_tests.rs::oc_tool_patch_counts_deleted_lines_with_and_without_a_trailing_newline`
+- P serializes concurrent patch transactions — `src/tool/apply_patch_tests.rs::oc_tool_patch_serializes_concurrent_patch_transactions`
+- P returns file diffs for final formatted content — `src/tool/apply_patch_tests.rs::oc_tool_patch_returns_file_diffs_for_final_formatted_content`
+- P moves and updates a file — `src/tool/apply_patch_tests.rs::oc_tool_patch_moves_and_updates_a_file`
+- P moves a file over an existing destination — `src/tool/apply_patch_tests.rs::oc_tool_patch_moves_a_file_over_an_existing_destination`
+- P moves a file without changing its contents — `src/tool/apply_patch_tests.rs::oc_tool_patch_moves_a_file_without_changing_its_contents`
+- P refuses to rewrite a file that is not valid UTF-8 and applies none of the patch — `src/tool/apply_patch_tests.rs::oc_tool_patch_refuses_to_rewrite_a_file_that_is_not_valid_utf8_and_applies_none_of_the_patch`
+- P renames a file when the move only changes its case — `src/tool/apply_patch_tests.rs::oc_tool_patch_renames_a_file_when_the_move_only_changes_its_case`
+- P moves into a directory whose name differs only in case — `src/tool/apply_patch_tests.rs::oc_tool_patch_moves_into_a_directory_whose_name_differs_only_in_case`
+- P moves a symlink without deleting its target — `src/tool/apply_patch_tests.rs::oc_tool_patch_moves_a_symlink_without_deleting_its_target`
+- P includes move file info in metadata — `src/tool/apply_patch_tests.rs::oc_tool_patch_includes_move_file_info_in_metadata`
+- P includes the move destination in edit permission resources — `src/tool/apply_patch_tests.rs::oc_tool_patch_includes_the_move_destination_in_edit_permission_resources`
+- P uses Location-relative resources for move targets in a nested Location — `src/tool/apply_patch_tests.rs::oc_tool_patch_uses_location_relative_resources_for_move_targets_in_a_nested_location`
+- P inserts lines with an insert-only hunk — `src/tool/apply_patch_tests.rs::oc_tool_patch_inserts_lines_with_an_insert_only_hunk`
+- P rejects deleting a directory — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_deleting_a_directory`
+- P rejects a missing second chunk context — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_a_missing_second_chunk_context`
+- P requires patchText — `src/tool/apply_patch_tests.rs::oc_tool_patch_requires_patch_text`
+- P rejects invalid patch format — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_invalid_patch_format`
+- P rejects an empty patch — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_an_empty_patch`
+- P rejects an invalid hunk header — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_an_invalid_hunk_header`
+- P applies successive update operations to one file — `src/tool/apply_patch_tests.rs::oc_tool_patch_applies_successive_update_operations_to_one_file`
+- P preserves files across self-moves and multi-hunk moves in one patch — `src/tool/apply_patch_tests.rs::oc_tool_patch_preserves_files_across_self_moves_and_multi_hunk_moves_in_one_patch`
+- P does not invent a first-line diff for BOM files — `src/tool/apply_patch_tests.rs::oc_tool_patch_does_not_invent_a_first_line_diff_for_bom_files`
+- P rejects an update with missing context — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_an_update_with_missing_context`
+- P rejects an update when the target file is missing — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_an_update_when_the_target_file_is_missing`
+- P identifies a directory used as an update target — `src/tool/apply_patch_tests.rs::oc_tool_patch_identifies_a_directory_used_as_an_update_target`
+- P identifies a missing delete target — `src/tool/apply_patch_tests.rs::oc_tool_patch_identifies_a_missing_delete_target`
+- P reports the failing destination and filesystem error — `src/tool/apply_patch_tests.rs::oc_tool_patch_reports_the_failing_destination_and_filesystem_error`
+- P reports the successful prefix and filesystem error — `src/tool/apply_patch_tests.rs::oc_tool_patch_reports_the_successful_prefix_and_filesystem_error`
+- P reports a destination written before move removal fails — `src/tool/apply_patch_tests.rs::oc_tool_patch_reports_a_destination_written_before_move_removal_fails`
+- P approves an external directory before reading and requests edit permission afterward — `src/tool/apply_patch_tests.rs::oc_tool_patch_approves_an_external_directory_before_reading_and_requests_edit_permission_afterward`
+- P does not inspect an external file when external permission is denied — `src/tool/apply_patch_tests.rs::oc_tool_patch_does_not_inspect_an_external_file_when_external_permission_is_denied`
+- P preserves edit permission rejection — `src/tool/apply_patch_tests.rs::oc_tool_patch_preserves_edit_permission_rejection`
+- P treats a sibling path inside the project worktree as internal — `src/tool/apply_patch_tests.rs::oc_tool_patch_treats_a_sibling_path_inside_the_project_worktree_as_internal`
+- P follows an internal symlink to an external file without external permission — `src/tool/apply_patch_tests.rs::oc_tool_patch_follows_an_internal_symlink_to_an_external_file_without_external_permission`
+- P approves a relative external target before reading and requests edit permission afterward — `src/tool/apply_patch_tests.rs::oc_tool_patch_approves_a_relative_external_target_before_reading_and_requests_edit_permission_afterward`
+- P uses canonical external permissions and resources for a move destination — `src/tool/apply_patch_tests.rs::oc_tool_patch_uses_canonical_external_permissions_and_resources_for_a_move_destination`
+- P approves each external file under the same parent — `src/tool/apply_patch_tests.rs::oc_tool_patch_approves_each_external_file_under_the_same_parent`
+- P rejects invalid later update before applying an earlier add — `src/tool/apply_patch_tests.rs::oc_tool_patch_rejects_invalid_later_update_before_applying_an_earlier_add`
+- P adds files by overwriting existing targets — `src/tool/apply_patch_tests.rs::oc_tool_patch_adds_files_by_overwriting_existing_targets`
+- P overwrites an add target that appears during permission approval — `src/tool/apply_patch_tests.rs::oc_tool_patch_overwrites_an_add_target_that_appears_during_permission_approval`
+- P preserves a later commit defect after earlier sequential applications — `src/tool/apply_patch_tests.rs::oc_tool_patch_preserves_a_later_commit_defect_after_earlier_sequential_applications`
+
+</details>
+
 <details><summary>Tools: glob and grep (37 of 39)</summary>
 
 
@@ -2579,8 +2582,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool registry, schemas, placement (54 of 100)</summary>
+<details><summary>Tool registry, schemas, placement (57 of 100)</summary>
 
+
+**`tool-model-policy.test.ts`**
+
+- P gives GPT-5+ patch and leaves file tools, shell, and websearch in Code Mode when fullCodeMode is on — `src/tool/apply_patch_tests.rs::oc_model_policy_gives_gpt_5_and_later_patch`
+- P keeps edit and write instead of patch for gpt-4 and gpt-oss models — `src/tool/apply_patch_tests.rs::oc_model_policy_keeps_edit_and_write_instead_of_patch_for_gpt_4_and_gpt_oss_models`
+- P needs no demotion when fullCodeMode is off while still applying patch and websearch rules — `src/tool/apply_patch_tests.rs::oc_model_policy_needs_no_demotion_when_full_code_mode_is_off_while_still_applying_patch_rules`
 
 **`tool-registry.test.ts`**
 
