@@ -313,6 +313,24 @@ and refreshed automatically; `codesmith mcp logout <name>` forgets them. Set
 `"oauth": {"clientId": "...", "clientSecret": "...", "scope": "...", "port": 19876}`
 to use a pre-registered client, or `"oauth": false` to turn it off.
 
+## Editors (ACP)
+
+`codesmith acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+on stdin/stdout, so editors that support ACP agents (such as Zed) can run
+CodeSmith sessions. In Zed's settings:
+
+```json
+"agent_servers": { "CodeSmith": { "command": "codesmith", "args": ["acp"] } }
+```
+
+Sessions stream text, reasoning, tool calls and plans (from the todo list);
+permission requests appear in the editor; agents (build, plan, …) are modes;
+slash commands, including `/review` and `/calibrate`, are offered; and
+sessions can be listed, loaded (with their history replayed), resumed,
+cancelled, closed and deleted. MCP servers the editor passes in are added to
+the session (stdio and HTTP). Sessions are the same ones the terminal UI and
+`codesmith run` use.
+
 ## Local server
 
 `codesmith serve` exposes sessions to other programs on this machine (an
@@ -344,7 +362,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
 4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees, stats~~
-5. Native Rust plugins, code mode, ACP, automations
+5. ~~ACP~~; native Rust plugins, code mode, automations
 
 ## License
 

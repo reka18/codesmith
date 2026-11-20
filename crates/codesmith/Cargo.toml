@@ -21,6 +21,7 @@ codesmith-core.workspace = true
 tokio.workspace = true
 ratatui.workspace = true
 axum.workspace = true
+chrono.workspace = true
 async-stream.workspace = true
 futures-util.workspace = true
 textwrap.workspace = true

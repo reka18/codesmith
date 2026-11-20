@@ -288,6 +288,11 @@ impl Session {
         Ok(())
     }
 
+    /// Replace who answers this session's permission requests.
+    pub fn set_asker(&mut self, asker: Arc<dyn crate::permission::Asker>) {
+        self.gate.set_asker(asker);
+    }
+
     /// Record a command and its result as a user/assistant exchange (used by
     /// native commands such as `/review`), so later turns can refer to it.
     pub fn append_exchange(&mut self, user: &str, assistant: &str, usage: &Usage) -> Result<()> {

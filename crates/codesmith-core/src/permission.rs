@@ -148,6 +148,11 @@ impl Gate {
         }
     }
 
+    /// Replace who answers permission requests (rules and "always" answers stay).
+    pub fn set_asker(&mut self, asker: Arc<dyn Asker>) {
+        self.asker = asker;
+    }
+
     /// The asker, to share with child sessions.
     pub fn asker(&self) -> Arc<dyn Asker> {
         self.asker.clone()

@@ -1,5 +1,6 @@
 //! `codesmith`: a terminal coding agent (a Rust port of OpenCode).
 
+mod acp;
 mod render;
 mod serve;
 mod tui;
@@ -109,6 +110,8 @@ enum Command {
         #[command(subcommand)]
         what: WorktreeCmd,
     },
+    /// Speak the Agent Client Protocol on stdin/stdout, for editors such as Zed.
+    Acp,
     /// Serve a local HTTP API for driving sessions from other programs.
     Serve {
         /// Address to listen on. Anything but loopback requires --token.
@@ -576,6 +579,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what),
+        Some(Command::Acp) => acp::run().await,
         Some(Command::Stats {
             days,
             year,
