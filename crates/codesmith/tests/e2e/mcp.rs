@@ -211,3 +211,23 @@ async fn local_mcp_servers_do_not_see_the_server_token() {
     assert!(stdout.contains("/rich:review"), "{stdout}");
     assert_eq!(std::fs::read_to_string(&seen).unwrap(), "[][included]");
 }
+
+// mcp-auth-choices.test.ts: "mcp auth accepts an optional server name and
+// rejects no-name noninteractive calls before connecting". Adapted: the
+// error goes to stderr.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_mcp_auth_without_a_name_needs_a_terminal() {
+    let e = Env::new();
+    e.config(
+        "http://127.0.0.1:9/v1",
+        json!({"mcp": {"servers": {"remote": {"type": "remote", "url": "http://127.0.0.1:9/mcp"}}}}),
+    );
+    let out = e.run_with_stdin(&["mcp", "auth"], "").await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(
+        out.stderr
+            .contains("Pass an MCP server name when running without an interactive terminal"),
+        "{}",
+        out.both()
+    );
+}

@@ -151,3 +151,81 @@ fn oc_debug_paths_and_config_are_in_the_debug_help() {
     let h = help(&["debug"]);
     assert!(h.contains("paths") && h.contains("config"), "{h}");
 }
+
+// mcp-auth-choices.test.ts: "offers only OAuth-capable MCP servers by their
+// server identity". Adapted: CodeSmith does not connect to list them, so
+// the hint comes from the saved tokens (expired with no refresh token),
+// not a live status, and servers are named by their config key.
+#[test]
+fn oc_mcp_auth_offers_only_oauth_capable_servers_by_their_server_identity() {
+    use codesmith_core::mcp::{oauth, ServerConfig};
+    let servers: std::collections::BTreeMap<String, ServerConfig> =
+        serde_json::from_value(serde_json::json!({
+            "Linear": {"type": "remote", "url": "https://linear.example/mcp"},
+            "Local": {"type": "local", "command": ["true"]},
+            "API key only": {"type": "remote", "url": "https://key.example/mcp", "oauth": false},
+            "GitHub": {"type": "remote", "url": "https://github.example/mcp"},
+        }))
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("mcp-auth.json");
+    oauth::save(
+        &store,
+        "Linear",
+        &oauth::Entry {
+            server_url: "https://linear.example/mcp".into(),
+            client_id: "c".into(),
+            client_secret: None,
+            token_endpoint: "https://linear.example/token".into(),
+            access_token: "t".into(),
+            refresh_token: None,
+            expires_at: Some(1),
+        },
+    )
+    .unwrap();
+    let choices = mcp_auth_choices(&servers, &store);
+    assert_eq!(
+        choices,
+        [
+            AuthChoice {
+                value: "GitHub".into(),
+                label: "GitHub".into(),
+                connected: false,
+                hint: None
+            },
+            AuthChoice {
+                value: "Linear".into(),
+                label: "Linear".into(),
+                connected: true,
+                hint: Some("needs authentication")
+            },
+        ]
+    );
+}
+
+// mcp-auth-choices.test.ts: "mcp auth accepts an optional server name and
+// rejects no-name noninteractive calls before connecting" (the parsing
+// half; the refusal is checked through the binary in tests/e2e/mcp.rs).
+#[test]
+fn oc_mcp_auth_accepts_an_optional_server_name() {
+    let parse = |args: &[&str]| {
+        let argv = ["codesmith", "mcp", "auth"].iter().chain(args).copied();
+        match Cli::try_parse_from(argv).unwrap().command {
+            Some(Command::Mcp {
+                what: McpCmd::Auth { name },
+            }) => name,
+            _ => unreachable!(),
+        }
+    };
+    assert_eq!(parse(&[]), None);
+    assert_eq!(parse(&["linear"]).as_deref(), Some("linear"));
+    let mut cmd = Cli::command();
+    let help = cmd
+        .find_subcommand_mut("mcp")
+        .unwrap()
+        .find_subcommand_mut("auth")
+        .unwrap()
+        .render_usage()
+        .to_string();
+    assert!(help.contains("[NAME]"), "{help}");
+}

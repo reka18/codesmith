@@ -681,8 +681,9 @@ enum McpCmd {
     List,
     /// Log in to a remote server with OAuth (opens the browser).
     Auth {
-        /// The server's name in codesmith.json.
-        name: String,
+        /// The server's name in codesmith.json (asked for in a terminal
+        /// when left out).
+        name: Option<String>,
     },
     /// Forget a remote server's saved OAuth tokens.
     Logout {
@@ -1066,6 +1067,10 @@ async fn run(cli: Cli) -> Result<()> {
             what: McpCmd::Auth { name },
         }) => {
             let loaded = config::load(&cwd)?;
+            let name = match name {
+                Some(n) => n,
+                None => pick_mcp_server(&loaded.config.mcp.servers)?,
+            };
             let Some(codesmith_core::mcp::ServerConfig::Remote { url, oauth, .. }) =
                 loaded.config.mcp.servers.get(&name)
             else {
@@ -1742,6 +1747,82 @@ fn parse_fields(fields: &[String]) -> Result<serde_json::Map<String, serde_json:
         given.insert(k.trim().to_string(), v.trim().into());
     }
     Ok(given)
+}
+
+/// An MCP server `mcp auth` can sign in to (OpenCode's `mcpAuthChoices`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AuthChoice {
+    pub value: String,
+    pub label: String,
+    /// It has saved tokens.
+    pub connected: bool,
+    pub hint: Option<&'static str>,
+}
+
+/// The servers that take an OAuth sign-in (remote, OAuth not turned off),
+/// by name, with whether tokens for them are saved in `store` and a hint
+/// when those tokens have expired with no way to refresh them.
+pub(crate) fn mcp_auth_choices(
+    servers: &std::collections::BTreeMap<String, codesmith_core::mcp::ServerConfig>,
+    store: &std::path::Path,
+) -> Vec<AuthChoice> {
+    use codesmith_core::mcp::{oauth, ServerConfig};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    servers
+        .iter()
+        .filter_map(|(name, s)| match s {
+            ServerConfig::Remote { url, oauth: o, .. } if oauth::Setting::enabled(o.as_ref()) => {
+                let saved = oauth::load(store, name, url);
+                let stale = saved.as_ref().is_some_and(|e| {
+                    e.refresh_token.is_none() && e.expires_at.is_some_and(|t| t <= now)
+                });
+                Some(AuthChoice {
+                    value: name.clone(),
+                    label: name.clone(),
+                    connected: saved.is_some(),
+                    hint: stale.then_some("needs authentication"),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The server `mcp auth` was run for without a name: picked from a
+/// numbered list in a terminal, else an error before anything connects.
+fn pick_mcp_server(
+    servers: &std::collections::BTreeMap<String, codesmith_core::mcp::ServerConfig>,
+) -> Result<String> {
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow!(
+            "Pass an MCP server name when running without an interactive terminal"
+        ));
+    }
+    let choices = mcp_auth_choices(servers, &codesmith_core::mcp::oauth::store_path());
+    if choices.is_empty() {
+        return Err(anyhow!(
+            "No remote MCP server in codesmith.json takes an OAuth sign-in"
+        ));
+    }
+    for (i, c) in choices.iter().enumerate() {
+        let state = match (c.connected, c.hint) {
+            (_, Some(h)) => format!(" ({h})"),
+            (true, None) => " (signed in)".into(),
+            (false, None) => String::new(),
+        };
+        eprintln!("  {}. {}{state}", i + 1, c.label);
+    }
+    let answer = read_line("MCP server to sign in to (number): ")?.unwrap_or_default();
+    answer
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| choices.get(i))
+        .map(|c| c.value.clone())
+        .ok_or_else(|| anyhow!("no server numbered {answer:?}"))
 }
 
 /// A line typed in the terminal; `None` when stdin is not one.

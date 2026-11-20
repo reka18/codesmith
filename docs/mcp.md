@@ -175,6 +175,11 @@ codesmith mcp auth docs      # opens the browser
 codesmith mcp logout docs    # forget the tokens
 ```
 
+Without a name, `codesmith mcp auth` lists the remote servers that take an
+OAuth sign-in (marking those signed in, and those whose tokens expired with
+no way to refresh them) and asks for one; without a terminal it needs the
+name.
+
 This follows the MCP authorization spec: discovery, dynamic client
 registration and PKCE, with the callback on `127.0.0.1:19876`. Tokens are
 saved in the data folder's `mcp-auth.json` (readable only by you), are only

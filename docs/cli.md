@@ -224,7 +224,7 @@ See [worktrees](sessions.md#worktrees).
 
 ```sh
 codesmith mcp list           # connect to each server and list its status and tools
-codesmith mcp auth NAME      # OAuth login for a remote server (opens the browser)
+codesmith mcp auth [NAME]    # OAuth login for a remote server (opens the browser; without NAME, pick one in a terminal)
 codesmith mcp logout NAME    # forget its tokens
 ```
 
