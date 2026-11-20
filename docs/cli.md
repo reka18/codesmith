@@ -121,7 +121,7 @@ start like a step.
 ## `codesmith session`
 
 ```sh
-codesmith session list [--all] [--archived] [--json]   # this folder's sessions (--all: every folder; --archived: the archived ones)
+codesmith session list [--all] [--archived] [--search TEXT] [--json]   # this folder's sessions (--all: every folder; --archived: the archived ones; --search: titles containing TEXT)
 codesmith session archive ID              # keep it, out of lists
 codesmith session unarchive ID
 codesmith session export ID > session.json

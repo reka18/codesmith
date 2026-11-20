@@ -54,7 +54,7 @@ permission and question ids are random.
 | Route | |
 |---|---|
 | `GET /health` | Version, directory, model. |
-| `GET /sessions` | List sessions, each with `archived` (when, or null) and `read` (its [read state](#read-state)); `?archived=true` or `false` lists only those that are or are not. |
+| `GET /sessions` | List sessions, each with `archived` (when, or null) and `read` (its [read state](#read-state)); `?archived=true` or `false` lists only those that are or are not; `?search=text` only those whose title contains it (case-insensitive, `%` and `_` as SQL `LIKE` wildcards); `?subpath=dir` the sessions started in that folder of the project instead of the server's. |
 | `POST /sessions {agent?, model?}` | Create a session. |
 | `GET /sessions/{id}` | Session info, `messages`, and `seqs`: each message's number. |
 | `DELETE /sessions/{id}` | Delete a session. |

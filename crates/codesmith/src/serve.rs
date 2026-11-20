@@ -934,7 +934,33 @@ async fn list(
         }
     };
     let db = st.store()?;
-    let list = db.list_archived(Some(&st.cwd.display().to_string()), false, archived)?;
+    // `?subpath=dir`: the sessions started in that folder of the project.
+    let dir = match q.get("subpath") {
+        Some(sub) => {
+            let rel = std::path::Path::new(sub);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err(ApiError(
+                    StatusCode::BAD_REQUEST,
+                    "subpath is a folder inside the project".into(),
+                ));
+            }
+            st.loaded.root.join(rel)
+        }
+        None => st.cwd.clone(),
+    };
+    let mut list = db.list_archived(Some(&dir.display().to_string()), false, archived)?;
+    // `?search=text`: titles containing it (see `store::title_matches`).
+    if let Some(text) = q.get("search") {
+        list.retain(|i| {
+            i.title
+                .as_deref()
+                .is_some_and(|t| codesmith_core::store::title_matches(t, text))
+        });
+    }
     let mut out = Vec::new();
     for i in list {
         let when = db.archived(&i.id)?;

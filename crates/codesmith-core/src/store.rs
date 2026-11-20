@@ -191,6 +191,40 @@ impl std::fmt::Debug for Store {
     }
 }
 
+/// Whether `title` contains `search` (OpenCode's session title search):
+/// case-insensitive beyond ASCII, with SQL `LIKE` wildcards (`%` any run,
+/// `_` any one character); everything else, `*` and `?` included, is
+/// literal.
+pub fn title_matches(title: &str, search: &str) -> bool {
+    let fold = |s: &str| -> Vec<char> { s.chars().flat_map(char::to_lowercase).collect() };
+    let (t, p) = (fold(title), fold(search));
+    // `%search%`, matched with one row of the usual wildcard table.
+    let mut pat = vec!['%'];
+    pat.extend(p);
+    pat.push('%');
+    let mut row = vec![false; t.len() + 1];
+    row[0] = true;
+    for c in &pat {
+        let mut next = vec![false; t.len() + 1];
+        match c {
+            '%' => {
+                let mut any = false;
+                for i in 0..=t.len() {
+                    any |= row[i];
+                    next[i] = any;
+                }
+            }
+            _ => {
+                for i in 1..=t.len() {
+                    next[i] = row[i - 1] && (*c == '_' || t[i - 1] == *c);
+                }
+            }
+        }
+        row = next;
+    }
+    row[t.len()]
+}
+
 pub fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1093,6 +1127,29 @@ impl Store {
             self.set_meta(id, VIEWED_META, Some(&idle.to_string()))?;
         }
         Ok(())
+    }
+
+    /// [`Store::list`] of the project at `root`, only the sessions started
+    /// in its folder `subpath` (OpenCode's `subpath` filter). `subpath` is
+    /// relative and stays inside the project.
+    pub fn list_subpath(&self, root: &Path, subpath: &str, children: bool) -> Result<Vec<Info>> {
+        let rel = Path::new(subpath);
+        if rel.is_absolute()
+            || rel
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(anyhow!("{subpath:?} is not a folder inside the project"));
+        }
+        self.list(Some(&root.join(rel).display().to_string()), children)
+    }
+
+    /// [`Store::list`], only the sessions whose title contains `text` (see
+    /// [`title_matches`]).
+    pub fn search(&self, directory: Option<&str>, children: bool, text: &str) -> Result<Vec<Info>> {
+        let mut all = self.list(directory, children)?;
+        all.retain(|i| i.title.as_deref().is_some_and(|t| title_matches(t, text)));
+        Ok(all)
     }
 
     /// When session `id` was archived, if it is.

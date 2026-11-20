@@ -701,6 +701,10 @@ enum SessionCmd {
         /// List the archived sessions instead.
         #[arg(long)]
         archived: bool,
+        /// Only sessions whose title contains this (case-insensitive; `%`
+        /// and `_` match any run and any one character).
+        #[arg(long)]
+        search: Option<String>,
         /// Print JSON.
         #[arg(long)]
         json: bool,
@@ -2410,11 +2414,19 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
         SessionCmd::List {
             all,
             archived,
+            search,
             json,
         } => {
             let dir = cwd.display().to_string();
-            let list =
+            let mut list =
                 db.list_archived(if all { None } else { Some(&dir) }, false, Some(archived))?;
+            if let Some(text) = &search {
+                list.retain(|i| {
+                    i.title
+                        .as_deref()
+                        .is_some_and(|t| codesmith_core::store::title_matches(t, text))
+                });
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&list)?);
                 return Ok(());

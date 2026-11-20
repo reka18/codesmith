@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 72 | 0 | 3 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 74 | 0 | 1 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1653** | **18** | **122** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1655** | **18** | **120** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (122 cases in 15 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (120 cases in 13 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -98,10 +98,8 @@ Missing features, by how many OpenCode test cases each would unlock (122 cases i
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
-| [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
-| [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
 
 ### ChatGPT Subscription Login
 
@@ -267,12 +265,6 @@ Missing features, by how many OpenCode test cases each would unlock (122 cases i
 
 - `plugin/skill.test.ts`: registers built-in skills
 
-### Session Subpath Filter
-
-1 cases.
-
-- `session-create.test.ts`: filters project sessions by subpath
-
 ### Provider Media Capabilities
 
 1 cases.
@@ -284,12 +276,6 @@ Missing features, by how many OpenCode test cases each would unlock (122 cases i
 1 cases.
 
 - `session-runner-message.test.ts`: exposes admitted reference directory source paths in model context
-
-### Session Title Search
-
-1 cases.
-
-- `session-store.test.ts`: searches titles case-insensitively beyond ASCII and keeps LIKE wildcard semantics
 
 ## Porting backlog
 
@@ -1540,7 +1526,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (251 of 308)</summary>
+<details><summary>Sessions and their store (253 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1582,6 +1568,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D preserves the project canonical directory when creating a session in another clone · repeat Session.create on the same location spawns no git · follows the directory's project identity established after creation · does not adopt nested repositories or sessions in another workspace — client-server: project identity across clones/workspaces
 - D stores supplied immutable create attributes · stores creation metadata and inherits it through children and forks — storage-model: immutable create attributes and creation metadata
 - P stores permission rules, inherits them through children and forks, and replaces them — `tests/oc_session_permissions.rs::oc_session_stores_permission_rules_inherits_them_through_children_and_forks_and_replaces_them` (adapted: kept as session meta; the rules only restrict)
+- P filters project sessions by subpath — `tests/oc_session_list.rs::oc_session_filters_project_sessions_by_subpath` (adapted: the subpath is the folder under the project root a session started in)
 - P forks a session by replaying a durable fork event into copied projected rows — `tests/oc_session_fork.rs::oc_session_forks_a_session_into_copied_history` (adapted: records copied, not an event replayed)
 - P queues a fork notice after copied history and before the first prompt — `tests/oc_session_fork.rs::oc_session_queues_a_fork_notice_before_the_first_prompt`
 - P keeps a fork untitled when its parent is untitled — `tests/oc_session_fork.rs::oc_session_keeps_a_fork_untitled_when_its_parent_is_untitled`
@@ -1728,7 +1715,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-store.test.ts`**
 
-- D lists by updated time and ID with exclusive two-item pages in either direction · pages messages by durable sequence, not timestamp or ID, and scopes cursor lookup · hydrates and settles assistant messages across session_part rows and legacy inline content rows · lastAssistantAfter returns the newest completed error-free assistant after the boundary with parts hydrated · lastAssistantAfter pages past more than twenty incomplete or errored assistant messages · lastAssistantAfter returns undefined without a qualifying assistant after the boundary — storage-model: OpenCode's message paging and part-row hydration
+- D lists by updated time and ID with exclusive two-item pages in either direction — storage-model: OpenCode's message paging and part-row hydration
+- P searches titles case-insensitively beyond ASCII and keeps LIKE wildcard semantics — `tests/oc_session_list.rs::oc_session_searches_titles_case_insensitively_beyond_ascii_and_keeps_like_wildcard_semantics`
+- D pages messages by durable sequence, not timestamp or ID, and scopes cursor lookup · hydrates and settles assistant messages across session_part rows and legacy inline content rows · lastAssistantAfter returns the newest completed error-free assistant after the boundary with parts hydrated · lastAssistantAfter pages past more than twenty incomplete or errored assistant messages · lastAssistantAfter returns undefined without a qualifying assistant after the boundary — storage-model: OpenCode's message paging and part-row hydration
 
 **`session-view.test.ts`**
 
