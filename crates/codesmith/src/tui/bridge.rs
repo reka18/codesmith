@@ -17,6 +17,8 @@ pub type Answers = Option<Vec<Vec<String>>>;
 
 pub enum Ev {
     Key(KeyEvent),
+    /// A diff viewer load finished.
+    Diff(Box<super::diff_view::Response>),
     Paste(String),
     Resize,
     /// The project's files, listed in the background for `@` completion.

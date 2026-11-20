@@ -158,6 +158,10 @@ pub enum Pick {
     Model,
     Agent,
     Theme,
+    /// The diff viewer's source chooser.
+    DiffSource,
+    /// The diff viewer's base branch picker.
+    DiffBase,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +182,12 @@ pub struct Picker {
     pub shown: Vec<usize>,
     /// Position in `shown`.
     pub sel: usize,
+    /// Typing filters the list (the diff source chooser has no filter).
+    pub filterable: bool,
+    /// Shown instead of the list while it is empty (a list still loading).
+    pub empty: Option<String>,
+    /// A note under the list.
+    pub footer: Option<String>,
 }
 
 impl Picker {
@@ -189,6 +199,9 @@ impl Picker {
             filter: String::new(),
             shown: vec![],
             sel: 0,
+            filterable: true,
+            empty: None,
+            footer: None,
         };
         p.refilter();
         p.sel = p
@@ -237,6 +250,8 @@ pub enum Modal {
     Picker(Picker),
     /// The help, scrolled this many rows.
     Help(usize),
+    /// The diff viewer's shortcuts, scrolled this many rows.
+    DiffHelp(usize),
 }
 
 /// What the runner should do after a key.
@@ -330,6 +345,16 @@ pub struct App {
     children: Vec<Child>,
     /// The call running the outermost of them, whose row shows them.
     sub_call: Option<String>,
+    /// The diff viewer, while open.
+    pub diff: Option<super::diff_view::Viewer>,
+    /// What the diff viewer remembers until the UI exits.
+    pub diff_memory: super::diff_view::Memory,
+    /// The diff viewer's layout choices (`tui.diffs` and the remembered ones).
+    pub diff_prefs: super::diff_view::Prefs,
+    /// `tui.diffs.source`.
+    pub diff_source: Option<super::diff_source::Source>,
+    /// The layout choices changed: the runner remembers them.
+    pub diff_prefs_changed: bool,
 }
 
 /// A running subagent, as the UI tracks it.
@@ -352,6 +377,7 @@ const HELP_COMMANDS: &str = "/new            start a new session
 /clear          clear the screen (the session is kept)
 /thinking       show or hide reasoning
 /verbosity [l]  cycle the transcript's verbosity, or set low, medium or high
+/diff           open or close the diff viewer and review panel (? there: its keys)
 /help           this help
 /exit           quit
 /calibrate      survey the codebase and choose review dimensions
@@ -432,6 +458,8 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("session.last", "follow the bottom again"),
     ("terminal.suspend", ""),
     ("help.show", "this help"),
+    ("diff.open", "open or close the diff viewer"),
+    ("pane.focus.right", "focus the docked diff viewer"),
 ];
 
 /// The help: every bound command with its keys, then the slash commands.
@@ -479,6 +507,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "cycle the transcript's verbosity, or set low, medium or high",
     ),
     ("help", "keys and commands"),
+    ("diff", "open or close the diff viewer and review panel"),
     ("themes", "pick a theme, or set the light or dark mode"),
     ("exit", "quit"),
 ];
@@ -646,6 +675,7 @@ impl App {
             return;
         };
         match ev {
+            Ev::Diff(r) => self.diff_answer(*r),
             Ev::Text(d) => match self.entries.last_mut() {
                 Some(Entry::Assistant(t)) => t.push_str(&d),
                 _ => self.entries.push(Entry::Assistant(d)),
@@ -877,6 +907,9 @@ impl App {
     }
 
     pub fn on_paste(&mut self, s: &str) {
+        if self.diff_focused() && !matches!(self.modal, Some(Modal::Picker(_))) {
+            return;
+        }
         match &mut self.modal {
             Some(Modal::Permission { feedback, .. }) => {
                 feedback.push_str(s.lines().next().unwrap_or(""))
@@ -886,7 +919,7 @@ impl App {
                 p.filter.push_str(s.lines().next().unwrap_or(""));
                 p.refilter();
             }
-            Some(Modal::Help(_)) => {}
+            Some(Modal::Help(_) | Modal::DiffHelp(_)) => {}
             None => {
                 if let Some(files) = super::attach::pasted_files(s, &self.cwd) {
                     for path in files {
@@ -1028,6 +1061,15 @@ impl App {
             "session.undo" => return Self::slash("undo"),
             "session.redo" => return Self::slash("redo"),
             "help.show" => return Self::slash("help"),
+            "diff.open" => return Self::slash("diff"),
+            "pane.focus.right" => {
+                let v = self.diff.as_mut()?;
+                if !v.now().docked {
+                    return None;
+                }
+                v.focused = true;
+                return Some(None);
+            }
             "theme.switch" => return Self::slash("themes"),
             "theme.switch_mode" => return Some(Some(Action::Run("theme.switch_mode"))),
             "theme.mode.lock" => return Some(Some(Action::Run("theme.mode.lock"))),
@@ -1102,8 +1144,18 @@ impl App {
 
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Action> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        if self.modal.is_some() {
+        // A focused diff viewer keeps its keys even with a permission or
+        // question waiting beside it (Enter must not answer it).
+        let diff = self.diff_focused();
+        let asking = matches!(
+            self.modal,
+            Some(Modal::Permission { .. } | Modal::Question { .. })
+        );
+        if self.modal.is_some() && !(diff && asking) {
             return self.modal_key(k, ctrl);
+        }
+        if diff {
+            return self.diff_key(k);
         }
         let stroke = keymap::stroke(&k)?;
         if self
@@ -1385,12 +1437,12 @@ impl App {
                             self.modal = None;
                             return Some(Action::Cancelled(kind));
                         }
-                        KeyCode::Backspace => {
+                        KeyCode::Backspace if p.filterable => {
                             p.filter.pop();
                             p.refilter();
                         }
                         _ => {
-                            if let Some(c) = typed {
+                            if let Some(c) = typed.filter(|_| p.filterable) {
                                 p.filter.push(c);
                                 p.refilter();
                             }
@@ -1399,7 +1451,7 @@ impl App {
                 }
                 return self.preview(before);
             }
-            Modal::Help(scroll) => match k.code {
+            Modal::Help(scroll) | Modal::DiffHelp(scroll) => match k.code {
                 KeyCode::Up => *scroll = scroll.saturating_sub(1),
                 KeyCode::Down => *scroll += 1,
                 KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
@@ -1420,6 +1472,184 @@ impl App {
             .then(|| now.map(|id| Action::Preview(Pick::Theme, id)))
             .flatten()
     }
+}
+
+/// The diff viewer's side of the app: opening and closing it, its keys,
+/// its pickers and the answers to its loads.
+impl App {
+    /// Whether keys go to the diff viewer: it is open full screen, or
+    /// docked and focused.
+    pub fn diff_focused(&self) -> bool {
+        self.diff
+            .as_ref()
+            .is_some_and(|v| v.focused || !v.now().docked)
+    }
+
+    /// `/diff`: open the viewer on `dir`'s changes (focused), or close it
+    /// when it is open.
+    pub fn toggle_diff(&mut self, dir: std::path::PathBuf) {
+        if self.diff.take().is_some() {
+            return;
+        }
+        let branch = super::diff_source::current_branch(&dir);
+        let source = self
+            .diff_memory
+            .source
+            .or(self.diff_source)
+            .unwrap_or(super::diff_source::Source::Branch);
+        let mut v = super::diff_view::Viewer::new(dir, branch.as_deref(), source, self.diff_prefs);
+        v.reload(&self.diff_memory);
+        self.diff = Some(v);
+    }
+
+    /// The loads the viewer asked for, for the runner to start.
+    pub fn take_diff_requests(&mut self) -> Vec<super::diff_view::Request> {
+        self.diff
+            .as_mut()
+            .map(|v| std::mem::take(&mut v.requests))
+            .unwrap_or_default()
+    }
+
+    /// A load finished.
+    pub fn diff_answer(&mut self, r: super::diff_view::Response) {
+        let Some(v) = self.diff.as_mut() else { return };
+        let Some(branches) = v.answer(r) else { return };
+        let Some(Modal::Picker(p)) = self.modal.as_mut() else {
+            return;
+        };
+        if p.kind != Pick::DiffBase {
+            return;
+        }
+        let current = v
+            .source_base(&self.diff_memory)
+            .map(|b| short_ref(&b.reference).to_string());
+        match branches {
+            Ok(list) => {
+                p.empty = Some("No branches found".into());
+                p.items = list
+                    .into_iter()
+                    .map(|b| PickItem {
+                        current: current.as_deref() == Some(b.as_str()),
+                        label: b.clone(),
+                        detail: String::new(),
+                        id: b,
+                    })
+                    .collect();
+                p.refilter();
+                p.sel = p
+                    .shown
+                    .iter()
+                    .position(|&i| p.items[i].current)
+                    .unwrap_or(0);
+            }
+            Err(_) => {
+                p.empty = Some("Could not load branches. Reopen the picker to try again.".into());
+            }
+        }
+    }
+
+    /// The session finished a turn: the last-turn source shows the new one.
+    pub fn diff_turn_done(&mut self) {
+        if let Some(v) = self.diff.as_mut() {
+            if v.source == super::diff_source::Source::Turn {
+                v.reload(&self.diff_memory);
+            }
+        }
+    }
+
+    /// The source chooser: the sources, then the base.
+    fn open_diff_source(&mut self) {
+        let Some(v) = self.diff.as_ref() else { return };
+        let mut items: Vec<PickItem> = super::diff_source::Source::ALL
+            .iter()
+            .map(|s| PickItem {
+                id: s.key().into(),
+                label: format!("{:<11}", s.label()),
+                detail: s.description().into(),
+                current: *s == v.source,
+            })
+            .collect();
+        items.push(PickItem {
+            id: "base".into(),
+            label: format!("{:<11}", "Base"),
+            detail: v
+                .source_base(&self.diff_memory)
+                .map_or("Choose…".into(), |b| b.name),
+            current: false,
+        });
+        let mut p = Picker::new(Pick::DiffSource, "Diff source", items);
+        p.filterable = false;
+        self.modal = Some(Modal::Picker(p));
+    }
+
+    /// A choice in one of the viewer's pickers.
+    pub fn diff_picked(&mut self, kind: Pick, id: &str) {
+        let Some(v) = self.diff.as_mut() else { return };
+        match kind {
+            Pick::DiffSource if id == "base" => {
+                v.load_branches();
+                let mut p = Picker::new(Pick::DiffBase, "Base branch", vec![]);
+                p.empty = Some("Loading branches…".into());
+                p.footer = Some("Remembered until the TUI exits".into());
+                self.modal = Some(Modal::Picker(p));
+            }
+            Pick::DiffSource => {
+                if let Some(s) = super::diff_source::Source::parse(id) {
+                    v.switch_source(s, &mut self.diff_memory);
+                }
+            }
+            Pick::DiffBase => v.choose_base(id, &mut self.diff_memory),
+            _ => {}
+        }
+    }
+
+    /// A key for the diff viewer: its commands (`diff.*`), the pane focus
+    /// keys, and `app.exit`, which closes it. Other keys do nothing.
+    fn diff_key(&mut self, k: KeyEvent) -> Option<Action> {
+        let stroke = keymap::stroke(&k)?;
+        if self
+            .pending_at
+            .is_some_and(|at| at.elapsed() > self.keymap.timeout)
+        {
+            self.pending.clear();
+        }
+        self.pending_at = None;
+        let mut seq = std::mem::take(&mut self.pending);
+        let continued = !seq.is_empty();
+        seq.push(stroke);
+        let found = self.keymap.lookup(scope::DIFF, &seq);
+        if found.exact.is_empty() && found.prefix {
+            self.pending = seq;
+            self.pending_at = Some(Instant::now());
+            return None;
+        }
+        let Some(id) = found.exact.first().copied() else {
+            if continued && !self.keymap.after_leader(&seq) {
+                return self.diff_key(k);
+            }
+            return None;
+        };
+        let v = self.diff.as_mut()?;
+        let (out, prefs) = v.command(id);
+        if prefs {
+            self.diff_prefs = v.prefs();
+            self.diff_prefs_changed = true;
+        }
+        match out {
+            super::diff_view::Outcome::Close => self.diff = None,
+            super::diff_view::Outcome::Source => self.open_diff_source(),
+            super::diff_view::Outcome::Help => self.modal = Some(Modal::DiffHelp(0)),
+            super::diff_view::Outcome::FocusPrompt | super::diff_view::Outcome::None => {}
+        }
+        None
+    }
+}
+
+/// A branch ref as the base picker lists it.
+pub fn short_ref(r: &str) -> &str {
+    r.strip_prefix("refs/heads/")
+        .or_else(|| r.strip_prefix("refs/remotes/"))
+        .unwrap_or(r)
 }
 
 #[cfg(test)]

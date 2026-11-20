@@ -18,12 +18,18 @@ mod bench;
 mod bridge;
 mod complete;
 mod diff;
+mod diff_draw;
+mod diff_source;
+mod diff_tree;
+mod diff_view;
 mod editor;
 mod group;
 pub(crate) mod keymap;
 mod markdown;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod parity_diff;
 #[cfg(test)]
 mod parity_groups;
 #[cfg(test)]
@@ -105,6 +111,8 @@ struct Runner {
     theme_before: Option<String>,
     /// `ctrl+z` was pressed: suspend before the next frame.
     suspend: bool,
+    /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
+    diffs: settings::Diffs,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -390,6 +398,30 @@ impl Runner {
         };
     }
 
+    /// Start the loads the diff viewer asked for, and remember its layout
+    /// when it changed.
+    fn pump_diff(&mut self) {
+        for req in self.app.take_diff_requests() {
+            let tx = self.tx.clone();
+            let root = config::project_root(&self.cwd);
+            let session = self.session_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let turn = || {
+                    let db = open_store().ok_or("the session store is unavailable")?;
+                    let snaps = Snapshots::for_project(&root)
+                        .ok_or_else(|| format!("snapshots are not kept for {}", root.display()))?;
+                    diff_source::turn_diff(&db, &session, &snaps)
+                };
+                let src = diff_view::Git(turn);
+                let _ = tx.send(Ev::Diff(Box::new(diff_view::run(req.job, req.seq, &src))));
+            });
+        }
+        if std::mem::take(&mut self.app.diff_prefs_changed) {
+            let text = diff_view::remember_text(&self.diffs, self.app.diff_prefs);
+            let _ = codesmith_core::paths::write_private(&diff_view::state_file(), text.as_bytes());
+        }
+    }
+
     fn stop_waiting(&mut self) {
         if let Some(w) = self.waiter.take() {
             w.abort();
@@ -436,6 +468,14 @@ impl Runner {
             "help" => self.app.modal = Some(Modal::Help(0)),
             "themes" | "theme" => self.theme_command(args),
             "clear" => self.app.entries.clear(),
+            "diff" => {
+                let dir = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.cwd.clone())
+                    .unwrap_or_else(|| self.cwd.clone());
+                self.app.toggle_diff(dir);
+            }
             "thinking" => {
                 self.app.show_reasoning = !self.app.show_reasoning;
                 self.app.notice(format!(
@@ -695,6 +735,7 @@ impl Runner {
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => self.set_model(&id)?,
+            Pick::DiffSource | Pick::DiffBase => self.app.diff_picked(kind, &id),
             Pick::Session | Pick::Agent | Pick::Model => {}
         }
         Ok(())
@@ -885,7 +926,9 @@ impl Runner {
                     self.app.error(e);
                 }
                 self.install(*session, false);
+                self.app.diff_turn_done();
             }
+            Ev::Diff(r) => self.app.diff_answer(*r),
             other => self.app.on_event(other),
         }
     }
@@ -1073,6 +1116,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         detected: None,
         theme_before: None,
         suspend: false,
+        diffs: settings::Diffs::default(),
     };
     let keymap = keymap::Keymap::new(&tui.keybinds, tui.leader_timeout, cfg!(unix));
     for w in tui_warnings
@@ -1087,6 +1131,14 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     r.app.reasoning_source = tui.markdown == settings::Markdown::Source;
     r.app.verbosity = tui.verbosity;
     r.app.grouping = tui.grouping;
+    r.diffs = tui.diffs;
+    r.app.diff_source = tui.diffs.source;
+    r.app.diff_prefs = diff_view::remembered(
+        &tui.diffs,
+        std::fs::read_to_string(diff_view::state_file())
+            .ok()
+            .as_deref(),
+    );
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
         .into_iter()
         .map(|(n, c)| (n, c.description.unwrap_or_default()))
@@ -1139,6 +1191,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             while let Ok(ev) = rx.try_recv() {
                 r.handle(ev).await;
             }
+            r.pump_diff();
             if r.app.quit {
                 break;
             }
@@ -1193,6 +1246,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("agent", true),
     ("model", true),
     ("variant", true),
+    ("diff", false),
 ];
 
 /// The built-in command `/name args` invokes, if any. As in OpenCode

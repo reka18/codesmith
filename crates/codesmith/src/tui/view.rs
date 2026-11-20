@@ -1186,8 +1186,52 @@ pub fn status_text(app: &App, scrolled: usize) -> String {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let full = f.area();
+    let Some(v) = &app.diff else {
+        draw_main(f, app, full);
+        return;
+    };
+    // The diff viewer: docked on the right of the session, or over it.
+    let g = v.geom(full.width, full.height);
+    if g.docked {
+        draw_main(f, app, Rect { width: g.x, ..full });
+    }
+    super::diff_draw::draw(f.buffer_mut(), full, v, &app.diff_memory, &app.keymap);
+    match &app.modal {
+        Some(m @ (Modal::Picker(_) | Modal::DiffHelp(_) | Modal::Help(_))) => {
+            draw_modal(f, full, m, app)
+        }
+        // Full screen, a waiting permission or question is out of sight:
+        // say so where the viewer's last row is.
+        Some(Modal::Permission { .. } | Modal::Question { .. }) if !g.docked => {
+            let p = theme::current();
+            let y = full.bottom().saturating_sub(1);
+            let text = match app.keymap.hint("diff.close") {
+                h if h.is_empty() => {
+                    " Waiting for your answer: close the diff viewer to reply".to_string()
+                }
+                h => format!(" Waiting for your answer: {h} closes the diff viewer to reply"),
+            };
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    text,
+                    Style::default().fg(p.selected_fg).bg(p.warning),
+                )),
+                Rect {
+                    y,
+                    height: 1,
+                    ..full
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+/// The session's screen in `area`: transcript, prompt, status line and
+/// dialogs.
+fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     let p = theme::current();
-    let area = f.area();
     // The theme's page and text colors under everything.
     f.buffer_mut()
         .set_style(area, Style::default().fg(p.text).bg(p.bg));
@@ -1248,8 +1292,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.modal.is_none() {
         draw_popup(f, app, body, input);
     }
-    if let Some(m) = &app.modal {
-        draw_modal(f, area, m, app);
+    match &app.modal {
+        // With the diff viewer open, its own dialogs are drawn over it.
+        Some(Modal::Picker(_) | Modal::DiffHelp(_) | Modal::Help(_)) if app.diff.is_some() => {}
+        Some(m) => draw_modal(f, area, m, app),
+        None => {}
     }
 }
 
@@ -1309,7 +1356,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     if !text.is_empty() {
         f.render_widget(Paragraph::new(shown).style(fg(p.text)), inner);
     }
-    if app.modal.is_none() && inner.height > 0 {
+    if app.modal.is_none() && !app.diff_focused() && inner.height > 0 {
         let y = inner.y + (crow - top).min(height.saturating_sub(1)) as u16;
         let x = inner.x + (ccol as u16).min(inner.width.saturating_sub(1));
         f.set_cursor_position((x, y));
@@ -1418,30 +1465,37 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 
 fn picker_lines(pk: &Picker, rows: usize, k: &super::keymap::Keymap) -> Vec<Line<'static>> {
     let p = theme::current();
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("> ", fg(p.primary)),
-            Span::styled(pk.filter.clone(), fg(p.dialog_text)),
-            Span::styled(
-                if pk.filter.is_empty() {
-                    "type to filter"
-                } else {
-                    ""
-                },
-                fg(p.dialog_muted),
-            ),
-        ]),
-        Line::default(),
-    ];
+    let mut lines = if !pk.filterable {
+        vec![]
+    } else {
+        vec![
+            Line::from(vec![
+                Span::styled("> ", fg(p.primary)),
+                Span::styled(pk.filter.clone(), fg(p.dialog_text)),
+                Span::styled(
+                    if pk.filter.is_empty() {
+                        "type to filter"
+                    } else {
+                        ""
+                    },
+                    fg(p.dialog_muted),
+                ),
+            ]),
+            Line::default(),
+        ]
+    };
     if pk.shown.is_empty() {
-        lines.push(Line::from(Span::styled(
-            if pk.items.is_empty() {
-                "Nothing to choose from."
-            } else {
-                "No matches."
-            },
-            fg(p.dialog_muted),
-        )));
+        let text = match &pk.empty {
+            Some(e) => e.clone(),
+            None if pk.items.is_empty() => "Nothing to choose from.".into(),
+            None => "No matches.".into(),
+        };
+        let color = if text.starts_with("Could not") {
+            p.error
+        } else {
+            p.dialog_muted
+        };
+        lines.push(Line::from(Span::styled(text, fg(color))));
     }
     let top = (pk.sel + 1).saturating_sub(rows);
     for (pos, &i) in pk.shown.iter().enumerate().skip(top).take(rows) {
@@ -1466,6 +1520,9 @@ fn picker_lines(pk: &Picker, rows: usize, k: &super::keymap::Keymap) -> Vec<Line
         ]));
     }
     lines.push(Line::default());
+    if let Some(note) = &pk.footer {
+        lines.push(Line::from(Span::styled(note.clone(), fg(p.dialog_muted))));
+    }
     let (prev, next) = (k.hint("dialog.select.prev"), k.hint("dialog.select.next"));
     let choose = match (prev.is_empty(), next.is_empty()) {
         (false, false) => format!("{prev}/{next}"),
@@ -1568,6 +1625,34 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 picker_lines(pk, rows, &app.keymap),
                 p.primary,
             )
+        }
+        Modal::DiffHelp(scroll) => {
+            let (single, tree) = app.diff.as_ref().map_or((false, false), |v| {
+                let (w, h) = v.term.get();
+                (v.single, !v.geom(w, h).compact)
+            });
+            let mut all: Vec<Line> = Vec::new();
+            let mut last = String::new();
+            for (group, key, label) in super::diff_draw::help_lines(&app.keymap, single, tree) {
+                if group != last {
+                    if !all.is_empty() {
+                        all.push(Line::default());
+                    }
+                    all.push(Line::from(Span::styled(
+                        group.clone(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )));
+                    last = group;
+                }
+                all.push(Line::from(vec![
+                    Span::styled(format!("{key:<17}  "), fg(p.dialog_text)),
+                    Span::styled(label, fg(p.dialog_muted)),
+                ]));
+            }
+            let fit = room.max(1);
+            let top = (*scroll).min(all.len().saturating_sub(fit));
+            let lines: Vec<Line> = all.into_iter().skip(top).take(fit).collect();
+            ("Diff shortcuts · esc close".into(), lines, p.primary)
         }
         Modal::Help(scroll) => {
             let text = help_text(&app.keymap);

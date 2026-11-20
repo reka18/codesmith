@@ -52,6 +52,21 @@ pub struct Settings {
     pub verbosity: Verbosity,
     /// `session.grouping`: `auto` or `none`.
     pub grouping: Grouping,
+    /// `diffs`: the diff viewer's defaults.
+    pub diffs: Diffs,
+}
+
+/// `tui.diffs`, as OpenCode's `diffs` settings: the source the diff viewer
+/// opens on, and its layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Diffs {
+    /// `branch`, `committed`, `working` or `turn`.
+    pub source: Option<super::diff_source::Source>,
+    pub tree: Option<bool>,
+    pub single: Option<bool>,
+    /// `auto` (`None` here), `split` or `unified`.
+    pub view: Option<super::diff_view::View>,
+    pub fullscreen: Option<bool>,
 }
 
 impl Default for Settings {
@@ -69,6 +84,7 @@ impl Default for Settings {
             markdown: Markdown::Rendered,
             verbosity: Verbosity::Low,
             grouping: Grouping::Auto,
+            diffs: Diffs::default(),
         }
     }
 }
@@ -201,6 +217,43 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
             Some(m) => s.grouping = m,
             None => bad("session.grouping", "must be \"auto\" or \"none\""),
         },
+    }
+    match v.get("diffs") {
+        None => {}
+        Some(d) if !d.is_object() => bad("diffs", "must be an object"),
+        Some(d) => {
+            match d.get("source") {
+                None => {}
+                Some(m) => match m.as_str().and_then(super::diff_source::Source::parse) {
+                    Some(m) => s.diffs.source = Some(m),
+                    None => bad(
+                        "diffs.source",
+                        "must be \"branch\", \"committed\", \"working\" or \"turn\"",
+                    ),
+                },
+            }
+            for (key, slot) in [
+                ("tree", &mut s.diffs.tree),
+                ("single", &mut s.diffs.single),
+                ("fullscreen", &mut s.diffs.fullscreen),
+            ] {
+                match d.get(key) {
+                    None => {}
+                    Some(b) => match b.as_bool() {
+                        Some(b) => *slot = Some(b),
+                        None => errors.push(format!("tui.diffs.{key}: must be true or false")),
+                    },
+                }
+            }
+            match d.get("view").map(|m| m.as_str()) {
+                None | Some(Some("auto")) => {}
+                Some(Some("split")) => s.diffs.view = Some(super::diff_view::View::Split),
+                Some(Some("unified")) => s.diffs.view = Some(super::diff_view::View::Unified),
+                Some(_) => {
+                    errors.push("tui.diffs.view: must be \"auto\", \"split\" or \"unified\"".into())
+                }
+            }
+        }
     }
     (s, errors)
 }

@@ -467,6 +467,26 @@ pub struct Palette {
     pub diff_added_bg: Color,
     pub diff_removed_bg: Color,
     pub diff_line_number: Color,
+    /// The diff viewer's cards and gutters.
+    pub diff_context_bg: Color,
+    pub diff_sign_added: Color,
+    pub diff_sign_removed: Color,
+    pub diff_line_number_added_bg: Color,
+    pub diff_line_number_removed_bg: Color,
+    /// Raised surfaces: the docked panel and the file tree, and a reviewed
+    /// card.
+    pub raised: Color,
+    pub raised_high: Color,
+    /// Action text: the diff source's label, a selected tree row, a
+    /// focused hint, a disabled one.
+    pub action_secondary: Color,
+    pub action_selected: Color,
+    pub action_focused: Color,
+    pub action_disabled: Color,
+    /// The file tree's markers and rails: muted text faded into the
+    /// raised surface.
+    pub tree_marker: Color,
+    pub tree_rail: Color,
     /// In [`doc::MARKDOWN`] order.
     pub markdown: [Color; 14],
     /// In [`doc::SYNTAX`] order.
@@ -488,6 +508,21 @@ fn term(c: Rgba, under: Option<Rgba>) -> Color {
             None if a < 128 => Color::Reset,
             None => Color::Rgb(c.r, c.g, c.b),
         },
+    }
+}
+
+/// Muted text moved `alpha` of the way to the raised surface (OpenCode's
+/// `tint(text.muted, background.raised.base, alpha)`).
+fn fade(t: &Resolved, alpha: f64) -> Color {
+    let page = t.rgba(t.background.base);
+    let under = (page.a == 255).then_some(page);
+    let (m, r) = (t.rgba(t.text.muted), t.rgba(t.background.raised.base));
+    match (term(m, under), term(r, under)) {
+        (Color::Rgb(a, b, c), Color::Rgb(d, e, f)) => {
+            let x = color::tint(Rgba::rgb(a, b, c), Rgba::rgb(d, e, f), alpha);
+            Color::Rgb(x.r, x.g, x.b)
+        }
+        (m, _) => m,
     }
 }
 
@@ -525,6 +560,19 @@ impl Palette {
             diff_added_bg: c(t.diff.added_bg),
             diff_removed_bg: c(t.diff.removed_bg),
             diff_line_number: c(t.diff.line_number),
+            diff_context_bg: c(t.diff.context_bg),
+            diff_sign_added: c(t.diff.highlight_added),
+            diff_sign_removed: c(t.diff.highlight_removed),
+            diff_line_number_added_bg: c(t.diff.line_number_added_bg),
+            diff_line_number_removed_bg: c(t.diff.line_number_removed_bg),
+            raised: c(t.background.raised.base),
+            raised_high: c(t.background.raised.high),
+            action_secondary: c(t.text.action[1].base),
+            action_selected: c(t.text.action[0].selected),
+            action_focused: c(t.background.action[0].focused),
+            action_disabled: c(t.text.action[0].disabled),
+            tree_marker: fade(t, 0.45),
+            tree_rail: fade(t, 0.7),
             markdown: t.markdown.map(c),
             syntax: t.syntax.map(c),
             syntect: Arc::new(OnceLock::new()),

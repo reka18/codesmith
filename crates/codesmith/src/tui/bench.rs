@@ -227,3 +227,108 @@ fn bench_completion() {
         report(&format!("@ query {q:?}"), t, "");
     }
 }
+
+/// The diff viewer on 200 changed files and a 7500-line new one: frames
+/// while scrolling, in split and unified view, docked beside a long
+/// session and full screen.
+#[test]
+#[ignore]
+fn bench_diff_viewer() {
+    use super::diff_source::{FileDiff, Source, Status};
+    use super::diff_view::{Prefs, Response, Viewer};
+    let patch: String = (0..3)
+        .map(|h| {
+            let at = h * 40 + 1;
+            format!(
+                "@@ -{at},5 +{at},5 @@\n fn a{h}() {{\n-    let x = {h};\n+    let x = {h} + 1;\n     x\n }}\n // end\n"
+            )
+        })
+        .collect();
+    let mut files: Vec<FileDiff> = (0..200)
+        .map(|i| {
+            FileDiff::from_patch(
+                &format!("src/m{}/f{i}.rs", i % 12),
+                Status::Modified,
+                &patch,
+            )
+        })
+        .collect();
+    let big: String = (0..7500)
+        .map(|i| format!("+    let value_{i} = compute({i}); // row {i}\n"))
+        .collect();
+    files.push(FileDiff::from_patch(
+        "src/big.rs",
+        Status::Added,
+        &format!("@@ -0,0 +1,7500 @@\n{big}"),
+    ));
+    let mut a = long_session(2000);
+    let open = |a: &mut App, fullscreen: bool| {
+        let prefs = Prefs {
+            fullscreen,
+            ..Prefs::default()
+        };
+        let mut v = Viewer::new("/repo".into(), Some("main"), Source::Working, prefs);
+        v.reload(&a.diff_memory);
+        let seq = v.requests.last().unwrap().seq;
+        v.answer(Response::Diff {
+            seq,
+            lookup: None,
+            base: None,
+            files: Ok(Some(files.clone())),
+        });
+        a.diff = Some(v);
+    };
+    open(&mut a, true);
+    let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    let t = time(1, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report(
+        "diff first frame (201 files)",
+        t,
+        "lays out and colors the rows in view",
+    );
+    let t = time(100, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("diff frame (split, tree)", t, "");
+    let mut n = 0;
+    let t = time(100, || {
+        n += 7;
+        a.diff.as_mut().unwrap().scroll = n;
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report(
+        "diff frame while scrolling",
+        t,
+        "new rows colored each frame",
+    );
+    let v = a.diff.as_mut().unwrap();
+    v.view_override = Some(super::diff_view::View::Unified);
+    let t = time(100, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("diff frame (unified, relaid once)", t, "");
+    // Deep in the big file: its colors are worked out down to there once.
+    let g = a.diff.as_ref().unwrap().now();
+    let end = a.diff.as_ref().unwrap().max_scroll(&g);
+    a.diff.as_mut().unwrap().scroll = end;
+    let t = time(1, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report(
+        "diff jump to the end of 7.5k lines",
+        t,
+        "colors the whole file once",
+    );
+    let t = time(100, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("diff frame at the end", t, "");
+    open(&mut a, false);
+    term.draw(|f| view::draw(f, &a)).unwrap();
+    let t = time(100, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("diff docked beside 2k entries", t, "both panes");
+}

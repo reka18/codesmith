@@ -12,7 +12,7 @@ use syntect::easy::HighlightLines;
 use syntect::parsing::SyntaxSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-fn syntaxes() -> &'static SyntaxSet {
+pub(crate) fn syntaxes() -> &'static SyntaxSet {
     static S: OnceLock<SyntaxSet> = OnceLock::new();
     S.get_or_init(SyntaxSet::load_defaults_newlines)
 }

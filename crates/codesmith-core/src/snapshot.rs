@@ -55,9 +55,13 @@ impl Snapshots {
         Self::new(root, &crate::paths::data_dir().join("snapshot"))
     }
 
-    fn git(&self, args: &[&str]) -> Result<String> {
-        let out = Command::new("git")
-            .env_remove(crate::SERVER_TOKEN_VAR)
+    /// A `git` command on the snapshot repository, set up as every
+    /// snapshot command is (its own git dir and index, the project as the
+    /// work tree, no system config). The diff viewer runs its own diff of
+    /// two trees with it, reading the output in bounded pieces.
+    pub fn command(&self) -> Command {
+        let mut c = Command::new("git");
+        c.env_remove(crate::SERVER_TOKEN_VAR)
             .arg("--git-dir")
             .arg(&self.git_dir)
             .arg("--work-tree")
@@ -70,12 +74,18 @@ impl Snapshots {
                 "-c",
                 "core.safecrlf=false",
             ])
-            .args(args)
             .current_dir(&self.work_tree)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_WORK_TREE");
+        c
+    }
+
+    fn git(&self, args: &[&str]) -> Result<String> {
+        let out = self
+            .command()
+            .args(args)
             .output()
             .context("running git (is it installed?)")?;
         if !out.status.success() {

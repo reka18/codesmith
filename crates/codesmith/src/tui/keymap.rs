@@ -1533,6 +1533,36 @@ pub mod scope {
         "session.line.down",
         "session.first",
         "session.last",
+        "diff.open",
+        "pane.focus.right",
+    ];
+    /// The diff viewer's keys. Its own come before `app.exit` (Ctrl+C
+    /// closes it), so Ctrl+D scrolls half a page there.
+    pub const DIFF: &[&str] = &[
+        "diff.close",
+        "diff.down",
+        "diff.up",
+        "diff.page.down",
+        "diff.page.up",
+        "diff.half_page.down",
+        "diff.half_page.up",
+        "diff.first",
+        "diff.last",
+        "diff.next_hunk",
+        "diff.previous_hunk",
+        "diff.next_file",
+        "diff.previous_file",
+        "diff.mark_reviewed",
+        "diff.toggle_file_tree",
+        "diff.single_patch",
+        "diff.switch_source",
+        "diff.toggle_view",
+        "diff.toggle_fullscreen",
+        "diff.help",
+        "pane.focus.left",
+        "pane.focus.right",
+        "diff.open",
+        "app.exit",
     ];
     pub const PICKER: &[&str] = &[
         "dialog.select.prev",
@@ -1549,7 +1579,7 @@ pub mod scope {
         "permission.allow.always",
         "permission.reject",
     ];
-    pub const ALL: &[&[&str]] = &[AUTOCOMPLETE, PROMPT, PICKER, QUESTION, PERMISSION];
+    pub const ALL: &[&[&str]] = &[AUTOCOMPLETE, PROMPT, DIFF, PICKER, QUESTION, PERMISSION];
 }
 
 fn expand(seq: &[Tok], leader: &[Vec<Stroke>]) -> Vec<Vec<Stroke>> {
