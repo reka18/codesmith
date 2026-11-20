@@ -1111,3 +1111,128 @@ fn copilot_login_needs_a_client_id_of_your_own() {
         "from-flag"
     );
 }
+
+// plugin/provider-{cerebras,kilo,llmgateway,nvidia,zenmux,openrouter,databricks}.test.ts
+
+use codesmith_core::providers::gateways;
+
+fn sent_headers(config: Value, spec: &str) -> Vec<(String, String)> {
+    let c: Config = serde_json::from_value(config).unwrap();
+    c.resolve_model(spec).unwrap().provider.headers
+}
+
+fn get<'a>(h: &'a [(String, String)], k: &str) -> Option<&'a str> {
+    h.iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(k))
+        .map(|(_, v)| v.as_str())
+}
+
+#[test]
+fn oc_cerebras_applies_the_legacy_integration_header() {
+    let h = sent_headers(json!({}), "cerebras/llama-4");
+    assert_eq!(
+        get(&h, "X-Cerebras-3rd-Party-Integration"),
+        Some("codesmith")
+    );
+}
+
+#[test]
+fn oc_cerebras_ignores_non_cerebras_providers() {
+    let h = sent_headers(json!({}), "groq/llama-4");
+    assert_eq!(get(&h, "X-Cerebras-3rd-Party-Integration"), None);
+}
+
+#[test]
+fn oc_cerebras_applies_the_integration_header_to_custom_native_cerebras_providers() {
+    let h = sent_headers(
+        json!({"providers": {"mine": {"settings": {"baseURL": "https://api.cerebras.ai/v1"}}}}),
+        "mine/x",
+    );
+    assert_eq!(
+        get(&h, "X-Cerebras-3rd-Party-Integration"),
+        Some("codesmith")
+    );
+}
+
+#[test]
+fn oc_kilo_applies_legacy_referer_headers_only_to_kilo_endpoints() {
+    let h = gateways::headers("anything", "https://api.kilo.ai/api/gateway");
+    assert_eq!(
+        h,
+        [
+            ("HTTP-Referer", "https://github.com/reka18/codesmith"),
+            ("X-Title", "codesmith")
+        ]
+    );
+    assert!(gateways::headers("kilo", "https://api.kilo.ai/other").is_empty());
+}
+
+#[test]
+fn oc_kilo_uses_endpoint_matching_instead_of_a_provider_id_guard() {
+    let h = sent_headers(
+        json!({"providers": {"my-kilo": {"settings": {"baseURL": "https://api.kilo.ai/api/gateway"}}}}),
+        "my-kilo/x",
+    );
+    assert_eq!(get(&h, "X-Title"), Some("codesmith"));
+}
+
+#[test]
+fn oc_llmgateway_applies_legacy_referer_headers() {
+    let h = gateways::headers("llmgateway", "https://api.llmgateway.io/v1");
+    assert_eq!(h.last(), Some(&("X-Source", "codesmith")));
+}
+
+#[test]
+fn oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin() {
+    let h = sent_headers(
+        json!({"providers": {"nvidia": {"settings": {"baseURL": "https://integrate.api.nvidia.com/v1"}}}}),
+        "nvidia/x",
+    );
+    assert_eq!(get(&h, "X-BILLING-INVOKE-ORIGIN"), Some("CodeSmith"));
+    let h = sent_headers(
+        json!({"providers": {"nvidia": {"settings": {"baseURL": "https://integrate.api.nvidia.com/v1"}, "headers": {"X-BILLING-INVOKE-ORIGIN": "Mine"}}}}),
+        "nvidia/x",
+    );
+    assert_eq!(get(&h, "X-BILLING-INVOKE-ORIGIN"), Some("Mine"));
+}
+
+#[test]
+fn oc_zenmux_lets_configured_legacy_headers_override_defaults() {
+    let h = sent_headers(
+        json!({"providers": {"zenmux": {"settings": {"baseURL": "https://zenmux.ai/api/v1"}, "headers": {"X-Title": "mine", "X-Other": "1"}}}}),
+        "zenmux/x",
+    );
+    assert_eq!(get(&h, "X-Title"), Some("mine"));
+    assert_eq!(get(&h, "X-Other"), Some("1"));
+    assert_eq!(
+        get(&h, "HTTP-Referer"),
+        Some("https://github.com/reka18/codesmith")
+    );
+}
+
+#[test]
+fn oc_openrouter_applies_referer_headers() {
+    let h = sent_headers(json!({}), "openrouter/anthropic/claude-sonnet-4.5");
+    assert_eq!(get(&h, "X-Title"), Some("codesmith"));
+}
+
+#[test]
+fn oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme() {
+    for host in [
+        "adb-1.azuredatabricks.net",
+        "https://adb-1.azuredatabricks.net/",
+    ] {
+        let mut c = Case::new("databricks", json!({}));
+        c.catalog_url = Some("https://${DATABRICKS_HOST}/ai-gateway/mlflow/v1");
+        c.env = env(&[("DATABRICKS_HOST", host)]);
+        assert_eq!(
+            c.ok().base_url,
+            "https://adb-1.azuredatabricks.net/ai-gateway/mlflow/v1",
+            "{host}"
+        );
+    }
+    assert_eq!(
+        providers::builtin("databricks").unwrap().env,
+        ["DATABRICKS_TOKEN"]
+    );
+}

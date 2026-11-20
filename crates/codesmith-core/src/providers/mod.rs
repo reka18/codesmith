@@ -7,6 +7,7 @@
 
 pub mod bedrock;
 pub mod copilot;
+pub mod gateways;
 pub mod vertex;
 
 use codesmith_ai::{Auth, Protocol};
@@ -104,6 +105,8 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         "GitHub Copilot",
         &["COPILOT_GITHUB_TOKEN"],
     ),
+    // DATABRICKS_HOST, which models.dev lists too, only fills the URL.
+    ("databricks", "Databricks", &["DATABRICKS_TOKEN"]),
 ];
 
 /// The provider config a plugin provider starts from.
@@ -126,6 +129,9 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
     }
     if copilot::owns(input) {
         return copilot::route(input).map(Some);
+    }
+    if input.provider_id == gateways::DATABRICKS {
+        return gateways::databricks(input).map(Some);
     }
     Ok(None)
 }

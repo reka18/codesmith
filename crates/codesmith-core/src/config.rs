@@ -1250,6 +1250,7 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
         let mut headers: Vec<(String, String)> = p.headers.into_iter().collect();
+        crate::providers::gateways::apply(pid, &base_url, &mut headers);
         for (k, v) in plugin.iter().flat_map(|r| r.headers.iter()) {
             if !headers.iter().any(|(h, _)| h.eq_ignore_ascii_case(k)) {
                 headers.push((k.clone(), v.clone()));
