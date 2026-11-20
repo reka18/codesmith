@@ -408,7 +408,10 @@ Streams (`lib.rs`, all protocols)
   `CONTINUATION` without a token is an error, a length finish is not
   continued, and usage counts the first request's input with every
   request's output. A blocked prompt now fails at the end of the stream, so a
-  continued request can still finish.
+  continued request can still finish. Not in OpenCode: a request that drops
+  or ends after output its latest checkpoint does not cover is not
+  continued (Gemini would generate that output again, and a repeated call
+  would run twice); it fails retryably so the whole response is retried.
 
 Finish reasons and usage (`lib.rs`, all protocols)
 - A finish carries a `FinishReason` in OpenCode's algebra (`stop`, `length`,

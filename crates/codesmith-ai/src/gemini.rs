@@ -370,6 +370,9 @@ pub struct State {
     /// This request's latest continuation checkpoint and raw finish reason.
     token: Option<String>,
     raw_finish: Option<String>,
+    /// Output arrived after the latest checkpoint: continuing from that
+    /// checkpoint would send it again.
+    past_checkpoint: bool,
     /// Why the prompt was blocked, when it was.
     blocked: Option<String>,
     /// The code execution call awaiting its result.
@@ -526,7 +529,8 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     let finish = c["finishReason"]
         .as_str()
         .filter(|f| *f != "FINISH_REASON_UNSPECIFIED");
-    match c["continuationToken"].as_str() {
+    let checkpoint = c["continuationToken"].as_str();
+    match checkpoint {
         Some(t) => state.token = Some(t.to_string()),
         None if finish.is_some() => state.token = None,
         None => {}
@@ -617,6 +621,17 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
             out.push(Event::TextDelta(t.to_string()));
         }
     }
+    // A checkpoint covers the output of its own chunk.
+    if checkpoint.is_some() {
+        state.past_checkpoint = false;
+    } else if out.iter().any(|e| {
+        matches!(
+            e,
+            Event::TextDelta(_) | Event::ReasoningDelta(_) | Event::ToolCall { .. }
+        )
+    }) {
+        state.past_checkpoint = true;
+    }
     if let Some(f) = finish.filter(|f| *f != CONTINUATION) {
         if FAILED.contains(&f) {
             return Err(Error::Provider {
@@ -642,7 +657,18 @@ pub fn resume(state: &mut State, dropped: bool) -> Result<Option<String>, Error>
     let token = state.token.take();
     let finish = state.raw_finish.take();
     let unfinished = finish.as_deref().is_none_or(|f| f == CONTINUATION);
+    let repeats = std::mem::take(&mut state.past_checkpoint);
     match token {
+        // Gemini would generate the output after the checkpoint again, and
+        // what was already passed on cannot be taken back: a dropped request
+        // fails with its connection error, an ended one as cut short, and
+        // the caller retries the whole response.
+        Some(_) if unfinished && repeats => match dropped {
+            true => Ok(None),
+            false => Err(Error::Transport(
+                "the Gemini response ended past its last checkpoint".into(),
+            )),
+        },
         Some(token) if unfinished => {
             // Usage is cumulative within one request; the next counts anew.
             state.continued.extend(state.usage.take());

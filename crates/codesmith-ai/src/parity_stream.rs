@@ -788,6 +788,51 @@ async fn gemini_response_continuation() {
     assert_eq!(finish_of(&c).0, "stop");
     assert_eq!(c.bodies[1]["continuationToken"], "checkpoint-1");
 
+    // Not in OpenCode (which resumes and repeats the output): output after
+    // the latest checkpoint was already passed on, and a continued request
+    // would generate it again (a call would run twice), so a request that
+    // drops or ends past its checkpoint is not continued; it fails
+    // retryably and the whole response is retried.
+    let replayed = |first: Reply| async {
+        continued(vec![
+            first,
+            Reply::Body(vec![json!({"candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": " THOUSAND"},
+                    {"functionCall": {"id": "call_1", "name": "lookup", "args": {}}},
+                ]},
+                "finishReason": "STOP",
+            }]})]),
+        ])
+        .await
+    };
+    let past = || {
+        vec![
+            text("THIRTEEN", json!({"continuationToken": "checkpoint-1"})),
+            json!({"candidates": [{"content": {"role": "model", "parts": [
+                {"text": " THOUSAND"},
+                {"functionCall": {"id": "call_1", "name": "lookup", "args": {}}},
+            ]}}]}),
+        ]
+    };
+    for first in [Reply::Dropped(past()), Reply::Body(past())] {
+        let c = replayed(first).await;
+        assert_eq!(c.bodies.len(), 1, "not continued");
+        assert!(
+            c.error.as_ref().is_some_and(Error::retryable),
+            "{:?}",
+            c.error
+        );
+        assert_eq!(
+            c.events
+                .iter()
+                .filter(|e| matches!(e, Event::ToolCall { .. }))
+                .count(),
+            1
+        );
+        assert!(!c.events.iter().any(|e| matches!(e, Event::Finish { .. })));
+    }
+
     // gemini :: counts the usage of a dropped request once resumed
     let c = continued(vec![
         Reply::Dropped(vec![
