@@ -12,7 +12,7 @@
 //! prompt sent first reports the finished command itself.
 
 mod app;
-mod attach;
+pub(crate) mod attach;
 #[cfg(test)]
 mod bench;
 mod bridge;

@@ -1311,24 +1311,92 @@ fn prompt_media(
     }))
 }
 
-/// A link the model can follow: a file path to read, or a URL.
+/// A link the model can follow (OpenCode's `linkReference`).
 fn reference(name: &str, uri: &str) -> String {
-    match uri.strip_prefix("file://") {
-        Some(path) => format!("Referenced: {name} ({path})"),
-        None => format!("[{name}]({uri})"),
+    if name.is_empty() {
+        uri.to_string()
+    } else {
+        format!("[{name}]({uri})")
     }
+}
+
+/// `%XX` escapes decoded (and `+` as a space in a query, `plus`).
+fn percent_decode(s: &str, plus: bool) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b'+' if plus => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The local file a link names: a `file://` URL, or a Zed link with a
+/// `path` (OpenCode's `resourceLinkToPart`).
+fn linked_file(uri: &str) -> Option<PathBuf> {
+    if uri.starts_with("file://") {
+        let path = uri.split(['?', '#']).next().unwrap_or(uri);
+        return crate::tui::attach::file_url(path).map(PathBuf::from);
+    }
+    let query = uri.strip_prefix("zed://")?.split_once('?')?.1;
+    let query = query.split('#').next().unwrap_or(query);
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("path="))
+        .and_then(|p| percent_decode(p, true))
+        .filter(|p| Path::new(p).is_absolute())
+        .map(PathBuf::from)
+}
+
+/// A path as a `file://` URL (OpenCode's `pathToFileURL`).
+fn file_uri(path: &str) -> String {
+    let mut out = String::from("file://");
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A prompt's content blocks, made into a message.
+#[derive(Debug, Default, PartialEq)]
+pub struct PromptContent {
+    pub text: String,
+    /// Images and PDFs given inline.
+    pub media: Vec<Media>,
+    /// Local files linked, to attach as the Read tool sees them (with its
+    /// permission checks) when the turn starts.
+    pub files: Vec<PathBuf>,
 }
 
 /// Prompt content blocks as one message and its attachments: text and
 /// embedded text resources join the message, images and binary resources
-/// that are images or PDFs become media (fitted to `limits`), images given
-/// only by URI and resource links are referenced in the text.
-pub fn prompt_content(
-    blocks: &Value,
-    limits: &ImageLimits,
-) -> Result<(String, Vec<Media>), RpcError> {
+/// that are images or PDFs become media (fitted to `limits`), local files
+/// linked (resource links and images given only by a `file://` URI) are
+/// attached when the turn starts, and other links are referenced in the
+/// text.
+pub fn prompt_content(blocks: &Value, limits: &ImageLimits) -> Result<PromptContent, RpcError> {
     let mut parts = Vec::new();
     let mut attached = Vec::new();
+    let mut files = Vec::new();
     for b in blocks.as_array().into_iter().flatten() {
         match b["type"].as_str() {
             Some("text") => parts.push(b["text"].as_str().unwrap_or("").to_string()),
@@ -1355,10 +1423,13 @@ pub fn prompt_content(
                             }
                         }
                     }
-                    (None, Some(u)) => {
-                        let name = uri_name(u).unwrap_or_else(|| "image".into());
-                        parts.push(reference(&name, u));
-                    }
+                    (None, Some(u)) => match linked_file(u) {
+                        Some(f) => files.push(f),
+                        None => {
+                            let name = uri_name(u).unwrap_or_else(|| "image".into());
+                            parts.push(reference(&name, u));
+                        }
+                    },
                     (None, None) => {
                         return Err(invalid(
                             "image content has no data or uri",
@@ -1381,15 +1452,51 @@ pub fn prompt_content(
                     }
                 }
             }
-            Some("resource_link") => parts.push(reference(
-                b["name"].as_str().unwrap_or(""),
-                b["uri"].as_str().unwrap_or(""),
-            )),
+            Some("resource_link") => {
+                let uri = b["uri"].as_str().unwrap_or("");
+                match linked_file(uri) {
+                    Some(f) => files.push(f),
+                    None => parts.push(reference(b["name"].as_str().unwrap_or(""), uri)),
+                }
+            }
             Some(other) => parts.push(format!("[{other} content omitted: not supported]")),
             None => {}
         }
     }
-    Ok((parts.join("\n\n"), attached))
+    Ok(PromptContent {
+        text: parts.join("\n\n"),
+        media: attached,
+        files,
+    })
+}
+
+/// Attach the files a prompt linked, as the TUI attaches `@` mentions:
+/// each goes through `read`'s permission checks (and `external_directory`
+/// outside the project), then joins the message as the Read tool's output,
+/// or as media for images and PDFs. A file that cannot be attached says
+/// why instead.
+fn attach_files(s: &Session, prompt: &mut PromptContent) {
+    for f in std::mem::take(&mut prompt.files) {
+        let shown = f.display().to_string();
+        let attached = s.attach(&shown);
+        let note = crate::tui::attach::attachment(&f, &shown, attached, &mut prompt.media);
+        prompt.text.push_str(&note);
+    }
+}
+
+/// A stored prompt split into what the user typed and the files attached
+/// to it (each by the path the Read tool was called with).
+fn prompt_attachments(text: &str) -> (&str, Vec<String>) {
+    let mut pieces = text.split(crate::tui::attach::MARKER);
+    let typed = pieces.next().unwrap_or("");
+    let files = pieces
+        .filter_map(|p| {
+            let head = p.lines().next()?;
+            let v: Value = serde_json::from_str(head).ok()?;
+            v["filePath"].as_str().map(str::to_string)
+        })
+        .collect();
+    (typed, files)
 }
 
 /// Media as ACP content: images as `image`, anything else as an embedded
@@ -1408,12 +1515,13 @@ fn media_content(m: &Media) -> Option<Value> {
     })
 }
 
-/// A tool result's images as `tool_call_update` content (ACP tool content
-/// carries images, not other binary media).
+/// A tool result's media as `tool_call_update` content: images as image
+/// content, as OpenCode sends them, and other media (PDFs) as embedded
+/// binary resources, which ACP tool content also carries (OpenCode drops
+/// them).
 fn tool_media_content(media: &[Media]) -> Vec<Value> {
     media
         .iter()
-        .filter(|m| m.kind() == codesmith_ai::MediaKind::Image)
         .filter_map(media_content)
         .map(|c| json!({"type": "content", "content": c}))
         .collect()
@@ -1838,7 +1946,19 @@ impl Agent {
                     // The engine's own notes are not the user's prompts.
                     (Role::System, _) => {}
                     (Role::User, Part::Text(t)) if is_prompt(t) => {
-                        self.conn.update(id, chunk("user_message_chunk", mid, t))
+                        // Attached files replay as the links they came as.
+                        let (typed, files) = prompt_attachments(t);
+                        if !typed.is_empty() || files.is_empty() {
+                            self.conn
+                                .update(id, chunk("user_message_chunk", mid, typed));
+                        }
+                        for f in files {
+                            let name = uri_name(&f).unwrap_or_else(|| "file".into());
+                            self.conn.update(
+                                id,
+                                json!({"sessionUpdate": "user_message_chunk", "messageId": mid, "content": {"type": "resource_link", "uri": file_uri(&f), "name": name}}),
+                            );
+                        }
                     }
                     (Role::User, Part::Media(media)) => {
                         if let Some(content) = media_content(media) {
@@ -2173,7 +2293,7 @@ impl Agent {
     async fn prompt(self: &Arc<Self>, rpc: Value, p: &Value) -> Result<(), RpcError> {
         let sid = p["sessionId"].as_str().unwrap_or("").to_string();
         let slot = self.slot(&sid).await?;
-        let (text, attached) = prompt_content(&p["prompt"], &slot.loaded.config.media.image)?;
+        let mut content = prompt_content(&p["prompt"], &slot.loaded.config.media.image)?;
         let Some(mut s) = self.acquire(&slot, &rpc).await? else {
             // Cancelled while queued: the cancel answered.
             return Ok(());
@@ -2185,8 +2305,9 @@ impl Agent {
         let task = tokio::spawn(async move {
             let mut sink = AcpSink::new(me.conn.clone(), &sid, &slot2, compaction, child_updates);
             let title_before = s.title.clone();
+            attach_files(&s, &mut content);
             let result = me
-                .run_turn(&mut s, &slot2, &text, attached, &mut sink)
+                .run_turn(&mut s, &slot2, &content.text, content.media, &mut sink)
                 .await;
             sink.settle();
             #[cfg(test)]
@@ -2682,11 +2803,7 @@ pub async fn run() -> Result<()> {
 /// JSON-RPC test client.
 ///
 /// Not ported, because CodeSmith lacks or deliberately omits the feature:
-/// - audio prompt content, and OpenCode's readable-file attachment of
-///   `resource_link`s and `file://` images without data (CodeSmith
-///   references them in the text, for `read` and its permission checks);
-/// - non-image media in tool results (ACP tool content carries images;
-///   a PDF a tool returned reaches the model but not the client);
+/// - audio prompt content;
 /// - background subagents, and turns woken by them after `end_turn`:
 ///   subagents run inside the parent's turn (child updates and their
 ///   projection into the parent are ported; turns woken by background
@@ -2755,6 +2872,8 @@ mod tests {
     ];
     /// Requests whose prompt carried attachments.
     static MEDIA_REQUESTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+    /// Requests for prompts that link files.
+    static LINKED: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
     /// A scripted model: the latest user message picks the script, and the
     /// tool results since it pick the step.
@@ -2822,6 +2941,9 @@ mod tests {
                         reply(&format!("woke again: {marker}"))
                     }
                 }
+            } else if prompt.contains("linked") {
+                LINKED.lock().unwrap().push(b.clone());
+                reply("linked")
             } else if prompt.contains("delegate") || prompt.contains("nest deeper") {
                 // A subagent that starts one of its own, which reads a file.
                 let (description, task) = if prompt.contains("delegate") {
@@ -4728,6 +4850,98 @@ mod tests {
         assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
     }
 
+    // prompt-content.subprocess.test.ts: "accepts embedded text resource,
+    // inline and remote image, and file resource link prompt content": a
+    // linked file is attached as the Read tool sees it, through its
+    // permission checks, and replays as the link.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_linked_files_are_attached() {
+        let (_d, cwd, base) = tmp().await;
+        let outside = tempfile::tempdir().unwrap();
+        let outside = outside.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("README.md"), "# ACP content smoke\n").unwrap();
+        std::fs::write(outside.join("secret.txt"), "hidden words\n").unwrap();
+        std::fs::write(cwd.join("shot.png"), media::unbase64(PIXEL).unwrap()).unwrap();
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        let cases = [
+            (
+                "linked readme",
+                json!({"type": "resource_link", "uri": file_uri(&cwd.join("README.md").display().to_string()), "name": "README.md", "mimeType": "text/markdown"}),
+            ),
+            (
+                "linked missing",
+                json!({"type": "resource_link", "uri": file_uri(&cwd.join("missing.md").display().to_string()), "name": "missing.md"}),
+            ),
+            (
+                "linked outside",
+                json!({"type": "resource_link", "uri": file_uri(&outside.join("secret.txt").display().to_string()), "name": "secret.txt"}),
+            ),
+            (
+                "linked image",
+                json!({"type": "image", "mimeType": "image/png", "data": "", "uri": file_uri(&cwd.join("shot.png").display().to_string())}),
+            ),
+        ];
+        let mut asked = Vec::new();
+        for (text, link) in &cases {
+            let id = c
+                .call(
+                    "session/prompt",
+                    json!({"sessionId": sid, "prompt": [{"type": "text", "text": text}, link]}),
+                )
+                .await;
+            let (done, _) = c
+                .until(id, |m| {
+                    asked.push(m["params"].clone());
+                    Some(json!({"outcome": {"outcome": "selected", "optionId": "reject"}}))
+                })
+                .await;
+            assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+        }
+        let sent: Vec<String> = LINKED
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b["messages"].to_string())
+            .collect();
+        let find = |what: &str| {
+            sent.iter()
+                .rev()
+                .find(|m| m.contains(what))
+                .cloned()
+                .unwrap_or_else(|| panic!("no request for {what}"))
+        };
+        let readme = find("linked readme");
+        assert!(readme.contains("Called the Read tool"), "{readme}");
+        assert!(readme.contains("1: # ACP content smoke"), "{readme}");
+        assert!(find("linked missing").contains("missing.md"));
+        // Outside the project the client is asked first, and a refusal
+        // keeps the file out.
+        let outside_ask = asked
+            .iter()
+            .find(|a| a["toolCall"]["toolCallId"] == "perm_external_directory")
+            .expect("an external_directory request");
+        assert_eq!(outside_ask["sessionId"], json!(sid));
+        assert!(!find("linked outside").contains("hidden words"));
+        assert!(find("linked image").contains("image_url"));
+        // A loaded session replays the link, not the file's contents.
+        let mut c2 = start(&cwd, &base);
+        let id = c2
+            .call(
+                "session/load",
+                json!({"cwd": cwd, "sessionId": sid, "mcpServers": []}),
+            )
+            .await;
+        let (_, seen) = c2.until(id, |_| None).await;
+        let user = updates(&seen, "user_message_chunk");
+        assert!(user.iter().any(|u| u["content"]["text"] == "linked readme"));
+        assert!(user.iter().any(|u| u["content"]
+            == json!({"type": "resource_link", "uri": file_uri(&cwd.join("README.md").display().to_string()), "name": "README.md"})));
+        assert!(!user.iter().any(|u| u["content"]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("ACP content smoke"))));
+    }
+
     /// A client and a session whose prompt runs a subagent, which runs
     /// one of its own that reads a file (with permission).
     async fn delegate(child_updates: bool) -> (Value, Vec<Value>, Vec<Value>, String) {
@@ -5200,21 +5414,36 @@ mod tests {
     #[test]
     fn content_and_servers() {
         let limits = ImageLimits::default();
-        let (t, m) = prompt_content(
+        let PromptContent {
+            text: t,
+            media: m,
+            files,
+        } = prompt_content(
             &json!([
                 {"type": "text", "text": "look"},
                 {"type": "resource", "resource": {"uri": "file:///p/a.rs", "text": "fn a() {}"}},
-                {"type": "resource_link", "name": "b.rs", "uri": "file:///p/b.rs"},
+                {"type": "resource_link", "name": "b.rs", "uri": "file:///p/b%20c.rs"},
+                {"type": "resource_link", "name": "z", "uri": "zed://file?path=%2Fp%2Fz.rs&x=1"},
+                {"type": "resource_link", "name": "site", "uri": "https://example.com/a"},
+                {"type": "resource_link", "uri": "https://example.com/b"},
                 {"type": "audio", "data": "AAEC", "mimeType": "audio/wav"}
             ]),
             &limits,
         )
         .unwrap();
-        assert_eq!(t, "look\n\n<file uri=\"file:///p/a.rs\">\nfn a() {}\n</file>\n\nReferenced: b.rs (/p/b.rs)\n\n[audio content omitted: not supported]");
+        assert_eq!(t, "look\n\n<file uri=\"file:///p/a.rs\">\nfn a() {}\n</file>\n\n[site](https://example.com/a)\n\nhttps://example.com/b\n\n[audio content omitted: not supported]");
         assert!(m.is_empty());
+        assert_eq!(
+            files,
+            [PathBuf::from("/p/b c.rs"), PathBuf::from("/p/z.rs")]
+        );
         // prompt-content.subprocess.test.ts and prompt.test.ts: inline and
         // remote images, blob resources, and an image with neither.
-        let (t, m) = prompt_content(
+        let PromptContent {
+            text: t,
+            media: m,
+            files,
+        } = prompt_content(
             &json!([
                 {"type": "text", "text": "compare"},
                 {"type": "image", "mimeType": "image/png", "data": PIXEL, "uri": "file:///p/shot.png"},
@@ -5226,7 +5455,8 @@ mod tests {
             &limits,
         )
         .unwrap();
-        assert_eq!(t, "compare\n\n[remote.png](https://example.com/remote.png)\n\nReferenced: local.png (/p/local.png)\n\n[attached resource file:///p/a.bin omitted: binary]");
+        assert_eq!(t, "compare\n\n[remote.png](https://example.com/remote.png)\n\n[attached resource file:///p/a.bin omitted: binary]");
+        assert_eq!(files, [PathBuf::from("/p/local.png")]);
         assert_eq!(
             m,
             vec![
@@ -5259,7 +5489,8 @@ mod tests {
                 Media::base64("application/pdf", "JVBERi0=")
             ]),
             vec![
-                json!({"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": PIXEL}})
+                json!({"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": PIXEL}}),
+                json!({"type": "content", "content": {"type": "resource", "resource": {"uri": "file:///file", "mimeType": "application/pdf", "blob": "JVBERi0="}}}),
             ]
         );
         // session.test.ts: "converts MCP configs"

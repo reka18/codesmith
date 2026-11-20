@@ -105,43 +105,56 @@ pub fn expand(text: &str, cwd: &Path, limits: &ImageLimits) -> Expanded {
     let mut media = Vec::new();
     for m in &found {
         let abs = cwd.join(m);
-        let shown = abs.display().to_string();
         let attached = if abs.is_dir() {
             Ok(None)
         } else {
             codesmith_core::media::attachment(&abs, m, limits)
         };
-        let body = if abs.is_dir() {
-            listing(&abs)
-        } else if let Err(e) = attached {
-            e
-        } else if let Ok(Some(file)) = attached {
-            let note = if file.kind() == codesmith_ai::MediaKind::Pdf {
-                "PDF read successfully"
-            } else {
-                "Image read successfully"
-            };
-            media.push(file);
-            note.to_string()
-        } else {
-            match std::fs::read(&abs) {
-                Ok(bytes) if bytes.contains(&0) => {
-                    format!("{m} is a binary file; its contents are not shown.")
-                }
-                Ok(bytes) => read_text(m, &String::from_utf8_lossy(&bytes)),
-                Err(e) => format!("Unable to read {m}: {e}"),
-            }
-        };
-        out.push_str(MARKER);
-        out.push_str(&serde_json::json!({ "filePath": shown }).to_string());
-        out.push('\n');
-        out.push_str(&body);
+        out.push_str(&attachment(&abs, m, attached, &mut media));
     }
     Expanded {
         text: out,
         media,
         files: found,
     }
+}
+
+/// What a prompt says about the file `abs` attached to it as if the Read
+/// tool had been called on it (`m` names it): `attached` is the file as
+/// media (pushed to `media`), `Ok(None)` to read it as text, or why it
+/// cannot be.
+pub fn attachment(
+    abs: &Path,
+    m: &str,
+    attached: Result<Option<Media>, String>,
+    media: &mut Vec<Media>,
+) -> String {
+    let body = if let Err(e) = attached {
+        e
+    } else if abs.is_dir() {
+        listing(abs)
+    } else if let Ok(Some(file)) = attached {
+        let note = if file.kind() == codesmith_ai::MediaKind::Pdf {
+            "PDF read successfully"
+        } else {
+            "Image read successfully"
+        };
+        media.push(file);
+        note.to_string()
+    } else {
+        match std::fs::read(abs) {
+            Ok(bytes) if bytes.contains(&0) => {
+                format!("{m} is a binary file; its contents are not shown.")
+            }
+            Ok(bytes) => read_text(m, &String::from_utf8_lossy(&bytes)),
+            Err(e) => format!("Unable to read {m}: {e}"),
+        }
+    };
+    let shown = abs.display().to_string();
+    format!(
+        "{MARKER}{}\n{body}",
+        serde_json::json!({ "filePath": shown })
+    )
 }
 
 /// A file waiting to be attached, shown in the prompt as `label`.
@@ -164,7 +177,7 @@ fn is_media_path(p: &Path) -> bool {
 }
 
 /// A `file://` URL as a path (local host only).
-fn file_url(s: &str) -> Option<String> {
+pub fn file_url(s: &str) -> Option<String> {
     let rest = s.strip_prefix("file://")?;
     let path = match rest.strip_prefix("localhost") {
         Some(p) => p,
