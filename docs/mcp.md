@@ -48,6 +48,13 @@ available to the agent. The config shape follows OpenCode's.
   (listing tools, resources and prompts, default 30 s) and `execution` (one
   tool call, default 5 minutes).
 
+A tool call that times out is cancelled on the server
+(`notifications/cancelled`). If a local server's process exits, its tools
+stop being offered and calls to them say the server exited. CodeSmith
+starts it again once, on the next call or before the model's next step;
+if that fails too, the server stays unavailable until the session is
+restarted. (OpenCode marks such a server failed without restarting it.)
+
 `codesmith mcp list` connects to each server and shows its status and tools.
 
 Because a project's `codesmith.json` can add MCP servers, and local servers

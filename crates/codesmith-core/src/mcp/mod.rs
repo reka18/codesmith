@@ -417,6 +417,10 @@ struct Shared {
     prompts_stale: AtomicBool,
     roots: Vec<String>,
     log: Option<PathBuf>,
+    /// Why the connection ended (a stdio server's process exited).
+    exited: Mutex<Option<String>>,
+    /// A reconnect was tried after it ended (only one is).
+    reconnect_tried: AtomicBool,
 }
 
 impl Shared {
@@ -504,12 +508,28 @@ impl Shared {
 
     /// The connection is gone: fail whatever still waits on it.
     fn close(&self, why: &str) {
+        self.exited
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| why.to_string());
         for (_, tx) in self.pending.lock().unwrap().drain() {
             let _ = tx.send(Err(anyhow!("{why}")));
         }
         for (_, tx) in self.streams.lock().unwrap().drain() {
             let _ = tx.send(Err(StreamError::Disconnected(why.into())));
         }
+    }
+}
+
+/// A request awaiting its reply; dropping it forgets the request.
+struct Pending<'a> {
+    shared: &'a Shared,
+    id: u64,
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        self.shared.pending.lock().unwrap().remove(&self.id);
     }
 }
 
@@ -557,6 +577,12 @@ impl Client {
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let (tx, mut rx) = oneshot::channel();
         self.shared.pending.lock().unwrap().insert(id, tx);
+        // Removes the entry however this ends, also when the caller drops
+        // the future (a cancelled turn, a closed event stream).
+        let _pending = Pending {
+            shared: &self.shared,
+            id,
+        };
         let fut = async {
             self.send(&msg).await?;
             if matches!(self.transport, Transport::Http { .. }) {
@@ -567,14 +593,27 @@ impl Client {
             }
             rx.await.map_err(|_| anyhow!("the MCP server exited"))?
         };
-        let r = match timeout_ms {
-            Some(ms) => tokio::time::timeout(Duration::from_millis(ms), fut)
-                .await
-                .unwrap_or_else(|_| Err(anyhow!("{method} timed out after {ms} ms"))),
+        match timeout_ms {
+            Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), fut).await {
+                Ok(r) => r,
+                Err(_) => {
+                    // Tell the server to stop working on it (best effort).
+                    let cancel = json!({"requestId": id, "reason": "timed out"});
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        self.notify("notifications/cancelled", Some(cancel)),
+                    )
+                    .await;
+                    Err(anyhow!("{method} timed out after {ms} ms"))
+                }
+            },
             None => fut.await,
-        };
-        self.shared.pending.lock().unwrap().remove(&id);
-        r
+        }
+    }
+
+    /// Why the connection ended, if it has (a stdio server exited).
+    pub fn exited(&self) -> Option<String> {
+        self.shared.exited.lock().unwrap().clone()
     }
 
     async fn notify(&self, method: &str, params: Option<Value>) -> Result<()> {
@@ -944,15 +983,39 @@ impl Client {
 
 /// Every configured server's client, tools, prompts and status.
 pub struct Mcp {
-    clients: BTreeMap<String, Arc<Client>>,
+    clients: RwLock<BTreeMap<String, Arc<Client>>>,
     pub statuses: BTreeMap<String, Status>,
+    /// What reconnecting a server needs: its config, the project root and
+    /// the default timeouts.
+    configs: BTreeMap<String, ServerConfig>,
+    root: PathBuf,
+    defaults: Timeouts,
+}
+
+/// Connect to one server and list its tools and prompts.
+async fn start(
+    name: &str,
+    server: &ServerConfig,
+    root: &Path,
+    defaults: &Timeouts,
+) -> Result<Arc<Client>> {
+    let c = connect(name, server, root, defaults).await?;
+    let t = c.list_tools().await?;
+    // A broken prompt list should not cost the server its tools.
+    let p = c.list_prompts().await.unwrap_or_default();
+    *c.tools.write().unwrap() = t;
+    *c.prompts.write().unwrap() = p;
+    Ok(c)
 }
 
 impl Mcp {
     pub fn empty() -> Arc<Mcp> {
         Arc::new(Mcp {
-            clients: BTreeMap::new(),
+            clients: RwLock::new(BTreeMap::new()),
             statuses: BTreeMap::new(),
+            configs: BTreeMap::new(),
+            root: PathBuf::new(),
+            defaults: Timeouts::default(),
         })
     }
 
@@ -973,16 +1036,7 @@ impl Mcp {
                 cfg.timeout.clone(),
             );
             pending.push(tokio::spawn(async move {
-                let r = async {
-                    let c = connect(&name, &server, &root, &defaults).await?;
-                    let t = c.list_tools().await?;
-                    // A broken prompt list should not cost the server its tools.
-                    let p = c.list_prompts().await.unwrap_or_default();
-                    *c.tools.write().unwrap() = t;
-                    *c.prompts.write().unwrap() = p;
-                    Ok::<_, anyhow::Error>(c)
-                }
-                .await;
+                let r = start(&name, &server, &root, &defaults).await;
                 (name, r)
             }));
         }
@@ -1002,23 +1056,93 @@ impl Mcp {
                 }
             }
         }
-        Arc::new(Mcp { clients, statuses })
+        Arc::new(Mcp {
+            clients: RwLock::new(clients),
+            statuses,
+            configs: cfg.servers.clone(),
+            root: root.to_path_buf(),
+            defaults: cfg.timeout.clone(),
+        })
     }
 
-    pub fn client(&self, server: &str) -> Option<&Arc<Client>> {
-        self.clients.get(server)
+    /// A server's client while it is connected (a stdio server that exited
+    /// is not).
+    pub fn client(&self, server: &str) -> Option<Arc<Client>> {
+        self.clients
+            .read()
+            .unwrap()
+            .get(server)
+            .filter(|c| c.exited().is_none())
+            .cloned()
+    }
+
+    /// Live clients, by server name.
+    fn live(&self) -> Vec<(String, Arc<Client>)> {
+        self.clients
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, c)| c.exited().is_none())
+            .map(|(n, c)| (n.clone(), c.clone()))
+            .collect()
+    }
+
+    /// Start a server again whose process exited, once per exit. Its tools
+    /// come back if it starts.
+    async fn reconnect(&self, server: &str) -> Option<Arc<Client>> {
+        let old = self.clients.read().unwrap().get(server).cloned()?;
+        if old.exited().is_none() {
+            return Some(old);
+        }
+        if old.shared.reconnect_tried.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        let cfg = self.configs.get(server)?;
+        match start(server, cfg, &self.root, &self.defaults).await {
+            Ok(c) => {
+                self.clients
+                    .write()
+                    .unwrap()
+                    .insert(server.to_string(), c.clone());
+                Some(c)
+            }
+            Err(e) => {
+                *old.shared.exited.lock().unwrap() =
+                    Some(format!("it exited, and restarting it failed: {e:#}"));
+                None
+            }
+        }
+    }
+
+    /// Try once to restart every server whose process exited.
+    async fn reconnect_exited(&self) {
+        let exited: Vec<String> = self
+            .clients
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, c)| {
+                c.exited().is_some() && !c.shared.reconnect_tried.load(Ordering::SeqCst)
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        for s in exited {
+            self.reconnect(&s).await;
+        }
     }
 
     /// Every connected server's tools, by server name.
     pub fn tools(&self) -> Vec<McpTool> {
-        self.clients
-            .values()
-            .flat_map(|c| c.tools.read().unwrap().clone())
+        self.live()
+            .into_iter()
+            .flat_map(|(_, c)| c.tools.read().unwrap().clone())
             .collect()
     }
 
+    /// A tool by name, from any server that offered it (including one that
+    /// has since exited).
     pub fn tool(&self, name: &str) -> Option<McpTool> {
-        self.clients.values().find_map(|c| {
+        self.clients.read().unwrap().values().find_map(|c| {
             c.tools
                 .read()
                 .unwrap()
@@ -1031,9 +1155,9 @@ impl Mcp {
     /// Every connected server's prompts, by server then name.
     pub fn prompts(&self) -> Vec<McpPrompt> {
         let mut all: Vec<McpPrompt> = self
-            .clients
-            .values()
-            .flat_map(|c| c.prompts.read().unwrap().clone())
+            .live()
+            .into_iter()
+            .flat_map(|(_, c)| c.prompts.read().unwrap().clone())
             .collect();
         all.sort_by(|a, b| (&a.server, &a.name).cmp(&(&b.server, &b.name)));
         all
@@ -1041,24 +1165,27 @@ impl Mcp {
 
     /// (server, instructions) for every connected server that gave any.
     pub fn instructions(&self) -> Vec<(String, String)> {
-        self.clients
-            .iter()
-            .filter_map(|(n, c)| c.instructions().map(|i| (n.clone(), i)))
+        self.live()
+            .into_iter()
+            .filter_map(|(n, c)| c.instructions().map(|i| (n, i)))
             .collect()
     }
 
     /// Connected servers that advertise resources.
     pub fn resource_servers(&self) -> Vec<String> {
-        self.clients
-            .iter()
+        self.live()
+            .into_iter()
             .filter(|(_, c)| c.has_resources())
-            .map(|(n, _)| n.clone())
+            .map(|(n, _)| n)
             .collect()
     }
 
-    /// Relist whatever a server announced as changed (`list_changed`).
+    /// Before each model step: restart (once) a server whose process
+    /// exited, and relist whatever a server announced as changed
+    /// (`list_changed`).
     pub async fn refresh(&self) {
-        for c in self.clients.values() {
+        self.reconnect_exited().await;
+        for (_, c) in self.live() {
             if c.shared.tools_stale.swap(false, Ordering::SeqCst) {
                 if let Ok(t) = c.list_tools().await {
                     *c.tools.write().unwrap() = t;
@@ -1090,16 +1217,30 @@ impl Mcp {
         let t = self
             .tool(name)
             .ok_or_else(|| anyhow!("no MCP tool {name}"))?;
-        let c = self
-            .clients
-            .get(&t.server)
-            .ok_or_else(|| anyhow!("MCP server {} is not connected", t.server))?;
+        let c = self.connected_or_restart(&t.server).await?;
         c.call_raw(&t.remote, args).await
     }
 
-    fn connected(&self, server: &str) -> Result<&Arc<Client>> {
-        self.clients
-            .get(server)
+    /// The server's client, restarting it once if its process exited.
+    async fn connected_or_restart(&self, server: &str) -> Result<Arc<Client>> {
+        if let Some(c) = self.client(server) {
+            return Ok(c);
+        }
+        let old = self.clients.read().unwrap().get(server).cloned();
+        let Some(old) = old else {
+            return Err(anyhow!("MCP server {server} is not connected"));
+        };
+        if let Some(c) = self.reconnect(server).await {
+            return Ok(c);
+        }
+        Err(anyhow!(
+            "MCP server {server} is unavailable: {}. Its tools can't be used until CodeSmith reconnects it (restart the session).",
+            old.exited().unwrap_or_else(|| "it exited".into())
+        ))
+    }
+
+    fn connected(&self, server: &str) -> Result<Arc<Client>> {
+        self.client(server)
             .ok_or_else(|| anyhow!("MCP server {server:?} is not connected"))
     }
 
@@ -1114,7 +1255,7 @@ impl Mcp {
                 templates.extend(t);
             }
             None => {
-                for c in self.clients.values() {
+                for (_, c) in self.live() {
                     if let Ok((r, t)) = c.list_resources().await {
                         resources.extend(r);
                         templates.extend(t);
@@ -1205,8 +1346,7 @@ impl Mcp {
         args: Option<&Value>,
     ) -> Result<EventType> {
         let c = self
-            .clients
-            .get(server)
+            .client(server)
             .filter(|c| c.has_events())
             .ok_or_else(|| anyhow!("MCP server {server} is not connected or offers no events"))?;
         let t = c
@@ -1581,6 +1721,98 @@ mod tests {
             ("boom".into(), true)
         );
         assert!(mcp.call("nope", json!({})).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn timed_out_and_dropped_requests_are_forgotten() {
+        let Some(py) = python() else { return };
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {
+            "fake": {"type": "local", "command": [py, fixture("mcp_stdio.py")], "timeout": {"execution": 300}}
+        }}))
+        .unwrap();
+        let mcp = Mcp::connect(&cfg, Path::new("/")).await;
+        let c = mcp.client("fake").unwrap();
+        let pending = || c.shared.pending.lock().unwrap().len();
+        let e = mcp
+            .call("fake_echo", json!({"text": "hang"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("timed out"), "{e}");
+        assert_eq!(pending(), 0);
+        // A call whose caller gives up (a cancelled turn) is forgotten too.
+        let m = mcp.clone();
+        let call = tokio::spawn(async move { m.call("fake_echo", json!({"text": "x"})).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(pending(), 1);
+        call.abort();
+        let _ = call.await;
+        assert_eq!(pending(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_exited_server_is_restarted_once() {
+        let Some(py) = python() else { return };
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {
+            "fake": {"type": "local", "command": [py, fixture("mcp_stdio.py")]}
+        }}))
+        .unwrap();
+        let mcp = Mcp::connect(&cfg, Path::new("/")).await;
+        let e = mcp
+            .call("fake_echo", json!({"text": "crash"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("exited"), "{e}");
+        assert!(
+            mcp.tools().is_empty(),
+            "an exited server's tools are not offered"
+        );
+        assert!(mcp.client("fake").is_none());
+        // The next call (or the next model step's refresh) starts it again.
+        assert_eq!(
+            mcp.call("fake_echo", json!({"text": "back"}))
+                .await
+                .unwrap(),
+            ("echo: back".into(), false)
+        );
+        assert_eq!(mcp.tools().len(), 2);
+        let _ = mcp.call("fake_echo", json!({"text": "crash"})).await;
+        mcp.refresh().await;
+        assert_eq!(mcp.tools().len(), 2, "restarted at the next step");
+
+        // A server that cannot start again stays unavailable, with the reason.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = format!(
+            "import os, runpy, sys\nif os.path.exists({m:?}): sys.exit(3)\nopen({m:?}, 'w').close()\nsys.argv = [{f:?}]\nrunpy.run_path({f:?}, run_name='__main__')",
+            m = marker.display().to_string(),
+            f = fixture("mcp_stdio.py")
+        );
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {
+            "once": {"type": "local", "command": [py, "-c", script], "timeout": {"startup": 2000}}
+        }}))
+        .unwrap();
+        let mcp = Mcp::connect(&cfg, Path::new("/")).await;
+        assert_eq!(mcp.statuses["once"], Status::Connected { tools: 2 });
+        let _ = mcp.call("once_echo", json!({"text": "crash"})).await;
+        let e = mcp
+            .call("once_echo", json!({"text": "hi"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("MCP server once is unavailable"), "{e}");
+        assert!(e.contains("restarting it failed"), "{e}");
+        let again = mcp
+            .call("once_echo", json!({"text": "hi"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            again.contains("unavailable"),
+            "only one restart is tried: {again}"
+        );
+        assert!(mcp.tools().is_empty());
     }
 
     #[tokio::test]

@@ -1,7 +1,8 @@
 """A minimal stdio MCP server for tests: two pages of tools, an echo tool,
 a failing tool, and a ping to the client in the middle of a call. Echoing
-"pixel" also returns a 1x1 PNG as image content."""
-import json, sys
+"pixel" also returns a 1x1 PNG as image content; echoing "crash" exits
+without answering, and "hang" never answers."""
+import json, sys, time
 
 PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
@@ -31,6 +32,11 @@ while True:
         name = m["params"]["name"]
         if name == "echo":
             text = m["params"]["arguments"]["text"]
+            if text == "crash":
+                sys.exit(1)
+            if text == "hang":
+                time.sleep(3)
+                continue
             content = [{"type": "text", "text": "echo: " + text}]
             if text == "pixel":
                 content.append({"type": "image", "data": PIXEL, "mimeType": "image/png"})

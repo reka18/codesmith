@@ -985,7 +985,7 @@ impl Runner {
             }
             Err(e) => return Err(Watch::Fatal(format!("{e:#}"))),
         };
-        let Some(client) = mcp.client(&server).cloned() else {
+        let Some(client) = mcp.client(&server) else {
             return Err(Watch::Broken(format!(
                 "MCP server {server} is not connected"
             )));
