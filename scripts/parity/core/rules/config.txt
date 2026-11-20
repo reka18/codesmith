@@ -6,22 +6,16 @@
 220 :: portable :: agent::resolve :: built-in subagents are denied the subagent tool (S)
 
 @command.test.ts
-11,48 :: feature :: Callback Commands :: plugin commands that run code
 36 :: portable :: command::load :: later command definitions replace earlier ones (S)
 
 @config/agent.test.ts
 35 :: portable :: agent config :: named color tokens ignored (S)
-41,124,134,438,524 :: feature :: Markdown Agent Files :: agents defined as Markdown files with frontmatter (and legacy fields)
-93 :: feature :: Markdown Agent Files :: Markdown agent fields
 145,265 :: portable :: agent::resolve :: home-relative permission paths; global permissions before agent-specific (S)
 158 :: design :: platform :: Windows paths
 175 :: design :: cloud :: remote (well-known) permission defaults
 355 :: portable :: agent::resolve :: configured agent fields mapped; unspecified variant kept (S)
 417 :: portable :: agent::resolve :: a built-in agent disabled by config is removed (S)
 578,613,650,674 :: design :: deliberate :: config.rs: no live reload or file watching
-
-@config/command-subagent.test.ts
-* :: design :: deliberate :: command.rs: no subtask/subagent mode for commands
 
 @config/command.test.ts
 158 :: portable :: command::load :: inline and file commands in config order (S)
@@ -79,7 +73,6 @@
 128 :: design :: deliberate :: skill.rs: disable-model-invocation not supported
 140 :: ported :: src/skill.rs::oc_skill_ids_come_from_the_folder_and_name_defaults_to_it
 180,254 :: portable :: skill::discover :: config entry types map to skill directories; a worktree copy beats the parent checkout's (S)
-216,288 :: feature :: Remote Skills :: downloaded and URL skill sources
 306,340,367,408,432 :: design :: deliberate :: config.rs: no file watching
 
 @flag.test.ts
@@ -119,7 +112,8 @@
 * :: portable :: command::builtin :: built-in init and review commands registered (S)
 
 @plugin/optimize.test.ts
-* :: feature :: Model-lab Prompt Plugins :: per-model prompt optimization plugins
+50,221 :: design :: deliberate :: prompt.rs: the model prompts are built in, not plugins that can be listed or enabled one by one
+276 :: design :: effect-internal :: one model-catalog lookup per step shared across prompt and identity plugins
 
 @plugin/permission-assert.test.ts
 * :: feature :: Plugin Permission API :: plugins asserting permissions
@@ -141,7 +135,6 @@
 * :: feature :: References :: reference sources (Git repositories)
 
 @skill-discovery.test.ts
-* :: feature :: Remote Skills :: downloaded skills
 
 @skill.test.ts
 35,212 :: portable :: skill + permission :: denied skills hidden and refused (S)

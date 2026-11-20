@@ -39,8 +39,8 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Shell tool and runtime | 207 | 87 | 2 | 45 | 58 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 90 | 0 | 11 | 50 | 26 | 0 |
-| Agents | 65 | 4 | 0 | 42 | 11 | 8 | 0 |
-| Skills and commands | 59 | 13 | 0 | 8 | 25 | 13 | 0 |
+| Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
+| Skills and commands | 59 | 26 | 0 | 1 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 13 | 0 | 18 | 127 | 6 | 0 |
 | MCP | 212 | 1 | 0 | 29 | 61 | 121 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **974** | **15** | **861** | **2335** | **1403** | **0** |
+| **Total** | **5588** | **1017** | **15** | **823** | **2334** | **1399** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (861 cases in 65 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (823 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -87,7 +87,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
-| [Markdown Agent Files](#markdown-agent-files) | 22 | agents defined as Markdown files with frontmatter (and legacy fields); Markdown agent fields |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
 | [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
@@ -106,7 +105,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [Hosted (Provider-executed) Tools in Sessions](#hosted-provider-executed-tools-in-sessions) | 11 | provider-executed tool results in the session; provider-executed results replayed inline; … |
 | [Plugin Session API](#plugin-session-api) | 9 | plugins creating child sessions; plugins admitting compaction; … |
-| [Model-lab Prompt Plugins](#model-lab-prompt-plugins) | 9 | per-model prompt optimization plugins |
 | [Session Forking](#session-forking) | 9 | fork a session at a message boundary |
 | [User Shell Commands](#user-shell-commands) | 9 | shell command run as a session message; user-run (`!`) background shells entering context via a completion notice; … |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
@@ -116,7 +114,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 | [Nested Instructions on Read](#nested-instructions-on-read) | 6 | AGENTS.md above a read file injected once |
 | [Skill Mentions](#skill-mentions) | 6 | prepared skills attached to a prompt; skill mentions materialized on their prompt |
 | [Shell Resolution Rules](#shell-resolution-rules) | 6 | shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh) |
-| [Remote Skills](#remote-skills) | 5 | downloaded and URL skill sources; downloaded skills |
 | [Code Mode Tool Placement Policy](#code-mode-tool-placement-policy) | 5 | per-model direct vs Code Mode tool placement under full_codemode |
 | [HTTP Request Hooks](#http-request-hooks) | 4 | plugin hooks on raw HTTP requests/responses |
 | [Old Image Eviction](#old-image-eviction) | 4 | oldest images replaced to cap the retained payload |
@@ -133,7 +130,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 3 | the `opencode` tool (models, worktrees, session moves) |
 | [Video Generation](#video-generation) | 3 | video_generate tool; video jobs |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Callback Commands](#callback-commands) | 2 | plugin commands that run code |
 | [Repository-scoped External Approvals](#repository-scoped-external-approvals) | 2 | an "always" external approval saved at the enclosing repository; external approval saved at the nearest project directory |
 | [Saved Approvals Management](#saved-approvals-management) | 2 | listing, editing and removing saved approvals per project |
 | [Plugin Permission API](#plugin-permission-api) | 2 | plugins asserting permissions |
@@ -538,17 +534,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 - `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
 - `session-error.test.ts`: types the ChatGPT workspace usage limit
 
-### Markdown Agent Files
-
-22 cases.
-
-- `config/agent.test.ts`: keeps schema fields and name out of legacy agent options
-- `config/agent.test.ts`: loads Markdown ${item.name}${native ? " with native request and permissions" : ""} (16 cases)
-- `config/agent.test.ts`: keeps Markdown legacy permission precedence in source order
-- `config/agent.test.ts`: loads Markdown legacy temperature ${variant ? "with" : "without"} a separate variant (2 cases)
-- `config/agent.test.ts`: loads legacy file-based agents from config directories
-- `config/agent.test.ts`: reads agent files that use V2 fields as V2
-
 ### Image Generation
 
 21 cases.
@@ -911,20 +896,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 - `plugin/session-remove.test.ts`: Effect plugins can remove sessions and their children
 - `plugin/session-remove.test.ts`: Promise plugins can remove sessions and their children
 
-### Model-lab Prompt Plugins
-
-9 cases.
-
-- `plugin/optimize.test.ts`: enables prompt plugins without model-specific tool optimization
-- `plugin/optimize.test.ts`: selects model-lab prompts through session context hooks
-- `plugin/optimize.test.ts`: renders the OpenAI prompt without changing tools or project instructions
-- `plugin/optimize.test.ts`: appends the Anthropic prompt to the baseline without changing tools or project instructions
-- `plugin/optimize.test.ts`: uses catalog names in Meta prompts for Muse model IDs
-- `plugin/optimize.test.ts`: preserves tools and an explicit agent system prompt by default
-- `plugin/optimize.test.ts`: allows one model-lab optimization plugin to be enabled independently
-- `plugin/optimize.test.ts`: preserves tools for model aliases and catalog-ID prompt selection by default
-- `plugin/optimize.test.ts`: lists models once per step across prompt and identity plugins
-
 ### Session Forking
 
 9 cases.
@@ -1026,16 +997,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 - `shell.test.ts`: falls back for terminal-only shells when compatibility is required
 - `shell.test.ts`: resolves the environment shell without retaining a removed executable
 - `shell.test.ts`: rejects blacklisted shells case-insensitively
-
-### Remote Skills
-
-5 cases.
-
-- `config/skill.test.ts`: loads directory and individual downloaded skill roots with later-source precedence
-- `config/skill.test.ts`: keeps directory skills when a URL source fails
-- `skill-discovery.test.ts`: downloads safe nested files under the skill root
-- `skill-discovery.test.ts`: refreshes cached files when the version changes
-- `skill-discovery.test.ts`: publishes complete updates and removes stale files
 
 ### Code Mode Tool Placement Policy
 
@@ -1172,13 +1133,6 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
 
-### Callback Commands
-
-2 cases.
-
-- `command.test.ts`: registers and executes callback commands
-- `command.test.ts`: returns callback error messages without stack traces
-
 ### Repository-scoped External Approvals
 
 2 cases.
@@ -1265,7 +1219,7 @@ Missing features, by how many OpenCode test cases each would unlock (861 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1403 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1399 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -1755,30 +1709,22 @@ Tests for behaviour CodeSmith already has but no test pins (1403 cases), by area
 - pending auto-approval skipped after an "always" for a guarded request (S) — `permission`
   - `permission.test.ts`: skips pending auto-approval after always for ${guard} (2 cases)
 
-### Agents (8)
+### Agents (6)
 
 - no custom agents / runtime defaults for created agents (S) — `agent::resolve`
   - `agent.test.ts`: starts without agents
   - `agent.test.ts`: creates agents with runtime defaults and supports direct removal
 - the selected default agent is listed first (S) — `agent::list`
   - `agent.test.ts`: lists the selected default agent first
-- named color tokens ignored (S) — `agent config`
-  - `config/agent.test.ts`: ignores named agent color tokens
 - home-relative permission paths; global permissions before agent-specific (S) — `agent::resolve`
   - `config/agent.test.ts`: matches POSIX paths against home-relative permissions
-- configured agent fields mapped; unspecified variant kept (S) — `agent::resolve`
-  - `config/agent.test.ts`: maps configured agent fields and preserves an unspecified model variant
 - plan reminder injected on switching to plan (S) — `agent::PLAN_REMINDER`
   - `plugin/plan.test.ts`: injects enter and leave reminders on agent switches
 - OpenAI Responses verbosity defaults (S) — `codesmith_ai options`
   - `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
 
-### Skills and commands (13)
+### Skills and commands (11)
 
-- later command definitions replace earlier ones (S) — `command::load`
-  - `command.test.ts`: replaces commands with later definitions
-- inline and file commands in config order (S) — `command::load`
-  - `config/command.test.ts`: loads inline and file-based commands in config order
 - plain content without frontmatter (S) — `skill frontmatter`
   - `config/markdown.test.ts`: parses plain content without frontmatter
 - config entry types map to skill directories; a worktree copy beats the parent checkout's (S) — `skill::discover`
@@ -2131,9 +2077,9 @@ Tests for behaviour CodeSmith already has but no test pins (1403 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 540 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 538 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
-| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 312 |
+| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
@@ -3115,7 +3061,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Agents (15 of 65)</summary>
+<details><summary>Agents (48 of 65)</summary>
 
 
 **`agent.test.ts`**
@@ -3126,24 +3072,52 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`config/agent.test.ts`**
 
+- P ignores named agent color tokens — `tests/oc_agents.rs::oc_agent_ignores_named_agent_color_tokens`
+- P keeps schema fields and name out of legacy agent options — `tests/oc_agents.rs::oc_agent_keeps_schema_fields_and_name_out_of_legacy_agent_options` (adapted: the options are request body fields, with temperature and top_p)
+- P loads Markdown ${item.name}${native ? " with native request and permissions" : ""} ×16 — `tests/oc_agents.rs::oc_agent_loads_markdown_model_selections_with_and_without_native_fields` (adapted: model references are provider/model#variant specs; no request settings)
+- P keeps Markdown legacy permission precedence in source order — `tests/oc_agents.rs::oc_agent_keeps_markdown_legacy_permission_precedence_in_source_order`
+- P loads Markdown legacy temperature ${variant ? "with" : "without"} a separate variant ×2 — `tests/oc_agents.rs::oc_agent_loads_markdown_legacy_temperature_with_and_without_a_variant`
 - D matches Windows paths against home-relative permissions — platform: Windows paths
 - D applies remote permission defaults before explicit global and build rules — cloud: remote (well-known) permission defaults
 - P applies all global permissions before agent-specific permissions — `tests/oc_config.rs::oc_agent_global_permissions_come_before_agent_specific_ones` (without the later-document removal and model fields)
+- P maps configured agent fields and preserves an unspecified model variant — `tests/oc_agents.rs::oc_agent_maps_configured_agent_fields_and_merges_request_maps` (adapted: two config files)
 - P removes a built-in agent disabled by configuration — `tests/oc_config.rs::oc_agent_a_built_in_agent_disabled_by_config_is_removed`
+- P loads legacy file-based agents from config directories — `tests/oc_agents.rs::oc_agent_loads_legacy_file_based_agents_from_config_directories` (adapted: the global config folder and its codesmith.json)
+- P reads agent files that use V2 fields as V2 — `tests/oc_agents.rs::oc_agent_reads_agent_files_that_use_v2_fields_as_v2`
 - D rebuilds agents when a source file is ${testCase.name} · coalesces updates inside the debounce window into one rebuild · rebuilds on a config update published immediately after startup · ignores updates outside agent source directories — deliberate: config.rs: no live reload or file watching
+
+**`plugin/optimize.test.ts`**
+
+- D enables prompt plugins without model-specific tool optimization — deliberate: prompt.rs: the model prompts are built in, not plugins that can be listed or enabled one by one
+- P selects model-lab prompts through session context hooks — `tests/oc_prompts.rs::oc_prompt_selects_model_lab_prompts_by_model_id` (adapted: rebranded prompts chosen by prompt::base_named)
+- P renders the OpenAI prompt without changing tools or project instructions — `tests/oc_prompts.rs::oc_prompt_renders_the_openai_prompt_with_tool_guidance`
+- P appends the Anthropic prompt to the baseline without changing tools or project instructions — `tests/oc_prompts.rs::oc_prompt_appends_the_anthropic_prompt_to_the_baseline`
+- P uses catalog names in Meta prompts for Muse model IDs — `tests/oc_prompts.rs::oc_prompt_uses_model_names_in_meta_prompts_for_muse_models` (adapted: names from config (or the catalog))
+- P preserves tools and an explicit agent system prompt by default — `tests/oc_prompts.rs::oc_prompt_preserves_an_explicit_agent_system_prompt`
+- D allows one model-lab optimization plugin to be enabled independently — deliberate: prompt.rs: the model prompts are built in, not plugins that can be listed or enabled one by one
+- P preserves tools for model aliases and catalog-ID prompt selection by default — `tests/oc_prompts.rs::oc_prompt_selects_by_the_configured_model_id_not_the_api_model` (adapted: CodeSmith reads no model family)
+- D lists models once per step across prompt and identity plugins — effect-internal: one model-catalog lookup per step shared across prompt and identity plugins
 
 </details>
 
-<details><summary>Skills and commands (38 of 59)</summary>
+<details><summary>Skills and commands (47 of 59)</summary>
 
+
+**`command.test.ts`**
+
+- P registers and executes callback commands — `tests/oc_plugin_commands.rs::oc_command_registers_and_executes_callback_commands` (a plugin's Command)
+- P replaces commands with later definitions — `tests/oc_commands.rs::oc_command_replaces_commands_with_later_definitions` (adapted: config layers)
+- P returns callback error messages without stack traces — `tests/oc_plugin_commands.rs::oc_command_registers_and_executes_callback_commands` (in the same test (the plugin registry is process-wide))
 
 **`config/command-subagent.test.ts`**
 
-- D runs ${fixture.name} in the background without switching the parent ×3 · subagent: false overrides subagent mode and the legacy alias — deliberate: command.rs: no subtask/subagent mode for commands
+- P runs ${fixture.name} in the background without switching the parent ×3 — `tests/oc_commands.rs::oc_command_runs_subagent_commands_in_a_child_without_switching_the_parent` (adapted: the child runs to completion and its report joins the parent as an exchange)
+- P subagent: false overrides subagent mode and the legacy alias — `tests/oc_commands.rs::oc_command_subagent_false_overrides_subagent_mode_and_the_legacy_alias` (adapted: the front end switches the session through Command::switches)
 
 **`config/command.test.ts`**
 
 - P interpolates ${JSON.stringify(item.template)} with literal input ${JSON.stringify(item.input)} ×7 — `src/command.rs::oc_command_interpolates_literal_input`
+- P loads inline and file-based commands in config order — `tests/oc_commands.rs::oc_command_loads_inline_and_file_based_commands_in_config_order` (adapted: a project codesmith.json below its .codesmith/ folder; no live reload)
 - D rebuilds commands when a source file is ${testCase.name} · coalesces updates inside the debounce window into one rebuild · rebuilds on a config update published immediately after startup · ignores updates outside command source directories · ConfigCommandPlugin native watcher — deliberate: config.rs: no live reload or file watching
 
 **`config/markdown.test.ts`**
@@ -3156,11 +3130,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D reads disable-model-invocation as autoinvoke — deliberate: skill.rs: disable-model-invocation not supported
 - P parses root and nested skill ids and metadata flags — `src/skill.rs::oc_skill_ids_come_from_the_folder_and_name_defaults_to_it`
+- P loads directory and individual downloaded skill roots with later-source precedence — `tests/oc_skill_remote.rs::oc_skill_loads_directory_and_downloaded_skill_roots_with_later_source_precedence` (adapted: against a local catalog)
+- P keeps directory skills when a URL source fails — `tests/oc_skill_remote.rs::oc_skill_keeps_directory_skills_when_a_url_source_fails` (adapted: an unreachable catalog)
 - D rescans directory sources when watched files change · watches canonical files behind symlinked skills · reloads symlinked sources when their target changes · follows missing source directories as their parents appear · ignores unrelated config updates and coalesces compatibility bursts into one reload — deliberate: config.rs: no file watching
 
 **`plugin/skill.test.ts`**
 
 - D reports canonical configured plugin sources with existing labels and ordering — effect-internal: plugin source labels
+
+**`skill-discovery.test.ts`**
+
+- P downloads safe nested files under the skill root — `tests/oc_skill_remote.rs::oc_skill_discovery_downloads_safe_nested_files_under_the_skill_root`
+- P refreshes cached files when the version changes — `tests/oc_skill_remote.rs::oc_skill_discovery_refreshes_cached_files_when_the_version_changes`
+- P publishes complete updates and removes stale files — `tests/oc_skill_remote.rs::oc_skill_discovery_publishes_complete_updates_and_removes_stale_files`
 
 **`skill.test.ts`**
 

@@ -175,14 +175,19 @@ fn oc_prompt_selects_by_the_configured_model_id_not_the_api_model() {
         )
     };
     type Pick<'a> = &'a dyn Fn(&[&str]) -> String;
-    let cases: [(&str, &str, Pick); 7] = [
+    // OpenCode's family cases set a catalog family CodeSmith does not read;
+    // the id alone picks the default prompt, as there.
+    let cases: [(&str, &str, Pick); 10] = [
         ("gpt-5-alias", "custom-model", &gpt),
         ("gpt-6-alias", "custom-model", &gpt),
         ("gpt-5-astra-alias", "custom-model", &astra),
         ("openai-alias", "GPT-5", &default),
+        ("codex-family-alias", "custom-deployment", &default),
         ("astra-api-alias", "gpt-6-astra", &default),
+        ("astra-family-alias", "custom-deployment", &default),
         ("claude-catalog-alias", "custom-model", &claude),
         ("anthropic-api-alias", "Claude-Opus-4-8", &default),
+        ("anthropic-family-alias", "custom-deployment", &default),
     ];
     for (id, api, want) in cases {
         let s = session(

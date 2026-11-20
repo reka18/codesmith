@@ -306,3 +306,35 @@
 25 :: ported :: tests/oc_providers.rs::oc_openrouter_applies_referer_headers :: adapted: the headers name CodeSmith
 @plugin/provider-databricks.test.ts
 30,38 :: ported :: tests/oc_providers.rs::oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme
+@config/agent.test.ts
+35 :: ported :: tests/oc_agents.rs::oc_agent_ignores_named_agent_color_tokens
+41 :: ported :: tests/oc_agents.rs::oc_agent_keeps_schema_fields_and_name_out_of_legacy_agent_options :: adapted: the options are request body fields, with temperature and top_p
+93 :: ported :: tests/oc_agents.rs::oc_agent_loads_markdown_model_selections_with_and_without_native_fields :: adapted: model references are provider/model#variant specs; no request settings
+124 :: ported :: tests/oc_agents.rs::oc_agent_keeps_markdown_legacy_permission_precedence_in_source_order
+134 :: ported :: tests/oc_agents.rs::oc_agent_loads_markdown_legacy_temperature_with_and_without_a_variant
+355 :: ported :: tests/oc_agents.rs::oc_agent_maps_configured_agent_fields_and_merges_request_maps :: adapted: two config files
+438 :: ported :: tests/oc_agents.rs::oc_agent_loads_legacy_file_based_agents_from_config_directories :: adapted: the global config folder and its codesmith.json
+524 :: ported :: tests/oc_agents.rs::oc_agent_reads_agent_files_that_use_v2_fields_as_v2
+@config/command-subagent.test.ts
+79 :: ported :: tests/oc_commands.rs::oc_command_runs_subagent_commands_in_a_child_without_switching_the_parent :: adapted: the child runs to completion and its report joins the parent as an exchange
+110 :: ported :: tests/oc_commands.rs::oc_command_subagent_false_overrides_subagent_mode_and_the_legacy_alias :: adapted: the front end switches the session through Command::switches
+@config/command.test.ts
+158 :: ported :: tests/oc_commands.rs::oc_command_loads_inline_and_file_based_commands_in_config_order :: adapted: a project codesmith.json below its .codesmith/ folder; no live reload
+@command.test.ts
+11 :: ported :: tests/oc_plugin_commands.rs::oc_command_registers_and_executes_callback_commands :: a plugin's Command
+36 :: ported :: tests/oc_commands.rs::oc_command_replaces_commands_with_later_definitions :: adapted: config layers
+48 :: ported :: tests/oc_plugin_commands.rs::oc_command_registers_and_executes_callback_commands :: in the same test (the plugin registry is process-wide)
+@plugin/optimize.test.ts
+60 :: ported :: tests/oc_prompts.rs::oc_prompt_selects_model_lab_prompts_by_model_id :: adapted: rebranded prompts chosen by prompt::base_named
+112 :: ported :: tests/oc_prompts.rs::oc_prompt_renders_the_openai_prompt_with_tool_guidance
+136 :: ported :: tests/oc_prompts.rs::oc_prompt_appends_the_anthropic_prompt_to_the_baseline
+160 :: ported :: tests/oc_prompts.rs::oc_prompt_uses_model_names_in_meta_prompts_for_muse_models :: adapted: names from config (or the catalog)
+199 :: ported :: tests/oc_prompts.rs::oc_prompt_preserves_an_explicit_agent_system_prompt
+237 :: ported :: tests/oc_prompts.rs::oc_prompt_selects_by_the_configured_model_id_not_the_api_model :: adapted: CodeSmith reads no model family
+@skill-discovery.test.ts
+86 :: ported :: tests/oc_skill_remote.rs::oc_skill_discovery_downloads_safe_nested_files_under_the_skill_root
+111 :: ported :: tests/oc_skill_remote.rs::oc_skill_discovery_refreshes_cached_files_when_the_version_changes
+131 :: ported :: tests/oc_skill_remote.rs::oc_skill_discovery_publishes_complete_updates_and_removes_stale_files
+@config/skill.test.ts
+216 :: ported :: tests/oc_skill_remote.rs::oc_skill_loads_directory_and_downloaded_skill_roots_with_later_source_precedence :: adapted: against a local catalog
+288 :: ported :: tests/oc_skill_remote.rs::oc_skill_keeps_directory_skills_when_a_url_source_fails :: adapted: an unreachable catalog
