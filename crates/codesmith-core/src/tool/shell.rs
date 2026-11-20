@@ -6,13 +6,17 @@
 //!
 //! Before anything runs, the command is split into the commands it would
 //! run (`shell_scan`), and each is checked against the `shell` rules; `cd`
-//! targets outside the project need `external_directory` approval. Output
+//! targets outside the project need `external_directory` approval, and files
+//! redirects write to are checked like the write tool's (`external_directory`,
+//! then `edit`). Input that can run code the scan cannot see (see
+//! [`shell_scan::Analysis::dynamic`]) runs only when no rule could refuse an
+//! arbitrary command, after asking when one could ask. Output
 //! that does not fit the limits is shown from its end, like OpenCode's. A
 //! command stopped at its timeout gets SIGTERM, then SIGKILL after 3 s.
 
 use super::{opt_bool, opt_str, opt_u64, shell_scan, str_arg, Ctx, Outcome, Output};
 use crate::config::ToolOutputConfig;
-use crate::permission::Request;
+use crate::permission::{Denied, Effect, Reply, Request, Rule};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -400,6 +404,115 @@ fn background_text(job: &Job, timed_out: Option<u64>) -> String {
     lines.join("\n")
 }
 
+/// Files the command's redirects write to, resolved against the working
+/// directory and every `cd` target (a relative path may be written after a
+/// `cd`), and the first target that is only known at run time.
+fn write_targets(
+    ctx: &Ctx<'_>,
+    dirs: &[PathBuf],
+    analysis: &shell_scan::Analysis,
+) -> (Vec<super::Target>, Option<String>) {
+    let mut targets: Vec<super::Target> = Vec::new();
+    let mut unknown = None;
+    for w in &analysis.writes {
+        let Some(path) = &w.path else {
+            unknown.get_or_insert_with(|| w.raw.clone());
+            continue;
+        };
+        if path.is_empty() {
+            unknown.get_or_insert_with(|| w.raw.clone());
+            continue;
+        }
+        if matches!(
+            path.as_str(),
+            "/dev/null" | "/dev/stdout" | "/dev/stderr" | "/dev/tty"
+        ) || path.starts_with("/dev/fd/")
+        {
+            continue;
+        }
+        let p = Path::new(path);
+        let bases: Vec<&PathBuf> = if p.is_absolute() {
+            dirs.iter().take(1).collect()
+        } else {
+            dirs.iter().collect()
+        };
+        for base in bases {
+            let t = ctx.resolve(&super::normalize(&base.join(p)).display().to_string());
+            if !targets.iter().any(|x| x.absolute == t.absolute) {
+                targets.push(t);
+            }
+        }
+    }
+    (targets, unknown)
+}
+
+/// How the rules settle `action` for a resource nothing is known about:
+/// the strictest effect any rule could have on it. A rule is a candidate
+/// unless a later rule for every resource (`*`) overrides it.
+fn unknown_effect(rules: &[Rule], action: &str) -> Effect {
+    let relevant: Vec<&Rule> = rules
+        .iter()
+        .filter(|r| crate::wildcard::matches(action, &r.action, false))
+        .collect();
+    let (from, mut effect) = match relevant.iter().rposition(|r| r.resource == "*") {
+        Some(i) => (i, Effect::Allow),
+        None => (0, Effect::Ask),
+    };
+    for r in &relevant[from..] {
+        effect = match (effect, r.effect) {
+            (Effect::Deny, _) | (_, Effect::Deny) => Effect::Deny,
+            (Effect::Ask, _) | (_, Effect::Ask) => Effect::Ask,
+            _ => Effect::Allow,
+        };
+    }
+    effect
+}
+
+/// Allow something the rules cannot see into (code only known at run time,
+/// a write to a computed path) only as far as the rules allow anything:
+/// refuse if a rule could deny it, ask if one could ask. Nothing is saved.
+fn authorize_unknown(
+    ctx: &Ctx<'_>,
+    actions: &[&str],
+    command: &str,
+    title: &str,
+) -> Result<(), String> {
+    let rules = ctx.gate.rules();
+    let mut ask = None;
+    for action in actions {
+        match unknown_effect(&rules, action) {
+            Effect::Deny => {
+                return Err(format!(
+                    "Permission denied: {title}; a rule denies some {action} requests, so it cannot run. Write the command so each part is visible (no computed command names, evaluated strings or arithmetic on variables set from text)."
+                ))
+            }
+            Effect::Ask => {
+                ask.get_or_insert(*action);
+            }
+            Effect::Allow => {}
+        }
+    }
+    let Some(action) = ask else {
+        return Ok(());
+    };
+    let req = Request {
+        action: action.to_string(),
+        resources: vec![command.to_string()],
+        save: Vec::new(),
+        title: title.to_string(),
+    };
+    let asker = ctx.gate.asker();
+    let reply = tokio::task::block_in_place(|| {
+        crate::plugin::active()
+            .permission(&req)
+            .unwrap_or_else(|| asker.ask(&req))
+    });
+    match reply {
+        Reply::Once | Reply::Always => Ok(()),
+        Reply::Reject(feedback) => Err(Denied::Declined { feedback }.to_string()),
+    }
+}
+
 /// Resolve `dir` (as written in a `cd`) against the working directory.
 fn resolve_dir(workdir: &Path, dir: &str) -> PathBuf {
     let p = Path::new(dir);
@@ -432,13 +545,78 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     let mut dirs = vec![dir.clone()];
     dirs.extend(analysis.directories.iter().map(|d| resolve_dir(&dir, d)));
     ctx.authorize_external_dirs(&dirs)?;
-    if !analysis.commands.is_empty() {
-        let (resources, save) = analysis.commands.iter().cloned().unzip();
+    let (targets, unknown_write) = write_targets(ctx, &dirs, &analysis);
+    for t in &targets {
+        ctx.authorize_external(t, false)?;
+    }
+    let (mut resources, mut save): (Vec<String>, Vec<String>) =
+        analysis.commands.iter().cloned().unzip();
+    // Other spellings of what runs (see `Analysis::delegated`) are shown only
+    // when they change the outcome: a deny, or an ask where the command as
+    // written is allowed. Otherwise "always" just saves their rules too.
+    let written_allowed = ctx.gate.allows("shell", &resources);
+    for (r, s) in &analysis.delegated {
+        if resources.contains(r) {
+            continue;
+        }
+        let one = std::slice::from_ref(r);
+        if ctx.check_not_denied("shell", one).is_err() {
+            resources.push(r.clone());
+            save.push(s.clone());
+        } else if !ctx.gate.allows("shell", one) {
+            if written_allowed {
+                resources.push(r.clone());
+            }
+            if !save.contains(s) {
+                save.push(s.clone());
+            }
+        }
+    }
+    if !resources.is_empty() {
         ctx.ask(Request {
             action: "shell".into(),
             resources,
             save,
             title: format!("$ {}", sc.command),
+        })?;
+    }
+    if let Some(reason) = &analysis.dynamic {
+        authorize_unknown(
+            ctx,
+            &["shell"],
+            &sc.command,
+            &format!(
+                "$ {} (cannot be checked command by command: {reason})",
+                sc.command
+            ),
+        )?;
+    }
+    if let Some(raw) = &unknown_write {
+        authorize_unknown(
+            ctx,
+            &["external_directory", "edit"],
+            &sc.command,
+            &format!(
+                "$ {} (writes to {raw}, which is only known when it runs)",
+                sc.command
+            ),
+        )?;
+    }
+    if !targets.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        for t in &targets {
+            for r in &t.resources {
+                if !names.contains(r) {
+                    names.push(r.clone());
+                }
+            }
+        }
+        let shown: Vec<&str> = targets.iter().map(|t| t.resource.as_str()).collect();
+        ctx.ask(Request {
+            action: "edit".into(),
+            resources: names,
+            save: vec!["*".into()],
+            title: format!("$ {} (writes {})", sc.command, shown.join(", ")),
         })?;
     }
     // Approval can outlive the directory, so check it just before spawning.
@@ -820,6 +998,12 @@ mod tests {
     }
 
     fn scripted_with(rules: Vec<Rule>, asker: Scripted) -> (Env, Arc<Scripted>) {
+        // Redirect targets are `edit` requests in CodeSmith (OpenCode only
+        // checks the command); these cases are about the `shell` rules, so
+        // edits are allowed unless a case's own rules say otherwise.
+        let rules = std::iter::once(Rule::new("edit", "*", Effect::Allow))
+            .chain(rules)
+            .collect();
         let asker = Arc::new(asker);
         let env = Env {
             dir: tempfile::tempdir().unwrap(),
@@ -893,11 +1077,17 @@ mod tests {
         assert_eq!(prompts.len(), 3);
         for p in &prompts {
             assert_eq!(p.action, "shell");
+            // CodeSmith: `export` with a value that is not static is a
+            // command of its own (OpenCode skips it); see shell_scan.
             assert_eq!(
                 p.resources,
-                strs(&["printf hello", r#"printf %s "$SCAN_TEST" > marker"#])
+                strs(&[
+                    "export SCAN_TEST=$(printf hello)",
+                    "printf hello",
+                    r#"printf %s "$SCAN_TEST" > marker"#
+                ])
             );
-            assert_eq!(p.save, strs(&["printf *", "printf *"]));
+            assert_eq!(p.save, strs(&["export *", "printf *", "printf *"]));
         }
 
         let (env, _) = scripted(vec![allow("*"), deny("shell", "printf hello")]);
@@ -1825,5 +2015,193 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(jobs.take_finished()[0].ending, Some(Ending::Signaled(15)));
+    }
+
+    // ---------------------------------------------------------------------
+    // CodeSmith security regressions: these ran a denied command (or wrote
+    // a denied file) before the fix. Each runs under every shell present
+    // and checks the marker file was not created.
+    // ---------------------------------------------------------------------
+
+    const SHELLS: [&str; 4] = ["/bin/sh", "/bin/bash", "/bin/zsh", "/opt/homebrew/bin/bash"];
+
+    async fn refused(rules: Vec<Rule>, command: &str, marker: &str) {
+        for shell in SHELLS.iter().filter(|s| has(s)) {
+            let (env, _rec) = Env::recording(rules.clone());
+            let mut ctx = env.ctx();
+            ctx.shell = shell.to_string();
+            let out = sh(&ctx, command).await;
+            let path = env.root().join(marker);
+            assert!(!path.exists(), "{shell}: {command} created {marker}");
+            assert!(out.is_err(), "{shell}: {command}: {out:?}");
+        }
+    }
+
+    fn all_but(action: &str, resource: &str) -> Vec<Rule> {
+        vec![Rule::new("*", "*", Effect::Allow), deny(action, resource)]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_declaration_subscripts_do_not_bypass_a_shell_deny() {
+        for (command, marker) in [
+            ("declare 'a[$(touch P1)]=1'", "P1"),
+            ("typeset 'a[$(touch P2)]=1'", "P2"),
+            ("a=(1); unset 'a[$(touch P3)]'", "P3"),
+        ] {
+            refused(all_but("shell", "*"), command, marker).await;
+            refused(all_but("shell", "touch *"), command, marker).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_arithmetic_does_not_bypass_a_deny() {
+        let rules = vec![
+            Rule::new("*", "*", Effect::Allow),
+            allow("echo *"),
+            allow("true *"),
+            deny("shell", "touch *"),
+        ];
+        for command in [
+            "echo $((0$(touch X)))",
+            "echo \"$((1+$(touch X)))\"",
+            "echo $(( `touch X` ))",
+            "true $((0$(touch X)))",
+            "echo $(( '$(touch X)' ))",
+            "x='a[$(touch X)]'; echo $((x))",
+            "x='a[$(touch X)]'; [[ x -eq 1 ]]",
+            "echo ${x:$(touch X)}",
+            "echo ${x/$(touch X)/}",
+            "cat <<< $(touch X)",
+        ] {
+            refused(rules.clone(), command, "X").await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_delegated_execution_does_not_bypass_a_deny() {
+        for command in [
+            "env touch X",
+            "command touch X",
+            "nohup touch X",
+            "time touch X",
+            "exec touch X",
+            "echo X | xargs touch",
+            "find . -maxdepth 0 -exec touch X ';'",
+            "bash -c 'touch X'",
+            "sh -c 'touch X'",
+            "eval 'touch X'",
+            "trap 'touch X' EXIT",
+            "t''ouch X",
+            "\\touch X",
+            "FOO=1 touch X",
+            "C=touch; $C X",
+            "bash -c \"$(printf 'touch X')\"",
+        ] {
+            refused(all_but("shell", "touch *"), command, "X").await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_redirect_targets_are_checked_like_writes() {
+        refused(all_but("edit", "*"), "echo x > marker", "marker").await;
+        refused(all_but("edit", "marker"), "f=marker; echo x > $f", "marker").await;
+        refused(all_but("edit", "marker"), "echo x > mark*", "marker").await;
+        refused(
+            all_but("edit", "marker"),
+            "bash -c 'echo x > marker'",
+            "marker",
+        )
+        .await;
+        let (_o, out) = outside();
+        let target = out.join("rc");
+        for command in [
+            format!("echo x > '{}'", target.display()),
+            format!("ls >> '{}'", target.display()),
+            format!("echo x 2> '{}'", target.display()),
+        ] {
+            let (env, rec) = Env::recording(base_rules_with(vec![]));
+            rec.deny_action("external_directory");
+            let err = sh(&env.ctx(), &command).await.unwrap_err();
+            assert!(err.contains("declined"), "{command}: {err}");
+            assert_eq!(rec.actions(), ["external_directory"], "{command}");
+            assert!(!target.exists(), "{command}");
+        }
+        // `/dev/null` and descriptor duplication are not writes.
+        let (env, rec) = Env::recording(all_but("edit", "*"));
+        sh(&env.ctx(), "echo x > /dev/null 2>&1").await.unwrap();
+        assert!(rec.actions().is_empty());
+        // Inside the project the default rules allow the write.
+        let (env, rec) = Env::recording(base_rules_with(vec![]));
+        sh(&env.ctx(), "echo x > marker").await.unwrap();
+        assert!(rec.actions().is_empty());
+        assert!(env.root().join("marker").exists());
+    }
+
+    fn base_rules_with(extra: Vec<Rule>) -> Vec<Rule> {
+        let mut r = crate::permission::base_rules();
+        r.extend(extra);
+        r
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_review_agent_cannot_write_or_run_programs() {
+        let review = crate::agent::resolve(&crate::config::Config::default(), "review").unwrap();
+        for (command, marker) in [
+            ("git diff > marker", "marker"),
+            ("ls > marker", "marker"),
+            ("git grep -O'touch X' foo", "X"),
+            ("git diff --output=marker", "marker"),
+            ("git log --output=marker", "marker"),
+            ("git log '--output=marker'", "marker"),
+            ("git -c core.pager='touch X' log", "X"),
+            ("x='a[$(touch X)]'; ls $((x))", "X"),
+        ] {
+            let (env, _rec) = Env::recording(review.permissions.clone());
+            std::process::Command::new("git")
+                .arg("init")
+                .arg("-q")
+                .current_dir(env.root())
+                .status()
+                .unwrap();
+            let out = sh(&env.ctx(), command).await;
+            assert!(out.is_err(), "{command}: {out:?}");
+            assert!(!env.root().join(marker).exists(), "{command}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_dynamic_input_runs_when_nothing_restricts_and_asks_otherwise() {
+        let command = "x=$(printf 2); y=$(cat /dev/null); echo $((x + ${y:-0}))";
+        let (env, rec) = Env::recording(vec![Rule::new("*", "*", Effect::Allow)]);
+        assert_eq!(sh(&env.ctx(), command).await.unwrap().content, "2");
+        assert!(rec.actions().is_empty());
+        let (env, rec) = Env::recording(vec![
+            Rule::new("*", "*", Effect::Allow),
+            Rule::new("shell", "git push *", Effect::Ask),
+        ]);
+        rec.deny_action("shell");
+        let err = sh(&env.ctx(), command).await.unwrap_err();
+        assert!(err.contains("declined"), "{err}");
+        assert_eq!(
+            rec.requests(),
+            [("shell".to_string(), vec![command.to_string()])]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sec_ordinary_commands_still_run_under_a_deny() {
+        let (env, rec) = Env::recording(all_but("shell", "touch *"));
+        for command in [
+            "echo $((1 + 2))",
+            "n=$(printf 3); echo $((n * 2))",
+            "env FOO=1 printf ok",
+            "bash -c 'printf ok'",
+            "export A=1 B; unset A",
+        ] {
+            sh(&env.ctx(), command)
+                .await
+                .unwrap_or_else(|e| panic!("{command}: {e}"));
+        }
+        assert!(rec.actions().is_empty());
     }
 }

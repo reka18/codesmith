@@ -208,8 +208,8 @@ impl Gate {
                 Reply::Once => Ok(()),
                 Reply::Always => {
                     let mut saved = self.saved.lock().unwrap();
-                    for s in &req.save {
-                        saved.push(Rule::new(&req.action, s, Effect::Allow));
+                    for s in safe_saves(req) {
+                        saved.push(Rule::new(&req.action, &s, Effect::Allow));
                     }
                     Ok(())
                 }
@@ -219,14 +219,65 @@ impl Gate {
     }
 }
 
-/// Every agent starts from these (OpenCode's `Agent.Info.default`).
+/// The rules "always" saves for `req`. An `external_directory` approval is
+/// saved for the directory (`<dir>/*`), except when that directory is `/`,
+/// the home directory or above it: approving `~/.zshrc` must not approve all
+/// of `$HOME`. Then the file itself is saved, and a directory not at all.
+fn safe_saves(req: &Request) -> Vec<String> {
+    if req.action != "external_directory" {
+        return req.save.clone();
+    }
+    let home = dirs::home_dir().map(|h| h.display().to_string().replace('\\', "/"));
+    let broad = |base: &str| {
+        let base = base.replace('\\', "/");
+        let base = base.trim_end_matches('/');
+        base.is_empty()
+            || base.contains('*')
+            || base.ends_with(':')
+            || home
+                .as_deref()
+                .is_some_and(|h| h == base || h.starts_with(&format!("{base}/")))
+    };
+    let mut out = Vec::new();
+    for s in &req.save {
+        let base = s.strip_suffix("/*").unwrap_or(s);
+        if s == "*" || broad(base) {
+            for r in &req.resources {
+                if !r.ends_with("/*") && !out.contains(r) {
+                    out.push(r.clone());
+                }
+            }
+        } else if !out.contains(s) {
+            out.push(s.clone());
+        }
+    }
+    out
+}
+
+/// Every agent starts from these (OpenCode's `Agent.Info.default`, with
+/// `external_directory` asking as in OpenCode's original defaults; the
+/// current OpenCode core allows it). CodeSmith's own scratch and tool-output
+/// directories stay allowed.
 pub fn base_rules() -> Vec<Rule> {
-    vec![
+    let mut rules = vec![
         Rule::new("*", "*", Effect::Allow),
+        Rule::new("external_directory", "*", Effect::Ask),
+    ];
+    for dir in [crate::paths::tmp_dir(), crate::paths::tool_output_dir()] {
+        let d = dir.display().to_string();
+        rules.push(Rule::new("external_directory", &d, Effect::Allow));
+        rules.push(Rule::new(
+            "external_directory",
+            &format!("{d}/*"),
+            Effect::Allow,
+        ));
+    }
+    rules.extend([
         Rule::new("read", "*.env", Effect::Ask),
         Rule::new("read", "*.env.*", Effect::Ask),
         Rule::new("read", "*.env.example", Effect::Allow),
-    ]
+    ]);
+    rules
 }
 
 #[cfg(test)]
@@ -277,6 +328,75 @@ mod tests {
         assert_eq!(evaluate("read", ".env.example", &r), Effect::Allow);
         assert_eq!(evaluate("edit", ".env", &r), Effect::Allow);
         assert_eq!(evaluate("shell", "cat .env", &r), Effect::Allow);
+    }
+
+    #[test]
+    fn base_rules_ask_before_leaving_the_project() {
+        let r = base_rules();
+        assert_eq!(evaluate("external_directory", "/etc/*", &r), Effect::Ask);
+        let home = dirs::home_dir().unwrap().display().to_string();
+        assert_eq!(
+            evaluate("external_directory", &format!("{home}/.zshrc"), &r),
+            Effect::Ask
+        );
+        for dir in [crate::paths::tmp_dir(), crate::paths::tool_output_dir()] {
+            let d = dir.display().to_string();
+            assert_eq!(evaluate("external_directory", &d, &r), Effect::Allow);
+            assert_eq!(
+                evaluate("external_directory", &format!("{d}/x/*"), &r),
+                Effect::Allow
+            );
+        }
+        assert_eq!(evaluate("shell", "ls", &r), Effect::Allow);
+    }
+
+    #[test]
+    fn always_never_saves_home_or_root_for_external_access() {
+        let home = dirs::home_dir().unwrap().display().to_string();
+        let saved = |resources: &[String], save: &[String]| {
+            let g = Gate::new(vec![], Arc::new(Fixed(Reply::Always)));
+            g.assert(&Request {
+                action: "external_directory".into(),
+                resources: resources.to_vec(),
+                save: save.to_vec(),
+                title: String::new(),
+            })
+            .unwrap();
+            let out: Vec<String> = g
+                .saved
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.resource.clone())
+                .collect();
+            out
+        };
+        let file = format!("{home}/.zshrc");
+        assert_eq!(
+            saved(std::slice::from_ref(&file), &[format!("{home}/*")]),
+            [file]
+        );
+        assert_eq!(saved(&["/x".into()], &["/*".into()]), ["/x"]);
+        let parent = std::path::Path::new(&home)
+            .parent()
+            .unwrap()
+            .display()
+            .to_string();
+        assert_eq!(
+            saved(&[format!("{parent}/y")], &[format!("{parent}/*")]),
+            [format!("{parent}/y")]
+        );
+        // A directory resource is not saved at all.
+        assert!(saved(&[format!("{home}/*")], &[format!("{home}/*")]).is_empty());
+        // A specific directory is saved as usual.
+        assert_eq!(
+            saved(&[format!("{home}/src/a.rs")], &[format!("{home}/src/*")]),
+            [format!("{home}/src/*")]
+        );
+        assert_eq!(
+            saved(&["/etc/hosts".into()], &["/etc/*".into()]),
+            ["/etc/*"]
+        );
     }
 
     #[test]
@@ -740,19 +860,29 @@ mod tests {
                 exact_effect: Allow,
                 denied_effect: Allow,
             },
+            // CodeSmith: a declaration whose value is not static is checked
+            // as a command (OpenCode skips it), so `export *` rules apply.
             Fixture {
                 command: "export VERSION=$(git describe --tags); npm run build",
-                approved: &["git describe *", "npm run build *"],
-                exact: &["git describe --tags", "npm run build"],
+                approved: &["export *", "git describe *", "npm run build *"],
+                exact: &[
+                    "export VERSION=$(git describe --tags)",
+                    "git describe --tags",
+                    "npm run build",
+                ],
                 denied: "export *",
                 saved: Allow,
                 exact_effect: Allow,
-                denied_effect: Allow,
+                denied_effect: Deny,
             },
             Fixture {
                 command: "export VERSION=$(git describe --tags); npm run build",
-                approved: &["git describe *", "npm run build *"],
-                exact: &["git describe --tags", "npm run build"],
+                approved: &["export *", "git describe *", "npm run build *"],
+                exact: &[
+                    "export VERSION=$(git describe --tags)",
+                    "git describe --tags",
+                    "npm run build",
+                ],
                 denied: "git describe *",
                 saved: Allow,
                 exact_effect: Allow,
@@ -864,11 +994,14 @@ mod tests {
         use Effect::{Allow, Ask};
         let fixtures: &[(&str, &[&str], &str, Effect)] = &[
             ("npm run 123", &["npm run 123 *"], "npm run build", Ask),
+            // CodeSmith: a prefix holding an option is saved exactly, not as
+            // `aws --cli-read-timeout 60 *` (OpenCode), which would cover any
+            // aws command (as `git -c *` covers any git config).
             (
                 "aws --cli-read-timeout 60 s3 ls",
-                &["aws --cli-read-timeout 60 *"],
+                &["aws --cli-read-timeout 60 s3 ls"],
                 "aws --cli-read-timeout 60 ec2 describe-instances",
-                Allow,
+                Ask,
             ),
             (
                 "git $(printf diff) --stat",

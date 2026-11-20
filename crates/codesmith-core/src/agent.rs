@@ -33,6 +33,105 @@ Complete the user's search request efficiently and report your findings clearly.
 
 pub const PLAN_REMINDER: &str = "<system-reminder>\nPlan mode is active. You are in a read-only planning phase: investigate, ask questions, and propose a plan. Do not modify files, change configuration, or run commands that change system state. The edit and write tools are disabled.\n</system-reminder>";
 
+/// Shell commands the review agent may run. No `git grep` (`-O<cmd>` runs a
+/// program, and option bundling defeats a pattern for it); `grep` does that.
+const REVIEW_SHELL: &[&str] = &[
+    "git diff *",
+    "git show *",
+    "git log *",
+    "git blame *",
+    "git status *",
+    "git ls-files *",
+    "git rev-parse *",
+    "git merge-base *",
+    "ls *",
+    "wc *",
+];
+
+/// Shell commands the explore agent may run: the review set plus searching.
+const EXPLORE_SHELL: &[&str] = &[
+    "git diff *",
+    "git show *",
+    "git log *",
+    "git blame *",
+    "git status *",
+    "git ls-files *",
+    "git rev-parse *",
+    "git merge-base *",
+    "git branch",
+    "git branch --list *",
+    "ls *",
+    "wc *",
+    "pwd",
+    "cat *",
+    "head *",
+    "tail *",
+    "grep *",
+    "rg *",
+    "find *",
+    "tree *",
+    "file *",
+    "stat *",
+    "du *",
+    "which *",
+    "basename *",
+    "dirname *",
+    "realpath *",
+    "sort *",
+    "cut *",
+    "tr *",
+];
+
+/// Options that make an allowed read-only command run a program or write a
+/// file: git's `--output` (`--ou` abbreviates it), `--ext-diff`,
+/// `--textconv`, `--no-index` (reads outside the repository), `-c`/`-C`/
+/// `--config-env` overrides; `find -exec`/`-delete`/`-fprint`; `rg --pre`;
+/// `tree -o`; `file -C`; `sort -o`/`--compress-program`; `tail -f` (never
+/// ends). Rules match the command
+/// with quotes removed too, so `'--output'` is caught.
+const READ_ONLY_DENIES: &[&str] = &[
+    "git -*",
+    "git * --ou*",
+    "git * --ext*",
+    "git * --textc*",
+    "git * --no-index*",
+    "git * --exec*",
+    "git * -O*",
+    "git * --open*",
+    "find * -exec*",
+    "find * -ok*",
+    "find * -delete*",
+    "find * -fprint*",
+    "find * -fls*",
+    "rg * --pre*",
+    "tree * -o*",
+    "file * -C*",
+    "file * --compile*",
+    "tail * -f*",
+    "tail * -F*",
+    "tail * --follow*",
+    "sort * -o*",
+    "sort * --o*",
+    "sort * --compress*",
+];
+
+fn read_only_shell(rules: &mut Vec<Rule>, allowed: &[&str]) {
+    for cmd in allowed {
+        rules.push(Rule::new("shell", cmd, Effect::Allow));
+    }
+    for cmd in READ_ONLY_DENIES {
+        rules.push(Rule::new("shell", cmd, Effect::Deny));
+        // `find * -exec*` needs a word before the option; cover it first too.
+        if let Some((head, option)) = cmd.split_once(" * ") {
+            rules.push(Rule::new(
+                "shell",
+                &format!("{head} {option}"),
+                Effect::Deny,
+            ));
+        }
+    }
+}
+
 fn builtin(id: &str) -> Option<Agent> {
     let mut a = Agent {
         id: id.to_string(),
@@ -73,7 +172,6 @@ fn builtin(id: &str) -> Option<Agent> {
             a.system = Some(PROMPT_EXPLORE.into());
             a.permissions.extend([
                 Rule::new("*", "*", Effect::Deny),
-                Rule::new("shell", "*", Effect::Allow),
                 Rule::new("grep", "*", Effect::Allow),
                 Rule::new("glob", "*", Effect::Allow),
                 Rule::new("webfetch", "*", Effect::Allow),
@@ -85,6 +183,10 @@ fn builtin(id: &str) -> Option<Agent> {
                 Rule::new("subagent", "*", Effect::Deny),
                 Rule::new("external_directory", "*", Effect::Allow),
             ]);
+            // OpenCode allows every shell command here and relies on the
+            // prompt; CodeSmith allows read-only ones (writes through
+            // redirects are `edit`, which stays denied).
+            read_only_shell(&mut a.permissions, EXPLORE_SHELL);
         }
         "review" => {
             a.name = "Review".into();
@@ -101,21 +203,7 @@ fn builtin(id: &str) -> Option<Agent> {
                 Rule::new("glob", "*", Effect::Allow),
                 Rule::new("external_directory", "*", Effect::Deny),
             ]);
-            for cmd in [
-                "git diff *",
-                "git show *",
-                "git log *",
-                "git blame *",
-                "git status *",
-                "git grep *",
-                "git ls-files *",
-                "git rev-parse *",
-                "git merge-base *",
-                "ls *",
-                "wc *",
-            ] {
-                a.permissions.push(Rule::new("shell", cmd, Effect::Allow));
-            }
+            read_only_shell(&mut a.permissions, REVIEW_SHELL);
         }
         _ => return None,
     }
@@ -236,6 +324,18 @@ mod tests {
             ("shell", "git push origin main", Effect::Deny),
             ("shell", "rm -rf x", Effect::Deny),
             ("subagent", "general", Effect::Deny),
+            // Options that run programs or write files.
+            ("shell", "git grep -O'touch /tmp/p' foo", Effect::Deny),
+            ("shell", "git grep foo", Effect::Deny),
+            ("shell", "git diff --output=~/.zshrc", Effect::Deny),
+            ("shell", "git log --output=/tmp/x", Effect::Deny),
+            ("shell", "git log -p --out=/tmp/x", Effect::Deny),
+            ("shell", "git diff --ext-diff", Effect::Deny),
+            ("shell", "git show --textconv HEAD", Effect::Deny),
+            ("shell", "git -c core.pager=sh log", Effect::Deny),
+            ("shell", "git diff --no-index /etc/passwd x", Effect::Deny),
+            ("shell", "git log --oneline -5", Effect::Allow),
+            ("edit", "/Users/x/.zshrc", Effect::Deny),
         ] {
             assert_eq!(
                 evaluate(action, res, &rv.permissions),
@@ -250,6 +350,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["general", "explore", "review"]
         );
+    }
+
+    #[test]
+    fn explore_shell_is_read_only() {
+        let ex = resolve(&Config::default(), "explore").unwrap();
+        for (res, want) in [
+            ("git log --oneline", Effect::Allow),
+            ("rg -n foo src", Effect::Allow),
+            ("find . -name '*.rs'", Effect::Allow),
+            ("cat README.md", Effect::Allow),
+            ("find . -exec touch {} ;", Effect::Deny),
+            ("find . -delete", Effect::Deny),
+            ("rg --pre ./evil foo", Effect::Deny),
+            ("find -exec touch {} ;", Effect::Deny),
+            ("tail -f log", Effect::Deny),
+            ("tail my-file.txt", Effect::Allow),
+            ("sort -o out in", Effect::Deny),
+            ("tree -o out", Effect::Deny),
+            ("touch x", Effect::Deny),
+            ("rm -rf x", Effect::Deny),
+            ("npm install", Effect::Deny),
+            ("git grep -Ocmd x", Effect::Deny),
+        ] {
+            assert_eq!(evaluate("shell", res, &ex.permissions), want, "{res}");
+        }
+        assert_eq!(evaluate("edit", "a.rs", &ex.permissions), Effect::Deny);
     }
 
     #[test]

@@ -21,7 +21,7 @@ ${diff}
 ${diff_note}
 
 ## How to review
-- Read the diff, then read the surrounding code in the changed files (and anything they call or are called by) whenever a judgement depends on it. Code that looks wrong in isolation may be correct in context, and the reverse. You can run read-only git commands (`git diff`, `git show`, `git log`, `git blame`, `git grep`) and read any file.
+- Read the diff, then read the surrounding code in the changed files (and anything they call or are called by) whenever a judgement depends on it. Code that looks wrong in isolation may be correct in context, and the reverse. You can run read-only git commands (`git diff`, `git show`, `git log`, `git blame`), search with the grep tool, and read any file.
 - Stay inside your dimension. Other reviewers cover the rest.
 - Only report problems introduced or made reachable by this change. Every finding must point at a changed line or at code the change newly depends on.
 - Only call a tool when it is needed. Assume the tools work.
