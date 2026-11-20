@@ -1262,3 +1262,92 @@ async fn oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command() {
         );
     }
 }
+
+// --- formatter.test.ts ---
+
+fn formatter(setting: Value) -> (codesmith_core::format::Formatter, tempfile::TempDir) {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path().canonicalize().unwrap();
+    let s: codesmith_core::format::Setting = serde_json::from_value(setting).unwrap();
+    (
+        codesmith_core::format::Formatter::new(Some(&s), r.clone(), r),
+        d,
+    )
+}
+
+/// `sh` appending `text` to the file it is given.
+fn append(text: &str) -> Value {
+    json!(["sh", "-c", format!("printf {text} >> \"$0\""), "$FILE"])
+}
+
+/// "matches ${entry.file} against ${extension}: ${matches}" (all ten rows).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_format_matches_files_against_configured_extensions() {
+    for (file, ext, matches) in [
+        ("test.match", ".match", true),
+        ("test.other", ".match", false),
+        ("test.MATCH", ".match", false),
+        ("test.MATCH", ".MATCH", true),
+        (".match", ".match", false),
+        (".match", "", true),
+        ("README", ".match", false),
+        ("README", "", true),
+        ("test.part.match", ".match", true),
+        ("test.part.match", ".part.match", false),
+    ] {
+        let (f, d) =
+            formatter(json!({"matching": {"command": ["true", "$FILE"], "extensions": [ext]}}));
+        let path = d.path().canonicalize().unwrap().join(file);
+        assert_eq!(
+            f.file(&path).await.is_some(),
+            matches,
+            "{file} against {ext:?}"
+        );
+    }
+}
+
+/// "does not run formatters marked as disabled in config"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_format_skips_disabled_formatters() {
+    let (f, d) = formatter(json!({"disabled": {
+        "disabled": true, "command": ["true", "$FILE"], "extensions": [".disabled"]
+    }}));
+    let path = d.path().join("test.disabled");
+    std::fs::write(&path, "").unwrap();
+    assert_eq!(f.file(&path).await, None);
+}
+
+/// "file() returns false when no formatter runs"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_format_returns_none_when_no_formatter_runs() {
+    let (f, d) = formatter(json!(false));
+    let path = d.path().join("test.txt");
+    std::fs::write(&path, "x").unwrap();
+    assert_eq!(f.file(&path).await, None);
+}
+
+/// "stops after the first matching formatter succeeds"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_format_stops_after_the_first_formatter_that_succeeds() {
+    let (f, d) = formatter(json!({
+        "first": {"command": append("A"), "extensions": [".seq"]},
+        "second": {"command": append("B"), "extensions": [".seq"]}
+    }));
+    let path = d.path().join("test.seq");
+    std::fs::write(&path, "x").unwrap();
+    assert_eq!(f.file(&path).await.as_deref(), Some("first"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "xA");
+}
+
+/// "tries the next matching formatter when the first fails"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_format_tries_the_next_formatter_when_the_first_fails() {
+    let (f, d) = formatter(json!({
+        "first": {"command": ["sh", "-c", "exit 1", "$FILE"], "extensions": [".fallback"]},
+        "second": {"command": append("B"), "extensions": [".fallback"]}
+    }));
+    let path = d.path().join("test.fallback");
+    std::fs::write(&path, "x").unwrap();
+    assert_eq!(f.file(&path).await.as_deref(), Some("second"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "xB");
+}
