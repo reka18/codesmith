@@ -23,41 +23,42 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 14 | 0 | 8 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 40 | 0 | 45 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 45 | 0 | 40 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
-| Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
+| Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
 | Tool: apply_patch | 90 | 90 | 0 | 0 | 0 | 0 | 0 |
 | Tools: glob and grep | 39 | 21 | 5 | 0 | 11 | 2 | 0 |
 | Tool: webfetch | 100 | 100 | 0 | 0 | 0 | 0 | 0 |
 | Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
-| Tool registry, schemas, placement | 100 | 23 | 0 | 5 | 53 | 19 | 0 |
+| Tool registry, schemas, placement | 100 | 28 | 0 | 0 | 53 | 19 | 0 |
 | Media tools | 39 | 0 | 0 | 24 | 9 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
-| Shell tool and runtime | 207 | 118 | 2 | 6 | 66 | 15 | 0 |
+| Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
-| Permission | 177 | 92 | 0 | 9 | 50 | 26 | 0 |
+| Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
 | Skills and commands | 59 | 26 | 0 | 1 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
-| Config | 164 | 30 | 0 | 3 | 127 | 4 | 0 |
+| Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
 | MCP | 212 | 17 | 0 | 13 | 61 | 121 | 0 |
-| Code Mode | 67 | 26 | 0 | 3 | 19 | 19 | 0 |
-| Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
+| Code Mode | 67 | 28 | 0 | 1 | 19 | 19 | 0 |
+| Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
-| Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 257 | 0 | 166 | 337 | 36 | 0 |
+| Worktrees, VCS and projects | 158 | 6 | 0 | 21 | 88 | 43 | 0 |
+| Providers, models and credentials | 796 | 272 | 0 | 147 | 341 | 36 | 0 |
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1442** | **15** | **379** | **2357** | **1395** | **0** |
+| **Total** | **5588** | **1496** | **16** | **320** | **2361** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
+- `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
 - `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
 - `session-runner.test.ts`: "rejects compaction ${response} without retrying or committing its draft" (2 cases): the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history. Pinned by `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it`.
@@ -78,7 +79,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (379 cases in 40 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (320 cases in 28 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -87,7 +88,6 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
 | [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
-| [Local Model Discovery](#local-model-discovery) | 19 | discovering LM Studio models and context; discovering local Ollama models and metadata; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
@@ -96,26 +96,15 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [Hosted (Provider-executed) Tools in Sessions](#hosted-provider-executed-tools-in-sessions) | 11 | provider-executed tool results in the session; provider-executed results replayed inline; … |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
-| [Tool-use Policies](#tool-use-policies) | 6 | a deny-only policy layer over permissions (an allow never grants) |
-| [Mercurial VCS](#mercurial-vcs) | 6 | Mercurial project markers; Mercurial support |
 | [Responses Checkpoint Continuation](#responses-checkpoint-continuation) | 6 | WebSocket continuation checkpoints for compaction triggers; compaction across WebSocket recovery without stale response IDs |
-| [Shell Resolution Rules](#shell-resolution-rules) | 6 | shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh) |
-| [Code Mode Tool Placement Policy](#code-mode-tool-placement-policy) | 5 | per-model direct vs Code Mode tool placement under full_codemode |
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
-| [Automation Event Stream Recovery](#automation-event-stream-recovery) | 3 | reconnect with replay from the last committed cursor, pause after repeated failures |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
-| [Config Source Toggles](#config-source-toggles) | 3 | disabling the global config / home-level .claude and agents directories |
-| [Attachment Source Paths](#attachment-source-paths) | 3 | local source paths announced next to provider media |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 3 | the `opencode` tool (models, worktrees, session moves) |
 | [Video Generation](#video-generation) | 3 | video_generate tool; video jobs |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Repository-scoped External Approvals](#repository-scoped-external-approvals) | 2 | an "always" external approval saved at the enclosing repository; external approval saved at the nearest project directory |
-| [Saved Approvals Management](#saved-approvals-management) | 2 | listing, editing and removing saved approvals per project |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
-| [Attachment Deduplication](#attachment-deduplication) | 2 | durable attachment references deduplicate provider media |
-| [Code Mode Progress](#code-mode-progress) | 2 | execute progress rows |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
 | [Per-session Permission Rules](#per-session-permission-rules) | 1 | stored per-session rules inherited by children and forks |
 | [Session Subpath Filter](#session-subpath-filter) | 1 | project sessions filtered by subpath |
@@ -320,30 +309,6 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 - `workspace.test.ts`: tracks active operations and lastActivity across file overrides
 - `workspace.test.ts`: surfaces wake failures during file overrides as Environment.Failed
 
-### Local Model Discovery
-
-19 cases.
-
-- `plugin/provider-lmstudio.test.ts`: is registered as a built-in provider plugin
-- `plugin/provider-lmstudio.test.ts`: discovers local language models with their capabilities and effective context
-- `plugin/provider-lmstudio.test.ts`: refreshes the catalog when LM Studio models change
-- `plugin/provider-lmstudio.test.ts`: discovers from configured endpoints with bearer authentication
-- `plugin/provider-lmstudio.test.ts`: discovers with a key saved through /connect as soon as it is saved
-- `plugin/provider-lmstudio.test.ts`: keeps sending the integration's env key after models load
-- `plugin/provider-lmstudio.test.ts`: shares discovery requests across plugin instances
-- `plugin/provider-lmstudio.test.ts`: replaces the credential-gated Models.dev catalog when discovery succeeds
-- `plugin/provider-ollama.test.ts`: skips unconfigured default local discovery when the location has no local execution plane
-- `plugin/provider-ollama.test.ts`: discovers local completion models and native metadata
-- `plugin/provider-ollama.test.ts`: refreshes changed digests and retains inventory through transient failures
-- `plugin/provider-ollama.test.ts`: replaces and restores the same-ID Models.dev provider
-- `plugin/provider-ollama.test.ts`: reloads layered endpoint and bearer authentication settings
-- `plugin/provider-vllm.test.ts`: waits for readiness and discovers official vLLM model metadata
-- `plugin/provider-vllm.test.ts`: waits for a slow endpoint instead of dropping its models
-- `plugin/provider-vllm.test.ts`: does not report a replaced endpoint's failure against the new one
-- `plugin/provider-vllm.test.ts`: refreshes inventory while retaining the last success through transient failures
-- `plugin/provider-vllm.test.ts`: replaces and restores same-ID Models.dev entries after an empty success
-- `plugin/provider-vllm.test.ts`: reloads layered custom endpoint and bearer authentication settings
-
 ### OAuth Provider Logins
 
 18 cases.
@@ -480,28 +445,6 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 - `generate.test.ts`: returns a typed error for an invalid request instead of crashing
 - `generate.test.ts`: rejects models of another type and unknown models
 
-### Tool-use Policies
-
-6 cases.
-
-- `config/policy.test.ts`: preserves last-match precedence for tool.use without granting approvals
-- `config/policy.test.ts`: matches tool.use file policies without case where file systems ignore it by default
-- `config/policy.test.ts`: denies permissions matched as action:resource
-- `config/policy.test.ts`: turns an ask into a deny but never grants
-- `config/policy.test.ts`: lets a later allow lift an earlier broad deny
-- `config/policy.test.ts`: denies every permission with a bare wildcard
-
-### Mercurial VCS
-
-6 cases.
-
-- `project.test.ts`: prefers git when both git and mercurial metadata exist
-- `project.test.ts`: prefers the nearest mercurial marker over an outer git repository
-- `project.test.ts`: prefers the nearest git marker over an outer mercurial repository
-- `project.test.ts`: returns global id for unreadable mercurial metadata
-- `vcs-hg.test.ts`: Mercurial rejects unsupported review modes and bases without requiring hg
-- `vcs-hg.test.ts`: Vcs mercurial
-
 ### Responses Checkpoint Continuation
 
 6 cases.
@@ -510,27 +453,6 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 - `session-checkpoint-transport.test.ts`: invalid trigger output does not retry or commit a continuation checkpoint
 - `session-checkpoint-transport.test.ts`: trigger recovers over SSE with complete input after the old socket closes and reconnect is rejected
 - `session-compaction-transport.test.ts`: compaction survives ${recovery} without stale response IDs (3 cases)
-
-### Shell Resolution Rules
-
-6 cases.
-
-- `shell.test.ts`: normalizes shell names
-- `shell.test.ts`: detects login shells
-- `shell.test.ts`: falls back when configured shell cannot be resolved
-- `shell.test.ts`: falls back for terminal-only shells when compatibility is required
-- `shell.test.ts`: resolves the environment shell without retaining a removed executable
-- `shell.test.ts`: rejects blacklisted shells case-insensitively
-
-### Code Mode Tool Placement Policy
-
-5 cases.
-
-- `tool-model-policy.test.ts`: treats Anthropic, Claude, and claude-agent models as strong when fullCodeMode is on
-- `tool-model-policy.test.ts`: hides glob, grep, and webfetch for every model when fullCodeMode is on
-- `tool-model-policy.test.ts`: keeps non-strong and absent models direct when fullCodeMode is on, hiding websearch when unavailable
-- `tool-model-policy.test.ts`: keeps strong-model tools direct when full_codemode is off
-- `tool-model-policy.test.ts`: places tools per model, propagates Code Mode to MCP instructions, and uses configured ref fallback
 
 ### Mid-session Effort Switch
 
@@ -559,14 +481,6 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 - `session-view.test.ts`: rejects an unknown session
 - `session-view.test.ts`: replays viewed state into a fresh database
 
-### Automation Event Stream Recovery
-
-3 cases.
-
-- `automation-event.test.ts`: a broken stream opens on the replacement connection, replaying from the last committed event
-- `automation-event.test.ts`: reopens after four healthy streams disconnect, each from its last committed cursor
-- `automation-event.test.ts`: pauses after three consecutive reconnects without confirmed stream output
-
 ### Browser Attachment
 
 3 cases.
@@ -574,22 +488,6 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 - `browser-attach.test.ts`: a replaced attachment's revoke never removes its replacement's grant
 - `browser-attach.test.ts`: disposing the plugin revokes the browser rules before the location finishes closing
 - `browser-idle.test.ts`: idle eviction ends the browser attachment and permits a fresh attachment
-
-### Config Source Toggles
-
-3 cases.
-
-- `config/config.test.ts`: excludes home-level claude and agents directories when global is disabled
-- `config/config.test.ts`: excludes global config reached through the project walk when global is disabled
-- `config/config.test.ts`: excludes missing files under symlinked global roots when global is disabled
-
-### Attachment Source Paths
-
-3 cases.
-
-- `session-runner-message.test.ts`: exposes admitted local image source paths before provider media
-- `session-runner-message.test.ts`: falls back to attachment names for invalid local source paths
-- `session-runner-message.test.ts`: does not add attachment location text for non-local provider media
 
 ### OpenCode Self-management Tool
 
@@ -615,40 +513,12 @@ Missing features, by how many OpenCode test cases each would unlock (379 cases i
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
 
-### Repository-scoped External Approvals
-
-2 cases.
-
-- `file-access-path.test.ts`: saves external approval at the enclosing repository on the host filesystem
-- `tool-write.test.ts`: saves external directory approval at the nearest project directory
-
-### Saved Approvals Management
-
-2 cases.
-
-- `permission.test.ts`: stores and removes saved resources for a project
-- `permission.test.ts`: edits saved approvals and enforces the edited rule
-
 ### Freeform Tool Formats
 
 2 cases.
 
 - `session-model-request-hooks.test.ts`: advertises only supported freeform formats without removing tools or changing the shared definitions
 - `tool-execute.test.ts`: execute takes raw code as freeform text, and Code Mode calls freeform tools with a string
-
-### Attachment Deduplication
-
-2 cases.
-
-- `session-runner-message.test.ts`: deduplicates provider media while preserving durable attachment references
-- `session-runner-message.test.ts`: preserves provider media with distinct labels or URI sources
-
-### Code Mode Progress
-
-2 cases.
-
-- `tool-execute.test.ts`: execute sends at most one progress update per 100 ms with the latest rows
-- `tool-execute.test.ts`: interrupted execute sends its latest progress rows before it settles
 
 ### Built-in Skills
 
@@ -1538,8 +1408,8 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 548 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 685 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 551 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 332 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
@@ -1892,7 +1762,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (209 of 308)</summary>
+<details><summary>Sessions and their store (214 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -2004,6 +1874,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D leaves out the recent context of a checkpoint that kept none — deliberate: compaction.rs: the kept tail stays as real messages
 - P lowers each prepared skill once before the prompt — `tests/oc_session_skill_mention.rs::oc_session_lowers_each_mentioned_skill_once_before_the_prompt`
 - P does not inject skill content for reference-only attachments — `tests/oc_session_skill_mention.rs::oc_session_does_not_inject_skill_content_for_mere_references` (adapted: a reference is an @word that is not a mention)
+- P exposes admitted local image source paths before provider media — `tests/oc_attachments.rs::oc_runner_message_exposes_admitted_local_image_source_paths_before_provider_media` (adapted: the announcement is part of the stored user message (`Session::prompt_attached`; the server's path attachments))
+- P falls back to attachment names for invalid local source paths — `tests/oc_attachments.rs::oc_runner_message_falls_back_to_attachment_names_for_invalid_local_source_paths` (adapted: the media part keeps its name; directory attachments are a separate group)
+- P does not add attachment location text for non-local provider media — `tests/oc_attachments.rs::oc_runner_message_does_not_add_attachment_location_text_for_non_local_provider_media`
+- P deduplicates provider media while preserving durable attachment references — `tests/oc_attachments.rs::oc_runner_message_deduplicates_provider_media_while_preserving_durable_attachment_references` (adapted: the duplicate is left out of the stored user message)
+- P preserves provider media with distinct labels or URI sources — `tests/oc_attachments.rs::oc_runner_message_preserves_provider_media_with_distinct_labels_or_uri_sources`
 - D replays flat state under an OpenCode hosted model's route key — cloud: OpenCode hosted model route key
 - D retries a failed stream from its last local call that ran — deliberate: runner.rs: tools run after the stream ends, a failed stream is retried from the prompt
 - P omits unfinished reasoning from an interrupted assistant message — `src/runner.rs::oc_session_message_omits_reasoning_only_assistant_turns`
@@ -2140,7 +2015,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool: write (12 of 19)</summary>
+<details><summary>Tool: write (13 of 19)</summary>
 
 
 **`file-mutation.test.ts`**
@@ -2156,6 +2031,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P accepts an absolute file path inside the active Location — `tests/oc_tools.rs::oc_write_accepts_an_absolute_path_inside_the_project`
 - D writes an external symlink target with only its in-location permission — deliberate: CodeSmith follows the link and asks external_directory for its target (tests/oc_tools.rs::oc_write_external_symlink_target_needs_external_approval pins it)
 - P approves an explicit external absolute path before edit — `tests/oc_tools.rs::oc_write_approves_an_external_path_before_edit` (adapted: names the file, saves its folder)
+- P saves external directory approval at the nearest project directory — `tests/oc_external_approvals.rs::oc_write_saves_external_directory_approval_at_the_nearest_project_directory` (adapted: the request names the file; the saved approval is the repository's)
 - P does not write when external_directory or edit approval is denied — `tests/oc_tools.rs::oc_write_does_not_write_when_denied`
 - D creates a new unformatted file without span failures or post-write reads — effect-internal: tracing spans and post-write reads
 
@@ -2424,7 +2300,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool registry, schemas, placement (76 of 100)</summary>
+<details><summary>Tool registry, schemas, placement (81 of 100)</summary>
 
 
 **`plugin/tool-input-repair-integration.test.ts`**
@@ -2456,7 +2332,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - P gives GPT-5+ patch and leaves file tools, shell, and websearch in Code Mode when fullCodeMode is on — `src/tool/apply_patch_tests.rs::oc_model_policy_gives_gpt_5_and_later_patch`
 - P keeps edit and write instead of patch for gpt-4 and gpt-oss models — `src/tool/apply_patch_tests.rs::oc_model_policy_keeps_edit_and_write_instead_of_patch_for_gpt_4_and_gpt_oss_models`
+- P treats Anthropic, Claude, and claude-agent models as strong when fullCodeMode is on — `tests/oc_tool_placement.rs::oc_model_tools_treats_anthropic_claude_and_claude_agent_models_as_strong_when_full_code_mode_is_on`
+- P hides glob, grep, and webfetch for every model when fullCodeMode is on — `tests/oc_tool_placement.rs::oc_model_tools_hides_glob_grep_and_webfetch_for_every_model_when_full_code_mode_is_on`
 - P needs no demotion when fullCodeMode is off while still applying patch and websearch rules — `src/tool/apply_patch_tests.rs::oc_model_policy_needs_no_demotion_when_full_code_mode_is_off_while_still_applying_patch_rules`
+- P keeps non-strong and absent models direct when fullCodeMode is on, hiding websearch when unavailable — `tests/oc_tool_placement.rs::oc_model_tools_keeps_non_strong_and_absent_models_direct_when_full_code_mode_is_on_hiding_websearch_when_unavailable`
+- P keeps strong-model tools direct when full_codemode is off — `tests/oc_tool_placement.rs::oc_select_keeps_strong_model_tools_direct_when_full_codemode_is_off`
+- P places tools per model, propagates Code Mode to MCP instructions, and uses configured ref fallback — `tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode` (adapted: `full_codemode` in config; MCP instruction wording and an unavailable model's ref fallback are not covered)
 
 **`tool-registry.test.ts`**
 
@@ -2496,7 +2377,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell tool and runtime (186 of 207)</summary>
+<details><summary>Shell tool and runtime (192 of 207)</summary>
 
 
 **`persistent-pty-daemon.test.ts`**
@@ -2596,8 +2477,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`shell.test.ts`**
 
+- P normalizes shell names — `tests/oc_shell_select.rs::oc_shell_normalizes_shell_names`
+- P detects login shells — `tests/oc_shell_select.rs::oc_shell_detects_login_shells`
+- P falls back when configured shell cannot be resolved — `tests/oc_shell_select.rs::oc_shell_falls_back_when_configured_shell_cannot_be_resolved`
+- P falls back for terminal-only shells when compatibility is required — `tests/oc_shell_select.rs::oc_shell_falls_back_for_terminal_only_shells_when_compatibility_is_required`
 - F builds command args per shell family — `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command` (POSIX families; Zsh now gets `+o nomatch`)
 - F passes an unmatched zsh glob through to the command — `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command` (an unmatched glob failed the whole Zsh line)
+- P resolves the environment shell without retaining a removed executable — `tests/oc_shell_select.rs::oc_shell_resolves_the_environment_shell_without_retaining_a_removed_executable`
+- P rejects blacklisted shells case-insensitively — `tests/oc_shell_select.rs::oc_shell_rejects_blacklisted_shells_case_insensitively` (adapted: names compare case-insensitively on every platform)
 - D normalizes Git Bash shell paths from env · resolves /usr/bin/bash from env to Git Bash · resolves bare bash to Git Bash before PATH · resolves bare PowerShell shells · resolves a configured app execution alias — platform: Windows / Git Bash / PowerShell / app execution aliases
 
 **`tool-shell.test.ts`**
@@ -2783,17 +2670,26 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Permission (142 of 177)</summary>
+<details><summary>Permission (151 of 177)</summary>
 
 
 **`config/policy.test.ts`**
 
-- D organization tool.use policy overrides authored policy · filters plugin-provided providers with ordered wildcard policies — cloud: organization / Console / integration policies
+- P preserves last-match precedence for tool.use without granting approvals — `tests/oc_policy.rs::oc_policy_preserves_last_match_precedence_for_tool_use_without_granting_approvals`
+- D organization tool.use policy overrides authored policy — cloud: organization / Console / integration policies
+- P matches tool.use file policies without case where file systems ignore it by default — `tests/oc_policy.rs::oc_policy_matches_tool_use_file_policies_without_case_where_file_systems_ignore_it_by_default` (adapted: an authored policy (organization policies are OpenCode Console's))
+- D filters plugin-provided providers with ordered wildcard policies — cloud: organization / Console / integration policies
 - D prevents project policy from overriding user-global policy — deliberate: config.rs: project rules come after (and so override) global ones
-- D reloads changed policies · lets organization provider statements override authored documents · lets an organization allow restore a provider denied by the user · names the organization when its permission statement decides: ${input.organization} ×2 · rebuilds the catalog when the organization's policy changes · requires one Console organization through MDM policy alone · keeps an integration's account out of a bare-ID allow · decides a well-known origin's providers by the origin: ${effect} ×2 · removes built-in and plugin web search providers that websearch.use denies · converts legacy statements in Console config before enforcement sees them — cloud: organization / Console / integration policies
+- D reloads changed policies — cloud: organization / Console / integration policies
+- P denies permissions matched as action:resource — `tests/oc_policy.rs::oc_policy_denies_permissions_matched_as_action_resource`
+- P turns an ask into a deny but never grants — `tests/oc_policy.rs::oc_policy_turns_an_ask_into_a_deny_but_never_grants`
+- P lets a later allow lift an earlier broad deny — `tests/oc_policy.rs::oc_policy_lets_a_later_allow_lift_an_earlier_broad_deny`
+- P denies every permission with a bare wildcard — `tests/oc_policy.rs::oc_policy_denies_every_permission_with_a_bare_wildcard`
+- D lets organization provider statements override authored documents · lets an organization allow restore a provider denied by the user · names the organization when its permission statement decides: ${input.organization} ×2 · rebuilds the catalog when the organization's policy changes · requires one Console organization through MDM policy alone · keeps an integration's account out of a bare-ID allow · decides a well-known origin's providers by the origin: ${effect} ×2 · removes built-in and plugin web search providers that websearch.use denies · converts legacy statements in Console config before enforcement sees them — cloud: organization / Console / integration policies
 
 **`file-access-path.test.ts`**
 
+- P saves external approval at the enclosing repository on the host filesystem — `tests/oc_external_approvals.rs::oc_file_access_saves_external_approval_at_the_enclosing_repository_on_the_host_filesystem`
 - D stats and finds the repository through the Location's Environment driver — client-server: Location Environment driver
 - D ignores unknown path input fields — effect-internal: schema input decoding
 - D normalizes Windows shell drive path %s before resolution ×4 — platform: Windows drive paths
@@ -2818,6 +2714,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P resolves an asked permission once — `src/permission.rs::oc_permission_resolves_an_asked_permission_once`
 - D shows a nested call's request on its parent's row until the scope closes · drops undefined metadata values so pending requests encode as JSON — client-server: pending-request rows and JSON encoding
 - P defects when an asked permission is declined — `src/permission.rs::oc_permission_declining_fails_the_request`
+- P stores and removes saved resources for a project — `tests/oc_saved_approvals.rs::oc_permission_stores_and_removes_saved_resources_for_a_project` (adapted: kept in the session database per project; `codesmith permissions` and `/permissions/saved` list and remove them)
+- P edits saved approvals and enforces the edited rule — `tests/oc_saved_approvals.rs::oc_permission_edits_saved_approvals_and_enforces_the_edited_rule`
 - P ${fixture.name}: ${scenario.name} ×72 — `src/permission.rs::oc_permission_shell_scanner_impact` (Bash/Zsh fixtures)
 - D ${fixture.name}: ${scenario.name} ×24 — platform: PowerShell fixtures
 - P ${fixture.name}: always allow covers repeat execution and narrows prefix scope ×5 — `src/permission.rs::oc_permission_always_covers_repeats_and_narrows_prefix_scope` (Bash fixtures)
@@ -3021,17 +2919,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Config (157 of 164)</summary>
+<details><summary>Config (160 of 164)</summary>
 
 
 **`config/config.test.ts`**
 
+- P excludes home-level claude and agents directories when global is disabled — `tests/oc_config_sources.rs::oc_config_excludes_home_level_claude_and_agents_directories_when_global_is_disabled` (adapted: `$CODESMITH_DISABLE_GLOBAL_CONFIG`; skills, commands and instructions (CodeSmith watches no config folders))
+- P excludes global config reached through the project walk when global is disabled — `tests/oc_config_sources.rs::oc_config_excludes_global_config_reached_through_the_project_walk_when_global_is_disabled`
 - P discovers the global config directory once when the project walk reaches it — `src/config.rs::oc_config_loads_the_global_config_once_when_the_project_walk_reaches_it`
 - D loads system configuration at highest priority · resolves the system configuration directory per platform · resolves macOS managed preferences with user-specific profiles first · strips MDM payload metadata from managed preferences — deliberate: config.rs: no system, MDM, well-known or integration config
 - P loads explicit file and content overrides in priority order — `src/config.rs::oc_config_loads_explicit_file_and_content_overrides_in_priority_order`
 - D layers integration documents below remote and user config and reloads when they change · ranks integration policies below managed policies and above user and project policies · keeps only the policies of documents from integrations managed policy denies — deliberate: config.rs: no system, MDM, well-known or integration config
 - P skips project configuration when project discovery is disabled — `src/config.rs::oc_config_skips_project_configuration_when_project_discovery_is_disabled`
-- D reloads file substitutions when their source changes · exposes filesystem updates under config roots through changes · does not reload when an unrelated file under a config root changes · reloads canonical events for a symlinked global root, even after removal · reloads ${source} config when its symlink target changes under a watched root ×2 · keeps watching a deleted config file so recreating it reloads · backs Config.Service and Config.Test with one shared test implementation — deliberate: config.rs: no live reload or file watching
+- D reloads file substitutions when their source changes — deliberate: config.rs: no live reload or file watching
+- P excludes missing files under symlinked global roots when global is disabled — `tests/oc_config_sources.rs::oc_config_excludes_missing_files_under_symlinked_global_roots_when_global_is_disabled` (adapted: no config layer at the global folder, by any name (CodeSmith watches none))
+- D exposes filesystem updates under config roots through changes · does not reload when an unrelated file under a config root changes · reloads canonical events for a symlinked global root, even after removal · reloads ${source} config when its symlink target changes under a watched root ×2 · keeps watching a deleted config file so recreating it reloads · backs Config.Service and Config.Test with one shared test implementation — deliberate: config.rs: no live reload or file watching
 - P returns the latest defined scalar from priority-ordered documents — `src/config.rs::oc_config_returns_the_latest_defined_scalar`
 - D tolerates unavailable authenticated wellknown config and reloads it later · keeps the last resolved wellknown config across failures and restarts while a credential exists — deliberate: config.rs: no system, MDM, well-known or integration config
 - D logs redacted source-aware diagnostics for every config source — other: OpenCode's source-aware config diagnostics logging
@@ -3168,7 +3070,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (45 of 67)</summary>
+<details><summary>Code Mode (47 of 67)</summary>
 
 
 **`codemode.test.ts`**
@@ -3213,15 +3115,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access · without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 · whole-body methods share consumption and expose Bun's empty body · discards a redirect body before reading the destination — platform: Bun/Node globals and fetch body internals (CodeSmith's Code Mode runs in Boa without them)
 - D executions share the prepared runtime of an inventory while keeping per-call state — effect-internal: shared prepared runtime
+- P execute sends at most one progress update per 100 ms with the latest rows — `tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows` (adapted: the row throttle driven directly; the session sends the rows as `tool_progress`)
+- P interrupted execute sends its latest progress rows before it settles — `tests/oc_codemode_progress.rs::oc_execute_interrupted_sends_its_latest_progress_rows_before_it_settles` (adapted: a stopped turn drops the program; the rows go out from the drop)
 
 </details>
 
-<details><summary>Automations (45 of 107)</summary>
+<details><summary>Automations (48 of 107)</summary>
 
 
 **`automation-event.test.ts`**
 
-- D retains the location only while its quiet subscription is open · pause cancels a prompt still preparing without waiting for its hook or admitting it on resume — client-server: Location retention and prompt-preparation hooks
+- D retains the location only while its quiet subscription is open — client-server: Location retention and prompt-preparation hooks
+- P a broken stream opens on the replacement connection, replaying from the last committed event — `tests/oc_automation_stream.rs::oc_automation_event_a_broken_stream_opens_on_the_replacement_connection_replaying_from_the_last_committed_event` (adapted: a prompt automation; every reconnect connects the server afresh)
+- P reopens after four healthy streams disconnect, each from its last committed cursor — `tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor`
+- F pauses after three consecutive reconnects without confirmed stream output — `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output` (the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever)
+- D pause cancels a prompt still preparing without waiting for its hook or admitting it on resume — client-server: Location retention and prompt-preparation hooks
 
 **`automation.test.ts`**
 
@@ -3258,7 +3166,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Worktrees, VCS and projects (88 of 158)</summary>
+<details><summary>Worktrees, VCS and projects (94 of 158)</summary>
 
 
 **`git.test.ts`**
@@ -3275,11 +3183,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`project.test.ts`**
 
-- D returns complete projects ordered by recent activity · updates and clears project metadata · records activity without editing metadata time and throttles repeats · lists archived projects only when requested · archives projects whose directories are gone and unarchives them on resolve · moves the canonical directory to a surviving clone instead of archiving · skips projects updated or active within the last sweep interval · never archives the global project · creates distinct deterministic projects for exact markerless directories · repository markers override markerless directory projects · does not publish project updates for first or repeated resolutions · publishes preserved project metadata when its canonical directory is renamed · keeps the canonical project directory when opening another clone · does not write the cache while resolving · reuses git discovery until git metadata changes · does not cache a transient git failure · sees the first commit in a reftable repository — client-server: OpenCode's project registry (list, archive, activity)
+- D returns complete projects ordered by recent activity · updates and clears project metadata · records activity without editing metadata time and throttles repeats · lists archived projects only when requested · archives projects whose directories are gone and unarchives them on resolve · moves the canonical directory to a surviving clone instead of archiving · skips projects updated or active within the last sweep interval · never archives the global project · creates distinct deterministic projects for exact markerless directories · repository markers override markerless directory projects · does not publish project updates for first or repeated resolutions · publishes preserved project metadata when its canonical directory is renamed · keeps the canonical project directory when opening another clone · does not write the cache while resolving — client-server: OpenCode's project registry (list, archive, activity)
+- P prefers git when both git and mercurial metadata exist — `tests/oc_vcs.rs::oc_project_prefers_git_when_both_git_and_mercurial_metadata_exist`
+- P prefers the nearest mercurial marker over an outer git repository — `tests/oc_vcs.rs::oc_project_prefers_the_nearest_mercurial_marker_over_an_outer_git_repository`
+- P prefers the nearest git marker over an outer mercurial repository — `tests/oc_vcs.rs::oc_project_prefers_the_nearest_git_marker_over_an_outer_mercurial_repository`
+- P returns global id for unreadable mercurial metadata — `tests/oc_vcs.rs::oc_project_returns_global_id_for_unreadable_mercurial_metadata`
+- D reuses git discovery until git metadata changes · does not cache a transient git failure · sees the first commit in a reftable repository — client-server: OpenCode's project registry (list, archive, activity)
 
 **`util/git-executable.test.ts`**
 
 - D uses an absolute executable on Windows · uses a non-shim PATH executable on macOS without probing developer directories · resolves the Apple shim on macOS from developer directories · falls back to PATH lookup on macOS when no developer tools exist or candidate is invalid · orders macOS developer directory candidates by DEVELOPER_DIR then xcode-select link · leaves lookup to the process on Linux · falls back to PATH lookup when Git is unresolved — platform: locating git on macOS/Windows
+
+**`vcs-hg.test.ts`**
+
+- P Mercurial rejects unsupported review modes and bases without requiring hg — `tests/oc_vcs.rs::oc_mercurial_rejects_unsupported_review_modes_and_bases_without_requiring_hg` (adapted: `/review <target>` in a Mercurial project is refused the same way)
+- P Vcs mercurial — `tests/oc_vcs.rs::oc_vcs_mercurial` (adapted: status, working-copy and named-branch diffs; skipped without hg, as OpenCode's are)
 
 **`vcs.test.ts`**
 
@@ -3291,7 +3209,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (594 of 796)</summary>
+<details><summary>Providers, models and credentials (613 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3513,7 +3431,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P loads on credential changes and clears the previous account's routers — `tests/oc_provider_logins.rs::oc_digitalocean_loads_on_credential_changes_and_clears_the_previous_accounts_routers`
 - P shows a returning account's cached routers at once and refreshes them in the background — `tests/oc_provider_logins.rs::oc_digitalocean_shows_a_returning_accounts_cached_routers_at_once` (adapted: the kept list serves at once; nothing refreshes in the background)
 - P completes browser OAuth independently of router discovery and releases the listener — `tests/oc_provider_logins.rs::oc_digitalocean_completes_browser_oauth_independently_of_router_discovery_and_releases_the_listener`
-- P rejects ${fixture.name} and releases the listener ×5 — `tests/oc_provider_logins.rs::oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener` (adapted: a post with another state is refused with 400 and the login keeps waiting, and the state is checked before the error)
+- P rejects ${fixture.name} and releases the listener ×5 — `tests/oc_provider_logins.rs::oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener`
 
 **`plugin/provider-dynamic.test.ts`**
 
@@ -3563,7 +3481,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D refreshes credentials without a client ID with the opencode-gitlab-auth application — deliberate: CodeSmith never refreshes with another project's OAuth application; a login without one needs GITLAB_OAUTH_CLIENT_ID (tests/oc_provider_logins.rs::oc_gitlab_oauth_refreshes_credentials_without_a_client_id_only_with_gitlab_oauth_client_id)
 - P refreshes only with the recorded client ID when the credential has one — `tests/oc_provider_logins.rs::oc_gitlab_oauth_refreshes_only_with_the_recorded_client_id_when_the_credential_has_one`
 - P reports a revoked refresh token with a sign-in-again hint instead of authorization-code hints — `tests/oc_provider_logins.rs::oc_gitlab_oauth_reports_a_revoked_refresh_token_with_a_sign_in_again_hint_instead_of_authorization_code_hints`
-- P rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) ×4 — `tests/oc_provider_logins.rs::oc_gitlab_oauth_rejects_invalid_or_denied_callbacks` (adapted: a callback with another state is answered 400 and the login keeps waiting instead of ending)
+- P rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) ×4 — `tests/oc_provider_logins.rs::oc_gitlab_oauth_rejects_invalid_or_denied_callbacks`
 - P preserves the active connection after a failed token exchange (${response.status}) ×3 — `tests/oc_provider_logins.rs::oc_gitlab_oauth_preserves_the_active_connection_after_a_failed_token_exchange`
 - P reports EADDRINUSE with a clear message when the callback port is occupied — `tests/oc_provider_logins.rs::oc_gitlab_oauth_reports_eaddrinuse_with_a_clear_message_when_the_callback_port_is_occupied`
 - P honors GITLAB_OAUTH_CLIENT_ID for self-managed applications — `tests/oc_provider_logins.rs::oc_gitlab_oauth_honors_gitlab_oauth_client_id_for_self_managed_applications`
@@ -3593,12 +3511,31 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P applies legacy referer headers only to enabled llmgateway — `tests/oc_providers.rs::oc_llmgateway_applies_legacy_referer_headers` (adapted: the headers name CodeSmith)
 - D does not apply legacy headers to a disabled llmgateway provider — deliberate: CodeSmith has no provider activation; a provider is used when a model names it
 
+**`plugin/provider-lmstudio.test.ts`**
+
+- P is registered as a built-in provider plugin — `tests/oc_local_models.rs::oc_lmstudio_is_registered_as_a_built_in_provider_plugin` (adapted: a built-in provider with its own discovery)
+- P discovers local language models with their capabilities and effective context — `tests/oc_local_models.rs::oc_lmstudio_discovers_local_language_models_with_their_capabilities_and_effective_context`
+- P refreshes the catalog when LM Studio models change — `tests/oc_local_models.rs::oc_lmstudio_refreshes_the_catalog_when_lm_studio_models_change` (adapted: each listing discovers again; nothing polls)
+- P discovers from configured endpoints with bearer authentication — `tests/oc_local_models.rs::oc_lmstudio_discovers_from_configured_endpoints_with_bearer_authentication`
+- P discovers with a key saved through /connect as soon as it is saved — `tests/oc_local_models.rs::oc_lmstudio_discovers_with_a_configured_key_and_keeps_sending_it` (adapted: the provider's key (configured, its variables or saved) is sent on every discovery)
+- P keeps sending the integration's env key after models load — `tests/oc_local_models.rs::oc_lmstudio_discovers_with_a_configured_key_and_keeps_sending_it` (adapted: the provider's key is sent on every discovery)
+- D shares discovery requests across plugin instances — deliberate: CodeSmith discovers once per listing, with no background plugin instances to share requests between
+- P replaces the credential-gated Models.dev catalog when discovery succeeds — `tests/oc_local_models.rs::oc_lmstudio_replaces_the_models_dev_catalog_when_discovery_succeeds` (adapted: a kept list for the current endpoint stands in for the catalog's models)
+
 **`plugin/provider-nvidia.test.ts`**
 
 - D is registered so legacy referer headers can be applied — deliberate: plugin.rs: provider plugins are compiled in
 - P applies NVIDIA tracking headers only to nvidia — `tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin` (adapted: the headers name CodeSmith)
 - P adds billing origin for custom NVIDIA endpoints — `tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin` (adapted: the headers name CodeSmith)
 - P preserves an explicit NVIDIA billing origin header — `tests/oc_providers.rs::oc_nvidia_applies_tracking_headers_and_preserves_an_explicit_billing_origin` (adapted: the headers name CodeSmith)
+
+**`plugin/provider-ollama.test.ts`**
+
+- D skips unconfigured default local discovery when the location has no local execution plane — platform: OpenCode workspaces have no local execution plane; CodeSmith always runs where it is
+- P discovers local completion models and native metadata — `tests/oc_local_models.rs::oc_ollama_discovers_local_completion_models_and_native_metadata`
+- P refreshes changed digests and retains inventory through transient failures — `tests/oc_local_models.rs::oc_ollama_refreshes_changed_digests_and_retains_inventory_through_transient_failures`
+- P replaces and restores the same-ID Models.dev provider — `tests/oc_local_models.rs::oc_ollama_replaces_and_restores_the_same_id_catalog_provider` (adapted: configured models stay beside the discovered ones)
+- P reloads layered endpoint and bearer authentication settings — `tests/oc_local_models.rs::oc_ollama_reloads_layered_endpoint_and_bearer_authentication_settings`
 
 **`plugin/provider-openai.test.ts`**
 
@@ -3628,8 +3565,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P registers Poe browser OAuth alongside generic key and environment methods without fetching — `tests/oc_provider_logins.rs::oc_poe_registers_poe_browser_oauth_alongside_generic_key_and_environment_methods_without_fetching` (adapted: `codesmith auth login poe --oauth` beside the key; the OAuth client id is the user's own)
 - P exchanges a PKCE code for a native Poe credential (expiry: ${expiry}) ×3 — `tests/oc_provider_logins.rs::oc_poe_exchanges_a_pkce_code_for_a_native_poe_credential` (adapted: a user-supplied client id)
 - P completes a login from a pasted redirect URL and keeps waiting after a wrong paste — `tests/oc_provider_logins.rs::oc_poe_completes_a_login_from_a_pasted_redirect_url_and_keeps_waiting_after_a_wrong_paste`
-- P isolates overlapping login attempts and closes cancelled listeners — `tests/oc_provider_logins.rs::oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listeners` (adapted: a callback with another state is answered 400 and the login keeps waiting instead of ending)
-- P rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) ×6 — `tests/oc_provider_logins.rs::oc_poe_rejects_invalid_or_denied_callbacks` (adapted: a callback with another state is answered 400 and the login keeps waiting instead of ending)
+- P isolates overlapping login attempts and closes cancelled listeners — `tests/oc_provider_logins.rs::oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listeners`
+- P rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) ×6 — `tests/oc_provider_logins.rs::oc_poe_rejects_invalid_or_denied_callbacks`
 - P preserves the active connection after a failed token exchange (${response.status}: ${response.body}) ×6 — `tests/oc_provider_logins.rs::oc_poe_preserves_the_active_connection_after_a_failed_token_exchange` (adapted: a failed login leaves the saved key)
 - P waits for the token exchange and consumes the callback once (cancel: ${cancel}) ×2 — `tests/oc_provider_logins.rs::oc_poe_waits_for_the_token_exchange_and_consumes_the_callback_once`
 - P keeps near-expiry keys usable and requires a new login after expiry — `tests/oc_provider_logins.rs::oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry`
@@ -3646,10 +3583,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - P browser OAuth supplies the native endpoint/token and refreshes a rejected token once — `tests/oc_provider_logins.rs::oc_snowflake_browser_oauth_supplies_the_native_endpoint_token_and_refreshes_a_rejected_token_once` (adapted: a 401 asks the login's authorizer to refresh, then the request is sent once more (codesmith-ai endpoint test); OpenCode's "Conversation complete" 400 rewrite is not ported)
 - P manual PAT uses its account and native compatibility rather than an SDK request rewrite — `tests/oc_provider_logins.rs::oc_snowflake_manual_pat_uses_its_account_and_native_compatibility_rather_than_an_sdk_request_rewrite` (adapted: asserts the resolved model's compatibility and cacheFormat)
-- P rejects a mismatched callback state before token exchange — `tests/oc_provider_logins.rs::oc_snowflake_rejects_a_mismatched_callback_state_before_token_exchange` (adapted: a callback with another state is answered 400 and the login keeps waiting instead of ending)
+- P rejects a mismatched callback state before token exchange — `tests/oc_provider_logins.rs::oc_snowflake_rejects_a_mismatched_callback_state_before_token_exchange`
 - P uses environment tokens rather than the account identifier and bypasses expired stored OAuth — `tests/oc_provider_logins.rs::oc_snowflake_uses_environment_tokens_rather_than_the_account_identifier_and_bypasses_expired_stored_oauth`
 - P requires a token separately from the account and supports environment PATs — `tests/oc_provider_logins.rs::oc_snowflake_requires_a_token_separately_from_the_account_and_supports_environment_pats`
 - P refreshes expired OAuth during native model resolution and persists rotated credentials — `tests/oc_provider_logins.rs::oc_snowflake_refreshes_expired_oauth_during_native_model_resolution_and_persists_rotated_credentials`
+
+**`plugin/provider-vllm.test.ts`**
+
+- P waits for readiness and discovers official vLLM model metadata — `tests/oc_local_models.rs::oc_vllm_waits_for_readiness_and_discovers_official_vllm_model_metadata` (adapted: a server that is not ready fails that listing; the next one discovers)
+- D waits for a slow endpoint instead of dropping its models — deliberate: an explicit `codesmith models vllm` waits 15 seconds as OpenCode does; the unprompted listing gives a loopback server 5, and nothing keeps waiting in the background
+- D does not report a replaced endpoint's failure against the new one — deliberate: endpoints change with config, not under a running background discovery, so there is no stale attempt to report
+- P refreshes inventory while retaining the last success through transient failures — `tests/oc_local_models.rs::oc_vllm_refreshes_inventory_while_retaining_the_last_success_through_transient_failures`
+- P replaces and restores same-ID Models.dev entries after an empty success — `tests/oc_local_models.rs::oc_lmstudio_replaces_the_models_dev_catalog_when_discovery_succeeds` (adapted: the same kept-list rule for every local provider)
+- P reloads layered custom endpoint and bearer authentication settings — `tests/oc_local_models.rs::oc_vllm_reloads_layered_custom_endpoint_and_bearer_authentication_settings`
 
 **`plugin/provider-zenmux.test.ts`**
 
