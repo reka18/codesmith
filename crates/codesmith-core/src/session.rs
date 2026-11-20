@@ -1181,8 +1181,9 @@ impl Session {
                 let prompt = s("prompt").ok_or_else(|| anyhow!("`prompt` is required"))?;
                 let to = match s("agent") {
                     Some(a) => {
-                        crate::agent::resolve(&self.loaded.config, &a)
+                        let target = crate::agent::resolve(&self.loaded.config, &a)
                             .ok_or_else(|| anyhow!("unknown agent {a}"))?;
+                        au::check_target(&self.agent.id, &target)?;
                         au::Target::Subagent { subagent: a }
                     }
                     None => au::Target::Session {
@@ -1191,12 +1192,33 @@ impl Session {
                 };
                 let name = s("name").unwrap_or_else(|| prompt.chars().take(40).collect());
                 let title = format!("Schedule \"{name}\" ({})", au::describe(&trigger));
-                self.allowed(au::TOOL, "create", title)
-                    .map_err(|e| anyhow!(e))?;
+                // Scheduling outlives this session, so it asks unless a rule
+                // names the action: the blanket allow agents start with
+                // does not cover it.
+                let explicit = |action: &str, resource: &str, title: String| {
+                    use crate::permission::{evaluate, Denied, Effect, Gate, Request};
+                    let rules = self.gate.rules();
+                    let named = au::explicit_effect(action, resource, &rules);
+                    if named == Effect::Deny || evaluate(action, resource, &rules) == Effect::Deny {
+                        let (action, resource) = (action.into(), resource.into());
+                        return Err(Denied::Blocked { action, resource }.to_string());
+                    }
+                    if named == Effect::Allow {
+                        return self.allowed(action, resource, title);
+                    }
+                    let req = Request {
+                        action: action.into(),
+                        resources: vec![resource.into()],
+                        save: vec![],
+                        title,
+                    };
+                    let gate = Gate::new(vec![], self.gate.asker());
+                    tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
+                };
+                explicit(au::TOOL, "create", title).map_err(|e| anyhow!(e))?;
                 if let au::Trigger::Event { server, event, .. } = &trigger {
                     let title = format!("Watch {event} events from MCP server {server}");
-                    self.allowed(au::WATCH_EVENT, server, title)
-                        .map_err(|e| anyhow!(e))?;
+                    explicit(au::WATCH_EVENT, server, title).map_err(|e| anyhow!(e))?;
                 }
                 let a = au::create(
                     db,

@@ -68,6 +68,10 @@ pub struct Config {
     /// `false` keeps this process from running automations (the UI,
     /// `serve` and `acp` run them by default).
     pub automations: Option<bool>,
+    /// Unattended automation runs: `permissions` are rules applied after
+    /// the default unattended denies (shell, edit, webfetch,
+    /// external_directory), to opt back in.
+    pub automation: crate::automation::Settings,
     /// `false` offers every MCP tool as a direct tool call instead of
     /// through Code Mode (useful for models that write JavaScript poorly).
     pub codemode: Option<bool>,

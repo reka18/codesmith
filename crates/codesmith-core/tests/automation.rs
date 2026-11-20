@@ -41,6 +41,12 @@ async fn model() -> String {
                 let content = last["content"].as_str().unwrap_or("").to_string();
                 let chunk = if body.get("tools").is_none() {
                     json!({"choices": [{"delta": {"content": "T"}, "finish_reason": "stop"}]})
+                } else if let Some(rest) = content
+                    .strip_prefix("call ")
+                    .filter(|_| last["role"] == "user")
+                {
+                    let (name, args) = rest.split_once(' ').unwrap_or((rest, "{}"));
+                    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": name, "arguments": args}}]}, "finish_reason": "tool_calls"}]})
                 } else if last["role"] == "user" && content.contains("use shell") {
                     json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "shell", "arguments": "{\"command\": \"echo hi\", \"description\": \"x\"}"}}]}, "finish_reason": "tool_calls"}]})
                 } else if last["role"] == "tool" {
@@ -61,7 +67,10 @@ fn loader(base: String) -> au::Loader {
         let config: Config = serde_json::from_value(json!({
             "model": "fake/m", "snapshots": false,
             "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
-            "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]
+            "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}],
+            // Unattended runs deny shell by default; this opts back in to
+            // asking, so the refusal of an ask is what is tested.
+            "automation": {"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}
         }))?;
         Ok(Loaded {
             config,
@@ -414,4 +423,182 @@ async fn event_triggered_runs() {
 
 fn runs_of(db: &Store, id: &str) -> Vec<au::Run> {
     au::runs(db, id).unwrap()
+}
+
+/// A loader with `extra` merged over a config whose rules allow everything
+/// (the agents' defaults; no rule mentions shell).
+fn open_loader(base: String, extra: Value) -> au::Loader {
+    Arc::new(move |dir: &Path| {
+        let mut v = json!({
+            "model": "fake/m", "snapshots": false,
+            "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}}
+        });
+        codesmith_core::config::merge(&mut v, extra.clone());
+        let config: Config = serde_json::from_value(v)?;
+        Ok(Loaded {
+            config,
+            files: vec![],
+            root: dir.to_path_buf(),
+        })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unattended_runs_deny_shell_unless_config_opts_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let db = Store::open(&dbp).unwrap();
+    let base = model().await;
+    let d = dir.path().display().to_string();
+    let job = |name: &str| au::New {
+        name: name.into(),
+        directory: d.clone(),
+        session_id: None,
+        trigger: Trigger::Every {
+            every: "1 hour".into(),
+            tz: None,
+        },
+        action: Action::Prompt {
+            prompt: "use shell".into(),
+            to: Target::Subagent {
+                subagent: "build".into(),
+            },
+        },
+    };
+
+    // The build agent allows shell interactively, but not unattended.
+    let runner = Runner::new(dbp.clone(), open_loader(base.clone(), json!({})));
+    let a = au::create(&db, job("denied")).unwrap();
+    due_now(&db, &a.id);
+    runner.tick().await.unwrap();
+    let r = &au::runs(&db, &a.id).unwrap()[0];
+    // Denied outright, the tool is not even offered.
+    assert!(r.detail.contains("No tool named \"shell\""), "{}", r.detail);
+
+    // `automation.permissions` opts back in for matching commands only.
+    // (A fresh database: the first runner holds the scheduler lease.)
+    let dbp = dir.path().join("s2.db");
+    let db = Store::open(&dbp).unwrap();
+    let runner = Runner::new(
+        dbp.clone(),
+        open_loader(
+            base.clone(),
+            json!({"automation": {"permissions": [{"action": "shell", "resource": "echo *", "effect": "allow"}]}}),
+        ),
+    );
+    let b = au::create(&db, job("allowed")).unwrap();
+    due_now(&db, &b.id);
+    runner.tick().await.unwrap();
+    let r = &au::runs(&db, &b.id).unwrap()[0];
+    assert!(r.detail.contains("tool said: hi"), "{}", r.detail);
+
+    let rules = au::unattended_rules(&Config::default());
+    for action in ["shell", "edit", "webfetch", "external_directory"] {
+        assert_eq!(
+            codesmith_core::permission::evaluate(action, "x", &rules),
+            codesmith_core::permission::Effect::Deny,
+            "{action}"
+        );
+    }
+}
+
+/// Answers every request with `reply`, recording the actions asked.
+struct Record(
+    std::sync::Mutex<Vec<String>>,
+    codesmith_core::permission::Reply,
+);
+impl codesmith_core::permission::Asker for Record {
+    fn ask(&self, req: &codesmith_core::permission::Request) -> codesmith_core::permission::Reply {
+        self.0.lock().unwrap().push(req.action.clone());
+        self.1.clone()
+    }
+}
+
+struct Collect(String);
+impl codesmith_core::session::Sink for Collect {
+    fn text(&mut self, d: &str) {
+        self.0.push_str(d);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_automation_tool_asks_and_keeps_agents_in_bounds() {
+    use codesmith_core::permission::Reply;
+    use codesmith_core::session::{Options, Session};
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let base = model().await;
+    let session = |extra: Value, agent: &str, reply: Reply| {
+        let loaded = (open_loader(base.clone(), extra))(dir.path()).unwrap();
+        let asker = Arc::new(Record(Default::default(), reply));
+        let s = Session::new(
+            &loaded,
+            dir.path().to_path_buf(),
+            Options {
+                agent: Some(agent.into()),
+                model: None,
+                resume: None,
+                title: Some("t".into()),
+                parent: None,
+                questioner: None,
+                mcp: None,
+            },
+            asker.clone(),
+            Some(Store::open(&dbp).unwrap()),
+        )
+        .unwrap();
+        (s, asker)
+    };
+    let create = |agent: Option<&str>| {
+        let mut args = json!({"action": "create", "name": "job", "prompt": "do it", "trigger": {"type": "every", "every": "1 hour"}});
+        if let Some(a) = agent {
+            args["agent"] = json!(a);
+        }
+        format!("call automation {args}")
+    };
+    let count = || au::list(&Store::open(&dbp).unwrap(), None).unwrap().len();
+
+    // Allowed by the blanket default before; now the user is asked.
+    let (mut s, asker) = session(json!({}), "build", Reply::Reject(None));
+    let mut out = Collect(String::new());
+    s.prompt(&create(None), &mut out).await.unwrap();
+    // (A declined request ends the turn.)
+    assert_eq!(*asker.0.lock().unwrap(), ["automation"], "{}", out.0);
+    assert_eq!(count(), 0);
+
+    // A rule naming the action decides without asking.
+    let rule =
+        json!({"permissions": [{"action": "automation", "resource": "*", "effect": "allow"}]});
+    let (mut s, asker) = session(rule.clone(), "build", Reply::Reject(None));
+    let mut out = Collect(String::new());
+    s.prompt(&create(None), &mut out).await.unwrap();
+    assert!(out.0.contains("Created"), "{}", out.0);
+    assert!(asker.0.lock().unwrap().is_empty());
+    assert_eq!(count(), 1);
+    let deny = json!({"permissions": [{"action": "automation", "resource": "*", "effect": "deny"}, {"action": "*", "resource": "*", "effect": "allow"}]});
+    let (mut s, _) = session(deny, "build", Reply::Once);
+    let mut out = Collect(String::new());
+    s.prompt(&create(None), &mut out).await.unwrap();
+    assert!(out.0.contains("a rule blocks automation"), "{}", out.0);
+    assert_eq!(count(), 1);
+
+    // The plan agent cannot schedule work for build; read-only targets are fine.
+    let (mut s, _) = session(rule, "plan", Reply::Once);
+    let mut out = Collect(String::new());
+    s.prompt(&create(Some("build")), &mut out).await.unwrap();
+    assert!(
+        out.0.contains("only as this session's agent (plan)"),
+        "{}",
+        out.0
+    );
+    assert_eq!(count(), 1);
+    for ok in ["plan", "explore", "review"] {
+        let mut out = Collect(String::new());
+        s.prompt(&create(Some(ok)), &mut out).await.unwrap();
+        assert!(out.0.contains("Created"), "{ok}: {}", out.0);
+    }
+    let mut out = Collect(String::new());
+    s.prompt(&create(Some("general")), &mut out).await.unwrap();
+    assert!(out.0.contains("not general"), "{}", out.0);
+    assert_eq!(count(), 4);
 }

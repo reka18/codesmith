@@ -572,9 +572,39 @@ Automations are stored with your sessions and run by whichever CodeSmith is
 open — the UI, `serve` or `acp` (`"automations": false` opts a process out) —
 or by `codesmith automation serve`, which you can keep running under launchd
 or systemd; a lease in the database keeps two processes from firing the same
-run. Runs are unattended: they follow your permission rules, but anything
-that would ask is refused. Each run's outcome, session and answer are kept for
-`automation log`.
+run. Each run's outcome, session and answer are kept for `automation log`.
+
+Automations are a way for a prompt-injected model to come back later, so they
+are kept on a short leash:
+
+- When the agent uses the `automation` tool, creating an automation (and
+  watching an MCP server's events) asks you first, even though agents allow
+  everything else by default; only a rule that names the action itself
+  (`{"action": "automation", "resource": "*", "effect": "allow"}`, or
+  `watch_mcp_event` with the server name) skips the question.
+- A job the agent creates runs as that session's own agent or as a read-only
+  subagent (`explore`, `review`): the plan agent cannot schedule work for
+  build. Use `codesmith automation add --agent …` to pick any agent yourself.
+- Runs are unattended. They follow your permission rules, anything that
+  would ask is refused, and on top of that `shell`, `edit` (and `write`),
+  `webfetch` and `external_directory` are denied, since a run may act on
+  untrusted input such as an MCP event. Opt back in with rules under
+  `automation.permissions`, which apply only to unattended runs, after those
+  denies:
+
+  ```json
+  {
+    "automation": {
+      "permissions": [
+        {"action": "shell", "resource": "cargo test*", "effect": "allow"},
+        {"action": "edit", "resource": "CHANGELOG.md", "effect": "allow"}
+      ]
+    }
+  }
+  ```
+
+  `{"action": "shell", "resource": "*", "effect": "allow"}` gives runs the
+  whole shell back.
 
 ## Plugins
 

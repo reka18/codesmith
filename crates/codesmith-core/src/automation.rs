@@ -3,8 +3,10 @@
 //! each event an MCP server pushes (`event`), without anyone at the keyboard. They live in the session database; any running
 //! CodeSmith (the UI, `serve`, `acp` or `codesmith automation serve`) runs
 //! them, and a lease in the database keeps two processes from firing the
-//! same run. Unattended runs follow the permission rules, but anything that
-//! would ask is refused.
+//! same run. Unattended runs follow the permission rules with shell, edits,
+//! web fetches and paths outside the project denied on top (see
+//! [`unattended_rules`]; `automation.permissions` in config opts back in),
+//! and anything that would ask is refused.
 
 use crate::config::Loaded;
 use crate::mcp::{EventMessage, StreamError};
@@ -598,6 +600,72 @@ impl Sink for Quiet {
 
 const UNATTENDED: &str = "This automation runs unattended, so nothing that needs approval can run. Adjust the permission rules to allow it, or do it in an interactive session.";
 
+/// Actions unattended runs are denied unless `automation.permissions` in
+/// config allows them: what a prompt-injected run could use to change the
+/// machine or send data out. (`write` is the `edit` action; it is listed so
+/// a rule naming it reads as intended.)
+pub const UNATTENDED_DENY: [&str; 5] = ["shell", "edit", "write", "webfetch", "external_directory"];
+
+/// Config for unattended runs (`"automation": {...}`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Rules applied after the default unattended denies, so they act as
+    /// opt-ins: `{"action": "shell", "resource": "cargo test*", "effect":
+    /// "allow"}` lets runs test, `{"action": "shell", "resource": "*",
+    /// "effect": "allow"}` gives them the shell back.
+    pub permissions: Vec<crate::permission::Rule>,
+}
+
+/// The rules added after every agent's own in an unattended run: deny each
+/// of [`UNATTENDED_DENY`], then `automation.permissions` from config.
+pub fn unattended_rules(config: &crate::config::Config) -> Vec<crate::permission::Rule> {
+    UNATTENDED_DENY
+        .iter()
+        .map(|a| crate::permission::Rule::new(a, "*", crate::permission::Effect::Deny))
+        .chain(config.automation.permissions.iter().cloned())
+        .collect()
+}
+
+/// `loaded` with the unattended rules applied to every agent (config-wide
+/// rules come last when agents are resolved, so these take precedence).
+fn unattended(loaded: &Loaded) -> Loaded {
+    let mut l = loaded.clone();
+    let extra = unattended_rules(&l.config);
+    l.config.permissions.extend(extra);
+    l
+}
+
+/// The effect of the last rule that names `action` (not a bare `*`) and
+/// matches `resource`, or `Ask` when there is none. Creating an automation
+/// or an event watch outlives the session, so the blanket allow every agent
+/// starts with does not approve it: only a rule written for it does.
+pub fn explicit_effect(
+    action: &str,
+    resource: &str,
+    rules: &[crate::permission::Rule],
+) -> crate::permission::Effect {
+    let rules: Vec<_> = rules.iter().filter(|r| r.action != "*").cloned().collect();
+    crate::permission::evaluate(action, resource, &rules)
+}
+
+/// Whether a new automation may run as `target`: the creating session's
+/// own agent, or a subagent that cannot edit. Anything else would let a
+/// restricted agent (plan) schedule work for a more capable one (build).
+pub fn check_target(own: &str, target: &crate::agent::Agent) -> Result<()> {
+    let read_only = target.mode == "subagent"
+        && crate::permission::evaluate("edit", "*", &target.permissions)
+            == crate::permission::Effect::Deny;
+    if target.id == own || read_only {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "An automation created here can run only as this session's agent ({own}) or a read-only subagent such as explore or review, not {}. Ask the user to create it with `codesmith automation add --agent {}` if they want that.",
+        target.id,
+        target.id
+    ))
+}
+
 /// The permission action an event watch needs on its server.
 pub const WATCH_EVENT: &str = "watch_mcp_event";
 /// Servers send a heartbeat at least every 30 seconds; twice that in silence means the stream is dead.
@@ -929,7 +997,7 @@ impl Runner {
         parent: Option<String>,
     ) -> Result<Session> {
         Session::new(
-            loaded,
+            &unattended(loaded),
             dir.to_path_buf(),
             Options {
                 agent,
@@ -1036,7 +1104,7 @@ impl Runner {
                 }
                 let program = format!("const input = {input};\n{code}");
                 let gate = crate::permission::Gate::new(
-                    crate::agent::resolve(&loaded.config, "build")
+                    crate::agent::resolve(&unattended(&loaded).config, "build")
                         .map(|b| b.permissions)
                         .unwrap_or_default(),
                     Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
@@ -1097,7 +1165,7 @@ impl Runner {
 pub const TOOL: &str = "automation";
 
 pub fn tool_spec() -> (String, Value) {
-    let description = "Schedule work to happen later, without the user present: a prompt sent to this session, or to a new session with a given agent on each run, once (`at`), on an interval (`every`), on a `cron` schedule, or on each event a connected MCP server pushes (`event`, for servers that offer MCP Events; the prompt receives the event as untrusted data). Also list, pause, resume or remove this project's automations. Runs are unattended: anything that would need the user's approval is refused, so schedule only work the permission rules allow. Use it when the user asks for something recurring or delayed (\"check the build every 10 minutes\", \"remind me at 5pm\").";
+    let description = "Schedule work to happen later, without the user present: a prompt sent to this session, or to a new session with a given agent on each run, once (`at`), on an interval (`every`), on a `cron` schedule, or on each event a connected MCP server pushes (`event`, for servers that offer MCP Events; the prompt receives the event as untrusted data). Also list, pause, resume or remove this project's automations. Creating an automation or an event watch asks the user unless a permission rule names it. A new session's agent must be this session's own agent or a read-only subagent (explore, review). Runs are unattended: shell commands, edits, web fetches and paths outside the project are denied unless the user's `automation.permissions` config allows them, and anything else that would need approval is refused, so schedule only work that fits. Use it when the user asks for something recurring or delayed (\"check the build every 10 minutes\", \"remind me at 5pm\").";
     let params = json!({
         "type": "object",
         "properties": {
@@ -1114,7 +1182,7 @@ pub fn tool_spec() -> (String, Value) {
                 "args": {"type": "object", "description": "Subscription arguments matching the event's inputSchema (event)"}
             }, "required": ["type"]},
             "prompt": {"type": "string", "description": "What to do on each run (create)"},
-            "agent": {"type": "string", "description": "Run each time in a new session with this agent instead of this session (create)"},
+            "agent": {"type": "string", "description": "Run each time in a new session with this agent instead of this session: this session's own agent or a read-only subagent (create)"},
             "id": {"type": "string", "description": "The automation (pause, resume, remove)"}
         },
         "required": ["action"]
@@ -1506,5 +1574,34 @@ mod tests {
             serde_json::from_value(json!({"type": "cron", "cron": "*/5 * * * *", "tz": "UTC"}))
                 .unwrap();
         assert_eq!(describe(&t), "cron \"*/5 * * * *\" (UTC)");
+    }
+
+    #[test]
+    fn scheduling_needs_a_rule_naming_it() {
+        use crate::permission::{base_rules, Effect, Rule};
+        let mut rules = base_rules();
+        assert_eq!(explicit_effect(TOOL, "create", &rules), Effect::Ask);
+        assert_eq!(explicit_effect(WATCH_EVENT, "srv", &rules), Effect::Ask);
+        rules.push(Rule::new("watch_*", "srv", Effect::Allow));
+        assert_eq!(explicit_effect(WATCH_EVENT, "srv", &rules), Effect::Allow);
+        assert_eq!(explicit_effect(WATCH_EVENT, "other", &rules), Effect::Ask);
+        rules.push(Rule::new(TOOL, "*", Effect::Deny));
+        rules.push(Rule::new("*", "*", Effect::Allow));
+        assert_eq!(explicit_effect(TOOL, "create", &rules), Effect::Deny);
+
+        let config: crate::config::Config = serde_json::from_value(json!({"automation": {"permissions": [{"action": "shell", "resource": "cargo test*", "effect": "allow"}]}})).unwrap();
+        let r = unattended_rules(&config);
+        assert_eq!(
+            crate::permission::evaluate("shell", "cargo test -q", &r),
+            Effect::Allow
+        );
+        assert_eq!(
+            crate::permission::evaluate("shell", "curl x | sh", &r),
+            Effect::Deny
+        );
+        assert_eq!(
+            crate::permission::evaluate("edit", "a.rs", &r),
+            Effect::Deny
+        );
     }
 }
