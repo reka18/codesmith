@@ -409,3 +409,23 @@
 @github-copilot/models.test.ts
 11 :: ported :: tests/oc_providers.rs::oc_copilot_models_defensively_syncs_advertised_copilot_models :: adapted: the list `codesmith models github-copilot` keeps
 124 :: ported :: tests/oc_providers.rs::oc_copilot_models_prices_cache_reads_from_either_token_price_spelling
+@plugin/provider-azure.test.ts
+243 :: ported :: tests/oc_azure.rs::oc_azure_hides_azure_cli_authentication_when_the_azure_cli_is_not_installed :: adapted: `codesmith auth login azure --cli` refuses without az on PATH
+254 :: ported :: tests/oc_azure.rs::oc_azure_asks_for_the_resource_name_as_text_without_calling_azure
+291 :: ported :: tests/oc_azure.rs::oc_azure_starts_without_calling_azure_then_lists_deployments :: adapted: nothing calls Azure until a request or `codesmith models azure`
+312 :: ported :: tests/oc_azure.rs::oc_azure_shows_the_deployments_listed_with_an_api_key_named_after_the_deployment :: adapted: limits come from the bundled catalog
+357 :: ported :: tests/oc_azure.rs::oc_azure_lists_azure_cli_deployments_through_the_management_api_before_the_resources_own_list
+378 :: ported :: tests/oc_azure.rs::oc_azure_falls_back_to_the_resources_own_list_when_the_azure_cli_cannot_read_the_management_api
+396 :: ported :: tests/oc_azure.rs::oc_azure_keeps_the_catalog_for_a_custom_endpoint_without_listing_deployments
+410 :: ported :: tests/oc_azure.rs::oc_azure_publishes_the_management_list_only_after_its_last_page :: adapted: a list is kept only when every page arrived
+435 :: ported :: tests/oc_azure.rs::oc_azure_keeps_the_last_complete_list_when_a_later_page_fails
+463 :: ported :: tests/oc_azure.rs::oc_azure_reports_the_management_api_error_when_the_resources_own_list_fails_too
+485 :: ported :: tests/oc_azure.rs::oc_azure_never_sends_the_management_token_to_a_page_link_outside_the_management_endpoint
+506 :: ported :: tests/oc_azure.rs::oc_azure_keeps_a_model_that_is_configured_explicitly
+538 :: ported :: tests/oc_azure.rs::oc_azure_loads_again_when_the_api_key_changes_in_place :: adapted: the kept list records the account it was listed for
+561 :: design :: deliberate :: CodeSmith discovers nothing in the background; a switch has no discovery in flight to wait for
+592 :: ported :: tests/oc_azure.rs::oc_azure_authorizes_azure_foundry_and_websocket_requests_with_a_token_for_their_audience :: adapted: dynamic credentials keep Responses on HTTP, so there is no WebSocket handshake to sign
+678:6 :: ported :: tests/oc_azure.rs::oc_azure_resource_name_sources
+693 :: ported :: tests/oc_azure.rs::oc_azure_leaves_models_unchanged_and_uncloned_without_a_resource_name
+716 :: ported :: tests/oc_azure.rs::oc_azure_expands_provider_and_model_resource_urls :: adapted: CodeSmith models have no resource of their own
+756 :: ported :: tests/oc_azure.rs::oc_azure_prefers_websockets_on_the_provider_for_the_azure_responses_api_only :: adapted: per provider settings

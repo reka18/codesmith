@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 185 | 0 | 240 | 334 | 37 | 0 |
+| Providers, models and credentials | 796 | 208 | 0 | 217 | 335 | 36 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1092** | **15** | **741** | **2343** | **1397** | **0** |
+| **Total** | **5588** | **1115** | **15** | **718** | **2344** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,13 +78,13 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (741 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (718 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
-| [Provider Plugins](#provider-plugins) | 72 | Azure (CLI auth, deployment discovery, WebSockets); DigitalOcean; … |
+| [Provider Plugins](#provider-plugins) | 49 | DigitalOcean; GitHub Copilot Auto model router; … |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
@@ -329,26 +329,8 @@ Missing features, by how many OpenCode test cases each would unlock (741 cases i
 
 ### Provider Plugins
 
-72 cases.
+49 cases.
 
-- `plugin/provider-azure.test.ts`: hides Azure CLI authentication when the Azure CLI is not installed
-- `plugin/provider-azure.test.ts`: asks for the resource name as text without calling Azure
-- `plugin/provider-azure.test.ts`: starts without calling Azure, then lists deployments
-- `plugin/provider-azure.test.ts`: shows the deployments listed with an API key, named after the deployment
-- `plugin/provider-azure.test.ts`: lists Azure CLI deployments through the management API before the resource's own list
-- `plugin/provider-azure.test.ts`: falls back to the resource's own list when the Azure CLI cannot read the management API
-- `plugin/provider-azure.test.ts`: keeps the catalog for a custom endpoint without listing deployments
-- `plugin/provider-azure.test.ts`: publishes the management list only after its last page
-- `plugin/provider-azure.test.ts`: keeps the last complete list when a later page fails
-- `plugin/provider-azure.test.ts`: reports the management API error when the resource's own list fails too
-- `plugin/provider-azure.test.ts`: never sends the management token to a page link outside the management endpoint
-- `plugin/provider-azure.test.ts`: keeps a model that is configured explicitly
-- `plugin/provider-azure.test.ts`: loads again when the API key changes in place
-- `plugin/provider-azure.test.ts`: shows the new account without waiting for the previous account's discovery
-- `plugin/provider-azure.test.ts`: authorizes Azure, Foundry, and WebSocket requests with a token for their audience
-- `plugin/provider-azure.test.ts`: {item.name} (6 cases)
-- `plugin/provider-azure.test.ts`: leaves models unchanged and uncloned without a resource name
-- `plugin/provider-azure.test.ts`: prefers WebSockets on the provider for the Azure Responses API only
 - `plugin/provider-digitalocean.test.ts`: is registered alongside the other provider plugins
 - `plugin/provider-digitalocean.test.ts`: registers browser OAuth alongside generic key and environment methods
 - `plugin/provider-digitalocean.test.ts`: loads routers for the signed-in account
@@ -1150,7 +1132,7 @@ Missing features, by how many OpenCode test cases each would unlock (741 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -1939,7 +1921,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 - the setup (start) command runs with worktree paths (S) — `worktree::create`
   - `worktree.test.ts`: runs the project setup script with worktree paths
 
-### Providers, models and credentials (37)
+### Providers, models and credentials (36)
 
 - default model when none is configured; a disabled provider's default ignored (S) — `config::resolve_model`
   - `catalog.test.ts`: falls back to newest available model when no default is configured
@@ -1987,8 +1969,6 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 - OpenRouter / Mistral headers and body (S) — `config providers`
   - `model-resolver.test.ts`: merges mapped OpenRouter headers and body with catalog overlays
   - `model-resolver.test.ts`: merges mapped Mistral headers and body with catalog overlays
-- provider and model resource URLs expanded (S) — `config providers (azure)`
-  - `plugin/provider-azure.test.ts`: expands provider and model resource URLs
 - no default output limit sent to OpenAI (S) — `session request`
   - `plugin/provider-openai.test.ts`: omits the default output limit from OpenAI steps and compaction
 
@@ -2005,7 +1985,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 547 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 548 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
@@ -3431,7 +3411,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (519 of 796)</summary>
+<details><summary>Providers, models and credentials (543 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3583,6 +3563,28 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P fills region from AWS_REGION then AWS_DEFAULT_REGION without overriding config — `tests/oc_providers.rs::oc_bedrock_fills_region_from_aws_region_then_aws_default_region_without_overriding_config`
 - P falls back to AWS_DEFAULT_REGION then us-east-1 — `tests/oc_providers.rs::oc_bedrock_falls_back_to_aws_default_region_then_us_east_1`
 - P applies to Mantle and native Bedrock packages — `tests/oc_providers.rs::oc_bedrock_applies_to_mantle_and_native_bedrock_packages`
+
+**`plugin/provider-azure.test.ts`**
+
+- P hides Azure CLI authentication when the Azure CLI is not installed — `tests/oc_azure.rs::oc_azure_hides_azure_cli_authentication_when_the_azure_cli_is_not_installed` (adapted: `codesmith auth login azure --cli` refuses without az on PATH)
+- P asks for the resource name as text without calling Azure — `tests/oc_azure.rs::oc_azure_asks_for_the_resource_name_as_text_without_calling_azure`
+- P starts without calling Azure, then lists deployments — `tests/oc_azure.rs::oc_azure_starts_without_calling_azure_then_lists_deployments` (adapted: nothing calls Azure until a request or `codesmith models azure`)
+- P shows the deployments listed with an API key, named after the deployment — `tests/oc_azure.rs::oc_azure_shows_the_deployments_listed_with_an_api_key_named_after_the_deployment` (adapted: limits come from the bundled catalog)
+- P lists Azure CLI deployments through the management API before the resource's own list — `tests/oc_azure.rs::oc_azure_lists_azure_cli_deployments_through_the_management_api_before_the_resources_own_list`
+- P falls back to the resource's own list when the Azure CLI cannot read the management API — `tests/oc_azure.rs::oc_azure_falls_back_to_the_resources_own_list_when_the_azure_cli_cannot_read_the_management_api`
+- P keeps the catalog for a custom endpoint without listing deployments — `tests/oc_azure.rs::oc_azure_keeps_the_catalog_for_a_custom_endpoint_without_listing_deployments`
+- P publishes the management list only after its last page — `tests/oc_azure.rs::oc_azure_publishes_the_management_list_only_after_its_last_page` (adapted: a list is kept only when every page arrived)
+- P keeps the last complete list when a later page fails — `tests/oc_azure.rs::oc_azure_keeps_the_last_complete_list_when_a_later_page_fails`
+- P reports the management API error when the resource's own list fails too — `tests/oc_azure.rs::oc_azure_reports_the_management_api_error_when_the_resources_own_list_fails_too`
+- P never sends the management token to a page link outside the management endpoint — `tests/oc_azure.rs::oc_azure_never_sends_the_management_token_to_a_page_link_outside_the_management_endpoint`
+- P keeps a model that is configured explicitly — `tests/oc_azure.rs::oc_azure_keeps_a_model_that_is_configured_explicitly`
+- P loads again when the API key changes in place — `tests/oc_azure.rs::oc_azure_loads_again_when_the_api_key_changes_in_place` (adapted: the kept list records the account it was listed for)
+- D shows the new account without waiting for the previous account's discovery — deliberate: CodeSmith discovers nothing in the background; a switch has no discovery in flight to wait for
+- P authorizes Azure, Foundry, and WebSocket requests with a token for their audience — `tests/oc_azure.rs::oc_azure_authorizes_azure_foundry_and_websocket_requests_with_a_token_for_their_audience` (adapted: dynamic credentials keep Responses on HTTP, so there is no WebSocket handshake to sign)
+- P {item.name} ×6 — `tests/oc_azure.rs::oc_azure_resource_name_sources`
+- P leaves models unchanged and uncloned without a resource name — `tests/oc_azure.rs::oc_azure_leaves_models_unchanged_and_uncloned_without_a_resource_name`
+- P expands provider and model resource URLs — `tests/oc_azure.rs::oc_azure_expands_provider_and_model_resource_urls` (adapted: CodeSmith models have no resource of their own)
+- P prefers WebSockets on the provider for the Azure Responses API only — `tests/oc_azure.rs::oc_azure_prefers_websockets_on_the_provider_for_the_azure_responses_api_only` (adapted: per provider settings)
 
 **`plugin/provider-cerebras.test.ts`**
 

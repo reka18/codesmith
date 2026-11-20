@@ -432,12 +432,18 @@ impl Config {
             .and_then(|c| c.provider(provider))
             .map(|p| p.models.as_slice())
             .unwrap_or(&[]);
-        for m in crate::providers::live::models(provider, None, templates) {
+        // A kept live list stands in for the catalog's models.
+        let live = crate::providers::live::models(provider, None, templates);
+        for m in &live {
             if m.enabled && !configured.contains_key(&m.id) && !out.contains(&m.id) {
-                out.push(m.id);
+                out.push(m.id.clone());
             }
         }
-        if let Some(p) = catalog.as_ref().and_then(|c| c.provider(provider)) {
+        if let Some(p) = catalog
+            .as_ref()
+            .and_then(|c| c.provider(provider))
+            .filter(|_| live.is_empty())
+        {
             for m in &p.models {
                 if !configured.contains_key(&m.id)
                     && types.contains(&m.kind.as_str())
@@ -1089,7 +1095,11 @@ pub const BUILTIN: &[(&str, &str, Protocol, &str, &[&str])] = &[
         "Azure OpenAI",
         Protocol::OpenaiResponses,
         "",
-        &["AZURE_OPENAI_API_KEY"],
+        &[
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_API_KEY",
+            "AZURE_COGNITIVE_SERVICES_API_KEY",
+        ],
     ),
     (
         "openrouter",
@@ -1284,6 +1294,24 @@ impl Config {
                 .unwrap_or(Protocol::OpenaiChat),
         };
         let azure = pid == "azure";
+        // Azure's resource: the saved login's, the configured one, or the
+        // environment's; it fills `${AZURE_RESOURCE_NAME}` in URLs.
+        let azure_login = azure
+            .then(|| crate::auth::entry(crate::providers::azure::ID))
+            .flatten();
+        let azure_resource = azure
+            .then(|| {
+                crate::providers::azure::resource_name(
+                    &p.settings,
+                    azure_login.as_ref(),
+                    &crate::providers::process_env(),
+                )
+            })
+            .flatten();
+        let resource_url = |u: &str| match &azure_resource {
+            Some(r) => crate::providers::azure::expand(u, r),
+            None => u.to_string(),
+        };
         let model_id =
             m.id.clone()
                 .or_else(|| cm.map(|cm| cm.model_id.clone()))
@@ -1311,7 +1339,8 @@ impl Config {
         let catalog_url = cm
             .filter(|_| catalog_package.and_then(crate::catalog::protocol) == Some(protocol))
             .and_then(|cm| cm.settings.as_ref()?.base_url.as_deref())
-            .and_then(expand_url);
+            .and_then(|u| expand_url(&resource_url(u)));
+        let configured_url = configured_url.map(|u| resource_url(&u));
         let base_url = configured_url
             .clone()
             .or_else(|| plugin.as_ref().map(|r| r.base_url.clone()))
@@ -1319,12 +1348,9 @@ impl Config {
             .or_else(|| p.settings.base_url.clone())
             .filter(|u| !u.is_empty())
             .or_else(|| {
-                let r = p
-                    .settings
-                    .resource_name
+                azure_resource
                     .as_deref()
-                    .filter(|r| !r.is_empty());
-                r.filter(|_| azure)
+                    .filter(|_| azure)
                     .map(|r| codesmith_ai::azure_resource_url(r, protocol))
             })
             .ok_or_else(|| match azure {
@@ -1333,8 +1359,11 @@ impl Config {
                 }
                 false => anyhow!("provider {pid:?} has no settings.baseURL"),
             })?;
+        // An Azure CLI login signs each request with an Entra ID token.
+        let azure_cli = azure && crate::providers::azure::cli_login(azure_login.as_ref());
         let api_key = match &plugin {
             Some(r) => r.api_key.clone(),
+            None if azure_cli => None,
             None => provider_key(pid, &p),
         };
         let query: Vec<(String, String)> = p.settings.query_params.clone().into_iter().collect();
@@ -1352,6 +1381,9 @@ impl Config {
         let auth = match p.settings.api_key_header.clone().filter(|h| !h.is_empty()) {
             Some(h) => codesmith_ai::Auth::Header(h),
             None if plugin.is_some() => plugin.as_ref().unwrap().auth.clone(),
+            None if azure_cli => {
+                crate::providers::azure::cli_auth(&crate::providers::process_env())?
+            }
             None if azure && protocol != Protocol::AnthropicMessages => {
                 codesmith_ai::Auth::Header("api-key".into())
             }
@@ -1478,7 +1510,12 @@ impl Config {
         }
         // The cache belongs to the model, not to a request option.
         options.remove("cache");
-        let websocket = websocket_route(pid, protocol, &p.settings, &base_url)?;
+        // WebSocket handshakes carry static headers only, so dynamic
+        // credentials stay on HTTP.
+        let websocket = match auth {
+            codesmith_ai::Auth::Dynamic(_) => None,
+            _ => websocket_route(pid, protocol, &p.settings, &base_url)?,
+        };
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id: wire_model,

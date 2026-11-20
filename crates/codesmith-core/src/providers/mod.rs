@@ -5,6 +5,7 @@
 //! GitHub Copilot logs in with GitHub's device flow and routes each model to
 //! the API that serves it.
 
+pub mod azure;
 pub mod bedrock;
 pub mod cloudflare;
 pub mod copilot;
@@ -137,6 +138,7 @@ pub fn key_form(
         cloudflare::GATEWAY => Some(cloudflare::gateway_form(settings, env)),
         cloudflare::WORKERS => Some(cloudflare::workers_form(settings, env)),
         snowflake::ID => Some(snowflake::key_form()),
+        azure::ID => Some(azure::key_form(settings)),
         _ => None,
     }
 }
@@ -346,6 +348,13 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
             } else {
                 None
             }
+        }
+        azure::ID => {
+            let s = stored?;
+            azure::cli_login(Some(s)).then(|| match azure::stored_resource(Some(s)) {
+                Some(r) => format!("Azure CLI login ({r})"),
+                None => "Azure CLI login".to_string(),
+            })
         }
         copilot::ID => {
             let s = stored?;

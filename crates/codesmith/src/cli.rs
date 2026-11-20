@@ -508,6 +508,10 @@ enum AuthCmd {
         /// key (poe, snowflake-cortex).
         #[arg(long)]
         oauth: bool,
+        /// azure: sign requests with Microsoft Entra ID tokens from the
+        /// Azure CLI (`az login`) instead of saving a key.
+        #[arg(long)]
+        cli: bool,
         /// google-vertex: use Application Default Credentials in this project.
         #[arg(long)]
         project: Option<String>,
@@ -963,8 +967,10 @@ async fn run(cli: Cli) -> Result<()> {
             let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
             let client = reqwest::Client::new();
             // Providers with a live list keep it for model resolution.
+            let settings = loaded.config.provider(&pid).unwrap_or_default().settings;
             if let Some(ids) =
-                codesmith_core::providers::live::refresh(&client, &pid, &m.provider).await
+                codesmith_core::providers::live::refresh(&client, &pid, &m.provider, &settings)
+                    .await
             {
                 for id in ids? {
                     println!("{pid}/{id}");
@@ -1490,6 +1496,7 @@ struct PluginLogin {
     location: Option<String>,
     client_id: Option<String>,
     oauth: bool,
+    cli: bool,
     fields: Vec<String>,
     cwd: PathBuf,
 }
@@ -1507,9 +1514,43 @@ async fn plugin_login(
         location,
         client_id,
         oauth,
+        cli,
         fields,
         cwd,
     } = login;
+    if cli {
+        if provider != providers::azure::ID {
+            return Err(anyhow!("--cli is for azure"));
+        }
+        let env = providers::process_env();
+        if providers::azure::find_cli(&env).is_none() {
+            return Err(anyhow!(
+                "the Azure CLI is not installed (no `az` on PATH): install it and run `az login`, or log in with a key"
+            ));
+        }
+        let loaded = config::load(&cwd)?;
+        let settings = loaded
+            .config
+            .provider(provider)
+            .unwrap_or_default()
+            .settings;
+        let mut answers = parse_fields(&fields)?;
+        let resource = match answers
+            .remove("resourceName")
+            .and_then(|v| v.as_str().map(str::to_string))
+        {
+            Some(r) => Some(r),
+            None if providers::azure::key_form(&settings).fields.is_empty() => None,
+            None => read_line("Azure resource (your Azure OpenAI or AI Services resource name): ")?
+                .filter(|r| !r.is_empty()),
+        };
+        providers::azure::save_cli_login(file, resource.as_deref())?;
+        return Ok(Some(format!(
+            "Saved an Azure CLI login{} in {}; requests use tokens from `az`",
+            resource.map(|r| format!(" for {r}")).unwrap_or_default(),
+            file.display()
+        )));
+    }
     if oauth {
         return browser_login(file, provider, client_id.as_deref(), &fields, &cwd)
             .await
@@ -1685,6 +1726,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             location,
             client_id,
             oauth,
+            cli,
             fields,
         } => {
             let login = PluginLogin {
@@ -1694,6 +1736,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 location,
                 client_id,
                 oauth,
+                cli,
                 fields: fields.clone(),
                 cwd: cwd.to_path_buf(),
             };

@@ -90,6 +90,7 @@ pub fn derive(
         super::copilot::ID => {
             super::copilot_models::derive(base, &super::copilot_models::parse(&raw), templates)
         }
+        super::azure::ID => super::azure::derive(&raw, templates),
         _ => vec![],
     }
 }
@@ -101,8 +102,21 @@ pub async fn refresh(
     client: &reqwest::Client,
     provider_id: &str,
     p: &codesmith_ai::Provider,
+    settings: &crate::config::ProviderSettings,
 ) -> Option<Result<Vec<String>>> {
     match provider_id {
+        super::azure::ID => Some(
+            refresh_azure(
+                client,
+                p,
+                settings,
+                &super::azure::Endpoints::default(),
+                &file(),
+                crate::auth::entry(super::azure::ID).as_ref(),
+                &super::process_env(),
+            )
+            .await,
+        ),
         super::modal::ID => Some(
             async {
                 let key = p.api_key.as_deref().ok_or_else(|| {
@@ -185,4 +199,41 @@ async fn fetch_copilot(
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("listing Copilot models: the answer has no data list"))?;
     Ok((root, account, raw))
+}
+
+/// List and keep an Azure resource's deployments (see
+/// [`super::azure::deployments`]); a custom endpoint keeps the catalog.
+pub async fn refresh_azure(
+    client: &reqwest::Client,
+    p: &codesmith_ai::Provider,
+    settings: &crate::config::ProviderSettings,
+    e: &super::azure::Endpoints,
+    path: &Path,
+    stored: Option<&Value>,
+    env: &super::Env,
+) -> Result<Vec<String>> {
+    use super::azure;
+    if settings.base_url.is_some() {
+        anyhow::bail!("a custom Azure endpoint keeps the catalog's models: configure them under providers.azure.models");
+    }
+    let resource = azure::resource_name(settings, stored, env).ok_or_else(|| {
+        anyhow::anyhow!("Azure needs the resource name: set settings.resourceName or AZURE_RESOURCE_NAME, or log in with it")
+    })?;
+    let (list, account) = if azure::cli_login(stored) {
+        let program =
+            azure::find_cli(env).ok_or_else(|| anyhow::anyhow!("the Azure CLI is not on PATH"))?;
+        let cli = azure::cli(program);
+        let l = azure::deployments(client, e, &resource, &azure::Credential::Cli(&cli)).await?;
+        (l, format!("azure-cli:{resource}"))
+    } else {
+        let key = p
+            .api_key
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Azure needs a key or an Azure CLI login"))?;
+        let l = azure::deployments(client, e, &resource, &azure::Credential::Key(key)).await?;
+        (l, format!("{}:{resource}", fingerprint(key)))
+    };
+    let ids = list.iter().map(|(n, _)| n.to_ascii_lowercase()).collect();
+    save_in(path, azure::ID, &account, "", azure::raw(&list))?;
+    Ok(ids)
 }

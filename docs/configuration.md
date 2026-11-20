@@ -117,7 +117,7 @@ from `settings.apiKey` in config.
 | `anthropic` | Anthropic Messages | `ANTHROPIC_API_KEY` |
 | `openai` | OpenAI Responses | `OPENAI_API_KEY` |
 | `google` | Gemini | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY` |
-| `azure` | OpenAI Responses | `AZURE_OPENAI_API_KEY` (needs `settings.resourceName` or `settings.baseURL`; see [Azure](#azure-openai)) |
+| `azure` | OpenAI Responses | `AZURE_OPENAI_API_KEY`, `AZURE_API_KEY`, `AZURE_COGNITIVE_SERVICES_API_KEY`, or an Azure CLI login (needs the resource name or `settings.baseURL`; see [Azure](#azure-openai)) |
 | `openrouter` | OpenAI Chat | `OPENROUTER_API_KEY` |
 | `groq` | OpenAI Chat | `GROQ_API_KEY` |
 | `deepseek` | OpenAI Chat | `DEEPSEEK_API_KEY` |
@@ -360,6 +360,32 @@ resource's Claude endpoint (`https://<resource>.services.ai.azure.com/anthropic/
 is used with the key in `x-api-key`. Set `"protocol": "openai-chat"` for Chat
 Completions.
 
+The resource name comes from the saved login, else `settings.resourceName`,
+else `AZURE_RESOURCE_NAME` (or the older
+`AZURE_COGNITIVE_SERVICES_RESOURCE_NAME`), and fills `${AZURE_RESOURCE_NAME}`
+in catalog and configured URLs. `codesmith auth login azure` asks for it
+after the key unless config names it (`--field resourceName=…` answers
+without asking).
+
+**Azure CLI (Microsoft Entra ID).** `codesmith auth login azure --cli
+[--field resourceName=…]` saves no secret: each request is signed with a
+token from the Azure CLI's own sign-in (`az login`), for its audience
+(`https://ai.azure.com` for Foundry endpoints on `*.services.ai.azure.com`,
+Cognitive Services otherwise), fetched with `az account get-access-token`
+and reused until five minutes before it expires. It needs `az` on `PATH`.
+Responses then go over HTTP rather than WebSockets.
+
+**Deployments.** `codesmith models azure` lists the resource's deployments
+and keeps them (see [Live model lists](#live-model-lists-modal-github-copilot-azure)):
+with an Azure CLI login through Azure Resource Manager (finding the resource
+across your subscriptions with Resource Graph, every page of the list, and
+never following a page link off `management.azure.com`), falling back to
+the resource's own list, which is what a key reads. Each deployment becomes
+a model named after it (`azure/prod-mini`), with the limits, prices and
+routes of the catalog model it deploys; deployments of models the catalog
+does not know need a `models` entry. A custom `settings.baseURL` keeps the
+catalog's models.
+
 ### Amazon Bedrock
 
 `amazon-bedrock` runs models on the Converse API
@@ -454,7 +480,7 @@ who started the request (`x-initiator`), whether it carries images, and the
 kind of step (agent, subagent, title, compaction).
 
 `codesmith models github-copilot` fetches the account's model list and keeps
-it (see [Live model lists](#live-model-lists-modal-github-copilot)): models then resolve
+it (see [Live model lists](#live-model-lists-modal-github-copilot-azure)): models then resolve
 with the API, limits, prices and reasoning variants Copilot advertises, the
 catalog's Copilot models stay only while Copilot still lists them, and
 `github-copilot/auto` appears when the account has an Auto pool. With a kept
@@ -550,9 +576,10 @@ deployment itself, which suits deployments that serve that API (OpenAI
 models; set `"protocol"` for others). Without a service key the deployment
 settings are not used and `settings.baseURL` takes a plain key.
 
-### Live model lists (Modal, GitHub Copilot)
+### Live model lists (Modal, GitHub Copilot, Azure)
 
-Some providers serve a model list of their own for your account.
+Some providers serve a model list of their own for your account (Azure:
+the resource's deployments).
 `codesmith models <provider>` fetches it and keeps it in the data folder's
 `live-models.json`, and from then on those models resolve with what the
 list says (limits, prices, modalities, reasoning variants) over the
@@ -779,7 +806,8 @@ and `codesmith auth login google-vertex --project <id>` save a login instead
 of a key; `auth logout` removes those too. Some key logins ask for more than the key (the
 account and gateway ids of [Cloudflare](#cloudflare-ai-gateway-and-workers-ai)):
 they are asked in the terminal after the key, or given with
-`--field KEY=VALUE`, and saved with it. `--oauth` logs in through a
+`--field KEY=VALUE`, and saved with it. `codesmith auth login azure --cli`
+saves an [Azure CLI](#azure-openai) login. `--oauth` logs in through a
 provider's browser OAuth instead of a key ([Poe](#poe),
 [Snowflake Cortex](#snowflake-cortex)).
 
