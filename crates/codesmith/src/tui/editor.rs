@@ -195,6 +195,44 @@ impl Editor {
         self.goal = None;
     }
 
+    /// Delete back to the start of the line, or the newline before it when
+    /// already there (Ctrl+U).
+    pub fn kill_to_start(&mut self) {
+        let s = self.line_start();
+        if s == self.cursor {
+            self.backspace();
+        } else {
+            self.text.replace_range(s..self.cursor, "");
+            self.cursor = s;
+        }
+        self.goal = None;
+    }
+
+    /// Delete the whole line the cursor is on, with its newline.
+    pub fn delete_line(&mut self) {
+        let (mut s, mut e) = (self.line_start(), self.line_end());
+        if e < self.text.len() {
+            e += 1;
+        } else {
+            s = s.saturating_sub(1);
+        }
+        self.text.replace_range(s..e, "");
+        self.cursor = s.min(self.text.len());
+        self.goal = None;
+    }
+
+    /// Start of the whole text.
+    pub fn buffer_home(&mut self) {
+        self.cursor = 0;
+        self.goal = None;
+    }
+
+    /// End of the whole text.
+    pub fn buffer_end(&mut self) {
+        self.cursor = self.text.len();
+        self.goal = None;
+    }
+
     fn col_of(&self, start: usize, end: usize) -> usize {
         self.text[start..end]
             .chars()

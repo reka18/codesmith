@@ -201,7 +201,6 @@ impl ModeSetting {
 /// A theme loaded in a mode.
 #[derive(Debug, Clone)]
 pub struct Loaded {
-    pub name: String,
     pub modes: Vec<Mode>,
     pub mode: Mode,
     pub theme: Resolved,
@@ -218,12 +217,7 @@ fn load(source: &Value, name: &str, requested: Mode) -> Result<Loaded, String> {
             .ok_or("Theme must provide at least one mode")?
     };
     let theme = doc::resolve(&document, Some(mode))?;
-    Ok(Loaded {
-        name: name.to_string(),
-        modes,
-        mode,
-        theme,
-    })
+    Ok(Loaded { modes, mode, theme })
 }
 
 /// The theme selection: the themes there are, the one chosen, and the mode
@@ -274,6 +268,7 @@ impl Themes {
 
     /// Every theme by name: the built-ins, then custom files (which may
     /// replace them), then `system`.
+    #[cfg(test)]
     pub fn all(&self) -> BTreeMap<String, Value> {
         let mut out = default_themes().clone();
         out.insert(DEFAULT.into(), opencode().clone());
@@ -352,6 +347,7 @@ impl Themes {
         &self.active
     }
 
+    #[cfg(test)]
     pub fn current(&self) -> &Loaded {
         &self.current
     }
@@ -362,6 +358,7 @@ impl Themes {
     }
 
     /// The modes the theme has.
+    #[cfg(test)]
     pub fn modes(&self) -> &[Mode] {
         &self.current.modes
     }
@@ -427,18 +424,9 @@ impl Themes {
         self.reload();
     }
 
-    /// Replace the custom themes (their files were read again).
-    pub fn set_custom(&mut self, custom: BTreeMap<String, Value>) {
-        self.custom = custom
-            .into_iter()
-            .filter(|(_, v)| is_theme_source(v))
-            .collect();
-        self.reload();
-    }
-
     /// The UI colors of the current theme.
     pub fn palette(&self) -> Palette {
-        Palette::new(&self.current.theme, self.mode())
+        Palette::new(&self.current.theme)
     }
 }
 
@@ -451,11 +439,8 @@ static EPOCH: AtomicU64 = AtomicU64::new(1);
 pub struct Palette {
     /// Different for every palette made: caches of drawn text key on it.
     pub epoch: u64,
-    pub mode: Mode,
     /// The page; `Reset` (the terminal's own) when the theme's is clear.
     pub bg: Color,
-    pub panel: Color,
-    pub element: Color,
     pub text: Color,
     pub muted: Color,
     pub faint: Color,
@@ -507,7 +492,7 @@ fn term(c: Rgba, under: Option<Rgba>) -> Color {
 }
 
 impl Palette {
-    pub fn new(t: &Resolved, mode: Mode) -> Palette {
+    pub fn new(t: &Resolved) -> Palette {
         let page = t.rgba(t.background.base);
         let under = (page.a == 255).then_some(page);
         let c = |id: doc::C| term(t.rgba(id), under);
@@ -516,10 +501,7 @@ impl Palette {
         let cat = t.categorical();
         Palette {
             epoch: EPOCH.fetch_add(1, Ordering::Relaxed),
-            mode,
             bg: c(t.background.base),
-            panel: c(t.background.raised.base),
-            element: c(t.background.raised.high),
             text: c(t.text.base),
             muted: c(t.text.muted),
             faint: c(t.text.faint),

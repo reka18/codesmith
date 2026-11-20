@@ -1,13 +1,14 @@
 //! Markdown to styled terminal lines: headings, emphasis, inline code,
 //! links, lists (with task boxes), quotes, rules, tables and fenced code
-//! blocks highlighted with syntect.
+//! blocks highlighted with syntect, in the current theme's Markdown and
+//! syntax colors.
 
+use super::theme;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -16,18 +17,12 @@ fn syntaxes() -> &'static SyntaxSet {
     S.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
-fn theme() -> &'static Theme {
-    static T: OnceLock<Theme> = OnceLock::new();
-    T.get_or_init(|| {
-        let mut set = ThemeSet::load_defaults();
-        set.themes.remove("base16-ocean.dark").unwrap_or_default()
-    })
-}
-
 /// Syntax-highlight `code` as `lang` (a fence tag or file extension), one
 /// span list per line. Unknown languages come back unstyled.
 pub fn highlight(code: &str, lang: &str) -> Vec<Vec<Span<'static>>> {
     let ss = syntaxes();
+    let p = theme::current();
+    let plain = Style::default().fg(p.md("codeBlock"));
     let token = lang.split([',', ' ', '{']).next().unwrap_or("").trim();
     let syntax = (!token.is_empty())
         .then(|| {
@@ -38,10 +33,10 @@ pub fn highlight(code: &str, lang: &str) -> Vec<Vec<Span<'static>>> {
     let Some(syntax) = syntax else {
         return code
             .lines()
-            .map(|l| vec![Span::raw(l.to_string())])
+            .map(|l| vec![Span::styled(l.to_string(), plain)])
             .collect();
     };
-    let mut h = HighlightLines::new(syntax, theme());
+    let mut h = HighlightLines::new(syntax, p.syntect());
     let mut out = Vec::new();
     for line in syntect::util::LinesWithEndings::from(code) {
         let spans = match h.highlight_line(line, ss) {
@@ -61,7 +56,10 @@ pub fn highlight(code: &str, lang: &str) -> Vec<Vec<Span<'static>>> {
                 })
                 .filter(|s| !s.content.is_empty())
                 .collect(),
-            Err(_) => vec![Span::raw(line.trim_end_matches(['\n', '\r']).to_string())],
+            Err(_) => vec![Span::styled(
+                line.trim_end_matches(['\n', '\r']).to_string(),
+                plain,
+            )],
         };
         out.push(spans);
     }
@@ -189,7 +187,8 @@ impl Renderer {
     }
 
     fn prefixes(&mut self) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
-        let dim = Style::default().fg(Color::DarkGray);
+        let p = theme::current();
+        let dim = Style::default().fg(p.md("blockQuote"));
         let mut first = Vec::new();
         let mut rest = Vec::new();
         for _ in 0..self.quote {
@@ -200,7 +199,12 @@ impl Renderer {
         for (i, it) in self.items.iter_mut().enumerate() {
             if i + 1 == n {
                 if let Some(b) = it.bullet.take() {
-                    first.push(Span::styled(b, Style::default().fg(Color::Cyan)));
+                    let token = if b.starts_with(|c: char| c.is_ascii_digit()) {
+                        "listEnumeration"
+                    } else {
+                        "listItem"
+                    };
+                    first.push(Span::styled(b, Style::default().fg(p.md(token))));
                     rest.push(Span::raw(" ".repeat(it.width)));
                     continue;
                 }
@@ -245,7 +249,7 @@ impl Renderer {
     }
 
     fn code_block(&mut self, lang: &str, code: &str) {
-        let bar = Style::default().fg(Color::DarkGray);
+        let bar = Style::default().fg(theme::current().faint);
         let (mut first, _) = self.prefixes();
         if !lang.is_empty() {
             let mut l = first.clone();
@@ -268,7 +272,8 @@ impl Renderer {
                 w[i] = w[i].max(c.width());
             }
         }
-        let sep = Style::default().fg(Color::DarkGray);
+        let p = theme::current();
+        let sep = Style::default().fg(p.md("horizontalRule"));
         for (ri, r) in t.rows.iter().enumerate() {
             let mut spans = Vec::new();
             for (i, width) in w.iter().enumerate() {
@@ -283,9 +288,11 @@ impl Renderer {
                     _ => (0, pad),
                 };
                 let style = if ri < t.head_rows {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
                     Style::default()
+                        .fg(p.md("heading"))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.md("text"))
                 };
                 spans.push(Span::styled(
                     format!("{}{c}{}", " ".repeat(l), " ".repeat(rt)),
@@ -311,10 +318,7 @@ impl Renderer {
             Tag::Heading { level, .. } => {
                 self.blank();
                 self.heading = Some(level);
-                let color = match level {
-                    HeadingLevel::H1 | HeadingLevel::H2 => Color::Cyan,
-                    _ => Color::Reset,
-                };
+                let color = theme::current().md("heading");
                 self.push_style(|s| s.fg(color).add_modifier(Modifier::BOLD));
                 if level == HeadingLevel::H1 {
                     self.push_style(|s| s.add_modifier(Modifier::UNDERLINED));
@@ -324,7 +328,8 @@ impl Renderer {
                 self.flush();
                 self.blank();
                 self.quote += 1;
-                self.push_style(|s| s.add_modifier(Modifier::ITALIC));
+                let c = theme::current().md("blockQuote");
+                self.push_style(|s| s.fg(c).add_modifier(Modifier::ITALIC));
             }
             Tag::CodeBlock(kind) => {
                 self.flush();
@@ -360,15 +365,24 @@ impl Renderer {
                     bullet: Some(bullet),
                 });
             }
-            Tag::Emphasis => self.push_style(|s| s.add_modifier(Modifier::ITALIC)),
-            Tag::Strong => self.push_style(|s| s.add_modifier(Modifier::BOLD)),
+            Tag::Emphasis => {
+                let c = theme::current().md("emphasis");
+                self.push_style(|s| s.fg(c).add_modifier(Modifier::ITALIC))
+            }
+            Tag::Strong => {
+                let c = theme::current().md("strong");
+                self.push_style(|s| s.fg(c).add_modifier(Modifier::BOLD))
+            }
             Tag::Strikethrough => self.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT)),
             Tag::Link { dest_url, .. } => {
                 self.links.push(dest_url.to_string());
-                self.push_style(|s| s.fg(Color::Blue).add_modifier(Modifier::UNDERLINED));
+                let c = theme::current().md("linkText");
+                self.push_style(|s| s.fg(c).add_modifier(Modifier::UNDERLINED));
             }
             Tag::Image { dest_url, .. } => {
                 self.links.push(dest_url.to_string());
+                let c = theme::current().md("imageText");
+                self.push_style(|s| s.fg(c));
                 self.text("[image: ");
             }
             Tag::Table(align) => {
@@ -405,7 +419,10 @@ impl Renderer {
                         let marks = "#".repeat(l as usize);
                         self.spans.insert(
                             0,
-                            Span::styled(format!("{marks} "), Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                format!("{marks} "),
+                                Style::default().fg(theme::current().faint),
+                            ),
                         );
                     }
                 }
@@ -449,13 +466,14 @@ impl Renderer {
                 if !url.is_empty() && shown != url && !url.starts_with('#') {
                     self.spans.push(Span::styled(
                         format!(" ({url})"),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme::current().md("link")),
                     ));
                 }
             }
             TagEnd::Image => {
                 let url = self.links.pop().unwrap_or_default();
                 self.text(&format!("]({url})"));
+                self.styles.pop();
             }
             TagEnd::TableCell => {
                 if let Some(t) = &mut self.table {
@@ -483,11 +501,12 @@ impl Renderer {
 /// Render markdown to lines at most `width` columns wide (code blocks are
 /// not wrapped).
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
+    let p = theme::current();
     let mut r = Renderer {
         width: width.max(10),
         out: Vec::new(),
         spans: Vec::new(),
-        styles: Vec::new(),
+        styles: vec![Style::default().fg(p.md("text"))],
         lists: Vec::new(),
         items: Vec::new(),
         quote: 0,
@@ -508,7 +527,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                 } else {
                     r.spans.push(Span::styled(
                         t.to_string(),
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(p.md("code")),
                     ));
                 }
             }
@@ -519,16 +538,16 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                 r.blank();
                 r.out.push(Line::from(Span::styled(
                     "─".repeat(r.width.min(60)),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(p.md("horizontalRule")),
                 )));
             }
             Event::TaskListMarker(done) => {
                 let s = if done { "☑ " } else { "☐ " };
                 r.spans
-                    .push(Span::styled(s, Style::default().fg(Color::Cyan)));
+                    .push(Span::styled(s, Style::default().fg(p.md("listItem"))));
             }
             Event::Html(h) | Event::InlineHtml(h) => {
-                let dim = Style::default().fg(Color::DarkGray);
+                let dim = Style::default().fg(p.muted);
                 for (i, l) in h.lines().enumerate() {
                     if i > 0 {
                         r.flush();
@@ -583,7 +602,10 @@ mod tests {
         assert!(style_of(&l, "italic")
             .add_modifier
             .contains(Modifier::ITALIC));
-        assert_eq!(style_of(&l, "code").fg, Some(Color::Yellow));
+        let p = theme::current();
+        assert_eq!(style_of(&l, "code").fg, Some(p.md("code")));
+        assert_eq!(style_of(&l, "Title").fg, Some(p.md("heading")));
+        assert_eq!(style_of(&l, "Some").fg, Some(p.md("text")));
     }
 
     #[test]

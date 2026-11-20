@@ -5,62 +5,6 @@
 use super::color::{ansi, Rgba};
 use serde_json::Value;
 
-/// The colors a V1 theme names, in OpenCode's order.
-pub const KEYS: [&str; 52] = [
-    "primary",
-    "secondary",
-    "accent",
-    "error",
-    "warning",
-    "success",
-    "info",
-    "text",
-    "textMuted",
-    "selectedListItemText",
-    "background",
-    "backgroundPanel",
-    "backgroundElement",
-    "backgroundMenu",
-    "border",
-    "borderActive",
-    "borderSubtle",
-    "diffAdded",
-    "diffRemoved",
-    "diffContext",
-    "diffHunkHeader",
-    "diffHighlightAdded",
-    "diffHighlightRemoved",
-    "diffAddedBg",
-    "diffRemovedBg",
-    "diffContextBg",
-    "diffLineNumber",
-    "diffAddedLineNumberBg",
-    "diffRemovedLineNumberBg",
-    "markdownText",
-    "markdownHeading",
-    "markdownLink",
-    "markdownLinkText",
-    "markdownCode",
-    "markdownBlockQuote",
-    "markdownEmph",
-    "markdownStrong",
-    "markdownHorizontalRule",
-    "markdownListItem",
-    "markdownListEnumeration",
-    "markdownImage",
-    "markdownImageText",
-    "markdownCodeBlock",
-    "syntaxComment",
-    "syntaxKeyword",
-    "syntaxFunction",
-    "syntaxVariable",
-    "syntaxString",
-    "syntaxNumber",
-    "syntaxType",
-    "syntaxOperator",
-    "syntaxPunctuation",
-];
-
 /// A V1 theme resolved for one mode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
@@ -73,10 +17,6 @@ impl Theme {
     /// The named color (black when a custom theme leaves it out).
     pub fn get(&self, key: &str) -> Rgba {
         self.colors.get(key).copied().unwrap_or(Rgba::rgb(0, 0, 0))
-    }
-
-    pub fn has(&self, key: &str) -> bool {
-        self.colors.contains_key(key)
     }
 }
 

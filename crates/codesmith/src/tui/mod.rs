@@ -19,9 +19,13 @@ mod bridge;
 mod complete;
 mod diff;
 mod editor;
+pub(crate) mod keymap;
 mod markdown;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod parity_keys;
+pub(crate) mod settings;
 pub(crate) mod theme;
 mod view;
 
@@ -87,6 +91,17 @@ struct Runner {
     /// the session object a turn's task dropped. Stopped when the TUI
     /// moves to another session (`/new`, `/sessions`) or exits.
     jobs: Jobs,
+    /// The theme selection.
+    themes: theme::Themes,
+    /// The theme `tui.theme.name` configures (the theme chosen in the UI is
+    /// remembered against it).
+    configured_theme: Option<String>,
+    /// The terminal's mode, when it reported its background.
+    detected: Option<theme::doc::Mode>,
+    /// The theme to go back to when the theme picker is closed.
+    theme_before: Option<String>,
+    /// `ctrl+z` was pressed: suspend before the next frame.
+    suspend: bool,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -415,7 +430,8 @@ impl Runner {
         };
         match name {
             "exit" | "quit" | "q" => self.app.quit = true,
-            "help" => self.app.modal = Some(Modal::Help),
+            "help" => self.app.modal = Some(Modal::Help(0)),
+            "themes" | "theme" => self.theme_command(args),
             "clear" => self.app.entries.clear(),
             "thinking" => {
                 self.app.show_reasoning = !self.app.show_reasoning;
@@ -657,12 +673,110 @@ impl Runner {
                 self.install(s, true);
             }
             Pick::Agent if self.idle_or_say() => self.set_agent(&id)?,
+            Pick::Theme => {
+                self.theme_before = None;
+                self.set_theme(&id, true);
+            }
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => self.set_model(&id)?,
             Pick::Session | Pick::Agent | Pick::Model => {}
         }
         Ok(())
+    }
+
+    /// Show the current theme from the next frame.
+    fn apply_theme(&mut self) {
+        theme::install(self.themes.palette());
+        for (name, e) in std::mem::take(&mut self.themes.errors) {
+            self.app
+                .error(format!("theme {name} did not load, using opencode: {e}"));
+        }
+    }
+
+    /// Remember the theme and mode chosen in the UI.
+    fn remember_theme(&self) {
+        let mode = self.themes.locked().then(|| self.themes.mode());
+        theme::remember(
+            self.configured_theme.as_deref(),
+            self.themes.selected(),
+            mode,
+        );
+    }
+
+    fn set_theme(&mut self, name: &str, persist: bool) {
+        if !self.themes.set(name) {
+            self.app.error(format!("there is no theme {name}"));
+            return;
+        }
+        self.apply_theme();
+        if persist {
+            self.remember_theme();
+            self.app
+                .notice(format!("theme: {}", self.themes.selected()));
+        }
+    }
+
+    /// `/themes`: pick a theme; `/themes <name>` choose one; `/themes
+    /// dark`, `light` or `system` set the mode.
+    fn theme_command(&mut self, args: &str) {
+        let arg = args.trim();
+        match arg {
+            "" => {
+                let current = self.themes.selected().to_string();
+                let items = self
+                    .themes
+                    .names()
+                    .into_iter()
+                    .map(|n| PickItem {
+                        current: n == current,
+                        detail: String::new(),
+                        label: n.clone(),
+                        id: n,
+                    })
+                    .collect();
+                self.theme_before = Some(current);
+                self.app.modal = Some(Modal::Picker(Picker::new(Pick::Theme, "Themes", items)));
+            }
+            "dark" | "light" => self.set_mode(theme::doc::Mode::parse(arg).unwrap()),
+            "system" => {
+                self.themes.unlock(self.detected);
+                self.apply_theme();
+                self.remember_theme();
+                self.app.notice("theme mode: follows the terminal");
+            }
+            name => self.set_theme(name, true),
+        }
+    }
+
+    fn set_mode(&mut self, mode: theme::doc::Mode) {
+        if !self.themes.set_mode(mode) {
+            self.app.error(format!(
+                "theme {} has no {} mode",
+                self.themes.selected(),
+                mode.key()
+            ));
+            return;
+        }
+        self.apply_theme();
+        self.remember_theme();
+        self.app.notice(format!("theme mode: {}", mode.key()));
+    }
+
+    /// A command the app hands over: theme mode switches and suspend.
+    fn run_command(&mut self, id: &str) {
+        match id {
+            "theme.switch_mode" => self.set_mode(self.themes.mode().other()),
+            "theme.mode.lock" if self.themes.locked() => self.theme_command("system"),
+            "theme.mode.lock" => {
+                self.themes.lock();
+                self.remember_theme();
+                self.app
+                    .notice(format!("theme mode: {} (pinned)", self.themes.mode().key()));
+            }
+            "terminal.suspend" => self.suspend = true,
+            _ => {}
+        }
     }
 
     async fn handle(&mut self, ev: Ev) {
@@ -712,6 +826,21 @@ impl Runner {
                         Ok(())
                     }
                     Some(Action::Picked(kind, id)) => self.picked(kind, id),
+                    Some(Action::Preview(Pick::Theme, id)) => {
+                        self.set_theme(&id, false);
+                        Ok(())
+                    }
+                    Some(Action::Cancelled(Pick::Theme)) => {
+                        if let Some(before) = self.theme_before.take() {
+                            self.set_theme(&before, false);
+                        }
+                        Ok(())
+                    }
+                    Some(Action::Preview(..) | Action::Cancelled(_)) => Ok(()),
+                    Some(Action::Run(id)) => {
+                        self.run_command(id);
+                        Ok(())
+                    }
                     Some(Action::CycleAgent(d)) => self.cycle_agent(d),
                     Some(Action::Quit) | None => Ok(()),
                 };
@@ -821,8 +950,62 @@ fn spawn_input(tx: UnboundedSender<Ev>) {
     });
 }
 
+/// The cursor shape `tui.cursor` asks for.
+fn cursor_style(c: settings::Cursor) -> Option<ratatui::crossterm::cursor::SetCursorStyle> {
+    use ratatui::crossterm::cursor::SetCursorStyle as S;
+    use settings::CursorStyle;
+    Some(match (c.style, c.blinking) {
+        (CursorStyle::Default, _) => return None,
+        (CursorStyle::Block, true) => S::BlinkingBlock,
+        (CursorStyle::Block, false) => S::SteadyBlock,
+        (CursorStyle::Underline, true) => S::BlinkingUnderScore,
+        (CursorStyle::Underline, false) => S::SteadyUnderScore,
+        (CursorStyle::Line, true) => S::BlinkingBar,
+        (CursorStyle::Line, false) => S::SteadyBar,
+    })
+}
+
+/// Stop to the shell (`ctrl+z`), and take the terminal back on `fg`.
+#[cfg(unix)]
+fn suspend(terminal: &mut ratatui::DefaultTerminal, cursor: settings::Cursor) {
+    use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    ratatui::restore();
+    // SAFETY: raising a signal at ourselves; the default action stops the
+    // process until it is continued.
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    let _ = enable_raw_mode();
+    let _ = execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste
+    );
+    if let Some(c) = cursor_style(cursor) {
+        let _ = execute!(std::io::stdout(), c);
+    }
+    let _ = terminal.clear();
+}
+
+#[cfg(not(unix))]
+fn suspend(_: &mut ratatui::DefaultTerminal, _: settings::Cursor) {}
+
 pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     let loaded = config::load(&cwd)?;
+    let (tui, tui_warnings) = settings::load(&loaded.config.tui);
+    let (custom, theme_errors) = theme::discover(&theme::theme_dirs(
+        &codesmith_core::paths::config_dir(),
+        &cwd,
+        &loaded.root,
+    ));
+    let (remembered, remembered_mode) = theme::remembered(tui.theme.as_deref());
+    let themes = theme::Themes::new(
+        remembered.as_deref().or(tui.theme.as_deref()),
+        remembered_mode.or(tui.mode),
+        None,
+        custom,
+    );
     let (tx, mut rx): (UnboundedSender<Ev>, UnboundedReceiver<Ev>) = unbounded_channel();
     let prompter = Arc::new(ChanPrompter::new(tx.clone()));
     let asker: Arc<dyn Asker> = if opts.auto {
@@ -870,7 +1053,23 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         waiter: None,
         resume_held: None,
         jobs: Jobs::default(),
+        themes,
+        configured_theme: tui.theme.clone(),
+        detected: None,
+        theme_before: None,
+        suspend: false,
     };
+    let keymap = keymap::Keymap::new(&tui.keybinds, tui.leader_timeout, cfg!(unix));
+    for w in tui_warnings
+        .iter()
+        .chain(&keymap.warnings)
+        .chain(&theme_errors)
+    {
+        r.app.error(w.clone());
+    }
+    r.app.keymap = Arc::new(keymap);
+    r.app.show_reasoning = tui.thinking.unwrap_or(false);
+    r.app.reasoning_source = tui.markdown == settings::Markdown::Source;
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
         .into_iter()
         .map(|(n, c)| (n, c.description.unwrap_or_default()))
@@ -901,6 +1100,17 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
 
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    if let Some(c) = cursor_style(tui.cursor) {
+        let _ = execute!(std::io::stdout(), c);
+    }
+    // The terminal's colors give the mode (unless one is pinned) and the
+    // `system` theme. Asked before input is read, so the reply is not
+    // taken for keys.
+    if let Some(colors) = theme::system::query(Duration::from_millis(200)) {
+        r.detected = theme::system::terminal_mode(&colors);
+        r.themes.set_palette(colors);
+    }
+    r.apply_theme();
     spawn_input(tx);
     let result: Result<()> = async {
         loop {
@@ -914,6 +1124,9 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             }
             if r.app.quit {
                 break;
+            }
+            if std::mem::take(&mut r.suspend) {
+                suspend(&mut terminal, tui.cursor);
             }
         }
         Ok(())
@@ -929,7 +1142,11 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         // Let it stop writing to the store before the process exits.
         let _ = tokio::time::timeout(Duration::from_secs(2), &mut t).await;
     }
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    let _ = execute!(
+        std::io::stdout(),
+        DisableBracketedPaste,
+        ratatui::crossterm::cursor::SetCursorStyle::DefaultUserShape
+    );
     ratatui::restore();
     if !r.session_id.is_empty() {
         println!(
@@ -948,6 +1165,8 @@ const BUILTINS: &[(&str, bool)] = &[
     ("help", false),
     ("clear", false),
     ("thinking", false),
+    ("themes", true),
+    ("theme", true),
     ("new", false),
     ("sessions", false),
     ("undo", false),

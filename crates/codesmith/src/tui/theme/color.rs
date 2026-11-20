@@ -16,11 +16,11 @@ impl Rgba {
         Rgba { r, g, b, a: 255 }
     }
 
-    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba {
+    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Rgba {
         Rgba { r, g, b, a }
     }
 
-    pub const TRANSPARENT: Rgba = Rgba::rgba(0, 0, 0, 0);
+    pub const TRANSPARENT: Rgba = Rgba::new(0, 0, 0, 0);
 
     /// `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`.
     pub fn from_hex(s: &str) -> Option<Rgba> {
@@ -32,9 +32,9 @@ impl Rgba {
         let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
         Some(match h.len() {
             3 => Rgba::rgb(nib(0)?, nib(1)?, nib(2)?),
-            4 => Rgba::rgba(nib(0)?, nib(1)?, nib(2)?, nib(3)?),
+            4 => Rgba::new(nib(0)?, nib(1)?, nib(2)?, nib(3)?),
             6 => Rgba::rgb(byte(0)?, byte(2)?, byte(4)?),
-            8 => Rgba::rgba(byte(0)?, byte(2)?, byte(4)?, byte(6)?),
+            8 => Rgba::new(byte(0)?, byte(2)?, byte(4)?, byte(6)?),
             _ => return None,
         })
     }

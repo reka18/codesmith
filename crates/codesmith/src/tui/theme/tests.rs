@@ -157,7 +157,7 @@ fn oc_validates_hue_relationships_in_every_provided_mode_while_parsing() {
 fn oc_generates_syntax_with_one_categorical_hue() {
     let src = complete(Mode::Light, json!({ "categorical": ["red"] }));
     let t = resolve_source(&src, Some(Mode::Light), "theme").unwrap();
-    let p = Palette::new(&t, Mode::Light);
+    let p = Palette::new(&t);
     assert!(!p.syntect().scopes.is_empty());
     assert_eq!(
         p.agent,

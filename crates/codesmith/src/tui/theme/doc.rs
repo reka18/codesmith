@@ -97,6 +97,7 @@ pub struct Stateful {
 }
 
 /// Which interaction states apply.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct States {
     pub disabled: bool,
@@ -106,6 +107,7 @@ pub struct States {
     pub hovered: bool,
 }
 
+#[cfg(test)]
 impl Stateful {
     /// The color of the first state that applies, in OpenCode's order
     /// (disabled, pressed, focused, selected, hovered), else the base.
@@ -187,27 +189,10 @@ pub struct Tokens {
     pub markdown: [C; 14],
 }
 
-impl Text {
-    pub fn action(&self, v: &str) -> Stateful {
-        self.action[VARIANTS.iter().position(|x| *x == v).unwrap_or(0)]
-    }
-    pub fn feedback(&self, kind: &str) -> Feedback {
-        self.feedback[FEEDBACK.iter().position(|x| *x == kind).unwrap_or(0)]
-    }
-}
-
-impl Background {
-    pub fn action(&self, v: &str) -> Stateful {
-        self.action[VARIANTS.iter().position(|x| *x == v).unwrap_or(0)]
-    }
-}
-
+#[cfg(test)]
 impl Tokens {
     pub fn syntax(&self, t: &str) -> C {
         self.syntax[SYNTAX.iter().position(|x| *x == t).unwrap_or(0)]
-    }
-    pub fn markdown(&self, t: &str) -> C {
-        self.markdown[MARKDOWN.iter().position(|x| *x == t).unwrap_or(0)]
     }
 }
 
@@ -218,6 +203,7 @@ struct Shared {
     hues: Vec<[C; 9]>,
     categorical: Vec<usize>,
     /// Color → (hue, step position).
+    #[cfg(test)]
     index: HashMap<C, (usize, usize)>,
     /// base, dialog, dialog.footer.
     views: Vec<Tokens>,
@@ -261,10 +247,6 @@ impl Resolved {
         self.hue(name).map(|h| h[pos]).unwrap_or(u32::MAX)
     }
 
-    pub fn hue_names(&self) -> &[String] {
-        &self.shared.hue_names
-    }
-
     pub fn categorical(&self) -> Vec<[C; 9]> {
         self.shared
             .categorical
@@ -275,11 +257,13 @@ impl Resolved {
 
     /// The hue and step a color came from, when it is one of the theme's
     /// hue colors.
+    #[cfg(test)]
     pub fn source(&self, c: C) -> Option<(&str, u32)> {
         let (h, p) = *self.shared.index.get(&c)?;
         Some((self.shared.hue_names[h].as_str(), STEPS[p]))
     }
 
+    #[cfg(test)]
     fn shift(&self, c: C, amount: i64) -> C {
         let Some(&(h, p)) = self.shared.index.get(&c) else {
             return c;
@@ -290,10 +274,12 @@ impl Resolved {
 
     /// The next step(s) of the color's hue (darker in light themes);
     /// colors that are not hue steps come back unchanged.
+    #[cfg(test)]
     pub fn increase(&self, c: C, amount: i64) -> C {
         self.shift(c, amount)
     }
 
+    #[cfg(test)]
     pub fn decrease(&self, c: C, amount: i64) -> C {
         self.shift(c, -amount)
     }
@@ -313,6 +299,7 @@ impl Resolved {
     }
 
     /// Whether two views are the same surface of the same resolution.
+    #[cfg(test)]
     pub fn same(&self, other: &Resolved) -> bool {
         Arc::ptr_eq(&self.shared, &other.shared) && self.view == other.view
     }
@@ -542,6 +529,7 @@ fn hue_schema(o: &Map<String, Value>) -> D {
 }
 
 /// A complete theme: hues, categorical colors and every token.
+#[cfg(test)]
 fn definition_schema(v: &Value) -> D {
     let o = obj(v)?;
     hue_schema(o)?;
@@ -590,6 +578,7 @@ pub fn modes(doc: &Value) -> Vec<Mode> {
         .collect()
 }
 
+#[cfg(test)]
 pub fn supports(doc: &Value, mode: Mode) -> bool {
     modes(doc).contains(&mode)
 }
@@ -1083,7 +1072,9 @@ fn resolve_expanded(def: &Value) -> Result<Resolved, String> {
             .ok_or_else(|| format!("Categorical hue \"{name}\" was not found"))?;
         categorical.push(i);
     }
+    #[cfg(test)]
     let mut index = HashMap::new();
+    #[cfg(test)]
     for (h, scale) in hues.scales.iter().enumerate() {
         for (p, c) in scale.iter().enumerate() {
             index.insert(*c, (h, p));
@@ -1127,6 +1118,7 @@ fn resolve_expanded(def: &Value) -> Result<Resolved, String> {
             hue_names: hues.names,
             hues: hues.scales,
             categorical,
+            #[cfg(test)]
             index,
             views,
             footer,
@@ -1136,6 +1128,7 @@ fn resolve_expanded(def: &Value) -> Result<Resolved, String> {
 }
 
 /// Resolve a complete theme definition (OpenCode's `resolveTheme`).
+#[cfg(test)]
 pub fn resolve_definition(def: &Value) -> Result<Resolved, String> {
     definition_schema(def).map_err(|Decode(g)| invalid("theme", g.as_deref()))?;
     resolve_expanded(&expand(def))

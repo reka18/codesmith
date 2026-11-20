@@ -101,7 +101,7 @@ pub fn generate(colors: &TerminalColors, mode: Mode) -> Value {
     let alpha = if dark { 0.22 } else { 0.14 };
     let context_bg = grays[2];
     let h = |c: Rgba| Value::String(c.hex());
-    let transparent = Rgba::rgba(bg.r, bg.g, bg.b, 0);
+    let transparent = Rgba::new(bg.r, bg.g, bg.b, 0);
     let mut theme = Map::new();
     let mut set = |k: &str, c: Rgba| {
         theme.insert(k.to_string(), h(c));

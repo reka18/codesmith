@@ -5,12 +5,15 @@ use super::bridge::{Answers, Ev};
 use super::complete::{self, Kind, Popup};
 use super::diff::Diff;
 use super::editor::Editor;
+use super::keymap::{self, scope, Keymap, Stroke};
 use codesmith_ai::Usage;
 use codesmith_core::config::Cost;
 use codesmith_core::permission::{Reply, Request};
 use codesmith_core::question::{interpret, Prompt};
 use codesmith_core::tool::todo::Todo;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::oneshot;
 
 // Tool rows are most of a transcript, so boxing them would not save room.
@@ -154,6 +157,7 @@ pub enum Pick {
     Session,
     Model,
     Agent,
+    Theme,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,7 +235,8 @@ pub enum Modal {
         reply: Option<oneshot::Sender<Answers>>,
     },
     Picker(Picker),
-    Help,
+    /// The help, scrolled this many rows.
+    Help(usize),
 }
 
 /// What the runner should do after a key.
@@ -249,6 +254,13 @@ pub enum Action {
     Picked(Pick, String),
     /// Switch to the next (+1) or previous (-1) primary agent.
     CycleAgent(i32),
+    /// A picker's selection moved (the theme picker previews it).
+    Preview(Pick, String),
+    /// A picker closed without a choice.
+    Cancelled(Pick),
+    /// A command the runner carries out: `theme.switch_mode`,
+    /// `theme.mode.lock`, `terminal.suspend`.
+    Run(&'static str),
 }
 
 #[derive(Default)]
@@ -294,8 +306,14 @@ pub struct App {
     /// The input text when the popup was dismissed with Esc (it stays closed
     /// until the text changes).
     dismissed: Option<String>,
-    /// Ctrl+X was pressed: the next key is a leader command.
-    leader: bool,
+    /// The keys of a binding typed so far (the leader key, say), and when
+    /// the last one came.
+    pending: Vec<Stroke>,
+    pending_at: Option<Instant>,
+    /// The key bindings.
+    pub keymap: Arc<Keymap>,
+    /// Show reasoning as its Markdown source rather than rendered.
+    pub reasoning_source: bool,
     /// Pasted image and PDF paths, attached on submit while their
     /// placeholder is still in the prompt.
     pub attachments: Vec<super::attach::Pending>,
@@ -317,27 +335,115 @@ struct Child {
     title: String,
 }
 
-pub const HELP: &str = "Enter send · Shift/Alt+Enter or Ctrl+J newline · ↑/↓ lines, then history
-←/→ Home/End, Ctrl/Alt+←/→ words · Ctrl+A/E line start/end · Ctrl+W/K/U delete
-Tab next agent (Shift+Tab previous) · Ctrl+O expand tool output · Ctrl+T reasoning
-Ctrl+X then m models · a agents · l sessions · n new session · b background commands
-/ commands and @ files complete as you type (Tab or Enter to accept)
-Esc or Ctrl+C interrupt a running turn · Ctrl+C on an empty prompt quits
-PgUp/PgDn scroll · Ctrl+End follow
-
-/new            start a new session
+/// The slash commands the help lists.
+const HELP_COMMANDS: &str = "/new            start a new session
 /sessions       pick a session to continue
 /undo, /redo    undo or redo the latest turn's file changes
 /agent [id]     switch agent (build, plan, …)
 /model [p/m]    switch model (p/m#variant picks a variant)
 /variant [name] cycle the model's variants (reasoning effort), or pick one
+/themes [name]  pick a theme (/theme too); /themes dark|light|system sets the mode
 /compact        summarize older history now
 /clear          clear the screen (the session is kept)
+/thinking       show or hide reasoning
 /help           this help
 /exit           quit
 /calibrate      survey the codebase and choose review dimensions
 /review [what]  review changes (uncommitted, a commit, a..b, a branch, #pr)
 /<command>      run a custom or built-in command (/init, …)";
+
+/// The commands the help lists, in order, with CodeSmith's wording where
+/// OpenCode's description does not fit.
+const HELP_KEYS: &[(&str, &str)] = &[
+    ("input.submit", "send"),
+    ("input.newline", "new line"),
+    (
+        "input.move.up",
+        "move up a line, then step through earlier messages",
+    ),
+    (
+        "input.move.down",
+        "move down a line, then step through later messages",
+    ),
+    ("input.word.backward", "move a word left"),
+    ("input.word.forward", "move a word right"),
+    ("input.line.home", "start of the line"),
+    ("input.line.end", "end of the line"),
+    ("input.delete.word.backward", "delete the previous word"),
+    ("input.delete.word.forward", "delete the next word"),
+    ("input.delete.to.line.end", "delete to the end of the line"),
+    (
+        "input.delete.to.line.start",
+        "delete to the start of the line",
+    ),
+    ("input.delete.line", "delete the line"),
+    (
+        "prompt.clear",
+        "clear the prompt (interrupts a running turn)",
+    ),
+    (
+        "session.interrupt",
+        "interrupt the running turn (clears the prompt when idle)",
+    ),
+    ("app.exit", "quit (on an empty prompt)"),
+    ("agent.cycle", "next primary agent"),
+    ("agent.cycle.reverse", "previous primary agent"),
+    ("agent.list", "pick an agent"),
+    ("model.list", "pick a model"),
+    ("variant.cycle", "next model variant"),
+    ("session.list", "pick a session"),
+    ("session.new", "new session"),
+    ("session.compact", "compact the session"),
+    ("session.undo", "undo the latest turn's file changes"),
+    ("session.redo", "redo them"),
+    (
+        "session.background",
+        "move running commands to the background",
+    ),
+    (
+        "session.toggle.tool_output",
+        "expand or collapse tool output",
+    ),
+    ("session.toggle.thinking", "show or hide reasoning"),
+    ("theme.switch", "pick a theme"),
+    ("theme.switch_mode", "switch between light and dark"),
+    ("theme.mode.lock", "pin or follow the terminal's mode"),
+    ("session.page.up", "scroll up a page"),
+    ("session.page.down", "scroll down a page"),
+    ("session.half.page.up", "scroll up half a page"),
+    ("session.half.page.down", "scroll down half a page"),
+    ("session.line.up", "scroll up a line"),
+    ("session.line.down", "scroll down a line"),
+    ("session.first", "scroll to the top"),
+    ("session.last", "follow the bottom again"),
+    ("terminal.suspend", ""),
+    ("help.show", "this help"),
+];
+
+/// The help: every bound command with its keys, then the slash commands.
+pub fn help_text(k: &Keymap) -> String {
+    let mut out = String::from("Keys (rebind them in tui.keybinds)\n");
+    for (id, desc) in HELP_KEYS {
+        let keys = k.list(id);
+        if keys.is_empty() {
+            continue;
+        }
+        let desc = match *desc {
+            "" => keymap::def(id).map(|d| d.desc).unwrap_or_default(),
+            d => d,
+        };
+        out.push_str(&format!("{:<30} {desc}\n", keys.join(", ")));
+    }
+    out.push_str(&format!(
+        "{:<30} complete commands and files (also {}, {})\n",
+        "/ and @",
+        k.hint("prompt.autocomplete.complete"),
+        k.hint("prompt.autocomplete.select")
+    ));
+    out.push('\n');
+    out.push_str(HELP_COMMANDS);
+    out
+}
 
 /// Built-in slash commands for autocomplete: (name, description).
 pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
@@ -355,6 +461,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("clear", "clear the screen"),
     ("thinking", "show or hide reasoning"),
     ("help", "keys and commands"),
+    ("themes", "pick a theme, or set the light or dark mode"),
     ("exit", "quit"),
 ];
 
@@ -761,7 +868,7 @@ impl App {
                 p.filter.push_str(s.lines().next().unwrap_or(""));
                 p.refilter();
             }
-            Some(Modal::Help) => {}
+            Some(Modal::Help(_)) => {}
             None => {
                 if let Some(files) = super::attach::pasted_files(s, &self.cwd) {
                     for path in files {
@@ -831,158 +938,227 @@ impl App {
         None
     }
 
-    fn popup_key(&mut self, k: &KeyEvent, ctrl: bool) -> Option<Option<Action>> {
-        let p = self.popup.as_mut()?;
-        let n = p.items.len();
-        match k.code {
-            KeyCode::Up => p.sel = (p.sel + n - 1) % n,
-            KeyCode::Char('p') if ctrl => p.sel = (p.sel + n - 1) % n,
-            KeyCode::Down => p.sel = (p.sel + 1) % n,
-            KeyCode::Char('n') if ctrl => p.sel = (p.sel + 1) % n,
-            KeyCode::Tab => return Some(self.accept(false)),
-            KeyCode::Enter if k.modifiers.is_empty() => {
-                let run = p.kind == Kind::Slash;
+    fn slash(name: &str) -> Option<Option<Action>> {
+        Some(Some(Action::Slash {
+            name: name.into(),
+            args: String::new(),
+        }))
+    }
+
+    /// Scroll the transcript by `rows` (up when positive).
+    fn scroll_by(&mut self, rows: i64) -> Option<Option<Action>> {
+        self.scroll = if rows >= 0 {
+            self.scroll.saturating_add(rows as usize)
+        } else {
+            self.scroll.saturating_sub(rows.unsigned_abs() as usize)
+        };
+        Some(None)
+    }
+
+    /// Run a prompt command: `None` when it does not apply now, so the
+    /// next command bound to the key is tried (Ctrl+C clears a prompt with
+    /// text and quits on an empty one; Up moves within the text, then
+    /// through the history).
+    fn run(&mut self, id: &str, via_leader: bool) -> Option<Option<Action>> {
+        let empty = self.input.is_empty();
+        match id {
+            "prompt.autocomplete.prev" | "prompt.autocomplete.next" => {
+                let p = self.popup.as_mut()?;
+                let n = p.items.len();
+                p.sel = if id.ends_with("prev") {
+                    (p.sel + n - 1) % n
+                } else {
+                    (p.sel + 1) % n
+                };
+                return Some(None);
+            }
+            "prompt.autocomplete.complete" => {
+                self.popup.as_ref()?;
+                return Some(self.accept(false));
+            }
+            "prompt.autocomplete.select" => {
+                let run = self.popup.as_ref()?.kind == Kind::Slash;
                 return Some(self.accept(run));
             }
-            KeyCode::Esc => {
+            "prompt.autocomplete.hide" => {
+                self.popup.as_ref()?;
                 self.popup = None;
                 self.dismissed = Some(self.input.text().to_string());
+                return Some(None);
             }
+            "prompt.clear" if self.busy => return Some(Some(Action::Interrupt)),
+            "prompt.clear" if !empty => self.input.clear(),
+            "session.interrupt" if self.busy => return Some(Some(Action::Interrupt)),
+            "session.interrupt" if !empty => self.input.clear(),
+            "session.interrupt" => return Some(None),
+            "session.background" if self.busy || via_leader => {
+                return Some(Some(Action::Background))
+            }
+            "app.exit" if empty || via_leader => {
+                self.quit = true;
+                return Some(Some(Action::Quit));
+            }
+            "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
+            "agent.cycle" => return Some(Some(Action::CycleAgent(1))),
+            "agent.cycle.reverse" => return Some(Some(Action::CycleAgent(-1))),
+            "agent.list" => return Self::slash("agent"),
+            "model.list" => return Self::slash("model"),
+            "variant.cycle" => return Self::slash("variant"),
+            "session.list" => return Self::slash("sessions"),
+            "session.new" => return Self::slash("new"),
+            "session.compact" => return Self::slash("compact"),
+            "session.undo" => return Self::slash("undo"),
+            "session.redo" => return Self::slash("redo"),
+            "help.show" => return Self::slash("help"),
+            "theme.switch" => return Self::slash("themes"),
+            "theme.switch_mode" => return Some(Some(Action::Run("theme.switch_mode"))),
+            "theme.mode.lock" => return Some(Some(Action::Run("theme.mode.lock"))),
+            "session.toggle.thinking" => {
+                self.show_reasoning = !self.show_reasoning;
+                return Some(None);
+            }
+            "session.toggle.tool_output" => {
+                self.expand_tools = !self.expand_tools;
+                return Some(None);
+            }
+            "session.page.up" => return self.scroll_by(10),
+            "session.page.down" => return self.scroll_by(-10),
+            "session.half.page.up" => return self.scroll_by(5),
+            "session.half.page.down" => return self.scroll_by(-5),
+            "session.line.up" => return self.scroll_by(1),
+            "session.line.down" => return self.scroll_by(-1),
+            "session.first" => {
+                self.scroll = usize::MAX / 2;
+                return Some(None);
+            }
+            "session.last" => {
+                self.scroll = 0;
+                return Some(None);
+            }
+            "input.submit" => return Some(self.submit()),
+            "input.newline" => self.input.insert('\n'),
+            "input.move.left" => self.input.left(),
+            "input.move.right" => self.input.right(),
+            "input.move.up" | "input.move.down" => {
+                let moved = if id.ends_with("up") {
+                    self.input.up()
+                } else {
+                    self.input.down()
+                };
+                if !moved {
+                    return None;
+                }
+                self.popup = None;
+                return Some(None);
+            }
+            "prompt.history.previous" | "prompt.history.next" => {
+                self.history_step(if id.ends_with("previous") { -1 } else { 1 });
+                self.popup = None;
+                return Some(None);
+            }
+            "input.line.home" | "input.visual.line.home" => self.input.home(),
+            "input.line.end" | "input.visual.line.end" => self.input.end(),
+            "input.buffer.home" => self.input.buffer_home(),
+            "input.buffer.end" => self.input.buffer_end(),
+            "input.word.forward" => self.input.word_right(),
+            "input.word.backward" => self.input.word_left(),
+            "input.backspace" => self.input.backspace(),
+            "input.delete" if !empty => self.input.delete(),
+            "input.delete.word.backward" => self.input.delete_word_back(),
+            "input.delete.word.forward" => self.input.delete_word_forward(),
+            "input.delete.to.line.end" => self.input.kill_to_end(),
+            "input.delete.to.line.start" => self.input.kill_to_start(),
+            "input.delete.line" => self.input.delete_line(),
             _ => return None,
         }
         Some(None)
     }
 
-    fn leader_key(&mut self, k: &KeyEvent) -> Option<Action> {
-        self.leader = false;
-        if k.code == KeyCode::Char('b') {
-            return Some(Action::Background);
-        }
-        let cmd = match k.code {
-            KeyCode::Char('m') => "model",
-            KeyCode::Char('a') => "agent",
-            KeyCode::Char('l') => "sessions",
-            KeyCode::Char('n') => "new",
-            KeyCode::Char('h') => "help",
-            KeyCode::Char('c') => "compact",
-            KeyCode::Char('u') => "undo",
-            KeyCode::Char('r') => "redo",
-            _ => return None,
-        };
-        Some(Action::Slash {
-            name: cmd.into(),
-            args: String::new(),
-        })
-    }
-
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Action> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = k.modifiers.contains(KeyModifiers::ALT);
         if self.modal.is_some() {
             return self.modal_key(k, ctrl);
         }
-        if self.leader {
-            return self.leader_key(&k);
+        let stroke = keymap::stroke(&k)?;
+        if self
+            .pending_at
+            .is_some_and(|at| at.elapsed() > self.keymap.timeout)
+        {
+            self.pending.clear();
         }
-        if let Some(a) = self.popup_key(&k, ctrl) {
-            return a;
+        self.pending_at = None;
+        let mut seq = std::mem::take(&mut self.pending);
+        let continued = !seq.is_empty();
+        seq.push(stroke);
+        let ids: Vec<&'static str> = if self.popup.is_some() {
+            scope::AUTOCOMPLETE
+                .iter()
+                .chain(scope::PROMPT)
+                .copied()
+                .collect()
+        } else {
+            scope::PROMPT.to_vec()
+        };
+        let found = self.keymap.lookup(&ids, &seq);
+        if found.exact.is_empty() && found.prefix {
+            self.pending = seq;
+            self.pending_at = Some(Instant::now());
+            return None;
         }
+        let via_leader = continued && self.keymap.after_leader(&seq);
         let browsing = self.hist.map(|_| self.input.text().to_string());
-        let ed = &mut self.input;
-        match k.code {
-            KeyCode::Char('c') if ctrl => {
-                if self.busy {
-                    return Some(Action::Interrupt);
+        let before = self.input.text().to_string();
+        for id in found.exact {
+            if let Some(action) = self.run(id, via_leader) {
+                let edit = id.starts_with("input.")
+                    && !matches!(id, "input.submit" | "input.move.up" | "input.move.down");
+                let other = !id.starts_with("prompt.history.")
+                    && !id.starts_with("prompt.autocomplete.")
+                    && id != "input.submit"
+                    && self.input.text() != before;
+                if edit || other {
+                    self.after_edit(browsing);
                 }
-                if ed.is_empty() {
-                    self.quit = true;
-                    return Some(Action::Quit);
-                }
-                ed.clear();
+                return action;
             }
-            KeyCode::Char('d') if ctrl && ed.is_empty() => {
-                self.quit = true;
-                return Some(Action::Quit);
-            }
-            KeyCode::Char('x') if ctrl => {
-                self.leader = true;
-                return None;
-            }
-            KeyCode::Char('t') if ctrl => {
-                self.show_reasoning = !self.show_reasoning;
-                return None;
-            }
-            KeyCode::Char('o') if ctrl => {
-                self.expand_tools = !self.expand_tools;
-                return None;
-            }
-            KeyCode::Char('u') if ctrl => ed.clear(),
-            KeyCode::Char('w') if ctrl => ed.delete_word_back(),
-            KeyCode::Char('k') if ctrl => ed.kill_to_end(),
-            KeyCode::Char('a') if ctrl => ed.home(),
-            KeyCode::Char('e') if ctrl => ed.end(),
-            KeyCode::Char('b') if ctrl => ed.left(),
-            KeyCode::Char('f') if ctrl => ed.right(),
-            KeyCode::Char('d') if ctrl => ed.delete(),
-            KeyCode::Char('b') if alt => ed.word_left(),
-            KeyCode::Char('f') if alt => ed.word_right(),
-            KeyCode::Char('d') if alt => ed.delete_word_forward(),
-            KeyCode::Char('j') if ctrl => ed.insert('\n'),
-            KeyCode::Enter if alt || k.modifiers.contains(KeyModifiers::SHIFT) => ed.insert('\n'),
-            KeyCode::Enter => return self.submit(),
-            KeyCode::Esc => {
-                if self.busy {
-                    return Some(Action::Interrupt);
-                }
-                ed.clear();
-            }
-            KeyCode::Backspace if alt || ctrl => ed.delete_word_back(),
-            KeyCode::Backspace => ed.backspace(),
-            KeyCode::Delete => ed.delete(),
-            KeyCode::Left if alt || ctrl => ed.word_left(),
-            KeyCode::Right if alt || ctrl => ed.word_right(),
-            KeyCode::Left => ed.left(),
-            KeyCode::Right => ed.right(),
-            KeyCode::End if ctrl => {
-                self.scroll = 0;
-                return None;
-            }
-            KeyCode::Home => ed.home(),
-            KeyCode::End => ed.end(),
-            KeyCode::Up => {
-                if !ed.up() {
-                    self.history_step(-1);
-                }
-                self.popup = None;
-                return None;
-            }
-            KeyCode::Down => {
-                if !ed.down() {
-                    self.history_step(1);
-                }
-                self.popup = None;
-                return None;
-            }
-            KeyCode::PageUp => {
-                self.scroll += 10;
-                return None;
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_sub(10);
-                return None;
-            }
-            KeyCode::Tab => return Some(Action::CycleAgent(1)),
-            KeyCode::BackTab => return Some(Action::CycleAgent(-1)),
-            KeyCode::Char(c) => ed.insert(c),
-            _ => return None,
         }
-        // Moving the cursor keeps the place in the history; editing leaves it.
+        if continued {
+            // A sequence that went nowhere: after the leader the key is
+            // dropped; otherwise the last key counts on its own.
+            if self.keymap.after_leader(&seq) {
+                return None;
+            }
+            return self.on_key(k);
+        }
+        // Unbound keys type their character.
+        match k.code {
+            KeyCode::Char(c)
+                if !k.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
+            {
+                self.input.insert(c);
+                self.after_edit(browsing);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// The input changed (or only its cursor moved): moving keeps the place
+    /// in the history, editing leaves it.
+    fn after_edit(&mut self, browsing: Option<String>) {
         if browsing.as_deref() == Some(self.input.text()) {
             self.refresh_popup();
         } else {
             self.edited();
         }
-        None
+    }
+
+    /// Whether the leader (or another binding's first keys) is waiting for
+    /// the next key, and which.
+    pub fn pending(&self) -> &[Stroke] {
+        &self.pending
     }
 
     fn history_step(&mut self, dir: i32) {
@@ -1043,8 +1219,11 @@ impl App {
                 if !p.filter.is_empty() {
                     p.filter.clear();
                     p.refilter();
-                    return None;
+                    return self.preview(None);
                 }
+                let kind = p.kind;
+                self.modal = None;
+                return Some(Action::Cancelled(kind));
             }
             let was_prompt = matches!(
                 self.modal,
@@ -1057,6 +1236,17 @@ impl App {
                 None
             };
         }
+        let st = keymap::stroke(&k);
+        let km = self.keymap.clone();
+        let hits = |ids: &[&'static str]| -> Vec<&'static str> {
+            st.as_ref()
+                .map(|s| km.lookup(ids, std::slice::from_ref(s)).exact)
+                .unwrap_or_default()
+        };
+        let typed = match k.code {
+            KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => Some(c),
+            _ => None,
+        };
         match self.modal.as_mut().unwrap() {
             Modal::Permission {
                 feedback,
@@ -1064,39 +1254,49 @@ impl App {
                 scroll,
                 ..
             } => {
-                let answer = match k.code {
-                    KeyCode::Char('y') if feedback.is_empty() => Some(Reply::Once),
-                    KeyCode::Char('a') if feedback.is_empty() => Some(Reply::Always),
-                    KeyCode::Char('n') if feedback.is_empty() => Some(Reply::Reject(None)),
-                    KeyCode::Esc => Some(Reply::Reject(None)),
+                let bound = if feedback.is_empty() {
+                    hits(scope::PERMISSION).first().copied()
+                } else {
+                    None
+                };
+                let answer = match (bound, k.code) {
+                    (Some("permission.allow.once"), _) => Some(Reply::Once),
+                    (Some("permission.allow.always"), _) => Some(Reply::Always),
+                    (Some(_), _) => Some(Reply::Reject(None)),
+                    (None, KeyCode::Esc) => Some(Reply::Reject(None)),
                     // Allowing takes a deliberate y or a: a stray Enter rejects.
-                    KeyCode::Enter if feedback.trim().is_empty() => Some(Reply::Reject(None)),
-                    KeyCode::Enter => Some(Reply::Reject(Some(feedback.trim().to_string()))),
-                    KeyCode::Up => {
+                    (None, KeyCode::Enter) if feedback.trim().is_empty() => {
+                        Some(Reply::Reject(None))
+                    }
+                    (None, KeyCode::Enter) => {
+                        Some(Reply::Reject(Some(feedback.trim().to_string())))
+                    }
+                    (None, KeyCode::Up) => {
                         scroll.set(scroll.get().saturating_sub(1));
                         None
                     }
-                    KeyCode::Down => {
+                    (None, KeyCode::Down) => {
                         scroll.set(scroll.get() + 1);
                         None
                     }
-                    KeyCode::PageUp => {
+                    (None, KeyCode::PageUp) => {
                         scroll.set(scroll.get().saturating_sub(10));
                         None
                     }
-                    KeyCode::PageDown => {
+                    (None, KeyCode::PageDown) => {
                         scroll.set(scroll.get() + 10);
                         None
                     }
-                    KeyCode::Backspace => {
+                    (None, KeyCode::Backspace) => {
                         feedback.pop();
                         None
                     }
-                    KeyCode::Char(c) => {
-                        feedback.push(c);
+                    (None, _) => {
+                        if let Some(c) = typed {
+                            feedback.push(c);
+                        }
                         None
                     }
-                    _ => None,
                 };
                 if let Some(a) = answer {
                     if let Some(r) = reply.take() {
@@ -1111,9 +1311,8 @@ impl App {
                 answers,
                 input,
                 reply,
-            } => match k.code {
-                KeyCode::Esc => self.cancel_modal(),
-                KeyCode::Enter => {
+            } => {
+                if !hits(scope::QUESTION).is_empty() {
                     answers.push(interpret(input, &prompts[*idx]));
                     input.clear();
                     *idx += 1;
@@ -1123,41 +1322,77 @@ impl App {
                         }
                         self.modal = None;
                     }
+                    return None;
                 }
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char(c) => input.push(c),
-                _ => {}
-            },
-            Modal::Picker(p) => match k.code {
-                KeyCode::Esc => self.modal = None,
-                KeyCode::Up => p.sel = p.sel.saturating_sub(1),
-                KeyCode::Char('p') if ctrl => p.sel = p.sel.saturating_sub(1),
-                KeyCode::Down | KeyCode::Tab if p.sel + 1 < p.shown.len() => p.sel += 1,
-                KeyCode::Char('n') if ctrl && p.sel + 1 < p.shown.len() => p.sel += 1,
-                KeyCode::PageUp => p.sel = p.sel.saturating_sub(10),
-                KeyCode::PageDown => p.sel = (p.sel + 10).min(p.shown.len().saturating_sub(1)),
-                KeyCode::Enter => {
-                    let picked = p.selected().map(|i| (p.kind, i.id.clone()));
-                    if picked.is_some() {
-                        self.modal = None;
+                match k.code {
+                    KeyCode::Esc => self.cancel_modal(),
+                    KeyCode::Backspace => {
+                        input.pop();
                     }
-                    return picked.map(|(k, id)| Action::Picked(k, id));
+                    _ => {
+                        if let Some(c) = typed {
+                            input.push(c);
+                        }
+                    }
                 }
-                KeyCode::Backspace => {
-                    p.filter.pop();
-                    p.refilter();
+            }
+            Modal::Picker(p) => {
+                let before = p.selected().map(|i| i.id.clone());
+                let last = p.shown.len().saturating_sub(1);
+                match hits(scope::PICKER).first().copied() {
+                    Some("dialog.select.prev") => p.sel = p.sel.saturating_sub(1),
+                    Some("dialog.select.next") => p.sel = (p.sel + 1).min(last),
+                    Some("dialog.select.page_up") => p.sel = p.sel.saturating_sub(10),
+                    Some("dialog.select.page_down") => p.sel = (p.sel + 10).min(last),
+                    Some("dialog.select.home") => p.sel = 0,
+                    Some("dialog.select.end") => p.sel = last,
+                    Some(_) => {
+                        let picked = p.selected().map(|i| (p.kind, i.id.clone()));
+                        if picked.is_some() {
+                            self.modal = None;
+                        }
+                        return picked.map(|(k, id)| Action::Picked(k, id));
+                    }
+                    None => match k.code {
+                        KeyCode::Esc => {
+                            let kind = p.kind;
+                            self.modal = None;
+                            return Some(Action::Cancelled(kind));
+                        }
+                        KeyCode::Backspace => {
+                            p.filter.pop();
+                            p.refilter();
+                        }
+                        _ => {
+                            if let Some(c) = typed {
+                                p.filter.push(c);
+                                p.refilter();
+                            }
+                        }
+                    },
                 }
-                KeyCode::Char(c) if !ctrl => {
-                    p.filter.push(c);
-                    p.refilter();
-                }
-                _ => {}
+                return self.preview(before);
+            }
+            Modal::Help(scroll) => match k.code {
+                KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Down => *scroll += 1,
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::PageDown => *scroll += 10,
+                _ => self.modal = None,
             },
-            Modal::Help => self.modal = None,
         }
         None
+    }
+
+    /// The theme picker previews the theme it is on, when that changed.
+    fn preview(&self, before: Option<String>) -> Option<Action> {
+        let Some(Modal::Picker(p)) = &self.modal else {
+            return None;
+        };
+        let now = p.selected().map(|i| i.id.clone());
+        (p.kind == Pick::Theme && now != before)
+            .then(|| now.map(|id| Action::Preview(Pick::Theme, id)))
+            .flatten()
     }
 }
 
@@ -1213,6 +1448,10 @@ mod tests {
         typ(&mut a, "c");
         a.on_key(key(KeyCode::Backspace));
         assert_eq!(a.input.text(), "ab\n");
+        // Ctrl+U deletes to the start of the line (OpenCode's
+        // `input.delete.to.line.start`), then the line break before it.
+        a.on_key(ctrl('u'));
+        assert_eq!(a.input.text(), "ab");
         a.on_key(ctrl('u'));
         assert!(a.input.is_empty());
     }
@@ -1231,7 +1470,7 @@ mod tests {
         a.on_key(ctrl('e'));
         a.on_key(ctrl('w'));
         assert_eq!(a.input.text(), "Fix nasty the ");
-        a.on_key(key(KeyCode::Home));
+        a.on_key(ctrl('a'));
         a.on_key(with(KeyCode::Enter, KeyModifiers::SHIFT));
         assert_eq!(a.input.text(), "\nFix nasty the ");
     }
@@ -1270,7 +1509,7 @@ mod tests {
         a.busy = true;
         a.on_key(ctrl('x'));
         assert_eq!(a.on_key(key(KeyCode::Char('b'))), Some(Action::Background));
-        assert!(!a.leader);
+        assert!(a.pending().is_empty());
     }
 
     #[test]

@@ -1,0 +1,182 @@
+//! The UI's settings: `tui` in `codesmith.json`, in the shape of
+//! OpenCode's TUI config (`theme`, `keybinds`, `leader`, `cursor`,
+//! `session`), merged across config files like the rest. OpenCode's first
+//! format (`tui.json`: `"theme": "name"`, `leader_timeout`, `session_list`
+//! keybind names) is read too and migrated as it loads, as OpenCode
+//! migrates it. Settings for features CodeSmith does not have are ignored.
+
+use super::keymap::{self, LEADER_TIMEOUT_MS};
+use super::theme::ModeSetting;
+use serde_json::{Map, Value};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorStyle {
+    Block,
+    Underline,
+    Line,
+    /// The terminal's own.
+    Default,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub style: CursorStyle,
+    pub blinking: bool,
+}
+
+/// How reasoning shows: rendered as Markdown, or as its highlighted source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Markdown {
+    #[default]
+    Rendered,
+    Source,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Settings {
+    /// `theme.name`.
+    pub theme: Option<String>,
+    /// `theme.mode`: `system`, `dark` or `light`.
+    pub mode: Option<ModeSetting>,
+    /// `keybinds`, by command id.
+    pub keybinds: Map<String, Value>,
+    /// `leader.timeout`, in milliseconds.
+    pub leader_timeout: u64,
+    pub cursor: Cursor,
+    /// `session.thinking`: show reasoning from the start.
+    pub thinking: Option<bool>,
+    /// `session.markdown`.
+    pub markdown: Markdown,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            theme: None,
+            mode: None,
+            keybinds: Map::new(),
+            leader_timeout: LEADER_TIMEOUT_MS,
+            cursor: Cursor {
+                style: CursorStyle::Block,
+                blinking: true,
+            },
+            thinking: None,
+            markdown: Markdown::Rendered,
+        }
+    }
+}
+
+/// OpenCode's first format, in the current shape: a theme name becomes
+/// `theme.name`, `leader_timeout` `leader.timeout`, and keybind names
+/// command ids (one set directly wins over its old name). Returns the
+/// keybind names that are neither.
+pub fn migrate(input: &Value) -> (Value, Vec<String>) {
+    let Some(o) = input.as_object() else {
+        return (input.clone(), vec![]);
+    };
+    let mut out = o.clone();
+    if let Some(Value::String(name)) = o.get("theme") {
+        out.insert("theme".into(), serde_json::json!({ "name": name }));
+    }
+    if let Some(t) = o.get("leader_timeout") {
+        out.remove("leader_timeout");
+        let leader = out
+            .entry("leader")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(l) = leader.as_object_mut() {
+            l.entry("timeout").or_insert_with(|| t.clone());
+        }
+    }
+    let mut dropped = Vec::new();
+    if let Some(Value::Object(k)) = o.get("keybinds") {
+        let (k, d) = keymap::migrate(k);
+        dropped = d;
+        out.insert("keybinds".into(), Value::Object(k));
+    }
+    (Value::Object(out), dropped)
+}
+
+fn get<'a>(v: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(v, |cur, k| cur.get(*k))
+}
+
+/// The settings in `tui` (null when unset), and what was wrong with them:
+/// a value that does not fit is reported and its default used.
+pub fn load(tui: &Value) -> (Settings, Vec<String>) {
+    let (v, dropped) = migrate(tui);
+    let mut s = Settings::default();
+    let mut errors: Vec<String> = dropped
+        .into_iter()
+        .map(|k| format!("tui.keybinds: there is no command `{k}`"))
+        .collect();
+    let mut bad = |path: &str, want: &str| errors.push(format!("tui.{path}: {want}"));
+    if !v.is_null() && !v.is_object() {
+        bad("", "must be an object");
+        return (s, errors);
+    }
+    match get(&v, &["theme", "name"]) {
+        None => {}
+        Some(Value::String(n)) if !n.is_empty() => s.theme = Some(n.clone()),
+        Some(_) => bad("theme.name", "must be a theme's name"),
+    }
+    match get(&v, &["theme", "mode"]) {
+        None => {}
+        Some(m) => match m.as_str().and_then(ModeSetting::parse) {
+            Some(m) => s.mode = Some(m),
+            None => bad("theme.mode", "must be \"system\", \"dark\" or \"light\""),
+        },
+    }
+    if let Some(k) = v.get("keybinds") {
+        match k.as_object() {
+            Some(k) => s.keybinds = k.clone(),
+            None => bad("keybinds", "must be an object of command ids to keys"),
+        }
+    }
+    match get(&v, &["leader", "timeout"]) {
+        None => {}
+        Some(t) => match t.as_u64().filter(|t| *t > 0) {
+            Some(t) => s.leader_timeout = t,
+            None => bad(
+                "leader.timeout",
+                "must be a whole number of milliseconds above 0",
+            ),
+        },
+    }
+    match get(&v, &["cursor", "style"]) {
+        None => {}
+        Some(c) => match c.as_str() {
+            Some("block") => s.cursor.style = CursorStyle::Block,
+            Some("underline") => s.cursor.style = CursorStyle::Underline,
+            Some("line") => s.cursor.style = CursorStyle::Line,
+            Some("default") => s.cursor.style = CursorStyle::Default,
+            _ => bad(
+                "cursor.style",
+                "must be \"block\", \"underline\", \"line\" or \"default\"",
+            ),
+        },
+    }
+    match get(&v, &["cursor", "blinking"]) {
+        None => {}
+        Some(b) => match b.as_bool() {
+            Some(b) => s.cursor.blinking = b,
+            None => bad("cursor.blinking", "must be true or false"),
+        },
+    }
+    match get(&v, &["session", "thinking"]) {
+        None => {}
+        Some(t) => match t.as_str() {
+            Some("show") => s.thinking = Some(true),
+            Some("hide") => s.thinking = Some(false),
+            _ => bad("session.thinking", "must be \"show\" or \"hide\""),
+        },
+    }
+    match get(&v, &["session", "markdown"]) {
+        None => {}
+        Some(m) => match m.as_str() {
+            Some("rendered") => s.markdown = Markdown::Rendered,
+            Some("source") => s.markdown = Markdown::Source,
+            _ => bad("session.markdown", "must be \"rendered\" or \"source\""),
+        },
+    }
+    (s, errors)
+}

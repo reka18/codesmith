@@ -111,6 +111,9 @@ pub struct Config {
     /// [`load`]; a config built any other way has none.
     #[serde(skip)]
     pub models_dev: Option<std::sync::Arc<crate::catalog::ModelsDev>>,
+    /// The terminal UI's own settings (theme, key bindings, cursor, …),
+    /// read by the UI as OpenCode reads its TUI config.
+    pub tui: Value,
 }
 
 /// The `catalog` key.
