@@ -453,57 +453,84 @@ fn tool_lines(t: &Tool, expand: bool, w: usize) -> Vec<Line<'static>> {
 }
 
 /// The transcript as display lines for a given width.
+#[cfg(test)]
 pub fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
     let w = width.saturating_sub(4) as usize;
     let mut out: Vec<Line<'static>> = Vec::new();
     for e in &app.entries {
-        match e {
-            Entry::User(t) => {
-                out.push(Line::default());
-                out.extend(styled(
-                    wrap(t, w),
-                    "› ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                out.push(Line::default());
-            }
-            Entry::Assistant(t) => out.extend(markdown_cached(t.trim_start_matches('\n'), w)),
-            Entry::Reasoning(t) if app.show_reasoning => {
-                out.extend(styled(
-                    wrap(t.trim(), w),
-                    "  ",
-                    dim().add_modifier(Modifier::ITALIC),
-                ));
-            }
-            Entry::Reasoning(_) => {}
-            Entry::Tool(t) => out.extend(tool_lines(t, app.expand_tools, w)),
-            Entry::Notice(t) => {
-                out.extend(styled(wrap(t, w), "", Style::default().fg(Color::Yellow)))
-            }
-            Entry::Error(t) => out.extend(styled(
+        entry_lines(app, e, w, &mut out);
+    }
+    out
+}
+
+/// The last `n` lines of [`transcript`] (all of it when shorter). Only the
+/// entries that reach into those lines are laid out, so drawing a long
+/// session costs what is on screen, not the whole history.
+pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
+    let w = width.saturating_sub(4) as usize;
+    let mut chunks: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut have = 0;
+    for e in app.entries.iter().rev() {
+        if have >= n {
+            break;
+        }
+        let mut lines = Vec::new();
+        entry_lines(app, e, w, &mut lines);
+        have += lines.len();
+        chunks.push(lines);
+    }
+    let mut out: Vec<Line<'static>> = chunks.into_iter().rev().flatten().collect();
+    if out.len() > n {
+        out.drain(..out.len() - n);
+    }
+    out
+}
+
+/// Append the display lines of one transcript entry.
+fn entry_lines(app: &App, e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
+    match e {
+        Entry::User(t) => {
+            out.push(Line::default());
+            out.extend(styled(
                 wrap(t, w),
-                "error: ",
-                Style::default().fg(Color::Red),
-            )),
-            Entry::Todos(todos) => {
-                for t in todos {
-                    let (mark, style) = match t.status {
-                        Status::Completed => ("✓", dim()),
-                        Status::InProgress => ("▶", Style::default().add_modifier(Modifier::BOLD)),
-                        Status::Pending => ("○", Style::default()),
-                        Status::Cancelled => ("✗", dim().add_modifier(Modifier::CROSSED_OUT)),
-                    };
-                    out.push(Line::from(Span::styled(
-                        format!("  {mark} {}", t.content),
-                        style,
-                    )));
-                }
+                "› ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            out.push(Line::default());
+        }
+        Entry::Assistant(t) => out.extend(markdown_cached(t.trim_start_matches('\n'), w)),
+        Entry::Reasoning(t) if app.show_reasoning => {
+            out.extend(styled(
+                wrap(t.trim(), w),
+                "  ",
+                dim().add_modifier(Modifier::ITALIC),
+            ));
+        }
+        Entry::Reasoning(_) => {}
+        Entry::Tool(t) => out.extend(tool_lines(t, app.expand_tools, w)),
+        Entry::Notice(t) => out.extend(styled(wrap(t, w), "", Style::default().fg(Color::Yellow))),
+        Entry::Error(t) => out.extend(styled(
+            wrap(t, w),
+            "error: ",
+            Style::default().fg(Color::Red),
+        )),
+        Entry::Todos(todos) => {
+            for t in todos {
+                let (mark, style) = match t.status {
+                    Status::Completed => ("✓", dim()),
+                    Status::InProgress => ("▶", Style::default().add_modifier(Modifier::BOLD)),
+                    Status::Pending => ("○", Style::default()),
+                    Status::Cancelled => ("✗", dim().add_modifier(Modifier::CROSSED_OUT)),
+                };
+                out.push(Line::from(Span::styled(
+                    format!("  {mark} {}", t.content),
+                    style,
+                )));
             }
         }
     }
-    out
 }
 
 /// Most text rows the input box shows.
@@ -601,8 +628,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         head,
     );
 
-    let lines = transcript(app, body.width);
     let visible = body.height as usize;
+    let lines = transcript_tail(app, body.width, visible.saturating_add(app.scroll));
     let max_scroll = lines.len().saturating_sub(visible);
     let scroll = app.scroll.min(max_scroll);
     let start = lines.len().saturating_sub(visible + scroll);
@@ -977,6 +1004,51 @@ mod tests {
         assert!(text(&transcript(&a, 60))
             .iter()
             .any(|l| l.contains("secret")));
+    }
+
+    #[test]
+    fn the_tail_is_the_end_of_the_whole_transcript() {
+        let mut a = App::new();
+        for i in 0..40 {
+            a.entries.push(match i % 5 {
+                0 => Entry::User(format!(
+                    "question {i} with enough words to wrap at narrow widths"
+                )),
+                1 => Entry::Assistant(format!(
+                    "# Answer {i}\n\n- one\n- two\n\n```\ncode {i}\n```"
+                )),
+                2 => tool("shell", "ls", Some(("a", false)), "a\nb\nc\nd\ne\nf"),
+                3 => Entry::Reasoning(format!("thinking {i}")),
+                _ => Entry::Notice(format!("notice {i}")),
+            });
+        }
+        for show in [false, true] {
+            a.show_reasoning = show;
+            for width in [20, 60, 120] {
+                let all = text(&transcript(&a, width));
+                for n in [0, 1, 7, 50, all.len() - 1, all.len(), all.len() + 10] {
+                    let tail = text(&transcript_tail(&a, width, n));
+                    assert_eq!(tail, all[all.len().saturating_sub(n)..], "n={n} w={width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_draws_the_same_rows_as_before() {
+        // The frame shows rows of the full transcript chosen by the scroll
+        // offset, clamped to the top.
+        let mut a = App::new();
+        for i in 0..30 {
+            a.entries.push(Entry::Notice(format!("row {i}")));
+        }
+        a.scroll = 5;
+        let s = screen(&a, 40, 12);
+        assert!(s.iter().any(|l| l.contains("row 24")), "{s:?}");
+        assert!(!s.iter().any(|l| l.contains("row 25")), "{s:?}");
+        a.scroll = 10_000;
+        let s = screen(&a, 40, 12);
+        assert!(s[1].contains("row 0"), "clamped to the top: {s:?}");
     }
 
     #[test]
