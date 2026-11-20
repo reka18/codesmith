@@ -370,6 +370,31 @@ pub fn resource_query(resource: &str) -> String {
     .join(" ")
 }
 
+/// The management API URL of the deployments of resource `id` (from the
+/// Resource Graph's answer), which the management token is sent to: `id`
+/// must be a plain ARM resource path, and the URL must stay on the
+/// management endpoint.
+pub fn deployments_url(management: &str, id: &str) -> Result<String> {
+    let plain = id.starts_with("/subscriptions/")
+        && !["@", "//", "..", "?", "#", "\\", "%"]
+            .iter()
+            .any(|bad| id.contains(bad))
+        && !id.chars().any(|c| c.is_whitespace() || c.is_control());
+    if !plain {
+        return Err(anyhow!(
+            "Azure returned a resource id that is not one: {id:?}"
+        ));
+    }
+    let url = format!("{management}{id}/deployments?api-version=2024-10-01");
+    let origin = reqwest::Url::parse(management)?.origin();
+    if reqwest::Url::parse(&url).map(|u| u.origin()).ok() != Some(origin) {
+        return Err(anyhow!(
+            "Azure returned a resource id outside the management endpoint"
+        ));
+    }
+    Ok(url)
+}
+
 /// The management API's list, every page of it (a list is complete or an
 /// error); page links must stay on the management endpoint, which every
 /// page's token is for.
@@ -396,7 +421,7 @@ pub async fn management_deployments(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow!("Azure resource {resource:?} was not found"))?;
     let origin = reqwest::Url::parse(&e.management)?.origin();
-    let mut url = format!("{}{id}/deployments?api-version=2024-10-01", e.management);
+    let mut url = deployments_url(&e.management, id)?;
     let mut out = vec![];
     loop {
         let page = get_json(client, client.get(&url).bearer_auth(&token)).await?;

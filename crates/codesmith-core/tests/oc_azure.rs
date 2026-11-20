@@ -872,3 +872,34 @@ fn oc_azure_prefers_websockets_on_the_provider_for_the_azure_responses_api_only(
     ));
     assert!(!resolve(json!({"protocol": "anthropic-messages"})));
 }
+
+/// Not in OpenCode: the resource id from the Resource Graph is the path of
+/// a URL the management token goes to, so it must be a plain ARM path that
+/// keeps the URL on the management endpoint.
+#[test]
+fn a_resource_id_must_keep_the_management_token_at_home() {
+    use codesmith_core::providers::azure::deployments_url;
+    let m = "https://management.azure.com";
+    let id = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/a";
+    assert_eq!(
+        deployments_url(m, id).unwrap(),
+        format!("{m}{id}/deployments?api-version=2024-10-01")
+    );
+    for bad in [
+        "@evil.example/subscriptions/x",
+        "/subscriptions/x@evil.example",
+        ".evil.example/subscriptions/x",
+        "//evil.example/subscriptions/x",
+        "/subscriptions//evil.example",
+        "/subscriptions/../../x",
+        "/subscriptions/x?y=1",
+        "/subscriptions/x#y",
+        "/subscriptions/x\\y",
+        "/subscriptions/x%2F..",
+        "/subscriptions/x y",
+        "/tenants/x",
+        "",
+    ] {
+        assert!(deployments_url(m, bad).is_err(), "{bad}");
+    }
+}
