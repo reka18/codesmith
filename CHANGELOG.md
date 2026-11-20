@@ -38,6 +38,11 @@ replays of its recorded provider traffic.
   HTTP server. Tool calls appear in the UI and over ACP while their
   arguments are still streaming. The UI follows a running subagent in its
   call's row and names it in its permission prompts.
+- **Themes and key bindings:** OpenCode's themes (its 33 built-in ones,
+  theme files in either of its formats, and `system` from the terminal's
+  colors) in light or dark mode following the terminal, picked with
+  `/themes`; OpenCode's keymap, its command ids, leader key and defaults,
+  rebound in `tui.keybinds`.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
   web search, todos, questions, and image, PDF and video input (video only
   for models that take it).
