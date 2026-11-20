@@ -103,3 +103,71 @@ fn a_cached_catalog_is_checked_once_then_stamped() {
     assert!(entry["checked"].is_string(), "{entry}");
     assert_eq!(entry["body"], body);
 }
+
+fn wide(n: usize, dup: bool) -> String {
+    let mut s = String::from("{");
+    for i in 0..n {
+        if i > 0 {
+            s.push(',');
+        }
+        let k = if dup { i % 2 } else { i };
+        s.push_str(&format!("\"p{k:08}\":0"));
+    }
+    s.push('}');
+    s
+}
+
+#[test]
+fn many_top_level_keys_index_in_linear_time() {
+    let t = wide(60_000, false);
+    let start = std::time::Instant::now();
+    let c = catalog::Catalog::from_text(t.clone().into()).unwrap();
+    assert_eq!(c.ids().count(), 60_000);
+    let _ = catalog::decode_snapshot(&t).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    // Duplicates: the last value wins, in the first one's place.
+    let c = catalog::Catalog::from_text(wide(10, true).into()).unwrap();
+    assert_eq!(c.ids().collect::<Vec<_>>(), ["p00000000", "p00000001"]);
+    let j = catalog::Json::parse(r#"{"a":1,"b":2,"a":3}"#).unwrap();
+    assert_eq!(serde_json::to_string(&j).unwrap(), r#"{"a":3,"b":2}"#);
+}
+
+/// A server that answers every request with an endless-looking body and
+/// no length.
+fn flood() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"a\":\"");
+            let chunk = vec![b'x'; 1 << 20];
+            for _ in 0..(catalog::MAX_BODY >> 20) + 4 {
+                if stream.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn an_oversized_catalog_body_is_refused() {
+    let kv = Arc::new(MemoryKv::default());
+    let s = ModelsDev::new(
+        Options {
+            url: Some(flood()),
+            fetch: true,
+            snapshot: false,
+            ..Options::default()
+        },
+        kv.clone(),
+    );
+    let err = s.try_refresh(true).await.unwrap_err();
+    assert!(err.to_string().contains("larger than"), "{err:#}");
+    assert!(kv.get(&catalog::cache_key(s.source())).is_none());
+}

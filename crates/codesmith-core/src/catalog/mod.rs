@@ -1378,10 +1378,14 @@ fn index(text: &str) -> Option<Vec<(String, std::ops::Range<usize>)>> {
                 }
                 fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Top<'de>, A::Error> {
                     let mut out: Vec<(String, &'de RawValue)> = Vec::new();
+                    let mut at: HashMap<String, usize> = HashMap::new();
                     while let Some((k, v)) = m.next_entry::<String, &'de RawValue>()? {
-                        match out.iter_mut().find(|(key, _)| *key == k) {
-                            Some(slot) => slot.1 = v,
-                            None => out.push((k, v)),
+                        match at.get(&k) {
+                            Some(&i) => out[i].1 = v,
+                            None => {
+                                at.insert(k.clone(), out.len());
+                                out.push((k, v));
+                            }
                         }
                     }
                     Ok(Top(out))
@@ -1731,6 +1735,26 @@ impl std::fmt::Display for Status {
 
 impl std::error::Error for Status {}
 
+/// The largest catalog body read (models.dev's is under 10 MB).
+pub const MAX_BODY: usize = 32 * 1024 * 1024;
+
+/// A response body as text, failing past [`MAX_BODY`] instead of
+/// buffering whatever the server sends.
+async fn read_body(mut res: reqwest::Response) -> anyhow::Result<String> {
+    if res.content_length().is_some_and(|n| n > MAX_BODY as u64) {
+        anyhow::bail!("the catalog is larger than {MAX_BODY} bytes");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = res.chunk().await? {
+        if body.len() + chunk.len() > MAX_BODY {
+            anyhow::bail!("the catalog is larger than {MAX_BODY} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8(body)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
+
 /// A loaded catalog: its text (read lazily) or normalized snapshots, with
 /// the full list and the offered catalog made from them on first use.
 struct Loaded {
@@ -2050,7 +2074,7 @@ impl ModelsDev {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             Ok(Some(Response {
-                text: res.text().await?,
+                text: read_body(res).await?,
                 etag,
             }))
         };

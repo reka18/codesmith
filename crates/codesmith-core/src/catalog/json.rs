@@ -157,10 +157,15 @@ impl<'de> Deserialize<'de> for Json {
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
                 let mut out: Vec<(String, Json)> = Vec::new();
+                // Where each key is, so duplicates (the last wins) stay linear.
+                let mut at: std::collections::HashMap<String, usize> = Default::default();
                 while let Some((k, v)) = map.next_entry::<String, Json>()? {
-                    match out.iter_mut().find(|(key, _)| *key == k) {
-                        Some(slot) => slot.1 = v,
-                        None => out.push((k, v)),
+                    match at.get(&k) {
+                        Some(&i) => out[i].1 = v,
+                        None => {
+                            at.insert(k.clone(), out.len());
+                            out.push((k, v));
+                        }
                     }
                 }
                 Ok(Json::Object(out))
