@@ -7,7 +7,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`codesmith`](#codesmith) | The interactive UI. |
 | [`mini`](#codesmith-mini) | The interactive UI in the terminal's scrollback. |
 | [`run`](#codesmith-run) | Run one prompt and print the result. |
-| [`session`](#codesmith-session) | List, export, import, delete, undo, redo, diff sessions. |
+| [`session`](#codesmith-session) | List, export, import, delete, undo, redo, diff sessions; migrate their media. |
 | [`models`](#codesmith-models) | List providers and models. |
 | [`auth`](#codesmith-auth) | Save, list or remove API keys. |
 | [`commands`](#codesmith-commands) | List commands. |
@@ -100,6 +100,7 @@ codesmith session fork  [ID] [--before N] # a copy through the latest message, o
 codesmith session diff  [ID]              # file changes since the latest turn began
 codesmith session undo  [ID]              # restore the files and hide the latest turn
 codesmith session redo  [ID]              # bring it back
+codesmith session migrate-media [ID]      # move inline media into the blob store (default: every session)
 ```
 
 `messages`, `fork`, `diff`, `undo` and `redo` default to the latest session in this folder. See

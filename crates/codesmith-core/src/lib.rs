@@ -6,6 +6,7 @@ pub mod approvals;
 pub mod attachment;
 pub mod auth;
 pub mod automation;
+pub mod blob;
 pub mod catalog;
 pub mod codemode;
 pub mod codemode_catalog;

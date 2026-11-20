@@ -735,6 +735,12 @@ enum SessionCmd {
         /// Session id (default: the latest in this directory).
         id: Option<String>,
     },
+    /// Move media kept inline in session records (sessions from before the
+    /// blob store, or with `media.blob` off) into the blob store.
+    MigrateMedia {
+        /// Session id (default: every session).
+        id: Option<String>,
+    },
 }
 
 impl RunArgs {
@@ -2376,6 +2382,20 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
                 serde_json::from_str(&text).context("not a codesmith session export")?;
             db.import(&e)?;
             println!("Imported {}", e.info.id);
+        }
+        SessionCmd::MigrateMedia { id } => {
+            let ids = match id {
+                Some(id) => vec![id],
+                None => db.list(None, true)?.into_iter().map(|s| s.id).collect(),
+            };
+            let mut moved = 0;
+            for id in &ids {
+                moved += db.migrate_media(id)?;
+            }
+            println!(
+                "Moved the media of {moved} record(s) in {} session(s) into the blob store.",
+                ids.len()
+            );
         }
     }
     Ok(())

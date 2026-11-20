@@ -138,7 +138,11 @@ codesmith session import session.json        # or: ... | codesmith session impor
 codesmith session delete ID                  # and its subagent sessions
 ```
 
-An export is a self-contained JSON file with the session and its messages.
+An export is a self-contained JSON file with the session and its messages,
+its media inline. An import (and a fork) stores that media in the blob store
+again (see [media limits](configuration.md#media-limits));
+`codesmith session migrate-media [ID]` does the same for sessions whose
+records still hold their media inline.
 
 ## Long sessions: compaction
 

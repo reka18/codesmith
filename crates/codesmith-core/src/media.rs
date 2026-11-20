@@ -46,6 +46,9 @@ impl Default for ImageLimits {
 #[serde(default)]
 pub struct MediaConfig {
     pub image: ImageLimits,
+    /// Keep sessions' media once in the blob store, outside their records
+    /// (see [`crate::blob`]); on unless `false`.
+    pub blob: Option<bool>,
 }
 
 /// How many leading bytes `detect` needs to tell every type apart (a WebM

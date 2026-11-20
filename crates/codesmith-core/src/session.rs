@@ -456,6 +456,9 @@ impl Session {
         store: Option<Store>,
     ) -> Result<Session> {
         let config = &loaded.config;
+        if let Some(s) = &store {
+            s.set_media_blob(config.media.blob.unwrap_or(true));
+        }
         let mut seen = 0;
         let mut ran_with = None;
         let mut instruction = None;

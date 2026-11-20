@@ -132,6 +132,9 @@ pub struct Export {
 
 pub struct Store {
     conn: std::sync::Mutex<Connection>,
+    /// Whether records keep their media in the blob store (see
+    /// [`crate::blob`]); on unless `media.blob` is false.
+    media_blob: std::sync::atomic::AtomicBool,
 }
 
 /// Session meta key: when the session was archived (ms).
@@ -425,8 +428,10 @@ impl Store {
                 PRAGMA user_version = 1;",
             )?;
         }
+        conn.execute_batch(crate::blob::TABLES)?;
         Ok(Store {
             conn: std::sync::Mutex::new(conn),
+            media_blob: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -510,8 +515,23 @@ impl Store {
     /// `BEGIN IMMEDIATE` transaction, so two connections (a UI and an
     /// automation in another process) appending to the same session cannot
     /// pick the same number.
+    ///
+    /// With the blob store on, the record's inline media is stored once as
+    /// blobs and the record keeps references (see [`crate::blob`]); a
+    /// message also ends any undone turn's chance of a redo, so the blobs
+    /// only those turns named are let go.
     pub fn append_at(&self, id: &str, record: &Record, t: i64) -> Result<i64> {
-        let body = serde_json::to_string(record)?;
+        let blobs = self.media_blob() && crate::blob::has_inline(record);
+        let plain = if blobs {
+            None
+        } else {
+            Some(serde_json::to_string(record)?)
+        };
+        let named = crate::blob::hashes(record);
+        let ends_redo = matches!(
+            record,
+            Record::Message { .. } | Record::Checkpoint { .. } | Record::Native { .. }
+        );
         let mut conn = self.conn.lock().unwrap();
         retry_busy(|| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -520,10 +540,25 @@ impl Store {
                 [id],
                 |r| r.get(0),
             )?;
+            let (body, hashes) = match &plain {
+                Some(b) => (b.clone(), named.clone()),
+                None => {
+                    let mut stored = record.clone();
+                    let hashes = crate::blob::externalize(&tx, &mut stored).map_err(sql_err)?;
+                    (
+                        serde_json::to_string(&stored).map_err(|e| sql_err(e.into()))?,
+                        hashes,
+                    )
+                }
+            };
             tx.execute(
                 "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
                 params![id, seq, t, body],
             )?;
+            crate::blob::record_refs(&tx, id, seq, &hashes).map_err(sql_err)?;
+            if ends_redo {
+                crate::blob::release_undone(&tx, id).map_err(sql_err)?;
+            }
             tx.execute(
                 "UPDATE session SET updated = ?2 WHERE id = ?1",
                 params![id, t],
@@ -531,6 +566,78 @@ impl Store {
             tx.commit()?;
             Ok(seq)
         })
+    }
+
+    /// Whether new records keep their media in the blob store.
+    pub fn media_blob(&self) -> bool {
+        self.media_blob.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Store new records' media as blobs (`true`, the default) or inline
+    /// (config `media.blob: false`). Records already written read either way.
+    pub fn set_media_blob(&self, on: bool) {
+        self.media_blob
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Keep `bytes` as a blob `owner` references (a job's result), and
+    /// return its hash; `None` past [`crate::blob::MAX_BYTES`].
+    pub fn put_blob(&self, owner: &str, bytes: &[u8], mime: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let Some(h) = crate::blob::put(&conn, bytes, mime)? else {
+            return Ok(None);
+        };
+        crate::blob::record_refs(&conn, owner, 0, &[h.clone()].into())?;
+        Ok(Some(h))
+    }
+
+    /// A blob's type and bytes, if it is still kept.
+    pub fn blob(&self, hash: &str) -> Result<Option<(String, Vec<u8>)>> {
+        let conn = self.conn.lock().unwrap();
+        crate::blob::get(&conn, hash)
+    }
+
+    /// Drop every reference `owner` holds, and the blobs nothing else names.
+    pub fn release_blobs(&self, owner: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        crate::blob::release(&conn, owner, None)
+    }
+
+    /// Move session `id`'s inline media (records written inline, before the
+    /// blob store or with it off) into blobs, whatever `media.blob` says:
+    /// an offline backfill. Returns how many records were rewritten.
+    pub fn migrate_media(&self, id: &str) -> Result<usize> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT seq, body FROM record WHERE session_id = ?1 AND body LIKE '%\"base64\"%' ORDER BY seq",
+            )?;
+            let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut moved = 0;
+        for (seq, body) in rows {
+            let Ok(mut record) = serde_json::from_str::<Record>(&body) else {
+                continue;
+            };
+            if !crate::blob::has_inline(&record) {
+                continue;
+            }
+            let hashes = crate::blob::externalize(&tx, &mut record)?;
+            let stored = serde_json::to_string(&record)?;
+            if stored == body {
+                continue;
+            }
+            tx.execute(
+                "UPDATE record SET body = ?3 WHERE session_id = ?1 AND seq = ?2",
+                params![id, seq, stored],
+            )?;
+            crate::blob::record_refs(&tx, id, seq, &hashes)?;
+            moved += 1;
+        }
+        tx.commit()?;
+        Ok(moved)
     }
 
     /// The newest record's sequence number in a session (0 if none).
@@ -607,11 +714,15 @@ impl Store {
         let mut out = Vec::new();
         for row in rows {
             let (seq, created, body) = row?;
+            let mut record: Record =
+                serde_json::from_str(&body).with_context(|| format!("record {seq} of {id}"))?;
+            if body.contains(crate::blob::PREFIX) {
+                crate::blob::hydrate(&conn, &mut record)?;
+            }
             out.push(Entry {
                 seq,
                 created,
-                record: serde_json::from_str(&body)
-                    .with_context(|| format!("record {seq} of {id}"))?,
+                record,
             });
         }
         Ok(out)
@@ -670,6 +781,7 @@ impl Store {
         conn.execute("DELETE FROM session_meta WHERE session_id = ?1", [id])?;
         conn.execute_batch(CONTEXT_TABLE)?;
         conn.execute("DELETE FROM session_context WHERE session_id = ?1", [id])?;
+        crate::blob::release(&conn, id, None)?;
         Ok(conn.execute("DELETE FROM session WHERE id = ?1", [id])? > 0)
     }
 
@@ -952,20 +1064,40 @@ impl Store {
             "INSERT INTO session (id, directory, title, agent, model, parent_id, created, updated, usage) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)",
             params![e.info.id, e.info.directory, e.info.title, e.info.agent, e.info.model, e.info.created, e.info.updated, serde_json::to_string(&e.info.usage)?],
         )?;
+        let blobs = self.media_blob();
         for en in &e.entries {
+            // References carried in never reach blobs this session didn't
+            // hold: they read as unavailable. Its own inline media becomes
+            // blobs it references.
+            let mut record = en.record.clone();
+            if !crate::blob::hashes(&record).is_empty() {
+                crate::blob::resolve(&mut record, &Default::default());
+            }
+            let hashes = if blobs {
+                crate::blob::externalize(&tx, &mut record)?
+            } else {
+                Default::default()
+            };
             tx.execute(
                 "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     e.info.id,
                     en.seq,
                     en.created,
-                    serde_json::to_string(&en.record)?
+                    serde_json::to_string(&record)?
                 ],
             )?;
+            crate::blob::record_refs(&tx, &e.info.id, en.seq, &hashes)?;
         }
         tx.commit()?;
         Ok(())
     }
+}
+
+/// An error inside a write transaction, as SQLite's so the busy retry
+/// passes it on.
+fn sql_err(e: anyhow::Error) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(e.into())
 }
 
 /// Rebuild the model's view of a log.

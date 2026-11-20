@@ -97,7 +97,7 @@ is parsed:
 | `tool_output` | `{"max_lines": 2000, "max_bytes": 51200}` | How much tool output goes to the model before it is truncated. See [Tool output](#tool-output). |
 | `compaction` | auto | When to summarize old history. See [Compaction](#compaction). |
 | `warming` | off | Keep-alive requests that keep an idle session's prompt cache warm. See [Prompt-cache warming](#prompt-cache-warming). |
-| `media` | see below | Limits that images are fitted to. See [Media limits](#media-limits). |
+| `media` | see below | Limits that images are fitted to, and whether media goes to the blob store. See [Media limits](#media-limits). |
 | `formatter` | off | `true`, or an object of overrides. See [formatters](language-servers-and-formatters.md#formatters). |
 | `lsp` | off | `true`, or an object of overrides. See [language servers](language-servers-and-formatters.md#language-servers). |
 | `mcp` | `{}` | `{"servers": {...}, "timeout": {...}}`. See [MCP](mcp.md). |
@@ -1143,6 +1143,15 @@ Images are fitted to these limits before they reach the model:
 With `auto_resize: false`, an image that is too large is dropped with a note
 to the model instead of scaled down. See [images and
 PDFs](tools.md#images-and-pdfs) for the rest of the media behaviour.
+
+Media in a session (attachments, images a tool read, generated images and
+videos) is kept once in the session database's blob store, outside the
+session's records: the records name each item by the SHA-256 of its bytes,
+the same bytes are stored once however often they recur (forks share them),
+and an item is deleted when the last session or turn naming it goes. One
+item is at most 20 MiB. `"media": {"blob": false}` keeps new media inline in
+the records instead. Sessions from before the blob store keep reading as
+they are; `codesmith session migrate-media` moves their media over.
 
 ## Compaction
 

@@ -1,0 +1,26 @@
+# Ports of the media groups: blob store, image and video generation, the
+# stateless generate API, hosted tools in sessions, Responses checkpoint
+# continuation and workspaces.
+@session-projector.test.ts
+1121 :: ported :: tests/oc_media_blob.rs::oc_blob_hydrates_media_refs_on_reads :: adapted: refs live in the session's records, not message and inbox rows
+1302 :: ported :: tests/oc_media_blob.rs::oc_blob_replaces_refs_to_missing_blobs_with_an_unavailable_placeholder
+1391 :: design :: storage-model :: CodeSmith hydrates records on read; a compaction's kept text names media from the record's own type and name
+1446 :: ported :: tests/oc_media_blob.rs::oc_blob_keeps_media_inline_when_media_blob_is_off :: adapted: `media.blob` is on by default, off with `false`
+1469 :: ported :: tests/oc_media_blob.rs::oc_blob_stores_media_once_and_refs_it_from_messages_and_tool_results :: adapted: no inbox rows
+1565 :: design :: storage-model :: OpenCode's inbox rows; CodeSmith has no inbox
+1584 :: ported :: tests/oc_media_blob.rs::oc_blob_deletes_undone_turns_refs_and_the_blobs_only_they_referenced :: adapted: an undo stays redoable until a new message, so its blobs go then
+1617 :: ported :: tests/oc_media_blob.rs::oc_blob_keeps_a_blob_while_a_fork_references_it_and_deletes_it_with_the_last_session
+1651 :: ported :: tests/oc_media_blob.rs::oc_blob_keeps_a_tool_results_blob_while_a_fork_references_it
+1697 :: design :: storage-model :: CodeSmith's records are append-only; no content update rewrites a tool result
+1964 :: ported :: tests/oc_media_blob.rs::oc_blob_splits_inline_media_out_of_stored_records_for_offline_backfills :: adapted: `Store::migrate_media` / `codesmith session migrate-media`
+2172 :: ported :: tests/oc_media_blob.rs::oc_blob_stores_a_forks_copies_of_inline_parent_media_as_blobs_and_leaves_the_parent_inline
+2226 :: design :: client-server :: per-Location media_blob settings; CodeSmith's store has one setting
+2384 :: ported :: tests/oc_media_blob.rs::oc_blob_moves_a_legacy_inline_media_message_into_a_blob :: adapted: no session_part rows; the record keeps its content
+@session-prompt.test.ts
+590 :: ported :: tests/oc_media_blob.rs::oc_blob_stores_media_refs_at_admission_when_config_enables_media_blob
+631 :: ported :: tests/oc_media_blob.rs::oc_blob_stores_a_forks_copies_of_inline_parent_media_as_blobs_and_leaves_the_parent_inline :: adapted: the store's setting, not the location's
+645 :: design :: client-server :: per-Location media_blob settings; CodeSmith's store has one setting
+658 :: design :: client-server :: Location instances that fail to boot
+681 :: ported :: tests/oc_media_blob.rs::oc_blob_records_refs_on_import_only_for_the_blobs_it_took_out_of_its_own_inline_media :: adapted: a carried-in ref reads as unavailable
+714 :: ported :: tests/oc_media_blob.rs::oc_blob_media_blob_is_on_by_default :: adapted: CodeSmith has no release channels; on by default everywhere
+747 :: ported :: tests/oc_media_blob.rs::oc_blob_imports_media_into_blobs_only_where_enabled :: adapted: the store's setting, not the location's

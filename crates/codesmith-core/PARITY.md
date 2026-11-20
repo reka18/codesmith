@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 14 | 0 | 8 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 45 | 0 | 40 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 60 | 0 | 19 | 175 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1496** | **16** | **320** | **2361** | **1395** | **0** |
+| **Total** | **5588** | **1511** | **16** | **299** | **2367** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -79,14 +79,13 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (320 cases in 28 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (299 cases in 27 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
-| [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
@@ -256,32 +255,6 @@ Missing features, by how many OpenCode test cases each would unlock (320 cases i
 - `tool-media-target-environment.test.ts`: reads its input and saves its output in the resolved target's environment, not the session's
 - `tool-media-target-environment.test.ts`: asks only the deny rules before replacing the file its real extension renames
 - `tool-media-target-environment.test.ts`: reads its input and saves its output in the resolved target's environment, not the session's
-
-### Media Blob Store
-
-21 cases.
-
-- `session-projector.test.ts`: hydrates media:&lt;hash> refs on message and inbox reads
-- `session-projector.test.ts`: replaces refs to missing blobs with an unavailable placeholder on read
-- `session-projector.test.ts`: names ref attachments in kept text without reading their blobs
-- `session-projector.test.ts`: keeps media inline unless experimental.media_blob is on
-- `session-projector.test.ts`: stores media once and refs it from inbox, message, and tool rows when experimental.media_blob is on
-- `session-projector.test.ts`: deletes a cancelled inbox row's blob refs and blobs
-- `session-projector.test.ts`: deletes reverted messages' blob refs and the blobs only they referenced
-- `session-projector.test.ts`: keeps a blob while a fork references it and deletes it with the last session
-- `session-projector.test.ts`: keeps a tool part's blob while a fork references it
-- `session-projector.test.ts`: releases a tool's blob when a content update drops its ref
-- `session-projector.test.ts`: splits inline media out of a session_part tool row for offline blob backfills
-- `session-projector.test.ts`: stores a fork's copies of inline parent media as blobs and leaves the parent's rows inline
-- `session-projector.test.ts`: copies inline parent media inline into a fork unless the parent's location stores media as blobs
-- `session-projector.test.ts`: moves a legacy inline media message's rewritten content to session_part with its media as a blob
-- `session-prompt.test.ts`: stores media refs at admission when the session's config enables media_blob
-- `session-prompt.test.ts`: forks a session's inline media into blobs when its location enables media_blob
-- `session-prompt.test.ts`: forks inline media inline when the parent's location doesn't enable media_blob, whatever the caller's
-- `session-prompt.test.ts`: forks and imports with media inline when the location's instance can't boot
-- `session-prompt.test.ts`: records refs on import only for the blobs it took out of its own inline media
-- `session-prompt.test.ts`: admits and imports media into blobs by default on a dev-channel server with no config
-- `session-prompt.test.ts`: imports media into blobs only where the location enables media_blob
 
 ### Workspaces
 
@@ -1410,9 +1383,9 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 685 |
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 551 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 332 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 335 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 229 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
 
@@ -1762,7 +1735,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (214 of 308)</summary>
+<details><summary>Sessions and their store (235 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1849,12 +1822,37 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-projector.test.ts`**
 
-- D does not settle a pending manual compaction on an auto failure · loads legacy revert storage into canonical state · projects staged, cleared, and committed reverts · orders projected messages and context by durable aggregate sequence · maps malformed persisted rows consistently while single-message lookup defects · checks session existence before resolving a missing message cursor · consumes the pending row and projects the message at promotion · projects durable context messages supported by the updater · rejects distinct creator events that reuse one projected message ID · projects retry state and clears it at the next step or execution terminal · does not infer restart continuation from lifecycle history · records each execution's start, including a resume after shutdown · updates only the newest incomplete assistant projection · reads and replays native data stored under its pre-v2.1 names · merges tool result native data into the call's native data · projects ended and failed step terminal state · does not revive a stale incomplete assistant projection · bumps session time_updated on step lifecycle events · leaves a settled inline assistant message untouched when a new step starts · stores interleaved assistant parts in session_part by ordinal across out-of-order tool completions and forks · appends inline content after existing session_part rows when splitting an inline assistant row · keeps projecting into session_part rows a newer release wrote for an in-progress message · forks a settled message whose parts are in session_part with its content · keeps session_part rows when an older build left inline content on the same message · reads a split message an older build added inline content to as its parts then that content · forks a split message an older build added inline media to · deletes a reverted message's session_part rows and the blobs only they referenced · forks and reads a long session in statements under 100 bound parameters · hydrates parts when envelope content is omitted or non-array, and fails to decode non-array content without parts · writes whole messages inline with experimental.part_rows off · reads the same reply when experimental.part_rows is switched on, off and on again mid-session — storage-model: OpenCode's event projector rows
+- D does not settle a pending manual compaction on an auto failure · loads legacy revert storage into canonical state · projects staged, cleared, and committed reverts · orders projected messages and context by durable aggregate sequence · maps malformed persisted rows consistently while single-message lookup defects · checks session existence before resolving a missing message cursor · consumes the pending row and projects the message at promotion · projects durable context messages supported by the updater · rejects distinct creator events that reuse one projected message ID · projects retry state and clears it at the next step or execution terminal · does not infer restart continuation from lifecycle history · records each execution's start, including a resume after shutdown · updates only the newest incomplete assistant projection · reads and replays native data stored under its pre-v2.1 names · merges tool result native data into the call's native data · projects ended and failed step terminal state · does not revive a stale incomplete assistant projection · bumps session time_updated on step lifecycle events · leaves a settled inline assistant message untouched when a new step starts — storage-model: OpenCode's event projector rows
+- P hydrates media:&lt;hash> refs on message and inbox reads — `tests/oc_media_blob.rs::oc_blob_hydrates_media_refs_on_reads` (adapted: refs live in the session's records, not message and inbox rows)
+- P replaces refs to missing blobs with an unavailable placeholder on read — `tests/oc_media_blob.rs::oc_blob_replaces_refs_to_missing_blobs_with_an_unavailable_placeholder`
+- D names ref attachments in kept text without reading their blobs — storage-model: CodeSmith hydrates records on read; a compaction's kept text names media from the record's own type and name
+- P keeps media inline unless experimental.media_blob is on — `tests/oc_media_blob.rs::oc_blob_keeps_media_inline_when_media_blob_is_off` (adapted: `media.blob` is on by default, off with `false`)
+- P stores media once and refs it from inbox, message, and tool rows when experimental.media_blob is on — `tests/oc_media_blob.rs::oc_blob_stores_media_once_and_refs_it_from_messages_and_tool_results` (adapted: no inbox rows)
+- D deletes a cancelled inbox row's blob refs and blobs — storage-model: OpenCode's inbox rows; CodeSmith has no inbox
+- P deletes reverted messages' blob refs and the blobs only they referenced — `tests/oc_media_blob.rs::oc_blob_deletes_undone_turns_refs_and_the_blobs_only_they_referenced` (adapted: an undo stays redoable until a new message, so its blobs go then)
+- P keeps a blob while a fork references it and deletes it with the last session — `tests/oc_media_blob.rs::oc_blob_keeps_a_blob_while_a_fork_references_it_and_deletes_it_with_the_last_session`
+- P keeps a tool part's blob while a fork references it — `tests/oc_media_blob.rs::oc_blob_keeps_a_tool_results_blob_while_a_fork_references_it`
+- D releases a tool's blob when a content update drops its ref — storage-model: CodeSmith's records are append-only; no content update rewrites a tool result
+- D stores interleaved assistant parts in session_part by ordinal across out-of-order tool completions and forks · appends inline content after existing session_part rows when splitting an inline assistant row — storage-model: OpenCode's event projector rows
+- P splits inline media out of a session_part tool row for offline blob backfills — `tests/oc_media_blob.rs::oc_blob_splits_inline_media_out_of_stored_records_for_offline_backfills` (adapted: `Store::migrate_media` / `codesmith session migrate-media`)
+- D keeps projecting into session_part rows a newer release wrote for an in-progress message · forks a settled message whose parts are in session_part with its content · keeps session_part rows when an older build left inline content on the same message — storage-model: OpenCode's event projector rows
+- P stores a fork's copies of inline parent media as blobs and leaves the parent's rows inline — `tests/oc_media_blob.rs::oc_blob_stores_a_forks_copies_of_inline_parent_media_as_blobs_and_leaves_the_parent_inline`
+- D copies inline parent media inline into a fork unless the parent's location stores media as blobs — client-server: per-Location media_blob settings; CodeSmith's store has one setting
+- D reads a split message an older build added inline content to as its parts then that content · forks a split message an older build added inline media to · deletes a reverted message's session_part rows and the blobs only they referenced — storage-model: OpenCode's event projector rows
+- P moves a legacy inline media message's rewritten content to session_part with its media as a blob — `tests/oc_media_blob.rs::oc_blob_moves_a_legacy_inline_media_message_into_a_blob` (adapted: no session_part rows; the record keeps its content)
+- D forks and reads a long session in statements under 100 bound parameters · hydrates parts when envelope content is omitted or non-array, and fails to decode non-array content without parts · writes whole messages inline with experimental.part_rows off · reads the same reply when experimental.part_rows is switched on, off and on again mid-session — storage-model: OpenCode's event projector rows
 
 **`session-prompt.test.ts`**
 
 - D exposes the execution registry · delegates execution continuation through SessionExecution · delegates process-local interruption through SessionExecution · forwards interrupt continuation policy · delegates interruption without requiring a recorded Session — effect-internal: execution delegation
 - D durably admits one user message before transcript promotion — storage-model: inbox admission before promotion
+- P stores media refs at admission when the session's config enables media_blob — `tests/oc_media_blob.rs::oc_blob_stores_media_refs_at_admission_when_config_enables_media_blob`
+- P forks a session's inline media into blobs when its location enables media_blob — `tests/oc_media_blob.rs::oc_blob_stores_a_forks_copies_of_inline_parent_media_as_blobs_and_leaves_the_parent_inline` (adapted: the store's setting, not the location's)
+- D forks inline media inline when the parent's location doesn't enable media_blob, whatever the caller's — client-server: per-Location media_blob settings; CodeSmith's store has one setting
+- D forks and imports with media inline when the location's instance can't boot — client-server: Location instances that fail to boot
+- P records refs on import only for the blobs it took out of its own inline media — `tests/oc_media_blob.rs::oc_blob_records_refs_on_import_only_for_the_blobs_it_took_out_of_its_own_inline_media` (adapted: a carried-in ref reads as unavailable)
+- P admits and imports media into blobs by default on a dev-channel server with no config — `tests/oc_media_blob.rs::oc_blob_media_blob_is_on_by_default` (adapted: CodeSmith has no release channels; on by default everywhere)
+- P imports media into blobs only where the location enables media_blob — `tests/oc_media_blob.rs::oc_blob_imports_media_into_blobs_only_where_enabled` (adapted: the store's setting, not the location's)
 - D streams durable Session events after an aggregate sequence · resumes through a recorded message without appending another prompt · records distinct messages when the ID is omitted · returns the original recorded message when the ID is retried · reconciles an exact retry from the promoted message without admission history · ignores delivery when retrying a promoted message · wakes execution when an exact prompt retry recovers a committed message · keeps the first admission when one ID is reused with a different prompt · keeps the first admission's delivery mode when one ID is reused with another · returns one recorded message to concurrent exact retries · promotes one message once under concurrent promotion attempts · reprojects pending inbox input without scheduling execution · rejects reuse of one globally unique message ID across sessions · rejects a prompt ID already used by visible Session history — storage-model: idempotent prompt admission and event streams
 - D starts execution by default after recording the prompt · starts execution when resume is explicitly true · only records the prompt when resume is false — client-server: resume flag on the prompt API
 - D keeps the first admission's metadata when one ID is reused with other metadata — storage-model: idempotent prompt admission and event streams
