@@ -180,10 +180,15 @@ fn parse_color(s: &str) -> Option<Rgba> {
         if parts.len() < 3 {
             return None;
         }
+        // One to four hex digits (the terminal's reply is untrusted input:
+        // a longer channel must not overflow the shift).
         let ch = |p: &str| -> Option<u8> {
+            if p.is_empty() || p.len() > 4 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
             let v = u32::from_str_radix(p, 16).ok()?;
             let max = (1u32 << (4 * p.len() as u32)) - 1;
-            (!p.is_empty() && p.len() <= 4).then(|| ((v as f64 / max as f64) * 255.0).round() as u8)
+            Some(((v as f64 / max as f64) * 255.0).round() as u8)
         };
         return Some(Rgba::rgb(ch(parts[0])?, ch(parts[1])?, ch(parts[2])?));
     }
@@ -281,6 +286,28 @@ pub fn query(timeout: std::time::Duration) -> Option<TerminalColors> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn color_channels_must_be_one_to_four_hex_digits() {
+        assert_eq!(
+            parse_color("rgb:ffff/0000/8080"),
+            Some(Rgba::rgb(255, 0, 128))
+        );
+        assert_eq!(parse_color("rgb:f/0/8"), Some(Rgba::rgb(255, 0, 136)));
+        for bad in [
+            "rgb:000000001/0/0",
+            "rgb:fffffffff/0/0",
+            "rgb:+f/0/0",
+            "rgb:/0/0",
+            "rgb:fffff/0/0",
+            "rgb:gg/0/0",
+        ] {
+            assert_eq!(parse_color(bad), None, "{bad}");
+        }
+        // Through the reply parser too.
+        let (c, _) = parse_replies(b"\x1b]11;rgb:000000001/0/0\x07");
+        assert_eq!(c.background, None);
+    }
 
     #[test]
     fn replies_are_parsed() {
