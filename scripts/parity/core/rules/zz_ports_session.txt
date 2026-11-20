@@ -18,3 +18,10 @@
 313 :: ported :: tests/oc_session_shell.rs::oc_session_shell_records_a_cancelled_or_timed_out_command
 379 :: ported :: tests/oc_session_shell.rs::oc_session_shell_records_a_spawn_failure_before_failing
 399 :: ported :: tests/oc_session_shell.rs::oc_session_shell_outlives_an_interrupted_caller
+@session-instructions.test.ts
+139 :: ported :: tests/oc_session_nearby.rs::oc_session_injects_agents_files_above_a_read_once
+199 :: ported :: tests/oc_session_nearby.rs::oc_session_falls_back_to_claude_md_above_a_read
+224 :: ported :: tests/oc_session_nearby.rs::oc_session_does_not_reinject_paths_in_the_stored_history :: the message is its own ledger
+251 :: ported :: tests/oc_session_nearby.rs::oc_session_discovers_agents_files_on_a_directory_listing
+287 :: ported :: tests/oc_session_nearby.rs::oc_session_reinjects_nested_instructions_dropped_by_compaction
+318 :: ported :: tests/oc_session_nearby.rs::oc_session_listing_the_working_directory_injects_nothing

@@ -789,6 +789,26 @@ impl Session {
         Ok(us::ran(&run, text))
     }
 
+    /// After a step's tool results: the instruction files its reads bring
+    /// in (see [`crate::nearby`]).
+    fn give_nearby_instructions(&mut self) -> Result<()> {
+        let n = self.messages.len();
+        if n < 2 {
+            return Ok(());
+        }
+        let texts = crate::nearby::after_step(
+            &self.cwd,
+            &self.root,
+            &self.messages[n - 2],
+            &self.messages[n - 1],
+            &self.messages,
+        );
+        for text in texts {
+            self.push(Message::user(text))?;
+        }
+        Ok(())
+    }
+
     /// The store sequence number of each of [`Session::messages`] (`None`
     /// for a checkpoint): a message's id, as a fork boundary takes it.
     pub fn seqs(&self) -> &[Option<i64>] {
@@ -1582,6 +1602,7 @@ impl Session {
                 role: Role::User,
                 parts: results,
             })?;
+            self.give_nearby_instructions()?;
             if let Some(e) = failure {
                 return Err(e);
             }

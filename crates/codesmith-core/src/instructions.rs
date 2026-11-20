@@ -24,7 +24,7 @@ use crate::instruction_state::{self as is, Definition, Observed};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-fn claude_fallback() -> bool {
+pub(crate) fn claude_fallback() -> bool {
     std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none()
 }
 

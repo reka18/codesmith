@@ -878,6 +878,13 @@ each file once:
 { "instructions": ["docs/STYLE.md", "~/notes/rust-conventions.md", "packages/*/CONVENTIONS.md"] }
 ```
 
+Folders below the working directory can have their own `AGENTS.md` (or
+`CLAUDE.md`). When the agent reads a file or lists a folder inside the
+project, the `AGENTS.md` files of the folders from there up to the working
+directory are given to it after the read, nearest first, as OpenCode does.
+Each is given once while it is in the conversation: one dropped by
+compaction or undo comes again with the next read under it.
+
 Set `$CODESMITH_DISABLE_CLAUDE_CODE` to stop reading `CLAUDE.md` files and
 `.claude/` folders for instructions, skills and commands.
 `codesmith debug prompt` prints the full system prompt the build agent (or

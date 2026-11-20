@@ -23,7 +23,6 @@ pub fn isolate() -> PathBuf {
         std::env::set_var("HOME", base.join("home"));
         std::env::set_var("CODESMITH_CONFIG_DIR", base.join("config"));
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
-        std::env::set_var("CODESMITH_DISABLE_CLAUDE_CODE", "1");
     });
     base
 }

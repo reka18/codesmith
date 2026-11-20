@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 6 | 0 | 16 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 21 | 0 | 64 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 27 | 0 | 58 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1349** | **15** | **472** | **2355** | **1397** | **0** |
+| **Total** | **5588** | **1355** | **15** | **466** | **2355** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (472 cases in 52 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (466 cases in 51 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -103,7 +103,6 @@ Missing features, by how many OpenCode test cases each would unlock (472 cases i
 | [Tool-use Policies](#tool-use-policies) | 6 | a deny-only policy layer over permissions (an allow never grants) |
 | [Mercurial VCS](#mercurial-vcs) | 6 | Mercurial project markers; Mercurial support |
 | [Responses Checkpoint Continuation](#responses-checkpoint-continuation) | 6 | WebSocket continuation checkpoints for compaction triggers; compaction across WebSocket recovery without stale response IDs |
-| [Nested Instructions on Read](#nested-instructions-on-read) | 6 | AGENTS.md above a read file injected once |
 | [Skill Mentions](#skill-mentions) | 6 | prepared skills attached to a prompt; skill mentions materialized on their prompt |
 | [Shell Resolution Rules](#shell-resolution-rules) | 6 | shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh) |
 | [Code Mode Tool Placement Policy](#code-mode-tool-placement-policy) | 5 | per-model direct vs Code Mode tool placement under full_codemode |
@@ -603,17 +602,6 @@ Missing features, by how many OpenCode test cases each would unlock (472 cases i
 - `session-checkpoint-transport.test.ts`: invalid trigger output does not retry or commit a continuation checkpoint
 - `session-checkpoint-transport.test.ts`: trigger recovers over SSE with complete input after the old socket closes and reconnect is rejected
 - `session-compaction-transport.test.ts`: compaction survives ${recovery} without stale response IDs (3 cases)
-
-### Nested Instructions on Read
-
-6 cases.
-
-- `session-instructions.test.ts`: injects AGENTS.md files above a read, excludes the Location root, and dedups across reads
-- `session-instructions.test.ts`: falls back to CLAUDE.md above a read where a directory has no AGENTS.md
-- `session-instructions.test.ts`: does not re-inject paths already recorded in durable session history
-- `session-instructions.test.ts`: discovers AGENTS.md on a directory listing, including the listed directory's own, and dedups with a later file read
-- `session-instructions.test.ts`: re-injects nested instructions dropped from history by compaction
-- `session-instructions.test.ts`: listing the Location root directory injects no instructions
 
 ### Skill Mentions
 
@@ -2032,7 +2020,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (190 of 308)</summary>
+<details><summary>Sessions and their store (196 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -2067,6 +2055,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-instructions.test.ts`**
 
+- P injects AGENTS.md files above a read, excludes the Location root, and dedups across reads — `tests/oc_session_nearby.rs::oc_session_injects_agents_files_above_a_read_once`
+- P falls back to CLAUDE.md above a read where a directory has no AGENTS.md — `tests/oc_session_nearby.rs::oc_session_falls_back_to_claude_md_above_a_read`
+- P does not re-inject paths already recorded in durable session history — `tests/oc_session_nearby.rs::oc_session_does_not_reinject_paths_in_the_stored_history` (the message is its own ledger)
+- P discovers AGENTS.md on a directory listing, including the listed directory's own, and dedups with a later file read — `tests/oc_session_nearby.rs::oc_session_discovers_agents_files_on_a_directory_listing`
+- P re-injects nested instructions dropped from history by compaction — `tests/oc_session_nearby.rs::oc_session_reinjects_nested_instructions_dropped_by_compaction`
+- P listing the Location root directory injects no instructions — `tests/oc_session_nearby.rs::oc_session_listing_the_working_directory_injects_nothing`
 - D toLLMMessages does not forward synthetic metadata to the provider — storage-model: synthetic metadata stripping
 
 **`session-list.test.ts`**
