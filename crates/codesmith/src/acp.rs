@@ -1030,7 +1030,8 @@ fn modes(s: &Session, config: &config::Config) -> Value {
 }
 
 /// Models worth offering: the configured default, agents' models, every
-/// model listed under a provider, and the session's own.
+/// model listed under a provider, and the session's own (all without their
+/// `#variant`).
 fn models(config: &config::Config, current: &str) -> Vec<(String, String)> {
     let mut specs: BTreeMap<String, String> = BTreeMap::new();
     for (pid, p) in &config.providers {
@@ -1043,8 +1044,9 @@ fn models(config: &config::Config, current: &str) -> Vec<(String, String)> {
         .model
         .iter()
         .chain(config.agents.values().filter_map(|a| a.model.as_ref()))
-        .chain(std::iter::once(&current.to_string()))
-        .cloned()
+        .map(String::as_str)
+        .chain(std::iter::once(current))
+        .map(|s| config::split_variant(s).0.to_string())
         .collect::<Vec<_>>();
     for spec in extra {
         specs.entry(spec.clone()).or_insert(spec);
@@ -1052,10 +1054,51 @@ fn models(config: &config::Config, current: &str) -> Vec<(String, String)> {
     specs.into_iter().collect()
 }
 
-/// `configOptions`: model and mode selectors (OpenCode's `configOptions`;
-/// CodeSmith models have no effort variants).
+/// The effort value that selects no variant (OpenCode's
+/// `DEFAULT_VARIANT_VALUE`).
+const DEFAULT_VARIANT: &str = "default";
+
+/// The variants a `provider/model` offers (none when it does not resolve).
+fn variants_of(config: &config::Config, base: &str) -> Vec<String> {
+    config
+        .resolve_model(base)
+        .map(|m| m.variants)
+        .unwrap_or_default()
+}
+
+/// `very-high` → `Very High`.
+fn variant_label(v: &str) -> String {
+    v.split(['-', '_'])
+        .map(|part| {
+            let mut c = part.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().chain(c).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The effort selector's current value (OpenCode's `selectVariant`).
+fn current_variant(variant: Option<&str>, variants: &[String]) -> String {
+    match variant {
+        None | Some(DEFAULT_VARIANT) => DEFAULT_VARIANT.into(),
+        Some(v) if variants.iter().any(|x| x == v) => v.into(),
+        _ if variants.iter().any(|x| x == DEFAULT_VARIANT) => DEFAULT_VARIANT.into(),
+        _ => variants
+            .first()
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_VARIANT.into()),
+    }
+}
+
+/// `configOptions`: the model selector, an effort selector when the model
+/// has variants, and the mode selector (OpenCode's `configOptions`). `model`
+/// is the session's `provider/model[#variant]`.
 fn config_options(config: &config::Config, model: &str, mode: &str) -> Value {
-    let models: Vec<Value> = models(config, model)
+    let (base, variant) = config::split_variant(model);
+    let models: Vec<Value> = models(config, base)
         .into_iter()
         .map(|(value, name)| json!({"value": value, "name": name}))
         .collect();
@@ -1069,10 +1112,79 @@ fn config_options(config: &config::Config, model: &str, mode: &str) -> Value {
             m
         })
         .collect();
-    json!([
-        {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": model, "options": models},
-        {"id": "mode", "name": "Session Mode", "category": "mode", "type": "select", "currentValue": mode, "options": modes},
-    ])
+    let mut out = vec![
+        json!({"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": base, "options": models}),
+    ];
+    let variants = variants_of(config, base);
+    if !variants.is_empty() {
+        let mut values = variants.clone();
+        if !values.iter().any(|v| v == DEFAULT_VARIANT) {
+            values.push(DEFAULT_VARIANT.into());
+        }
+        let options: Vec<Value> = values
+            .iter()
+            .map(|v| json!({"value": v, "name": variant_label(v)}))
+            .collect();
+        out.push(json!({
+            "id": "effort", "name": "Effort", "description": "Available effort levels for this model",
+            "category": "thought_level", "type": "select",
+            "currentValue": current_variant(variant, &variants), "options": options,
+        }));
+    }
+    out.push(json!({"id": "mode", "name": "Session Mode", "category": "mode", "type": "select", "currentValue": mode, "options": modes}));
+    Value::Array(out)
+}
+
+fn effort_not_found(value: &str) -> RpcError {
+    invalid(
+        format!("effort not found: {value}"),
+        json!({"effort": value}),
+    )
+}
+
+/// The spec a `model` selection picks (OpenCode's `parseModelSelection` and
+/// `requireModel`): `provider/model`, `provider/model#variant`, or
+/// `provider/model/variant` when no listed model has that whole id. Without
+/// a variant, the current one is kept if the model is the same.
+fn model_selection(
+    config: &config::Config,
+    value: &str,
+    current: &str,
+) -> Result<String, RpcError> {
+    let listed = models(config, current);
+    let is_listed = |spec: &str| listed.iter().any(|(v, _)| v == spec);
+    let (base, variant) = match config::split_variant(value) {
+        (base, Some(v)) => (base, Some(v)),
+        _ if is_listed(value) => (value, None),
+        _ => match value.rsplit_once('/') {
+            Some((base, v))
+                if is_listed(base) && variants_of(config, base).iter().any(|x| x == v) =>
+            {
+                (base, Some(v))
+            }
+            _ => (value, None),
+        },
+    };
+    config.resolve_model(base).map_err(|_| {
+        invalid(
+            format!("model not found: {value}"),
+            json!({"providerId": value.split('/').next(), "modelId": value}),
+        )
+    })?;
+    let variants = variants_of(config, base);
+    let variant = match variant {
+        Some(DEFAULT_VARIANT) => None,
+        Some(v) if variants.iter().any(|x| x == v) => Some(v),
+        Some(v) => return Err(effort_not_found(v)),
+        None => match config::split_variant(current) {
+            (b, Some(v)) if b == base && variants.iter().any(|x| x == v) => Some(v),
+            _ => None,
+        },
+    };
+    Ok(match variant {
+        Some(v) => format!("{base}#{v}"),
+        None => base.to_string(),
+    })
 }
 
 fn is_prompt(t: &str) -> bool {
@@ -1506,19 +1618,29 @@ impl Agent {
         Ok(out)
     }
 
-    /// Change the model or mode; returns the new `configOptions`.
+    /// Change the model, effort or mode; returns the new `configOptions`.
+    /// A change while a turn runs applies once it ends.
     async fn select(&self, sid: &str, config_id: &str, value: &str) -> Result<Value, RpcError> {
         let slot = self.slot(sid).await?;
         let config = &slot.loaded.config;
-        let target = match config_id {
-            "model" => {
-                config.resolve_model(value).map_err(|_| {
-                    invalid(
-                        format!("model not found: {value}"),
-                        json!({"providerId": value.split('/').next(), "modelId": value}),
-                    )
-                })?;
-                &slot.model
+        let current = slot
+            .model
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| slot.shown.lock().unwrap().0.clone());
+        let (target, value) = match config_id {
+            "model" => (&slot.model, model_selection(config, value, &current)?),
+            "effort" => {
+                let base = config::split_variant(&current).0;
+                let spec = if value == DEFAULT_VARIANT {
+                    base.to_string()
+                } else if variants_of(config, base).iter().any(|v| v == value) {
+                    format!("{base}#{value}")
+                } else {
+                    return Err(effort_not_found(value));
+                };
+                (&slot.model, spec)
             }
             "mode" => {
                 agent::resolve(config, value)
@@ -1526,7 +1648,7 @@ impl Agent {
                     .ok_or_else(|| {
                         invalid(format!("mode not found: {value}"), json!({"mode": value}))
                     })?;
-                &slot.mode
+                (&slot.mode, value.to_string())
             }
             _ => {
                 return Err(invalid(
@@ -1535,7 +1657,7 @@ impl Agent {
                 ))
             }
         };
-        let previous = target.lock().unwrap().replace(value.to_string());
+        let previous = target.lock().unwrap().replace(value.clone());
         let mut g = slot.session.lock().await;
         match g.as_mut() {
             // A turn is running: it picks the change up when it ends.
@@ -1553,6 +1675,10 @@ impl Agent {
         let model = slot.model.lock().unwrap().clone().unwrap_or(model);
         let mode = slot.mode.lock().unwrap().clone().unwrap_or(mode);
         let options = config_options(config, &model, &mode);
+        self.conn.update(
+            sid,
+            json!({"sessionUpdate": "config_option_update", "configOptions": options}),
+        );
         if config_id == "mode" {
             self.conn.update(
                 sid,
@@ -1872,8 +1998,6 @@ pub async fn run() -> Result<()> {
 ///   references them in the text, for `read` and its permission checks);
 /// - non-image media in tool results (ACP tool content carries images;
 ///   a PDF a tool returned reaches the model but not the client);
-/// - effort variants (`effort` config option) and `parseModelSelection`'s
-///   variant suffixes: CodeSmith models have no variants;
 /// - child-session updates (`opencode/child-session-updates`), background
 ///   turns woken by shells or subagents after `end_turn`, and
 ///   `_session/steering`: subagents run inside the parent's turn and their
@@ -1964,7 +2088,9 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             let after = format!("done: {last}");
-            let chunks = if prompt.contains("describe") {
+            let chunks = if prompt.contains("effort?") {
+                reply(&format!("effort: {}", b["reasoning_effort"]))
+            } else if prompt.contains("describe") {
                 reply("described")
             } else if prompt.contains("think") {
                 vec![
@@ -3007,8 +3133,16 @@ mod tests {
                 json!({"code": -32602, "message": "Invalid params: mode not found: explore", "data": {"mode": "explore"}}),
             ),
             (
-                set("effort", json!("high")),
-                json!({"code": -32602, "message": "Invalid params: unknown config option: effort", "data": {"configId": "effort"}}),
+                set("effort", json!("ultra")),
+                json!({"code": -32602, "message": "Invalid params: effort not found: ultra", "data": {"effort": "ultra"}}),
+            ),
+            (
+                set("model", json!("fake/other#ultra")),
+                json!({"code": -32602, "message": "Invalid params: effort not found: ultra", "data": {"effort": "ultra"}}),
+            ),
+            (
+                set("bogus", json!("x")),
+                json!({"code": -32602, "message": "Invalid params: unknown config option: bogus", "data": {"configId": "bogus"}}),
             ),
             (
                 set("model", json!(true)),
@@ -3051,6 +3185,214 @@ mod tests {
         assert_eq!(option(&r, "model")["currentValue"], "fake/other");
         assert_eq!(option(&r, "mode")["currentValue"], "build");
         assert_eq!(r["result"]["modes"]["currentModeId"], "build");
+    }
+
+    // config-option.test.ts: "builds effort option from variants and falls
+    // back to default when current variant is invalid"
+    #[test]
+    fn oc_acp_effort_option_shape() {
+        let config: config::Config = serde_json::from_value(json!({
+            "providers": {"t": {"protocol": "anthropic-messages", "settings": {"baseURL": "http://x", "apiKey": "k"},
+                "models": {
+                    "effort": {"variants": [{"id": "low"}, {"id": "default"}, {"id": "high"}]},
+                    "plain": {},
+                    "claude/sonnet-4": {"variants": {"very-high": {"reasoningEffort": "high"}}},
+                }}}
+        }))
+        .unwrap();
+        let effort = |spec: &str| {
+            config_options(&config, spec, "build")
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["id"] == "effort")
+                .cloned()
+        };
+        assert_eq!(
+            effort("t/effort").unwrap(),
+            json!({
+                "id": "effort", "name": "Effort", "description": "Available effort levels for this model",
+                "category": "thought_level", "type": "select", "currentValue": "default",
+                "options": [
+                    {"value": "low", "name": "Low"},
+                    {"value": "default", "name": "Default"},
+                    {"value": "high", "name": "High"},
+                ],
+            })
+        );
+        assert_eq!(effort("t/effort#high").unwrap()["currentValue"], "high");
+        // No variants: no effort selector.
+        assert_eq!(effort("t/plain"), None);
+        let ids: Vec<Value> = config_options(&config, "t/effort", "build")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].clone())
+            .collect();
+        assert_eq!(ids, [json!("model"), json!("effort"), json!("mode")]);
+        // The model selector names the model, not its variant.
+        let all = config_options(&config, "t/claude/sonnet-4#very-high", "build");
+        assert_eq!(all[0]["currentValue"], "t/claude/sonnet-4");
+        assert_eq!(all[1]["currentValue"], "very-high");
+        assert_eq!(all[1]["options"][0]["name"], "Very High");
+        assert_eq!(
+            current_variant(Some("missing"), &["minimal".into(), "low".into()]),
+            "minimal"
+        );
+        assert_eq!(
+            current_variant(Some("missing"), &["low".into(), "default".into()]),
+            "default"
+        );
+        // parseModelSelection: exact slash-containing ids win; a trailing
+        // `/variant` or `#variant` picks a variant.
+        for (value, spec) in [
+            ("t/effort", "t/effort"),
+            ("t/effort/low", "t/effort#low"),
+            ("t/effort#high", "t/effort#high"),
+            ("t/effort#default", "t/effort"),
+            ("t/claude/sonnet-4", "t/claude/sonnet-4"),
+            ("t/claude/sonnet-4/very-high", "t/claude/sonnet-4#very-high"),
+            ("t/claude/sonnet-4/missing", "t/claude/sonnet-4/missing"),
+        ] {
+            assert_eq!(model_selection(&config, value, "t/plain").unwrap(), spec);
+        }
+        // Switching to the same model keeps the variant; another drops it.
+        assert_eq!(
+            model_selection(&config, "t/effort", "t/effort#high").unwrap(),
+            "t/effort#high"
+        );
+        assert_eq!(
+            model_selection(&config, "t/plain", "t/effort#high").unwrap(),
+            "t/plain"
+        );
+        assert_eq!(
+            model_selection(&config, "t/effort#nope", "t/plain")
+                .unwrap_err()
+                .1,
+            "Invalid params: effort not found: nope"
+        );
+    }
+
+    // catalog.test.ts: "switches model, effort, and mode against the warm
+    // catalog" (the effort part)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_effort_switches_like_the_model() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start_with(
+            &cwd,
+            &base,
+            json!({"providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"},
+                "models": {"m": {"variants": {"fast": {"reasoningEffort": "minimal"}}}, "other": {"name": "Other"}}}}}),
+        );
+        let new = c
+            .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
+            .await;
+        let sid = new["result"]["sessionId"].as_str().unwrap().to_string();
+        let effort = option(&new, "effort");
+        assert_eq!(effort["currentValue"], "default");
+        // Built-in reasoning variants, then the configured ones.
+        let values: Vec<&str> = effort["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, ["low", "medium", "high", "fast", "default"]);
+        let set = |id: &str, value: &str| json!({"sessionId": sid, "configId": id, "value": value});
+        async fn ask(c: &mut Client, sid: &str) -> String {
+            let id = c
+                .call(
+                    "session/prompt",
+                    json!({"sessionId": sid, "prompt": [{"type": "text", "text": "effort?"}]}),
+                )
+                .await;
+            let (_, seen) = c.until(id, |_| None).await;
+            updates(&seen, "agent_message_chunk")
+                .iter()
+                .filter_map(|u| u["content"]["text"].as_str())
+                .collect()
+        }
+        assert_eq!(ask(&mut c, &sid).await, "effort: null");
+
+        let id = c
+            .call("session/set_config_option", set("effort", "high"))
+            .await;
+        let (r, seen) = c.until(id, |_| None).await;
+        assert_eq!(option(&r, "effort")["currentValue"], "high");
+        assert_eq!(option(&r, "model")["currentValue"], "fake/m");
+        let pushed = updates(&seen, "config_option_update");
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0]["configOptions"], r["result"]["configOptions"]);
+        assert_eq!(ask(&mut c, &sid).await, "effort: \"high\"");
+        let stored = |cwd: &Path| {
+            Store::open(&cwd.join("acp.db"))
+                .unwrap()
+                .get(&sid)
+                .unwrap()
+                .unwrap()
+                .model
+        };
+        assert_eq!(stored(&cwd), "fake/m#high");
+
+        // A configured variant; `provider/model/variant` picks one too.
+        let r = c
+            .request("session/set_config_option", set("model", "fake/m/fast"))
+            .await;
+        assert_eq!(option(&r, "effort")["currentValue"], "fast");
+        assert_eq!(ask(&mut c, &sid).await, "effort: \"minimal\"");
+        // The same model keeps its variant.
+        let r = c
+            .request("session/set_config_option", set("model", "fake/m"))
+            .await;
+        assert_eq!(option(&r, "effort")["currentValue"], "fast");
+        // Another model drops it.
+        let r = c
+            .request("session/set_config_option", set("model", "fake/other"))
+            .await;
+        assert_eq!(option(&r, "effort")["currentValue"], "default");
+        assert_eq!(stored(&cwd), "fake/other");
+        let r = c
+            .request("session/set_config_option", set("model", "fake/m#medium"))
+            .await;
+        assert_eq!(option(&r, "effort")["currentValue"], "medium");
+        let r = c
+            .request("session/set_config_option", set("effort", "default"))
+            .await;
+        assert_eq!(option(&r, "effort")["currentValue"], "default");
+        assert_eq!(stored(&cwd), "fake/m");
+
+        // During a turn the switch waits for it to end, and is stored.
+        let pid = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "think"}]}),
+            )
+            .await;
+        let se = c
+            .call("session/set_config_option", set("effort", "low"))
+            .await;
+        let mut answered = 0;
+        while answered < 2 {
+            let m = c.recv().await;
+            if m.get("method").is_none() && (m["id"] == json!(pid) || m["id"] == json!(se)) {
+                assert!(m.get("error").is_none(), "{m}");
+                if m["id"] == json!(se) {
+                    assert_eq!(option(&m, "effort")["currentValue"], "low");
+                }
+                answered += 1;
+            }
+        }
+        assert_eq!(ask(&mut c, &sid).await, "effort: \"low\"");
+        assert_eq!(stored(&cwd), "fake/m#low");
+        let mut c2 = start(&cwd, &base);
+        let r = c2
+            .request(
+                "session/load",
+                json!({"cwd": cwd, "sessionId": sid, "mcpServers": []}),
+            )
+            .await;
+        assert_eq!(option(&r, "model")["currentValue"], "fake/m");
+        assert_eq!(option(&r, "effort")["currentValue"], "low");
     }
 
     // additional-directories.test.ts: "rejects %p before creating a
