@@ -25,7 +25,7 @@ to match its features.
 curl -fsSL https://raw.githubusercontent.com/reka18/codesmith/main/install.sh | sh
 # or
 brew install reka18/tap/codesmith
-# or, from source (Rust 1.85+)
+# or, from source (Rust 1.91+)
 cargo install --locked --git https://github.com/reka18/codesmith codesmith
 ```
 

@@ -19,19 +19,36 @@ download from it, and macOS signing happens on the owner's own Mac.
 Linux binaries are static musl builds so they have no glibc version floor: a
 glibc build made on Ubuntu 24.04 would need glibc 2.39 and fail on Debian 12,
 RHEL 9 and older LTS releases, and musl also covers Alpine. CodeSmith has no
-native dependencies beyond bundled C (SQLite, ring), which build with
+native dependencies beyond bundled C (SQLite, ring, zstd), which build with
 `musl-gcc`. The cost is musl's slower allocator, which doesn't matter for an
 agent that mostly waits on the network.
 
 Each build is packaged as `codesmith-<version>-<target>.tar.gz`, containing a
-`codesmith-<version>-<target>/` directory with the binary, `LICENSE` and
-`README.md`. The final job writes `SHA256SUMS` and creates a **draft** release
+`codesmith-<version>-<target>/` directory with the binary, `LICENSE`,
+`README.md`, `CHANGELOG.md` and the `docs/` guide. The final job writes `SHA256SUMS` and creates a **draft** release
 with everything attached. It stays a draft until the macOS binaries are signed,
 so nobody downloads an unsigned build from `/releases/latest`.
 
 The workflow uses only `gh` and GitHub's own `actions/checkout`,
 `actions/upload-artifact` and `actions/download-artifact`, pinned to commit
 SHAs. Rust comes from the runner's preinstalled `rustup`.
+
+## Dry run
+
+Running the workflow by hand is always a dry run, whatever its `dry_run`
+input says: the release job only runs for a pushed `v*` tag.
+
+```sh
+gh workflow run release.yml --ref my-branch
+gh run watch
+```
+
+It builds, smoke-tests and packages all four targets, then writes
+`SHA256SUMS`, renders the Homebrew formula from it, checks that every URL in
+the formula names a tarball it built, and installs the Linux tarball with
+`install.sh`. The tarballs, `SHA256SUMS` and the formula are left as workflow
+artifacts. Do this before tagging whenever the dependencies or the workflow
+change.
 
 ## Signing without secrets in CI
 
@@ -75,7 +92,8 @@ identity works.
    `version` on the `codesmith-ai`/`codesmith-core` entries under
    `[workspace.dependencies]`), then run `cargo check` so `Cargo.lock` follows.
    Run `cargo fmt --all --check`, `cargo clippy --all-targets --workspace` and
-   `cargo test --workspace`. Commit: `Release 0.2.0`.
+   `cargo test --workspace`. Add the release's section to `CHANGELOG.md`.
+   Commit: `Release 0.2.0`.
 2. **Tag and push.** The workflow fails if the tag doesn't match the version.
 
    ```sh

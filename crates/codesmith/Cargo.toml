@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-homepage.workspace = true
 readme.workspace = true
 keywords = ["agent", "llm", "ai", "tui", "coding-assistant"]
 categories = ["command-line-utilities", "development-tools"]

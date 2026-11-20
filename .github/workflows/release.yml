@@ -102,7 +102,7 @@ jobs:
         run: |
           name="codesmith-$VERSION-$TARGET"
           mkdir -p "dist/$name"
-          cp "target/$TARGET/release/codesmith" LICENSE README.md "dist/$name/"
+          cp "target/$TARGET/release/codesmith" LICENSE README.md CHANGELOG.md "dist/$name/"
           # The README links into docs/, so ship the guide too.
           cp -R docs "dist/$name/docs"
           # COPYFILE_DISABLE keeps macOS tar from adding ._ AppleDouble files.

@@ -32,7 +32,7 @@ brew install reka18/tap/codesmith
 `shasum -a 256 -c SHA256SUMS --ignore-missing`, unpack, and put `codesmith`
 on your `PATH`.
 
-**From source** (Rust 1.85 or later):
+**From source** (Rust 1.91 or later):
 
 ```sh
 cargo install --locked --git https://github.com/reka18/codesmith codesmith
