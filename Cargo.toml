@@ -23,6 +23,8 @@ grep-searcher = "0.1"
 htmd = "0.1"
 ignore = "0.4"
 rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
 ratatui = "0.30"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }

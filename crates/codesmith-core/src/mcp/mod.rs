@@ -3,6 +3,8 @@
 //! OpenCode's `mcp.servers` shape: `{"type": "local", "command": [...]}` for a
 //! stdio server or `{"type": "remote", "url": ...}` for streamable HTTP.
 
+pub mod oauth;
+
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,6 +48,9 @@ pub enum ServerConfig {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        /// `false` turns OAuth off; an object pre-sets the OAuth client.
+        #[serde(default)]
+        oauth: Option<oauth::Setting>,
         #[serde(default)]
         disabled: bool,
         #[serde(default)]
@@ -92,9 +97,13 @@ pub struct McpTool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
-    Connected { tools: usize },
+    Connected {
+        tools: usize,
+    },
     Disabled,
     Failed(String),
+    /// The server wants an OAuth login: `codesmith mcp auth <name>`.
+    NeedsAuth,
 }
 
 /// `<server>_<tool>` with anything outside `[A-Za-z0-9_-]` turned into `_`.
@@ -250,6 +259,14 @@ impl Client {
             *session.lock().unwrap() = Some(s.to_string());
         }
         let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            let www = resp
+                .headers()
+                .get("www-authenticate")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            return Err(oauth::Unauthorized(www).into());
+        }
         if !status.is_success() {
             let body: String = resp
                 .text()
@@ -396,6 +413,9 @@ impl Mcp {
                     tools.extend(t);
                     clients.insert(name, c);
                 }
+                Err(e) if e.downcast_ref::<oauth::Unauthorized>().is_some() => {
+                    statuses.insert(name, Status::NeedsAuth);
+                }
                 Err(e) => {
                     statuses.insert(name, Status::Failed(format!("{e:#}")));
                 }
@@ -441,17 +461,34 @@ async fn connect(
         pick(|t| t.execution, DEFAULT_EXECUTION_MS),
     );
     let client = match cfg {
-        ServerConfig::Remote { url, headers, .. } => Arc::new(Client {
-            server: name.to_string(),
-            transport: Transport::Http {
-                client: reqwest::Client::new(),
-                url: url.clone(),
-                headers: headers.clone(),
-                session: Mutex::new(None),
-            },
-            next: AtomicU64::new(1),
-            timeouts,
-        }),
+        ServerConfig::Remote {
+            url,
+            headers,
+            oauth: setting,
+            ..
+        } => {
+            let http = reqwest::Client::new();
+            let mut headers = headers.clone();
+            let has_auth = headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("authorization"));
+            if !has_auth && oauth::Setting::enabled(setting.as_ref()) {
+                if let Some(tok) = oauth::token(&http, &oauth::store_path(), name, url).await {
+                    headers.insert("Authorization".into(), format!("Bearer {tok}"));
+                }
+            }
+            Arc::new(Client {
+                server: name.to_string(),
+                transport: Transport::Http {
+                    client: http,
+                    url: url.clone(),
+                    headers,
+                    session: Mutex::new(None),
+                },
+                next: AtomicU64::new(1),
+                timeouts,
+            })
+        }
         ServerConfig::Local {
             command,
             cwd,
@@ -699,5 +736,88 @@ mod tests {
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
         assert!(start.elapsed() < Duration::from_secs(5));
         assert!(matches!(&mcp.statuses["slow"], Status::Failed(e) if e.contains("timed out")));
+    }
+}
+
+#[cfg(test)]
+mod oauth_flow_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn login_refresh_and_use() {
+        let Some(py) = ["python3", "python"].into_iter().find(|p| {
+            std::process::Command::new(p)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }) else {
+            return;
+        };
+        let mut child = tokio::process::Command::new(py)
+            .arg(format!(
+                "{}/tests/fixtures/mcp_oauth.py",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        let url = format!("http://127.0.0.1:{}/mcp", line.trim());
+        let name = format!("oauth-test-{}", std::process::id());
+
+        // Without a token the server is reported as needing a login.
+        let cfg: McpConfig =
+            serde_json::from_value(json!({"servers": {&name: {"type": "remote", "url": &url}}}))
+                .unwrap();
+        assert_eq!(
+            Mcp::connect(&cfg, Path::new("/")).await.statuses[&name],
+            Status::NeedsAuth
+        );
+
+        // The browser is played by an HTTP client that follows the redirect to our callback.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let http = reqwest::Client::new();
+        let setting: oauth::Setting = serde_json::from_value(json!({"port": 0})).unwrap();
+        let e = oauth::login(&http, &store, &name, &url, Some(&setting), |u| {
+            let u = u.to_string();
+            tokio::spawn(async move {
+                let _ = reqwest::get(u).await;
+            });
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                e.client_id.as_str(),
+                e.access_token.as_str(),
+                e.refresh_token.as_deref()
+            ),
+            ("cid-1", "at-1", Some("rt-1"))
+        );
+
+        // at-1 expires at once, so asking for a token refreshes it.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let tok = oauth::token(&http, &store, &name, &url).await.unwrap();
+        assert_eq!(tok, "at-2");
+        assert_eq!(
+            oauth::load(&store, &name, &url)
+                .unwrap()
+                .refresh_token
+                .as_deref(),
+            Some("rt-1"),
+            "the refresh token is kept"
+        );
+
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {&name: {"type": "remote", "url": &url, "headers": {"Authorization": format!("Bearer {tok}")}}}})).unwrap();
+        let mcp = Mcp::connect(&cfg, Path::new("/")).await;
+        assert_eq!(mcp.statuses[&name], Status::Connected { tools: 1 });
+        let tool = tool_name(&name, "whoami");
+        assert_eq!(mcp.call(&tool, json!({})).await.unwrap().0, "token at-2");
     }
 }

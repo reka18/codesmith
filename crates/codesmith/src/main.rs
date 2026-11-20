@@ -122,6 +122,10 @@ enum AuthCmd {
 enum McpCmd {
     /// Connect to each configured server and list its status and tools.
     List,
+    /// Log in to a remote server with OAuth (opens the browser).
+    Auth { name: String },
+    /// Forget a remote server's saved OAuth tokens.
+    Logout { name: String },
 }
 
 #[derive(Subcommand)]
@@ -317,6 +321,47 @@ async fn run(cli: Cli) -> Result<()> {
             .await
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
+        Some(Command::Mcp {
+            what: McpCmd::Auth { name },
+        }) => {
+            let loaded = config::load(&cwd)?;
+            let Some(codesmith_core::mcp::ServerConfig::Remote { url, oauth, .. }) =
+                loaded.config.mcp.servers.get(&name)
+            else {
+                return Err(anyhow!(
+                    "{name} is not a remote MCP server in codesmith.json"
+                ));
+            };
+            if !codesmith_core::mcp::oauth::Setting::enabled(oauth.as_ref()) {
+                return Err(anyhow!("OAuth is turned off for {name} (\"oauth\": false)"));
+            }
+            use codesmith_core::mcp::oauth;
+            let e = oauth::login(&reqwest::Client::new(), &oauth::store_path(), &name, url, oauth.as_ref(), |u| {
+                eprintln!("Opening the browser to authorize {name}. If it doesn't open, visit:\n{u}\n");
+                oauth::open_browser(u);
+            })
+            .await?;
+            println!(
+                "Authorized {name}{}",
+                if e.refresh_token.is_some() {
+                    " (with a refresh token)"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        }
+        Some(Command::Mcp {
+            what: McpCmd::Logout { name },
+        }) => {
+            use codesmith_core::mcp::oauth;
+            if oauth::remove(&oauth::store_path(), &name)? {
+                println!("Removed the saved tokens for {name}");
+            } else {
+                println!("No saved tokens for {name}");
+            }
+            Ok(())
+        }
         Some(Command::Mcp { what: McpCmd::List }) => {
             let loaded = config::load(&cwd)?;
             if loaded.config.mcp.servers.is_empty() {
@@ -330,6 +375,9 @@ async fn run(cli: Cli) -> Result<()> {
                         println!("{name}: connected, {tools} tool(s)")
                     }
                     codesmith_core::mcp::Status::Disabled => println!("{name}: disabled"),
+                    codesmith_core::mcp::Status::NeedsAuth => {
+                        println!("{name}: needs authorization; run `codesmith mcp auth {name}`")
+                    }
                     codesmith_core::mcp::Status::Failed(e) => println!("{name}: failed: {e}"),
                 }
                 for t in mcp.tools.iter().filter(|t| &t.server == name) {
@@ -631,8 +679,10 @@ pub(crate) async fn connect_mcp(
     let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
     if warn {
         for (name, s) in &mcp.statuses {
-            if let codesmith_core::mcp::Status::Failed(e) = s {
-                eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} failed to start: {e}");
+            match s {
+                codesmith_core::mcp::Status::Failed(e) => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} failed to start: {e}"),
+                codesmith_core::mcp::Status::NeedsAuth => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} needs authorization: run `codesmith mcp auth {name}`"),
+                _ => {}
             }
         }
     }

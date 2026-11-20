@@ -216,6 +216,15 @@ tool, keyed by the tool's name: `{"action": "github_*", "resource": "*", "effect
 server's tools from the model.
 `codesmith mcp list` shows each server's status and tools.
 
+Remote servers that require OAuth show as needing authorization;
+`codesmith mcp auth <name>` logs in through the browser (discovery, dynamic
+client registration and PKCE per the MCP authorization spec, with the
+callback on `127.0.0.1:19876`). Tokens are saved in the data dir's
+`mcp-auth.json` (owner-only), only ever sent to the URL they were issued for,
+and refreshed automatically; `codesmith mcp logout <name>` forgets them. Set
+`"oauth": {"clientId": "...", "clientSecret": "...", "scope": "...", "port": 19876}`
+to use a pre-registered client, or `"oauth": false` to turn it off.
+
 ## Roadmap
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
@@ -223,7 +232,7 @@ server's tools from the model.
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
 3. ~~Interactive terminal UI~~; local server API
-4. ~~MCP (stdio and HTTP tools)~~, MCP OAuth, ~~more providers, saved keys~~ and logins, formatters, worktrees, stats
+4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys~~ and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
 
 ## License

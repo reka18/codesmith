@@ -343,6 +343,9 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             codesmith_core::mcp::Status::Failed(e) => {
                 Some(format!("MCP server {n} failed to start: {e}"))
             }
+            codesmith_core::mcp::Status::NeedsAuth => Some(format!(
+                "MCP server {n} needs authorization: run `codesmith mcp auth {n}`"
+            )),
             _ => None,
         })
         .collect();
