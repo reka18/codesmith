@@ -34,7 +34,10 @@ the terminal (see [configuration](configuration.md)).
   Other editors get `session_info_update` markers under
   `_meta["codesmith/compaction"]` (`started`, then `completed` with the
   token counts before and after, or `failed`). A retried or nudged summary
-  streams again from the start; the completion has the final one.
+  streams again from the start; the completion has the final one. A
+  compaction with nothing to compact yet fails at once: `in_progress`
+  then `failed` (or the `failed` marker alone). A replayed compaction
+  whose summary is empty (a provider's own window) clears the summary.
 - **Agents and models.** Agents (build, plan, ...) are modes. The model and
   mode are config options the editor can switch. A model with
   [variants](configuration.md#provider-options-and-variants) also gets an

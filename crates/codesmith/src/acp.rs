@@ -523,7 +523,7 @@ type Before = (PathBuf, Option<String>);
 
 /// The compaction that is running (its id and reason), so a cancel can
 /// settle it.
-type Compacting = Arc<Mutex<Option<(String, &'static str)>>>;
+type Compacting = Arc<Mutex<OpenCompaction>>;
 
 /// A compaction's `session/update`, as OpenCode's `ACPCompaction.update`
 /// sends it: `compaction_update` when the client renders those, else a
@@ -892,55 +892,131 @@ impl Sink for AcpSink {
     fn compaction_start(&mut self) {
         self.settle_retry();
         self.in_reasoning = false;
-        let (id, reason) = (unique("cmp"), if self.manual { "manual" } else { "auto" });
-        self.conn.update(
-            &self.session,
-            compaction_update(self.compaction, &id, reason, "started", None),
-        );
-        *self.compacting.lock().unwrap() = Some((id, reason));
+        let reason = if self.manual { "manual" } else { "auto" };
+        let mut open = self.compacting.lock().unwrap();
+        for u in compaction_started(&mut open, self.compaction, reason) {
+            self.conn.update(&self.session, u);
+        }
     }
     fn compaction_delta(&mut self, delta: &str) {
-        let Some((id, _)) = self.compacting.lock().unwrap().clone() else {
-            return;
-        };
-        if self.compaction && !delta.is_empty() {
-            self.conn.update(
-                &self.session,
-                json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": id, "content": {"type": "text", "text": delta}}),
-            );
+        let open = self.compacting.lock().unwrap();
+        for u in compaction_chunk(&open, self.compaction, delta) {
+            self.conn.update(&self.session, u);
         }
     }
     fn compaction_end(&mut self, outcome: Result<&str, &str>) {
         match outcome {
             Ok(summary) => self.summary = Some(summary.to_string()),
             Err(e) => {
-                if let Some((id, reason)) = self.compacting.lock().unwrap().take() {
-                    self.conn.update(
-                        &self.session,
-                        compaction_update(self.compaction, &id, reason, "failed", Some(e)),
-                    );
+                let reason = if self.manual { "manual" } else { "auto" };
+                let mut open = self.compacting.lock().unwrap();
+                for u in compaction_failed(&mut open, self.compaction, reason, e) {
+                    self.conn.update(&self.session, u);
                 }
             }
         }
     }
     fn compacted(&mut self, before: u64, after: u64) {
         let summary = self.summary.take();
-        let Some((id, reason)) = self.compacting.lock().unwrap().take() else {
-            return;
-        };
-        let mut update = compaction_update(
+        let mut open = self.compacting.lock().unwrap();
+        for u in compaction_completed(
+            &mut open,
             self.compaction,
-            &id,
-            reason,
-            "completed",
             summary.as_deref(),
-        );
-        if !self.compaction {
-            let marker = &mut update["_meta"][COMPACTION_META];
-            marker["tokensBefore"] = json!(before);
-            marker["tokensAfter"] = json!(after);
+            before,
+            after,
+        ) {
+            self.conn.update(&self.session, u);
         }
-        self.conn.update(&self.session, update);
+    }
+}
+
+/// The compaction open in a turn (its id and reason), as the updates for
+/// it are made (after OpenCode's `ACPTranslate` compaction rows): each
+/// function takes the open compaction and whether the client renders
+/// `compaction_update`, and returns the updates to send.
+type OpenCompaction = Option<(String, &'static str)>;
+
+/// A compaction starts.
+fn compaction_started(
+    open: &mut OpenCompaction,
+    standard: bool,
+    reason: &'static str,
+) -> Vec<Value> {
+    let id = unique("cmp");
+    let u = compaction_update(standard, &id, reason, "started", None);
+    *open = Some((id, reason));
+    vec![u]
+}
+
+/// A piece of the summary: forwarded only inside an open compaction, and
+/// only to a client that renders summaries.
+fn compaction_chunk(open: &OpenCompaction, standard: bool, text: &str) -> Vec<Value> {
+    match open {
+        Some((id, _)) if standard && !text.is_empty() => vec![
+            json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": id, "content": {"type": "text", "text": text}}),
+        ],
+        _ => vec![],
+    }
+}
+
+/// A compaction fails with `message`. One that failed before it started
+/// (nothing to compact yet) is opened first for a client that renders
+/// compactions, so it has something to settle; a marker client gets the
+/// failure alone.
+fn compaction_failed(
+    open: &mut OpenCompaction,
+    standard: bool,
+    reason: &'static str,
+    message: &str,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    let (id, reason) = match open.take() {
+        Some(o) => o,
+        None => {
+            let id = unique("cmp");
+            if standard {
+                out.push(compaction_update(true, &id, reason, "started", None));
+            }
+            (id, reason)
+        }
+    };
+    out.push(compaction_update(
+        standard,
+        &id,
+        reason,
+        "failed",
+        Some(message),
+    ));
+    out
+}
+
+/// A compaction completes with `summary` (none, or an empty one, clears
+/// the client's); an end with none open is dropped.
+fn compaction_completed(
+    open: &mut OpenCompaction,
+    standard: bool,
+    summary: Option<&str>,
+    before: u64,
+    after: u64,
+) -> Vec<Value> {
+    let Some((id, reason)) = open.take() else {
+        return vec![];
+    };
+    let mut update = compaction_update(standard, &id, reason, "completed", summary);
+    if !standard {
+        let marker = &mut update["_meta"][COMPACTION_META];
+        marker["tokensBefore"] = json!(before);
+        marker["tokensAfter"] = json!(after);
+    }
+    vec![update]
+}
+
+/// The compaction a cancelled turn left open, settled as cancelled.
+fn compaction_cancelled(open: &mut OpenCompaction, standard: bool) -> Vec<Value> {
+    match open.take() {
+        Some((id, reason)) => vec![compaction_update(standard, &id, reason, "cancelled", None)],
+        None => vec![],
     }
 }
 
@@ -2061,8 +2137,9 @@ impl Agent {
         for (index, item) in items.iter().enumerate() {
             let (mid, seq, m) = match item {
                 Item::Checkpoint(cid, summary) => {
+                    // An empty summary (a native window) clears the client's.
                     let update = if compaction {
-                        json!({"sessionUpdate": "compaction_update", "compactionId": cid, "status": "completed", "summary": [{"type": "text", "text": summary}]})
+                        compaction_update(true, cid, "auto", "completed", Some(summary))
                     } else {
                         json!({"sessionUpdate": "session_info_update", "_meta": {COMPACTION_META: {"status": "completed", "messageId": cid}}})
                     };
@@ -2872,12 +2949,9 @@ impl Agent {
                 update,
             );
         }
-        if let Some((id, reason)) = slot.compacting.lock().unwrap().take() {
-            let standard = self.client_has("/session/compaction");
-            self.conn.update(
-                sid,
-                compaction_update(standard, &id, reason, "cancelled", None),
-            );
+        let standard = self.client_has("/session/compaction");
+        for u in compaction_cancelled(&mut slot.compacting.lock().unwrap(), standard) {
+            self.conn.update(sid, u);
         }
         let stats = std::mem::take(&mut *slot.stats.lock().unwrap());
         if let Running::Prompt(rpc) = running {
@@ -5539,6 +5613,244 @@ mod tests {
 
     // compaction.ts `update`: failed and cancelled compactions, for clients
     // with and without the capability.
+    // translate.test.ts compaction rows, over the turn's compaction state.
+    // Adapted: CodeSmith makes its own compaction ids, so the tests check
+    // that one compaction's updates share one id.
+
+    /// The updates with their compaction ids replaced by `"id"`, after
+    /// checking every update names the same compaction.
+    fn same_compaction(updates: Vec<Value>) -> Vec<Value> {
+        let id = |u: &Value| {
+            u.get("compactionId")
+                .or_else(|| u["_meta"][COMPACTION_META].get("messageId"))
+                .cloned()
+        };
+        let first = updates.first().and_then(id);
+        updates
+            .into_iter()
+            .map(|mut u| {
+                assert_eq!(id(&u), first, "{u}");
+                if u.get("compactionId").is_some() {
+                    u["compactionId"] = json!("id");
+                } else if u["_meta"][COMPACTION_META].get("messageId").is_some() {
+                    u["_meta"][COMPACTION_META]["messageId"] = json!("id");
+                }
+                u
+            })
+            .collect()
+    }
+
+    fn standard(status: &str) -> Value {
+        json!({"sessionUpdate": "compaction_update", "compactionId": "id", "status": status})
+    }
+
+    fn chunk(text: &str) -> Value {
+        json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": "id", "content": {"type": "text", "text": text}})
+    }
+
+    fn marker(value: Value) -> Value {
+        let mut m = json!({"messageId": "id", "reason": "manual"});
+        m.as_object_mut()
+            .unwrap()
+            .extend(value.as_object().unwrap().clone());
+        json!({"sessionUpdate": "session_info_update", "_meta": {COMPACTION_META: m}})
+    }
+
+    fn settled(status: &str, extra: Value) -> Value {
+        let mut u = standard(status);
+        u["summary"] = Value::Null;
+        u.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        u
+    }
+
+    #[test]
+    fn oc_acp_cancels_the_compaction_a_cancelled_turn_left_open() {
+        let mut open = None;
+        let mut all = compaction_started(&mut open, true, "manual");
+        all.extend(compaction_cancelled(&mut open, true));
+        assert_eq!(
+            same_compaction(all),
+            [standard("in_progress"), settled("cancelled", json!({}))]
+        );
+        assert!(compaction_cancelled(&mut open, true).is_empty());
+    }
+
+    #[test]
+    fn oc_acp_streams_a_compactions_summary_and_completes_it_with_the_full_summary() {
+        let mut open = None;
+        let mut all = compaction_started(&mut open, true, "manual");
+        all.extend(compaction_chunk(&open, true, "Sum"));
+        all.extend(compaction_chunk(&open, true, "mary"));
+        all.extend(compaction_completed(&mut open, true, Some("Summary"), 9, 3));
+        let mut done = standard("completed");
+        done["summary"] = json!([{"type": "text", "text": "Summary"}]);
+        assert_eq!(
+            same_compaction(all),
+            [standard("in_progress"), chunk("Sum"), chunk("mary"), done]
+        );
+    }
+
+    #[test]
+    fn oc_acp_clears_the_summary_of_a_compaction_that_completes_without_a_readable_one() {
+        let mut open = None;
+        let mut all = compaction_started(&mut open, true, "manual");
+        all.extend(compaction_completed(&mut open, true, Some(""), 9, 3));
+        assert_eq!(
+            same_compaction(all),
+            [standard("in_progress"), settled("completed", json!({}))]
+        );
+    }
+
+    #[test]
+    fn oc_acp_fails_a_compaction_with_its_error_and_clears_the_partial_summary() {
+        let mut open = None;
+        let mut all = compaction_started(&mut open, true, "manual");
+        all.extend(compaction_chunk(&open, true, "partial"));
+        all.extend(compaction_failed(
+            &mut open,
+            true,
+            "manual",
+            "summary request failed",
+        ));
+        assert_eq!(
+            same_compaction(all),
+            [
+                standard("in_progress"),
+                chunk("partial"),
+                settled("failed", json!({"error": "summary request failed"}))
+            ]
+        );
+    }
+
+    #[test]
+    fn oc_acp_keeps_cores_own_compaction_failure_messages() {
+        let mut open = None;
+        compaction_started(&mut open, true, "manual");
+        let u = compaction_failed(&mut open, true, "manual", "Output limit");
+        assert_eq!(u[0]["error"], "Output limit");
+    }
+
+    #[test]
+    fn oc_acp_reports_a_compaction_defect_as_a_generic_failure() {
+        let mut open = None;
+        compaction_started(&mut open, true, "manual");
+        let u = compaction_failed(
+            &mut open,
+            true,
+            "manual",
+            "Error: locked\n    at run (compaction.ts:1:1)",
+        );
+        assert_eq!(u[0]["error"], "Compaction failed");
+    }
+
+    // translate.test.ts: "reports an interrupted compaction as cancelled"
+    // and "reports an aborted compaction as cancelled". Adapted: an
+    // interrupt or abort in CodeSmith cancels the turn, which settles the
+    // open compaction.
+    #[test]
+    fn oc_acp_reports_an_interrupted_or_aborted_compaction_as_cancelled() {
+        for standard_client in [true, false] {
+            let mut open = None;
+            compaction_started(&mut open, standard_client, "manual");
+            let u = compaction_cancelled(&mut open, standard_client);
+            if standard_client {
+                assert_eq!(same_compaction(u), [settled("cancelled", json!({}))]);
+            } else {
+                assert_eq!(
+                    same_compaction(u),
+                    [marker(json!({"status": "failed",
+                        "error": {"type": "aborted", "message": "Compaction cancelled"}}))]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oc_acp_opens_a_compaction_that_fails_before_it_starts_before_settling_it() {
+        let mut open = None;
+        let u = compaction_failed(&mut open, true, "auto", "Nothing to compact yet");
+        assert_eq!(
+            same_compaction(u),
+            [
+                standard("in_progress"),
+                settled("failed", json!({"error": "Nothing to compact yet"}))
+            ]
+        );
+        assert!(open.is_none());
+    }
+
+    #[test]
+    fn oc_acp_drops_summary_chunks_outside_an_open_compaction() {
+        let mut open = None;
+        let mut all = compaction_chunk(&open, true, "early");
+        all.extend(compaction_started(&mut open, true, "manual"));
+        all.extend(compaction_completed(&mut open, true, Some("Summary"), 9, 3));
+        all.extend(compaction_chunk(&open, true, "late"));
+        let statuses: Vec<&Value> = all.iter().map(|u| &u["status"]).collect();
+        assert_eq!(statuses, [&json!("in_progress"), &json!("completed")]);
+    }
+
+    #[test]
+    fn oc_acp_drops_a_compaction_end_without_a_start() {
+        let mut open = None;
+        assert!(compaction_completed(&mut open, true, Some("Summary"), 9, 3).is_empty());
+    }
+
+    #[test]
+    fn oc_acp_marks_a_compaction_without_forwarding_its_summary_when_the_client_lacks_the_capability(
+    ) {
+        let mut open = None;
+        let mut all = compaction_started(&mut open, false, "manual");
+        all.extend(compaction_chunk(&open, false, "Summary"));
+        all.extend(compaction_completed(
+            &mut open,
+            false,
+            Some("Summary"),
+            9,
+            3,
+        ));
+        assert_eq!(
+            same_compaction(all),
+            [
+                marker(json!({"status": "started"})),
+                marker(json!({"status": "completed", "tokensBefore": 9, "tokensAfter": 3}))
+            ]
+        );
+    }
+
+    // Adapted: the marker's error is CodeSmith's `compaction.failed` with
+    // the full message, not the provider's own error object.
+    #[test]
+    fn oc_acp_marks_a_failed_compaction_with_the_full_error() {
+        let mut open = None;
+        let mut all = compaction_started(&mut open, false, "manual");
+        all.extend(compaction_failed(
+            &mut open,
+            false,
+            "manual",
+            "summary request failed\nat x",
+        ));
+        assert_eq!(
+            same_compaction(all),
+            [
+                marker(json!({"status": "started"})),
+                marker(json!({"status": "failed",
+                    "error": {"type": "compaction.failed", "message": "summary request failed\nat x"}}))
+            ]
+        );
+    }
+
+    #[test]
+    fn oc_acp_marks_a_compaction_that_fails_before_it_starts_without_opening_it() {
+        let mut open = None;
+        let u = compaction_failed(&mut open, false, "auto", "summary request failed");
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0]["_meta"][COMPACTION_META]["status"], "failed");
+        assert_eq!(u[0]["_meta"][COMPACTION_META]["reason"], "auto");
+    }
+
     #[test]
     fn oc_acp_compaction_failure_shapes() {
         assert_eq!(

@@ -78,7 +78,8 @@ pub trait Sink: Send {
     fn step_end(&mut self, _reason: &FinishReason, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     /// A compaction started: its summary streams through
-    /// `compaction_delta`, and it ends with `compaction_end`.
+    /// `compaction_delta`, and it ends with `compaction_end` (which comes
+    /// alone for a compaction that fails before it starts).
     fn compaction_start(&mut self) {}
     /// Summary text as the model writes it. A retried or nudged summary
     /// streams again from the start; `compaction_end` has the final one.

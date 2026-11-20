@@ -104,7 +104,7 @@ Where the tests live:
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
-| cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
+| cli: ACP | 105 | 54 | 3 | 2 | 25 | 21 |
 | tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
@@ -112,7 +112,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **741** | **520** | **2373** | **259** |
+| **Total** | **4637** | **758** | **744** | **500** | **2376** | **259** |
 
 ## Fixes made while porting
 
@@ -307,6 +307,14 @@ Where the tests live:
   shows a failed one's error with `i` to open a new session drafting
   OpenCode's investigation prompt. Difference: a server signed in here
   connects when its session's servers next start.
+- **A compaction that fails before it starts** (`cli/test/acp/translate`):
+  a `/compact` with nothing to compact sent ACP clients nothing. Core now
+  ends such a compaction without starting it, and the ACP sink opens and
+  fails one for a client that renders `compaction_update`, or sends the
+  failed marker alone to one that does not.
+- **A replayed compaction with no summary** (`cli/test/acp/translate`): a
+  provider's native compaction replayed with an empty summary text; it now
+  clears the client's summary (`summary: null`), as a live one does.
 
 ## Differences found but not fixed
 
@@ -856,6 +864,23 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/acp/translate` | ends a length-limited step with max_tokens | already passing | oc_acp_prompt_streams_message_ids_and_resolves_with_usage, oc_acp_replay_shape |
 | `cli/test/acp/translate` | sums usage across steps and reports thought and cache tokens | already passing | oc_acp_prompt_streams_message_ids_and_resolves_with_usage, oc_acp_replay_shape |
 | `cli/test/acp/translate` | replays a completed compaction as one terminal update | already passing | oc_acp_compaction_updates |
+| `cli/test/acp/compaction` | treats a null compaction capability as unsupported | already passing | oc_acp_compaction_updates |
+| `cli/test/acp/translate` | cancels the compaction a cancelled turn left open | already passing | oc_acp_cancels_the_compaction_a_cancelled_turn_left_open |
+| `cli/test/acp/translate` | streams a compaction's summary and completes it with the full summary | already passing | oc_acp_streams_a_compactions_summary_and_completes_it_with_the_full_summary |
+| `cli/test/acp/translate` | clears the summary of a compaction that completes without a readable one | already passing | oc_acp_clears_the_summary_of_a_compaction_that_completes_without_a_readable_one |
+| `cli/test/acp/translate` | fails a compaction with its error and clears the partial summary | already passing | oc_acp_fails_a_compaction_with_its_error_and_clears_the_partial_summary |
+| `cli/test/acp/translate` | keeps core's own compaction failure messages | already passing | oc_acp_keeps_cores_own_compaction_failure_messages |
+| `cli/test/acp/translate` | reports a compaction defect as a generic failure | already passing | oc_acp_reports_a_compaction_defect_as_a_generic_failure |
+| `cli/test/acp/translate` | reports an interrupted compaction as cancelled | already passing | oc_acp_reports_an_interrupted_or_aborted_compaction_as_cancelled (adapted: an interrupt cancels the turn) |
+| `cli/test/acp/translate` | reports an aborted compaction as cancelled | already passing | oc_acp_reports_an_interrupted_or_aborted_compaction_as_cancelled (adapted: an abort cancels the turn) |
+| `cli/test/acp/translate` | opens a compaction that fails before it starts before settling it | after a fix | oc_acp_opens_a_compaction_that_fails_before_it_starts_before_settling_it |
+| `cli/test/acp/translate` | drops summary chunks outside an open compaction | already passing | oc_acp_drops_summary_chunks_outside_an_open_compaction |
+| `cli/test/acp/translate` | drops a compaction end without a start | already passing | oc_acp_drops_a_compaction_end_without_a_start |
+| `cli/test/acp/translate` | marks a compaction without forwarding its summary when the client lacks the capability | already passing | oc_acp_marks_a_compaction_without_forwarding_its_summary_when_the_client_lacks_the_capability |
+| `cli/test/acp/translate` | marks a failed compaction with the full error | already passing | oc_acp_marks_a_failed_compaction_with_the_full_error (adapted: CodeSmith's `compaction.failed` error with the full message) |
+| `cli/test/acp/translate` | marks a compaction that fails before it starts without opening it | after a fix | oc_acp_marks_a_compaction_that_fails_before_it_starts_without_opening_it |
+| `cli/test/acp/translate` | replays a compaction without a summary as cleared | after a fix | oc_acp_compaction_failure_shapes (the replayed checkpoint goes through the same update) |
+| `cli/test/acp/translate` | replays a compaction as a marker when the client lacks the capability | already passing | oc_acp_compaction_updates |
 | `cli/test/acp/translate` | replays reasoning with the same message IDs as live reasoning ordinals | already passing | oc_acp_prompt_streams_message_ids_and_resolves_with_usage, oc_acp_replay_shape |
 | `cli/test/acp/turn` | streams resumed turns after background shells finish | already passing | oc_acp_background_shell_wakes_the_session |
 | `tui/test/app-lifecycle` | ctrl+c dismisses autocomplete and shell mode before exiting | already passing | oc_ctrl_c_dismisses_autocomplete_before_exiting (adapted: no shell mode) |
@@ -941,29 +966,6 @@ transport and its tool presentation.
 - `tui/test/util/selection-copy-on-select` (2): e.g. "copy-on-select preserves multi-clicks at column $column"
 - `tui/test/ui/link` (1): e.g. "plain clicks on any row of a wrapped Markdown link resolve the full URL"
 - `tui/test/config-v2` (1): e.g. "validates terminal copy behavior"
-
-### acp: streamed compaction (20)
-
-- `cli/test/acp/compaction`: treats a null compaction capability as unsupported
-- `cli/test/acp/translate`: cancels the compaction a cancelled turn left open
-- `cli/test/acp/translate`: streams a compaction's summary and completes it with the full summary
-- `cli/test/acp/translate`: clears the summary of a compaction that completes without a readable one
-- `cli/test/acp/translate`: fails a compaction with its error and clears the partial summary
-- `cli/test/acp/translate`: keeps core's own compaction failure messages
-- `cli/test/acp/translate`: reports a compaction defect as a generic failure
-- `cli/test/acp/translate`: reports an interrupted compaction as cancelled
-- `cli/test/acp/translate`: reports an aborted compaction as cancelled
-- `cli/test/acp/translate`: opens a compaction that fails before it starts before settling it
-- `cli/test/acp/translate`: drops summary chunks outside an open compaction
-- `cli/test/acp/translate`: drops a compaction end without a start
-- `cli/test/acp/translate`: marks a compaction without forwarding its summary when the client lacks the capability
-- `cli/test/acp/translate`: marks a failed compaction with the full error
-- `cli/test/acp/translate`: marks a compaction that fails before it starts without opening it
-- `cli/test/acp/translate`: replays a compaction without a summary as cleared
-- `cli/test/acp/translate`: replays a failed compaction with its error
-- `cli/test/acp/translate`: replays a cancelled compaction as cancelled
-- `cli/test/acp/translate`: skips a running compaction on replay
-- `cli/test/acp/translate`: replays a compaction as a marker when the client lacks the capability
 
 ### tui: per-agent and per-session model selection, the rest (2)
 
@@ -1083,6 +1085,7 @@ transport and its tool presentation.
 | cli: packaging | n/a | 3 | 1 | single-executable asset archive |
 | cli: migrations | n/a | 1 | 1 | credential import from older versions |
 ### Code Mode on Boa
+| acp: compaction replay | by design | 3 | 1 | CodeSmith's history keeps completed compactions only: a failed, cancelled or running compaction leaves nothing to replay |
 
 Of the 1137 Code Mode assertions run, 111 fail on purpose, by reason (the
 test names each one):

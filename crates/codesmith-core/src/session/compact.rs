@@ -31,6 +31,9 @@
 //! provider compacts the conversation itself (OpenAI Responses), and its
 //! window replaces the history; see [`Session::compact_natively`].
 
+/// Why a compaction fails before it starts.
+const NOTHING_TO_COMPACT: &str = "nothing to compact yet";
+
 use super::{Session, Sink};
 use crate::compaction::{self, Estimate};
 use crate::config::ModelRef;
@@ -471,6 +474,8 @@ impl Session {
     }
 
     /// Replace older history with a structured summary, keeping the newest turns.
+    /// With nothing to compact it fails before starting: the sink gets
+    /// only `compaction_end` with the error.
     pub async fn compact(&mut self, sink: &mut dyn Sink) -> Result<()> {
         self.compact_for(sink, Reason::Manual).await
     }
@@ -482,7 +487,9 @@ impl Session {
         let before = self.estimate_prompt();
         let k = compaction::split(&self.messages, self.loaded.config.compaction.keep());
         if k == 0 || self.messages.is_empty() {
-            return Err(anyhow!("nothing to compact yet"));
+            // Failed before it started: the sink settles it alone.
+            sink.compaction_end(Err(NOTHING_TO_COMPACT));
+            return Err(anyhow!(NOTHING_TO_COMPACT));
         }
         sink.compaction_start();
         // No keep-alive ping while the summary is written.
@@ -537,7 +544,8 @@ impl Session {
         // A resumed window is the messages without sequence numbers.
         let stored_window = self.stored && self.seqs.iter().all(Option::is_none);
         if self.messages.len() <= self.compact.native_len || stored_window {
-            return Err(anyhow!("nothing to compact yet"));
+            sink.compaction_end(Err(NOTHING_TO_COMPACT));
+            return Err(anyhow!(NOTHING_TO_COMPACT));
         }
         let before = self.estimate_prompt();
         sink.compaction_start();
