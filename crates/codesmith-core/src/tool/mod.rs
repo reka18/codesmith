@@ -4,6 +4,7 @@
 mod edit;
 mod glob;
 mod grep;
+mod lsp;
 mod read;
 pub mod shell;
 pub mod subagent;
@@ -37,6 +38,9 @@ pub struct Ctx<'a> {
     pub websearch: Option<websearch::WebSearchConfig>,
     /// Formats files after `write` and `edit`; `None` when formatting is off.
     pub format: Option<std::sync::Arc<crate::format::Formatter>>,
+    /// Language servers for diagnostics after `write` and `edit` and for the
+    /// `lsp` tool; `None` when they are off.
+    pub lsp: Option<std::sync::Arc<crate::lsp::Lsp>>,
 }
 
 impl Ctx<'_> {
@@ -54,6 +58,18 @@ impl Ctx<'_> {
             Ok(now) if now != written => format!("\n\nThe file was reformatted by {name}, so it now differs from what you wrote; read it again before editing it."),
             _ => String::new(),
         }
+    }
+
+    /// Tell the language servers a file changed and return the errors they
+    /// report, formatted for the model; with `others`, errors in other
+    /// files too. Empty when language servers are off or report none.
+    pub fn diagnostics(&self, path: &std::path::Path, others: bool) -> String {
+        let Some(lsp) = &self.lsp else {
+            return String::new();
+        };
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| handle.block_on(lsp.touch(path, true)));
+        crate::lsp::report(&lsp.diagnostics(), path, others)
     }
 }
 
@@ -96,9 +112,10 @@ pub enum Tool {
     Subagent,
     Skill,
     Question,
+    Lsp,
 }
 
-pub const ALL: [Tool; 12] = [
+pub const ALL: [Tool; 13] = [
     Tool::Read,
     Tool::Write,
     Tool::Edit,
@@ -111,6 +128,7 @@ pub const ALL: [Tool; 12] = [
     Tool::Subagent,
     Tool::Skill,
     Tool::Question,
+    Tool::Lsp,
 ];
 
 impl Tool {
@@ -128,6 +146,7 @@ impl Tool {
             Tool::Subagent => "subagent",
             Tool::Skill => "skill",
             Tool::Question => "question",
+            Tool::Lsp => "lsp",
         }
     }
 
@@ -165,6 +184,7 @@ impl Tool {
             Tool::Subagent => subagent::spec(&[]),
             Tool::Skill => crate::skill::tool_spec(&[]),
             Tool::Question => crate::question::spec(),
+            Tool::Lsp => lsp::spec(),
         };
         ToolSpec {
             name: self.name().to_string(),
@@ -183,6 +203,7 @@ impl Tool {
             Tool::Shell => shell::run(ctx, input).await,
             Tool::Webfetch => webfetch::run(ctx, input).await,
             Tool::Websearch => websearch::run(ctx, input).await,
+            Tool::Lsp => lsp::run(ctx, input).await,
             Tool::Todowrite | Tool::Subagent | Tool::Skill | Tool::Question => {
                 Err(format!("{} must be run by the session", self.name()))
             }
@@ -252,7 +273,7 @@ pub fn repair(input: &Value) -> Value {
 }
 
 fn is_numeric_field(k: &str) -> bool {
-    matches!(k, "offset" | "limit" | "timeout")
+    matches!(k, "offset" | "limit" | "timeout" | "line" | "character")
 }
 
 pub(crate) fn str_arg<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -490,6 +511,7 @@ pub(crate) mod testing {
                 jobs: Some(shell::Jobs::default()),
                 websearch: None,
                 format: None,
+                lsp: None,
             }
         }
         pub fn write(&self, rel: &str, content: &str) -> PathBuf {

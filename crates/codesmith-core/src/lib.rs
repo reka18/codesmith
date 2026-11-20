@@ -10,6 +10,7 @@ pub mod compaction;
 pub mod config;
 pub mod format;
 pub mod instructions;
+pub mod lsp;
 pub mod mcp;
 pub mod paths;
 pub mod permission;

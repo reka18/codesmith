@@ -270,7 +270,8 @@ mod tests {
                 "todowrite",
                 "subagent",
                 "skill",
-                "question"
+                "question",
+                "lsp"
             ]
         );
         assert_eq!(
@@ -285,7 +286,8 @@ mod tests {
                 "todowrite",
                 "subagent",
                 "skill",
-                "question"
+                "question",
+                "lsp"
             ]
         );
         assert_eq!(
@@ -304,7 +306,8 @@ mod tests {
                 "webfetch",
                 "websearch",
                 "todowrite",
-                "skill"
+                "skill",
+                "lsp"
             ]
         );
         let c = cfg(

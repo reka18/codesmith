@@ -43,6 +43,10 @@ pub struct Config {
     /// Format files after edits: `true` for the built-in formatters, or an
     /// object of per-formatter overrides. Off when unset.
     pub formatter: Option<crate::format::Setting>,
+    /// Language servers whose errors are added to `write`/`edit` results:
+    /// `true` for the built-ins, or an object of per-server overrides and
+    /// custom servers. Off when unset.
+    pub lsp: Option<crate::lsp::Setting>,
     /// Where `--worktree` creates worktrees and what it runs in them.
     pub worktree: crate::worktree::WorktreeConfig,
     /// `false` keeps this process from running automations (the UI,

@@ -471,8 +471,9 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     std::fs::write(&target.absolute, &updated)
         .map_err(|e| format!("Unable to edit {path}: {e}"))?;
     let note = ctx.format(&target.absolute, &updated);
+    let diagnostics = ctx.diagnostics(&target.absolute, false);
     Ok(Output::text(format!(
-        "Edited {} ({n} replacement{}){note}",
+        "Edited {} ({n} replacement{}){note}{diagnostics}",
         target.resource,
         if n == 1 { "" } else { "s" }
     )))

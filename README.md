@@ -118,6 +118,7 @@ Other commands: `codesmith models`, `codesmith debug paths|config|model|agents|p
 | `skill` | Load a skill's instructions when a task matches its description |
 | `websearch` | Search the web through your own [SearXNG](https://docs.searxng.org/) instance (only offered when `websearch.url` is set) |
 | `question` | Ask you multiple-choice or free-form questions on the terminal (not offered with `--auto` or without a terminal) |
+| `lsp` | Definitions, references, hover, symbols and call hierarchy from your language servers (only offered when `lsp` is on) |
 
 ## Configuration
 
@@ -229,6 +230,46 @@ formatter changes the file, the tool result tells the model to re-read it.
 ```
 
 `"formatter": false` (or leaving it out) turns formatting off.
+
+## Language servers
+
+With `"lsp": true`, the agent hears from your language servers after it
+writes or edits a file, as in OpenCode: the file is sent to the servers for
+its type (`didOpen`, then `didChange`), and the errors they publish within
+three seconds are added to the tool result, up to 20 per file, so the model
+fixes them in the next step. `write` also lists errors in up to five other
+files; warnings and hints are left out. It is off by default, as in
+OpenCode, since servers use memory and can lag behind the files.
+
+The built-in servers follow OpenCode's list (`rust-analyzer`, `gopls`,
+`clangd`, `pyright`, `typescript-language-server`, `deno`, `zls`,
+`sourcekit-lsp`, `jdtls`, `lua-language-server`, `bash-language-server` and
+about 25 more), but none is ever downloaded: each is used only when it is on
+`PATH`, or in the project's `node_modules/.bin` for JavaScript tooling (the
+TypeScript server also needs the project's own `typescript`). A server
+starts the first time a matching file is touched, in the nearest folder with
+its project file (`Cargo.toml` widened to the Cargo workspace, `go.mod`,
+`pyproject.toml`, a lockfile and so on); one that fails to start is not
+retried, and an edit waits at most five seconds for one still starting.
+
+```jsonc
+"lsp": {
+  "typescript": { "disabled": true },
+  "rust": { "command": ["rust-analyzer"], "env": { "RUST_LOG": "error" } },
+  "custom": {
+    "command": ["custom-lsp-server", "--stdio"],
+    "extensions": [".custom"],
+    "initialization": { "preferences": { "strict": true } }
+  }
+}
+```
+
+An object keeps the built-ins on; `"lsp": false` (or leaving it out) turns
+language servers off. `initialization` is sent as `initializationOptions` and
+returned for `workspace/configuration`. With language servers on, the agent
+also gets an `lsp` tool for `goToDefinition`, `findReferences`, `hover`,
+`documentSymbol`, `workspaceSymbol`, `goToImplementation` and call
+hierarchies (permission action `lsp`).
 
 ## Code review
 

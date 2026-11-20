@@ -114,6 +114,7 @@ pub struct Session {
     questioner: Option<Arc<dyn crate::question::Questioner>>,
     mcp: Arc<crate::mcp::Mcp>,
     format: Option<Arc<crate::format::Formatter>>,
+    lsp: Option<Arc<crate::lsp::Lsp>>,
 }
 
 impl Session {
@@ -177,6 +178,10 @@ impl Session {
         }
         if !config.websearch.enabled() {
             tools.retain(|t| *t != Tool::Websearch);
+        }
+        let lsp = crate::lsp::Lsp::new(config.lsp.as_ref(), loaded.root.clone()).map(Arc::new);
+        if lsp.is_none() {
+            tools.retain(|t| *t != Tool::Lsp);
         }
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
@@ -275,6 +280,7 @@ impl Session {
                 );
                 f.enabled().then(|| Arc::new(f))
             },
+            lsp,
         })
     }
 
@@ -641,6 +647,7 @@ impl Session {
                             jobs: Some(self.jobs.clone()),
                             websearch: Some(self.loaded.config.websearch.clone()),
                             format: self.format.clone(),
+                            lsp: self.lsp.clone(),
                         };
                         tool::execute(&ctx, &name, &input).await
                     }
@@ -1057,6 +1064,7 @@ impl Session {
         )
         .map_err(|e| format!("{e:#}"))?;
         child.depth = self.depth + 1;
+        child.lsp = self.lsp.clone();
         let mut csink = ChildSink {
             parent: sink,
             label: agent_id.to_string(),
