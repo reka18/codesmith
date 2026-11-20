@@ -716,6 +716,80 @@ deployment itself, which suits deployments that serve that API (OpenAI
 models; set `"protocol"` for others). Without a service key the deployment
 settings are not used and `settings.baseURL` takes a plain key.
 
+### Claude Agent (your Claude Code login)
+
+`claude-agent` runs the `claude` you installed and signed in to (Claude
+Code, found on `PATH`, or set `CODESMITH_CLAUDE_PATH`), as OpenCode's
+Claude Agent provider does. CodeSmith speaks to it the stream-json protocol
+the Claude Agent SDK uses: one long-running process per session, which
+stops after five minutes idle and resumes its Claude session next time.
+Any login Claude Code has works (a subscription, an API key, a cloud
+account). CodeSmith never reads, stores or passes a credential for it:
+
+```sh
+claude auth login                       # in a terminal, once
+codesmith auth login claude-agent       # checks Claude Code and saves its models; saves no key
+codesmith models claude-agent           # the same check, then the model list
+codesmith -m claude-agent/sonnet#high   # efforts are the variants Claude Code lists
+```
+
+What Claude sees:
+
+- **Prompt.** Claude Code's own system prompt, with a note that it runs in
+  CodeSmith, the agent's own prompt as its role, and CodeSmith's
+  instructions (AGENTS.md files, skills, MCP instructions, references),
+  without the date and environment, which Claude Code writes itself.
+  Titles use their own prompt.
+- **Tools.** Claude Code's built-in tools are off. CodeSmith's tools reach
+  Claude as the tools of an MCP server (`codesmith`) that lives in
+  CodeSmith; Claude Code may run only those (`--allowedTools
+  mcp__codesmith__*`, `--permission-mode dontAsk`: anything else is refused
+  without asking). When Claude calls one, CodeSmith holds the call, runs it
+  as it runs any model's tool calls, with its own permission rules and
+  prompts, and hands the result back. There is one permission system, and
+  if the tool server cannot connect the request fails rather than fall
+  back to Claude Code's tools.
+- **Settings.** None of your Claude Code settings: settings files, CLAUDE.md
+  files, hooks, MCP servers, skills, auto compaction, auto memory, away
+  summaries, tool search, the advisor tool and the non-streaming and
+  refusal fallbacks are off, and `CLAUDE_CODE_SIMPLE`,
+  `CLAUDE_CODE_EFFORT_LEVEL`, `MCP_TOOL_TIMEOUT` and
+  `CODESMITH_SERVER_TOKEN` are cleared from its environment. Prompts are
+  sent verbatim (CodeSmith already expanded commands and file
+  references), which needs Claude Code 2.1.248 or later.
+- **Identity.** Claude Code is told it is CodeSmith that drives it
+  (`CLAUDE_AGENT_SDK_CLIENT_APP=codesmith/<version>`); nothing claims to be
+  another program.
+
+CodeSmith's history stays the source of truth: Claude's replies are saved
+like any model's, so you can switch models mid-session. Turns Claude did
+not see (another model's) reach it once, inside a `<conversation-checkpoint>`
+user message; after an edit or undo the Claude session is branched at the
+last point both histories agree on (or rebuilt from the history). The
+provider keeps each session's Claude session and checkpoints, and the
+model list, under `<data>/claude-agent/`. Claude Code already retries API
+failures, so CodeSmith does not retry its turns. Cost follows the login
+Claude Code reports: none for a subscription, a custom base URL or a
+gateway; the catalog's prices of the model it resolves otherwise.
+
+A provider's config reaches Claude Code as its environment:
+
+| CodeSmith | Claude Code |
+|---|---|
+| `settings.baseURL` | `ANTHROPIC_BASE_URL` |
+| `settings.headerTimeout` (ms) | `API_TIMEOUT_MS` |
+| `settings.chunkTimeout` (ms) | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` |
+| `headers` | `ANTHROPIC_CUSTOM_HEADERS` |
+| `body` | `CLAUDE_CODE_EXTRA_BODY` |
+| a model's `limit.output` | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (else Claude Code picks) |
+
+Unlike OpenCode, `settings.apiKey` and `settings.authToken` are not passed:
+put a key where Claude Code reads it. Changing any of these, the system
+prompt or the tools starts a new process; the model and effort change on
+the running one. Temperature and other sampling options do not apply, and
+the HTTP hooks of plugins never run, since Claude Code makes the API calls.
+`claude` must run on the same machine.
+
 ### Live model lists (Modal, GitHub Copilot, Azure)
 
 Some providers serve a model list of their own for your account (Azure:
@@ -1417,6 +1491,7 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `CODESMITH_MODELS_PATH` | A catalog file read instead of the cached one. |
 | `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog, not even with `models --refresh`. |
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
+| `CODESMITH_CLAUDE_PATH` | The `claude` the [Claude Agent](#claude-agent-your-claude-code-login) provider runs, instead of `claude` on `PATH`. |
 | `CODESMITH_SHELL_DAEMON` | `0`: [`codesmith serve`](local-server.md#the-shell-daemon) runs commands and terminals itself instead of in its shell daemon. |
 | `CODESMITH_SHELLD_HANDOFF` | The shell daemon handoff a server inherits from the one before it ([restarting](local-server.md#restarting-without-stopping-commands)); taken out of the environment at startup. |
 | `CODESMITH_SHELLD_SOCKET_DIR` | Where the shell daemon's socket directory goes instead of your runtime directory (`$XDG_RUNTIME_DIR`, or the per-user temporary directory on macOS) or `/tmp` (absolute, no `..`). |

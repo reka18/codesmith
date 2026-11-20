@@ -1,0 +1,96 @@
+# Claude Agent provider ports (tests/oc_claude_agent.rs, tests/oc_claude_agent_session.rs).
+@plugin/provider/claude-agent/claude/branches.test.ts
+13 :: ported :: tests/oc_claude_agent.rs::oc_a_failed_compaction_deletes_its_temporary_branch_and_keeps_the_unmodified_primary_history_resumable
+41 :: ported :: tests/oc_claude_agent.rs::oc_an_unsupported_attachment_in_changed_history_fails_with_its_own_message_before_forking
+61 :: ported :: tests/oc_claude_agent.rs::oc_a_fork_finds_its_source_after_reload_and_rebuilds_safely_if_that_transcript_has_disappeared
+111 :: ported :: tests/oc_claude_agent.rs::oc_undo_resends_an_unchanged_question_then_branches_again_using_remapped_checkpoints
+156 :: ported :: tests/oc_claude_agent.rs::oc_an_edited_earlier_reply_forks_before_it_and_sends_the_edited_history
+181 :: ported :: tests/oc_claude_agent.rs::oc_cancelling_one_generate_branch_leaves_another_and_the_primary_session_usable_and_deletes_both_temporary_branches
+236 :: ported :: tests/oc_claude_agent.rs::oc_compaction_leaves_a_parked_tool_turn_running_and_the_next_primary_request_starts_from_the_summary
+@plugin/provider/claude-agent/claude/probe.test.ts
+11 :: ported :: tests/oc_claude_agent.rs::oc_discovers_each_models_capacity_without_sending_a_prompt
+31 :: ported :: tests/oc_claude_agent.rs::oc_keeps_the_login_and_other_limits_when_one_model_reports_an_invalid_capacity
+50 :: ported :: tests/oc_claude_agent.rs::oc_closes_stuck_context_discovery_without_turning_it_into_a_login_failure
+69 :: ported :: tests/oc_claude_agent.rs::oc_times_out_a_stuck_startup_and_closes_the_process
+88 :: ported :: tests/oc_claude_agent.rs::oc_only_2_1_248_or_later_is_compatible
+94 :: ported :: tests/oc_claude_agent.rs::oc_only_a_missing_credential_counts_as_logged_out
+@plugin/provider/claude-agent/claude/recorder.test.ts
+7 :: ported :: tests/oc_claude_agent.rs::oc_checked_in_recordings_contain_no_thinking_blocks_or_deltas
+@plugin/provider/claude-agent/claude/session.test.ts
+8:1 :: ported :: tests/oc_claude_agent.rs::oc_exit_code_0_before_a_result_reports_failure_and_allows_cleanup
+8:1 :: ported :: tests/oc_claude_agent.rs::oc_exit_code_1_before_a_result_reports_failure_and_allows_cleanup
+@plugin/provider/claude-agent/claude/sessions.test.ts
+18 :: ported :: tests/oc_claude_agent.rs::oc_streams_consecutive_turns_once_on_one_process_with_per_turn_usage
+51 :: ported :: tests/oc_claude_agent.rs::oc_a_missing_claude_transcript_is_rebuilt_from_history_even_after_a_rejected_attachment
+90 :: ported :: tests/oc_claude_agent.rs::oc_cancellation_drains_past_the_interrupt_receipt_before_accepting_another_turn
+133 :: ported :: tests/oc_claude_agent.rs::oc_cancelled_history_resumes_after_a_registry_restart_without_replaying_the_partial_reply
+175 :: ported :: tests/oc_claude_agent.rs::oc_chat_keeps_the_claude_code_preset_when_opencodes_built_in_prompt_changes
+198 :: ported :: tests/oc_claude_agent.rs::oc_a_turn_arriving_during_idle_shutdown_waits_for_the_old_process_then_resumes_its_session
+232 :: ported :: tests/oc_claude_agent.rs::oc_cancelling_during_startup_closes_it_and_does_not_save_a_nonexistent_session
+254 :: ported :: tests/oc_claude_agent.rs::oc_chat_checks_compatibility_before_sending_a_prompt
+268 :: ported :: tests/oc_claude_agent.rs::oc_changes_model_and_effort_live_and_resumes_when_the_output_limit_changes_or_is_cleared
+339 :: ported :: tests/oc_claude_agent.rs::oc_titles_use_their_own_task_prompt_in_a_throwaway_session_that_leaves_the_chat_alone
+366 :: ported :: tests/oc_claude_agent.rs::oc_conversation_branches_send_the_chats_tools_and_system_prompt_and_a_tool_call_ends_the_branch
+405 :: ported :: tests/oc_claude_agent.rs::oc_closing_the_registry_interrupts_and_drains_a_running_side_call
+@plugin/provider/claude-agent/claude/status.test.ts
+10 :: ported :: tests/oc_claude_agent.rs::oc_finds_claude_when_it_is_installed_after_the_plugin_starts
+27 :: ported :: tests/oc_claude_agent.rs::oc_a_reconnect_waits_for_the_startup_check_then_publishes_the_new_login
+51 :: ported :: tests/oc_claude_agent.rs::oc_reports_a_failed_startup_and_recovers_on_the_next_check
+@plugin/provider/claude-agent/claude/sync.test.ts
+10 :: ported :: tests/oc_claude_agent.rs::oc_catches_up_once_saves_transcript_boundaries_then_continues_without_replaying_history
+@plugin/provider/claude-agent/claude/tools.test.ts
+12 :: ported :: tests/oc_claude_agent.rs::oc_two_tool_steps_keep_one_turn_alive_past_the_idle_timeout_and_match_every_result_to_its_call
+52 :: design :: deliberate :: claude_agent::global(): the registry lives for the process, which has no plugin reload; its processes are killed with it
+79 :: ported :: tests/oc_claude_agent.rs::oc_closing_the_registry_waits_for_a_running_tool_call_to_drain_without_answering_it
+124 :: ported :: tests/oc_claude_agent.rs::oc_a_turn_left_waiting_for_tool_results_stops_idle_ms_after_opencode_stops_running_the_session
+140 :: ported :: tests/oc_claude_agent.rs::oc_a_process_exit_while_opencode_runs_tools_resumes_with_their_saved_results
+163 :: ported :: tests/oc_claude_agent.rs::oc_results_that_do_not_answer_every_waiting_call_stop_the_turn_and_rebuild_from_the_full_history
+191 :: ported :: tests/oc_claude_agent.rs::oc_active_turn_steering_delivers_tool_feedback_and_new_input_through_the_sdk_queue
+229 :: ported :: tests/oc_claude_agent.rs::oc_an_aborted_tool_drains_the_old_turn_before_sending_a_fresh_user_message_on_the_same_process
+275 :: ported :: tests/oc_claude_agent.rs::oc_tool_images_and_pdfs_reach_claude_as_image_and_document_content
+320 :: ported :: tests/oc_claude_agent.rs::oc_a_last_step_without_tools_stops_the_parked_turn_and_resumes_with_the_saved_result
+345 :: ported :: tests/oc_claude_agent.rs::oc_a_tool_list_change_lets_the_parked_turn_finish_and_answers_calls_to_removed_tools
+363 :: ported :: tests/oc_claude_agent.rs::oc_an_unavailable_opencode_server_fails_closed :: adapted: the failing turn stops at its start, so the interrupt finds it running
+@plugin/provider/claude-agent/language-model/convert.test.ts
+23 :: ported :: tests/oc_claude_agent.rs::oc_calls_to_tools_we_did_not_offer_are_left_to_claude_code_and_do_not_end_the_step
+31 :: ported :: tests/oc_claude_agent.rs::oc_a_steps_finish_carries_the_plan_usage_claude_code_reported_during_it
+47 :: ported :: tests/oc_claude_agent.rs::oc_utility_calls_keep_system_instructions_separate_from_conversation_content_and_omit_thinking
+75 :: ported :: tests/oc_claude_agent.rs::oc_preserves_byte_base64_url_image_and_pdf_attachments
+@plugin/provider/claude-agent/language-model/error.test.ts
+16 :: ported :: tests/oc_claude_agent.rs::oc_a_recorded_failed_turn_ends_in_an_error_after_its_text_without_a_finish
+29 :: ported :: tests/oc_claude_agent.rs::oc_a_recorded_billing_failure_is_an_error_not_answer_text
+37 :: ported :: tests/oc_claude_agent.rs::oc_a_rejected_weekly_window_gives_its_reset_date_while_allowed_windows_do_not_fail
+69 :: ported :: tests/oc_claude_agent.rs::oc_empty_successes_after_api_retries_report_the_terminal_http_status
+@plugin/provider/claude-agent/plugin.test.ts
+120 :: design :: platform :: CodeSmith always runs locally, where it can start `claude`
+141 :: ported :: tests/oc_claude_agent.rs::oc_starts_without_models_or_a_claude_run_and_connecting_fills_and_saves_the_list
+167 :: ported :: tests/oc_claude_agent.rs::oc_starts_with_the_saved_list_and_its_prices_without_running_claude :: adapted: the saved list and its pricing, without the provider registry
+187 :: ported :: tests/oc_claude_agent.rs::oc_shows_no_cost_for_a_subscription
+194 :: ported :: tests/oc_claude_agent.rs::oc_shows_anthropics_prices_for_an_api_key_login
+201 :: ported :: tests/oc_claude_agent.rs::oc_shows_no_cost_through_a_custom_base_url_which_bills_in_its_own_way
+208 :: ported :: tests/oc_claude_agent.rs::oc_shows_a_cloud_account_its_clouds_prices
+215 :: ported :: tests/oc_claude_agent.rs::oc_ignores_a_malformed_saved_list_and_checks_claude_when_already_connected :: adapted: CodeSmith fetches nothing in the background, so only the malformed list is pinned
+229 :: ported :: tests/oc_claude_agent.rs::oc_binds_chats_to_plugin_storage_and_checks_context_sizes_for_models_a_chat_reports_without_one
+270 :: ported :: tests/oc_claude_agent.rs::oc_connecting_without_claude_installed_asks_the_user_to_install_it
+282 :: ported :: tests/oc_claude_agent.rs::oc_connecting_while_logged_out_of_claude_asks_the_user_to_sign_in
+295 :: ported :: tests/oc_claude_agent.rs::oc_connecting_with_an_old_claude_still_lists_its_models
+337 :: ported :: tests/oc_claude_agent_session.rs::oc_tags_requests_by_kind_and_marks_a_forks_primary_requests_with_its_source
+364 :: ported :: tests/oc_claude_agent_session.rs::oc_passes_the_agents_role_and_instructions_but_not_the_date_or_environment :: adapted: no CLAUDE_CODE_MAX_OUTPUT_TOKENS without a configured limit; stopped calls go as `claudeCodeAborted` (tests/oc_claude_agent.rs::oc_an_aborted_tool_drains_the_old_turn_before_sending_a_fresh_user_message_on_the_same_process)
+395 :: ported :: tests/oc_claude_agent_session.rs::oc_passes_the_agents_role_and_instructions_but_not_the_date_or_environment :: adapted: a chat's request through a session; the same options go on generate and compaction requests
+410 :: ported :: tests/oc_claude_agent_session.rs::oc_passes_the_agents_role_and_instructions_but_not_the_date_or_environment :: adapted: a chat's request through a session
+438 :: ported :: tests/oc_claude_agent.rs::oc_never_retries_a_turn_since_claude_code_already_retries_api_failures
+457 :: ported :: tests/oc_claude_agent.rs::oc_passes_the_configured_connection_to_claude_code_for_the_login_check_and_for_chats :: adapted: `settings.apiKey` and `settings.authToken` are not passed (CodeSmith handles no Anthropic credential for Claude Code); model-level settings do not exist
+519 :: ported :: tests/oc_claude_agent.rs::oc_leaves_the_users_environment_alone_when_nothing_is_configured
+@plugin/provider/claude-agent/sync/sync.test.ts
+16 :: ported :: tests/oc_claude_agent.rs::oc_an_interrupted_reply_continues_after_the_submitted_input_without_hiding_earlier_edits_or_missed_turns
+34 :: ported :: tests/oc_claude_agent.rs::oc_branches_only_at_a_matching_checkpoint_never_midway_through_a_group_of_tool_calls
+69 :: ported :: tests/oc_claude_agent.rs::oc_chooses_all_four_cases_and_never_resumes_a_record_without_history
+84 :: ported :: tests/oc_claude_agent.rs::oc_ignores_thinking_metadata_and_reordered_user_notes_but_notices_changed_visible_text
+103 :: ported :: tests/oc_claude_agent.rs::oc_compares_tool_inputs_independent_of_key_order_and_keeps_tool_images_with_their_result
+159 :: ported :: tests/oc_claude_agent.rs::oc_catch_up_includes_only_missed_turns_and_leaves_the_current_request_outside_the_checkpoint
+175 :: ported :: tests/oc_claude_agent.rs::oc_catch_up_preserves_tool_calls_results_images_and_pdfs_excluding_reasoning
+@plugin/provider/claude-agent/tools/tools.test.ts
+7 :: ported :: tests/oc_claude_agent.rs::oc_names_round_trip_within_claudes_limit_including_names_that_need_sanitizing :: adapted: CodeSmith's server is `codesmith`, so its prefix is `mcp__codesmith__`
+23 :: ported :: tests/oc_claude_agent.rs::oc_long_subagent_descriptions_retain_the_actual_opencode_agent_list :: adapted: CodeSmith's list starts `Available agents:`
+37 :: ported :: tests/oc_claude_agent.rs::oc_execution_failures_and_denied_permissions_stay_errors_and_json_stays_intact
+51 :: ported :: tests/oc_claude_agent.rs::oc_tool_media_remains_content_blocks_and_does_not_consume_a_newly_queued_user_message :: adapted: CodeSmith keeps tool media with its result rather than in a following user message

@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
-| Providers, models and credentials | 796 | 272 | 0 | 147 | 341 | 36 | 0 |
+| Providers, models and credentials | 796 | 352 | 0 | 65 | 343 | 36 | 0 |
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1555** | **16** | **224** | **2398** | **1395** | **0** |
+| **Total** | **5588** | **1635** | **16** | **142** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -81,11 +81,10 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (224 cases in 21 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (142 cases in 20 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
@@ -106,92 +105,6 @@ Missing features, by how many OpenCode test cases each would unlock (224 cases i
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 | [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
-
-### Claude Agent SDK Provider
-
-82 cases.
-
-- `plugin/provider/claude-agent/claude/branches.test.ts`: a failed compaction deletes its temporary branch and keeps the unmodified primary history resumable
-- `plugin/provider/claude-agent/claude/branches.test.ts`: an unsupported attachment in changed history fails with its own message before forking
-- `plugin/provider/claude-agent/claude/branches.test.ts`: a fork finds its source after reload and rebuilds safely if that transcript has disappeared
-- `plugin/provider/claude-agent/claude/branches.test.ts`: undo resends an unchanged question, then branches again using remapped checkpoints
-- `plugin/provider/claude-agent/claude/branches.test.ts`: an edited earlier reply forks before it and sends the edited history
-- `plugin/provider/claude-agent/claude/branches.test.ts`: cancelling one generate branch leaves another and the primary session usable, and deletes both temporary branches
-- `plugin/provider/claude-agent/claude/branches.test.ts`: compaction leaves a parked tool turn running and the next primary request starts from the summary
-- `plugin/provider/claude-agent/claude/probe.test.ts`: discovers each model's capacity without sending a prompt
-- `plugin/provider/claude-agent/claude/probe.test.ts`: keeps the login and other limits when one model reports an invalid capacity
-- `plugin/provider/claude-agent/claude/probe.test.ts`: closes stuck context discovery without turning it into a login failure
-- `plugin/provider/claude-agent/claude/probe.test.ts`: times out a stuck startup and closes the process
-- `plugin/provider/claude-agent/claude/probe.test.ts`: only 2.1.248 or later is compatible
-- `plugin/provider/claude-agent/claude/probe.test.ts`: only a missing credential counts as logged out
-- `plugin/provider/claude-agent/claude/recorder.test.ts`: checked-in recordings contain no thinking blocks or deltas
-- `plugin/provider/claude-agent/claude/session.test.ts`: exit code %i before a result reports failure and allows cleanup (2 cases)
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: streams consecutive turns once, on one process, with per-turn usage
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: a missing Claude transcript is rebuilt from history, even after a rejected attachment
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: cancellation drains past the interrupt receipt before accepting another turn
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: cancelled history resumes after a registry restart without replaying the partial reply
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: chat keeps the Claude Code preset when OpenCode's built-in prompt changes
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: a turn arriving during idle shutdown waits for the old process, then resumes its session
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: cancelling during startup closes it and does not save a nonexistent session
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: chat checks compatibility before sending a prompt
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: changes model and effort live, and resumes when the output limit changes or is cleared
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: titles use their own task prompt in a throwaway session that leaves the chat alone
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: conversation branches send the chat's tools and system prompt, and a tool call ends the branch
-- `plugin/provider/claude-agent/claude/sessions.test.ts`: closing the registry interrupts and drains a running side call
-- `plugin/provider/claude-agent/claude/status.test.ts`: finds claude when it is installed after the plugin starts
-- `plugin/provider/claude-agent/claude/status.test.ts`: a reconnect waits for the startup check, then publishes the new login
-- `plugin/provider/claude-agent/claude/status.test.ts`: reports a failed startup and recovers on the next check
-- `plugin/provider/claude-agent/claude/sync.test.ts`: catches up once, saves transcript boundaries, then continues without replaying history
-- `plugin/provider/claude-agent/claude/tools.test.ts`: two tool steps keep one turn alive past the idle timeout and match every result to its call
-- `plugin/provider/claude-agent/claude/tools.test.ts`: plugin reload hands over the process with its pending handlers; without a reload it shuts down
-- `plugin/provider/claude-agent/claude/tools.test.ts`: closing the registry waits for a running tool call to drain, without answering it
-- `plugin/provider/claude-agent/claude/tools.test.ts`: a turn left waiting for tool results stops IDLE_MS after OpenCode stops running the session
-- `plugin/provider/claude-agent/claude/tools.test.ts`: a process exit while OpenCode runs tools resumes with their saved results
-- `plugin/provider/claude-agent/claude/tools.test.ts`: results that do not answer every waiting call stop the turn and rebuild from the full history
-- `plugin/provider/claude-agent/claude/tools.test.ts`: active-turn steering delivers tool feedback and new input through the SDK queue
-- `plugin/provider/claude-agent/claude/tools.test.ts`: an aborted tool drains the old turn before sending a fresh user message on the same process
-- `plugin/provider/claude-agent/claude/tools.test.ts`: tool images and PDFs reach Claude as image and document content
-- `plugin/provider/claude-agent/claude/tools.test.ts`: a last step without tools stops the parked turn and resumes with the saved result
-- `plugin/provider/claude-agent/claude/tools.test.ts`: a tool list change lets the parked turn finish and answers calls to removed tools
-- `plugin/provider/claude-agent/claude/tools.test.ts`: an unavailable OpenCode server fails closed
-- `plugin/provider/claude-agent/language-model/convert.test.ts`: calls to tools we did not offer are left to Claude Code and do not end the step
-- `plugin/provider/claude-agent/language-model/convert.test.ts`: a step's finish carries the plan usage Claude Code reported during it
-- `plugin/provider/claude-agent/language-model/convert.test.ts`: utility calls keep system instructions separate from conversation content and omit thinking
-- `plugin/provider/claude-agent/language-model/convert.test.ts`: preserves byte/base64/URL image and PDF attachments
-- `plugin/provider/claude-agent/language-model/error.test.ts`: a recorded failed turn ends in an error after its text, without a finish
-- `plugin/provider/claude-agent/language-model/error.test.ts`: a recorded billing failure is an error, not answer text
-- `plugin/provider/claude-agent/language-model/error.test.ts`: a rejected weekly window gives its reset date, while allowed windows do not fail
-- `plugin/provider/claude-agent/language-model/error.test.ts`: empty successes after API retries report the terminal HTTP status
-- `plugin/provider/claude-agent/plugin.test.ts`: skips where opencode cannot start local processes
-- `plugin/provider/claude-agent/plugin.test.ts`: starts without models or a claude run, and connecting fills and saves the list
-- `plugin/provider/claude-agent/plugin.test.ts`: starts with the saved list and its prices without running claude
-- `plugin/provider/claude-agent/plugin.test.ts`: shows no cost for a subscription
-- `plugin/provider/claude-agent/plugin.test.ts`: shows Anthropic's prices for an API key login
-- `plugin/provider/claude-agent/plugin.test.ts`: shows no cost through a custom base URL, which bills in its own way
-- `plugin/provider/claude-agent/plugin.test.ts`: shows a cloud account its cloud's prices
-- `plugin/provider/claude-agent/plugin.test.ts`: ignores a malformed saved list and checks claude when already connected
-- `plugin/provider/claude-agent/plugin.test.ts`: binds chats to plugin storage, and checks context sizes for models a chat reports without one
-- `plugin/provider/claude-agent/plugin.test.ts`: connecting without claude installed asks the user to install it
-- `plugin/provider/claude-agent/plugin.test.ts`: connecting while logged out of claude asks the user to sign in
-- `plugin/provider/claude-agent/plugin.test.ts`: connecting with an old claude still lists its models
-- `plugin/provider/claude-agent/plugin.test.ts`: tags requests by kind, and marks a fork's primary requests with its source
-- `plugin/provider/claude-agent/plugin.test.ts`: leaves the output budget to Claude and keeps tool error flags
-- `plugin/provider/claude-agent/plugin.test.ts`: passes the agent's role to Claude on every kind of request
-- `plugin/provider/claude-agent/plugin.test.ts`: passes opencode's instructions to Claude, except the date and environment Claude Code writes itself
-- `plugin/provider/claude-agent/plugin.test.ts`: never retries a turn, since Claude Code already retries API failures
-- `plugin/provider/claude-agent/plugin.test.ts`: passes the configured connection to Claude Code, for the login check and for chats
-- `plugin/provider/claude-agent/plugin.test.ts`: leaves the user's environment alone when nothing is configured
-- `plugin/provider/claude-agent/sync/sync.test.ts`: an interrupted reply continues after the submitted input without hiding earlier edits or missed turns
-- `plugin/provider/claude-agent/sync/sync.test.ts`: branches only at a matching checkpoint, never midway through a group of tool calls
-- `plugin/provider/claude-agent/sync/sync.test.ts`: chooses all four cases and never resumes a record without history
-- `plugin/provider/claude-agent/sync/sync.test.ts`: ignores thinking, metadata and reordered user notes, but notices changed visible text
-- `plugin/provider/claude-agent/sync/sync.test.ts`: compares tool inputs independent of key order and keeps tool images with their result
-- `plugin/provider/claude-agent/sync/sync.test.ts`: catch-up includes only missed turns and leaves the current request outside the checkpoint
-- `plugin/provider/claude-agent/sync/sync.test.ts`: catch-up preserves tool calls, results, images and PDFs, excluding reasoning
-- `plugin/provider/claude-agent/tools/tools.test.ts`: names round-trip within Claude's limit, including names that need sanitizing
-- `plugin/provider/claude-agent/tools/tools.test.ts`: long subagent descriptions retain the actual OpenCode agent list
-- `plugin/provider/claude-agent/tools/tools.test.ts`: execution failures and denied permissions stay errors, and JSON stays intact
-- `plugin/provider/claude-agent/tools/tools.test.ts`: tool media remains content blocks and does not consume a newly queued user message
 
 ### ChatGPT Subscription Login
 
@@ -1278,8 +1191,8 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 685 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 552 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 686 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 553 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 339 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
@@ -3176,7 +3089,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (613 of 796)</summary>
+<details><summary>Providers, models and credentials (695 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3571,6 +3484,127 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P merges legacy Zenmux headers with existing headers — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
 - P lets configured Zenmux legacy headers override defaults — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
 - D guards legacy Zenmux headers to the exact zenmux provider id — deliberate: CodeSmith matches ZenMux by its endpoint, as it does Kilo, LLM Gateway and NVIDIA, not by provider id
+
+**`plugin/provider/claude-agent/claude/branches.test.ts`**
+
+- P a failed compaction deletes its temporary branch and keeps the unmodified primary history resumable — `tests/oc_claude_agent.rs::oc_a_failed_compaction_deletes_its_temporary_branch_and_keeps_the_unmodified_primary_history_resumable`
+- P an unsupported attachment in changed history fails with its own message before forking — `tests/oc_claude_agent.rs::oc_an_unsupported_attachment_in_changed_history_fails_with_its_own_message_before_forking`
+- P a fork finds its source after reload and rebuilds safely if that transcript has disappeared — `tests/oc_claude_agent.rs::oc_a_fork_finds_its_source_after_reload_and_rebuilds_safely_if_that_transcript_has_disappeared`
+- P undo resends an unchanged question, then branches again using remapped checkpoints — `tests/oc_claude_agent.rs::oc_undo_resends_an_unchanged_question_then_branches_again_using_remapped_checkpoints`
+- P an edited earlier reply forks before it and sends the edited history — `tests/oc_claude_agent.rs::oc_an_edited_earlier_reply_forks_before_it_and_sends_the_edited_history`
+- P cancelling one generate branch leaves another and the primary session usable, and deletes both temporary branches — `tests/oc_claude_agent.rs::oc_cancelling_one_generate_branch_leaves_another_and_the_primary_session_usable_and_deletes_both_temporary_branches`
+- P compaction leaves a parked tool turn running and the next primary request starts from the summary — `tests/oc_claude_agent.rs::oc_compaction_leaves_a_parked_tool_turn_running_and_the_next_primary_request_starts_from_the_summary`
+
+**`plugin/provider/claude-agent/claude/probe.test.ts`**
+
+- P discovers each model's capacity without sending a prompt — `tests/oc_claude_agent.rs::oc_discovers_each_models_capacity_without_sending_a_prompt`
+- P keeps the login and other limits when one model reports an invalid capacity — `tests/oc_claude_agent.rs::oc_keeps_the_login_and_other_limits_when_one_model_reports_an_invalid_capacity`
+- P closes stuck context discovery without turning it into a login failure — `tests/oc_claude_agent.rs::oc_closes_stuck_context_discovery_without_turning_it_into_a_login_failure`
+- P times out a stuck startup and closes the process — `tests/oc_claude_agent.rs::oc_times_out_a_stuck_startup_and_closes_the_process`
+- P only 2.1.248 or later is compatible — `tests/oc_claude_agent.rs::oc_only_2_1_248_or_later_is_compatible`
+- P only a missing credential counts as logged out — `tests/oc_claude_agent.rs::oc_only_a_missing_credential_counts_as_logged_out`
+
+**`plugin/provider/claude-agent/claude/recorder.test.ts`**
+
+- P checked-in recordings contain no thinking blocks or deltas — `tests/oc_claude_agent.rs::oc_checked_in_recordings_contain_no_thinking_blocks_or_deltas`
+
+**`plugin/provider/claude-agent/claude/session.test.ts`**
+
+- P exit code %i before a result reports failure and allows cleanup — `tests/oc_claude_agent.rs::oc_exit_code_0_before_a_result_reports_failure_and_allows_cleanup`
+- P exit code %i before a result reports failure and allows cleanup — `tests/oc_claude_agent.rs::oc_exit_code_1_before_a_result_reports_failure_and_allows_cleanup`
+
+**`plugin/provider/claude-agent/claude/sessions.test.ts`**
+
+- P streams consecutive turns once, on one process, with per-turn usage — `tests/oc_claude_agent.rs::oc_streams_consecutive_turns_once_on_one_process_with_per_turn_usage`
+- P a missing Claude transcript is rebuilt from history, even after a rejected attachment — `tests/oc_claude_agent.rs::oc_a_missing_claude_transcript_is_rebuilt_from_history_even_after_a_rejected_attachment`
+- P cancellation drains past the interrupt receipt before accepting another turn — `tests/oc_claude_agent.rs::oc_cancellation_drains_past_the_interrupt_receipt_before_accepting_another_turn`
+- P cancelled history resumes after a registry restart without replaying the partial reply — `tests/oc_claude_agent.rs::oc_cancelled_history_resumes_after_a_registry_restart_without_replaying_the_partial_reply`
+- P chat keeps the Claude Code preset when OpenCode's built-in prompt changes — `tests/oc_claude_agent.rs::oc_chat_keeps_the_claude_code_preset_when_opencodes_built_in_prompt_changes`
+- P a turn arriving during idle shutdown waits for the old process, then resumes its session — `tests/oc_claude_agent.rs::oc_a_turn_arriving_during_idle_shutdown_waits_for_the_old_process_then_resumes_its_session`
+- P cancelling during startup closes it and does not save a nonexistent session — `tests/oc_claude_agent.rs::oc_cancelling_during_startup_closes_it_and_does_not_save_a_nonexistent_session`
+- P chat checks compatibility before sending a prompt — `tests/oc_claude_agent.rs::oc_chat_checks_compatibility_before_sending_a_prompt`
+- P changes model and effort live, and resumes when the output limit changes or is cleared — `tests/oc_claude_agent.rs::oc_changes_model_and_effort_live_and_resumes_when_the_output_limit_changes_or_is_cleared`
+- P titles use their own task prompt in a throwaway session that leaves the chat alone — `tests/oc_claude_agent.rs::oc_titles_use_their_own_task_prompt_in_a_throwaway_session_that_leaves_the_chat_alone`
+- P conversation branches send the chat's tools and system prompt, and a tool call ends the branch — `tests/oc_claude_agent.rs::oc_conversation_branches_send_the_chats_tools_and_system_prompt_and_a_tool_call_ends_the_branch`
+- P closing the registry interrupts and drains a running side call — `tests/oc_claude_agent.rs::oc_closing_the_registry_interrupts_and_drains_a_running_side_call`
+
+**`plugin/provider/claude-agent/claude/status.test.ts`**
+
+- P finds claude when it is installed after the plugin starts — `tests/oc_claude_agent.rs::oc_finds_claude_when_it_is_installed_after_the_plugin_starts`
+- P a reconnect waits for the startup check, then publishes the new login — `tests/oc_claude_agent.rs::oc_a_reconnect_waits_for_the_startup_check_then_publishes_the_new_login`
+- P reports a failed startup and recovers on the next check — `tests/oc_claude_agent.rs::oc_reports_a_failed_startup_and_recovers_on_the_next_check`
+
+**`plugin/provider/claude-agent/claude/sync.test.ts`**
+
+- P catches up once, saves transcript boundaries, then continues without replaying history — `tests/oc_claude_agent.rs::oc_catches_up_once_saves_transcript_boundaries_then_continues_without_replaying_history`
+
+**`plugin/provider/claude-agent/claude/tools.test.ts`**
+
+- P two tool steps keep one turn alive past the idle timeout and match every result to its call — `tests/oc_claude_agent.rs::oc_two_tool_steps_keep_one_turn_alive_past_the_idle_timeout_and_match_every_result_to_its_call`
+- D plugin reload hands over the process with its pending handlers; without a reload it shuts down — deliberate: claude_agent::global(): the registry lives for the process, which has no plugin reload; its processes are killed with it
+- P closing the registry waits for a running tool call to drain, without answering it — `tests/oc_claude_agent.rs::oc_closing_the_registry_waits_for_a_running_tool_call_to_drain_without_answering_it`
+- P a turn left waiting for tool results stops IDLE_MS after OpenCode stops running the session — `tests/oc_claude_agent.rs::oc_a_turn_left_waiting_for_tool_results_stops_idle_ms_after_opencode_stops_running_the_session`
+- P a process exit while OpenCode runs tools resumes with their saved results — `tests/oc_claude_agent.rs::oc_a_process_exit_while_opencode_runs_tools_resumes_with_their_saved_results`
+- P results that do not answer every waiting call stop the turn and rebuild from the full history — `tests/oc_claude_agent.rs::oc_results_that_do_not_answer_every_waiting_call_stop_the_turn_and_rebuild_from_the_full_history`
+- P active-turn steering delivers tool feedback and new input through the SDK queue — `tests/oc_claude_agent.rs::oc_active_turn_steering_delivers_tool_feedback_and_new_input_through_the_sdk_queue`
+- P an aborted tool drains the old turn before sending a fresh user message on the same process — `tests/oc_claude_agent.rs::oc_an_aborted_tool_drains_the_old_turn_before_sending_a_fresh_user_message_on_the_same_process`
+- P tool images and PDFs reach Claude as image and document content — `tests/oc_claude_agent.rs::oc_tool_images_and_pdfs_reach_claude_as_image_and_document_content`
+- P a last step without tools stops the parked turn and resumes with the saved result — `tests/oc_claude_agent.rs::oc_a_last_step_without_tools_stops_the_parked_turn_and_resumes_with_the_saved_result`
+- P a tool list change lets the parked turn finish and answers calls to removed tools — `tests/oc_claude_agent.rs::oc_a_tool_list_change_lets_the_parked_turn_finish_and_answers_calls_to_removed_tools`
+- P an unavailable OpenCode server fails closed — `tests/oc_claude_agent.rs::oc_an_unavailable_opencode_server_fails_closed` (adapted: the failing turn stops at its start, so the interrupt finds it running)
+
+**`plugin/provider/claude-agent/language-model/convert.test.ts`**
+
+- P calls to tools we did not offer are left to Claude Code and do not end the step — `tests/oc_claude_agent.rs::oc_calls_to_tools_we_did_not_offer_are_left_to_claude_code_and_do_not_end_the_step`
+- P a step's finish carries the plan usage Claude Code reported during it — `tests/oc_claude_agent.rs::oc_a_steps_finish_carries_the_plan_usage_claude_code_reported_during_it`
+- P utility calls keep system instructions separate from conversation content and omit thinking — `tests/oc_claude_agent.rs::oc_utility_calls_keep_system_instructions_separate_from_conversation_content_and_omit_thinking`
+- P preserves byte/base64/URL image and PDF attachments — `tests/oc_claude_agent.rs::oc_preserves_byte_base64_url_image_and_pdf_attachments`
+
+**`plugin/provider/claude-agent/language-model/error.test.ts`**
+
+- P a recorded failed turn ends in an error after its text, without a finish — `tests/oc_claude_agent.rs::oc_a_recorded_failed_turn_ends_in_an_error_after_its_text_without_a_finish`
+- P a recorded billing failure is an error, not answer text — `tests/oc_claude_agent.rs::oc_a_recorded_billing_failure_is_an_error_not_answer_text`
+- P a rejected weekly window gives its reset date, while allowed windows do not fail — `tests/oc_claude_agent.rs::oc_a_rejected_weekly_window_gives_its_reset_date_while_allowed_windows_do_not_fail`
+- P empty successes after API retries report the terminal HTTP status — `tests/oc_claude_agent.rs::oc_empty_successes_after_api_retries_report_the_terminal_http_status`
+
+**`plugin/provider/claude-agent/plugin.test.ts`**
+
+- D skips where opencode cannot start local processes — platform: CodeSmith always runs locally, where it can start `claude`
+- P starts without models or a claude run, and connecting fills and saves the list — `tests/oc_claude_agent.rs::oc_starts_without_models_or_a_claude_run_and_connecting_fills_and_saves_the_list`
+- P starts with the saved list and its prices without running claude — `tests/oc_claude_agent.rs::oc_starts_with_the_saved_list_and_its_prices_without_running_claude` (adapted: the saved list and its pricing, without the provider registry)
+- P shows no cost for a subscription — `tests/oc_claude_agent.rs::oc_shows_no_cost_for_a_subscription`
+- P shows Anthropic's prices for an API key login — `tests/oc_claude_agent.rs::oc_shows_anthropics_prices_for_an_api_key_login`
+- P shows no cost through a custom base URL, which bills in its own way — `tests/oc_claude_agent.rs::oc_shows_no_cost_through_a_custom_base_url_which_bills_in_its_own_way`
+- P shows a cloud account its cloud's prices — `tests/oc_claude_agent.rs::oc_shows_a_cloud_account_its_clouds_prices`
+- P ignores a malformed saved list and checks claude when already connected — `tests/oc_claude_agent.rs::oc_ignores_a_malformed_saved_list_and_checks_claude_when_already_connected` (adapted: CodeSmith fetches nothing in the background, so only the malformed list is pinned)
+- P binds chats to plugin storage, and checks context sizes for models a chat reports without one — `tests/oc_claude_agent.rs::oc_binds_chats_to_plugin_storage_and_checks_context_sizes_for_models_a_chat_reports_without_one`
+- P connecting without claude installed asks the user to install it — `tests/oc_claude_agent.rs::oc_connecting_without_claude_installed_asks_the_user_to_install_it`
+- P connecting while logged out of claude asks the user to sign in — `tests/oc_claude_agent.rs::oc_connecting_while_logged_out_of_claude_asks_the_user_to_sign_in`
+- P connecting with an old claude still lists its models — `tests/oc_claude_agent.rs::oc_connecting_with_an_old_claude_still_lists_its_models`
+- P tags requests by kind, and marks a fork's primary requests with its source — `tests/oc_claude_agent_session.rs::oc_tags_requests_by_kind_and_marks_a_forks_primary_requests_with_its_source`
+- P leaves the output budget to Claude and keeps tool error flags — `tests/oc_claude_agent_session.rs::oc_passes_the_agents_role_and_instructions_but_not_the_date_or_environment` (adapted: no CLAUDE_CODE_MAX_OUTPUT_TOKENS without a configured limit; stopped calls go as `claudeCodeAborted` (tests/oc_claude_agent.rs::oc_an_aborted_tool_drains_the_old_turn_before_sending_a_fresh_user_message_on_the_same_process))
+- P passes the agent's role to Claude on every kind of request — `tests/oc_claude_agent_session.rs::oc_passes_the_agents_role_and_instructions_but_not_the_date_or_environment` (adapted: a chat's request through a session; the same options go on generate and compaction requests)
+- P passes opencode's instructions to Claude, except the date and environment Claude Code writes itself — `tests/oc_claude_agent_session.rs::oc_passes_the_agents_role_and_instructions_but_not_the_date_or_environment` (adapted: a chat's request through a session)
+- P never retries a turn, since Claude Code already retries API failures — `tests/oc_claude_agent.rs::oc_never_retries_a_turn_since_claude_code_already_retries_api_failures`
+- P passes the configured connection to Claude Code, for the login check and for chats — `tests/oc_claude_agent.rs::oc_passes_the_configured_connection_to_claude_code_for_the_login_check_and_for_chats` (adapted: `settings.apiKey` and `settings.authToken` are not passed (CodeSmith handles no Anthropic credential for Claude Code); model-level settings do not exist)
+- P leaves the user's environment alone when nothing is configured — `tests/oc_claude_agent.rs::oc_leaves_the_users_environment_alone_when_nothing_is_configured`
+
+**`plugin/provider/claude-agent/sync/sync.test.ts`**
+
+- P an interrupted reply continues after the submitted input without hiding earlier edits or missed turns — `tests/oc_claude_agent.rs::oc_an_interrupted_reply_continues_after_the_submitted_input_without_hiding_earlier_edits_or_missed_turns`
+- P branches only at a matching checkpoint, never midway through a group of tool calls — `tests/oc_claude_agent.rs::oc_branches_only_at_a_matching_checkpoint_never_midway_through_a_group_of_tool_calls`
+- P chooses all four cases and never resumes a record without history — `tests/oc_claude_agent.rs::oc_chooses_all_four_cases_and_never_resumes_a_record_without_history`
+- P ignores thinking, metadata and reordered user notes, but notices changed visible text — `tests/oc_claude_agent.rs::oc_ignores_thinking_metadata_and_reordered_user_notes_but_notices_changed_visible_text`
+- P compares tool inputs independent of key order and keeps tool images with their result — `tests/oc_claude_agent.rs::oc_compares_tool_inputs_independent_of_key_order_and_keeps_tool_images_with_their_result`
+- P catch-up includes only missed turns and leaves the current request outside the checkpoint — `tests/oc_claude_agent.rs::oc_catch_up_includes_only_missed_turns_and_leaves_the_current_request_outside_the_checkpoint`
+- P catch-up preserves tool calls, results, images and PDFs, excluding reasoning — `tests/oc_claude_agent.rs::oc_catch_up_preserves_tool_calls_results_images_and_pdfs_excluding_reasoning`
+
+**`plugin/provider/claude-agent/tools/tools.test.ts`**
+
+- P names round-trip within Claude's limit, including names that need sanitizing — `tests/oc_claude_agent.rs::oc_names_round_trip_within_claudes_limit_including_names_that_need_sanitizing` (adapted: CodeSmith's server is `codesmith`, so its prefix is `mcp__codesmith__`)
+- P long subagent descriptions retain the actual OpenCode agent list — `tests/oc_claude_agent.rs::oc_long_subagent_descriptions_retain_the_actual_opencode_agent_list` (adapted: CodeSmith's list starts `Available agents:`)
+- P execution failures and denied permissions stay errors, and JSON stays intact — `tests/oc_claude_agent.rs::oc_execution_failures_and_denied_permissions_stay_errors_and_json_stays_intact`
+- P tool media remains content blocks and does not consume a newly queued user message — `tests/oc_claude_agent.rs::oc_tool_media_remains_content_blocks_and_does_not_consume_a_newly_queued_user_message` (adapted: CodeSmith keeps tool media with its result rather than in a following user message)
 
 **`plugin/warming.test.ts`**
 

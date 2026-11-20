@@ -96,6 +96,18 @@ codesmith -m snowflake-cortex/claude-sonnet-4-6
 codesmith auth login poe --oauth --client-id <your Poe OAuth client>
 ```
 
+**Your Claude Code login.** With [Claude Code](https://code.claude.com/docs/en/setup)
+installed and signed in (`claude auth login`), the `claude-agent` provider
+runs it as the model, with CodeSmith's tools, permissions and history.
+CodeSmith never sees or stores its credentials:
+
+```sh
+codesmith auth login claude-agent      # checks claude and saves its model list
+codesmith -m claude-agent/sonnet
+```
+
+See [Claude Agent](configuration.md#claude-agent-your-claude-code-login).
+
 Browser logins for Poe, DigitalOcean and GitLab run as an OAuth
 application you register yourself (CodeSmith ships none); each section of
 [the configuration guide](configuration.md#providers-and-models) says how:
