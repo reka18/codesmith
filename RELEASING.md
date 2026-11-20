@@ -1,60 +1,48 @@
 # Releasing CodeSmith
 
-Releases are GitHub Releases built by GitHub Actions. There are no servers of
-our own: the release page hosts the tarballs, `install.sh` and Homebrew
-download from it, and macOS signing happens on the owner's own Mac.
+There is no hosted CI and no GitHub Actions: everything is built and checked
+on our own machines, and GitHub only hosts the code and the release page.
+`install.sh` and Homebrew download the tarballs from that page, and macOS
+signing happens on the owner's own Mac.
 
-## What gets built
+## Checks before every push
 
-`.github/workflows/release.yml` runs when a `v*` tag is pushed. It builds
-`codesmith` for:
+`scripts/ci.sh` is the CI: `cargo fmt --check`, `cargo clippy --all-targets
+--workspace -D warnings`, `cargo test --workspace` and `shellcheck`. Install the
+hooks once per clone with `scripts/install-hooks.sh`; the pre-push hook runs
+`scripts/ci.sh` and a failure stops the push.
 
-| Target | Runner | Notes |
+## What a release contains
+
+`codesmith` for four targets:
+
+| Target | Built on | Notes |
 |---|---|---|
-| `aarch64-apple-darwin` | `macos-15` (Apple Silicon) | native |
-| `x86_64-apple-darwin` | `macos-15` | cross-compiled with Xcode's SDK; smoke-tested under Rosetta |
-| `x86_64-unknown-linux-musl` | `ubuntu-24.04` | static, native |
-| `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | static, native |
+| `aarch64-apple-darwin` | an Apple Silicon Mac | native |
+| `x86_64-apple-darwin` | the same Mac | cross-compiled with Xcode's SDK |
+| `x86_64-unknown-linux-musl` | a Linux machine, or a cross toolchain | static |
+| `aarch64-unknown-linux-musl` | a Linux machine, or a cross toolchain | static |
 
-Linux binaries are static musl builds so they have no glibc version floor: a
-glibc build made on Ubuntu 24.04 would need glibc 2.39 and fail on Debian 12,
-RHEL 9 and older LTS releases, and musl also covers Alpine. CodeSmith has no
+Linux binaries are static musl builds so they have no glibc version floor
+(a glibc build from Ubuntu 24.04 would need glibc 2.39 and fail on Debian 12,
+RHEL 9 and older LTS releases), and musl also covers Alpine. CodeSmith has no
 native dependencies beyond bundled C (SQLite, ring, zstd), which build with
-`musl-gcc`. The cost is musl's slower allocator, which doesn't matter for an
-agent that mostly waits on the network.
+`musl-gcc`.
 
 Each build is packaged as `codesmith-<version>-<target>.tar.gz`, containing a
 `codesmith-<version>-<target>/` directory with the binary, `LICENSE`,
-`README.md`, `CHANGELOG.md` and the `docs/` guide. The final job writes `SHA256SUMS` and creates a **draft** release
-with everything attached. It stays a draft until the macOS binaries are signed,
-so nobody downloads an unsigned build from `/releases/latest`.
+`README.md`, `CHANGELOG.md` and the `docs/` guide, plus a `SHA256SUMS` file.
+Releases are created as **drafts** with `gh release create --draft` and stay
+drafts until the macOS binaries are signed, so nobody downloads an unsigned
+build from `/releases/latest`.
 
-The workflow uses only `gh` and GitHub's own `actions/checkout`,
-`actions/upload-artifact` and `actions/download-artifact`, pinned to commit
-SHAs. Rust comes from the runner's preinstalled `rustup`.
+Building and packaging the four targets is currently manual; a local release
+script is still to be written.
 
-## Dry run
+## Signing the macOS binaries
 
-Running the workflow by hand is always a dry run, whatever its `dry_run`
-input says: the release job only runs for a pushed `v*` tag.
-
-```sh
-gh workflow run release.yml --ref my-branch
-gh run watch
-```
-
-It builds, smoke-tests and packages all four targets, then writes
-`SHA256SUMS`, renders the Homebrew formula from it, checks that every URL in
-the formula names a tarball it built, and installs the Linux tarball with
-`install.sh`. The tarballs, `SHA256SUMS` and the formula are left as workflow
-artifacts. Do this before tagging whenever the dependencies or the workflow
-change.
-
-## Signing without secrets in CI
-
-The Developer ID private key never leaves the signing Mac, and CI holds no
-Apple credentials. Instead, `scripts/sign-macos.sh` runs on that Mac after CI
-finishes. It:
+The Developer ID private key never leaves the signing Mac. `scripts/sign-macos.sh`
+runs on that Mac once the draft release exists. It:
 
 1. downloads the draft release's macOS tarballs and `SHA256SUMS` with `gh`, and
    refuses to continue unless they match;
@@ -91,18 +79,18 @@ identity works.
 1. **Bump the version** in `[workspace.package]` in `Cargo.toml` (and the
    `version` on the `codesmith-ai`/`codesmith-core` entries under
    `[workspace.dependencies]`), then run `cargo check` so `Cargo.lock` follows.
-   Run `cargo fmt --all --check`, `cargo clippy --all-targets --workspace` and
-   `cargo test --workspace`. Add the release's section to `CHANGELOG.md`.
+   Run `scripts/ci.sh`. Add the release's section to `CHANGELOG.md`.
    Commit: `Release 0.2.0`.
-2. **Tag and push.** The workflow fails if the tag doesn't match the version.
+2. **Tag and push.** Check that the tag matches the version.
 
    ```sh
    git tag -s v0.2.0 -m "CodeSmith 0.2.0"
    git push origin main v0.2.0
    ```
 
-3. **Wait for the Release workflow** to finish (`gh run watch`). A draft
-   release `v0.2.0` now has four tarballs and `SHA256SUMS`.
+3. **Build and upload** the four tarballs and `SHA256SUMS` (see "What a
+   release contains"), then `gh release create v0.2.0 --draft` with them
+   attached.
 4. **Sign on the signing Mac:**
 
    ```sh
