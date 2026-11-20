@@ -117,6 +117,42 @@ pub fn policy_denial(action: &str, resources: &[String], rules: &[Rule]) -> Opti
         .find_map(|r| policy_denies(action, r, &[rules]))
 }
 
+/// The message of a policy deny that could refuse *some* `action` request,
+/// for a request whose resource is not known (a computed command name, an
+/// evaluated string, a write to a computed path): a deny statement whose
+/// pattern can match `action:…`, unless a later allow statement lifts it
+/// for every resource of the action (`*` or `action:*`).
+pub fn policy_may_deny(action: &str, rules: &[Rule]) -> Option<String> {
+    let ic = ignores_case(action);
+    let key = format!("{action}:");
+    let policies: Vec<&Rule> = rules.iter().filter(|r| r.policy.is_some()).collect();
+    let from = policies
+        .iter()
+        .rposition(|r| {
+            r.effect == Effect::Allow && (r.resource == "*" || r.resource == format!("{key}*"))
+        })
+        .map_or(0, |i| i + 1);
+    policies[from..]
+        .iter()
+        .rev()
+        .find(|r| r.effect == Effect::Deny && pattern_may_match_prefix(&r.resource, &key, ic))
+        .map(|r| r.policy.as_deref().unwrap_or(POLICY_MESSAGE).to_string())
+}
+
+/// Whether `pattern` could match some input starting with `prefix`: the
+/// pattern's literal head (before its first wildcard) and `prefix` agree as
+/// far as both go. Over-approximates; that only refuses more.
+fn pattern_may_match_prefix(pattern: &str, prefix: &str, ignore_case: bool) -> bool {
+    let pattern = pattern.replace('\\', "/");
+    let head = &pattern[..pattern.find(['*', '?']).unwrap_or(pattern.len())];
+    let (head, prefix) = if ignore_case {
+        (head.to_lowercase(), prefix.to_lowercase())
+    } else {
+        (head.to_string(), prefix.to_string())
+    };
+    head.starts_with(&prefix) || prefix.starts_with(&head)
+}
+
 fn policy_denies(action: &str, resource: &str, layers: &[&[Rule]]) -> Option<String> {
     let ic = ignores_case(action);
     let key = format!("{action}:{resource}");

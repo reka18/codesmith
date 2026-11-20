@@ -1430,6 +1430,14 @@ fn authorize_unknown(
     let saved = ctx.gate.saved();
     let mut ask = None;
     for action in actions {
+        // A policy statement is matched as `action:resource`; one that
+        // could deny some request of this action refuses a request whose
+        // resource cannot be known, as a deny rule does.
+        if let Some(message) = crate::permission::policy_may_deny(action, ctx.gate.configured()) {
+            return Err(format!(
+                "Permission denied: {title}; {message}: a policy denies some {action} requests, so it cannot run. Write the command so each part is visible (no computed command names, evaluated strings or arithmetic on variables set from text)."
+            ));
+        }
         match unknown_effect(ctx.gate.configured(), &saved, action) {
             Effect::Deny => {
                 return Err(format!(
