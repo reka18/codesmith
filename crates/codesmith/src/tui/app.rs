@@ -439,14 +439,6 @@ pub struct App {
     pub diff_source: Option<super::diff_source::Source>,
     /// The layout choices changed: the runner remembers them.
     pub diff_prefs_changed: bool,
-    /// Mini mode's settings, in mini mode.
-    pub mini: Option<super::mini::Settings>,
-    /// Entries before this one are in the terminal's scrollback (mini
-    /// mode) and are left as they are.
-    pub sealed: usize,
-    /// `entries` was replaced (not appended to) since the last frame; the
-    /// first this many came with the replacement.
-    pub replaced: Option<usize>,
     /// The session tab strip, while tabs are on (set before each frame).
     pub tabs: Option<super::tabs::Strip>,
     /// The titles of sessions the transcript mentions, by ID (`None` for
@@ -565,7 +557,7 @@ fn palette_command(id: &str) -> bool {
         || id.starts_with("session.line.")
         || matches!(
             id,
-            "prompt.clear" | "session.interrupt" | "command.palette.show" | "app.clear"
+            "prompt.clear" | "session.interrupt" | "command.palette.show"
         ))
 }
 
@@ -832,7 +824,6 @@ impl App {
         to.reasoning_source = self.reasoning_source;
         to.diff_prefs = self.diff_prefs;
         to.diff_source = self.diff_source;
-        to.mini = self.mini.clone();
         to.cwd = self.cwd.clone();
     }
 
@@ -842,8 +833,6 @@ impl App {
 
     /// Replace the transcript (a session loaded or cleared).
     pub fn set_entries(&mut self, entries: Vec<Entry>) {
-        self.replaced = Some(entries.len());
-        self.sealed = 0;
         self.entries = entries;
     }
 
@@ -885,8 +874,7 @@ impl App {
         self.last_turn = None;
     }
 
-    /// The turn ended: its footer (when a model step ran), outside mini
-    /// mode, which writes its own turn summary.
+    /// The turn ended: its footer (when a model step ran).
     pub fn end_turn(&mut self, interrupted: bool) {
         let Some(r) = self.recorder.take() else {
             return;
@@ -901,9 +889,6 @@ impl App {
         let mut tokens = self.usage_log.turn(&r.usage, &model);
         if !self.turn_tokens {
             tokens.clear();
-        }
-        if self.mini.is_some() {
-            return;
         }
         self.entries.push(Entry::Footer(Footer {
             tokens,
@@ -1162,13 +1147,7 @@ impl App {
             // Text of a subagent whose row is not shown.
             Ev::ChildText(_) => {}
             Ev::Todos(t) => {
-                // A list already in the scrollback stays there.
-                let sealed = self.sealed;
-                let mut i = 0;
-                self.entries.retain(|e| {
-                    i += 1;
-                    i <= sealed || !matches!(e, Entry::Todos(_))
-                });
+                self.entries.retain(|e| !matches!(e, Entry::Todos(_)));
                 self.entries.push(Entry::Todos(t));
             }
             Ev::Notice(n) => self.notice(n),
@@ -1630,7 +1609,6 @@ impl App {
                 self.tabs.as_ref()?;
                 return Some(Some(Action::Run(super::keymap::static_id(id)?)));
             }
-            "app.clear" if self.mini.is_some() => return Some(Some(Action::Run("app.clear"))),
             "agent.cycle" => return Some(Some(Action::CycleAgent(1))),
             "agent.cycle.reverse" => return Some(Some(Action::CycleAgent(-1))),
             "agent.list" => return Self::slash("agent"),
@@ -2007,15 +1985,6 @@ impl App {
 
     /// Show a toast (or queue it behind the one shown).
     pub fn toast(&mut self, t: super::toast::Toast) {
-        // Mini mode draws no overlay: a toast is a notice there.
-        if self.mini.is_some() {
-            let text = match &t.title {
-                Some(title) => format!("{title}: {}", t.message),
-                None => t.message,
-            };
-            self.notice(text);
-            return;
-        }
         self.toasts.show(t, Instant::now());
     }
 

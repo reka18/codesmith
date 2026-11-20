@@ -12,9 +12,7 @@ codesmith -w                       # work in a new git worktree (see sessions.md
 codesmith --auto                   # approve every request no rule denies
 ```
 
-See [CLI](cli.md#codesmith) for every flag. `codesmith mini` opens the same
-UI in [mini mode](#mini-mode), which writes the transcript into the
-terminal's own scrollback.
+See [CLI](cli.md#codesmith) for every flag.
 
 ## The screen
 
@@ -50,7 +48,7 @@ terminal's own scrollback.
   · 12.3s · 48.2 tok/s`). The throughput counts output and reasoning
   tokens over the time the model spent streaming them, so tool time and
   the wait for the first token are left out; `tui.session.tps: false`
-  hides it. Mini mode adds the throughput to its turn summary.
+  hides it.
   With `tui.debug.turn_tokens`, a `Tokens` row follows it (`+ Tokens: 2
   steps · latest: 1,234 new · 5,000 cached · 6,234 total`), flagging
   likely cache busts: a step that read fewer cached tokens than the one
@@ -533,8 +531,7 @@ column on the left, each with the project (and the branch, in a worktree)
 under its title, when the terminal is at least 106 columns wide and the
 diff viewer is closed; narrower, they are the strip. `tui.tabs.mode: "off"`
 turns tabs off (see [configuration](configuration.md#session-tabs-tuitabs));
-they are on by default except inside the herdr multiplexer, and mini mode
-has none. With no mouse, there are no clicks, drags or tab menus.
+they are on by default except inside the herdr multiplexer. With no mouse, there are no clicks, drags or tab menus.
 
 ## The terminal title, notifications and exit
 
@@ -549,8 +546,7 @@ Short messages (a copied session ID or link, a turn that failed in another
 tab) show as toasts at the top right, as in OpenCode, for five seconds; one
 shows at a time, with `+N more` waiting behind it. A toast about another
 session than the shown one (or its parent or subagents) carries that
-session's title. A toast over the cursor hides it. Mini mode shows them as
-notices.
+session's title. A toast over the cursor hides it.
 
 With `tui.attention` (see
 [configuration](configuration.md#notifications-and-sounds-tuiattention)),
@@ -598,89 +594,3 @@ Permission requests and the agent's questions open as dialogs:
   (**c**), and must be confirmed with Enter before the form submits. A
   question that comes while a picker or the help is open waits until it
   closes.
-
-## Mini mode
-
-`codesmith mini` is OpenCode's split-footer interface (`opencode mini`): it
-stays on the terminal's normal screen, never the alternate one. Each part of
-the transcript is written into the terminal's scrollback once it is
-finished, so it stays after the UI exits and can be scrolled, searched,
-selected and copied with the terminal's own tools; a small live footer at
-the bottom holds the prompt, the running turn and any dialog.
-
-```sh
-codesmith mini                         # new session
-codesmith mini -c                      # continue the latest session here
-codesmith mini -s ses_01J... --no-replay
-git diff | codesmith mini --prompt "review this"   # piped input, then --prompt, is the first message
-```
-
-It takes `-c`, `-s`, `-m`, `--agent`, `--prompt` and `--auto` as `codesmith`
-does, plus `--replay` / `--no-replay` and `--replay-limit N` (see below).
-It needs a terminal for its output; piped stdin becomes the first prompt
-(before `--prompt`, a line apart) and keys are then read from the terminal.
-
-- **What is written, and when.** The transcript is cut into the same rows
-  as the full UI: an entry, or a group of tool calls and thoughts at the
-  current [verbosity](#verbosity). A row is written when it is finished
-  (the turn is over, or a later row has started and none of its calls is
-  still running), rendered once with the same Markdown, diff and group
-  renderers and the theme, wrapped at the terminal's width. A streamed
-  answer is written a block at a time: up to the last blank line outside a
-  code fence, so code blocks and tables are held until they are whole.
-  Prompts, notices and errors are written at once. Text rows are a blank
-  row apart from what is around them; tool rows follow one another. Once
-  written, a row does not change (ctrl+o, `/verbosity` and `/thinking`
-  apply to what is written after).
-- **The footer.** From the top: what is not written yet (the answer's
-  unfinished block, running calls with their command output as it prints,
-  a running subagent's row), autocomplete, the prompt box, and a status
-  line: a spinner, `working`, the interrupt key, then as room allows the
-  agent, model, context in use, cost and the help key. The status line
-  admits those facts one by one in a fixed order and stops at the first
-  that does not fit, so it does not jump about as the terminal is resized
-  (OpenCode's `footerStatuslinePolicy`). The footer starts on the row the
-  cursor was on when mini mode opened, so what the shell printed before
-  stays; it grows upward only once it reaches the bottom.
-- **Dialogs.** Permission requests, the agent's questions and pickers
-  (`/model`, `/sessions`, …) take the prompt's place in the footer, with the
-  same keys as the [full UI's dialogs](#permission-and-question-dialogs).
-  Once answered they are gone; the call they asked about is written with
-  its result. The diff viewer (`/diff`) is full screen and borrows the
-  alternate screen while it is open; the footer comes back as it was.
-- **Keys.** Every binding is the full UI's, through the keymap. `app.clear`
-  (**ctrl+l**) clears the screen without losing anything: the rows on it
-  scroll up into the scrollback. Scrolling keys do nothing here; the
-  terminal scrolls its own history. **ctrl+z** suspends; the footer starts
-  again at the bottom when the UI is continued.
-- **Banners.** `▪ cs mini v0.1.0 · ~/src/project` as the session opens
-  (shortened to fit: the folder's name, the version, then more of its
-  path), and on exit the session's title and the command that resumes it
-  (`Continue codesmith mini -s ses_…`), which replaces the full UI's exit
-  line. After each turn a summary row says which agent and model ran it
-  and for how long (`Build · anthropic/claude-sonnet-4-5 · 12.3s`).
-- **Resume and resize.** With replay on (the default), a continued
-  session's newest 200 prompts and answers are written as the UI opens,
-  and when the terminal is resized the screen and its scrollback are
-  cleared and the transcript written again at the new width (terminals
-  reflow lines differently, and some not at all). `--no-replay` or
-  `tui.mini.replay: false` keeps what is there: nothing is written on
-  resume, and after a resize the footer moves to the bottom rows.
-  `--replay-limit` or `tui.mini.replay_limit` changes the 200.
-- **Terminals.** Each frame is one write wrapped in synchronized output
-  (`CSI ? 2026 h` … `l`), which terminals that support it show at once and
-  others ignore; footer rows that did not change are not written again.
-  Rows are written without trailing spaces, so copied text is clean.
-  `tui.mini.mono` writes monochrome ASCII for terminals (or logs) that want
-  it: no colors, and box and list symbols as ASCII.
-
-What the scrollback shows is set under [`tui.mini`](configuration.md#mini-mode-tuimini),
-with OpenCode's defaults: reasoning shown, tool calls not (the footer
-shows them while they run), and a turn summary. Three presets set the
-knobs together, as OpenCode's verbosity slider does: `/verbosity quiet`
-(answers and prompts only, no footer details), `/verbosity default`, and
-`/verbosity everything` (tool calls with their shell output too);
-`/verbosity up` and `/verbosity down` step between them. `/verbosity`
-with no argument, or `low`/`medium`/`high`, still sets how tool rows are
-grouped when they are shown.
-

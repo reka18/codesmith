@@ -105,29 +105,28 @@ fn plain(raw: &str) -> String {
 }
 
 /// The UI running in a pseudo-terminal, read and typed into.
-pub(crate) struct Ui {
+struct Ui {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     /// Everything read so far.
-    pub(crate) screen: String,
+    screen: String,
     /// Where the chunk that held the last `wait_for` match starts, so the
     /// next wait also sees text that arrived in that same chunk.
     since: usize,
     /// The terminal as drawn: diff-based redraws split text in the byte
-    /// stream, so waits also look at the screen itself. It keeps a
-    /// scrollback, for mini mode.
-    pub(crate) term: vt100::Parser,
+    /// stream, so waits also look at the screen itself.
+    term: vt100::Parser,
 }
 
 impl Ui {
     /// The UI with `args`, or `None` where `script(1)` is missing.
-    pub(crate) fn start(e: &Env, args: &str) -> Option<Ui> {
+    fn start(e: &Env, args: &str) -> Option<Ui> {
         Self::start_with(e, args, &[])
     }
 
     /// [`start`](Self::start) with more environment variables.
-    pub(crate) fn start_with(e: &Env, args: &str, vars: &[(&str, &str)]) -> Option<Ui> {
+    fn start_with(e: &Env, args: &str, vars: &[(&str, &str)]) -> Option<Ui> {
         if !std::path::Path::new("/usr/bin/script").exists() {
             eprintln!("skipped: script(1) is not installed");
             return None;
@@ -156,12 +155,12 @@ impl Ui {
             child,
             screen: String::new(),
             since: 0,
-            term: vt100::Parser::new(30, 100, 2000),
+            term: vt100::Parser::new(30, 100, 0),
         })
     }
 
     /// Read output until `text` is drawn (after what was read before).
-    pub(crate) async fn wait_for(&mut self, text: &str) {
+    async fn wait_for(&mut self, text: &str) {
         let mut buf = [0u8; 8192];
         // Text read before this wait but after the previous match's chunk
         // began counts too: two expected texts often arrive in one read.
@@ -200,13 +199,13 @@ impl Ui {
         assert_eq!(seen, Ok(true), "{text:?} was not drawn:\n{}", plain(&fresh));
     }
 
-    pub(crate) async fn send(&mut self, bytes: &[u8]) {
+    async fn send(&mut self, bytes: &[u8]) {
         self.stdin.write_all(bytes).await.unwrap();
         self.stdin.flush().await.unwrap();
     }
 
     /// Read all the UI writes until it exits.
-    pub(crate) async fn read_to_end(&mut self) {
+    async fn read_to_end(&mut self) {
         let mut buf = [0u8; 8192];
         let (stdout, term, screen) = (&mut self.stdout, &mut self.term, &mut self.screen);
         let _ = tokio::time::timeout(Duration::from_secs(20), async {
@@ -225,13 +224,13 @@ impl Ui {
     }
 
     /// Quit with Ctrl+D on the empty prompt.
-    pub(crate) async fn quit(mut self) {
+    async fn quit(mut self) {
         self.quit_reading().await;
     }
 
     /// Quit, reading (into `screen` and `term`) all the UI writes until it
     /// exits.
-    pub(crate) async fn quit_reading(&mut self) {
+    async fn quit_reading(&mut self) {
         self.send(b"\x04").await;
         let mut buf = [0u8; 8192];
         let (stdout, term, screen) = (&mut self.stdout, &mut self.term, &mut self.screen);

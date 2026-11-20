@@ -827,11 +827,6 @@ mod toasts {
         assert_eq!(a.toasts.current().unwrap().message, "next");
         assert_eq!(a.toasts.tick(later + Duration::from_secs(6)), None);
         assert!(a.toasts.current().is_none());
-        let mut m = App::new();
-        m.mini = Some(Default::default());
-        m.toast(Toast::new(Variant::Info, "in mini"));
-        assert!(m.toasts.current().is_none());
-        assert!(matches!(m.entries.last(), Some(Entry::Notice(n)) if n == "in mini"));
     }
 }
 

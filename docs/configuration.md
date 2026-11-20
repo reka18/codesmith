@@ -111,7 +111,7 @@ is parsed:
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
-| `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display, transcript verbosity, session tabs and mini mode. See [The terminal UI](#the-terminal-ui-tui). |
+| `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display, transcript verbosity and session tabs. See [The terminal UI](#the-terminal-ui-tui). |
 | `watcher` | `{}` | `{"ignore": [...]}`: paths or globs, relative to the project, that are not watched. See [File watching](#file-watching). |
 
 Unknown keys are ignored, so a config written for a newer CodeSmith still
@@ -1462,37 +1462,11 @@ as OpenCode's `attention` settings; both are off by default:
 `terminal.title` (default `true`) keeps the terminal window's title on the
 session's.
 
-### Mini mode: `tui.mini`
-
-What [mini mode](interactive-ui.md#mini-mode) (`codesmith mini`) writes to
-the scrollback and shows in its footer, as OpenCode's `mini` settings:
-
-```jsonc
-{ "tui": { "mini": { "tools": "show", "shell_output": "hide", "replay_limit": 50 } } }
-```
-
-| Key | Default | What it does |
-|---|---|---|
-| `thinking` | `show` | Reasoning in the scrollback (`/thinking` toggles it). |
-| `tools` | `hide` | Tool calls in the scrollback, grouped by `session.verbosity`. Hidden, they show in the footer only while they run. |
-| `shell_output` | `hide` | A finished command's output under its row (with `tools` shown). |
-| `turn_summary` | `show` | The agent, model and duration row after each turn. |
-| `footer` | `show` | The agent, model, context, cost and help key in the footer's status line. |
-| `splash` | `show` | The entry and exit banners. |
-| `work_spinner` | `block-soft-slide` | The footer's spinner: one of OpenCode's names (`block-soft-slide`, `block-soft-sweep`, `block-low-comet`, `block-low-duet`, `block-shuttle`, `block-bridge`, `block-squeeze`, `small-toggle`, `square-toggle`, `grow-shrink`, `quadrant-orbit`, `crosshatch`, `density-wave`, `seed`), drawn with block characters common fonts have. |
-| `mono` | `false` | Monochrome ASCII output. |
-| `replay` | `true` | Write a continued session's history as the UI opens, and the transcript again after a resize (`--replay`, `--no-replay`). |
-| `replay_limit` | `200` | The newest prompts and answers a replay writes (`--replay-limit`). |
-
-The `quiet`, `default` and `everything` presets of `/verbosity` in mini
-mode set `thinking`, `tools`, `shell_output`, `turn_summary` and `footer`
-together for the run.
-
 OpenCode's first TUI format (its `tui.json`) works here too and is read as
 the current one: `"theme": "name"`, `leader_timeout`, and keybind names
 like `session_list`. A name set both ways takes the command id's value.
 Settings OpenCode has for features CodeSmith lacks (`mouse`, `scroll`,
-`attention.sound_pack`, …) are ignored. A value that does not fit,
+`attention.sound_pack`, `mini`, …) are ignored. A value that does not fit,
 an unknown command or key, and two configured bindings that clash are
 reported when the UI opens; the default is used instead.
 

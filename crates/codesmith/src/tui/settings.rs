@@ -54,8 +54,6 @@ pub struct Settings {
     pub grouping: Grouping,
     /// `diffs`: the diff viewer's defaults.
     pub diffs: Diffs,
-    /// `mini`: mini mode's settings.
-    pub mini: super::mini::Settings,
     /// `tabs`: the session tabs.
     pub tabs: super::tabs::Settings,
     /// `debug.turn_tokens`: a token usage row after each turn.
@@ -135,7 +133,6 @@ impl Default for Settings {
             verbosity: Verbosity::Low,
             grouping: Grouping::Auto,
             diffs: Diffs::default(),
-            mini: super::mini::Settings::default(),
             tabs: super::tabs::Settings::default(),
             terminal_title: true,
             tps: true,
@@ -384,9 +381,6 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
             }
         }
     }
-    let (mini, mini_errors) = super::mini::settings::load(&v);
-    s.mini = mini;
-    errors.extend(mini_errors);
     let (tabs, tab_errors) = super::tabs::load(&v, |k| std::env::var(k).ok());
     s.tabs = tabs;
     errors.extend(tab_errors);

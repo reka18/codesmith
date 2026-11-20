@@ -50,6 +50,17 @@ fn app_with(tui: Value) -> App {
 
 // ----- tui/test/config-v2 ---------------------------------------------------
 
+// Mini mode lives on feature/slim-mode: an OpenCode `tui.mini` block, and
+// its `app.clear` key, still load without complaint.
+#[test]
+fn mini_settings_are_ignored() {
+    let (_, errors) = settings::load(&json!({
+        "mini": { "replay": false, "replay_limit": 50, "verbosity": "quiet" },
+        "keybinds": { "app.clear": "ctrl+l" },
+    }));
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 // (adapted) The leader key, its timeout, the cursor and tab defaults; the
 // scroll, diffs, debug and session halves are settings CodeSmith does not
 // have.

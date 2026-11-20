@@ -32,7 +32,6 @@
 //! - `automation`: `automation add`/`run-due`/`log`.
 //! - `worktree`: `run -w`.
 //! - `tui`: the interactive UI in a pseudo-terminal.
-//! - `mini`: `codesmith mini`, its transcript in the terminal's scrollback.
 //! - `catalog`: the models.dev catalog: listing, resolution, background
 //!   refresh.
 //! - `oc_cli`: OpenCode's CLI tests that need the binary (see PARITY.md).
@@ -46,7 +45,6 @@ mod catalog;
 mod delegation;
 mod limits;
 mod mcp;
-mod mini;
 mod oc_cli;
 mod pty;
 mod run_cli;

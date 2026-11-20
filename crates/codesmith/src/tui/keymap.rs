@@ -1544,7 +1544,6 @@ pub mod scope {
         "model.cycle_recent_reverse",
         "model.cycle_favorite",
         "model.cycle_favorite_reverse",
-        "app.clear",
         "agent.cycle",
         "agent.cycle.reverse",
         "agent.list",

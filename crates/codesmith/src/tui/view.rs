@@ -69,7 +69,7 @@ fn fg(c: Color) -> Style {
 type Rendered = HashMap<(u64, usize, u64), Vec<Line<'static>>>;
 static MARKDOWN: Mutex<Option<Rendered>> = Mutex::new(None);
 
-pub(super) fn markdown_cached(text: &str, width: usize) -> Vec<Line<'static>> {
+fn markdown_cached(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
     let key = (h.finish(), width, theme::current().epoch);
@@ -245,7 +245,7 @@ fn hard_wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// The permission dialog's keys line, with the bindings in effect.
-pub(super) fn permission_keys(k: &super::keymap::Keymap) -> String {
+fn permission_keys(k: &super::keymap::Keymap) -> String {
     let key = |id: &str| match k.hint(id) {
         h if h.is_empty() => String::new(),
         h => format!("[{h}] "),
@@ -268,7 +268,7 @@ const PERMISSION_FEEDBACK: &str =
 /// it does not fit it scrolls (`scroll` is clamped here) with a line saying
 /// how much is hidden. The diff preview takes whatever is left after that.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn permission_lines(
+fn permission_lines(
     req: &codesmith_core::permission::Request,
     from: Option<&str>,
     feedback: &str,
@@ -552,6 +552,16 @@ const SUB_EXPANDED: usize = 20;
 /// Rows of a subagent's latest text shown when expanded.
 const SUB_TEXT_ROWS: usize = 12;
 
+/// A turn's length: `850ms`, `12.3s`, `4m 05s`, `1h 02m`.
+fn duration(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms}ms"),
+        1_000..=59_999 => format!("{:.1}s", ms as f64 / 1e3),
+        60_000..=3_599_999 => format!("{}m {:02}s", ms / 60_000, ms / 1000 % 60),
+        _ => format!("{}h {:02}m", ms / 3_600_000, ms / 60_000 % 60),
+    }
+}
+
 /// A turn's footer, as OpenCode's: the agent in its color, then the
 /// model, the duration and the throughput, dropped as the width shrinks.
 fn footer_line(f: &super::app::Footer, w: usize) -> Line<'static> {
@@ -561,10 +571,7 @@ fn footer_line(f: &super::app::Footer, w: usize) -> Line<'static> {
         rest.push_str(&format!(" · {}", f.model));
     }
     if f.duration_ms > 0 && !(28..36).contains(&w) {
-        rest.push_str(&format!(
-            " · {}",
-            super::mini::commit::duration(f.duration_ms)
-        ));
+        rest.push_str(&format!(" · {}", duration(f.duration_ms)));
     }
     if let Some(t) = f.tps {
         rest.push_str(&format!(" · {t:.1} tok/s"));
@@ -811,7 +818,7 @@ pub fn rows(app: &App) -> Vec<Node<usize, GroupKind>> {
 /// How an entry groups (see [`group::part_path`]): its path, or `None`
 /// when it draws nothing and does not break a group (an empty answer or
 /// thought).
-pub(super) fn entry_path(app: &App, e: &Entry) -> Option<&'static [GroupKind]> {
+fn entry_path(app: &App, e: &Entry) -> Option<&'static [GroupKind]> {
     match e {
         Entry::Assistant(t) if t.trim().is_empty() => None,
         Entry::Assistant(_) => Some(group::part_path(Part::Text, app.verbosity)),
@@ -919,33 +926,6 @@ fn layout_tail(
     if out.len() > n {
         out.drain(..out.len() - n);
     }
-    out
-}
-
-/// The rows of the entries `ids` (in order), grouped as the transcript
-/// groups them: mini mode's scrollback commits (`completed`, every group
-/// closed) and its live footer.
-pub(super) fn entries_lines(
-    app: &App,
-    ids: &[usize],
-    w: usize,
-    completed: bool,
-) -> Vec<Line<'static>> {
-    let tree = group::group_entries(
-        ids.iter()
-            .copied()
-            .filter(|&j| entry_path(app, &app.entries[j]).is_some()),
-        |&j| entry_path(app, &app.entries[j]).unwrap_or_default(),
-    );
-    let mut out = Vec::new();
-    Rows::new(app, w).nodes(&tree, completed, &mut out);
-    out
-}
-
-/// One entry's rows on its own, outside any group.
-pub(super) fn entry_rows(app: &App, i: usize, w: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    entry_lines(app, &app.entries[i], w, &mut out);
     out
 }
 
@@ -1576,7 +1556,7 @@ fn input_hint(app: &App) -> String {
     format!(" {} ", parts.join(" · "))
 }
 
-pub(super) fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let p = theme::current();
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -1638,7 +1618,7 @@ fn keys_line(parts: &[(String, &str)]) -> String {
         .join(" · ")
 }
 
-pub(super) fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
+fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
     let Some(pop) = &app.popup else { return };
     let p = theme::current();
     let k = &app.keymap;
@@ -1820,7 +1800,7 @@ fn picker_lines(pk: &Picker, rows: usize, k: &super::keymap::Keymap) -> Vec<Line
 
 const MODAL_WIDTH: u16 = 100;
 
-pub(super) fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
+fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
     let p = theme::current();
     // Rows inside the border of the tallest dialog that fits.
     let room = area.height.saturating_sub(4) as usize;
@@ -1965,6 +1945,14 @@ mod tests {
     use crate::tui::app::{App, Pick, PickItem, Picker};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn durations() {
+        assert_eq!(duration(850), "850ms");
+        assert_eq!(duration(12_345), "12.3s");
+        assert_eq!(duration(245_000), "4m 05s");
+        assert_eq!(duration(3_720_000), "1h 02m");
+    }
 
     fn text(lines: &[Line]) -> Vec<String> {
         lines

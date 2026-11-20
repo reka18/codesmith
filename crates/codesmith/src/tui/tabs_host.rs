@@ -99,8 +99,8 @@ pub(super) struct Host {
 }
 
 impl Host {
-    /// Tabs for a UI on `main`. In mini mode, or with tabs off, there is
-    /// one session at a time, as before tabs.
+    /// Tabs for a UI on `main`. With tabs off, there is one session at a
+    /// time, as before tabs.
     pub fn new(
         main: UnboundedSender<Ev>,
         auto: bool,
@@ -488,7 +488,7 @@ impl Runner {
             e.saved = true;
         }
         e.unread = None;
-        if !self.tabs.on() || self.app.mini.is_some() {
+        if !self.tabs.on() {
             self.app.tabs = None;
             return;
         }
@@ -603,7 +603,7 @@ impl Runner {
 
     /// A tab command (`session.tab.*`).
     pub(super) fn tab_command(&mut self, id: &str) {
-        if !self.tabs.on() || self.app.mini.is_some() {
+        if !self.tabs.on() {
             return;
         }
         let current = self.tabs.entries[self.tabs.shown].tab.session.clone();
@@ -820,7 +820,7 @@ impl Runner {
 
     /// A note for the session picker: the session is open in a tab.
     pub(super) fn tab_note(&self, session: &str) -> &'static str {
-        if self.tabs.on() && self.app.mini.is_none() && self.tabs.index_of(session).is_some() {
+        if self.tabs.on() && self.tabs.index_of(session).is_some() {
             " · open in a tab"
         } else {
             ""

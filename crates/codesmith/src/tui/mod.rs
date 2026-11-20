@@ -33,7 +33,6 @@ pub(crate) mod keymap;
 mod markdown;
 mod mcp_view;
 mod mention;
-pub(crate) mod mini;
 mod models;
 mod navigation;
 mod outside;
@@ -98,21 +97,6 @@ pub struct Opts {
     pub model: Option<String>,
     pub prompt: Option<String>,
     pub auto: bool,
-    /// Mini mode (`codesmith mini`), with its command-line overrides.
-    pub mini: Option<MiniOpts>,
-}
-
-/// `codesmith mini`'s flags over `tui.mini`.
-#[derive(Debug, Clone, Default)]
-pub struct MiniOpts {
-    pub replay: Option<bool>,
-    pub replay_limit: Option<usize>,
-}
-
-/// Where the UI draws: the full screen, or mini mode's scrollback and footer.
-enum Screen {
-    Full(ratatui::DefaultTerminal),
-    Mini(Box<mini::Mini<std::io::Stdout>>),
 }
 
 struct Runner {
@@ -161,8 +145,6 @@ struct Runner {
     suspend: bool,
     /// `prompt.editor`: edit the prompt in `$EDITOR` before the next frame.
     edit: bool,
-    /// `app.clear` (mini mode): clear the screen before the next frame.
-    clear: bool,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
     diffs: settings::Diffs,
     /// The open session tabs; the fields above from `app` to `jobs` are
@@ -627,24 +609,6 @@ impl Runner {
                         "hidden"
                     }
                 ));
-            }
-            "verbosity" if self.app.mini.is_some() && mini_verbosity(args).is_some() => {
-                let m = self.app.mini.as_mut().expect("mini mode");
-                let level = match mini_verbosity(args) {
-                    Some(Ok(l)) => Some(l),
-                    Some(Err(dir)) => m.step(dir),
-                    None => None,
-                };
-                let shown = match level {
-                    Some(l) => {
-                        *m = m.with_level(l);
-                        self.app.show_reasoning = m.thinking;
-                        "set"
-                    }
-                    None => "already",
-                };
-                let label = mini::settings::label(m.level());
-                self.app.notice(format!("mini verbosity {shown}: {label}"));
             }
             "verbosity" => {
                 let arg = args.trim();
@@ -1192,7 +1156,6 @@ impl Runner {
                     "terminal title: off"
                 });
             }
-            "app.clear" => self.clear = true,
             "mcp.list" if self.app.modal.is_none() => {
                 let servers = self
                     .mcp
@@ -1250,7 +1213,11 @@ impl Runner {
 
     /// Edit the prompt in the external editor, the terminal handed to it
     /// and taken back after.
-    async fn edit_prompt(&mut self, screen: &mut Screen, cursor: settings::Cursor) {
+    async fn edit_prompt(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        cursor: settings::Cursor,
+    ) {
         let Some(editor) = external::configured(&|k| std::env::var(k).ok()) else {
             self.app
                 .error("Failed to open editor: Set $VISUAL or $EDITOR to open an external editor");
@@ -1259,42 +1226,30 @@ impl Runner {
         let value = self.app.input.text().to_string();
         let cwd = self.cwd.clone();
         pause_input(true);
-        let full = matches!(screen, Screen::Full(_));
-        if let Screen::Mini(m) = screen {
-            m.release();
-        }
         let result = tokio::task::spawn_blocking(move || {
             external::open(
                 &value,
                 Some(&editor),
                 &cwd,
                 &mut || {
-                    if full {
-                        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
-                        ratatui::restore();
-                    }
+                    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+                    ratatui::restore();
                 },
                 &mut || {},
             )
         })
         .await
         .unwrap_or_else(|e| Err(anyhow!("{e}")));
-        match screen {
-            Screen::Full(t) => {
-                use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
-                let _ = enable_raw_mode();
-                let _ = execute!(
-                    std::io::stdout(),
-                    EnterAlternateScreen,
-                    EnableBracketedPaste
-                );
-                if let Some(c) = cursor_style(cursor) {
-                    let _ = execute!(std::io::stdout(), c);
-                }
-                let _ = t.clear();
-            }
-            Screen::Mini(m) => m.retake(),
+        let _ = ratatui::crossterm::terminal::enable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            EnableBracketedPaste
+        );
+        if let Some(c) = cursor_style(cursor) {
+            let _ = execute!(std::io::stdout(), c);
         }
+        let _ = terminal.clear();
         pause_input(false);
         match result {
             Ok(Some(text)) => {
@@ -1774,10 +1729,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         custom,
     );
     let (tx, mut rx): (UnboundedSender<Ev>, UnboundedReceiver<Ev>) = unbounded_channel();
-    // Mini mode has no tabs, as in OpenCode.
-    let mut tab_settings = tui.tabs;
-    tab_settings.enabled &= opts.mini.is_none();
-    let mut tabs = tabs_host::Host::new(tx.clone(), opts.auto, cwd.clone(), tab_settings);
+    let mut tabs = tabs_host::Host::new(tx.clone(), opts.auto, cwd.clone(), tui.tabs);
     // Each tab's session talks on a channel of its own.
     let (first_tab, parts) = tabs.parts();
     codesmith_core::automation::spawn_scheduler(&loaded);
@@ -1821,7 +1773,6 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         theme_before: None,
         suspend: false,
         edit: false,
-        clear: false,
         diffs: settings::Diffs::default(),
         tabs,
         history: history::Store::default(),
@@ -1879,8 +1830,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     let first = r.make(opts.resume.clone())?;
     r.install(first, opts.resume.is_some());
     r.start_tabs(first_tab, opts.resume.is_some());
-    // Mini mode's entry banner says as much.
-    if r.app.entries.is_empty() && opts.mini.is_none() {
+    if r.app.entries.is_empty() {
         r.app.notice(format!(
             "CodeSmith {} · {} · /help for commands",
             env!("CARGO_PKG_VERSION"),
@@ -1897,18 +1847,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         }
     }
 
-    let mini_opts = opts.mini.clone();
-    if let Some(m) = &mini_opts {
-        let mut s = tui.mini.clone();
-        s.replay = m.replay.unwrap_or(s.replay);
-        s.replay_limit = m.replay_limit.unwrap_or(s.replay_limit);
-        r.app.show_reasoning = s.thinking;
-        r.app.mini = Some(s);
-    }
-    let mut screen = match &mini_opts {
-        None => Screen::Full(ratatui::init()),
-        Some(_) => Screen::Mini(Box::new(mini_screen(&r.cwd)?)),
-    };
+    let mut terminal = ratatui::init();
     let _ = execute!(
         std::io::stdout(),
         EnableBracketedPaste,
@@ -1940,23 +1879,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             }
             let following = r.sync_shells();
             let toast = r.app.toasts.tick(std::time::Instant::now());
-            let tick = match &mut screen {
-                Screen::Full(t) => {
-                    t.draw(|f| view::draw(f, &r.app))?;
-                    match (following.then_some(SHELL_POLL), toast) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    }
-                }
-                Screen::Mini(m) => {
-                    m.draw(&mut r.app)?;
-                    let t = m.tick(&r.app);
-                    if following {
-                        Some(t.map_or(SHELL_POLL, |t| t.min(SHELL_POLL)))
-                    } else {
-                        t
-                    }
-                }
+            terminal.draw(|f| view::draw(f, &r.app))?;
+            let tick = match (following.then_some(SHELL_POLL), toast) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
             };
             let ev = match tick {
                 // The spinner moves while nothing else comes in.
@@ -1977,18 +1903,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
                 break;
             }
             if std::mem::take(&mut r.suspend) {
-                match &mut screen {
-                    Screen::Full(t) => suspend(t, tui.cursor),
-                    Screen::Mini(m) => m.suspend(),
-                }
+                suspend(&mut terminal, tui.cursor);
             }
             if std::mem::take(&mut r.edit) {
-                r.edit_prompt(&mut screen, tui.cursor).await;
-            }
-            if std::mem::take(&mut r.clear) {
-                if let Screen::Mini(m) = &mut screen {
-                    m.clear();
-                }
+                r.edit_prompt(&mut terminal, tui.cursor).await;
             }
         }
         Ok(())
@@ -2013,69 +1931,21 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         ratatui::crossterm::event::DisableFocusChange,
         ratatui::crossterm::cursor::SetCursorStyle::DefaultUserShape
     );
-    let banner = match screen {
-        Screen::Full(_) => {
-            ratatui::restore();
-            false
-        }
-        // The main screen stays as it is, the transcript on it.
-        Screen::Mini(mut m) => {
-            let _ = m.close(&mut r.app);
-            let _ = ratatui::crossterm::terminal::disable_raw_mode();
-            r.app.mini.as_ref().is_some_and(|s| s.splash)
-        }
-    };
+    ratatui::restore();
     // What continues the session, once it is in the store.
     let stored = (!r.session_id.is_empty())
         .then(open_store)
         .flatten()
         .and_then(|db| db.get(&r.session_id).ok().flatten());
-    if let Some(info) = stored.filter(|_| !banner) {
+    if let Some(info) = stored {
         let title = info
             .title
             .unwrap_or_else(|| tabs::NEW_SESSION_TITLE.to_string());
-        let command = if mini_opts.is_some() {
-            "codesmith mini"
-        } else {
-            "codesmith"
-        };
-        if let Some(text) = term::epilogue(Some((&title, &info.id)), command, None) {
+        if let Some(text) = term::epilogue(Some((&title, &info.id)), "codesmith", None) {
             println!("{text}");
         }
     }
     result
-}
-
-/// Mini mode's `/verbosity quiet|default|everything` (a preset) or
-/// `/verbosity up|down` (a step, as a slider): `Err` holds the step.
-fn mini_verbosity(args: &str) -> Option<std::result::Result<mini::settings::Level, i32>> {
-    let a = args.trim().to_ascii_lowercase();
-    match a.as_str() {
-        "up" => Some(Err(1)),
-        "down" => Some(Err(-1)),
-        _ => mini::settings::Level::parse(&a).map(Ok),
-    }
-}
-
-/// Mini mode's screen, from where the cursor is (what the shell printed
-/// stays). Asked before input is read, so the reply is not taken for keys.
-fn mini_screen(cwd: &std::path::Path) -> Result<mini::Mini<std::io::Stdout>> {
-    use ratatui::crossterm::{cursor, terminal};
-    terminal::enable_raw_mode()?;
-    let (cols, rows) = terminal::size()?;
-    // Without a terminal on stdin (a prompt piped in), the reply would not
-    // be read: start at the bottom row.
-    let asked = std::io::IsTerminal::is_terminal(&std::io::stdin())
-        .then(cursor::position)
-        .and_then(|r| r.ok());
-    let row = match asked {
-        Some((0, y)) => y,
-        Some((_, y)) => y + 1,
-        None => rows.saturating_sub(1),
-    };
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let detail = mini::splash::directory_label(cwd, home.as_deref());
-    Ok(mini::Mini::new(std::io::stdout(), cols, rows, row, detail))
 }
 
 /// The command of a `!command` prompt (OpenCode's shell mode).

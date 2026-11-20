@@ -1057,11 +1057,6 @@ impl Form {
         }
     }
 
-    /// How many rows the dialog's text takes at `width` columns.
-    pub fn height(&self, width: usize, term: (u16, u16), km: &Keymap) -> usize {
-        wrapped(&self.lines(width, term, km), width)
-    }
-
     /// The form's text, `width` columns wide on a terminal of `term`
     /// columns and rows. Text from the model or a server is shown escaped.
     pub fn lines(&self, width: usize, term: (u16, u16), km: &Keymap) -> Vec<Line<'static>> {
