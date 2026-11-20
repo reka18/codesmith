@@ -2,10 +2,21 @@
 # *draft* GitHub Release. The macOS binaries are signed and notarized
 # afterwards on the owner's signing Mac (scripts/sign-macos.sh), which then
 # publishes the release. No signing material ever reaches CI. See RELEASING.md.
+#
+# A manual run (workflow_dispatch) is always a dry run: it builds, smoke-tests
+# and packages every target, writes SHA256SUMS, renders the Homebrew formula
+# and runs install.sh against the Linux tarball, all as workflow artifacts.
+# The release job only runs for a pushed v* tag, whatever the dispatch inputs.
 name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and package only (manual runs never create a release)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -37,8 +48,14 @@ jobs:
       - name: Check the tag matches the crate version
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          [ -n "$version" ] || { echo "::error::no version in [workspace.package]"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            echo "dry run on $GITHUB_REF_NAME: version $version"
+            echo "VERSION=$version" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME#v}"
           if [ "$tag" != "$version" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
             exit 1
@@ -69,6 +86,10 @@ jobs:
         run: |
           bin="target/$TARGET/release/codesmith"
           file "$bin"
+          if [[ "$TARGET" == *musl ]] && ! file "$bin" | grep -Eq 'statically linked|static-pie linked'; then
+            echo "::error::$bin is not statically linked"
+            exit 1
+          fi
           # The x86_64 macOS binary runs under Rosetta on the arm runner.
           if [ "$TARGET" = x86_64-apple-darwin ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
             echo "::warning::Rosetta unavailable; not running the x86_64 binary"
@@ -84,7 +105,8 @@ jobs:
           cp "target/$TARGET/release/codesmith" LICENSE README.md "dist/$name/"
           # The README links into docs/, so ship the guide too.
           cp -R docs "dist/$name/docs"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # COPYFILE_DISABLE keeps macOS tar from adding ._ AppleDouble files.
+          COPYFILE_DISABLE=1 tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "ASSET=dist/$name.tar.gz" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -93,8 +115,56 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  # Dry runs only: everything the release job would publish, as artifacts.
+  dry-run:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum codesmith-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 4 ] || { echo "::error::expected 4 tarballs"; exit 1; }
+
+      - name: Render the Homebrew formula
+        run: |
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          scripts/update-homebrew.sh "$version" dist/SHA256SUMS dist/codesmith.rb
+          cat dist/codesmith.rb
+          # Every URL in the formula must name a tarball this run built.
+          grep -o 'codesmith-#{version}-[a-z0-9_-]*\.tar\.gz' dist/codesmith.rb \
+            | sed "s/#{version}/$version/" | while read -r f; do
+              [ -f "dist/$f" ] || { echo "::error::formula names $f, which was not built"; exit 1; }
+            done
+
+      - name: Install with install.sh
+        run: |
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          CODESMITH_VERSION="$version" CODESMITH_BASE_URL="file://$PWD/dist" \
+            CODESMITH_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          "$RUNNER_TEMP/bin/codesmith" --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dry-run
+          path: |
+            dist/SHA256SUMS
+            dist/codesmith.rb
+          if-no-files-found: error
+
   release:
     needs: build
+    # Only a pushed v* tag publishes; manual (dry) runs can never reach this.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
