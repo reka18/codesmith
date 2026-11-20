@@ -126,6 +126,10 @@ carry on with a system update (see
 not shown or counted as a prompt. Sessions that contain one can't be opened
 by CodeSmith builds older than this feature.
 
+An idle session's prompt cache expires after a few minutes; with
+[`warming`](configuration.md#prompt-cache-warming) on, CodeSmith sends small
+keep-alive requests so the next prompt still reads it.
+
 Images are large, so once a conversation's images pass 25 MiB, the oldest
 are replaced by a note until 15 MiB remain.
 

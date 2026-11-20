@@ -34,3 +34,25 @@
 1485 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_a_fixed_lead_before_the_threshold
 1512 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_on_a_window_whose_threshold_is_under_64k
 1538 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_waits_for_a_response_whose_prompt_is_still_cached :: adapted: a 32s cache cold after two seconds
+# Prompt-cache warming (src/warming.rs).
+@config/warming.test.ts
+8 :: ported :: src/warming.rs::oc_warming_config_accepts_boolean_enablement
+14 :: ported :: src/warming.rs::oc_warming_config_decodes_custom_durations
+@plugin/warming.test.ts
+134 :: ported :: src/warming.rs::oc_warming_warms_every_4_minutes_when_the_model_has_no_cache_ttl
+143 :: ported :: src/warming.rs::oc_warming_warms_at_90_percent_of_the_models_cache_ttl_by_default
+152 :: ported :: src/warming.rs::oc_warming_doesnt_warm_a_cache_that_outlives_the_warming_window
+161 :: ported :: src/warming.rs::oc_warming_keeps_an_explicit_interval
+172 :: ported :: src/warming.rs::oc_warming_keeps_warming_after_a_ping_hits_the_cache
+181 :: ported :: src/warming.rs::oc_warming_stops_warming_after_a_ping_misses_the_cache
+190 :: ported :: src/warming.rs::oc_warming_resumes_warming_on_the_next_real_request_after_a_miss
+201 :: ported :: src/warming.rs::oc_warming_doesnt_count_a_ping_without_cache_usage_as_a_miss
+210 :: ported :: src/warming.rs::oc_warming_keeps_warming_when_a_request_is_sent_while_a_missed_ping_responds
+224 :: ported :: src/warming.rs::oc_warming_counts_the_interval_from_when_the_request_was_sent
+235 :: ported :: src/warming.rs::oc_warming_counts_the_next_interval_from_when_a_ping_was_sent
+244 :: ported :: src/warming.rs::oc_warming_waits_for_a_request_running_at_the_due_time
+257 :: ported :: src/warming.rs::oc_warming_stops_warming_when_a_request_outlasts_the_cache
+273 :: ported :: src/warming.rs::oc_warming_keeps_one_loop_when_turned_off_and_on_again
+289 :: ported :: src/warming.rs::oc_warming_doesnt_ping_during_a_running_compaction
+302 :: ported :: src/warming.rs::oc_warming_stops_warming_a_deleted_session :: adapted: a session's warming stops when it is closed
+313 :: ported :: src/warming.rs::oc_warming_stops_every_loop_when_the_plugin_closes :: adapted: per session; dropping its warmer

@@ -1186,7 +1186,9 @@ impl Session {
             // The last allowed step must answer in text (OpenCode's MAX_STEPS).
             let final_step = steps + 1 >= max_steps;
             let before = self.messages.len();
-            let (parts, reason, usage) = match self.step(sink, final_step).await {
+            let stepped = self.step(sink, final_step).await;
+            self.warm_end();
+            let (parts, reason, usage) = match stepped {
                 Ok(r) => r,
                 // A context overflow is recovered by compacting once, unless
                 // the response had already streamed output (which the step
@@ -2655,6 +2657,7 @@ impl Session {
             // The tool definitions stay, so the cached prefix does too.
             req.tool_choice = Some(codesmith_ai::ToolChoice::None);
         }
+        self.warm_send(Some(&req));
         let mut policy = retry::Policy::default();
         let mut attempt = 0;
         loop {

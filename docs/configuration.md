@@ -12,6 +12,7 @@ This page covers where config lives, how files combine, and every key.
 - [References](#references)
 - [Media limits](#media-limits)
 - [Compaction](#compaction)
+- [Prompt-cache warming](#prompt-cache-warming)
 - [Tool output](#tool-output)
 - [Web search](#web-search)
 - [The terminal UI: `tui`](#the-terminal-ui-tui)
@@ -86,6 +87,7 @@ is parsed:
 | `subagent_depth` | `1` | How deep subagents may nest. `1` lets the main session start subagents, but a subagent cannot start its own. |
 | `tool_output` | `{"max_lines": 2000, "max_bytes": 51200}` | How much tool output goes to the model before it is truncated. See [Tool output](#tool-output). |
 | `compaction` | auto | When to summarize old history. See [Compaction](#compaction). |
+| `warming` | off | Keep-alive requests that keep an idle session's prompt cache warm. See [Prompt-cache warming](#prompt-cache-warming). |
 | `media` | see below | Limits that images are fitted to. See [Media limits](#media-limits). |
 | `formatter` | off | `true`, or an object of overrides. See [formatters](language-servers-and-formatters.md#formatters). |
 | `lsp` | off | `true`, or an object of overrides. See [language servers](language-servers-and-formatters.md#language-servers). |
@@ -830,6 +832,7 @@ The `cache` setting on a provider or a model changes this (a model's wins):
 | `true`, `"auto"` | The default placement above. |
 | `false`, `"none"` | No breakpoints, no `prompt_cache_key`, no lifetime. |
 | `{"ttl": "1h"}` | The default placement with this cache lifetime: `5m` or `1h` on Anthropic's breakpoints; on OpenAI `24h` is sent as `prompt_cache_retention` and anything else as `prompt_cache_options.ttl`. |
+| `{"warming": true}` | Also keep this model's cache warm (or `false` to not); see [Prompt-cache warming](#prompt-cache-warming). |
 | `{"tools": true, "system": true, "messages": 2}` | Exactly these breakpoints: the last tool, the system prompt, and the last 2 messages (`messages` also takes `{"tail": n}`, `"latest-user-message"` or `"latest-assistant"`). |
 
 Variants can't change caching: the cache belongs to the model. Cache reads
@@ -1002,6 +1005,35 @@ model's `limit.output`, lowered to the room the request leaves in the window.
 Without `limit.context`, CodeSmith cannot tell when the window is nearly
 full. Compaction then happens only when you run `/compact`, or when the
 provider rejects a prompt as too long (unless `auto` is `false`).
+
+## Prompt-cache warming
+
+A provider's prompt cache lasts a few minutes after the request that last
+used it (five on most, or the model's `cache.ttl`). Leave a session idle
+longer, and the next prompt pays to write the whole conversation again.
+Warming sends a small keep-alive request before the cache expires: the
+session's latest request again, with a prompt asking for a one-word reply.
+It is off by default.
+
+```jsonc
+{ "warming": true }
+{ "warming": { "interval": "2 minutes", "duration": "1 hour", "prompt": "Reply with exactly: OK" } }
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `interval` | `"auto"` | Idle time between keep-alive requests. `"auto"` is 90% of the model's `cache.ttl`, or 4 minutes without one. |
+| `duration` | `"30 minutes"` | How long after the latest real request to keep warming. |
+| `prompt` | a keep-alive prompt | What the keep-alive request asks. |
+
+A provider's or model's `cache.warming` (`true`, `false`, or the same
+object without `prompt`) overrides the top-level setting:
+`"cache": {"ttl": "5m", "warming": true}`. With `"auto"`, a cache that
+outlives `duration` (`"1h"` against the 30-minute default) is not warmed.
+Keep-alive requests wait while a request or compaction runs, stop when one
+rebuilt the cache instead of reading it (until the next real request), and
+end when the session is closed. Subagents are not warmed. Their tokens count
+in the session's usage.
 
 ## Tool output
 

@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 238 | 0 | 185 | 337 | 36 | 0 |
+| Providers, models and credentials | 796 | 257 | 0 | 166 | 337 | 36 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1302** | **15** | **525** | **2350** | **1396** | **0** |
+| **Total** | **5588** | **1321** | **15** | **506** | **2350** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (525 cases in 56 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (506 cases in 55 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -88,7 +88,6 @@ Missing features, by how many OpenCode test cases each would unlock (525 cases i
 | [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
 | [Goal Plugin](#goal-plugin) | 20 | goal watchdog; /goal loop with a reviewer |
-| [Prompt-cache Warming](#prompt-cache-warming) | 19 | keeping provider caches warm |
 | [Local Model Discovery](#local-model-discovery) | 19 | discovering LM Studio models and context; discovering local Ollama models and metadata; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
@@ -359,30 +358,6 @@ Missing features, by how many OpenCode test cases each would unlock (525 cases i
 - `plugin/goal.test.ts`: pauses a goal set by an earlier server process instead of continuing it
 - `plugin/goal.test.ts`: does not give a child session its parent's goal
 - `plugin/goal.test.ts`: pauses, resumes and clears a goal through its subcommands
-
-### Prompt-cache Warming
-
-19 cases.
-
-- `config/warming.test.ts`: accepts boolean enablement
-- `config/warming.test.ts`: decodes custom durations
-- `plugin/warming.test.ts`: warms every 4 minutes when the model has no cache.ttl
-- `plugin/warming.test.ts`: warms at 90% of the model's cache.ttl by default
-- `plugin/warming.test.ts`: doesn't warm a cache that outlives the warming window
-- `plugin/warming.test.ts`: keeps an explicit interval
-- `plugin/warming.test.ts`: keeps warming after a ping hits the cache
-- `plugin/warming.test.ts`: stops warming after a ping misses the cache
-- `plugin/warming.test.ts`: resumes warming on the next real request after a miss
-- `plugin/warming.test.ts`: doesn't count a ping without cache usage as a miss
-- `plugin/warming.test.ts`: keeps warming when a request is sent while a missed ping responds
-- `plugin/warming.test.ts`: counts the interval from when the request was sent, not when its response ended
-- `plugin/warming.test.ts`: counts the next interval from when a ping was sent
-- `plugin/warming.test.ts`: waits for a request running at the due time, then pings while the cache lasts
-- `plugin/warming.test.ts`: stops warming when a request outlasts the cache, until the next request
-- `plugin/warming.test.ts`: keeps one loop when warming is turned off and on again before the next ping
-- `plugin/warming.test.ts`: doesn't ping during a running compaction
-- `plugin/warming.test.ts`: stops warming a deleted session
-- `plugin/warming.test.ts`: stops every loop when the plugin closes
 
 ### Local Model Discovery
 
@@ -3386,7 +3361,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (575 of 796)</summary>
+<details><summary>Providers, models and credentials (594 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3421,6 +3396,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P keeps a moved catalog model without reasoning variants free of variants — `tests/oc_catalog.rs::oc_catalog_keeps_a_moved_catalog_model_without_reasoning_variants_free_of_variants`
 - P builds configured reasoning variants after provider and model package normalization — `tests/oc_catalog.rs::oc_catalog_builds_configured_reasoning_variants_after_provider_and_model_package_normalization` (adapted: one provider per protocol)
 - P applies configured release date, temperature support, and reasoning field — `tests/oc_catalog.rs::oc_catalog_applies_configured_release_date_temperature_support_and_reasoning_field` (adapted: no release dates or freeform formats kept)
+
+**`config/warming.test.ts`**
+
+- P accepts boolean enablement — `src/warming.rs::oc_warming_config_accepts_boolean_enablement`
+- P decodes custom durations — `src/warming.rs::oc_warming_config_decodes_custom_durations`
 
 **`github-copilot/models.test.ts`**
 
@@ -3748,6 +3728,26 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P merges legacy Zenmux headers with existing headers — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
 - P lets configured Zenmux legacy headers override defaults — `tests/oc_providers.rs::oc_zenmux_lets_configured_legacy_headers_override_defaults` (adapted: the headers name CodeSmith)
 - D guards legacy Zenmux headers to the exact zenmux provider id — deliberate: CodeSmith matches ZenMux by its endpoint, as it does Kilo, LLM Gateway and NVIDIA, not by provider id
+
+**`plugin/warming.test.ts`**
+
+- P warms every 4 minutes when the model has no cache.ttl — `src/warming.rs::oc_warming_warms_every_4_minutes_when_the_model_has_no_cache_ttl`
+- P warms at 90% of the model's cache.ttl by default — `src/warming.rs::oc_warming_warms_at_90_percent_of_the_models_cache_ttl_by_default`
+- P doesn't warm a cache that outlives the warming window — `src/warming.rs::oc_warming_doesnt_warm_a_cache_that_outlives_the_warming_window`
+- P keeps an explicit interval — `src/warming.rs::oc_warming_keeps_an_explicit_interval`
+- P keeps warming after a ping hits the cache — `src/warming.rs::oc_warming_keeps_warming_after_a_ping_hits_the_cache`
+- P stops warming after a ping misses the cache — `src/warming.rs::oc_warming_stops_warming_after_a_ping_misses_the_cache`
+- P resumes warming on the next real request after a miss — `src/warming.rs::oc_warming_resumes_warming_on_the_next_real_request_after_a_miss`
+- P doesn't count a ping without cache usage as a miss — `src/warming.rs::oc_warming_doesnt_count_a_ping_without_cache_usage_as_a_miss`
+- P keeps warming when a request is sent while a missed ping responds — `src/warming.rs::oc_warming_keeps_warming_when_a_request_is_sent_while_a_missed_ping_responds`
+- P counts the interval from when the request was sent, not when its response ended — `src/warming.rs::oc_warming_counts_the_interval_from_when_the_request_was_sent`
+- P counts the next interval from when a ping was sent — `src/warming.rs::oc_warming_counts_the_next_interval_from_when_a_ping_was_sent`
+- P waits for a request running at the due time, then pings while the cache lasts — `src/warming.rs::oc_warming_waits_for_a_request_running_at_the_due_time`
+- P stops warming when a request outlasts the cache, until the next request — `src/warming.rs::oc_warming_stops_warming_when_a_request_outlasts_the_cache`
+- P keeps one loop when warming is turned off and on again before the next ping — `src/warming.rs::oc_warming_keeps_one_loop_when_turned_off_and_on_again`
+- P doesn't ping during a running compaction — `src/warming.rs::oc_warming_doesnt_ping_during_a_running_compaction`
+- P stops warming a deleted session — `src/warming.rs::oc_warming_stops_warming_a_deleted_session` (adapted: a session's warming stops when it is closed)
+- P stops every loop when the plugin closes — `src/warming.rs::oc_warming_stops_every_loop_when_the_plugin_closes` (adapted: per session; dropping its warmer)
 
 **`provider.test.ts`**
 

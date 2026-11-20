@@ -40,6 +40,7 @@ pub mod stats;
 pub mod store;
 pub mod title;
 pub mod tool;
+pub mod warming;
 pub mod watch;
 pub mod wildcard;
 pub mod worktree;

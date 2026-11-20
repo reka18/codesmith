@@ -98,6 +98,9 @@ pub struct Config {
     pub commands: BTreeMap<String, crate::command::Command>,
     /// When to compact and how much recent history to keep verbatim.
     pub compaction: crate::compaction::Settings,
+    /// Prompt-cache warming: `true`, or `{"prompt", "interval",
+    /// "duration"}` (see [`crate::warming`]). Off when unset.
+    pub warming: Option<Value>,
     /// Limits images are fitted to before they reach the model
     /// (`media.image`: `auto_resize`, `max_width`, `max_height`,
     /// `max_base64_bytes`).

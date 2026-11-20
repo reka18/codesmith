@@ -51,6 +51,12 @@ pub(super) struct State {
     cycle_start: Option<u64>,
     /// The background summary held for the next compaction.
     held: Option<Held>,
+    /// Prompt-cache warming after the latest request.
+    warmer: crate::warming::Warmer,
+    /// The latest request, which a keep-alive ping repeats.
+    snapshot: Arc<Mutex<Option<Request>>>,
+    /// Usage of pings not counted yet.
+    pings: Arc<Mutex<Vec<Usage>>>,
 }
 
 /// What a summary request came to: the summary, and the usage of each call.
@@ -140,6 +146,53 @@ enum Failure {
 }
 
 impl Session {
+    /// A request (`None`: a compaction) is going out: keep the prompt
+    /// cache warm after it, as `warming` says. Subagents are not warmed.
+    pub(super) fn warm_send(&mut self, req: Option<&Request>) {
+        if self.parent.is_some() {
+            return;
+        }
+        if let Some(r) = req {
+            *self.compact.snapshot.lock().unwrap() = Some(r.clone());
+        }
+        let config = &self.loaded.config;
+        let decision = crate::warming::decide(
+            config.warming.as_ref(),
+            crate::warming::model_setting(config, &self.model_spec).as_ref(),
+            self.model.cache.ttl.as_deref(),
+        );
+        let ping = self.ping();
+        self.compact.warmer.send(decision, true, ping);
+    }
+
+    /// The request or compaction ended; what pings cost so far is counted.
+    pub(super) fn warm_end(&mut self) {
+        self.compact.warmer.end();
+        let pings = std::mem::take(&mut *self.compact.pings.lock().unwrap());
+        for u in pings {
+            let _ = self.count_side_call(u);
+        }
+    }
+
+    /// A keep-alive request: the latest request with the prompt added.
+    fn ping(&self) -> crate::warming::Ping {
+        let (client, model) = (self.client.clone(), self.model.clone());
+        let (snapshot, pings) = (self.compact.snapshot.clone(), self.compact.pings.clone());
+        Arc::new(move |prompt: String| {
+            let (client, model) = (client.clone(), model.clone());
+            let (snapshot, pings) = (snapshot.clone(), pings.clone());
+            Box::pin(async move {
+                let mut req = snapshot.lock().unwrap().clone()?;
+                req.messages.push(Message::user(prompt));
+                req.interaction = codesmith_ai::Interaction::Background;
+                let stream = model.provider.stream(&client, &req).await.ok()?;
+                let r = codesmith_ai::assemble(stream, |_| {}).await.ok()?;
+                pings.lock().unwrap().push(r.usage);
+                Some(r.usage)
+            })
+        })
+    }
+
     /// Estimated size of the next request: system prompt, every offered
     /// tool definition (MCP, plugin and the rest, not only the built-in
     /// tools) and history (about four characters per token).
@@ -357,6 +410,8 @@ impl Session {
             return Err(anyhow!("nothing to compact yet"));
         }
         sink.compaction_start();
+        // No keep-alive ping while the summary is written.
+        self.warm_send(None);
         // A background summary still being written shows as a running
         // compaction while it is awaited.
         let budget = self.budget(reason);
@@ -364,6 +419,7 @@ impl Session {
             Some((summary, keep)) => (Ok(summary), keep),
             None => (self.summarize(sink, reason, k).await, k),
         };
+        self.warm_end();
         match result {
             Ok(summary) => {
                 sink.compaction_end(Ok(&summary));
@@ -534,6 +590,8 @@ impl Session {
         self.last_prompt_tokens = 0;
         self.compact.anchor = None;
         self.compact.cycle_start = None;
+        // The latest request no longer matches the history.
+        *self.compact.snapshot.lock().unwrap() = None;
         self.discard_held();
         Ok(())
     }
