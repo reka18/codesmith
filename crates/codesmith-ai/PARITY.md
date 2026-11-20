@@ -10,7 +10,9 @@ stream lifecycle, partial output and Gemini continuation in
 [`src/parity_stream.rs`](src/parity_stream.rs), endpoints, auth, billed
 cost, compatibility overrides and request encoding in
 [`src/parity_endpoint.rs`](src/parity_endpoint.rs), hosted tools in
-[`src/parity_hosted.rs`](src/parity_hosted.rs) (and the two
+[`src/parity_hosted.rs`](src/parity_hosted.rs), the Responses
+WebSocket transport and incremental continuation in
+[`src/parity_ws.rs`](src/parity_ws.rs) (and the two
 default-auth cases in `codesmith-core/src/config.rs`), the partial JSON parser in
 [`src/partial_json.rs`](src/partial_json.rs), and the session's handling of a
 failed step's partial output in `codesmith-core/tests/runner_parity.rs`).
@@ -38,13 +40,13 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
 | OpenAI Chat | 115 | 15 | 88 | 12 |
-| OpenAI Responses | 159 | 22 | 91 | 46 |
+| OpenAI Responses | 159 | 22 | 117 | 20 |
 | Anthropic Messages | 95 | 9 | 75 | 11 |
 | Gemini | 61 | 12 | 44 | 5 |
 | Shared | 85 | 10 | 59 | 16 |
-| **Total** | **515** | **68** | **357** | **90** |
+| **Total** | **515** | **68** | **383** | **64** |
 
-Of the gaps, 55 are missing provider features (the roadmap) and
+Of the gaps, 29 are missing provider features (the roadmap) and
 35 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -267,6 +269,34 @@ OpenAI Responses (`responses.rs`)
   (newer GPT models never cache top-level `instructions`), where it was sent
   as `instructions`.
 
+Responses WebSocket transport (`ws.rs`, `ws/continuation.rs`,
+`ws/session.rs`; `src/parity_ws.rs`, `codesmith-core/tests/websocket_session.rs`)
+- New: a session's steps can go over the Responses WebSocket API
+  (`settings.transport`, defaulting to `websocket` for OpenAI, xAI on
+  Responses and Azure v1 endpoints as in OpenCode). One socket per session
+  (tokio-tungstenite with rustls), reused across steps and replaced after 55
+  minutes (24 for xAI) or when the URL or headers change; the message is the
+  HTTP body without `stream`, `stream_options` and `background`, and the
+  handshake the HTTP request's URL (`wss://`) and headers, with OpenAI's
+  `OpenAI-Beta: responses_websockets=2026-02-06` default and Azure's
+  `api-version` removed.
+- Incremental continuation: a completed response is a checkpoint, and the
+  next step sends only the input items after its input and output, with
+  `previous_response_id`, when no other field changed (items compare
+  without response-only metadata and with tool arguments as JSON; reasoning
+  re-encrypted at completion keeps its streamed copy). xAI declines it with
+  `store: false` and drops `instructions` from it.
+- Stream checks on the socket: one `response.created` with an id before any
+  other response event, the same id throughout, nothing after the terminal
+  event; keepalives and provider notifications may come first.
+- Recovery: `previous_response_not_found`, `websocket_connection_limit_reached`
+  and an unclassified `invalid_request_error` (no code) against an
+  incremental send are resent in full on a new socket before any output;
+  every error frame drops the socket. A failed connect or a send that never
+  left falls back to HTTP (a failed connect for the rest of the session), as
+  does a 1009 close; five sockets lost mid-response in a row keep the
+  session on HTTP. An abandoned response drops its socket.
+
 Shared (`lib.rs`, `schema.rs`)
 - `normalize_tool_history` runs before every request: a call without a result
   gets an error result (`Tool result missing`) before the next assistant turn,
@@ -416,6 +446,20 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
 
 ## Partially ported
 
+- Responses WebSocket (`src/parity_ws.rs`): errors carry no HTTP context,
+  cause or OpenCode reason tag, so the rejection and control-event cases
+  check the recovery and message; delivery state is read from the
+  transport's last failure; the "already closed" and "system code" cases
+  use tokio-tungstenite against a server that hangs up and a closed port
+  (`ECONNREFUSED` for OpenCode's `ENOTFOUND`); the sanitizing case checks
+  non-ASCII text (Rust strings hold no lone surrogates); the unsupported
+  Azure case logs no warning; the composed continuation request replays
+  assistant text as `type: "message"` items; "closes a direct WebSocket
+  execution" is the session's socket, dropped when a response is abandoned.
+  Not ported: OpenCode's interceptor hooks (`experimental.ws.*`), metrics,
+  and the connect and idle timeouts' configuration (fixed at 15 seconds and
+  30 minutes).
+
 - `gemini` "does not resume a response cut off by its own timeout": a reqwest
   read timeout stands for OpenCode's request timeout.
 - `error-partial` "loop reports only the failed step as partial" is a session
@@ -479,44 +523,6 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
   rejects user content straight after a tool message.
 
 ## Roadmap: provider features CodeSmith lacks
-
-
-### Responses WebSocket transport and incremental continuation (26 tests)
-
-OpenCode can stream Responses over a WebSocket and send only new input against a previous response checkpoint. CodeSmith is stateless HTTP only (`store: false`, full history each turn).
-
-_OpenAI Responses 26._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — prepares one OpenAI Responses route for either transport
-- `openai-responses` — streams OpenAI Responses over WebSocket
-- `openai-responses` — rejects out-of-order and mismatched WebSocket response events
-- `openai-responses` — tolerates keepalive and provider notifications before response.created
-- `openai-responses` — continues a streamed tool call with only the new tool output
-- `openai-responses` — continues a tool call from authoritative completed response output
-- `openai-responses` — continues a custom tool call from completed response output
-- `openai-responses` — continues a promoted steer after assistant output with response-only text metadata
-- `openai-responses` — continues streamed reasoning when completion re-encrypts the same item
-- `openai-responses` — uses a full request when any non-input invariant changes
-- `openai-responses` — stages no checkpoint for incomplete or ID-less completion
-- `openai-responses` — classifies explicit continuation rejection for runner-owned recovery
-- `openai-responses` — retries an incremental send in full when the provider rejects it without a code
-- `openai-responses` — shapes the incremental send with the route continuation
-- `openai-responses` — builds WebSocket and HTTP fallback from the same final request
-- `openai-responses` — sanitizes outbound WebSocket requests and HTTP fallback bodies
-- `openai-responses` — builds xAI WebSocket requests without OpenAI handshake headers
-- `openai-responses` — builds Azure WebSocket requests with v1 URLs and the route's auth header
-- `openai-responses` — keeps unsupported Azure endpoints and API versions on HTTP
-- `openai-responses` — uses exactly one HTTP request when no WebSocket executor is supplied
-- `openai-responses` — closes a direct WebSocket execution after partial consumption
-- `openai-responses` — terminates WebSocket control events without waiting for the socket to close
-- `openai-responses` — marks post-send WebSocket failures with delivery state
-- `openai-responses` — fails immediately when WebSocket is already closed
-- `openai-responses` — keeps the system code when a WebSocket fails to connect
-- `openai-responses` — prepares the composed native continuation request
-
-</details>
 
 
 ### Configured Chat reasoning fields (8 tests)
