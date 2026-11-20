@@ -1957,7 +1957,8 @@ impl<'a> Scanner<'a> {
     /// An assignment `raw` (`value` with quotes removed) to a variable in
     /// [`COMMAND_VARS`], kept for [`command_var`].
     fn note_command_var(&self, raw: &str, value: &str) {
-        let name = raw.split(['=', '[']).next().unwrap_or(raw);
+        // The name as the shell reads it: `GIT_S\SH_COMMAND=x` is one.
+        let name = value.split(['=', '[']).next().unwrap_or(value);
         let name = name.trim_end_matches('+');
         if COMMAND_VARS.contains(&name) || name.starts_with("GIT_CONFIG_") {
             self.shared
@@ -2129,6 +2130,9 @@ impl<'a> Scanner<'a> {
                     .map(|w| w.replace(['\\', '\'', '"'], ""))
                     .filter(|w| !w.is_empty())
                     .collect();
+                // Assignments before the name: `(x=1 rm F)` runs `rm`.
+                let name = words.iter().position(|w| !assignment_word(w));
+                let words = words[name.unwrap_or(words.len())..].to_vec();
                 if words.is_empty() {
                     continue;
                 }
@@ -3582,7 +3586,7 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Wrapped> {
             "",
         ),
         "dtruss" => (&["-t", "-p", "-n"], ""),
-        "arch" => (&["-arch", "-d", "-e"], ""),
+        "arch" => (&["-arch", "--arch", "-d", "-e"], ""),
         "sandbox-exec" => (&["-f", "-n", "-p", "-D"], ""),
         "unshare" => (
             &[
@@ -4353,7 +4357,8 @@ fn command_var(
     depth: usize,
     out: &mut Analysis,
 ) -> Result<(), Opaque> {
-    let Some((name, raw_value)) = raw.split_once('=') else {
+    let (Some((_, raw_value)), Some((name, _))) = (raw.split_once('='), value.split_once('='))
+    else {
         return Ok(());
     };
     let name = name.trim_end_matches('+');
@@ -4401,7 +4406,8 @@ fn dash_name_matters(raw: &str, shared: &Shared) -> bool {
             '`' => return true,
             '$' => match c.get(i + 1) {
                 Some('(') if c.get(i + 2) == Some(&'(') => i += 2,
-                Some('(') | Some('\'') | Some('"') | Some('[') => return true,
+                // Zsh's `$=x`, `$~x`, `$^x`, `$+x` are expansions of `x`.
+                Some('(' | '\'' | '"' | '[' | '=' | '~' | '^' | '+') => return true,
                 Some('{') => {
                     let close = match c[i + 2..].iter().position(|&x| x == '}') {
                         Some(k) => i + 2 + k,
@@ -4743,6 +4749,7 @@ fn awk_tokens(p: &[char]) -> Option<Vec<AwkTok>> {
                 loop {
                     match p.get(i)? {
                         '"' => break,
+                        '\\' if p.get(i + 1) == Some(&'\n') => i += 2,
                         '\\' => {
                             let e = *p.get(i + 1)?;
                             s.push(match e {
@@ -5123,17 +5130,27 @@ fn sed_effects(s: &str, fx: &mut ProgramEffects) -> Result<(), ()> {
     }
 }
 
-/// The scripts of a `sed` command in `cooked`, as `(raw, text)`, read as
-/// GNU sed does (`bsd: false`: options anywhere, `-i` alone takes no
-/// suffix) or as BSD sed does (`-i SUFFIX`, options first). `None` when
-/// a script comes from a file the run computes, or `--sandbox` turns off
-/// commands and writes (an empty list).
-fn sed_scripts<'a>(
-    raw: &'a [String],
-    cooked: &'a [String],
-    bsd: bool,
-) -> Option<Vec<(&'a str, &'a str)>> {
+/// A `sed` command's arguments, read one way.
+#[derive(Default)]
+struct SedArgs<'a> {
+    /// Its scripts, as `(raw, text)`.
+    scripts: Vec<(&'a str, &'a str)>,
+    /// `--sandbox`: scripts can neither run commands nor write files.
+    sandbox: bool,
+    /// The files it reads, by index in the words.
+    files: Vec<usize>,
+    /// With `-i`, the backup suffix (empty for none): the files are
+    /// rewritten in place.
+    in_place: Option<String>,
+}
+
+/// The arguments of a `sed` command in `cooked`, read as GNU sed does
+/// (`bsd: false`: options anywhere, `-i` alone takes no suffix) or as BSD
+/// sed does (`-i SUFFIX`, options first). `None` when a script comes from
+/// a file the run computes.
+fn sed_scripts<'a>(raw: &'a [String], cooked: &'a [String], bsd: bool) -> Option<SedArgs<'a>> {
     let n = cooked.len();
+    let mut args = SedArgs::default();
     let mut scripts = Vec::new();
     let mut operands = Vec::new();
     let mut from_file = false;
@@ -5156,7 +5173,7 @@ fn sed_scripts<'a>(
             continue;
         }
         if w == "--sandbox" {
-            return Some(Vec::new());
+            args.sandbox = true;
         }
         if let Some(long) = w.strip_prefix("--") {
             let (name, value) = long
@@ -5179,6 +5196,7 @@ fn sed_scripts<'a>(
                     from_file = true;
                 }
                 ("line-length", None) => i += 1,
+                ("in-place", v) => args.in_place = Some(v.unwrap_or("").to_string()),
                 _ => {}
             }
             i += 1;
@@ -5209,23 +5227,36 @@ fn sed_scripts<'a>(
                     break;
                 }
                 'i' | 'I' if bsd => {
-                    if rest.is_empty() {
+                    let suffix = if rest.is_empty() {
                         i += 1;
-                    }
+                        cooked.get(i).cloned().unwrap_or_default()
+                    } else {
+                        rest
+                    };
+                    args.in_place = Some(suffix);
                     break;
                 }
-                'i' => break,
+                'i' => {
+                    args.in_place = Some(rest);
+                    break;
+                }
                 _ => {}
             }
         }
         i += 1;
     }
+    let mut files = &operands[..];
     if scripts.is_empty() && !from_file {
         if let Some(&k) = operands.first() {
             scripts.push((raw[k].as_str(), cooked[k].as_str()));
+            files = &operands[1..];
         }
     }
-    Some(scripts)
+    args.files = files.to_vec();
+    if !args.sandbox {
+        args.scripts = scripts;
+    }
+    Some(args)
 }
 
 /// Checks what an `awk` or `sed` program runs and writes. Program text the
@@ -5242,12 +5273,22 @@ fn program_effects(
     let mut fx = ProgramEffects::default();
     let mut unreadable = false;
     if base == "sed" {
+        let mut edited = Vec::new();
         for bsd in [false, true] {
-            let Some(scripts) = sed_scripts(raw, cooked, bsd) else {
+            let Some(args) = sed_scripts(raw, cooked, bsd) else {
                 unreadable = true;
                 continue;
             };
-            for (r, text) in scripts {
+            if let Some(suffix) = &args.in_place {
+                // `-i` rewrites each file, and with a suffix keeps a copy.
+                for &k in &args.files {
+                    edited.push((k, String::new()));
+                    if !suffix.is_empty() {
+                        edited.push((k, suffix.clone()));
+                    }
+                }
+            }
+            for (r, text) in args.scripts {
                 shared.charge(text.len());
                 if !is_static_word(r) {
                     unreadable = true;
@@ -5258,6 +5299,21 @@ fn program_effects(
                 if sed_effects(text, &mut fx).is_err() && !bsd && text.contains(['e', 'w', 'W']) {
                     unreadable = true;
                 }
+            }
+        }
+        edited.sort();
+        edited.dedup();
+        for (k, suffix) in edited {
+            if suffix.is_empty() {
+                push_write(out, &raw[k], &cooked[k], cwd);
+            } else {
+                // The copy's name joins the file's and the suffix's (`*`
+                // in a BSD suffix stands for the file's base name).
+                let static_name = is_static_word(&raw[k]) && !suffix.contains('*');
+                out.writes.push(Write {
+                    raw: format!("{}{suffix}", raw[k]),
+                    path: static_name.then(|| format!("{}{suffix}", cooked[k])),
+                });
             }
         }
     } else {
@@ -6812,6 +6868,12 @@ mod tests {
         assert_eq!(paths("sed 'w out' f"), [Some("out".to_string())]);
         assert_eq!(paths("sed 's/a/b/w out2' f"), [Some("out2".to_string())]);
         assert_eq!(paths("find . -fprint o"), [Some("o".to_string())]);
+        assert_eq!(paths("sed -i 's/a/b/' f"), [Some("f".to_string())]);
+        assert_eq!(
+            paths("sed -i.bak 's/a/b/' f"),
+            [Some("f".to_string()), Some("f.bak".to_string())]
+        );
+        assert!(paths("sed -n 1p f").is_empty());
     }
 
     #[test]

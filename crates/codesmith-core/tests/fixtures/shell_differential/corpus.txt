@@ -1630,6 +1630,9 @@ x='a[$(rm F)]';
  a=(1); echo ${=a[(e)x]}
 %%
 echo "${x-"'$\(rm  F)'"}"
+%% ---- a handler that recurses through a pipe forks without end: the
+%% harness's per-case process budget and sweep contain it
+command_not_found_handler() { rr|m F; }; nosuch
 %% ---- wrappers that run their argument (real where installed)
 taskset 1 rm F
 %%
@@ -1733,6 +1736,12 @@ sed -n '/x/{w out
 sed '1e rm F' f1
 %%
 sed -i '' 's/x/y/' f1
+%% the backup `-i SUFFIX` keeps is a write
+sed -i '""' 's/x/y/' f1
+%%
+sed -i.bak 's/x/y/' f1
+%%
+sed -i .orig -e 's/x/y/' f1
 %%
 find . -name f1 -fprint out
 %%
@@ -1751,6 +1760,13 @@ GIT_SSH_COMMAND='rm F'; export GIT_SSH_COMMAND; git ls-remote x:y
 env GIT_SSH_COMMAND='touch G' git ls-remote x:y
 %%
 GIT_PAGER='rm F' git -p version
+%% the name as the shell reads it
+export GIT_S\SH_COMMAND='rm F'; git ls-remote x:y
+%%
+G''IT_SSH_COMMAND='rm F' git ls-remote x:y
+%% awk joins a string continued by backslash-newline
+awk 'BEGIN { print "x" > "ou\
+t" }'
 %% ---- Zsh's short loops
 for x (F) rm $x
 %%
@@ -1786,3 +1802,14 @@ set -- rm; (( $1 F ))
 echo rm; (( $_ F ))
 %%
 i=0; (( $i < 1 )) && touch G
+%% Zsh reads text that is no arithmetic as subshells, assignments and all
+((] (\
+rm ]F)	 ; (touc=h G) ))
+%%
+((] ; (X=1 rm F) ))
+%%
+((] ; (X$=1 rm F) ))
+%%
+(("" ] |; <<(X=1 rm F) ))
+%%
+arch --arch arm64 touch G
