@@ -160,16 +160,20 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Store> {
+        // The busy timeout comes first so a second process opening a new
+        // database waits for the first instead of failing.
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(anyhow!("database schema {version} is newer than this codesmith understands ({SCHEMA_VERSION}); upgrade codesmith"));
         }
         if version < 1 {
+            // IF NOT EXISTS: two connections (`serve`'s scheduler and its
+            // first request) can both find a new database at version 0.
             conn.execute_batch(
-                "CREATE TABLE session (
+                "CREATE TABLE IF NOT EXISTS session (
                     id TEXT PRIMARY KEY,
                     directory TEXT NOT NULL,
                     title TEXT,
@@ -180,8 +184,8 @@ impl Store {
                     updated INTEGER NOT NULL,
                     usage TEXT NOT NULL DEFAULT '{}'
                 );
-                CREATE INDEX session_directory ON session(directory, updated);
-                CREATE TABLE record (
+                CREATE INDEX IF NOT EXISTS session_directory ON session(directory, updated);
+                CREATE TABLE IF NOT EXISTS record (
                     session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
                     seq INTEGER NOT NULL,
                     created INTEGER NOT NULL,
@@ -522,6 +526,22 @@ pub fn redo_target(entries: &[Entry]) -> Option<(i64, String)> {
 mod tests {
     use super::*;
     use codesmith_ai::{Part, Role};
+
+    /// Regression: a second process opening a new database while the first
+    /// was creating its tables failed with "table session already exists"
+    /// (`serve`'s scheduler and its first request did this).
+    #[test]
+    fn opening_a_database_another_opener_is_still_creating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        let first = Store::open(&path).unwrap();
+        first
+            .with_conn(|c| Ok(c.execute_batch("PRAGMA user_version = 0;")?))
+            .unwrap();
+        let second = Store::open(&path).unwrap();
+        second.create(&info("a", "/d", 1)).unwrap();
+        assert_eq!(first.get("a").unwrap().unwrap().id, "a");
+    }
 
     fn info(id: &str, dir: &str, updated: i64) -> Info {
         Info {
