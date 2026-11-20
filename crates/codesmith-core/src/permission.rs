@@ -30,6 +30,11 @@ pub struct Rule {
     /// or written to config.
     #[serde(skip)]
     pub builtin: bool,
+    /// A `tool.use` policy statement (see [`Policy`]): `resource` is an
+    /// `action:resource` pattern, and the statement can deny but never
+    /// grant. Not read from or written to config as a rule.
+    #[serde(skip)]
+    pub policy: Option<Arc<str>>,
 }
 
 impl Rule {
@@ -39,6 +44,7 @@ impl Rule {
             resource: resource.into(),
             effect,
             builtin: false,
+            policy: None,
         }
     }
 
@@ -47,6 +53,81 @@ impl Rule {
         self.builtin = true;
         self
     }
+}
+
+/// A policy statement from config (OpenCode's `ConfigPolicy`):
+/// `{"action": "tool.use", "resource": "shell:git push *", "effect":
+/// "deny", "message": "…"}`. For a permission request, each resource is
+/// matched as `action:resource` against the `tool.use` statements, the last
+/// match deciding; a deny refuses the request whatever the rules or saved
+/// approvals say (asking included), and an allow only lifts an earlier
+/// statement's deny: it never grants anything. Other actions
+/// (`provider.use`, `mcp.use`, …) are OpenCode's managed policies and are
+/// not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Policy {
+    pub action: String,
+    pub resource: String,
+    pub effect: PolicyEffect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyEffect {
+    Allow,
+    Deny,
+}
+
+/// What a policy deny says when it names no message (OpenCode's).
+pub const POLICY_MESSAGE: &str = "Blocked by configuration policy";
+
+impl Policy {
+    pub fn tool(effect: PolicyEffect, resource: &str) -> Policy {
+        Policy {
+            action: "tool.use".into(),
+            resource: resource.into(),
+            effect,
+            message: None,
+        }
+    }
+
+    /// The statement as a rule carried with an agent's rules, if it is a
+    /// `tool.use` one.
+    pub fn rule(&self) -> Option<Rule> {
+        (self.action == "tool.use").then(|| Rule {
+            action: "tool.use".into(),
+            resource: self.resource.clone(),
+            effect: match self.effect {
+                PolicyEffect::Allow => Effect::Allow,
+                PolicyEffect::Deny => Effect::Deny,
+            },
+            builtin: false,
+            policy: Some(self.message.as_deref().unwrap_or(POLICY_MESSAGE).into()),
+        })
+    }
+}
+
+/// The message of the policy statement that denies `action` on any of
+/// `resources` (see [`Policy`]), if one does.
+pub fn policy_denial(action: &str, resources: &[String], rules: &[Rule]) -> Option<String> {
+    resources
+        .iter()
+        .find_map(|r| policy_denies(action, r, &[rules]))
+}
+
+fn policy_denies(action: &str, resource: &str, layers: &[&[Rule]]) -> Option<String> {
+    let ic = ignores_case(action);
+    let key = format!("{action}:{resource}");
+    let last = layers
+        .iter()
+        .rev()
+        .flat_map(|l| l.iter().rev())
+        .filter(|r| r.policy.is_some())
+        .find(|r| wildcard::matches(&key, &r.resource, ic))?;
+    (last.effect == Effect::Deny)
+        .then(|| last.policy.as_deref().unwrap_or(POLICY_MESSAGE).to_string())
 }
 
 fn strictness(e: Effect) -> u8 {
@@ -66,8 +147,9 @@ fn ignores_case(action: &str) -> bool {
 }
 
 /// The effect of the last rule matching `action` and `resource`; `Ask` if
-/// none. When built-in agent rules are present, the stricter of that and the
-/// same evaluation without them.
+/// none. When built-in agent rules are present, the stricter of that and
+/// the same evaluation without them. Policy statements are not rules:
+/// [`Gate`] checks them first.
 pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
     evaluate_layers(action, resource, &[rules])
 }
@@ -76,7 +158,9 @@ pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
 fn evaluate_layers(action: &str, resource: &str, layers: &[&[Rule]]) -> Effect {
     let ic = ignores_case(action);
     let hit = |r: &&Rule| {
-        wildcard::matches(action, &r.action, false) && wildcard::matches(resource, &r.resource, ic)
+        r.policy.is_none()
+            && wildcard::matches(action, &r.action, false)
+            && wildcard::matches(resource, &r.resource, ic)
     };
     let newest_first = || layers.iter().rev().flat_map(|l| l.iter().rev());
     let all = newest_first()
@@ -160,6 +244,8 @@ impl Asker for Fixed {
 pub enum Denied {
     /// A rule denies it.
     Blocked { action: String, resource: String },
+    /// A policy statement denies it; its message.
+    Policy { message: String },
     /// The user declined.
     Declined { feedback: Option<String> },
 }
@@ -173,6 +259,7 @@ impl std::fmt::Display for Denied {
                     "Permission denied: a rule blocks {action} for {resource}"
                 )
             }
+            Denied::Policy { message } => write!(f, "Permission denied: {message}"),
             Denied::Declined { feedback: None } => write!(f, "The user declined this request."),
             Denied::Declined { feedback: Some(fb) } => {
                 write!(f, "The user declined this request and said: {fb}")
@@ -264,6 +351,9 @@ impl Gate {
     /// Allowed by rules alone, without asking. A configured deny wins over
     /// a saved approval, as in [`Gate::assert`].
     pub fn allows(&self, action: &str, resources: &[String]) -> bool {
+        if policy_denial(action, resources, &self.rules).is_some() {
+            return false;
+        }
         if resources
             .iter()
             .any(|r| evaluate(action, r, &self.rules) == Effect::Deny)
@@ -278,6 +368,9 @@ impl Gate {
     /// Used for follow-up requests the user already approved the start of,
     /// such as `webfetch` redirect targets (OpenCode's `assertNotDenied`).
     pub fn assert_not_denied(&self, action: &str, resources: &[String]) -> Result<(), Denied> {
+        if let Some(message) = policy_denial(action, resources, &self.rules) {
+            return Err(Denied::Policy { message });
+        }
         for r in resources {
             if evaluate(action, r, &self.rules) == Effect::Deny {
                 return Err(Denied::Blocked {
@@ -292,6 +385,9 @@ impl Gate {
     /// Allow, ask, or refuse. Configured denies are checked before saved
     /// approvals, so "always allow" can never override an explicit deny.
     pub fn assert(&self, req: &Request) -> Result<(), Denied> {
+        if let Some(message) = policy_denial(&req.action, &req.resources, &self.rules) {
+            return Err(Denied::Policy { message });
+        }
         for r in &req.resources {
             if evaluate(&req.action, r, &self.rules) == Effect::Deny {
                 return Err(Denied::Blocked {

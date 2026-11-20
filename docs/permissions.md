@@ -258,6 +258,36 @@ A [plugin](plugins.md) can answer a permission request in place of the
 user, but it is consulted only for requests that the rules would ask about,
 never for ones they deny.
 
+## Policies
+
+`policies` are deny-only statements over the rules, as in OpenCode. A
+`tool.use` statement names a permission as `action:resource`:
+
+```jsonc
+"policies": [
+  { "action": "tool.use", "resource": "shell:*", "effect": "deny" },
+  { "action": "tool.use", "resource": "shell:git *", "effect": "allow" },
+  { "action": "tool.use", "resource": "shell:git push *", "effect": "deny",
+    "message": "Pushing is done in CI" }
+]
+```
+
+Each resource of a request is matched against the statements, and the last
+match decides. A `deny` refuses the request whatever the rules say, before
+anyone is asked and over any saved approval, with its `message` (else
+"Blocked by configuration policy") as the reason. An `allow` only lifts an
+earlier statement's deny: it never grants anything, so with the statements
+above `git status` still asks if the rules ask. Compound shell commands are
+checked command by command, and paths match without case on macOS, as rules
+do. `{"action": "tool.use", "resource": "*", "effect": "deny"}` refuses
+every permission.
+
+Statements apply to every agent. Unlike `permissions`, an earlier config
+file's statements have the final say: a project's `codesmith.json` cannot
+lift a deny in your global config. OpenCode's other policy actions
+(`provider.use`, `mcp.use`, `integration.use`, …) belong to its managed
+and Console policies and are not read.
+
 ## Unattended runs
 
 [Automations](automations.md) run with nobody at the keyboard. Anything that

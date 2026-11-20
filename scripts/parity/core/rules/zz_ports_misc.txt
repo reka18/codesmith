@@ -37,3 +37,10 @@
 49 :: ported :: tests/oc_shell_select.rs::oc_shell_falls_back_for_terminal_only_shells_when_compatibility_is_required
 77 :: ported :: tests/oc_shell_select.rs::oc_shell_resolves_the_environment_shell_without_retaining_a_removed_executable
 93 :: ported :: tests/oc_shell_select.rs::oc_shell_rejects_blacklisted_shells_case_insensitively :: adapted: names compare case-insensitively on every platform
+@config/policy.test.ts
+85 :: ported :: tests/oc_policy.rs::oc_policy_preserves_last_match_precedence_for_tool_use_without_granting_approvals
+104 :: ported :: tests/oc_policy.rs::oc_policy_matches_tool_use_file_policies_without_case_where_file_systems_ignore_it_by_default :: adapted: an authored policy (organization policies are OpenCode Console's)
+161 :: ported :: tests/oc_policy.rs::oc_policy_denies_permissions_matched_as_action_resource
+180 :: ported :: tests/oc_policy.rs::oc_policy_turns_an_ask_into_a_deny_but_never_grants
+189 :: ported :: tests/oc_policy.rs::oc_policy_lets_a_later_allow_lift_an_earlier_broad_deny
+198 :: ported :: tests/oc_policy.rs::oc_policy_denies_every_permission_with_a_bare_wildcard

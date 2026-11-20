@@ -499,7 +499,8 @@ impl Host {
             .await
             .map_err(|_| PermissionError::Declined)?;
         r.map_err(|e| match e {
-            crate::permission::Denied::Blocked { .. } => PermissionError::Blocked(e.to_string()),
+            crate::permission::Denied::Blocked { .. }
+            | crate::permission::Denied::Policy { .. } => PermissionError::Blocked(e.to_string()),
             crate::permission::Denied::Declined { feedback: Some(f) } => {
                 PermissionError::Corrected(f)
             }

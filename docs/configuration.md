@@ -80,6 +80,7 @@ is parsed:
 | `title` | `true` | `false` names sessions after their first line, with no model request. See [Session titles](#session-titles). |
 | `shell` | `$SHELL`, else `/bin/zsh` on macOS and Bash (else `/bin/sh`) elsewhere | Shell the `shell` tool runs commands with (`<shell> -c`) and terminals start. A bare name is looked up on `PATH`; a shell that cannot be found falls back to the default, and so do Fish and Nushell for the `shell` tool, which needs POSIX `-c` scripts (terminals still start them). |
 | `providers` | built-ins | Providers and their models. See [Providers and models](#providers-and-models). |
+| `policies` | `[]` | Deny-only `tool.use` statements over the rules; an earlier file has the final say. See [policies](permissions.md#policies). |
 | `agents` | built-ins | Add or override agents. See [agents](agents-and-subagents.md#configuring-agents). |
 | `permissions` | see [defaults](permissions.md#defaults) | Ordered rules applied to every agent. They can't widen a built-in agent's own restrictions, and `agents.<id>.permissions` override them. See [where rules come from](permissions.md#where-rules-come-from). |
 | `instructions` | `[]` | Extra instruction files or globs. See [Instructions](#instructions). |

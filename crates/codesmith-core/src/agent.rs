@@ -325,6 +325,10 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
         agent.permissions.extend(c.permissions.iter().cloned());
     }
     agent.permissions.extend(config.overrides.iter().cloned());
+    // Policies deny whatever the rules say; they travel with the rules.
+    agent
+        .permissions
+        .extend(config.policies.iter().filter_map(|p| p.rule()));
     Some(agent)
 }
 

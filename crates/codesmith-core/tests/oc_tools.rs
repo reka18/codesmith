@@ -103,12 +103,7 @@ fn sorted_lines(s: &str) -> Vec<String> {
 }
 
 fn allow(action: &str) -> Rule {
-    Rule {
-        action: action.into(),
-        resource: "*".into(),
-        effect: Effect::Allow,
-        builtin: false,
-    }
+    Rule::new(action, "*", Effect::Allow)
 }
 
 // --- tool-search.test.ts ---

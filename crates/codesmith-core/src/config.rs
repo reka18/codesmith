@@ -54,6 +54,11 @@ pub struct Config {
     /// Shell for the `shell` tool; defaults to `$SHELL`, then `/bin/sh`.
     pub shell: Option<String>,
     pub permissions: Vec<Rule>,
+    /// Policy statements (OpenCode's `policies`): `tool.use` ones deny
+    /// permissions as `action:resource` and never grant; see
+    /// [`crate::permission::Policy`]. A later file's statements go before
+    /// an earlier file's, so the earlier file has the final say.
+    pub policies: Vec<crate::permission::Policy>,
     /// Rules applied after every agent's own rules, so they beat both the
     /// built-in and the configured agent rules. Set by the process, never
     /// read from config files: unattended automation runs put their denies
@@ -1039,6 +1044,16 @@ pub fn merge(base: &mut Value, top: Value) {
         (Value::Object(b), Value::Object(t)) => {
             for (k, v) in t {
                 match b.get_mut(&k) {
+                    // Earlier-loaded policy wins (OpenCode reverses its
+                    // documents): a later layer's statements go first.
+                    Some(Value::Array(existing)) if k == "policies" => {
+                        if let Value::Array(mut more) = v {
+                            more.append(existing);
+                            *existing = more;
+                        } else {
+                            b.insert(k, v);
+                        }
+                    }
                     Some(Value::Array(existing)) if APPEND.contains(&k.as_str()) => {
                         if let Value::Array(more) = v {
                             existing.extend(more);
