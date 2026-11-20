@@ -1159,6 +1159,224 @@ Fix the thing (and the other thing)
 It's done; don't worry.
 EOF
 )"
+%% ---- shell tables written through assignments
+aliases[q]='rm F'
+q
+%%
+aliases=(q 'rm F')
+q
+%%
+galiases[Q]='; rm F'
+echo Q
+%%
+functions[f]='rm F'; f
+%%
+functions=(f 'rm F'); f
+%%
+commands[ls]=$PWD/../bin/rm; ls F
+%%
+commands[ls]=../bin/rm; ls F
+%%
+typeset -A functions; functions[f]='rm F'; f
+%%
+BASH_CMDS[ls]=../bin/rm; ls F
+%%
+BASH_CMDS=([ls]=../bin/rm); ls F
+%%
+declare BASH_CMDS[ls]=../bin/rm; ls F
+%%
+BASH_ALIASES[q]='rm F'; shopt -s expand_aliases
+q
+%%
+nameddirs[x]=sub; cd ~x
+%%
+chpwd_functions=(rm); cd sub
+%%
+zshexit_functions=(rm)
+%%
+precmd_functions=(rm)
+%%
+TRAPEXIT() { rm F }
+%%
+zshexit() { rm F }
+%%
+chpwd() { rm F }; cd sub
+%%
+x=rm; chpwd_functions+=($x); cd sub
+%% ---- wrapper and shell option parsing
+xargs -R 1 -I {} rm {} <<< F
+%%
+xargs -S 255 -I {} rm {} <<< F
+%%
+xargs -J % rm % <<< F
+%%
+xargs -0 rm < /dev/null
+%%
+xargs -r rm <<< F
+%%
+xargs -n 1 -P 2 rm <<< F
+%%
+xargs -L 1 rm <<< F
+%%
+xargs -E x rm <<< F
+%%
+xargs -s 100 rm <<< F
+%%
+xargs -t rm <<< F
+%%
+xargs -o rm <<< F
+%%
+xargs --null rm < /dev/null
+%%
+env -iS 'rm F'
+%%
+env -vS 'rm F'
+%%
+env -S'rm F'
+%%
+env --split-string='rm F'
+%%
+env -i -S 'rm F'
+%%
+env -P ../bin rm F
+%%
+nice -n 5 -- rm F
+%%
+nohup -- rm F
+%%
+timeout --foreground 1 rm F
+%%
+timeout -k 1 2 rm F
+%%
+timeout -s9 1 rm F
+%%
+timeout --signal=KILL 1 rm F
+%%
+timeout --preserve-status 1 rm F
+%%
+timeout 1s rm F
+%%
+command -pV rm
+%%
+bash -c -- 'rm F'
+%%
+bash -c 'rm F' -- x
+%%
+bash -xec 'rm F'
+%%
+bash -o posix -c 'rm F'
+%%
+bash -O extglob -c 'rm F'
+%%
+bash +x -c 'rm F'
+%%
+bash --posix -c 'rm F'
+%%
+bash --noprofile --norc -c 'rm F'
+%%
+zsh -fc 'rm F'
+%%
+zsh -o shwordsplit -c 'rm F'
+%%
+zsh --no-rcs -c 'rm F'
+%%
+sh -ec 'rm F'
+%%
+sh -c 'rm F' sh x
+%%
+b\ash -c 'rm F'
+%%
+ba''sh -c 'rm F'
+%%
+'bash' -c 'rm F'
+%%
+"$0" -c 'rm F'
+%%
+$SHELL -c 'rm F'
+%%
+${BASH:-bash} -c 'rm F'
+%%
+exec bash -c 'rm F'
+%%
+command bash -c 'rm F'
+%%
+env -i bash -c 'rm F'
+%%
+trap 'rm F' EXIT INT
+%%
+trap -- 'rm F' 0 1
+%%
+trap 'rm F' $x EXIT
+%%
+eval $'rm\nF'
+%%
+eval $'\x24(rm F)'
+%%
+eval "$(printf 'rm F')"
+%%
+eval -- 'rm F'
+%%
+. /dev/fd/0 <<< 'rm F'
+%%
+source /dev/fd/3 3<<< 'rm F'
+%%
+source -- <(echo rm F)
+%% ---- lexer corners
+!(rm F)
+%%
+{rm F;}
+%%
+{ rm F } always { touch G }
+%%
+for ((i=0;i<1;i++)) { rm F; }
+%%
+[[ a < $(rm F) ]]
+%%
+((rm F) )
+%%
+$((rm F) )
+%%
+case esac in esac) rm F;; esac
+%%
+case x in x) rm F
+esac
+%%
+for x in; do rm F; done
+%%
+for x
+in a; do rm F; done
+%%
+x=$(cat <<EOF)
+$(rm F)
+EOF
+%%
+echo x;#$(rm F)
+rm F
+%%
+echo x#;rm F
+%%
+cat <<EOF
+EOF
+$(rm F)
+EOF
+%%
+cat <<'E'OF
+$(rm F)
+EOF
+%%
+cat << EOF
+$(rm F)
+EOF
+%%
+cat <<"$x"
+$(rm F)
+$x
+%%
+let 'x=$(rm F)'
+%%
+x='$(rm F)'; echo $((x))
+%%
+declare -i x='a[$(rm F)]'
 %% ---- functions with other compound bodies
 f() for x in 1; do rm F; done; f
 %%

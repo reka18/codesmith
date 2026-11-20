@@ -222,6 +222,33 @@ const SHELL_EVALUATED: [&str; 21] = [
     "FCEDIT",
 ];
 
+/// Variables that are the shell's own tables of what names run: Bash's
+/// command hash and aliases, Zsh's `zsh/parameter` arrays and hook lists.
+fn shell_table(name: &str) -> bool {
+    const TABLES: [&str; 19] = [
+        "BASH_CMDS",
+        "BASH_ALIASES",
+        "aliases",
+        "galiases",
+        "saliases",
+        "dis_aliases",
+        "dis_galiases",
+        "dis_saliases",
+        "functions",
+        "dis_functions",
+        "functions_source",
+        "commands",
+        "builtins",
+        "dis_builtins",
+        "reswords",
+        "dis_reswords",
+        "nameddirs",
+        "userdirs",
+        "options",
+    ];
+    TABLES.contains(&name) || name.ends_with("_functions")
+}
+
 const TERMINATORS: [&str; 7] = ["then", "elif", "else", "fi", "do", "done", "esac"];
 const DECLARATIONS: [&str; 7] = [
     "declare", "typeset", "export", "readonly", "local", "unset", "unsetenv",
@@ -1198,6 +1225,7 @@ impl<'a> Scanner<'a> {
         let saved_peek = self.peeked.take();
         let saved_dquote = std::mem::take(&mut self.in_dquote);
         let body = self.pos;
+        let pending = self.heredocs.len();
         self.depth += 1;
         let result = self.list();
         self.depth -= 1;
@@ -1207,6 +1235,11 @@ impl<'a> Scanner<'a> {
         let (_, stop) = result?;
         if stop != Stop::RParen {
             return Err("command-substitution");
+        }
+        if self.heredocs.len() > pending {
+            // `$(cat <<X)` with the body after the `)`: Zsh and Bash read it
+            // differently.
+            return Err("heredoc");
         }
         let Tok::Op(Op::RParen, close) = self.next()? else {
             unreachable!()
@@ -1785,6 +1818,10 @@ impl<'a> Scanner<'a> {
         if SHELL_EVALUATED.contains(&name) {
             self.flags.sink = true;
         }
+        if shell_table(name.split('[').next().unwrap_or(name)) {
+            // `BASH_CMDS[ls]=path`, Zsh `functions[f]=code`: what a name runs.
+            self.flags.eval();
+        }
         if matches!(name, "NULLCMD" | "READNULLCMD") {
             // Zsh runs it for a bare redirect: `NULLCMD=rm; >x`.
             self.flags.eval();
@@ -1849,6 +1886,12 @@ impl<'a> Scanner<'a> {
             }
             "declare" | "typeset" | "local" | "export" | "readonly" | "unset" | "integer"
             | "float" | "read" | "mapfile" | "readarray" | "getopts" | "vared" | "unsetenv" => {
+                if args.iter().any(|w| {
+                    let n = w.value.split(['=', '[']).next().unwrap_or("");
+                    !w.value.starts_with(['-', '+']) && shell_table(n.trim_end_matches('+'))
+                }) {
+                    self.flags.eval();
+                }
                 let integer = ["declare", "typeset", "local"].contains(&name)
                     && args
                         .iter()
@@ -1881,7 +1924,9 @@ impl<'a> Scanner<'a> {
             {
                 self.flags.eval()
             }
-            "enable" | "setopt" | "emulate" | "shopt" => self.flags.eval(),
+            "enable" | "setopt" | "unsetopt" | "emulate" | "shopt" => self.flags.eval(),
+            // Zsh `set -A name values` assigns an array (`set -A functions ...`).
+            "set" if args.iter().any(|w| w.value == "-A" || w.value == "+A") => self.flags.eval(),
             _ => {}
         }
         // Text only known at run time.
@@ -2464,7 +2509,10 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
         Some(cooked[from..].join(" "))
     };
     match base {
-        "eval" => Some(static_join(1).or_else(|| (cooked.len() == 1).then(String::new))),
+        "eval" => {
+            let from = 1 + usize::from(cooked.get(1).is_some_and(|w| w == "--"));
+            Some(static_join(from).or_else(|| (cooked.len() == from).then(String::new)))
+        }
         "source" | "." => {
             let i = 1 + usize::from(cooked.get(1).is_some_and(|w| w == "--"));
             raw.get(i)
@@ -2603,7 +2651,8 @@ fn computed_source(raw: &str) -> bool {
 fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     // Options that take a separate argument, per wrapper.
     let with_arg: &[&str] = match base {
-        "env" => &["-u", "--unset", "-C", "--chdir"],
+        // `-P altpath` is BSD's.
+        "env" => &["-u", "--unset", "-C", "--chdir", "-P"],
         "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "caffeinate" | "noglob"
         | "nocorrect" | "repeat" | "coproc" => &[],
         "exec" => &["-a"],
@@ -2617,8 +2666,12 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
             "--chdir", "--prompt", "--host",
         ],
         "doas" => &["-u", "-C"],
+        // `-J`, `-R`, `-S` are BSD's.
         "xargs" => &[
             "-I",
+            "-J",
+            "-R",
+            "-S",
             "-L",
             "-n",
             "-P",
@@ -4158,6 +4211,19 @@ mod tests {
             "echo $(cat <<EOF\n)\nrm F\nEOF\n)",
             "echo \"$(cat <<'EOF'\n)\"; rm F; echo \"(\nEOF\n)\"",
             "echo \"$(echo ${x%)}\"; rm F; \": )\"",
+            "BASH_CMDS[ls]=../bin/rm; ls F",
+            "BASH_CMDS=([ls]=../bin/rm); ls F",
+            "declare BASH_CMDS[ls]=../bin/rm; ls F",
+            "commands[ls]=../bin/rm; ls F",
+            "functions[f]='rm F'; f",
+            "functions=(f 'rm F'); f",
+            "set -A functions f 'rm F'; f",
+            "chpwd_functions=(rm); cd sub",
+            "x=$(cat <<EOF)\nbody\nEOF\nrm F",
+            "env -P ../bin rm F",
+            "xargs -J % rm % <<< F",
+            "xargs -R 1 -I {} rm {} <<< F",
+            "eval -- 'rm F'",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
