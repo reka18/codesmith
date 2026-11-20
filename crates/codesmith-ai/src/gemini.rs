@@ -84,7 +84,19 @@ fn parts(m: &Message, omit_ids: bool, legacy: bool, pending: &mut Vec<Value>) ->
     let mut signed = false;
     for p in &m.parts {
         match p {
-            Part::Text(t) if !t.is_empty() => out.push(json!({"text": t.as_str()})),
+            // Visible text goes back with the signature Gemini gave it (an
+            // empty signed part too).
+            Part::Text(t) => {
+                let sig = t
+                    .meta_for(Protocol::GoogleGemini)
+                    .and_then(|m| m.signature.as_deref())
+                    .filter(|_| m.role == Role::Assistant);
+                match sig {
+                    Some(sig) => out.push(json!({"text": t.as_str(), "thoughtSignature": sig})),
+                    None if !t.is_empty() => out.push(json!({"text": t.as_str()})),
+                    None => {}
+                }
+            }
             // Thoughts go back only with the signature Gemini gave them.
             Part::Reasoning(r) if m.role == Role::Assistant => {
                 if let Some(sig) = r
@@ -362,8 +374,9 @@ pub struct State {
     /// The open thought block's id, and the signature it has so far.
     reasoning: Option<String>,
     signature: Option<String>,
-    /// The open text block's id.
+    /// The open text block's id, and the signature its parts carried.
     text: Option<String>,
+    text_signature: Option<String>,
     /// Blocks of each kind so far, for ids.
     texts: usize,
     thoughts: usize,
@@ -404,9 +417,15 @@ impl State {
         }
     }
 
+    /// Close an open text block; signed text gets its signature.
     fn end_text(&mut self, out: &mut Vec<Event>) {
         if let Some(id) = self.text.take() {
             out.push(Event::TextEnd(id));
+            if let Some(sig) = self.text_signature.take() {
+                let mut meta = ReasoningMeta::of(Protocol::GoogleGemini);
+                meta.signature = Some(sig);
+                out.push(Event::PartMeta(meta));
+            }
         }
     }
 
@@ -673,7 +692,15 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
                     .cloned()
                     .unwrap_or_else(|| json!({})),
             });
-        } else if let Some(t) = p["text"].as_str().filter(|t| !t.is_empty()) {
+        } else if let Some(t) = p["text"].as_str() {
+            // Visible text may be signed, even when empty (a signature that
+            // closes the block).
+            if let Some(s) = p["thoughtSignature"].as_str().filter(|s| !s.is_empty()) {
+                state.text_signature = Some(s.to_string());
+            }
+            if t.is_empty() {
+                continue;
+            }
             state.end_thinking(&mut out);
             if state.text.is_none() {
                 let id = state.next_id(true);

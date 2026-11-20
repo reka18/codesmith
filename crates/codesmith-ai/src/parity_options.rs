@@ -529,16 +529,21 @@ fn anthropic_reasoning_replay() {
             let r = req("claude-sonnet-4-5", vec![asst(vec![thinking("unsigned reasoning")])]);
             assert_eq!(anthropic::body(&r)["messages"], json!([]));
         }),
-        ("anthropic-messages :: infers empty-signature compatibility across Kimi providers (by endpoint and model)", || {
-            for (url, model) in [
-                ("https://api.moonshot.ai/anthropic", "kimi-k2.6"),
-                ("https://api.kimi.com/coding/v1/", "k3"),
-                ("https://compatible.test/v1/", "qwen3.8-flash"),
-                ("https://compatible.test/v1/", "minimax-m3"),
+        ("anthropic-messages :: infers empty-signature compatibility across Kimi providers", || {
+            for (name, url, model) in [
+                ("kimi-for-coding", "https://compatible.test/v1/", "k3"),
+                ("moonshotai", "https://api.moonshot.ai/anthropic", "kimi-k2.6"),
+                ("opencode", "https://compatible.test/v1/", "qwen3.8-flash"),
+                ("opencode-go", "https://compatible.test/v1/", "minimax-m3"),
             ] {
+                let p = Provider {
+                    name: name.into(),
+                    base_url: url.into(),
+                    ..Default::default()
+                };
                 let r = req(model, vec![asst(vec![thinking("unsigned reasoning")])]);
                 assert_eq!(
-                    anthropic::body_for(&r, url)["messages"],
+                    anthropic::body_with(&r, &p)["messages"],
                     json!([{"role": "assistant", "content": [{"type": "thinking", "thinking": "unsigned reasoning", "signature": ""}]}]),
                     "{model}"
                 );

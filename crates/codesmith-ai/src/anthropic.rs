@@ -25,11 +25,20 @@ const DEFAULT_EFFORT: &str = "high";
 
 /// Whether unsigned reasoning must be dropped rather than replayed with an
 /// empty signature (after OpenCode's `requireThinkingSignature`): Anthropic
-/// rejects it, but Kimi, MiMo, Qwen and MiniMax servers accept it.
-pub fn require_signature(base_url: &str, model: &str) -> bool {
-    let url = base_url.to_ascii_lowercase();
+/// rejects it, but Kimi, MiMo, Qwen and MiniMax servers accept it. An
+/// explicit `requireSignature` compatibility setting wins.
+pub fn require_signature(p: &Provider, model: &str) -> bool {
+    if let Some(r) = p.compat.require_signature {
+        return r;
+    }
+    let url = p.base_url.to_ascii_lowercase();
     let m = model.to_ascii_lowercase();
-    !(m.starts_with("kimi-")
+    let name = p.name.to_ascii_lowercase();
+    !(matches!(
+        name.as_str(),
+        "kimi-for-coding" | "moonshotai" | "moonshotai-cn"
+    ) || name.contains("xiaomi")
+        || m.starts_with("kimi-")
         || url.contains("api.kimi.com/coding")
         || url.contains("api.moonshot.ai/anthropic")
         || url.contains("api.moonshot.cn/anthropic")
@@ -496,6 +505,16 @@ pub fn body(req: &Request) -> Value {
     body_for(req, "")
 }
 
+/// The request body for a server at `base_url`, with nothing configured.
+#[cfg(test)]
+pub fn body_for(req: &Request, base_url: &str) -> Value {
+    let p = Provider {
+        base_url: base_url.into(),
+        ..Default::default()
+    };
+    body_with(req, &p)
+}
+
 /// A reasoning part as a thinking block (after OpenCode's lowering): signed
 /// thinking with its signature, redacted thinking as `redacted_thinking`,
 /// and unsigned text with an empty signature where the server accepts it.
@@ -608,9 +627,9 @@ fn hosted_blocks(h: &crate::Hosted) -> Vec<Value> {
     }
 }
 
-/// The request body for a server at `base_url`.
-pub fn body_for(req: &Request, base_url: &str) -> Value {
-    let require_signature = require_signature(base_url, &req.model);
+/// The request body for provider `p`.
+pub fn body_with(req: &Request, p: &Provider) -> Value {
+    let require_signature = require_signature(p, &req.model);
     let mut messages: Vec<Value> = Vec::new();
     // System updates on models that take them natively are held until the
     // next assistant turn (or the end), the nearest spot after a user turn
@@ -692,7 +711,7 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
         }
     }
     release(&mut messages, &mut held);
-    if base_url.to_ascii_lowercase().contains("api.meta.ai") {
+    if p.base_url.to_ascii_lowercase().contains("api.meta.ai") {
         hoist_videos(&mut messages);
     }
     // Tool results must lead their user turn.
@@ -1281,7 +1300,7 @@ pub(crate) fn request(
     client: &reqwest::Client,
     req: &Request,
 ) -> reqwest::RequestBuilder {
-    let body = body_for(req, &p.base_url);
+    let body = body_with(req, p);
     let mut h = vec![("anthropic-version".to_string(), VERSION.to_string())];
     h.extend(headers(p, &body));
     p.json_post(client, "messages", h, &body)

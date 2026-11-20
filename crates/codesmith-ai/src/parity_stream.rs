@@ -303,9 +303,10 @@ fn block_lifecycle() {
                     collect(&evs),
                     [
                         Part::Reasoning(Reasoning::new("A", sig("reasoning_sig_a"))),
-                        Part::Text("X".into()),
+                        // Each text part keeps its own signature.
+                        Part::Text(crate::Text::new("X", sig("text_sig_x"))),
                         Part::Reasoning(Reasoning::new("B", sig("reasoning_sig_b"))),
-                        Part::Text("Y".into()),
+                        Part::Text(crate::Text::new("Y", sig("text_sig_y"))),
                     ]
                 );
             },
