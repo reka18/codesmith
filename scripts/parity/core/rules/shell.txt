@@ -1,15 +1,9 @@
 @persistent-pty-daemon.test.ts
-* :: feature :: PTY Sessions :: persistent PTY daemon
+* :: feature :: Shell Daemon :: the process daemon itself (discovery, registrations, protocol versions, adoption)
 @persistent-pty-session.test.ts
-* :: feature :: PTY Sessions :: persistent terminals
-@pty/info-schema.test.ts
-* :: feature :: PTY Sessions :: PTY info schema
-@pty/protocol.test.ts
-* :: feature :: PTY Sessions :: PTY wire protocol
-@pty/pty-session.test.ts
-* :: feature :: PTY Sessions :: PTY sessions and attachments
-@pty/ticket.test.ts
-* :: feature :: PTY Sessions :: PTY access tickets
+62 :: design :: deliberate :: removing an in-process terminal cannot fail, so nothing is left stuck to block later cleanups
+125,284 :: feature :: Shell Daemon :: handing the daemon's processes over to the next server
+153,202,224 :: feature :: Shell Daemon :: commands run as the daemon's pipe processes
 
 @process/process.test.ts
 * :: design :: effect-internal :: OpenCode's Effect process wrapper (CodeSmith uses tokio::process directly)

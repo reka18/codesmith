@@ -36,7 +36,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool registry, schemas, placement | 100 | 1 | 0 | 25 | 53 | 21 | 0 |
 | Media tools | 39 | 0 | 0 | 24 | 9 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
-| Shell tool and runtime | 207 | 66 | 2 | 67 | 57 | 15 | 0 |
+| Shell tool and runtime | 207 | 87 | 2 | 45 | 58 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 90 | 0 | 11 | 50 | 26 | 0 |
 | Agents | 65 | 4 | 0 | 42 | 11 | 8 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **953** | **15** | **883** | **2334** | **1403** | **0** |
+| **Total** | **5588** | **974** | **15** | **861** | **2335** | **1403** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,16 +78,15 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (883 cases in 66 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (861 cases in 65 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 154 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
-| [PTY Sessions](#pty-sessions) | 38 | persistent PTY daemon; persistent terminals; … |
+| [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
-| [Shell Daemon](#shell-daemon) | 23 | commands that outlive the server process in a daemon; foreground calls settled across a server restart; … |
 | [Markdown Agent Files](#markdown-agent-files) | 22 | agents defined as Markdown files with frontmatter (and legacy fields); Markdown agent fields |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
 | [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
@@ -464,9 +463,9 @@ Missing features, by how many OpenCode test cases each would unlock (883 cases i
 - `plugin/provider/claude-agent/tools/tools.test.ts`: execution failures and denied permissions stay errors, and JSON stays intact
 - `plugin/provider/claude-agent/tools/tools.test.ts`: tool media remains content blocks and does not consume a newly queued user message
 
-### PTY Sessions
+### Shell Daemon
 
-38 cases.
+39 cases.
 
 - `persistent-pty-daemon.test.ts`: rediscovers a same-protocol daemon after its registration rotates
 - `persistent-pty-daemon.test.ts`: rediscovers a rotated registration when acquiring a subscription
@@ -479,33 +478,32 @@ Missing features, by how many OpenCode test cases each would unlock (883 cases i
 - `persistent-pty-daemon.test.ts`: starts fresh instead of failing when an inherited registration is gone or expired
 - `persistent-pty-daemon.test.ts`: stops a discovered inherited daemon when adoption fails
 - `persistent-pty-daemon.test.ts`: gives up at once on a daemon binary that speaks another protocol, and never starts it again
-- `persistent-pty-session.test.ts`: removes a deleted session's terminals
-- `persistent-pty-session.test.ts`: keeps cleaning up later deletions after a terminal fails to stop
-- `persistent-pty-session.test.ts`: renames a terminal, publishes the update and clears the user title
 - `persistent-pty-session.test.ts`: knows a handoff is prepared until a shutdown or until its ticket expires
 - `persistent-pty-session.test.ts`: creates, inspects, signals and waits for a pipe process
 - `persistent-pty-session.test.ts`: keeps pipe processes and terminals apart
 - `persistent-pty-session.test.ts`: reports daemon rejections as request errors and a terminated wait as one
 - `persistent-pty-session.test.ts`: prepares a handoff more than once on the same owner connection
-- `pty/info-schema.test.ts`: accepts pid 0 (Windows ConPTY assigns the pid asynchronously)
-- `pty/info-schema.test.ts`: accepts a positive pid
-- `pty/info-schema.test.ts`: rejects a negative pid
-- `pty/info-schema.test.ts`: accepts an exit code for retained exited sessions
-- `pty/protocol.test.ts`: drops invalid binary input frames and decodes valid ones
-- `pty/protocol.test.ts`: encodes the cursor as a 0x00-prefixed JSON control frame
-- `pty/protocol.test.ts`: splits replay into bounded frames
-- `pty/pty-session.test.ts`: returns typed not found errors for missing sessions
-- `pty/pty-session.test.ts`: retains exited sessions until removed
-- `pty/pty-session.test.ts`: replays buffered output and streams live output to attachments
-- `pty/pty-session.test.ts`: stops delivering output after detach
-- `pty/pty-session.test.ts`: isolates output between sessions
-- `pty/pty-session.test.ts`: notifies attachments with the exit code and rejects attach after exit
-- `pty/pty-session.test.ts`: defaults command, login args, and cwd from shell selection and location
-- `pty/ticket.test.ts`: consumes tickets once
-- `pty/ticket.test.ts`: rejects tickets scoped to a different request
-- `pty/ticket.test.ts`: rejects tickets after the TTL elapses
-- `pty/ticket.test.ts`: rejects tickets scoped to a different workspace
-- `pty/ticket.test.ts`: keeps PTY and client MCP targets apart
+- `shell-daemon.test.ts`: runs a command with the server's environment, an absolute cwd and its metadata
+- `shell-daemon.test.ts`: pages shell output at UTF-8 boundaries with byte cursors
+- `shell-daemon.test.ts`: retries an incomplete live character and consumes malformed bytes at exit
+- `shell-daemon.test.ts`: counts lines like the spawner and reads only what reached the file after a write error
+- `shell-daemon.test.ts`: bounds what it reads to number lines the daemon has not counted yet
+- `shell-daemon.test.ts`: reports a command lost with the daemon as killed, with what it wrote
+- `shell-daemon.test.ts`: records successful and failed exits without signalling a finished command
+- `shell-daemon.test.ts`: recreates the output directory removed while the Location is open
+- `shell-daemon.test.ts`: fails a command the daemon rejected instead of spawning it
+- `shell-daemon.test.ts`: stops a timed-out command with SIGTERM, then SIGKILL after the grace period, and keeps it
+- `shell-daemon.test.ts`: forgets a command in the daemon before deleting its file, on remove and on eviction
+- `shell-daemon.test.ts`: takes its commands back after a restart and leaves other Locations' alone
+- `shell-daemon.test.ts`: a Location closed while the server runs keeps enforcing its commands' timeouts
+- `shell-daemon.test.ts`: a closed Location and its replacement see the same commands, with one timer and one report each
+- `shell-daemon.test.ts`: finishes taking a Location's commands back even if the call that started it is interrupted
+- `shell-daemon.test.ts`: the sweep keeps a running command's file, and deletes a finished one's file and forgets it
+- `shell-daemon.test.ts`: the spawner recreates the output directory removed while the Location is open
+- `shell-daemon.test.ts`: starts the daemon on the first command, never on boot or sweep, and runs it with the server's environment
+- `shell-restart.test.ts`: settles a foreground call ${finished ? "whose command finished during the restart" : "whose command still runs"} and resumes its session (2 cases)
+- `shell-restart.test.ts`: stops a command ${starting ? "still being created" : "a foreground call waits on"} when the server shuts down without a handoff (2 cases)
+- `shell-retention.test.ts`: eviction makes progress past an already-removed shell
 
 ### ChatGPT Subscription Login
 
@@ -539,32 +537,6 @@ Missing features, by how many OpenCode test cases each would unlock (883 cases i
 - `plugin/provider-openai.test.ts`: reloads providers on a switch only when the ChatGPT login changes
 - `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
 - `session-error.test.ts`: types the ChatGPT workspace usage limit
-
-### Shell Daemon
-
-23 cases.
-
-- `shell-daemon.test.ts`: runs a command with the server's environment, an absolute cwd and its metadata
-- `shell-daemon.test.ts`: pages shell output at UTF-8 boundaries with byte cursors
-- `shell-daemon.test.ts`: retries an incomplete live character and consumes malformed bytes at exit
-- `shell-daemon.test.ts`: counts lines like the spawner and reads only what reached the file after a write error
-- `shell-daemon.test.ts`: bounds what it reads to number lines the daemon has not counted yet
-- `shell-daemon.test.ts`: reports a command lost with the daemon as killed, with what it wrote
-- `shell-daemon.test.ts`: records successful and failed exits without signalling a finished command
-- `shell-daemon.test.ts`: recreates the output directory removed while the Location is open
-- `shell-daemon.test.ts`: fails a command the daemon rejected instead of spawning it
-- `shell-daemon.test.ts`: stops a timed-out command with SIGTERM, then SIGKILL after the grace period, and keeps it
-- `shell-daemon.test.ts`: forgets a command in the daemon before deleting its file, on remove and on eviction
-- `shell-daemon.test.ts`: takes its commands back after a restart and leaves other Locations' alone
-- `shell-daemon.test.ts`: a Location closed while the server runs keeps enforcing its commands' timeouts
-- `shell-daemon.test.ts`: a closed Location and its replacement see the same commands, with one timer and one report each
-- `shell-daemon.test.ts`: finishes taking a Location's commands back even if the call that started it is interrupted
-- `shell-daemon.test.ts`: the sweep keeps a running command's file, and deletes a finished one's file and forgets it
-- `shell-daemon.test.ts`: the spawner recreates the output directory removed while the Location is open
-- `shell-daemon.test.ts`: starts the daemon on the first command, never on boot or sweep, and runs it with the server's environment
-- `shell-restart.test.ts`: settles a foreground call ${finished ? "whose command finished during the restart" : "whose command still runs"} and resumes its session (2 cases)
-- `shell-restart.test.ts`: stops a command ${starting ? "still being created" : "a foreground call waits on"} when the server shuts down without a handoff (2 cases)
-- `shell-retention.test.ts`: eviction makes progress past an already-removed shell
 
 ### Markdown Agent Files
 
@@ -2159,7 +2131,7 @@ Tests for behaviour CodeSmith already has but no test pins (1403 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 539 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 540 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 312 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
@@ -2860,12 +2832,49 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell tool and runtime (125 of 207)</summary>
+<details><summary>Shell tool and runtime (147 of 207)</summary>
 
+
+**`persistent-pty-session.test.ts`**
+
+- P removes a deleted session's terminals — `tests/oc_pty.rs::oc_persistent_pty_removes_a_deleted_sessions_terminals`
+- D keeps cleaning up later deletions after a terminal fails to stop — deliberate: removing an in-process terminal cannot fail, so nothing is left stuck to block later cleanups
+- P renames a terminal, publishes the update and clears the user title — `tests/oc_pty.rs::oc_persistent_pty_renames_a_terminal_publishes_the_update_and_clears_the_user_title` (adapted: the update event carries the terminal, whose sessionId names the session)
 
 **`process/process.test.ts`**
 
 - D captures stdout and exit code zero · maps command setup failures to AppProcessError · captures stdout and stderr in emission order · non-zero exit returns RunResult; caller can require success · requireSuccess fails on non-zero exit · requireSuccess succeeds on exit 0 · requireExitIn allowlists multiple exit codes · truncates stdout when maxOutputBytes is set · truncates stderr when maxErrorBytes is set · result includes command description · timeout cleans up the scoped child process · fiber interruption cleans up the scoped child process after readiness · string returns stdout as string · lines returns the platform's array of lines · feeds a string to stdin and returns it on stdout · feeds a Uint8Array to stdin · feeds a Stream of Uint8Array chunks to stdin · completes correctly with empty input · carries existing Command options like env · carries existing Command options like cwd · maps streaming command setup failures to AppProcessError · emits lines incrementally and ends cleanly on exit 0 · okExitCodes determines whether a non-zero exit fails the stream · includes stderr in output while retaining capped failure diagnostics · without okExitCodes, never fails on exit code · AbortSignal interrupts the stream · returns the platform ChildProcessHandle for advanced use — effect-internal: OpenCode's Effect process wrapper (CodeSmith uses tokio::process directly)
+
+**`pty/info-schema.test.ts`**
+
+- P accepts pid 0 (Windows ConPTY assigns the pid asynchronously) — `tests/oc_pty.rs::oc_info_accepts_pid_0`
+- P accepts a positive pid — `tests/oc_pty.rs::oc_info_accepts_a_positive_pid`
+- P rejects a negative pid — `tests/oc_pty.rs::oc_info_rejects_a_negative_pid`
+- P accepts an exit code for retained exited sessions — `tests/oc_pty.rs::oc_info_accepts_an_exit_code_for_retained_exited_sessions`
+
+**`pty/protocol.test.ts`**
+
+- P drops invalid binary input frames and decodes valid ones — `tests/oc_pty.rs::oc_protocol_drops_invalid_binary_input_frames_and_decodes_valid_ones`
+- P encodes the cursor as a 0x00-prefixed JSON control frame — `tests/oc_pty.rs::oc_protocol_encodes_the_cursor_as_a_0x00_prefixed_json_control_frame`
+- P splits replay into bounded frames — `tests/oc_pty.rs::oc_protocol_splits_replay_into_bounded_frames` (adapted: frames are at most 64 KiB of UTF-8, cut on character boundaries)
+
+**`pty/pty-session.test.ts`**
+
+- P returns typed not found errors for missing sessions — `tests/oc_pty.rs::oc_pty_returns_typed_not_found_errors_for_missing_sessions`
+- P retains exited sessions until removed — `tests/oc_pty.rs::oc_pty_retains_exited_sessions_until_removed`
+- P replays buffered output and streams live output to attachments — `tests/oc_pty.rs::oc_pty_replays_buffered_output_and_streams_live_output_to_attachments`
+- P stops delivering output after detach — `tests/oc_pty.rs::oc_pty_stops_delivering_output_after_detach` (adapted: detaching consumes the attachment, so the check is that output still flows to others)
+- P isolates output between sessions — `tests/oc_pty.rs::oc_pty_isolates_output_between_sessions`
+- P notifies attachments with the exit code and rejects attach after exit — `tests/oc_pty.rs::oc_pty_notifies_attachments_with_the_exit_code_and_rejects_attach_after_exit`
+- P defaults command, login args, and cwd from shell selection and location — `tests/oc_pty.rs::oc_pty_defaults_command_login_args_and_cwd_from_shell_selection_and_location`
+
+**`pty/ticket.test.ts`**
+
+- P consumes tickets once — `tests/oc_pty.rs::oc_ticket_consumes_tickets_once`
+- P rejects tickets scoped to a different request — `tests/oc_pty.rs::oc_ticket_rejects_tickets_scoped_to_a_different_request`
+- P rejects tickets after the TTL elapses — `tests/oc_pty.rs::oc_ticket_rejects_tickets_after_the_ttl_elapses`
+- P rejects tickets scoped to a different workspace — `tests/oc_pty.rs::oc_ticket_rejects_tickets_scoped_to_a_different_workspace`
+- P keeps PTY and client MCP targets apart — `tests/oc_pty.rs::oc_ticket_keeps_pty_and_client_mcp_targets_apart`
 
 **`shell-result.test.ts`**
 

@@ -1,0 +1,27 @@
+# Terminal ports (tests/oc_pty.rs).
+@persistent-pty-session.test.ts
+38 :: ported :: tests/oc_pty.rs::oc_persistent_pty_removes_a_deleted_sessions_terminals
+92 :: ported :: tests/oc_pty.rs::oc_persistent_pty_renames_a_terminal_publishes_the_update_and_clears_the_user_title :: adapted: the update event carries the terminal, whose sessionId names the session
+@pty/info-schema.test.ts
+16 :: ported :: tests/oc_pty.rs::oc_info_accepts_pid_0
+20 :: ported :: tests/oc_pty.rs::oc_info_accepts_a_positive_pid
+24 :: ported :: tests/oc_pty.rs::oc_info_rejects_a_negative_pid
+28 :: ported :: tests/oc_pty.rs::oc_info_accepts_an_exit_code_for_retained_exited_sessions
+@pty/protocol.test.ts
+5 :: ported :: tests/oc_pty.rs::oc_protocol_drops_invalid_binary_input_frames_and_decodes_valid_ones
+12 :: ported :: tests/oc_pty.rs::oc_protocol_encodes_the_cursor_as_a_0x00_prefixed_json_control_frame
+18 :: ported :: tests/oc_pty.rs::oc_protocol_splits_replay_into_bounded_frames :: adapted: frames are at most 64 KiB of UTF-8, cut on character boundaries
+@pty/pty-session.test.ts
+89 :: ported :: tests/oc_pty.rs::oc_pty_returns_typed_not_found_errors_for_missing_sessions
+108 :: ported :: tests/oc_pty.rs::oc_pty_retains_exited_sessions_until_removed
+126 :: ported :: tests/oc_pty.rs::oc_pty_replays_buffered_output_and_streams_live_output_to_attachments
+151 :: ported :: tests/oc_pty.rs::oc_pty_stops_delivering_output_after_detach :: adapted: detaching consumes the attachment, so the check is that output still flows to others
+167 :: ported :: tests/oc_pty.rs::oc_pty_isolates_output_between_sessions
+183 :: ported :: tests/oc_pty.rs::oc_pty_notifies_attachments_with_the_exit_code_and_rejects_attach_after_exit
+209 :: ported :: tests/oc_pty.rs::oc_pty_defaults_command_login_args_and_cwd_from_shell_selection_and_location
+@pty/ticket.test.ts
+17 :: ported :: tests/oc_pty.rs::oc_ticket_consumes_tickets_once
+28 :: ported :: tests/oc_pty.rs::oc_ticket_rejects_tickets_scoped_to_a_different_request
+39 :: ported :: tests/oc_pty.rs::oc_ticket_rejects_tickets_after_the_ttl_elapses
+51 :: ported :: tests/oc_pty.rs::oc_ticket_rejects_tickets_scoped_to_a_different_workspace
+65 :: ported :: tests/oc_pty.rs::oc_ticket_keeps_pty_and_client_mcp_targets_apart
