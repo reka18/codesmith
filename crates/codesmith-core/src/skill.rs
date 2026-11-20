@@ -1,6 +1,7 @@
 //! Skills: folders with a `SKILL.md` (a `name`/`description` header plus
 //! instructions) that the model loads on demand with the `skill` tool.
-//! Ported from OpenCode, local skills only (no remote skill indexes).
+//! Ported from OpenCode, with skills downloaded from catalog URLs (see
+//! [`crate::skill_remote`]).
 //!
 //! The `oc_skill_*` tests port OpenCode's frontmatter cases
 //! (`packages/core/test/config/markdown.test.ts`, `config/skill.test.ts`).
@@ -101,6 +102,11 @@ pub fn roots(
         out.push(d.join(".codesmith/skills"));
     }
     for e in extra {
+        if crate::skill_remote::is_url(e) {
+            // A catalog URL: its downloaded skill folders.
+            out.extend(crate::skill_remote::pulled(e));
+            continue;
+        }
         let p = PathBuf::from(e);
         out.push(if p.is_absolute() { p } else { root.join(p) });
     }
@@ -117,14 +123,23 @@ pub fn find(cwd: &Path, root: &Path, extra: &[String]) -> Vec<Skill> {
 pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
     let mut by_id: BTreeMap<String, Skill> = BTreeMap::new();
     for r in roots {
-        let Ok(entries) = std::fs::read_dir(r) else {
-            continue;
+        // A root with its own `SKILL.md` is one skill (a downloaded one);
+        // otherwise each `<id>/SKILL.md` below it is.
+        let dirs: Vec<PathBuf> = if r.join("SKILL.md").is_file() {
+            vec![r.clone()]
+        } else {
+            let Ok(entries) = std::fs::read_dir(r) else {
+                continue;
+            };
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            entries.into_iter().map(|e| e.path()).collect()
         };
-        let mut entries: Vec<_> = entries.flatten().collect();
-        entries.sort_by_key(|e| e.file_name());
-        for e in entries {
-            let id = e.file_name().to_string_lossy().into_owned();
-            let file = e.path().join("SKILL.md");
+        for dir in dirs {
+            let Some(id) = dir.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let file = dir.join("SKILL.md");
             if !is_safe_id(&id) || !file.is_file() {
                 continue;
             }
