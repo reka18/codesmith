@@ -9,6 +9,11 @@
 //! `command_not_found_handler` log any other name. On macOS the shells run
 //! under `sandbox-exec`, which refuses network access, writes outside the
 //! temporary directory and executing anything but the shims and shells.
+//! Each case runs in a session of its own under a process budget
+//! (`RLIMIT_NPROC`, and a sweep once it has more than `CASE_LIMIT`
+//! processes); when it ends or times out, everything in its session and
+//! below it is stopped, then killed (see `contain`), so a case that forks
+//! without end cannot fill the process table or outlive its run.
 //!
 //! Every logged command must be accounted for by the scan: some command or
 //! delegated command the scan reports matches a rule `name *` for the logged
@@ -168,10 +173,10 @@ const PASS_THROUGH: &[(&str, &[&str])] = &[
     ("caffeinate", &["/usr/bin/caffeinate"]),
     ("arch", &["/usr/bin/arch"]),
     ("lockf", &["/usr/bin/lockf"]),
-    ("script", &["/usr/bin/script"]),
+    // Not `script` or `setsid`: they start a session of their own, which
+    // the sweep after each case (see `contain`) could miss.
     ("flock", &["/usr/bin/flock"]),
     ("taskset", &["/usr/bin/taskset"]),
-    ("setsid", &["/usr/bin/setsid"]),
     ("awk", &["/usr/bin/awk"]),
     ("sed", &["/usr/bin/sed"]),
     ("perl", &["/usr/bin/perl"]),
@@ -221,6 +226,137 @@ fn installed_shells() -> Vec<(&'static str, &'static str)> {
         out.push((label, path));
     }
     out
+}
+
+/// Processes one case may have before it is ended: a case that forks
+/// without end (`command_not_found_handler() { rr|m F; }; nosuch` under
+/// Zsh) is swept as soon as the run loop sees it pass this.
+const CASE_LIMIT: usize = 64;
+
+/// The hard stop behind [`CASE_LIMIT`], for forks faster than the run loop
+/// looks: `RLIMIT_NPROC` counts every process of the user, so the limit is
+/// set this far above the count when a case starts. Cases running at once
+/// share it, which also keeps several such cases together from going much
+/// past it.
+const CASE_PROCESSES: usize = 256;
+
+/// Runs take this shared; a test that must see the process table alone
+/// takes it exclusively.
+static RUNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// A live process: `(pid, parent, session, uid)`. Zombies are left out.
+type Proc = (i32, i32, i32, u32);
+
+#[cfg(target_os = "macos")]
+fn processes() -> Vec<Proc> {
+    let mut pids = vec![0i32; 16384];
+    let n = unsafe {
+        libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * 4) as libc::c_int)
+    };
+    pids.truncate(n.max(0) as usize);
+    let mut out = Vec::new();
+    for pid in pids.into_iter().filter(|&p| p > 0) {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        // SZOMB: exited, waiting to be reaped.
+        if got != size || info.pbi_status == 5 {
+            continue;
+        }
+        let session = unsafe { libc::getsid(pid) };
+        out.push((pid, info.pbi_ppid as i32, session, info.pbi_uid));
+    }
+    out
+}
+
+#[cfg(not(target_os = "macos"))]
+fn processes() -> Vec<Proc> {
+    use std::os::unix::fs::MetadataExt;
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    for e in dir.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else {
+            continue;
+        };
+        // `pid (comm) state ppid pgrp session ...`; comm may hold spaces.
+        let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        if f.len() < 4 || f[0] == "Z" {
+            continue;
+        }
+        let uid = e.metadata().map(|m| m.uid()).unwrap_or(u32::MAX);
+        out.push((
+            pid,
+            f[1].parse().unwrap_or(0),
+            f[3].parse().unwrap_or(0),
+            uid,
+        ));
+    }
+    out
+}
+
+fn user_processes() -> usize {
+    let me = unsafe { libc::getuid() };
+    processes().iter().filter(|p| p.3 == me).count()
+}
+
+/// Ends every process of the case whose session is `session`: those in
+/// the session and every descendant of its leader, stopped first (so none
+/// forks again while the rest are found), then killed.
+fn contain(session: i32) {
+    use std::collections::HashSet;
+    let me = std::process::id() as i32;
+    let mut stopped: HashSet<i32> = HashSet::new();
+    for _ in 0..200 {
+        let procs = processes();
+        let mut found: HashSet<i32> = procs
+            .iter()
+            .filter(|p| p.0 == session || p.2 == session)
+            .map(|p| p.0)
+            .collect();
+        loop {
+            let more: Vec<i32> = procs
+                .iter()
+                .filter(|p| !found.contains(&p.0) && found.contains(&p.1))
+                .map(|p| p.0)
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            found.extend(more);
+        }
+        found.retain(|&p| p > 1 && p != me);
+        let new: Vec<i32> = found.difference(&stopped).copied().collect();
+        if new.is_empty() {
+            break;
+        }
+        for &p in &new {
+            unsafe {
+                libc::kill(p, libc::SIGSTOP);
+            }
+        }
+        stopped.extend(new);
+    }
+    for &p in &stopped {
+        unsafe {
+            libc::kill(p, libc::SIGKILL);
+        }
+    }
 }
 
 /// One isolated place to run inputs: shims logging to `log`, a work dir.
@@ -350,6 +486,11 @@ impl Slot {
     /// Run `input` under `shell`; the argv of every logged command and the
     /// files the run created.
     fn run(&self, label: &str, shell: &str, input: &str) -> Run {
+        let _shared = RUNS.read().unwrap_or_else(|e| e.into_inner());
+        self.run_case(label, shell, input)
+    }
+
+    fn run_case(&self, label: &str, shell: &str, input: &str) -> Run {
         self.reset();
         let before = self.files();
         let mut cmd = match &self.profile {
@@ -370,8 +511,24 @@ impl Slot {
             .current_dir(self.work())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .process_group(0);
+            .stderr(Stdio::piped());
+        // Each case runs in a session of its own, under a process budget.
+        let cap = (user_processes() + CASE_PROCESSES) as libc::rlim_t;
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let limit = libc::rlimit {
+                    rlim_cur: cap,
+                    rlim_max: cap,
+                };
+                if libc::setrlimit(libc::RLIMIT_NPROC, &limit) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         if label.starts_with("bash") {
             cmd.env("BASH_ENV", self.root.join("bashenv"));
         }
@@ -379,6 +536,7 @@ impl Slot {
             cmd.env("ZDOTDIR", self.root.join("zdot"));
         }
         let mut child = cmd.spawn().expect("spawn shell");
+        let session = child.id() as i32;
         let mut stderr = child.stderr.take().unwrap();
         let reader = std::thread::spawn(move || {
             let mut s = Vec::new();
@@ -387,15 +545,23 @@ impl Slot {
         });
         let deadline = Instant::now() + Duration::from_secs(4);
         let mut timed_out = false;
+        let mut polls = 0usize;
         loop {
             if child.try_wait().unwrap().is_some() {
                 break;
             }
+            polls += 1;
+            if polls.is_multiple_of(4)
+                && processes().iter().filter(|p| p.2 == session).count() > CASE_LIMIT
+            {
+                timed_out = true;
+                contain(session);
+                let _ = child.wait();
+                break;
+            }
             if Instant::now() > deadline {
                 timed_out = true;
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
+                contain(session);
                 let _ = child.wait();
                 break;
             }
@@ -405,9 +571,7 @@ impl Slot {
         if input.contains('&') || input.contains("coproc") {
             std::thread::sleep(Duration::from_millis(40));
         }
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
-        }
+        contain(session);
         let stderr = if timed_out {
             String::new()
         } else {
@@ -456,12 +620,18 @@ fn verdict(input: &str, cwd: &Path) -> Verdict {
         Err(_) => Verdict::Refused,
         Ok(a) if a.dynamic.is_some() => Verdict::Dynamic,
         Ok(a) => {
-            let redirect_only = a.commands.iter().chain(&a.delegated).any(|(r, _)| {
-                r.trim_start()
-                    .trim_start_matches(|c: char| c.is_ascii_digit())
-                    .trim_start_matches('&')
-                    .starts_with(['<', '>'])
-            });
+            // Zsh's reading of `((...))` as subshells may hold one too.
+            let redirect_only = a
+                .commands
+                .iter()
+                .chain(&a.delegated)
+                .chain(&a.deny_only)
+                .any(|(r, _)| {
+                    r.trim_start()
+                        .trim_start_matches(|c: char| c.is_ascii_digit())
+                        .trim_start_matches('&')
+                        .starts_with(['<', '>'])
+                });
             Verdict::Checked {
                 resources: a
                     .commands
@@ -495,6 +665,15 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
         // resource `code:NAME ...`, which only a rule naming it allows: what
         // the code runs or writes is its own business, like a script's.
         Verdict::Checked { resources, .. } if resources.iter().any(|r| r.starts_with("code:")) => {
+            return Vec::new()
+        }
+        // Sourcing a file runs it like a script, which the scan leaves to
+        // the file (the shims are shell scripts: `. ../bin/rm` runs one).
+        Verdict::Checked { resources, .. }
+            if resources
+                .iter()
+                .any(|r| r.starts_with(". ") || r.starts_with("source ")) =>
+        {
             return Vec::new()
         }
         Verdict::Checked {
@@ -998,9 +1177,15 @@ fn shell_differential_mutated() {
         .collect();
     let mut rng = Rng(seed.rotate_left(17) | 1);
     let inputs: Vec<String> = (0..cases)
-        .map(|_| {
+        .map(|_| loop {
             let base = &seeds[rng.below(seeds.len())];
-            mutate(&mut rng, base)
+            let m = mutate(&mut rng, base);
+            // A redefined not-found handler runs for every unknown name,
+            // itself included: such a case proves nothing about the scan,
+            // and only the process budget would end it.
+            if !m.contains("not_found_handle") {
+                break m;
+            }
         })
         .collect();
     let results = run_all(&slots, &inputs);
@@ -1009,6 +1194,47 @@ fn shell_differential_mutated() {
         found.is_empty(),
         "mutated bypasses (seed {seed}):\n{}",
         report(&found)
+    );
+}
+
+/// A case that forks without end finishes quickly and leaves nothing
+/// running: the process budget stops its forks, the sweep ends the rest.
+#[test]
+fn shell_differential_contains_fork_bombs() {
+    const BOMB: &str = "command_not_found_handler() { rr|m F; }; nosuch";
+    const BASH_BOMB: &str = "command_not_found_handle() { rr|m F; }; nosuch";
+    let (_dir, slots) = slots(1);
+    // Alone, so no other case's processes are counted or match.
+    let _alone = RUNS.write().unwrap_or_else(|e| e.into_inner());
+    let before = user_processes();
+    for &(label, shell) in &installed_shells() {
+        for input in [BOMB, BASH_BOMB, "f() { f | f; }; f"] {
+            let start = Instant::now();
+            slots[0].run_case(label, shell, input);
+            assert!(start.elapsed() < Duration::from_secs(8), "{label}: {input}");
+            let ps = Command::new("/bin/ps")
+                .args(["-A", "-o", "command="])
+                .output()
+                .expect("ps");
+            let ps = String::from_utf8_lossy(&ps.stdout);
+            let left: Vec<&str> = ps
+                .lines()
+                // A shell (or subshell) of the case: `SHELL -c INPUT`.
+                .filter(|l| {
+                    l.split_once(" -c ")
+                        .is_some_and(|(_, code)| code.trim_end() == input)
+                })
+                .collect();
+            assert!(left.is_empty(), "{label}: still running: {left:?}");
+        }
+    }
+    // Other work on the machine changes the count too: only a leak of the
+    // budget's size would show.
+    assert!(
+        user_processes() < before + CASE_PROCESSES,
+        "{} processes before, {} after",
+        before,
+        user_processes()
     );
 }
 
