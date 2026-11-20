@@ -75,6 +75,8 @@ permission and question ids are random.
 | `POST /pty/{pty}/connect-token`, `GET /pty/{pty}/connect` | A ticket for, and the WebSocket of, a terminal ([details](#attaching)). |
 | `GET /sessions/{id}/terminals`, `POST /sessions/{id}/terminals {...}` | A session's terminals, removed with the session. |
 | `GET /sessions/{id}/terminals/read?lines=N` | What the session's current terminal shows, as text. |
+| `POST /shell-daemon/handoff` | Hand the shell daemon to the next server and stop this one ([details](#restarting-without-stopping-commands)). |
+| `POST /shell-daemon/shutdown` | Stop the shell daemon and every command and terminal it runs. |
 
 ## Turn events
 
@@ -306,10 +308,74 @@ terminal, within 60 seconds. A bad ticket is refused (403). The `Host` and
 Removing a terminal (or its session) sends `SIGHUP` to its program's
 process group and to the terminal's foreground group, then `SIGKILL` after
 half a second. When the program exits on its own, whatever it left running
-in its group is killed too. Unlike OpenCode, whose terminals live in a
-separate daemon that can outlast the server, CodeSmith's end with the
-server: when it stops, the kernel hangs their terminals up, which sends
-their programs `SIGHUP`.
+in its group is killed too. Terminals live in the server's
+[shell daemon](#the-shell-daemon), so they end with the server unless it
+hands them over.
+
+## The shell daemon
+
+As OpenCode's server does with its process daemon, the server runs its
+sessions' shell commands and its terminals in a background helper,
+`codesmith __shelld` (the same binary), so they can outlive a server
+restart. The server starts it when the first command or terminal is
+created, never at startup, and owns it over a private connection: when the
+server ends in any way (stopped, crashed, killed) without handing it over,
+the daemon stops every command and terminal it runs (`SIGTERM` to each
+command's process group, `SIGKILL` three seconds later) and removes its
+files. So without a handoff, commands end with the server, as before.
+
+Set `CODESMITH_SHELL_DAEMON=0` to run commands and terminals in the server
+process instead. If the daemon cannot be started, commands are run by the
+server itself; a command the daemon refused fails.
+
+Its files: a runtime directory `$XDG_STATE_HOME/codesmith/shelld/<random>`
+(default `~/.local/state/...`) holding `service.json` and `service.lock`,
+and a socket in `/tmp/codesmith-shelld-<uid>/` (or under
+`$CODESMITH_SHELLD_SOCKET_DIR`).
+
+Security:
+
+- Only your user can reach it: both directories must be yours, mode 0700,
+  the socket is 0600, and both ends check the peer's user id on every
+  connection.
+- Every request carries a random 256-bit token from `service.json` (0600),
+  compared in constant time; a wrong one is refused and the connection
+  closed. Without a handoff ticket no second client can take ownership.
+- The server's bearer token never reaches the daemon or its commands.
+- A daemon of another protocol version is refused and left alone.
+
+Limits: 64 commands running at once and 1024 kept (finished ones are
+forgotten once reported), 16 terminals, 128 connections, frames of at most
+8 MiB; a connection that sends nothing for five seconds is closed.
+
+### Restarting without stopping commands
+
+`POST /shell-daemon/handoff` is a graceful restart's first step. The server
+prepares a handoff, answers
+
+```json
+{"handoff": {"directory": "...", "instanceID": "...", "ticket": "...", "expiresAt": 1730000000000}}
+```
+
+then stops its turns (their tool calls end as interrupted) and exits,
+leaving the daemon's commands and terminals running. Start the next server
+in the same directory within two minutes with that object as JSON in
+`CODESMITH_SHELLD_HANDOFF`:
+
+```sh
+CODESMITH_SHELLD_HANDOFF="$handoff" codesmith serve
+```
+
+It claims the daemon with the ticket (good once) and takes everything
+back: terminals are listed and attached to as before; each session with
+commands in the daemon is loaded, its commands become background jobs again
+(new ones continue the `shell_N` numbering), and when one finishes the
+session is resumed with its output as usual. A command a call was waiting
+on runs on without the call's timeout; one whose timeout passed during the
+restart is stopped as timed out; one being stopped is killed. If nobody
+claims the daemon in time, it stops everything. A handoff that cannot be
+used (expired, or its daemon gone) is ignored and the server starts fresh;
+`{"handoff": null}` (and no exit) means there was nothing to hand over.
 
 ## Example
 

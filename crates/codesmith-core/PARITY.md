@@ -36,7 +36,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool registry, schemas, placement | 100 | 1 | 0 | 25 | 53 | 21 | 0 |
 | Media tools | 39 | 0 | 0 | 24 | 9 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
-| Shell tool and runtime | 207 | 87 | 2 | 45 | 58 | 15 | 0 |
+| Shell tool and runtime | 207 | 118 | 2 | 6 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 90 | 0 | 11 | 50 | 26 | 0 |
 | Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1145** | **15** | **686** | **2346** | **1396** | **0** |
+| **Total** | **5588** | **1176** | **15** | **647** | **2354** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,13 +78,12 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (686 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (647 cases in 60 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
-| [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
 | [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
@@ -326,48 +325,6 @@ Missing features, by how many OpenCode test cases each would unlock (686 cases i
 - `plugin/provider/claude-agent/tools/tools.test.ts`: long subagent descriptions retain the actual OpenCode agent list
 - `plugin/provider/claude-agent/tools/tools.test.ts`: execution failures and denied permissions stay errors, and JSON stays intact
 - `plugin/provider/claude-agent/tools/tools.test.ts`: tool media remains content blocks and does not consume a newly queued user message
-
-### Shell Daemon
-
-39 cases.
-
-- `persistent-pty-daemon.test.ts`: rediscovers a same-protocol daemon after its registration rotates
-- `persistent-pty-daemon.test.ts`: rediscovers a rotated registration when acquiring a subscription
-- `persistent-pty-daemon.test.ts`: waits on its own connection until the process exits
-- `persistent-pty-daemon.test.ts`: closes the wait connection when the wait is interrupted
-- `persistent-pty-daemon.test.ts`: reports a daemon that goes away during a wait as unreachable
-- `persistent-pty-daemon.test.ts`: retries a start-required request when connection fails before dispatch
-- `persistent-pty-daemon.test.ts`: does not replay a dispatched mutating request when its response is lost
-- `persistent-pty-daemon.test.ts`: rejects incompatible daemons without replacing or killing them
-- `persistent-pty-daemon.test.ts`: starts fresh instead of failing when an inherited registration is gone or expired
-- `persistent-pty-daemon.test.ts`: stops a discovered inherited daemon when adoption fails
-- `persistent-pty-daemon.test.ts`: gives up at once on a daemon binary that speaks another protocol, and never starts it again
-- `persistent-pty-session.test.ts`: knows a handoff is prepared until a shutdown or until its ticket expires
-- `persistent-pty-session.test.ts`: creates, inspects, signals and waits for a pipe process
-- `persistent-pty-session.test.ts`: keeps pipe processes and terminals apart
-- `persistent-pty-session.test.ts`: reports daemon rejections as request errors and a terminated wait as one
-- `persistent-pty-session.test.ts`: prepares a handoff more than once on the same owner connection
-- `shell-daemon.test.ts`: runs a command with the server's environment, an absolute cwd and its metadata
-- `shell-daemon.test.ts`: pages shell output at UTF-8 boundaries with byte cursors
-- `shell-daemon.test.ts`: retries an incomplete live character and consumes malformed bytes at exit
-- `shell-daemon.test.ts`: counts lines like the spawner and reads only what reached the file after a write error
-- `shell-daemon.test.ts`: bounds what it reads to number lines the daemon has not counted yet
-- `shell-daemon.test.ts`: reports a command lost with the daemon as killed, with what it wrote
-- `shell-daemon.test.ts`: records successful and failed exits without signalling a finished command
-- `shell-daemon.test.ts`: recreates the output directory removed while the Location is open
-- `shell-daemon.test.ts`: fails a command the daemon rejected instead of spawning it
-- `shell-daemon.test.ts`: stops a timed-out command with SIGTERM, then SIGKILL after the grace period, and keeps it
-- `shell-daemon.test.ts`: forgets a command in the daemon before deleting its file, on remove and on eviction
-- `shell-daemon.test.ts`: takes its commands back after a restart and leaves other Locations' alone
-- `shell-daemon.test.ts`: a Location closed while the server runs keeps enforcing its commands' timeouts
-- `shell-daemon.test.ts`: a closed Location and its replacement see the same commands, with one timer and one report each
-- `shell-daemon.test.ts`: finishes taking a Location's commands back even if the call that started it is interrupted
-- `shell-daemon.test.ts`: the sweep keeps a running command's file, and deletes a finished one's file and forgets it
-- `shell-daemon.test.ts`: the spawner recreates the output directory removed while the Location is open
-- `shell-daemon.test.ts`: starts the daemon on the first command, never on boot or sweep, and runs it with the server's environment
-- `shell-restart.test.ts`: settles a foreground call ${finished ? "whose command finished during the restart" : "whose command still runs"} and resumes its session (2 cases)
-- `shell-restart.test.ts`: stops a command ${starting ? "still being created" : "a foreground call waits on"} when the server shuts down without a handoff (2 cases)
-- `shell-retention.test.ts`: eviction makes progress past an already-removed shell
 
 ### ChatGPT Subscription Login
 
@@ -1963,9 +1920,9 @@ Tests for behaviour CodeSmith already has but no test pins (1396 cases), by area
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 550 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 327 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
 
@@ -2663,14 +2620,33 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell tool and runtime (147 of 207)</summary>
+<details><summary>Shell tool and runtime (186 of 207)</summary>
 
+
+**`persistent-pty-daemon.test.ts`**
+
+- P rediscovers a same-protocol daemon after its registration rotates — `tests/oc_shell_daemon.rs::oc_rediscovers_a_same_protocol_daemon_after_its_registration_rotates`
+- P rediscovers a rotated registration when acquiring a subscription — `tests/oc_shell_daemon.rs::oc_rediscovers_a_rotated_registration_when_acquiring_a_subscription` (adapted: a terminal attachment is the subscription)
+- P waits on its own connection until the process exits — `tests/oc_shell_daemon.rs::oc_waits_on_its_own_connection_until_the_process_exits`
+- P closes the wait connection when the wait is interrupted — `tests/oc_shell_daemon.rs::oc_closes_the_wait_connection_when_the_wait_is_interrupted`
+- P reports a daemon that goes away during a wait as unreachable — `tests/oc_shell_daemon.rs::oc_reports_a_daemon_that_goes_away_during_a_wait_as_unreachable`
+- P retries a start-required request when connection fails before dispatch — `tests/oc_shell_daemon.rs::oc_retries_a_start_required_request_when_connection_fails_before_dispatch`
+- P does not replay a dispatched mutating request when its response is lost — `tests/oc_shell_daemon.rs::oc_does_not_replay_a_dispatched_mutating_request_when_its_response_is_lost`
+- P rejects incompatible daemons without replacing or killing them — `tests/oc_shell_daemon.rs::oc_rejects_incompatible_daemons_without_replacing_or_killing_them`
+- P starts fresh instead of failing when an inherited registration is gone or expired — `tests/oc_shell_daemon.rs::oc_starts_fresh_instead_of_failing_when_an_inherited_registration_is_gone_or_expired`
+- P stops a discovered inherited daemon when adoption fails — `tests/oc_shell_daemon.rs::oc_stops_a_discovered_inherited_daemon_when_adoption_fails` (a daemon that refuses the claim (its ticket was used, so another server owns it) is left alone)
+- P gives up at once on a daemon binary that speaks another protocol, and never starts it again — `tests/oc_shell_daemon.rs::oc_gives_up_at_once_on_a_daemon_binary_that_speaks_another_protocol_and_never_starts_it_again`
 
 **`persistent-pty-session.test.ts`**
 
 - P removes a deleted session's terminals — `tests/oc_pty.rs::oc_persistent_pty_removes_a_deleted_sessions_terminals`
 - D keeps cleaning up later deletions after a terminal fails to stop — deliberate: removing an in-process terminal cannot fail, so nothing is left stuck to block later cleanups
 - P renames a terminal, publishes the update and clears the user title — `tests/oc_pty.rs::oc_persistent_pty_renames_a_terminal_publishes_the_update_and_clears_the_user_title` (adapted: the update event carries the terminal, whose sessionId names the session)
+- P knows a handoff is prepared until a shutdown or until its ticket expires — `tests/oc_shell_daemon.rs::oc_knows_a_handoff_is_prepared_until_a_shutdown_or_until_its_ticket_expires`
+- P creates, inspects, signals and waits for a pipe process — `tests/oc_shell_daemon.rs::oc_creates_inspects_signals_and_waits_for_a_pipe_process` (against the real daemon)
+- P keeps pipe processes and terminals apart — `tests/oc_shell_daemon.rs::oc_keeps_pipe_processes_and_terminals_apart`
+- P reports daemon rejections as request errors and a terminated wait as one — `tests/oc_shell_daemon.rs::oc_reports_daemon_rejections_as_request_errors_and_a_terminated_wait_as_one`
+- P prepares a handoff more than once on the same owner connection — `tests/oc_shell_daemon.rs::oc_prepares_a_handoff_more_than_once_on_the_same_owner_connection`
 
 **`process/process.test.ts`**
 
@@ -2707,12 +2683,39 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P rejects tickets scoped to a different workspace — `tests/oc_pty.rs::oc_ticket_rejects_tickets_scoped_to_a_different_workspace`
 - P keeps PTY and client MCP targets apart — `tests/oc_pty.rs::oc_ticket_keeps_pty_and_client_mcp_targets_apart`
 
+**`shell-daemon.test.ts`**
+
+- P runs a command with the server's environment, an absolute cwd and its metadata — `tests/oc_shell_daemon.rs::oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_metadata` (adapted: the session environment stands in for the server's, the server token is kept out)
+- D pages shell output at UTF-8 boundaries with byte cursors — client-server: OpenCode's Shell service pages a command's output by byte cursor for its clients; CodeSmith has no paged-output API (the model reads the output file)
+- D retries an incomplete live character and consumes malformed bytes at exit — client-server: the same paged-output API (incomplete characters at a cursor)
+- P counts lines like the spawner and reads only what reached the file after a write error — `tests/oc_shell_daemon.rs::oc_counts_lines_like_the_spawner` (adapted: a daemon command's result equals the spawner's, line counts and truncation notice included)
+- D bounds what it reads to number lines the daemon has not counted yet — client-server: bounded reads for line counts the daemon has not reported; CodeSmith captures a daemon command's output from its file exactly as a spawned one's
+- P reports a command lost with the daemon as killed, with what it wrote — `tests/oc_shell_daemon.rs::oc_reports_a_command_lost_with_the_daemon_as_killed_with_what_it_wrote`
+- P records successful and failed exits without signalling a finished command — `tests/oc_shell_daemon.rs::oc_records_successful_and_failed_exits_without_signalling_a_finished_command`
+- P recreates the output directory removed while the Location is open — `tests/oc_shell_daemon.rs::oc_recreates_the_output_directory_removed_while_the_location_is_open`
+- P fails a command the daemon rejected instead of spawning it — `tests/oc_shell_daemon.rs::oc_fails_a_command_the_daemon_rejected_instead_of_spawning_it`
+- P stops a timed-out command with SIGTERM, then SIGKILL after the grace period, and keeps it — `tests/oc_shell_daemon.rs::oc_stops_a_timed_out_command_with_sigterm_then_sigkill_after_the_grace_period_and_keeps_it`
+- P forgets a command in the daemon before deleting its file, on remove and on eviction — `tests/oc_shell_daemon.rs::oc_forgets_a_command_in_the_daemon_once_it_is_reported` (adapted: no shell records to remove or evict; the daemon forgets a command once its result is reported)
+- P takes its commands back after a restart and leaves other Locations' alone — `tests/oc_shell_daemon.rs::oc_takes_its_commands_back_after_a_restart_and_leaves_other_locations_alone`
+- D a Location closed while the server runs keeps enforcing its commands' timeouts — client-server: Locations closed and reopened while the server runs; CodeSmith's server keeps one set of jobs per session for its whole life (reloads share it)
+- D a closed Location and its replacement see the same commands, with one timer and one report each — client-server: the same (a closed Location and its replacement); nothing is taken back twice (tests/oc_shell_daemon.rs::oc_takes_its_commands_back_after_a_restart_and_leaves_other_locations_alone adopts twice)
+- D finishes taking a Location's commands back even if the call that started it is interrupted — client-server: a Location's recovery interrupted by its caller; CodeSmith's server runs a session's recovery on a task of its own, so a dropped request cannot cut it short
+- D the sweep keeps a running command's file, and deletes a finished one's file and forgets it — storage-model: the shell sweep's daemon side; CodeSmith removes output files by age, and the daemon forgets a command once it is reported
+- P the spawner recreates the output directory removed while the Location is open — `tests/oc_shell_daemon.rs::oc_recreates_the_output_directory_removed_while_the_location_is_open` (both the daemon and the spawner)
+- P starts the daemon on the first command, never on boot or sweep, and runs it with the server's environment — `../codesmith/tests/e2e/serve.rs::a_background_command_survives_a_graceful_restart` (the real binary: no daemon at boot, one at the first command; the environment in oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_metadata)
+
+**`shell-restart.test.ts`**
+
+- P settles a foreground call ${finished ? "whose command finished during the restart" : "whose command still runs"} and resumes its session ×2 — `../codesmith/tests/e2e/serve.rs::a_foreground_command_survives_a_graceful_restart, a_background_command_survives_a_graceful_restart` (adapted: the interrupted call is settled as interrupted, and the command's result reaches the resumed session as its background notification)
+- P stops a command ${starting ? "still being created" : "a foreground call waits on"} when the server shuts down without a handoff ×2 — `../codesmith/tests/e2e/serve.rs::a_server_stopped_without_a_handoff_stops_its_commands` (adapted: without a handoff the daemon stops everything once its owner is gone, whether the call waited on it or it was still being created)
+
 **`shell-result.test.ts`**
 
 - D keeps a removed command's result unchanged — storage-model: removed command rows
 
 **`shell-retention.test.ts`**
 
+- D eviction makes progress past an already-removed shell — storage-model: eviction of retained shell records; CodeSmith keeps none beyond a session's jobs
 - D does not inherit host process.env when creating a shell in a workspace-backed location — client-server: workspace-backed Locations
 
 **`shell.test.ts`**

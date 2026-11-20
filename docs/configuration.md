@@ -1120,6 +1120,10 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `CODESMITH_MODELS_PATH` | A catalog file read instead of the cached one. |
 | `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog, not even with `models --refresh`. |
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
+| `CODESMITH_SHELL_DAEMON` | `0`: [`codesmith serve`](local-server.md#the-shell-daemon) runs commands and terminals itself instead of in its shell daemon. |
+| `CODESMITH_SHELLD_HANDOFF` | The shell daemon handoff a server inherits from the one before it ([restarting](local-server.md#restarting-without-stopping-commands)); taken out of the environment at startup. |
+| `CODESMITH_SHELLD_SOCKET_DIR` | Where the shell daemon's socket directory goes instead of `/tmp` (absolute, no `..`). |
+| `XDG_STATE_HOME` | The shell daemon's runtime directories are under `$XDG_STATE_HOME/codesmith/shelld`, else `~/.local/state/codesmith/shelld`. |
 | `CODESMITH_DISABLE_FILEWATCHER` | `1` or `true`: watch no files ([file watching](#file-watching)). |
 
 CodeSmith sets `CODESMITH_SESSION_ID` for commands the `shell` tool runs, and

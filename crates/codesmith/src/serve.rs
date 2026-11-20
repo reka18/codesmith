@@ -37,6 +37,10 @@
 //!   of the directory for 24 hours (watching it again renews that), as
 //!   OpenCode's `fs.watch`; 404 when it is not an existing file inside the
 //!   directory, 503 when file watching is off
+//! - `POST   /shell-daemon/handoff` → `{handoff}`, then the server exits,
+//!   leaving its commands and terminals to the next server (started with
+//!   the handoff in `CODESMITH_SHELLD_HANDOFF`) · `POST
+//!   /shell-daemon/shutdown`: stop the daemon and all it runs
 //! - terminals: `/pty`, `/pty/{pty}`, `/pty/{pty}/connect-token`, the
 //!   `/pty/{pty}/connect` WebSocket and `/sessions/{id}/terminals`; see
 //!   [`pty`]
@@ -487,7 +491,8 @@ impl Server {
         Server::with_daemon(loaded, cwd, db, auto, token, mcp, None)
     }
 
-    /// [`Server::new`], running commands and terminals in `daemon`.
+    /// A server whose commands and terminals run in `daemon` (none: in
+    /// this process).
     pub fn with_daemon(
         loaded: Loaded,
         cwd: PathBuf,

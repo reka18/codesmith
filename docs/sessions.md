@@ -70,6 +70,15 @@ UI does not keep a session you left running in the background: it shows and
 wakes one session only, so nothing would report the commands of another. A
 command's output file stays, and is named in the result.
 
+Over the [server](local-server.md#the-shell-daemon), commands run in its
+shell daemon, so a graceful restart
+([`POST /shell-daemon/handoff`](local-server.md#restarting-without-stopping-commands))
+keeps them running: the next server takes each session's commands back as
+its background jobs and reports them when they finish, including a command
+a tool call was waiting on (the call itself ends as interrupted). Without a
+handoff they stop with the server. The UI, `codesmith run` and ACP run
+commands in their own process, which they end with.
+
 ## Export, import and delete
 
 ```sh

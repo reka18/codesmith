@@ -1,0 +1,44 @@
+# Shell daemon ports (tests/oc_shell_daemon.rs; the restart cases also in
+# crates/codesmith/tests/e2e/serve.rs, against the real binary).
+@persistent-pty-daemon.test.ts
+11 :: ported :: tests/oc_shell_daemon.rs::oc_rediscovers_a_same_protocol_daemon_after_its_registration_rotates
+43 :: ported :: tests/oc_shell_daemon.rs::oc_rediscovers_a_rotated_registration_when_acquiring_a_subscription :: adapted: a terminal attachment is the subscription
+88 :: ported :: tests/oc_shell_daemon.rs::oc_waits_on_its_own_connection_until_the_process_exits
+123 :: ported :: tests/oc_shell_daemon.rs::oc_closes_the_wait_connection_when_the_wait_is_interrupted
+144 :: ported :: tests/oc_shell_daemon.rs::oc_reports_a_daemon_that_goes_away_during_a_wait_as_unreachable
+160 :: ported :: tests/oc_shell_daemon.rs::oc_retries_a_start_required_request_when_connection_fails_before_dispatch
+186 :: ported :: tests/oc_shell_daemon.rs::oc_does_not_replay_a_dispatched_mutating_request_when_its_response_is_lost
+206 :: ported :: tests/oc_shell_daemon.rs::oc_rejects_incompatible_daemons_without_replacing_or_killing_them
+250 :: ported :: tests/oc_shell_daemon.rs::oc_starts_fresh_instead_of_failing_when_an_inherited_registration_is_gone_or_expired
+268 :: ported :: tests/oc_shell_daemon.rs::oc_stops_a_discovered_inherited_daemon_when_adoption_fails :: a daemon that refuses the claim (its ticket was used, so another server owns it) is left alone
+306 :: ported :: tests/oc_shell_daemon.rs::oc_gives_up_at_once_on_a_daemon_binary_that_speaks_another_protocol_and_never_starts_it_again
+@persistent-pty-session.test.ts
+125 :: ported :: tests/oc_shell_daemon.rs::oc_knows_a_handoff_is_prepared_until_a_shutdown_or_until_its_ticket_expires
+153 :: ported :: tests/oc_shell_daemon.rs::oc_creates_inspects_signals_and_waits_for_a_pipe_process :: against the real daemon
+202 :: ported :: tests/oc_shell_daemon.rs::oc_keeps_pipe_processes_and_terminals_apart
+224 :: ported :: tests/oc_shell_daemon.rs::oc_reports_daemon_rejections_as_request_errors_and_a_terminated_wait_as_one
+284 :: ported :: tests/oc_shell_daemon.rs::oc_prepares_a_handoff_more_than_once_on_the_same_owner_connection
+@shell-daemon.test.ts
+33 :: ported :: tests/oc_shell_daemon.rs::oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_metadata :: adapted: the session environment stands in for the server's, the server token is kept out
+108 :: design :: client-server :: OpenCode's Shell service pages a command's output by byte cursor for its clients; CodeSmith has no paged-output API (the model reads the output file)
+141 :: design :: client-server :: the same paged-output API (incomplete characters at a cursor)
+170 :: ported :: tests/oc_shell_daemon.rs::oc_counts_lines_like_the_spawner :: adapted: a daemon command's result equals the spawner's, line counts and truncation notice included
+207 :: design :: client-server :: bounded reads for line counts the daemon has not reported; CodeSmith captures a daemon command's output from its file exactly as a spawned one's
+237 :: ported :: tests/oc_shell_daemon.rs::oc_reports_a_command_lost_with_the_daemon_as_killed_with_what_it_wrote
+255 :: ported :: tests/oc_shell_daemon.rs::oc_records_successful_and_failed_exits_without_signalling_a_finished_command
+274 :: ported :: tests/oc_shell_daemon.rs::oc_recreates_the_output_directory_removed_while_the_location_is_open
+294 :: ported :: tests/oc_shell_daemon.rs::oc_fails_a_command_the_daemon_rejected_instead_of_spawning_it
+310 :: ported :: tests/oc_shell_daemon.rs::oc_stops_a_timed_out_command_with_sigterm_then_sigkill_after_the_grace_period_and_keeps_it
+340 :: ported :: tests/oc_shell_daemon.rs::oc_forgets_a_command_in_the_daemon_once_it_is_reported :: adapted: no shell records to remove or evict; the daemon forgets a command once its result is reported
+373 :: ported :: tests/oc_shell_daemon.rs::oc_takes_its_commands_back_after_a_restart_and_leaves_other_locations_alone
+441 :: design :: client-server :: Locations closed and reopened while the server runs; CodeSmith's server keeps one set of jobs per session for its whole life (reloads share it)
+455 :: design :: client-server :: the same (a closed Location and its replacement); nothing is taken back twice (tests/oc_shell_daemon.rs::oc_takes_its_commands_back_after_a_restart_and_leaves_other_locations_alone adopts twice)
+496 :: design :: client-server :: a Location's recovery interrupted by its caller; CodeSmith's server runs a session's recovery on a task of its own, so a dropped request cannot cut it short
+530 :: design :: storage-model :: the shell sweep's daemon side; CodeSmith removes output files by age, and the daemon forgets a command once it is reported
+578 :: ported :: tests/oc_shell_daemon.rs::oc_recreates_the_output_directory_removed_while_the_location_is_open :: both the daemon and the spawner
+608 :: ported :: ../codesmith/tests/e2e/serve.rs::a_background_command_survives_a_graceful_restart :: the real binary: no daemon at boot, one at the first command; the environment in oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_metadata
+@shell-restart.test.ts
+122 :: ported :: ../codesmith/tests/e2e/serve.rs::a_foreground_command_survives_a_graceful_restart, a_background_command_survives_a_graceful_restart :: adapted: the interrupted call is settled as interrupted, and the command's result reaches the resumed session as its background notification
+206 :: ported :: ../codesmith/tests/e2e/serve.rs::a_server_stopped_without_a_handoff_stops_its_commands :: adapted: without a handoff the daemon stops everything once its owner is gone, whether the call waited on it or it was still being created
+@shell-retention.test.ts
+21 :: design :: storage-model :: eviction of retained shell records; CodeSmith keeps none beyond a session's jobs
