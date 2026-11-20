@@ -56,12 +56,38 @@ Maintainers: see [RELEASING.md](RELEASING.md).
 Run `codesmith` in a project for the interactive UI (`-c` continues the latest
 session here, `-s ID` a specific one, `--prompt "..."` sends a first message):
 
-- **Enter** sends, **Alt+Enter** or **Ctrl+J** adds a line, **↑/↓** recalls
-  earlier messages, **PgUp/PgDn** scroll
+- **Editing**: a real cursor. **Enter** sends; **Shift+Enter**, **Alt+Enter**
+  or **Ctrl+J** adds a line. **←/→**, **Home/End** (**Ctrl+A/E**), and
+  **Ctrl/Alt+←/→** (**Alt+B/F**) move by character, line and word;
+  **Ctrl+W**/**Alt+Backspace** delete a word, **Ctrl+K** to the end of the
+  line, **Ctrl+U** the whole prompt. **↑/↓** move between lines and, at the
+  first or last line, through earlier messages. Pastes go in at the cursor.
+- **Autocomplete**: typing `/` lists commands (built-in, custom and MCP
+  prompts) and `@` lists project files (fuzzy, respecting `.gitignore`).
+  **↑/↓** choose, **Tab** completes, **Enter** runs the command or attaches
+  the file, **Esc** closes the list. Like OpenCode, each `@path` that names a
+  file is attached to the message as a Read tool result (a directory as its
+  listing), so the model sees it without a round trip.
+- **Transcript**: replies render as markdown: headings, bold/italic,
+  inline code, links, lists and task lists, quotes, tables, and fenced code
+  blocks with syntax highlighting. `edit` and `write` calls show a colored
+  diff of the change; long tool output is collapsed to a few lines, and
+  **Ctrl+O** expands it all. **Ctrl+T** shows reasoning; **PgUp/PgDn**
+  scroll, **Ctrl+End** follows the bottom again.
+- **Agents and models**: **Tab** / **Shift+Tab** cycle the primary agents
+  (build, plan, …). `/model` and `/agent` without arguments, and `/sessions`,
+  open pickers you can type into to filter. OpenCode's leader keys work too:
+  **Ctrl+X** then **m** models, **a** agents, **l** sessions, **n** new
+  session, **c** compact, **u**/**r** undo/redo, **h** help.
+- **Status line**: context in use (the last call's tokens, and the share of
+  the model's `limit.context` when configured), the session's cost when the
+  model has a `cost`, and token totals.
+- **Prompts**: permission requests and questions open as dialogs; an edit or
+  write request previews its diff.
 - **Esc** interrupts a running turn; **Ctrl+C** on an empty prompt quits
-- Permission requests and questions open as dialogs
 - `/new`, `/sessions`, `/undo`, `/redo`, `/agent`, `/model`, `/compact`,
-  `/clear`, `/help`, `/exit`, plus every custom and built-in command
+  `/clear`, `/thinking`, `/help`, `/exit`, plus every custom and built-in
+  command
 
 For scripts and one-shot use, `codesmith run`:
 
