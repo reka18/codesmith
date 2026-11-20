@@ -1621,3 +1621,10 @@ echo "${x:-$'$(rm F)'}"
 bash < <(echo rm F)""
 %%
 cat <(echo x)y
+%%
+echo x > ~'' +//}out
+%%
+echo "$${x/$$'(rm F)'/y}"
+%%
+x='a[$(rm F)]';
+ a=(1); echo ${=a[(e)x]}

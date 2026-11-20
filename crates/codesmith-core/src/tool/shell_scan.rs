@@ -330,6 +330,8 @@ fn output_is_known(items: &[Item]) -> bool {
 /// variable (arithmetic), `${!x}` (indirection), `${x@P}` (prompt
 /// expansion) or Zsh `${(e)x}` flags.
 fn parameter_evaluates(body: &str) -> bool {
+    // Zsh's `${=x}`, `${^x}`, `${~x}`, `${+x}` prefix the name.
+    let body = body.trim_start_matches(['=', '^', '~', '+']);
     let names_something = |t: &str| t.chars().any(|c| is_name_start(c) || c == '$' || c == '`');
     if body.starts_with(['!', '(']) && body.len() > 1 {
         return true;
@@ -1375,6 +1377,16 @@ impl<'a> Scanner<'a> {
                     let text = self.text(body, self.pos);
                     if parameter_evaluates(&text) {
                         self.flags.sink = true;
+                    }
+                    let unquoted = text.replace(['\'', '"'], "");
+                    if ["$(", "`", "$["]
+                        .iter()
+                        .any(|t| unquoted.contains(t) && !text.contains(t))
+                    {
+                        // Shells differ on which quotes count inside `${...}`
+                        // (`"$${x/$$'(cmd)'/y}"` runs `cmd` in Bash 3.2):
+                        // a substitution spelled once quotes go is unknown.
+                        self.flags.eval();
                     }
                     if text.trim_start_matches(['=', '^', '+']).starts_with('~') {
                         // Zsh `${~x}` globs the value, running its glob
@@ -2524,7 +2536,7 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
                 // A glob in a redirect target is expanded when it matches one file.
                 path,
             });
-            if value.starts_with('~') && !raw.starts_with('~') && differs {
+            if value.starts_with('~') && !plain_tilde(raw) && differs {
                 // `""~/x`: `$HOME/x` in Zsh, `./~/x` in Bash.
                 out.writes.push(Write {
                     raw: raw.clone(),
@@ -3172,7 +3184,7 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
         let literal = Some(v.to_string());
         if is_static_word(r)
             && v.starts_with('~')
-            && !r.starts_with('~')
+            && !plain_tilde(r)
             && !resolved.contains(&literal)
         {
             // `cd ""~`: home in Zsh, `./~` in Bash.
@@ -3190,6 +3202,18 @@ fn home() -> PathBuf {
 /// remove to nothing, which Zsh removes first (`""~/x` is `$HOME/x` there).
 fn tilde_prefix(raw: &str, value: &str) -> bool {
     strip_empty_quotes(raw).starts_with('~') && value.starts_with('~')
+}
+
+/// Whether `raw` starts with a tilde prefix every shell expands: `~` and a
+/// name or `+`/`-`, unquoted, up to the first `/`. Bash leaves `~''x`
+/// alone; Zsh expands it.
+fn plain_tilde(raw: &str) -> bool {
+    raw.starts_with('~')
+        && !raw
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .contains(['\'', '"', '\\', '$', '`'])
 }
 
 /// `raw` without leading `''`/`""` pairs, which Zsh removes before it
@@ -4659,6 +4683,8 @@ mod tests {
             "echo \"$${x-\"'$(rm F)'\"}\"",
             "echo \"${x:-$'`rm F`'}\"",
             "bash < <(echo rm F)\"\"",
+            "echo \"$${x/$$'(rm F)'/y}\"",
+            "x='a[$(rm F)]'; a=(1); echo ${=a[(e)x]}",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
