@@ -505,6 +505,10 @@ async fn oc_image_tool_saves_with_the_extension_of_the_images_real_format() {
         .to_string();
     assert!(saved.ends_with(".jpg"), "{saved}");
     assert!(saved.contains("/images/ses_test/image_"), "{saved}");
+    assert!(
+        saved.starts_with(&isolate().display().to_string()),
+        "{saved}"
+    );
     assert!(result.contains(saved.trim_end_matches(".jpg")));
     assert!(std::path::Path::new(&saved).exists());
     let _ = std::fs::remove_file(&saved);

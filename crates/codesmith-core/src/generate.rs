@@ -534,19 +534,6 @@ pub async fn text(
         .ok_or_else(|| GenerateError::Unavailable {
             message: "No model specified and no supported model is available".into(),
         })?;
-    let m = config.resolve_model(&spec).map_err(|e| {
-        let (pid, mid, _) = parse_ref(&spec).unwrap_or(("", "", None));
-        if config.provider(pid).is_none() {
-            GenerateError::ModelNotFound {
-                provider: pid.into(),
-                model: mid.into(),
-            }
-        } else {
-            GenerateError::InvalidRequest {
-                message: format!("{e:#}"),
-            }
-        }
-    })?;
     if let Some((pid, mid, _)) = parse_ref(&spec) {
         let kind = config.models_dev.as_ref().and_then(|c| {
             c.catalog()
@@ -560,6 +547,19 @@ pub async fn text(
             return Err(missing(config, pid, mid, "chat"));
         }
     }
+    let m = config.resolve_model(&spec).map_err(|e| {
+        let (pid, mid, _) = parse_ref(&spec).unwrap_or(("", "", None));
+        if config.provider(pid).is_none() {
+            GenerateError::ModelNotFound {
+                provider: pid.into(),
+                model: mid.into(),
+            }
+        } else {
+            GenerateError::InvalidRequest {
+                message: format!("{e:#}"),
+            }
+        }
+    })?;
     // Gateways want a session for attribution even on a stateless call;
     // a fresh id is sent each time and nothing is stored.
     let session = crate::session::new_id();

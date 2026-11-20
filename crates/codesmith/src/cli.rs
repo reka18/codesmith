@@ -51,6 +51,25 @@ enum Command {
     /// Start the minimal interactive interface: the transcript goes to the
     /// terminal's scrollback, with a small live footer for the prompt.
     Mini(MiniArgs),
+    /// One model call outside any session's history (OpenCode's generate
+    /// API): text from a chat model, text from a session's settled
+    /// context (`--session`), or an image (`--image`). Nothing is stored
+    /// but a session's usage.
+    Generate {
+        /// The prompt.
+        prompt: Vec<String>,
+        /// The model as provider/model[#variant] (default: the configured
+        /// model; for `--image`, required).
+        #[arg(short, long)]
+        model: Option<String>,
+        /// Generate from this session's context, adding only its usage.
+        #[arg(long)]
+        session: Option<String>,
+        /// Make an image and save it here (its real extension replaces
+        /// the one given).
+        #[arg(long)]
+        image: Option<PathBuf>,
+    },
     /// List providers and their models, or ask one provider for its models.
     Models {
         /// A provider id: list the models its API reports.
@@ -1245,6 +1264,12 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what).await,
         Some(Command::Acp) => acp::run().await,
+        Some(Command::Generate {
+            prompt,
+            model,
+            session,
+            image,
+        }) => generate_cmd(&cwd, prompt.join(" "), model, session, image).await,
         Some(Command::Automation { what }) => automation_cmd(&cwd, what).await,
         Some(Command::Stats {
             days,
@@ -2191,6 +2216,79 @@ pub(crate) fn take_server_token() {
         }
         std::env::remove_var(var);
     }
+}
+
+async fn generate_cmd(
+    cwd: &std::path::Path,
+    prompt: String,
+    model: Option<String>,
+    session_id: Option<String>,
+    image: Option<PathBuf>,
+) -> Result<()> {
+    use codesmith_core::generate;
+    if prompt.trim().is_empty() {
+        return Err(anyhow!("give a prompt"));
+    }
+    let loaded = config::load(cwd)?;
+    let client = reqwest::Client::new();
+    if let Some(out) = image {
+        let model = model.ok_or_else(|| anyhow!("--image needs --model provider/model"))?;
+        let result = generate::image(
+            &loaded.config,
+            &client,
+            &generate::ImageInput {
+                model,
+                prompt,
+                n: Some(1),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await?;
+        let img = result
+            .images
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("the model returned no image"))?;
+        let ext = codesmith_core::tool::image_generate::extension(&img.mime);
+        let file = PathBuf::from(format!("{}{ext}", out.with_extension("").display()));
+        std::fs::write(&file, &img.data).with_context(|| format!("writing {}", file.display()))?;
+        println!("{}", file.display());
+        return Ok(());
+    }
+    let text = match session_id {
+        Some(id) => {
+            let mut s = Session::new(
+                &loaded,
+                cwd.to_path_buf(),
+                Options {
+                    agent: None,
+                    model,
+                    resume: Some(id),
+                    title: None,
+                    parent: None,
+                    questioner: None,
+                    mcp: None,
+                },
+                Arc::new(Fixed(Reply::Reject(None))),
+                Some(open_store()?),
+            )?;
+            s.generate(&prompt).await?
+        }
+        None => {
+            generate::text(
+                &loaded.config,
+                &client,
+                model.as_deref(),
+                &prompt,
+                Default::default(),
+            )
+            .await?
+            .0
+        }
+    };
+    println!("{text}");
+    Ok(())
 }
 
 fn open_store() -> Result<Store> {

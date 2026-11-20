@@ -51,3 +51,15 @@
 @video-generation.test.ts
 84 :: ported :: tests/oc_video_generate.rs::oc_video_keeps_jobs_across_restarts_and_forgets_them_a_day_after_they_finish :: adapted: the stored videos go with the job's row
 119 :: ported :: tests/oc_video_generate.rs::oc_video_waits_for_a_job_to_finish_and_cancels_a_running_one
+@generate.test.ts
+104 :: ported :: tests/oc_generate.rs::oc_generate_retries_a_stateless_call_the_provider_never_received :: adapted: the one-shot rule driven with a refused connection's error
+139 :: ported :: tests/oc_generate.rs::oc_generate_does_not_retry_a_stateless_failure_the_provider_may_have_run
+158 :: ported :: tests/oc_generate.rs::oc_generate_does_not_retry_stateless_authentication_quota_or_invalid_request_failures
+170 :: ported :: tests/oc_generate.rs::oc_generate_waits_out_a_throttle_and_cancels_without_another_generation :: adapted: provider errors carry no headers, so the schedule's backoff applies instead of retry-after
+190 :: ported :: tests/oc_generate.rs::oc_generate_retries_an_overloaded_provider_at_most_three_times
+224 :: ported :: tests/oc_generate.rs::oc_generate_attributes_each_stateless_completion_without_creating_a_stored_session :: adapted: a fresh session id as the prompt cache key, no gateway session header
+@session-generate.test.ts
+283 :: ported :: tests/oc_generate.rs::oc_session_generates_from_fresh_settled_context_and_records_only_its_usage
+408 :: design :: differs :: one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook
+445 :: ported :: tests/oc_generate.rs::oc_session_regenerates_a_failed_partial_answer_without_mutating_history
+481 :: ported :: tests/oc_generate.rs::oc_session_generate_blocks_unavailable_initial_instructions_before_generation

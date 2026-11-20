@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 98 | 7 | 31 | 190 | 67 | 0 |
+| Session runner | 393 | 111 | 7 | 17 | 191 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1531** | **16** | **276** | **2370** | **1395** | **0** |
+| **Total** | **5588** | **1544** | **16** | **262** | **2371** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -74,12 +74,13 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 
 ## Found bugs and differences
 
-None open: every bug porting found is fixed above.
+Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.
 
+- **Difference to decide**, `session-generate.test.ts` "runs generate hooks instead of context hooks" (1): one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (276 cases in 25 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (262 cases in 24 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -88,7 +89,6 @@ Missing features, by how many OpenCode test cases each would unlock (276 cases i
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
-| [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
@@ -298,21 +298,6 @@ Missing features, by how many OpenCode test cases each would unlock (276 cases i
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-
-### Stateless Generate API
-
-14 cases.
-
-- `generate.test.ts`: retries a stateless call the provider never received
-- `generate.test.ts`: does not retry a stateless ${reason._tag} failure the provider may have run (3 cases)
-- `generate.test.ts`: does not retry stateless ${reason._tag} failures (3 cases)
-- `generate.test.ts`: honors provider backoff and cancels without another generation
-- `generate.test.ts`: retries an overloaded provider at most three times
-- `generate.test.ts`: attributes each stateless completion without creating a stored session
-- `session-generate.test.ts`: generates from fresh settled Session context and records only its usage
-- `session-generate.test.ts`: runs generate hooks instead of context hooks
-- `session-generate.test.ts`: regenerates a failed partial answer without mutating Session history
-- `session-generate.test.ts`: blocks unavailable initial instructions before generation
 
 ### Client-attached MCP Servers
 
@@ -1353,17 +1338,25 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 232 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
+| Behaviour that differs and is for the maintainer to decide (see above) | 1 |
 
 ## Per-test inventory
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (295 of 393)</summary>
+<details><summary>Session runner (309 of 393)</summary>
 
 
 **`generate.test.ts`**
 
-- D loads dynamic AI SDK models · resolves dynamic models with their catalog metadata — platform: dynamic AI SDK models
+- D loads dynamic AI SDK models — platform: dynamic AI SDK models
+- P retries a stateless call the provider never received — `tests/oc_generate.rs::oc_generate_retries_a_stateless_call_the_provider_never_received` (adapted: the one-shot rule driven with a refused connection's error)
+- P does not retry a stateless ${reason._tag} failure the provider may have run ×3 — `tests/oc_generate.rs::oc_generate_does_not_retry_a_stateless_failure_the_provider_may_have_run`
+- P does not retry stateless ${reason._tag} failures ×3 — `tests/oc_generate.rs::oc_generate_does_not_retry_stateless_authentication_quota_or_invalid_request_failures`
+- P honors provider backoff and cancels without another generation — `tests/oc_generate.rs::oc_generate_waits_out_a_throttle_and_cancels_without_another_generation` (adapted: provider errors carry no headers, so the schedule's backoff applies instead of retry-after)
+- P retries an overloaded provider at most three times — `tests/oc_generate.rs::oc_generate_retries_an_overloaded_provider_at_most_three_times`
+- D resolves dynamic models with their catalog metadata — platform: dynamic AI SDK models
+- P attributes each stateless completion without creating a stored session — `tests/oc_generate.rs::oc_generate_attributes_each_stateless_completion_without_creating_a_stored_session` (adapted: a fresh session id as the prompt cache key, no gateway session header)
 - P generates images through the model's image entrypoint with the provider key — `tests/oc_image_generate.rs::oc_generate_generates_images_through_the_models_image_entrypoint_with_the_provider_key`
 - P keeps credential metadata out of image requests — `tests/oc_image_generate.rs::oc_generate_keeps_credential_metadata_out_of_image_requests` (adapted: a catalog provider's key, no Console token)
 - P downloads URL images and detects their type from the bytes — `tests/oc_image_generate.rs::oc_generate_downloads_url_images_and_detects_their_type_from_the_bytes`
@@ -1382,6 +1375,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D classifies success and typed failure terminals · defaults owner-scope interruption to shutdown and preserves explicit reasons — effect-internal: execution terminal classification and owner-scope interruption
 - D resumes a directly driven child after execution teardown · leaves a child parked when its parent is gone or its restart budget is exhausted · claims at execution start, releases on completion, and preserves through teardown · a user interrupt releases the claim so the turn never resurrects · tells the drain once the user stopped it · reports an idle interrupt as a no-op · does not resume a user-cancelled background child whose notification was not admitted · honors a job cancellation persisted before its child could release the claim · starts every claimed execution without waiting for earlier drains to finish · resumes each claimed Session at most once · terminalizes a turn that exhausts its resume budget instead of crash-looping · counts every resume durably and never consumes the claim it recovers · the sweep leaves Sessions already draining in this process untouched · keeps shell owners idle until a user prompt delivers recovered notices exactly once · counts a suspended parent's restart attempt before its shell-woken child can wake it · watches shell jobs whose commands survived the restart · settles a shell call a killed server left running as moved to the background · reattaches once a ${exited ? "finished" : "running"} shell a killed server backgrounded without settling its call ×2 · settles a recovered child's unsettled shell call before the child resumes · preserves locally running background work · wakes the owner for a silent shell failure persisted before its completion notification · delivers an image outcome persisted before its notification, and cancels one still running · waits again for a running video after a restart, then saves it and delivers the notice · does not duplicate a shell notification already ${delivered ? "delivered" : "admitted"} ×2 · acknowledges recovery markers when their owning session is deleted · delivers cancellation at the resumed parent's next step · does not bypass a claimed owner's restart budget for a shell notice · recovers a child's shell ${shellFirst ? "before" : "after"} its job record without bypassing attempt ${resumeAttempts + 1} ×4 · resumes a background subagent and notifies its parent exactly once · delivers a subagent result persisted before restart without rerunning the child · delivers a completed outbox row at boot without touching the child · wakes the parent of an admitted report if the restart sweep fails afterward · reconciles an outbox row whose notification was already delivered · retains a subagent completion marker when synthetic admission conflicts · honors a suspended parent's restart budget after ${resumeAttempts} attempts before notifying it ×2 · terminalizes a recovered subagent that exhausts its resume budget · charges a suspended parent's restart attempt before a fast child can wake it — deliberate: session.rs: subagents run inside the tool call; no background-subagent reports, job claims or restart recovery
 - D resumes only steering input after an interrupt with continue · stays parked after an interrupt with continue when only queued work remains · an idle interrupt with continue resumes pending steers · an interrupt with continue resumes a queued compaction next in line · keeps a control item parked behind a queued prompt on continue — deliberate: session.rs: no steers or queues
+
+**`session-generate.test.ts`**
+
+- P generates from fresh settled Session context and records only its usage — `tests/oc_generate.rs::oc_session_generates_from_fresh_settled_context_and_records_only_its_usage`
+- D runs generate hooks instead of context hooks — differs: one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook
+- P regenerates a failed partial answer without mutating Session history — `tests/oc_generate.rs::oc_session_regenerates_a_failed_partial_answer_without_mutating_history`
+- P blocks unavailable initial instructions before generation — `tests/oc_generate.rs::oc_session_generate_blocks_unavailable_initial_instructions_before_generation`
 
 **`session-run-coordinator.test.ts`**
 

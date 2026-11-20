@@ -7,6 +7,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`codesmith`](#codesmith) | The interactive UI. |
 | [`mini`](#codesmith-mini) | The interactive UI in the terminal's scrollback. |
 | [`run`](#codesmith-run) | Run one prompt and print the result. |
+| [`generate`](#codesmith-generate) | One model call outside any session's history: text or an image. |
 | [`session`](#codesmith-session) | List, export, import, delete, undo, redo, diff sessions; migrate their media. |
 | [`models`](#codesmith-models) | List providers and models. |
 | [`auth`](#codesmith-auth) | Save, list or remove API keys. |
@@ -85,6 +86,22 @@ codesmith run --format json "list the TODOs" | jq .
 Without `--auto`, requests that a rule marks `ask` are asked on the
 terminal. See [answering a request](permissions.md#answering-a-request). The
 `question` tool is not offered without a terminal or with `--auto`.
+
+## `codesmith generate`
+
+```sh
+codesmith generate [-m provider/model] PROMPT          # text from a chat model; nothing is stored
+codesmith generate --session ID PROMPT                 # from that session's context; only its usage is added
+codesmith generate -m provider/model --image out.png PROMPT   # an image, saved with its real extension
+```
+
+A call is retried only when the provider never ran it (a refused
+connection, a throttle, an overloaded server, at most three times), since
+each attempt may be billed. With `--session`, the request is what the
+session's next step would send (its system prompt, history and tools,
+with any instruction change since then as an update) followed by the
+prompt; the history is not changed, and a failure is retried from the
+start like a step.
 
 ## `codesmith session`
 

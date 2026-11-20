@@ -3258,15 +3258,50 @@ impl Session {
     /// switched off (the tools stay declared, and with them the cached
     /// prefix). Nothing is saved to the history; its tokens count toward
     /// the session's usage.
+    ///
+    /// The instructions are read fresh, as a step would read them, without
+    /// recording anything: a change since the last step goes as an update
+    /// before `prompt`, and a session whose instructions cannot be read yet
+    /// fails before anything is sent.
     pub async fn generate(&mut self, prompt: &str) -> Result<String> {
-        let (text, usage) = self.generate_text(prompt).await?;
+        use crate::instruction_state as is;
+        let list = self.instruction_sources()?;
+        let o = is::observe(&list, self.instruction.as_ref())?;
+        let preview = if o.initial {
+            let text = is::join(&is::render_initial(&list, &o.current)?);
+            let system = assemble_system(&self.base_system, &text, self.agent.id == "plan");
+            (Some(system), None)
+        } else {
+            let text = is::update_text(&list, &o)?;
+            (None, (!text.is_empty()).then_some(text))
+        };
+        let (text, usage) = self.generate_with(prompt, preview).await?;
         self.count_side_call(usage)?;
+        if let (Some(s), true) = (&self.store, self.stored) {
+            self.save_usage(s);
+        }
         Ok(text)
     }
 
     /// [`Session::generate`] without counting its usage.
     async fn generate_text(&self, prompt: &str) -> Result<(String, Usage)> {
+        self.generate_with(prompt, (None, None)).await
+    }
+
+    /// A side request with `preview`'s system prompt (when it has one) and
+    /// instruction update (when there is one) before `prompt`.
+    async fn generate_with(
+        &self,
+        prompt: &str,
+        preview: (Option<String>, Option<String>),
+    ) -> Result<(String, Usage)> {
         let (mut req, _) = self.request_for(crate::plugin::RequestKind::Generate);
+        if let Some(system) = preview.0 {
+            req.system = system;
+        }
+        if let Some(update) = preview.1 {
+            req.messages.push(Message::system(update));
+        }
         req.messages.push(Message::user(prompt));
         req.tool_choice = Some(codesmith_ai::ToolChoice::None);
         req.interaction = codesmith_ai::Interaction::Background;

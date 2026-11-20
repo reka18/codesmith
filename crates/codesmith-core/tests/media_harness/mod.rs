@@ -188,8 +188,26 @@ pub fn provider(id: &str, _package: &str, models: Vec<Value>) -> (String, Value)
     )
 }
 
+/// Point home, config and data at a scratch folder for the whole test
+/// binary, so generated files and saved keys never touch the user's.
+pub fn isolate() -> std::path::PathBuf {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let base = std::env::temp_dir().join(format!("codesmith-media-{}", std::process::id()));
+    ONCE.call_once(|| {
+        for d in ["home", "config", "data"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        std::env::set_var("HOME", base.join("home"));
+        std::env::set_var("CODESMITH_CONFIG_DIR", base.join("config"));
+        std::env::set_var("XDG_DATA_HOME", base.join("data"));
+        std::env::set_var("CODESMITH_DISABLE_CLAUDE_CODE", "1");
+    });
+    base
+}
+
 /// A config over `providers` (the catalog), with keys for `keyed`.
 pub fn config(providers: Vec<(String, Value)>, keyed: &[&str], extra: Value) -> Config {
+    isolate();
     let source: serde_json::Map<String, Value> = providers.into_iter().collect();
     let snaps = catalog::decode_snapshot(&Value::Object(source).to_string()).unwrap();
     let mut c = json!({"snapshots": false, "providers": {}});
