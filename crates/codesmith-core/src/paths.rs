@@ -26,6 +26,11 @@ pub fn data_dir() -> PathBuf {
     xdg("XDG_DATA_HOME", ".local/share").join("codesmith")
 }
 
+/// API keys saved with `codesmith auth login`.
+pub fn auth_file() -> PathBuf {
+    data_dir().join("auth.json")
+}
+
 /// Full tool outputs that were too large to show inline.
 pub fn tool_output_dir() -> PathBuf {
     data_dir().join("tool-output")

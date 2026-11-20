@@ -314,25 +314,121 @@ pub struct ModelRef {
     pub temperature: Option<f32>,
 }
 
+/// Built-in providers: (id, name, protocol, base URL, key variables).
+/// Local servers need no key.
+pub const BUILTIN: &[(&str, &str, Protocol, &str, &[&str])] = &[
+    (
+        "anthropic",
+        "Anthropic",
+        Protocol::AnthropicMessages,
+        "https://api.anthropic.com/v1",
+        &["ANTHROPIC_API_KEY"],
+    ),
+    (
+        "openai",
+        "OpenAI",
+        Protocol::OpenaiResponses,
+        "https://api.openai.com/v1",
+        &["OPENAI_API_KEY"],
+    ),
+    (
+        "google",
+        "Google Gemini",
+        Protocol::GoogleGemini,
+        "https://generativelanguage.googleapis.com/v1beta",
+        &[
+            "GEMINI_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+            "GOOGLE_API_KEY",
+        ],
+    ),
+    (
+        "openrouter",
+        "OpenRouter",
+        Protocol::OpenaiChat,
+        "https://openrouter.ai/api/v1",
+        &["OPENROUTER_API_KEY"],
+    ),
+    (
+        "groq",
+        "Groq",
+        Protocol::OpenaiChat,
+        "https://api.groq.com/openai/v1",
+        &["GROQ_API_KEY"],
+    ),
+    (
+        "deepseek",
+        "DeepSeek",
+        Protocol::OpenaiChat,
+        "https://api.deepseek.com/v1",
+        &["DEEPSEEK_API_KEY"],
+    ),
+    (
+        "mistral",
+        "Mistral",
+        Protocol::OpenaiChat,
+        "https://api.mistral.ai/v1",
+        &["MISTRAL_API_KEY"],
+    ),
+    (
+        "xai",
+        "xAI",
+        Protocol::OpenaiChat,
+        "https://api.x.ai/v1",
+        &["XAI_API_KEY"],
+    ),
+    (
+        "together",
+        "Together AI",
+        Protocol::OpenaiChat,
+        "https://api.together.xyz/v1",
+        &["TOGETHER_API_KEY"],
+    ),
+    (
+        "fireworks",
+        "Fireworks AI",
+        Protocol::OpenaiChat,
+        "https://api.fireworks.ai/inference/v1",
+        &["FIREWORKS_API_KEY"],
+    ),
+    (
+        "cerebras",
+        "Cerebras",
+        Protocol::OpenaiChat,
+        "https://api.cerebras.ai/v1",
+        &["CEREBRAS_API_KEY"],
+    ),
+    (
+        "ollama",
+        "Ollama (local)",
+        Protocol::OpenaiChat,
+        "http://127.0.0.1:11434/v1",
+        &[],
+    ),
+    (
+        "lmstudio",
+        "LM Studio (local)",
+        Protocol::OpenaiChat,
+        "http://127.0.0.1:1234/v1",
+        &[],
+    ),
+    (
+        "llamacpp",
+        "llama.cpp server (local)",
+        Protocol::OpenaiChat,
+        "http://127.0.0.1:8080/v1",
+        &[],
+    ),
+];
+
 fn builtin(id: &str) -> Option<ProviderConfig> {
-    let (protocol, url, env) = match id {
-        "anthropic" => (
-            Protocol::AnthropicMessages,
-            "https://api.anthropic.com/v1",
-            "ANTHROPIC_API_KEY",
-        ),
-        "openai" => (
-            Protocol::OpenaiChat,
-            "https://api.openai.com/v1",
-            "OPENAI_API_KEY",
-        ),
-        _ => return None,
-    };
+    let (_, name, protocol, url, env) = BUILTIN.iter().find(|b| b.0 == id)?;
     Some(ProviderConfig {
-        protocol: Some(protocol),
-        env: vec![env.to_string()],
+        name: Some(name.to_string()),
+        protocol: Some(*protocol),
+        env: env.iter().map(|s| s.to_string()).collect(),
         settings: ProviderSettings {
-            base_url: Some(url.into()),
+            base_url: Some(url.to_string()),
             api_key: None,
         },
         ..Default::default()
@@ -385,7 +481,8 @@ impl Config {
                 p.env
                     .iter()
                     .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()))
-            });
+            })
+            .or_else(|| crate::auth::key(pid));
         let m = p.models.get(mid).cloned().unwrap_or_default();
         let mut body = p.body.clone();
         body.extend(m.body.clone());
@@ -518,7 +615,22 @@ mod tests {
         .unwrap();
         let m = c.resolve_model("openai/gpt-x").unwrap();
         assert_eq!(m.provider.base_url, "http://proxy/v1");
-        assert_eq!(m.provider.protocol, Protocol::OpenaiChat);
+        assert_eq!(m.provider.protocol, Protocol::OpenaiResponses);
+        let g = Config::default().resolve_model("google/gemini-x").unwrap();
+        assert_eq!(g.provider.protocol, Protocol::GoogleGemini);
+        let o = Config::default().resolve_model("ollama/qwen3").unwrap();
+        assert_eq!(
+            (o.provider.base_url.as_str(), o.provider.protocol),
+            ("http://127.0.0.1:11434/v1", Protocol::OpenaiChat)
+        );
+        let c: Config =
+            serde_json::from_value(json!({"providers": {"openai": {"protocol": "openai-chat"}}}))
+                .unwrap();
+        assert_eq!(
+            c.resolve_model("openai/gpt-x").unwrap().provider.protocol,
+            Protocol::OpenaiChat,
+            "the protocol can be switched back"
+        );
     }
 
     #[test]

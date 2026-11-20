@@ -325,6 +325,7 @@ dependencies = [
  "codesmith-ai",
  "codesmith-core",
  "ratatui",
+ "reqwest",
  "serde_json",
  "textwrap",
  "tokio",

@@ -137,7 +137,7 @@ commas allowed), lowest to highest precedence:
   "model": "local/qwen3-coder",
   "providers": {
     "local": {
-      "protocol": "openai-chat",            // or "anthropic-messages"
+      "protocol": "openai-chat",            // or openai-responses, anthropic-messages, google-gemini
       "settings": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "{env:LOCAL_API_KEY}" },
       "body": { "chat_template_kwargs": { "enable_thinking": false } },
       "models": { "qwen3-coder": { "limit": { "context": 32768, "output": 8192 } } }
@@ -177,6 +177,21 @@ reading `.env` files, which asks.
 directory (with `CLAUDE.md` as a fallback), plus
 `~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
+## Providers
+
+Built in, with the key read from the usual environment variable:
+`anthropic`, `openai` (Responses API), `google` (Gemini), `openrouter`, `groq`,
+`deepseek`, `mistral`, `xai`, `together`, `fireworks`, `cerebras`, and local
+servers that need no key: `ollama`, `lmstudio`, `llamacpp`. Any
+OpenAI-compatible server can be added under `providers` as above.
+
+- `codesmith models` lists providers and configured models;
+  `codesmith models <provider>` asks that provider's API for its models.
+- `codesmith auth login <provider>` saves a key on this machine (in the data
+  dir's `auth.json`, owner-only); `auth list` shows where each provider's key
+  comes from and `auth logout` removes one. Config and environment variables
+  take precedence over saved keys.
+
 ## MCP servers
 
 Tools from [Model Context Protocol](https://modelcontextprotocol.io) servers
@@ -208,7 +223,7 @@ server's tools from the model.
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
 3. ~~Interactive terminal UI~~; local server API
-4. ~~MCP (stdio and HTTP tools)~~, MCP OAuth, more providers and logins, formatters, worktrees, stats
+4. ~~MCP (stdio and HTTP tools)~~, MCP OAuth, ~~more providers, saved keys~~ and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
 
 ## License

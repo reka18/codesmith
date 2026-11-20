@@ -2,7 +2,9 @@
 //! into a stream of provider-neutral `Event`s.
 
 mod anthropic;
+mod gemini;
 mod openai;
+mod responses;
 mod sse;
 
 use futures_util::stream::BoxStream;
@@ -100,6 +102,10 @@ pub enum Protocol {
     OpenaiChat,
     /// Anthropic Messages.
     AnthropicMessages,
+    /// OpenAI Responses (stateless; nothing stored server-side).
+    OpenaiResponses,
+    /// Google Gemini generateContent.
+    GoogleGemini,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -151,8 +157,75 @@ impl Provider {
         match self.protocol {
             Protocol::OpenaiChat => openai::stream(self, client, req).await,
             Protocol::AnthropicMessages => anthropic::stream(self, client, req).await,
+            Protocol::OpenaiResponses => responses::stream(self, client, req).await,
+            Protocol::GoogleGemini => gemini::stream(self, client, req).await,
         }
     }
+}
+
+impl Provider {
+    /// Model ids the provider reports, sorted.
+    pub async fn list_models(&self, client: &reqwest::Client) -> Result<Vec<String>, Error> {
+        let base = self.base_url.trim_end_matches('/');
+        let mut rb = match self.protocol {
+            Protocol::GoogleGemini => client.get(format!("{base}/models?pageSize=1000")),
+            _ => client.get(format!("{base}/models")),
+        };
+        if let Some(k) = &self.api_key {
+            rb = match self.protocol {
+                Protocol::AnthropicMessages => rb
+                    .header("x-api-key", k)
+                    .header("anthropic-version", anthropic::VERSION),
+                Protocol::GoogleGemini => rb.header("x-goog-api-key", k),
+                _ => rb.bearer_auth(k),
+            };
+        }
+        for (k, v) in &self.headers {
+            rb = rb.header(k, v);
+        }
+        let resp = rb.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body: text.chars().take(2000).collect(),
+            });
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(model_ids(self.protocol, &v))
+    }
+}
+
+pub(crate) fn model_ids(protocol: Protocol, v: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = match protocol {
+        Protocol::GoogleGemini => v["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| {
+                m["supportedGenerationMethods"]
+                    .as_array()
+                    .map(|a| a.iter().any(|x| x == "generateContent"))
+                    .unwrap_or(true)
+            })
+            .filter_map(|m| {
+                m["name"]
+                    .as_str()
+                    .map(|n| n.trim_start_matches("models/").to_string())
+            })
+            .collect(),
+        _ => v["data"]
+            .as_array()
+            .or(v["models"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["id"].as_str().or(m["name"].as_str()).map(str::to_string))
+            .collect(),
+    };
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Send a JSON POST and fail with the status and a bounded body on non-2xx.
@@ -219,6 +292,34 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Protocol>("anthropic-messages".into()).unwrap(),
             Protocol::AnthropicMessages
+        );
+        for (name, p) in [
+            ("openai-responses", Protocol::OpenaiResponses),
+            ("google-gemini", Protocol::GoogleGemini),
+        ] {
+            assert_eq!(serde_json::from_value::<Protocol>(name.into()).unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn model_listings() {
+        use serde_json::json;
+        assert_eq!(
+            model_ids(
+                Protocol::OpenaiChat,
+                &json!({"data": [{"id": "b"}, {"id": "a"}]})
+            ),
+            ["a", "b"]
+        );
+        assert_eq!(
+            model_ids(
+                Protocol::GoogleGemini,
+                &json!({"models": [
+                    {"name": "models/gemini-x", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/embed", "supportedGenerationMethods": ["embedContent"]}
+                ]})
+            ),
+            ["gemini-x"]
         );
     }
 

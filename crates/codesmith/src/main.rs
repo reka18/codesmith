@@ -46,8 +46,16 @@ struct Cli {
 enum Command {
     /// Run one prompt non-interactively and print the result.
     Run(RunArgs),
-    /// List configured providers and models.
-    Models,
+    /// List providers and configured models, or ask one provider for its models.
+    Models {
+        /// A provider id: list the models its API reports.
+        provider: Option<String>,
+    },
+    /// Save, list or remove API keys stored on this machine.
+    Auth {
+        #[command(subcommand)]
+        what: AuthCmd,
+    },
     /// List commands available as `codesmith run /name ...`.
     Commands,
     /// Show MCP servers and their tools.
@@ -98,6 +106,16 @@ struct RunArgs {
     /// Title for a new session (otherwise one is generated).
     #[arg(long)]
     title: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum AuthCmd {
+    /// Save an API key for a provider (read from the terminal without echo, or from stdin).
+    Login { provider: String },
+    /// List providers with saved keys and where each provider's key comes from.
+    List,
+    /// Remove a saved key.
+    Logout { provider: String },
 }
 
 #[derive(Subcommand)]
@@ -335,10 +353,25 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Some(Command::Models) => {
+        Some(Command::Models {
+            provider: Some(pid),
+        }) => {
+            let loaded = config::load(&cwd)?;
+            let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
+            let ids = m
+                .provider
+                .list_models(&reqwest::Client::new())
+                .await
+                .map_err(|e| anyhow!("listing {pid} models: {e}"))?;
+            for id in ids {
+                println!("{pid}/{id}");
+            }
+            Ok(())
+        }
+        Some(Command::Models { provider: None }) => {
             let loaded = config::load(&cwd)?;
             let c = &loaded.config;
-            let mut ids: Vec<String> = vec!["anthropic".into(), "openai".into()];
+            let mut ids: Vec<String> = config::BUILTIN.iter().map(|b| b.0.to_string()).collect();
             ids.extend(
                 c.providers
                     .keys()
@@ -348,8 +381,9 @@ async fn run(cli: Cli) -> Result<()> {
             );
             for id in ids {
                 let p = c.provider(&id).unwrap_or_default();
+                let name = p.name.clone().unwrap_or_else(|| id.clone());
                 if p.models.is_empty() {
-                    println!("{id}/*");
+                    println!("{id}/*  ({name}; `codesmith models {id}` lists its models)");
                 }
                 for m in p.models.keys() {
                     println!("{id}/{m}");
@@ -360,6 +394,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Auth { what }) => auth_cmd(&cwd, what),
         Some(Command::Session { what }) => session_cmd(cwd, what),
         Some(Command::Debug { what }) => debug(cwd, what),
     }
@@ -503,6 +538,89 @@ fn stdin_has_input() -> bool {
     }
     #[cfg(not(unix))]
     true
+}
+
+fn read_secret(prompt: &str) -> Result<String> {
+    let mut line = String::new();
+    if std::io::stdin().is_terminal() {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+        let _ = std::process::Command::new("stty")
+            .arg("-echo")
+            .stdin(std::process::Stdio::inherit())
+            .status();
+        let r = std::io::stdin().read_line(&mut line);
+        let _ = std::process::Command::new("stty")
+            .arg("echo")
+            .stdin(std::process::Stdio::inherit())
+            .status();
+        eprintln!();
+        r?;
+    } else {
+        std::io::stdin().read_to_string(&mut line)?;
+    }
+    Ok(line.trim().to_string())
+}
+
+fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
+    use codesmith_core::auth;
+    let file = paths::auth_file();
+    match what {
+        AuthCmd::Login { provider } => {
+            let key = read_secret(&format!("API key for {provider}: "))?;
+            if key.is_empty() {
+                return Err(anyhow!("no key entered"));
+            }
+            auth::set_in(&file, &provider, &key)?;
+            println!("Saved a key for {provider} in {}", file.display());
+            let loaded = config::load(cwd)?;
+            if loaded.config.provider(&provider).is_none() {
+                println!("note: {provider} is not a built-in provider; add it under \"providers\" in codesmith.json to use it");
+            }
+        }
+        AuthCmd::List => {
+            let loaded = config::load(cwd)?;
+            let c = &loaded.config;
+            let saved = auth::providers_in(&file);
+            let mut ids: Vec<String> = config::BUILTIN.iter().map(|b| b.0.to_string()).collect();
+            ids.extend(
+                c.providers
+                    .keys()
+                    .chain(saved.iter())
+                    .filter(|k| !ids.contains(k))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            ids.dedup();
+            for id in ids {
+                let p = c.provider(&id).unwrap_or_default();
+                let source = if p.settings.api_key.as_deref().is_some_and(|k| !k.is_empty()) {
+                    "config".to_string()
+                } else if let Some(v) = p
+                    .env
+                    .iter()
+                    .find(|v| std::env::var(v).is_ok_and(|k| !k.is_empty()))
+                {
+                    format!("${v}")
+                } else if let Some(k) = auth::key_in(&file, &id) {
+                    format!("saved {}", auth::mask(&k))
+                } else if p.env.is_empty() {
+                    "none needed".into()
+                } else {
+                    "—".into()
+                };
+                println!("{id:<12} {source}");
+            }
+        }
+        AuthCmd::Logout { provider } => {
+            if auth::remove_in(&file, &provider)? {
+                println!("Removed the saved key for {provider}");
+            } else {
+                println!("No saved key for {provider}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Connect to the configured MCP servers, warning about any that fail.

@@ -7,7 +7,7 @@ use crate::{
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
-const VERSION: &str = "2023-06-01";
+pub(crate) const VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 32_000;
 
 pub fn body(req: &Request) -> Value {
