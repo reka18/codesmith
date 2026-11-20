@@ -640,3 +640,596 @@ async fn oc_write_external_symlink_target_needs_external_approval() {
     assert_eq!(env.rec.actions(), ["external_directory", "edit"]);
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "after");
 }
+
+// --- tool-read-filesystem.test.ts ---
+
+/// "ReadTool text serialization": every case of the table, checked against
+/// the text the model sees.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_text_serialization() {
+    // (name, content, offset, limit, what the model sees)
+    type Case = (
+        &'static str,
+        &'static str,
+        Option<u64>,
+        Option<u64>,
+        &'static str,
+    );
+    let cases: &[Case] = &[
+        (
+            "reads a partial GIF signature as text",
+            "GIF8 is text",
+            None,
+            None,
+            "Read file lines.txt, lines 1-1\n1: GIF8 is text",
+        ),
+        (
+            "preserves a selected trailing blank line before continuation",
+            "alpha\n\nomega\n",
+            Some(1),
+            Some(2),
+            "Read file lines.txt, lines 1-2\n1: alpha\n2: \n[Output truncated. Continue reading with offset: 3]",
+        ),
+        (
+            "preserves multiple selected trailing blank lines at a noninitial offset",
+            "before\nalpha\n\n\nomega\n",
+            Some(2),
+            Some(3),
+            "Read file lines.txt, lines 2-4\n2: alpha\n3: \n4: \n[Output truncated. Continue reading with offset: 5]",
+        ),
+        (
+            "preserves a selected trailing blank line at EOF",
+            "alpha\n\n",
+            None,
+            Some(2),
+            "Read file lines.txt, lines 1-2\n1: alpha\n2: ",
+        ),
+        (
+            "preserves internal blank lines in a page",
+            "alpha\n\nomega\n",
+            None,
+            Some(3),
+            "Read file lines.txt, lines 1-3\n1: alpha\n2: \n3: omega",
+        ),
+        (
+            "preserves continuation for a nonblank page",
+            "alpha\n\nomega\n",
+            None,
+            Some(1),
+            "Read file lines.txt, lines 1-1\n1: alpha\n[Output truncated. Continue reading with offset: 2]",
+        ),
+        (
+            "strips only the terminal file newline in a whole-file read",
+            "alpha\n\n",
+            None,
+            None,
+            "Read file lines.txt, lines 1-2\n1: alpha\n2: ",
+        ),
+        (
+            "does not add a line for a whole-file terminal newline",
+            "alpha\n",
+            None,
+            None,
+            "Read file lines.txt, lines 1-1\n1: alpha",
+        ),
+        (
+            "preserves a whole-file read without a terminal newline",
+            "alpha",
+            None,
+            None,
+            "Read file lines.txt, lines 1-1\n1: alpha",
+        ),
+        (
+            "preserves empty whole-file output",
+            "",
+            None,
+            None,
+            "Read file lines.txt, 0 lines",
+        ),
+        (
+            "preserves empty-file page output",
+            "",
+            None,
+            Some(2),
+            "Read file lines.txt, 0 lines",
+        ),
+        (
+            "numbers the only blank line in a newline-only file",
+            "\n",
+            None,
+            Some(1),
+            "Read file lines.txt, lines 1-1\n1: ",
+        ),
+        (
+            "keeps the newline of a whole newline-only file",
+            "\n",
+            None,
+            None,
+            "Read file lines.txt, lines 1-1\n1: ",
+        ),
+        (
+            "numbers a single blank line before continuation",
+            "alpha\n\nomega\n",
+            Some(2),
+            Some(1),
+            "Read file lines.txt, lines 2-2\n2: \n[Output truncated. Continue reading with offset: 3]",
+        ),
+        (
+            "counts the last blank line when an offset is past EOF",
+            "alpha\n\n",
+            Some(9),
+            Some(1),
+            "Read file lines.txt, lines 2-2 (offset 9 is past the end; the file has 2 lines)\n2: ",
+        ),
+    ];
+    let mut failures = vec![];
+    for (name, content, offset, limit, model) in cases {
+        let env = Env::new();
+        env.write("lines.txt", content);
+        let mut input = json!({"path": "lines.txt"});
+        if let Some(o) = offset {
+            input["offset"] = json!(o);
+        }
+        if let Some(l) = limit {
+            input["limit"] = json!(l);
+        }
+        let (out, err) = env.call("read", input).await;
+        if err || out != *model {
+            failures.push(format!("{name}:\n  got  {out:?}\n  want {model:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Reads `name` (written with `content`) and splits what the model sees
+/// into lines; `Err` when the read failed.
+async fn read_lines(
+    env: &Env,
+    name: &str,
+    content: &[u8],
+    offset: Option<i64>,
+    limit: Option<u64>,
+) -> Result<Vec<String>, String> {
+    std::fs::write(env.root().join(name), content).unwrap();
+    let mut input = json!({"path": name});
+    if let Some(o) = offset {
+        input["offset"] = json!(o);
+    }
+    if let Some(l) = limit {
+        input["limit"] = json!(l);
+    }
+    let (out, err) = env.call("read", input).await;
+    if err {
+        Err(out)
+    } else {
+        Ok(out.split('\n').map(String::from).collect())
+    }
+}
+
+fn numbered(lines: &[String], from: usize, to: usize) -> Vec<String> {
+    (from..=to)
+        .map(|n| format!("{n}: {}", lines[n - 1]))
+        .collect()
+}
+
+fn padded(count: usize, width: usize, fill: char) -> Vec<String> {
+    (1..=count)
+        .map(|i| {
+            let mut s = i.to_string();
+            while s.len() < width {
+                s.push(fill);
+            }
+            s
+        })
+        .collect()
+}
+
+/// "returns the last lines when the offset is past the end"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_returns_the_last_lines_when_the_offset_is_past_the_end() {
+    let env = Env::new();
+    assert_eq!(
+        read_lines(
+            &env,
+            "short.txt",
+            b"one\ntwo\nthree\nfour\nfive\n",
+            Some(9),
+            Some(2)
+        )
+        .await
+        .unwrap(),
+        [
+            "Read file short.txt, lines 4-5 (offset 9 is past the end; the file has 5 lines)",
+            "4: four",
+            "5: five"
+        ]
+    );
+    assert_eq!(
+        read_lines(&env, "empty.txt", b"", Some(5), None)
+            .await
+            .unwrap(),
+        ["Read file empty.txt, 0 lines (offset 5 is past the end; the file has 0 lines)"]
+    );
+    let long = padded(1_800, 1_000, 'x');
+    let tail = read_lines(
+        &env,
+        "long.txt",
+        long.join("\n").as_bytes(),
+        Some(2_000),
+        Some(2_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        [tail[0].as_str(), tail.last().unwrap().as_str()],
+        [
+            "Read file long.txt, lines 1750-1800 (offset 2000 is past the end; the file has 1800 lines)",
+            format!("1800: {}", long[1_799]).as_str()
+        ]
+    );
+}
+
+/// "returns the last lines of a file larger than the first chunk when the
+/// offset is past the end"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_returns_the_last_lines_of_a_large_file_past_the_end() {
+    let env = Env::new();
+    let lines = padded(3_000, 100, 'x');
+    let head = |name: &str, from: usize, to: usize| {
+        format!(
+            "Read file {name}, lines {from}-{to} (offset {{}} is past the end; the file has 3000 lines)"
+        )
+    };
+    let lf = read_lines(
+        &env,
+        "lf.txt",
+        format!("{}\n", lines.join("\n")).as_bytes(),
+        Some(5_000),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(lf[0], head("lf.txt", 2_901, 3_000).replace("{}", "5000"));
+    assert_eq!(lf[1..], numbered(&lines, 2_901, 3_000)[..]);
+    let un = read_lines(
+        &env,
+        "unterminated.txt",
+        lines.join("\n").as_bytes(),
+        Some(3_001),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        un[0],
+        head("unterminated.txt", 2_901, 3_000).replace("{}", "3001")
+    );
+    assert_eq!(un[1..], numbered(&lines, 2_901, 3_000)[..]);
+    let crlf = read_lines(
+        &env,
+        "crlf.txt",
+        format!("{}\r\n", lines.join("\r\n")).as_bytes(),
+        Some(3_001),
+        Some(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        crlf[0],
+        head("crlf.txt", 2_996, 3_000).replace("{}", "3001")
+    );
+    assert_eq!(crlf[1..], numbered(&lines, 2_996, 3_000)[..]);
+    let one = read_lines(
+        &env,
+        "crlf-unterminated.txt",
+        lines.join("\r\n").as_bytes(),
+        Some(4_000),
+        Some(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        one,
+        [
+            head("crlf-unterminated.txt", 3_000, 3_000).replace("{}", "4000"),
+            format!("3000: {}", lines[2_999])
+        ]
+    );
+    // A mid-file byte order mark is line content.
+    let mut marked = lines.clone();
+    marked[2_900] = format!("\u{feff}{}", lines[2_900]);
+    let bom = read_lines(
+        &env,
+        "bom.txt",
+        marked.join("\n").as_bytes(),
+        Some(3_001),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(bom[1], format!("2901: \u{feff}{}", lines[2_900]));
+    let huge = read_lines(
+        &env,
+        "huge-last.txt",
+        format!("{}\n{}", lines[..10].join("\n"), "z".repeat(300 * 1024)).as_bytes(),
+        Some(12),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut want = vec![
+        "Read file huge-last.txt, lines 1-11 (offset 12 is past the end; the file has 11 lines)"
+            .to_string(),
+    ];
+    want.extend(numbered(&lines, 1, 10));
+    want.push(format!(
+        "11: {}... (line truncated to 2000 chars)",
+        "z".repeat(2_000)
+    ));
+    assert_eq!(huge, want);
+    let wide = padded(200, 3_000, 'w');
+    let capped = read_lines(
+        &env,
+        "wide.txt",
+        format!("{}\n", wide.join("\n")).as_bytes(),
+        Some(201),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        capped[0],
+        "Read file wide.txt, lines 176-200 (offset 201 is past the end; the file has 200 lines)"
+    );
+    let want: Vec<String> = (176..=200)
+        .map(|n| {
+            format!(
+                "{n}: {}... (line truncated to 2000 chars)",
+                &wide[n - 1][..2_000]
+            )
+        })
+        .collect();
+    assert_eq!(capped[1..], want[..]);
+    let mut early = lines.join("\n").into_bytes();
+    early[10] = 0;
+    let err = read_lines(&env, "early-nul.txt", &early, Some(3_001), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err, "Cannot read binary file: early-nul.txt");
+}
+
+/// "starts a negative offset that many lines before the end"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_starts_a_negative_offset_that_many_lines_before_the_end() {
+    let env = Env::new();
+    let small = b"one\ntwo\nthree\nfour\nfive\n";
+    assert_eq!(
+        read_lines(&env, "small.txt", small, Some(-3), None)
+            .await
+            .unwrap(),
+        [
+            "Read file small.txt, lines 3-5",
+            "3: three",
+            "4: four",
+            "5: five"
+        ]
+    );
+    assert_eq!(
+        read_lines(&env, "all.txt", small, Some(-50), None)
+            .await
+            .unwrap(),
+        [
+            "Read file all.txt, lines 1-5",
+            "1: one",
+            "2: two",
+            "3: three",
+            "4: four",
+            "5: five"
+        ]
+    );
+    assert_eq!(
+        read_lines(&env, "limited.txt", small, Some(-4), Some(2))
+            .await
+            .unwrap(),
+        [
+            "Read file limited.txt, lines 2-3",
+            "2: two",
+            "3: three",
+            "[Output truncated. Continue reading with offset: 4]"
+        ]
+    );
+    assert_eq!(
+        read_lines(&env, "crlf.txt", b"one\r\ntwo\r\nthree\r\n", Some(-2), None)
+            .await
+            .unwrap(),
+        ["Read file crlf.txt, lines 2-3", "2: two", "3: three"]
+    );
+    assert_eq!(
+        read_lines(&env, "unterminated.txt", b"one\ntwo\nthree", Some(-1), None)
+            .await
+            .unwrap(),
+        ["Read file unterminated.txt, lines 3-3", "3: three"]
+    );
+    assert_eq!(
+        read_lines(&env, "empty.txt", b"", Some(-5), None)
+            .await
+            .unwrap(),
+        ["Read file empty.txt, 0 lines"]
+    );
+}
+
+/// "starts a negative offset from the end of a file larger than the first chunk"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_starts_a_negative_offset_from_the_end_of_a_large_file() {
+    let env = Env::new();
+    let lines = padded(3_000, 100, 'x');
+    let content = format!("{}\n", lines.join("\n"));
+    let lf = read_lines(&env, "lf.txt", content.as_bytes(), Some(-50), None)
+        .await
+        .unwrap();
+    assert_eq!(lf[0], "Read file lf.txt, lines 2951-3000");
+    assert_eq!(lf[1..], numbered(&lines, 2_951, 3_000)[..]);
+    let window = read_lines(&env, "window.txt", content.as_bytes(), Some(-50), Some(10))
+        .await
+        .unwrap();
+    let mut want = vec!["Read file window.txt, lines 2951-2960".to_string()];
+    want.extend(numbered(&lines, 2_951, 2_960));
+    want.push("[Output truncated. Continue reading with offset: 2961]".into());
+    assert_eq!(window, want);
+    let crlf = read_lines(
+        &env,
+        "crlf.txt",
+        lines.join("\r\n").as_bytes(),
+        Some(-3),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(crlf[0], "Read file crlf.txt, lines 2998-3000");
+    assert_eq!(crlf[1..], numbered(&lines, 2_998, 3_000)[..]);
+    let whole = read_lines(&env, "whole.txt", content.as_bytes(), Some(-5_000), None)
+        .await
+        .unwrap();
+    let n = whole.len();
+    assert_eq!(
+        [&whole[0], &whole[n - 2], &whole[n - 1]],
+        [
+            "Read file whole.txt, lines 1-506",
+            &format!("506: {}", lines[505]),
+            "[Output truncated. Continue reading with offset: 507]"
+        ]
+    );
+    let wide = padded(200, 3_000, 'w');
+    let clipped = read_lines(
+        &env,
+        "wide.txt",
+        format!("{}\n", wide.join("\n")).as_bytes(),
+        Some(-100),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        [clipped[0].as_str(), clipped.last().unwrap().as_str()],
+        [
+            "Read file wide.txt, lines 101-125",
+            "[Output truncated. Continue reading with offset: 126]"
+        ]
+    );
+}
+
+/// "reads the end of a file many chunks long"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_reads_the_end_of_a_file_many_chunks_long() {
+    let env = Env::new();
+    let lines = padded(60_000, 50, 'x');
+    let content = format!("{}\n", lines.join("\n"));
+    let mut want = vec!["Read file negative.txt, lines 59996-60000".to_string()];
+    want.extend(numbered(&lines, 59_996, 60_000));
+    assert_eq!(
+        read_lines(&env, "negative.txt", content.as_bytes(), Some(-5), None)
+            .await
+            .unwrap(),
+        want
+    );
+    let mut want = vec![
+        "Read file past.txt, lines 59998-60000 (offset 70000 is past the end; the file has 60000 lines)"
+            .to_string(),
+    ];
+    want.extend(numbered(&lines, 59_998, 60_000));
+    assert_eq!(
+        read_lines(&env, "past.txt", content.as_bytes(), Some(70_000), Some(3))
+            .await
+            .unwrap(),
+        want
+    );
+    let mut want = vec!["Read file deep.txt, lines 45000-45001".to_string()];
+    want.extend(numbered(&lines, 45_000, 45_001));
+    want.push("[Output truncated. Continue reading with offset: 45002]".into());
+    assert_eq!(
+        read_lines(&env, "deep.txt", content.as_bytes(), Some(45_000), Some(2))
+            .await
+            .unwrap(),
+        want
+    );
+    let mut want = vec!["Read file far.txt, lines 50001-50003".to_string()];
+    want.extend(numbered(&lines, 50_001, 50_003));
+    want.push("[Output truncated. Continue reading with offset: 50004]".into());
+    assert_eq!(
+        read_lines(&env, "far.txt", content.as_bytes(), Some(-10_000), Some(3))
+            .await
+            .unwrap(),
+        want
+    );
+    let mut early = content.into_bytes();
+    early[10] = 0;
+    for (name, offset) in [("early-nul.txt", -5), ("early-nul-past.txt", 70_000)] {
+        let err = read_lines(&env, name, &early, Some(offset), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err, format!("Cannot read binary file: {name}"));
+    }
+}
+
+/// "reads malformed UTF-8 lossily and still rejects null-byte binary content"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_reads_malformed_utf8_lossily_and_rejects_binary() {
+    let env = Env::new();
+    let err = read_lines(&env, "archive.dat", &[0, 1, 2, 3], None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err, "Cannot read binary file: archive.dat");
+    assert_eq!(
+        read_lines(&env, "malformed.txt", &[0x68, 0x69, 0x80], None, None)
+            .await
+            .unwrap(),
+        ["Read file malformed.txt, lines 1-1", "1: hi\u{FFFD}"]
+    );
+}
+
+/// "reads text despite a binary-associated extension"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_reads_text_despite_a_binary_extension() {
+    let env = Env::new();
+    assert_eq!(
+        read_lines(&env, "notes.docx", b"plain text", None, None)
+            .await
+            .unwrap(),
+        ["Read file notes.docx, lines 1-1", "1: plain text"]
+    );
+}
+
+/// "pages text with one-based offsets"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_pages_text_with_one_based_offsets() {
+    let env = Env::new();
+    assert_eq!(
+        read_lines(&env, "lines.txt", b"one\r\ntwo\nthree", Some(2), Some(1))
+            .await
+            .unwrap(),
+        [
+            "Read file lines.txt, lines 2-2",
+            "2: two",
+            "[Output truncated. Continue reading with offset: 3]"
+        ]
+    );
+}
+
+/// "truncates long lines"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_read_truncates_long_lines() {
+    let env = Env::new();
+    let out = read_lines(
+        &env,
+        "long.txt",
+        format!("{}😀tail", "a".repeat(1_999)).as_bytes(),
+        None,
+        Some(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        out[1],
+        format!("1: {}... (line truncated to 2000 chars)", "a".repeat(1_999))
+    );
+}
