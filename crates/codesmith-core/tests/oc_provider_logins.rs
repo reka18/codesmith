@@ -1,0 +1,565 @@
+//! Provider browser logins (OpenCode's `plugin/provider-poe.test.ts`,
+//! `provider-gitlab-oauth.test.ts`, `provider-snowflake-cortex.test.ts` and
+//! `provider-digitalocean.test.ts`), against local servers standing in for
+//! the providers' OAuth endpoints; the "browser" is a plain HTTP client.
+
+use codesmith_core::providers::{self, oauth, poe, Input};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn env(pairs: &[(&str, &str)]) -> providers::Env {
+    let m: HashMap<String, String> = pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    Arc::new(move |k| m.get(k).cloned())
+}
+
+/// One answer of the fixture server; `gate` holds it until released.
+struct Reply {
+    status: u16,
+    body: String,
+    gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+fn reply(status: u16, body: impl Into<String>) -> Reply {
+    Reply {
+        status,
+        body: body.into(),
+        gate: None,
+        started: None,
+    }
+}
+
+/// A recorded request: method, path, headers (lowercase names) and body.
+#[derive(Debug, Clone)]
+struct Seen {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+impl Seen {
+    fn form(&self) -> HashMap<String, String> {
+        url::form_urlencoded::parse(self.body.as_bytes())
+            .into_owned()
+            .collect()
+    }
+}
+
+#[derive(Clone)]
+struct Server {
+    url: String,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    replies: Arc<Mutex<Vec<Reply>>>,
+}
+
+impl Server {
+    fn push(&self, r: Reply) {
+        self.replies.lock().unwrap().push(r);
+    }
+    fn seen(&self) -> Vec<Seen> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+async fn read_request(s: &mut tokio::net::TcpStream) -> Option<Seen> {
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 65536];
+    loop {
+        let n = s.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let text = String::from_utf8_lossy(&buf).to_string();
+        if let Some(i) = text.find("\r\n\r\n") {
+            let len = text[..i]
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            if buf.len() >= i + 4 + len {
+                break;
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    let mut lines = head.lines();
+    let mut first = lines.next()?.split_whitespace();
+    let method = first.next()?.to_string();
+    let path = first.next()?.to_string();
+    let headers = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    Some(Seen {
+        method,
+        path,
+        headers,
+        body: body.to_string(),
+    })
+}
+
+/// A local server answering requests with the queued replies, in order.
+async fn server() -> Server {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let srv = Server {
+        url: format!("http://{}", l.local_addr().unwrap()),
+        seen: Default::default(),
+        replies: Default::default(),
+    };
+    let s2 = srv.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let srv = s2.clone();
+            tokio::spawn(async move {
+                let Some(req) = read_request(&mut s).await else {
+                    return;
+                };
+                srv.seen.lock().unwrap().push(req);
+                let r = {
+                    let mut q = srv.replies.lock().unwrap();
+                    (!q.is_empty()).then(|| q.remove(0))
+                };
+                let Some(mut r) = r else {
+                    let _ = s
+                        .write_all(
+                            b"HTTP/1.1 500 X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await;
+                    return;
+                };
+                if let Some(t) = r.started.take() {
+                    let _ = t.send(());
+                }
+                if let Some(g) = r.gate.take() {
+                    let _ = g.await;
+                }
+                let resp = format!(
+                    "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    r.status,
+                    r.body.len(),
+                    r.body
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    srv
+}
+
+/// The browser following a redirect: status and page.
+async fn browse(url: &str) -> reqwest::Result<(u16, String)> {
+    let r = reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await?;
+    Ok((r.status().as_u16(), r.text().await.unwrap_or_default()))
+}
+
+fn params(url: &str) -> HashMap<String, String> {
+    url::Url::parse(url)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect()
+}
+
+/// The redirect a provider would send the browser to.
+fn redirect(auth_url: &str, extra: &[(&str, &str)]) -> String {
+    let p = params(auth_url);
+    let mut u = url::Url::parse(&p["redirect_uri"]).unwrap();
+    {
+        let mut q = u.query_pairs_mut();
+        q.append_pair("state", &p["state"]);
+        q.append_pair("code", "auth-code");
+    }
+    let mut pairs: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+    for (k, v) in extra {
+        pairs.retain(|(pk, _)| pk != k);
+        pairs.push((k.to_string(), v.to_string()));
+    }
+    u.query_pairs_mut().clear().extend_pairs(pairs);
+    u.to_string()
+}
+
+fn input<'a>(
+    provider: &'a str,
+    s: &'a codesmith_core::config::ProviderSettings,
+    stored: Option<Value>,
+    key: Option<&str>,
+    e: providers::Env,
+) -> Input<'a> {
+    Input {
+        provider_id: provider,
+        settings: s,
+        configured_url: s.base_url.as_deref(),
+        configured_protocol: None,
+        package: None,
+        catalog_url: None,
+        model_id: "test-model",
+        api_key: key.map(str::to_string),
+        stored,
+        env: e,
+    }
+}
+
+const WAIT: Duration = Duration::from_secs(30);
+
+// plugin/provider-poe.test.ts
+
+fn poe_endpoints(srv: &Server) -> poe::Endpoints {
+    poe::Endpoints {
+        client_id: "my-poe-client".into(),
+        authorize: "https://poe.com/oauth/authorize".into(),
+        token: format!("{}/token", srv.url),
+        issuer: "https://poe.com".into(),
+    }
+}
+
+#[tokio::test]
+async fn oc_poe_registers_poe_browser_oauth_alongside_generic_key_and_environment_methods_without_fetching(
+) {
+    let p = providers::builtin("poe").unwrap();
+    assert_eq!(p.env, ["POE_API_KEY"]);
+    assert_eq!(poe::LABEL, "Login with Poe (browser)");
+    let srv = server().await;
+    let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+    assert!(login.url.starts_with("https://poe.com/oauth/authorize?"));
+    assert!(srv.seen().is_empty(), "starting a login fetches nothing");
+    // CodeSmith ships no Poe OAuth client: the login asks for one.
+    let e = poe::client_id(None, &Default::default(), &env(&[]))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("CODESMITH_POE_CLIENT_ID"), "{e}");
+    assert!(e.contains("POE_API_KEY"), "{e}");
+    assert_eq!(
+        poe::client_id(
+            None,
+            &Default::default(),
+            &env(&[("CODESMITH_POE_CLIENT_ID", "mine")])
+        )
+        .unwrap(),
+        "mine"
+    );
+}
+
+#[tokio::test]
+async fn oc_poe_exchanges_a_pkce_code_for_a_native_poe_credential() {
+    // An expiry in seconds, null, or none at all.
+    for (expiry, give) in [
+        (json!(3600), true),
+        (Value::Null, true),
+        (Value::Null, false),
+    ] {
+        let srv = server().await;
+        let e = poe_endpoints(&srv);
+        let login = poe::start(&e).await.unwrap();
+        let url = login.url.clone();
+        let p = params(&url);
+        assert_eq!(p["response_type"], "code");
+        assert_eq!(p["client_id"], "my-poe-client");
+        assert_eq!(p["scope"], "apikey:create");
+        assert_eq!(p["code_challenge_method"], "S256");
+        assert!(!p["state"].is_empty());
+        let cb = url::Url::parse(&p["redirect_uri"]).unwrap();
+        assert_eq!(cb.host_str(), Some("127.0.0.1"));
+        assert_eq!(cb.path(), "/callback");
+        let body = if give {
+            json!({"api_key": " poe-key ", "api_key_expires_in": expiry})
+        } else {
+            json!({"api_key": " poe-key "})
+        };
+        srv.push(reply(200, body.to_string()));
+        let extra: &[(&str, &str)] = if expiry.is_null() {
+            &[]
+        } else {
+            &[("iss", "https://poe.com")]
+        };
+        let to = redirect(&url, extra);
+        let before = oauth::now_ms();
+        let client = reqwest::Client::new();
+        let (done, page) =
+            tokio::join!(poe::finish(&client, login, None, |_| {}, WAIT), browse(&to));
+        let saved = done.unwrap();
+        let (status, page) = page.unwrap();
+        assert_eq!(status, 200);
+        assert!(page.contains("Authorization successful"), "{page}");
+        let seen = srv.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            (seen[0].method.as_str(), seen[0].path.as_str()),
+            ("POST", "/token")
+        );
+        assert!(seen[0].headers["content-type"].contains("application/x-www-form-urlencoded"));
+        let form = seen[0].form();
+        assert_eq!(form["grant_type"], "authorization_code");
+        assert_eq!(form["client_id"], "my-poe-client");
+        assert_eq!(form["code"], "auth-code");
+        assert_eq!(form["redirect_uri"], p["redirect_uri"]);
+        assert_eq!(
+            codesmith_core::mcp::oauth::challenge(&form["code_verifier"]),
+            p["code_challenge"]
+        );
+        assert_eq!(saved["access"], "poe-key");
+        assert_eq!(saved["refresh"], "");
+        let expires = saved["expires"].as_u64().unwrap();
+        if expiry.is_null() {
+            assert_eq!(expires, poe::NEVER);
+        } else {
+            assert!(expires >= before + 3_600_000 && expires <= oauth::now_ms() + 3_600_000);
+        }
+        // The saved key is the provider's bearer key.
+        let s = Default::default();
+        let r = providers::route(&input("poe", &s, Some(saved), None, env(&[])))
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.base_url, "https://api.poe.com/v1");
+        assert_eq!(r.api_key.as_deref(), Some("poe-key"));
+        assert_eq!(r.protocol, codesmith_ai::Protocol::OpenaiChat);
+    }
+}
+
+#[tokio::test]
+async fn oc_poe_completes_a_login_from_a_pasted_redirect_url_and_keeps_waiting_after_a_wrong_paste()
+{
+    let srv = server().await;
+    let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+    let good = redirect(&login.url, &[]);
+    let foreign = redirect(&login.url, &[("state", "another-login")]);
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let wrong = Arc::new(Mutex::new(Vec::<String>::new()));
+    let w = wrong.clone();
+    srv.push(reply(
+        200,
+        json!({"api_key": "poe-key", "api_key_expires_in": 3600}).to_string(),
+    ));
+    let client = reqwest::Client::new();
+    let wait = poe::finish(
+        &client,
+        login,
+        Some(rx),
+        move |m| w.lock().unwrap().push(m.to_string()),
+        WAIT,
+    );
+    let paste = async {
+        tx.send(foreign).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            *wrong.lock().unwrap(),
+            ["This URL belongs to a different sign-in"]
+        );
+        tx.send(good).await.unwrap();
+    };
+    let (saved, ()) = tokio::join!(wait, paste);
+    assert_eq!(saved.unwrap()["access"], "poe-key");
+    assert_eq!(srv.seen()[0].form()["code"], "auth-code");
+}
+
+#[tokio::test]
+async fn oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listeners() {
+    let srv = server().await;
+    let e = poe_endpoints(&srv);
+    let first = poe::start(&e).await.unwrap();
+    let next = poe::start(&e).await.unwrap();
+    let (p1, p2) = (params(&first.url), params(&next.url));
+    assert_ne!(p1["redirect_uri"], p2["redirect_uri"]);
+    assert_ne!(p1["code_challenge"], p2["code_challenge"]);
+    assert_ne!(p1["state"], p2["state"]);
+    let crossed = redirect(&first.url, &[("state", p2["state"].as_str())]);
+    let client = reqwest::Client::new();
+    let (done, page) = tokio::join!(
+        poe::finish(&client, first, None, |_| {}, WAIT),
+        browse(&crossed)
+    );
+    assert_eq!(page.unwrap().0, 400);
+    assert_eq!(done.unwrap_err().to_string(), "Invalid OAuth state");
+    // Cancelling the other login closes its listener.
+    let next_cb = redirect(&next.url, &[]);
+    drop(next);
+    assert!(browse(&next_cb).await.is_err());
+    assert!(srv.seen().is_empty());
+}
+
+#[tokio::test]
+async fn oc_poe_rejects_invalid_or_denied_callbacks() {
+    let cases: &[(&[(&str, &str)], &str)] = &[
+        (&[("state", "")], "Invalid OAuth state"),
+        (
+            &[("iss", "https://other.example"), ("error", "access_denied")],
+            "Invalid OAuth issuer",
+        ),
+        (&[("iss", "https://poe.com/")], "Invalid OAuth issuer"),
+        (&[("iss", "")], "Invalid OAuth issuer"),
+        (&[("code", "")], "Missing authorization code"),
+        (
+            &[
+                ("error", "access_denied"),
+                ("error_description", "User declined access"),
+            ],
+            "User declined access",
+        ),
+    ];
+    for (extra, message) in cases {
+        let srv = server().await;
+        let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+        let to = redirect(&login.url, extra);
+        let client = reqwest::Client::new();
+        let (done, page) =
+            tokio::join!(poe::finish(&client, login, None, |_| {}, WAIT), browse(&to));
+        let (status, page) = page.unwrap();
+        assert_eq!(status, 400, "{extra:?}");
+        assert!(page.contains("Authorization failed"), "{page}");
+        assert_eq!(done.unwrap_err().to_string(), *message, "{extra:?}");
+        assert!(srv.seen().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn oc_poe_preserves_the_active_connection_after_a_failed_token_exchange() {
+    let cases: Vec<(u16, &str, &str)> = vec![
+        (
+            400,
+            r#"{"error":"invalid_grant","error_description":"Code expired"}"#,
+            "Poe token exchange failed: Code expired",
+        ),
+        (
+            400,
+            r#"{"error":"invalid_grant"}"#,
+            "Poe token exchange failed: invalid_grant",
+        ),
+        (502, "Bad gateway", "Poe token exchange failed (502)"),
+        (
+            400,
+            r#"{"error_description":"Rejected auth-code"}"#,
+            "Poe token exchange failed (400)",
+        ),
+        (200, "{}", "Invalid Poe token response"),
+        (200, "{", "Invalid Poe token response"),
+        (200, r#"{"api_key":"   "}"#, "Invalid Poe token response"),
+        (
+            200,
+            r#"{"api_key":"poe-key","api_key_expires_in":-1}"#,
+            "Invalid Poe token response",
+        ),
+        (
+            200,
+            r#"{"api_key":"poe-key","api_key_expires_in":1.5}"#,
+            "Invalid Poe token response",
+        ),
+        (
+            200,
+            r#"{"api_key":"poe-key","api_key_expires_in":1e309}"#,
+            "Invalid Poe token response",
+        ),
+        (
+            200,
+            r#"{"api_key":"poe-key","api_key_expires_in":8640000000000}"#,
+            "Invalid Poe API key expiry",
+        ),
+    ];
+    for (status, body, message) in cases {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("auth.json");
+        codesmith_core::auth::set_in(&file, "poe", "previous-key").unwrap();
+        let srv = server().await;
+        let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+        let to = redirect(&login.url, &[]);
+        srv.push(reply(status, body));
+        let client = reqwest::Client::new();
+        let (done, page) =
+            tokio::join!(poe::finish(&client, login, None, |_| {}, WAIT), browse(&to));
+        let (code, page) = page.unwrap();
+        assert_eq!(code, 400, "{body}");
+        assert!(page.contains(message), "{body}: {page}");
+        assert_eq!(done.unwrap_err().to_string(), message, "{body}");
+        assert_eq!(
+            codesmith_core::auth::key_in(&file, "poe").as_deref(),
+            Some("previous-key")
+        );
+    }
+}
+
+#[tokio::test]
+async fn oc_poe_waits_for_the_token_exchange_and_consumes_the_callback_once() {
+    for cancel in [false, true] {
+        let srv = server().await;
+        let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+        let to = redirect(&login.url, &[]);
+        let (started_tx, started) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        srv.push(Reply {
+            status: 200,
+            body: json!({"api_key": "poe-key"}).to_string(),
+            gate: Some(gate),
+            started: Some(started_tx),
+        });
+        let client = reqwest::Client::new();
+        let finish =
+            tokio::spawn(async move { poe::finish(&client, login, None, |_| {}, WAIT).await });
+        let page = tokio::spawn({
+            let to = to.clone();
+            async move { browse(&to).await }
+        });
+        started.await.unwrap();
+        // A second callback while the first is exchanged is refused.
+        assert_eq!(browse(&to).await.unwrap().0, 409);
+        assert_eq!(srv.seen().len(), 1);
+        if cancel {
+            finish.abort();
+            let _ = release.send(());
+            assert!(finish.await.is_err(), "cancelled");
+            assert!(
+                page.await.unwrap().is_err(),
+                "the browser's request is dropped"
+            );
+            continue;
+        }
+        let _ = release.send(());
+        let saved = finish.await.unwrap().unwrap();
+        assert_eq!(saved["access"], "poe-key");
+        let (status, page) = page.await.unwrap().unwrap();
+        assert_eq!(status, 200);
+        assert!(page.contains("Authorization successful"));
+    }
+}
+
+#[test]
+fn oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry() {
+    let now = oauth::now_ms();
+    let saved = json!({"type": "oauth", "method": "browser", "access": "poe-key", "refresh": "", "expires": now + 120_000});
+    assert_eq!(
+        poe::stored_key(Some(&saved), now).unwrap().as_deref(),
+        Some("poe-key")
+    );
+    let e = poe::stored_key(Some(&saved), now + 120_000)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.starts_with("Poe API key expired. Log in with Poe again"),
+        "{e}"
+    );
+    // A key (saved or from POE_API_KEY) is used instead.
+    let s = Default::default();
+    let r = providers::route(&input(
+        "poe",
+        &s,
+        Some(json!({"type": "api", "key": "manual-key"})),
+        Some("manual-key"),
+        env(&[]),
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(r.api_key.as_deref(), Some("manual-key"));
+}

@@ -373,3 +373,12 @@
 103 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_follows_the_account_id_when_another_form_login_becomes_active :: adapted: one saved login per provider; the latest login wins
 127 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_preserves_a_configured_endpoint_url_instead_of_deriving_one_from_account_id
 143 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_uses_configured_account_id_over_env_account_id
+@plugin/provider-poe.test.ts
+83 :: ported :: tests/oc_provider_logins.rs::oc_poe_registers_poe_browser_oauth_alongside_generic_key_and_environment_methods_without_fetching :: adapted: `codesmith auth login poe --oauth` beside the key; the OAuth client id is the user's own
+97 :: ported :: tests/oc_provider_logins.rs::oc_poe_exchanges_a_pkce_code_for_a_native_poe_credential :: adapted: a user-supplied client id
+175 :: ported :: tests/oc_provider_logins.rs::oc_poe_completes_a_login_from_a_pasted_redirect_url_and_keeps_waiting_after_a_wrong_paste
+202 :: ported :: tests/oc_provider_logins.rs::oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listeners
+234 :: ported :: tests/oc_provider_logins.rs::oc_poe_rejects_invalid_or_denied_callbacks
+280 :: ported :: tests/oc_provider_logins.rs::oc_poe_preserves_the_active_connection_after_a_failed_token_exchange :: adapted: a failed login leaves the saved key
+299 :: ported :: tests/oc_provider_logins.rs::oc_poe_waits_for_the_token_exchange_and_consumes_the_callback_once
+337 :: ported :: tests/oc_provider_logins.rs::oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry

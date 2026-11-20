@@ -136,6 +136,7 @@ from `settings.apiKey` in config.
 | `databricks` | OpenAI Chat | `DATABRICKS_TOKEN` (and `DATABRICKS_HOST`, with or without `https://`) |
 | `cloudflare-ai-gateway` | per model: OpenAI Responses, Anthropic Messages or OpenAI Chat | `CLOUDFLARE_API_TOKEN`, `CF_AIG_TOKEN` (and the account and gateway ids); see [Cloudflare](#cloudflare-ai-gateway-and-workers-ai) |
 | `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) |
+| `poe` | OpenAI Chat | `POE_API_KEY`, or `codesmith auth login poe --oauth`; see [Poe](#poe) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -471,6 +472,23 @@ gateway in `cf-aig-gateway-id` (a `workers-ai/` prefix is dropped). Workers
 AI uses that endpoint with the token as a bearer token. A configured
 `settings.baseURL` is used for every model as given.
 
+### Poe
+
+`poe` takes an API key (`POE_API_KEY`, or `codesmith auth login poe`), or
+signs in in the browser with `codesmith auth login poe --oauth`, which has
+Poe issue an API key for CodeSmith (OAuth with PKCE, scope
+`apikey:create`). The issued key is used until it expires; then the login
+says so and you log in again. If the browser runs on another machine, paste
+the URL it lands on into the terminal; a URL from another login is refused
+and the login keeps waiting.
+
+The browser login runs as an OAuth client registered with Poe, and
+CodeSmith ships none of its own (nor borrows another project's): register a
+public client (PKCE, scope `apikey:create`, redirect URI
+`http://127.0.0.1/callback` on any port) and give its client id with
+`--client-id`, `settings.clientId` on the `poe` provider, or
+`CODESMITH_POE_CLIENT_ID`, in that order.
+
 ### Responses over WebSocket
 
 As in OpenCode, an `openai-responses` provider can carry a session's steps
@@ -689,7 +707,8 @@ and `codesmith auth login google-vertex --project <id>` save a login instead
 of a key; `auth logout` removes those too. Some key logins ask for more than the key (the
 account and gateway ids of [Cloudflare](#cloudflare-ai-gateway-and-workers-ai)):
 they are asked in the terminal after the key, or given with
-`--field KEY=VALUE`, and saved with it.
+`--field KEY=VALUE`, and saved with it. `--oauth` logs in through a
+provider's browser OAuth instead of a key ([Poe](#poe)).
 
 ## Instructions
 

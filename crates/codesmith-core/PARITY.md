@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 142 | 0 | 292 | 325 | 37 | 0 |
+| Providers, models and credentials | 796 | 163 | 0 | 271 | 325 | 37 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1049** | **15** | **793** | **2334** | **1397** | **0** |
+| **Total** | **5588** | **1070** | **15** | **772** | **2334** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,11 +78,11 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (793 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (772 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Provider Plugins](#provider-plugins) | 124 | GitHub Copilot; Modal; … |
+| [Provider Plugins](#provider-plugins) | 103 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
@@ -146,7 +146,7 @@ Missing features, by how many OpenCode test cases each would unlock (793 cases i
 
 ### Provider Plugins
 
-124 cases.
+103 cases.
 
 - `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
 - `github-copilot/models.test.ts`: prices cache reads from either token price spelling
@@ -226,14 +226,6 @@ Missing features, by how many OpenCode test cases each would unlock (793 cases i
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
 - `plugin/provider-openrouter.test.ts`: filters OpenRouter's gpt-5 chat alias
 - `plugin/provider-openrouter.test.ts`: does not disable gpt-5-chat-latest for non-OpenRouter providers
-- `plugin/provider-poe.test.ts`: registers Poe browser OAuth alongside generic key and environment methods without fetching
-- `plugin/provider-poe.test.ts`: exchanges a PKCE code for a native Poe credential (expiry: ${expiry}) (3 cases)
-- `plugin/provider-poe.test.ts`: completes a login from a pasted redirect URL and keeps waiting after a wrong paste
-- `plugin/provider-poe.test.ts`: isolates overlapping login attempts and closes cancelled listeners
-- `plugin/provider-poe.test.ts`: rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) (6 cases)
-- `plugin/provider-poe.test.ts`: preserves the active connection after a failed token exchange (${response.status}: ${response.body}) (6 cases)
-- `plugin/provider-poe.test.ts`: waits for the token exchange and consumes the callback once (cancel: ${cancel}) (2 cases)
-- `plugin/provider-poe.test.ts`: keeps near-expiry keys usable and requires a new login after expiry
 - `plugin/provider-sap-ai-core.test.ts`: copies serviceKey option into AICORE_SERVICE_KEY but keeps SDK options to deployment metadata
 - `plugin/provider-sap-ai-core.test.ts`: preserves existing AICORE_SERVICE_KEY over serviceKey option
 - `plugin/provider-sap-ai-core.test.ts`: omits deployment and resourceGroup SDK options when no service key is available
@@ -3470,7 +3462,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (467 of 796)</summary>
+<details><summary>Providers, models and credentials (488 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3722,6 +3714,17 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D is registered so legacy OpenRouter behavior can be applied — deliberate: plugin.rs: provider plugins are compiled in
 - P applies legacy referer headers only to openrouter — `tests/oc_providers.rs::oc_openrouter_applies_referer_headers` (adapted: the headers name CodeSmith)
+
+**`plugin/provider-poe.test.ts`**
+
+- P registers Poe browser OAuth alongside generic key and environment methods without fetching — `tests/oc_provider_logins.rs::oc_poe_registers_poe_browser_oauth_alongside_generic_key_and_environment_methods_without_fetching` (adapted: `codesmith auth login poe --oauth` beside the key; the OAuth client id is the user's own)
+- P exchanges a PKCE code for a native Poe credential (expiry: ${expiry}) ×3 — `tests/oc_provider_logins.rs::oc_poe_exchanges_a_pkce_code_for_a_native_poe_credential` (adapted: a user-supplied client id)
+- P completes a login from a pasted redirect URL and keeps waiting after a wrong paste — `tests/oc_provider_logins.rs::oc_poe_completes_a_login_from_a_pasted_redirect_url_and_keeps_waiting_after_a_wrong_paste`
+- P isolates overlapping login attempts and closes cancelled listeners — `tests/oc_provider_logins.rs::oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listeners`
+- P rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) ×6 — `tests/oc_provider_logins.rs::oc_poe_rejects_invalid_or_denied_callbacks`
+- P preserves the active connection after a failed token exchange (${response.status}: ${response.body}) ×6 — `tests/oc_provider_logins.rs::oc_poe_preserves_the_active_connection_after_a_failed_token_exchange` (adapted: a failed login leaves the saved key)
+- P waits for the token exchange and consumes the callback once (cancel: ${cancel}) ×2 — `tests/oc_provider_logins.rs::oc_poe_waits_for_the_token_exchange_and_consumes_the_callback_once`
+- P keeps near-expiry keys usable and requires a new login after expiry — `tests/oc_provider_logins.rs::oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry`
 
 **`plugin/provider-zenmux.test.ts`**
 

@@ -9,6 +9,8 @@ pub mod bedrock;
 pub mod cloudflare;
 pub mod copilot;
 pub mod gateways;
+pub mod oauth;
+pub mod poe;
 pub mod vertex;
 
 use codesmith_ai::{Auth, Protocol};
@@ -192,6 +194,7 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         "Cloudflare AI Gateway",
         &["CLOUDFLARE_API_TOKEN", "CF_AIG_TOKEN"],
     ),
+    (poe::ID, "Poe", &["POE_API_KEY"]),
     (
         cloudflare::WORKERS,
         "Cloudflare Workers AI",
@@ -228,6 +231,7 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
         gateways::DATABRICKS => return gateways::databricks(input).map(Some),
         cloudflare::GATEWAY => return cloudflare::gateway(input).map(Some),
         cloudflare::WORKERS => return cloudflare::workers(input).map(Some),
+        poe::ID => return poe::route(input).map(Some),
         _ => {}
     }
     Ok(None)
@@ -245,6 +249,7 @@ pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
         vertex::ID | vertex::ANTHROPIC_ID => {
             vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
         }
+        poe::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
         _ => false,
     }
 }
@@ -298,6 +303,13 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
                 }
             };
             Some(format!("project {project} in {location}, {creds}"))
+        }
+        poe::ID => {
+            let s = stored?;
+            (s["type"] == "oauth").then(|| match poe::stored_key(Some(s), oauth::now_ms()) {
+                Ok(_) => "saved Poe login".to_string(),
+                Err(_) => "saved Poe login (expired: log in again)".to_string(),
+            })
         }
         _ => None,
     }

@@ -500,9 +500,14 @@ enum AuthCmd {
         /// github-copilot: log in to this GitHub Enterprise host (company.ghe.com).
         #[arg(long)]
         enterprise: Option<String>,
-        /// github-copilot: the client id of your GitHub OAuth app (device flow enabled).
+        /// The client id of your OAuth app: github-copilot (device flow
+        /// enabled), or a provider's browser login with --oauth.
         #[arg(long)]
         client_id: Option<String>,
+        /// Log in through the provider's browser OAuth instead of pasting a
+        /// key (poe).
+        #[arg(long)]
+        oauth: bool,
         /// google-vertex: use Application Default Credentials in this project.
         #[arg(long)]
         project: Option<String>,
@@ -1464,6 +1469,7 @@ struct PluginLogin {
     project: Option<String>,
     location: Option<String>,
     client_id: Option<String>,
+    oauth: bool,
     cwd: PathBuf,
 }
 
@@ -1479,10 +1485,18 @@ async fn plugin_login(
         project,
         location,
         client_id,
+        oauth,
         cwd,
     } = login;
+    if oauth {
+        return browser_login(file, provider, client_id.as_deref(), &cwd)
+            .await
+            .map(Some);
+    }
     if client_id.is_some() && provider != providers::copilot::ID {
-        return Err(anyhow!("--client-id is for github-copilot"));
+        return Err(anyhow!(
+            "--client-id is for github-copilot, or goes with --oauth"
+        ));
     }
     if location.is_some() && project.is_none() {
         return Err(anyhow!("--location goes with --project"));
@@ -1569,6 +1583,50 @@ async fn plugin_login(
     Ok(None)
 }
 
+/// A provider's browser OAuth login (`--oauth`).
+async fn browser_login(
+    file: &std::path::Path,
+    provider: &str,
+    client_id: Option<&str>,
+    cwd: &std::path::Path,
+) -> Result<String> {
+    use codesmith_core::providers;
+    let loaded = config::load(cwd)?;
+    let settings = loaded
+        .config
+        .provider(provider)
+        .unwrap_or_default()
+        .settings;
+    let env = providers::process_env();
+    let open = |url: &str| {
+        eprintln!(
+            "Open this URL to log in (it should open by itself):\n{url}\n\
+             Waiting for the browser… If it runs on another machine, paste the URL it ends up on here."
+        );
+        codesmith_core::mcp::oauth::open_browser(url);
+    };
+    let client = reqwest::Client::new();
+    match provider {
+        providers::poe::ID => {
+            let id = providers::poe::client_id(client_id, &settings.plugin, &env)?;
+            let e = providers::poe::Endpoints::poe(&id);
+            providers::poe::login(
+                &client,
+                file,
+                &e,
+                open,
+                Some(providers::oauth::stdin_lines()),
+            )
+            .await?;
+        }
+        p => return Err(anyhow!("{p} has no browser login; --oauth is for poe")),
+    }
+    Ok(format!(
+        "Logged in to {provider}; the login is saved in {}",
+        file.display()
+    ))
+}
+
 async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
     use codesmith_core::auth;
     let file = paths::auth_file();
@@ -1580,6 +1638,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             project,
             location,
             client_id,
+            oauth,
             fields,
         } => {
             let login = PluginLogin {
@@ -1588,6 +1647,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 project,
                 location,
                 client_id,
+                oauth,
                 cwd: cwd.to_path_buf(),
             };
             if let Some(done) = plugin_login(&file, &provider, login).await? {
