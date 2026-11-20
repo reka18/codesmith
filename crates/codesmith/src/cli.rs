@@ -66,6 +66,7 @@ enum Command {
     },
     /// Survey the codebase and choose the dimensions `review` uses.
     Calibrate {
+        /// Model for the survey, as provider/model.
         #[arg(short, long)]
         model: Option<String>,
     },
@@ -119,6 +120,7 @@ enum Command {
         /// Address to listen on. Anything but loopback requires --token.
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// Port to listen on.
         #[arg(long, default_value_t = 4096)]
         port: u16,
         /// The bearer token clients must send as `Authorization: Bearer <token>`
@@ -196,11 +198,13 @@ struct RunArgs {
 enum AutomationCmd {
     /// List automations (this project's, or --all).
     List {
+        /// List automations from every project.
         #[arg(long)]
         all: bool,
     },
     /// Add an automation: one trigger and one action.
     Add {
+        /// A name for the automation, shown in lists and logs.
         #[arg(long)]
         name: String,
         /// Repeat on an interval ("10 minutes", "2 hours").
@@ -243,13 +247,25 @@ enum AutomationCmd {
         agent: Option<String>,
     },
     /// Pause an automation; it keeps its schedule but does not run.
-    Pause { id: String },
+    Pause {
+        /// Automation id (see `automation list`).
+        id: String,
+    },
     /// Resume a paused automation (its next run is computed from now).
-    Resume { id: String },
+    Resume {
+        /// Automation id (see `automation list`).
+        id: String,
+    },
     /// Delete an automation and its run log.
-    Remove { id: String },
+    Remove {
+        /// Automation id (see `automation list`).
+        id: String,
+    },
     /// Show an automation's runs.
-    Log { id: String },
+    Log {
+        /// Automation id (see `automation list`).
+        id: String,
+    },
     /// Run automations in the foreground until stopped (for launchd or systemd).
     Serve,
     /// Fire whatever is due once and exit.
@@ -262,6 +278,7 @@ enum WorktreeCmd {
     List,
     /// Create a worktree and print its path.
     Create {
+        /// Name for the worktree's folder (default: generated).
         name: Option<String>,
         /// Commit or branch to start from (default HEAD).
         #[arg(long)]
@@ -272,6 +289,7 @@ enum WorktreeCmd {
     },
     /// Remove a worktree by name or path.
     Remove {
+        /// The worktree's name or path (see `worktree list`).
         name: String,
         /// Remove even with uncommitted changes.
         #[arg(long)]
@@ -468,11 +486,17 @@ fn enter_worktree(cwd: &std::path::Path, name: &str) -> Result<PathBuf> {
 #[derive(Subcommand)]
 enum AuthCmd {
     /// Save an API key for a provider (read from the terminal without echo, or from stdin).
-    Login { provider: String },
+    Login {
+        /// Provider id, such as anthropic or openai.
+        provider: String,
+    },
     /// List providers with saved keys and where each provider's key comes from.
     List,
     /// Remove a saved key.
-    Logout { provider: String },
+    Logout {
+        /// Provider id whose saved key to remove.
+        provider: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -480,9 +504,15 @@ enum McpCmd {
     /// Connect to each configured server and list its status and tools.
     List,
     /// Log in to a remote server with OAuth (opens the browser).
-    Auth { name: String },
+    Auth {
+        /// The server's name in codesmith.json.
+        name: String,
+    },
     /// Forget a remote server's saved OAuth tokens.
-    Logout { name: String },
+    Logout {
+        /// The server's name in codesmith.json.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -497,20 +527,35 @@ enum SessionCmd {
         json: bool,
     },
     /// Delete a session (and its subagent sessions).
-    Delete { id: String },
+    Delete {
+        /// Session id (see `session list`).
+        id: String,
+    },
     /// Print a session as JSON.
-    Export { id: String },
+    Export {
+        /// Session id (see `session list`).
+        id: String,
+    },
     /// Import a session exported as JSON (a file path, or - for stdin).
-    Import { file: String },
+    Import {
+        /// Path to the exported JSON, or - to read stdin.
+        file: String,
+    },
     /// Undo the latest turn: restore the files it changed and hide it.
     Undo {
         /// Session id (default: the latest in this directory).
         id: Option<String>,
     },
     /// Redo the latest undo.
-    Redo { id: Option<String> },
+    Redo {
+        /// Session id (default: the latest in this directory).
+        id: Option<String>,
+    },
     /// Show the file changes made since the latest turn began.
-    Diff { id: Option<String> },
+    Diff {
+        /// Session id (default: the latest in this directory).
+        id: Option<String>,
+    },
 }
 
 impl RunArgs {
@@ -554,10 +599,12 @@ enum Debug {
         /// provider/model or provider/model#variant (default: the configured model).
         spec: Option<String>,
     },
-    /// Print the system prompt the build agent would get here.
+    /// Print the system prompt an agent would get here.
     Prompt {
+        /// Model as provider/model (default: the configured model).
         #[arg(short, long)]
         model: Option<String>,
+        /// Agent whose prompt to print (default: build).
         #[arg(long)]
         agent: Option<String>,
     },
@@ -1796,6 +1843,41 @@ fn variant_lines(c: &config::Config, m: &config::ModelRef, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every subcommand and argument says what it is: a missing doc comment
+    /// prints a blank line in `--help`.
+    #[test]
+    fn every_subcommand_and_arg_has_help() {
+        use clap::CommandFactory;
+        fn walk(cmd: &clap::Command, path: &str, missing: &mut Vec<String>) {
+            for a in cmd.get_arguments() {
+                let id = a.get_id().as_str();
+                if a.is_hide_set() || id == "help" || id == "version" {
+                    continue;
+                }
+                let help = a.get_help().map(|h| h.to_string()).unwrap_or_default();
+                if help.trim().is_empty() {
+                    missing.push(format!("{path} <{id}>"));
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                let p = format!("{path} {}", sub.get_name());
+                if sub.get_name() == "help" {
+                    continue;
+                }
+                let about = sub.get_about().map(|h| h.to_string()).unwrap_or_default();
+                if about.trim().is_empty() {
+                    missing.push(p.clone());
+                }
+                walk(sub, &p, missing);
+            }
+        }
+        let cmd = Cli::command();
+        cmd.clone().debug_assert();
+        let mut missing = vec![];
+        walk(&cmd, "codesmith", &mut missing);
+        assert!(missing.is_empty(), "no help text: {missing:#?}");
+    }
 
     #[test]
     fn debug_model_lists_variants_with_their_options() {

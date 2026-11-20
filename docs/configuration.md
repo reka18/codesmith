@@ -467,8 +467,8 @@ each file once:
 
 Set `$CODESMITH_DISABLE_CLAUDE_CODE` to stop reading `CLAUDE.md` files and
 `.claude/` folders for instructions, skills and commands.
-`codesmith debug prompt` prints the full system prompt the build agent would
-get in the current folder.
+`codesmith debug prompt` prints the full system prompt the build agent (or
+the one named with `--agent`) would get in the current folder.
 
 ## Media limits
 
