@@ -1378,12 +1378,13 @@ impl<'a> Scanner<'a> {
                     if parameter_evaluates(&text) {
                         self.flags.sink = true;
                     }
-                    let unquoted = text.replace(['\'', '"'], "");
+                    let unquoted = text.replace(['\'', '"', '\\'], "");
                     if ["$(", "`", "$["]
                         .iter()
                         .any(|t| unquoted.contains(t) && !text.contains(t))
                     {
-                        // Shells differ on which quotes count inside `${...}`
+                        // Shells differ on which quotes and escapes count
+                        // inside `${...}`
                         // (`"$${x/$$'(cmd)'/y}"` runs `cmd` in Bash 3.2):
                         // a substitution spelled once quotes go is unknown.
                         self.flags.eval();
@@ -4684,6 +4685,7 @@ mod tests {
             "echo \"${x:-$'`rm F`'}\"",
             "bash < <(echo rm F)\"\"",
             "echo \"$${x/$$'(rm F)'/y}\"",
+            "echo \"${x-\"'$\\(rm  F)'\"}\"",
             "x='a[$(rm F)]'; a=(1); echo ${=a[(e)x]}",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
