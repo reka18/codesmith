@@ -105,22 +105,24 @@ fn plain(raw: &str) -> String {
 }
 
 /// The UI running in a pseudo-terminal, read and typed into.
-struct Ui {
+pub(crate) struct Ui {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
-    screen: String,
+    /// Everything read so far.
+    pub(crate) screen: String,
     /// Where the chunk that held the last `wait_for` match starts, so the
     /// next wait also sees text that arrived in that same chunk.
     since: usize,
     /// The terminal as drawn: diff-based redraws split text in the byte
-    /// stream, so waits also look at the screen itself.
-    term: vt100::Parser,
+    /// stream, so waits also look at the screen itself. It keeps a
+    /// scrollback, for mini mode.
+    pub(crate) term: vt100::Parser,
 }
 
 impl Ui {
     /// The UI with `args`, or `None` where `script(1)` is missing.
-    fn start(e: &Env, args: &str) -> Option<Ui> {
+    pub(crate) fn start(e: &Env, args: &str) -> Option<Ui> {
         if !std::path::Path::new("/usr/bin/script").exists() {
             eprintln!("skipped: script(1) is not installed");
             return None;
@@ -148,12 +150,12 @@ impl Ui {
             child,
             screen: String::new(),
             since: 0,
-            term: vt100::Parser::new(30, 100, 0),
+            term: vt100::Parser::new(30, 100, 2000),
         })
     }
 
     /// Read output until `text` is drawn (after what was read before).
-    async fn wait_for(&mut self, text: &str) {
+    pub(crate) async fn wait_for(&mut self, text: &str) {
         let mut buf = [0u8; 8192];
         // Text read before this wait but after the previous match's chunk
         // began counts too: two expected texts often arrive in one read.
@@ -192,14 +194,34 @@ impl Ui {
         assert_eq!(seen, Ok(true), "{text:?} was not drawn:\n{}", plain(&fresh));
     }
 
-    async fn send(&mut self, bytes: &[u8]) {
+    pub(crate) async fn send(&mut self, bytes: &[u8]) {
         self.stdin.write_all(bytes).await.unwrap();
         self.stdin.flush().await.unwrap();
     }
 
     /// Quit with Ctrl+D on the empty prompt.
-    async fn quit(mut self) {
+    pub(crate) async fn quit(mut self) {
+        self.quit_reading().await;
+    }
+
+    /// Quit, reading (into `screen` and `term`) all the UI writes until it
+    /// exits.
+    pub(crate) async fn quit_reading(&mut self) {
         self.send(b"\x04").await;
+        let mut buf = [0u8; 8192];
+        let (stdout, term, screen) = (&mut self.stdout, &mut self.term, &mut self.screen);
+        let _ = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        term.process(&buf[..n]);
+                        screen.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    }
+                }
+            }
+        })
+        .await;
         let status = tokio::time::timeout(Duration::from_secs(20), self.child.wait())
             .await
             .expect("the UI did not quit")
