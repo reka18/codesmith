@@ -179,6 +179,8 @@ pub enum Pick {
     DiffSource,
     /// The diff viewer's base branch picker.
     DiffBase,
+    /// The command palette (`command.palette.show`, ctrl+p).
+    Command,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -439,6 +441,9 @@ pub struct App {
     pub tps: bool,
     /// The last turn's duration (ms) and throughput.
     pub last_turn: Option<(u64, Option<f64>)>,
+    /// Text to copy to the terminal's clipboard (`OSC 52`) before the
+    /// next frame.
+    pub clipboard: Option<String>,
     /// `tui.debug.turn_tokens`: a usage row after each turn.
     pub turn_tokens: bool,
     /// The session's steps so far, for the turn usage rows.
@@ -466,6 +471,22 @@ struct Child {
     id: String,
     agent: String,
     title: String,
+}
+
+/// Whether the palette lists command `id`: the prompt's commands, less
+/// its editing, scrolling and numbered-tab keys.
+fn palette_command(id: &str) -> bool {
+    !(id.starts_with("input.")
+        || id.starts_with("prompt.autocomplete.")
+        || id.starts_with("prompt.history.")
+        || id.starts_with("session.tab.select.")
+        || id.starts_with("session.page.")
+        || id.starts_with("session.half.page.")
+        || id.starts_with("session.line.")
+        || matches!(
+            id,
+            "prompt.clear" | "session.interrupt" | "command.palette.show" | "app.clear"
+        ))
 }
 
 /// The slash commands the help lists.
@@ -1260,6 +1281,52 @@ impl App {
         self.scroll = 0;
     }
 
+    /// The command palette: the UI's commands (with their keys) and the
+    /// slash commands, filtered as typed.
+    pub fn open_palette(&mut self) {
+        let mut items = Vec::new();
+        for id in keymap::scope::PROMPT {
+            if !palette_command(id) || (*id == "session.copy.id" && self.header.session.is_empty())
+            {
+                continue;
+            }
+            let Some(def) = keymap::def(id) else { continue };
+            let keys = self.keymap.hint(id);
+            items.push(PickItem {
+                id: id.to_string(),
+                label: def.desc.to_string(),
+                detail: if keys.is_empty() {
+                    id.to_string()
+                } else {
+                    format!("{keys} · {id}")
+                },
+                current: false,
+            });
+        }
+        for c in &self.commands {
+            items.push(PickItem {
+                id: format!("/{}", c.label),
+                label: format!("/{}", c.label),
+                detail: c.detail.clone(),
+                current: false,
+            });
+        }
+        self.popup = None;
+        self.modal = Some(Modal::Picker(Picker::new(Pick::Command, "Commands", items)));
+    }
+
+    /// Run what the palette chose.
+    fn palette_run(&mut self, id: &str) -> Option<Action> {
+        if let Some(name) = id.strip_prefix('/') {
+            return Some(Action::Slash {
+                name: name.to_string(),
+                args: String::new(),
+            });
+        }
+        let id = keymap::static_id(id)?;
+        self.run(id, true).flatten()
+    }
+
     /// Forget a message jump and the room added for it.
     fn end_navigation(&mut self) {
         self.nav = None;
@@ -1365,6 +1432,15 @@ impl App {
             "session.undo" => return Self::slash("undo"),
             "session.redo" => return Self::slash("redo"),
             "help.show" => return Self::slash("help"),
+            "command.palette.show" => {
+                self.open_palette();
+                return Some(None);
+            }
+            "session.copy.id" if !self.header.session.is_empty() => {
+                self.clipboard = Some(self.header.session.clone());
+                self.notice("Session ID copied to clipboard!");
+                return Some(None);
+            }
             "diff.open" => return Self::slash("diff"),
             "pane.focus.right" => {
                 let v = self.diff.as_mut()?;
@@ -1774,6 +1850,11 @@ impl App {
                     Some("dialog.select.page_down") => p.sel = (p.sel + 10).min(last),
                     Some("dialog.select.home") => p.sel = 0,
                     Some("dialog.select.end") => p.sel = last,
+                    Some(_) if p.kind == Pick::Command => {
+                        let id = p.selected().map(|i| i.id.clone())?;
+                        self.modal = None;
+                        return self.palette_run(&id);
+                    }
                     Some(_) => {
                         let picked = p.selected().map(|i| (p.kind, i.id.clone()));
                         if picked.is_some() {

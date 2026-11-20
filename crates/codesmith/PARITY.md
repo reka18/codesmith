@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 361 | 206 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 364 | 203 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **637** | **642** | **2357** | **259** |
+| **Total** | **4637** | **742** | **640** | **639** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -638,6 +638,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/model-preference` | atomically serializes model preference updates | after a fix | oc_atomically_serializes_model_preference_updates (adapted: threads under the repository's lock) |
 | `tui/test/context/local-selection` | cycles all recent models in a stable order in both directions | after a fix | oc_cycles_all_recent_models_in_a_stable_order_in_both_directions (adapted: the cycle over the recents) |
 | `tui/test/context/local` | moves a model to the front, deduplicates, and limits recents | after a fix | oc_moves_a_model_to_the_front_deduplicates_and_limits_recents |
+| `tui/test/copy-session-id` | Copy session ID from Ctrl+P (%s) (3 cases) | after a fix | oc_copy_session_id_from_ctrl_p (adapted: `OSC 52` reports no failure, and a UI with no session stands for home) |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -906,9 +907,8 @@ transport and its tool presentation.
 - `tui/test/cli/tui/dialog-mcp`: returns to the MCP server list after OAuth completes
 - `tui/test/cli/tui/dialog-mcp`: opens an investigation draft for a failed MCP server at its originating location
 
-### tui: command palette (4)
+### tui: settings in the command palette (1)
 
-- `tui/test/copy-session-id`: Copy session ID from Ctrl+P (%s) (3 cases)
 - `tui/test/cli/tui/command-palette`: searches settings globally and opens the matching setting
 
 ### cli: worktree from a subfolder (3)

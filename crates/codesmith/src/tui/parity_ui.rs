@@ -578,3 +578,63 @@ fn ctrl_f_in_the_model_picker_toggles_a_favorite() {
     assert_eq!(a.on_key(ctrl_f), None);
     assert!(a.modal.is_some());
 }
+
+/// Open the palette with ctrl+p, type `filter`, and press Enter.
+fn palette(a: &mut super::app::App, filter: &str) -> Option<super::app::Action> {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    a.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    for c in filter.chars() {
+        a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+}
+
+// copy-session-id.test.tsx: "Copy session ID from Ctrl+P (%s)" (3 cases;
+// adapted: `OSC 52` reports no failure, so success and failure are one
+// case, and a UI with no session yet stands for home)
+#[test]
+fn oc_copy_session_id_from_ctrl_p() {
+    use super::app::{App, Modal};
+    let mut a = App::new();
+    a.header.session = "ses_copy_id".into();
+    assert_eq!(palette(&mut a, "Copy session ID"), None);
+    assert!(a.modal.is_none(), "the palette closes");
+    assert_eq!(a.clipboard.as_deref(), Some("ses_copy_id"));
+    assert!(
+        matches!(a.entries.last(), Some(super::app::Entry::Notice(n)) if n == "Session ID copied to clipboard!")
+    );
+    assert_eq!(
+        super::term::copy("ses_copy_id"),
+        "\x1b]52;c;c2VzX2NvcHlfaWQ=\x07"
+    );
+    // Home: nothing to copy, so the palette does not offer it.
+    let mut home = App::new();
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    home.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    let Some(Modal::Picker(p)) = &home.modal else {
+        panic!("no palette");
+    };
+    assert!(!p.items.iter().any(|i| i.id == "session.copy.id"));
+    assert!(p.items.iter().any(|i| i.id == "model.list"));
+}
+
+// The palette runs UI commands and slash commands.
+#[test]
+fn the_palette_runs_commands() {
+    use super::app::{Action, App};
+    let mut a = App::new();
+    assert_eq!(
+        palette(&mut a, "List available models"),
+        Some(Action::Slash {
+            name: "model".into(),
+            args: String::new()
+        })
+    );
+    assert_eq!(
+        palette(&mut a, "/diff"),
+        Some(Action::Slash {
+            name: "diff".into(),
+            args: String::new()
+        })
+    );
+}

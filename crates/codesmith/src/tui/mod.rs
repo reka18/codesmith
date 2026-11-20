@@ -1038,7 +1038,8 @@ impl Runner {
                 }
             }
             Pick::DiffSource | Pick::DiffBase => self.app.diff_picked(kind, &id),
-            Pick::Session | Pick::Fork | Pick::Agent | Pick::Model => {}
+            // The app runs what the palette chose.
+            Pick::Command | Pick::Session | Pick::Fork | Pick::Agent | Pick::Model => {}
         }
         Ok(())
     }
@@ -1219,6 +1220,16 @@ impl Runner {
     /// Bring the title, notifications and program status up to date, and
     /// write what changed.
     fn attend(&mut self) {
+        if let Some(text) = self.app.clipboard.take() {
+            let seq = term::copy(&text);
+            self.outside
+                .out
+                .push_str(&if std::env::var_os("TMUX").is_some() {
+                    format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
+                } else {
+                    seq
+                });
+        }
         let views = self.tab_views();
         let title = self.app.header.title.clone();
         self.outside.observe(views, title.as_deref());

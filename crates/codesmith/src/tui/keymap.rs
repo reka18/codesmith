@@ -1531,6 +1531,8 @@ pub mod scope {
         "session.message.user.next",
         "session.message.user.previous",
         "session.messages_last_user",
+        "command.palette.show",
+        "session.copy.id",
         "model.cycle_recent",
         "model.cycle_recent_reverse",
         "model.cycle_favorite",

@@ -48,6 +48,13 @@ pub fn set_title(title: &str) -> String {
     format!("\x1b]0;{}\x07", clean(title))
 }
 
+/// The escape sequence that puts `text` on the clipboard (`OSC 52`).
+pub fn copy(text: &str) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text);
+    format!("\x1b]52;c;{b64}\x07")
+}
+
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[90m";

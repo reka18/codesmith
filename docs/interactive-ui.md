@@ -370,6 +370,12 @@ ends, **enter** chooses, and **esc** closes. The model picker
 lists the models configured under `providers`, plus the current one. To use
 any other model, type `/model provider/model`.
 
+**ctrl+p** opens the command palette, as in OpenCode: every UI command
+with its keys, and the slash commands, filtered as you type; **enter**
+runs the one highlighted. It is also how to reach commands that have no
+key by default, such as `Copy session ID` (which puts the session's ID on
+the clipboard through the terminal, `OSC 52`).
+
 As in OpenCode, the model picker lists your favourite models first (`★`),
 then the ones used recently, then the rest; **ctrl+f** adds the
 highlighted model to the favourites or takes it off. **F2** and
