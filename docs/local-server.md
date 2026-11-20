@@ -303,12 +303,13 @@ terminal, within 60 seconds. A bad ticket is refused (403). The `Host` and
   buffered without end.
 - Writes wait at most two seconds for a program that isn't reading.
 
-Stopping a terminal (removing it or its session, or stopping the server)
-sends `SIGHUP` to its program's process group and to the terminal's
-foreground group, then `SIGKILL` after half a second. When the program exits
-on its own, whatever it left running in its group is killed too. Unlike
-OpenCode, whose terminals live in a separate daemon that can outlast the
-server, CodeSmith's end with the server.
+Removing a terminal (or its session) sends `SIGHUP` to its program's
+process group and to the terminal's foreground group, then `SIGKILL` after
+half a second. When the program exits on its own, whatever it left running
+in its group is killed too. Unlike OpenCode, whose terminals live in a
+separate daemon that can outlast the server, CodeSmith's end with the
+server: when it stops, the kernel hangs their terminals up, which sends
+their programs `SIGHUP`.
 
 ## Example
 
