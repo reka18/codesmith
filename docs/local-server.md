@@ -68,6 +68,8 @@ permission and question ids are random.
 | `POST /sessions/{id}/background` | Move the running turn's foreground commands to the background ([details](#stopping-and-backgrounding-commands)). |
 | `POST /sessions/{id}/jobs/{jid}/cancel` | Stop one running command ([details](#stopping-and-backgrounding-commands)). |
 | `GET /sessions/{id}/environment`, `PUT /sessions/{id}/environment {variables}` | The environment the session's shell commands run in ([details](#session-environment)). |
+| `GET /events` | `filesystem.changed` events for the server's directory, as Server-Sent Events ([details](#file-watching)). |
+| `POST /fs/watch {path}`, `POST /fs/unwatch {path}` | Watch, or stop watching, one file of the directory ([details](#file-watching)). |
 
 ## Turn events
 
@@ -202,6 +204,32 @@ wait to resume for them, and answers `{"aborted": false,
 stop it answers `{"aborted": false}`. `DELETE /sessions/{id}` also stops a
 running turn, the background commands and the wait, and ends the
 followers' streams.
+
+## File watching
+
+As OpenCode's server does, the server tells clients about files that change,
+on `GET /events`:
+
+```
+event: filesystem.changed
+data: {"type":"filesystem.changed","location":"/path/to/project","file":"/path/to/project/src/a.ts","event":"change"}
+```
+
+`event` is `add`, `change` or `unlink`. Two things are watched:
+
+- the project's branch metadata, `.git/HEAD` (in the real Git directory,
+  through a worktree's or a symlinked `.git`) or `.hg/branch`, from when the
+  server starts, so a client sees branch switches; and
+- files a client asks for with `POST /fs/watch {"path": "src/a.ts"}` (relative
+  to the directory). The file must exist inside the directory, or the answer
+  is 404. A watch lasts 24 hours; watching the file again renews it, and
+  `POST /fs/unwatch` ends it. The directory holds at most 256 watches; one
+  more drops the watch closest to expiring. An atomic save (write a temp
+  file, rename it over) counts as a change.
+
+With file watching turned off (`CODESMITH_DISABLE_FILEWATCHER=1`), `/fs/watch`
+answers 503 and `/events` stays quiet. `watcher.ignore` naming `.git` stops the
+branch watch. See [file watching](configuration.md#file-watching).
 
 ## Example
 

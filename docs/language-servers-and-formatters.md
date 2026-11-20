@@ -68,6 +68,15 @@ writes or edits a file:
 Servers use memory and can lag behind the files, which is why they are off
 by default.
 
+Files changed outside the agent reach the servers too. From when the first
+server is running, the project is [watched](configuration.md#file-watching),
+and each burst of changes (gathered for 100 ms) goes to the servers whose
+folder holds them: as `workspace/didChangeWatchedFiles` for the files a server
+asked to watch (the globs it registers; a server that registers none hears
+about files of its own types), and as a `didChange` with the new text for a
+file it has open. Ignored files (`node_modules`, `.gitignore`d paths,
+`watcher.ignore`) are left out.
+
 The built-in servers follow OpenCode's list. Their ids (the keys you use in
 config) are:
 

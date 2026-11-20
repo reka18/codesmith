@@ -60,7 +60,9 @@ replays of its recorded provider traffic.
   `child_text`, `child_reasoning` and `child_end`, and generated media's
   metadata as `media`), a follow stream for turns the server
   starts itself, permissions, questions, undo and redo, and routes for
-  jobs, backgrounding, cancelling and the session environment.
+  jobs, backgrounding, cancelling and the session environment, and
+  `filesystem.changed` events for the branch metadata and files a client
+  watches (`/fs/watch`).
 - **ACP:** modes, models and an Effort option for variants, plans, diffs
   (replayed when a session is loaded), compaction progress and summaries,
   subagent activity (OpenCode's child-session updates), linked files
@@ -90,7 +92,10 @@ replays of its recorded provider traffic.
   from a session runs in a new child session of it each time; `--in-session`
   (CLI) or target `session` (tool) continues the creating session instead.
 - **Language servers and formatters:** OpenCode's built-in lists, off by
-  default.
+  default. Files changed outside the agent reach the language servers.
+- **File watching:** FSEvents, inotify or ReadDirectoryChangesW, started
+  only when something uses it, honouring `.gitignore` and `watcher.ignore`;
+  `CODESMITH_DISABLE_FILEWATCHER` turns it off.
 - **Plugins:** native Rust plugins compiled into your own build.
 - **Provider library:** `codesmith-ai` also carries per-part media options,
   per-message effort changes and tool namespaces, which sessions do not use

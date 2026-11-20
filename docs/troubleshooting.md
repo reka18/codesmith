@@ -81,6 +81,12 @@ starters. Remote servers that need OAuth show as needing authorization: run
 must be on `PATH` (or in `node_modules/.bin`), and one that failed to start
 is not retried until you restart CodeSmith.
 
+**Language servers miss changes made outside CodeSmith (Linux).** inotify
+needs a watch per directory, and CodeSmith takes at most half of
+`fs.inotify.max_user_watches`; directories past that are not watched. Raise
+the limit (`sudo sysctl fs.inotify.max_user_watches=524288`), or leave large
+generated folders out with [`watcher.ignore`](configuration.md#file-watching).
+
 **`codesmith serve` returns 401 or 403.** Send
 `Authorization: Bearer $(cat ~/.local/share/codesmith/serve-token)` (or the
 `--token` you started it with). Requests with a foreign `Origin`, a `Host`

@@ -99,6 +99,7 @@ is parsed:
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
 | `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display and transcript verbosity. See [The terminal UI](#the-terminal-ui-tui). |
+| `watcher` | `{}` | `{"ignore": [...]}`: paths or globs, relative to the project, that are not watched. See [File watching](#file-watching). |
 
 Unknown keys are ignored, so a config written for a newer CodeSmith still
 loads.
@@ -744,6 +745,38 @@ The theme picked with `/themes` is remembered (in
 `~/.local/share/codesmith/tui-state.json`) and wins over `theme.name`
 until `theme.name` itself changes.
 
+## File watching
+
+As in OpenCode, CodeSmith watches files only where something uses the
+changes:
+
+- **Language servers** (when [`lsp`](language-servers-and-formatters.md#language-servers)
+  is on): once a server is running, the project is watched so that files
+  changed outside the agent (by you, a `git checkout`, a build) reach it.
+- **The local server** (`codesmith serve`): the project's branch metadata
+  (`.git/HEAD`, or `.hg/branch`) and the files a client asked to watch, sent
+  as `filesystem.changed` events. See [file watching](local-server.md#file-watching).
+
+Nothing is watched at startup, and a process with nothing to watch holds no
+watch and no thread. The platform's own notifications are used: FSEvents on
+macOS and ReadDirectoryChangesW on Windows (one watch for the whole project),
+inotify on Linux (one watch per directory, at most half of
+`fs.inotify.max_user_watches`, so other tools keep room; past that, deeper
+directories go unwatched). A watched project leaves out `node_modules`,
+`.git`, `.venv`, `venv` and `__pycache__` anywhere, what the project's
+`.gitignore` ignores, and `watcher.ignore`:
+
+```jsonc
+{ "watcher": { "ignore": ["dist", "**/*.generated.ts"] } }
+```
+
+An entry without wildcards is a path from the project root (`dist` is the
+top-level `dist`). Naming `.git` (or `.hg`) also stops the branch watch.
+`CODESMITH_DISABLE_FILEWATCHER=1` turns file watching off.
+
+Idle cost is negligible: on a 100,000-file tree, see
+[PERFORMANCE.md](../PERFORMANCE.md#file-watching).
+
 ## Environment variables
 
 | Variable | Effect |
@@ -763,6 +796,7 @@ until `theme.name` itself changes.
 | `CODESMITH_MODELS_PATH` | A catalog file read instead of the cached one. |
 | `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog, not even with `models --refresh`. |
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
+| `CODESMITH_DISABLE_FILEWATCHER` | `1` or `true`: watch no files ([file watching](#file-watching)). |
 
 CodeSmith sets `CODESMITH_SESSION_ID` for commands the `shell` tool runs, and
 `CODESMITH_WORKTREE_BASE` and `CODESMITH_WORKTREE_PATH` for a worktree's
