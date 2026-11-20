@@ -1337,6 +1337,10 @@ impl Session {
         let skills = self.mentioned_skills(text)?;
         let _lease = self.take_turn(sink).await?;
         let plugins = crate::plugin::active();
+        // Plugins check permissions for this session through the host
+        // while the turn runs.
+        let _gate =
+            (!plugins.is_empty()).then(|| crate::plugin::host::live_gate(&self.id, &self.gate));
         // Plugins' prompt hooks may change the text and keep metadata with it.
         let mut prompt_metadata = None;
         let hooked;

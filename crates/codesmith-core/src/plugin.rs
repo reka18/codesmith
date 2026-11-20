@@ -16,7 +16,7 @@ pub mod host;
 mod request;
 
 pub use context::{Context, ContextMessage, ContextTool, Prompt};
-pub use host::{Host, HostError};
+pub use host::{AssertPermission, Host, HostError, PermissionError};
 pub use request::{RequestKind, RequestScope};
 /// The HTTP types the request hooks take.
 pub use reqwest;

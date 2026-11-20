@@ -384,3 +384,126 @@ fn decode_cursor(s: &str) -> Option<Cursor> {
         .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
+
+// --- Permissions (OpenCode's `ctx.permission.assert`) ---
+
+/// A permission a plugin asserts for a running session, checked like a
+/// built-in tool's: the session's rules first, then its approvals, then a
+/// plugin's [`super::Plugin::permission`] hook or the user.
+#[derive(Debug, Clone, Default)]
+pub struct AssertPermission {
+    pub session_id: String,
+    /// The action rules are written for (`"deploy"`).
+    pub action: String,
+    pub resources: Vec<String>,
+    /// The resource patterns an "always" answer saves (none by default).
+    pub save: Vec<String>,
+    /// What the prompt shows (default: the action and resources).
+    pub title: Option<String>,
+}
+
+/// Why a permission was not given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionError {
+    /// A rule blocks it.
+    Blocked(String),
+    /// The user declined and said what to do instead; the plugin should
+    /// hand this on (a tool returns it as its error).
+    Corrected(String),
+    /// The user declined: the session's turn stops after the running call,
+    /// as for a declined built-in tool.
+    Declined,
+    /// The session is not running a turn in this process.
+    NotRunning(String),
+}
+
+impl std::fmt::Display for PermissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PermissionError::Blocked(m) | PermissionError::Corrected(m) => f.write_str(m),
+            PermissionError::Declined => f.write_str("The user declined this request."),
+            PermissionError::NotRunning(id) => {
+                write!(f, "Session {id} is not running in this process")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PermissionError {}
+
+type Gates = std::collections::HashMap<String, std::sync::Weak<crate::permission::Gate>>;
+
+/// The permission gates of the sessions running a turn, by session id.
+static GATES: std::sync::Mutex<Option<Gates>> = std::sync::Mutex::new(None);
+
+/// Keeps a running session's gate reachable for [`Host::assert_permission`]
+/// until dropped (at the end of the turn).
+pub(crate) struct LiveGate {
+    id: String,
+    gate: std::sync::Arc<crate::permission::Gate>,
+}
+
+impl Drop for LiveGate {
+    fn drop(&mut self) {
+        let mut g = GATES.lock().unwrap();
+        if let Some(map) = g.as_mut() {
+            let mine = map
+                .get(&self.id)
+                .is_some_and(|w| std::ptr::eq(w.as_ptr(), std::sync::Arc::as_ptr(&self.gate)));
+            if mine {
+                map.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// Make session `id`'s gate (its rules, approvals and asker, shared)
+/// reachable while the returned guard lives.
+pub(crate) fn live_gate(id: &str, gate: &crate::permission::Gate) -> LiveGate {
+    let mut copy = crate::permission::Gate::new(gate.configured().to_vec(), gate.asker());
+    copy.share_approvals(gate.approvals());
+    let gate = std::sync::Arc::new(copy);
+    GATES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(Default::default)
+        .insert(id.to_string(), std::sync::Arc::downgrade(&gate));
+    LiveGate {
+        id: id.to_string(),
+        gate,
+    }
+}
+
+impl Host {
+    /// Check a permission for a running session (OpenCode's
+    /// `permission.assert`): allowed, blocked by a rule, or asked, which
+    /// waits for the answer (on a blocking thread, so any runtime will do).
+    /// A plugin tool returns the error's text as its failure.
+    pub async fn assert_permission(&self, input: AssertPermission) -> Result<(), PermissionError> {
+        let gate = GATES
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|m| m.get(&input.session_id))
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| PermissionError::NotRunning(input.session_id.clone()))?;
+        let req = crate::permission::Request {
+            title: input
+                .title
+                .unwrap_or_else(|| format!("{} {}", input.action, input.resources.join(", "))),
+            action: input.action,
+            resources: input.resources,
+            save: input.save,
+        };
+        let r = tokio::task::spawn_blocking(move || gate.assert(&req))
+            .await
+            .map_err(|_| PermissionError::Declined)?;
+        r.map_err(|e| match e {
+            crate::permission::Denied::Blocked { .. } => PermissionError::Blocked(e.to_string()),
+            crate::permission::Denied::Declined { feedback: Some(f) } => {
+                PermissionError::Corrected(f)
+            }
+            crate::permission::Denied::Declined { feedback: None } => PermissionError::Declined,
+        })
+    }
+}

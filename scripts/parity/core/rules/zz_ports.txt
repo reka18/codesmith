@@ -482,3 +482,6 @@
 @plugin/session-remove.test.ts
 12 :: ported :: tests/oc_plugin_session.rs::oc_plugins_can_remove_sessions_and_their_children
 39 :: ported :: tests/oc_plugin_session.rs::oc_removing_a_session_leaves_only_the_unrelated_ones_listed :: adapted: one Rust API
+@plugin/permission-assert.test.ts
+42 :: ported :: tests/oc_plugin_permission.rs::oc_plugins_assert_permissions_and_receive_outcomes_as_tool_errors :: adapted: `Host::assert_permission` against the running session's rules and asker; outcomes as `PermissionError`
+71 :: ported :: tests/oc_plugin_permission.rs::oc_plugins_assert_permissions_with_plain_input :: adapted: one Rust API
