@@ -14,6 +14,11 @@
 //! the old copy, and files the new version dropped go). A catalog that
 //! cannot be read adds no skills; the others still load.
 //!
+//! Downloads are capped: [`MAX_FILE`] per file (and for the index) and
+//! [`MAX_SKILL`] for one skill's files together, counted as they stream; a
+//! skill that goes over is not updated (a new version keeps the old copy).
+//! Redirects are followed only on the same origin.
+//!
 //! Deliberate difference: single-file `<name>.md` skills are not
 //! supported (as for local skills), so a skill needs a `SKILL.md`.
 
@@ -24,6 +29,11 @@ use std::sync::Mutex;
 
 /// The marker file holding a downloaded skill's version.
 const VERSION_FILE: &str = ".codesmith-version";
+
+/// The most one downloaded file (or a catalog's index) may hold.
+pub const MAX_FILE: u64 = 1024 * 1024;
+/// The most one skill's files may hold together.
+pub const MAX_SKILL: u64 = 8 * 1024 * 1024;
 
 #[derive(serde::Deserialize)]
 struct Index {
@@ -127,7 +137,17 @@ pub async fn pull(url: &str, cache: &Path) -> Vec<PathBuf> {
     let Ok(index_url) = source.join("index.json") else {
         return Vec::new();
     };
+    // Redirects stay on the origin they start from.
+    let same_origin = reqwest::redirect::Policy::custom(|attempt| {
+        let from = attempt.previous().first().map(|u| u.origin());
+        if attempt.previous().len() < 10 && from == Some(attempt.url().origin()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    });
     let client = match reqwest::Client::builder()
+        .redirect(same_origin)
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -135,7 +155,7 @@ pub async fn pull(url: &str, cache: &Path) -> Vec<PathBuf> {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    let Some(index) = get(&client, index_url.as_str())
+    let Some(index) = get(&client, index_url.as_str(), MAX_FILE)
         .await
         .and_then(|b| serde_json::from_slice::<Index>(&b).ok())
     else {
@@ -155,10 +175,22 @@ pub async fn pull(url: &str, cache: &Path) -> Vec<PathBuf> {
                 refresh(&client, &root, v, &files).await;
             }
             _ => {
+                // What the skill already holds counts toward its cap.
+                let mut left = MAX_SKILL.saturating_sub(
+                    files
+                        .iter()
+                        .filter_map(|(_, f)| std::fs::metadata(root.join(f)).ok())
+                        .map(|m| m.len())
+                        .sum(),
+                );
                 for (url, file) in &files {
                     let dest = root.join(file);
                     if !dest.exists() {
-                        download(&client, url, &dest).await;
+                        match download(&client, url, &dest, left).await {
+                            Some(n) => left -= n,
+                            None if left == 0 => break,
+                            None => {}
+                        }
                     }
                 }
             }
@@ -211,10 +243,14 @@ async fn refresh(client: &reqwest::Client, root: &Path, version: &str, files: &[
     let staging = root.with_file_name(format!("{name}.tmp-{token}"));
     let backup = root.with_file_name(format!("{name}.old-{token}"));
     let mut ok = true;
+    let mut left = MAX_SKILL;
     for (url, file) in files {
-        if !download(client, url, &staging.join(file)).await {
-            ok = false;
-            break;
+        match download(client, url, &staging.join(file), left).await {
+            Some(n) => left -= n,
+            None => {
+                ok = false;
+                break;
+            }
         }
     }
     if ok
@@ -232,34 +268,54 @@ async fn refresh(client: &reqwest::Client, root: &Path, version: &str, files: &[
     let _ = std::fs::remove_dir_all(&staging);
 }
 
-/// GET `url`, retrying twice on errors and bad statuses.
-async fn get(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
+/// GET `url`, retrying twice on errors and bad statuses; `None` for a
+/// body over `cap` bytes (stopped as soon as it goes over) or a redirect
+/// that was not followed.
+async fn get(client: &reqwest::Client, url: &str, cap: u64) -> Option<Vec<u8>> {
     for attempt in 0..3 {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200 << attempt)).await;
         }
-        let Ok(resp) = client.get(url).send().await else {
+        let Ok(mut resp) = client.get(url).send().await else {
             continue;
         };
         let status = resp.status();
         if status.is_success() {
-            if let Ok(b) = resp.bytes().await {
-                return Some(b.to_vec());
+            if resp.content_length().is_some_and(|n| n > cap) {
+                return None;
             }
-        } else if status.is_client_error() && status.as_u16() != 429 {
+            let mut body = Vec::new();
+            let complete = loop {
+                match resp.chunk().await {
+                    Ok(Some(c)) => {
+                        if body.len() as u64 + c.len() as u64 > cap {
+                            return None;
+                        }
+                        body.extend_from_slice(&c);
+                    }
+                    Ok(None) => break true,
+                    Err(_) => break false,
+                }
+            };
+            if complete {
+                return Some(body);
+            }
+        } else if status.is_redirection() || (status.is_client_error() && status.as_u16() != 429) {
             return None;
         }
     }
     None
 }
 
-async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> bool {
-    let Some(body) = get(client, url).await else {
-        return false;
-    };
-    dest.parent()
+/// Download `url` to `dest`, at most `left` bytes (and [`MAX_FILE`]): the
+/// bytes written, or `None` when it failed or was too large.
+async fn download(client: &reqwest::Client, url: &str, dest: &Path, left: u64) -> Option<u64> {
+    let body = get(client, url, left.min(MAX_FILE)).await?;
+    let written = dest
+        .parent()
         .is_some_and(|p| std::fs::create_dir_all(p).is_ok())
-        && std::fs::write(dest, body).is_ok()
+        && std::fs::write(dest, &body).is_ok();
+    written.then_some(body.len() as u64)
 }
 
 #[cfg(test)]

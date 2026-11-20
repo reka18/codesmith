@@ -56,14 +56,23 @@ async fn catalog() -> Catalog {
                         st.files.get(&path).cloned()
                     }
                 };
-                let (status, body) = match body {
-                    Some(b) => ("200 OK", b),
-                    None => ("404 Not Found", "Not Found".to_string()),
+                // A file `REDIRECT <url>` redirects there.
+                let resp = match body {
+                    Some(b) if b.starts_with("REDIRECT ") => format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        &b["REDIRECT ".len()..]
+                    ),
+                    b => {
+                        let (status, body) = match b {
+                            Some(b) => ("200 OK", b),
+                            None => ("404 Not Found", "Not Found".to_string()),
+                        };
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
                 };
-                let resp = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
                 let _ = s.write_all(resp.as_bytes()).await;
             });
         }
@@ -275,4 +284,100 @@ fn oc_skill_keeps_directory_skills_when_a_url_source_fails() {
     let skills = skill::discover(&roots);
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].description, "Available");
+}
+
+/// Not in OpenCode: a file over the per-file cap, or a skill over the
+/// per-skill cap, is not downloaded.
+#[tokio::test(flavor = "multi_thread")]
+async fn downloads_are_capped_per_file_and_per_skill() {
+    use codesmith_core::skill_remote::{MAX_FILE, MAX_SKILL};
+    let c = catalog().await;
+    let big = "x".repeat(MAX_FILE as usize + 1);
+    let skill = "---\nname: big\ndescription: d\n---\nbody\n";
+    let (dirs, _) = c
+        .pull(
+            json!([{"name": "big", "version": "1", "files": ["SKILL.md", "huge.md"]}]),
+            &[
+                ("/catalog/big/SKILL.md", skill),
+                ("/catalog/big/huge.md", &big),
+            ],
+        )
+        .await;
+    assert!(dirs.is_empty(), "{dirs:?}");
+
+    // Files each under the cap, together over the skill's.
+    let part = "y".repeat(MAX_FILE as usize - 10);
+    let n = (MAX_SKILL / MAX_FILE) as usize + 1;
+    let names: Vec<String> = (0..n).map(|i| format!("part{i}.md")).collect();
+    let paths: Vec<String> = names.iter().map(|f| format!("/catalog/many/{f}")).collect();
+    let mut files: Vec<(&str, &str)> = vec![("/catalog/many/SKILL.md", skill)];
+    files.extend(paths.iter().map(|p| (p.as_str(), part.as_str())));
+    let mut listed = vec!["SKILL.md".to_string()];
+    listed.extend(names.iter().cloned());
+    let (dirs, _) = c
+        .pull(
+            json!([{"name": "many", "version": "1", "files": listed}]),
+            &files,
+        )
+        .await;
+    assert!(dirs.is_empty(), "{dirs:?}");
+    // Unversioned: it keeps what fit and stops at the cap.
+    let (_, requests) = c
+        .pull(json!([{"name": "many", "files": listed}]), &files)
+        .await;
+    let root = c.cache.path().join("skills");
+    let total: u64 = walk(&root)
+        .iter()
+        .map(|p| p.metadata().unwrap().len())
+        .sum();
+    assert!(total <= MAX_SKILL, "{total}");
+    assert!(requests.len() <= n + 2, "{requests:?}");
+}
+
+fn walk(d: &Path) -> Vec<PathBuf> {
+    let mut out = vec![];
+    for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Not in OpenCode: a redirect to another origin is not followed; one on
+/// the catalog's origin is.
+#[tokio::test(flavor = "multi_thread")]
+async fn redirects_stay_on_the_catalogs_origin() {
+    let c = catalog().await;
+    let other = catalog().await;
+    let skill = "---\nname: s\ndescription: d\n---\nbody\n";
+    other.state.lock().unwrap().files =
+        [("/elsewhere/SKILL.md".to_string(), skill.to_string())].into();
+    let away = format!(
+        "REDIRECT {}",
+        other.base.replace("/catalog/", "/elsewhere/SKILL.md")
+    );
+    let (dirs, _) = c
+        .pull(
+            json!([{"name": "s", "files": ["SKILL.md"]}]),
+            &[("/catalog/s/SKILL.md", &away)],
+        )
+        .await;
+    assert!(dirs.is_empty(), "{dirs:?}");
+    assert!(other.state.lock().unwrap().requests.is_empty());
+
+    let home = format!(
+        "REDIRECT {}",
+        c.base.replace("/catalog/", "/moved/SKILL.md")
+    );
+    let (dirs, _) = c
+        .pull(
+            json!([{"name": "s", "files": ["SKILL.md"]}]),
+            &[("/catalog/s/SKILL.md", &home), ("/moved/SKILL.md", skill)],
+        )
+        .await;
+    assert_eq!(dirs.len(), 1);
 }
