@@ -1150,10 +1150,19 @@ fn stdin_has_input() -> bool {
     if std::io::stdin().is_terminal() {
         return false;
     }
+    // fstat the descriptor itself: on macOS, stat of `/dev/stdin` races a
+    // writer closing its end of the pipe and can report no file type (or
+    // EBADF), which dropped piped input from `echo hi | codesmith run`.
     #[cfg(unix)]
     {
+        use std::os::fd::AsFd;
         use std::os::unix::fs::FileTypeExt;
-        match std::fs::metadata("/dev/stdin") {
+        match std::io::stdin()
+            .as_fd()
+            .try_clone_to_owned()
+            .map(std::fs::File::from)
+            .and_then(|f| f.metadata())
+        {
             Ok(m) => m.file_type().is_fifo() || m.file_type().is_file(),
             Err(_) => false,
         }
