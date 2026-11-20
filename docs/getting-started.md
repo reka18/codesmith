@@ -107,14 +107,16 @@ application you register yourself (CodeSmith ships none); each section of
 [SAP AI Core](configuration.md#sap-ai-core) and
 [Modal](configuration.md#live-model-lists-modal-github-copilot-azure).
 
-**A local server.** `ollama`, `lmstudio` and `llamacpp` are built in at their
-default ports, with no key:
+**A local server.** `ollama`, `lmstudio`, `vllm` and `llamacpp` are built in
+at their default ports, with no key, and `codesmith models` lists what each
+running one has loaded (see
+[local model discovery](configuration.md#local-model-discovery-ollama-lm-studio-vllm-llamacpp)):
 
 ```sh
 codesmith -m ollama/qwen3-coder
 ```
 
-Any other OpenAI-compatible server (vLLM, oMLX, a llama.cpp server on another
+Any other OpenAI-compatible server (oMLX, a llama.cpp server on another
 port, and so on) takes a few lines of config. Put this in
 `~/.config/codesmith/codesmith.json`:
 

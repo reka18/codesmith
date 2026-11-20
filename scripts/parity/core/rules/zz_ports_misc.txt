@@ -1,0 +1,24 @@
+# Ports of the local model discovery, VCS, shell, policy, approval, config,
+# attachment, Code Mode, automation and decision-model groups.
+@plugin/provider-lmstudio.test.ts
+28 :: ported :: tests/oc_local_models.rs::oc_lmstudio_is_registered_as_a_built_in_provider_plugin :: adapted: a built-in provider with its own discovery
+33 :: ported :: tests/oc_local_models.rs::oc_lmstudio_discovers_local_language_models_with_their_capabilities_and_effective_context
+134 :: ported :: tests/oc_local_models.rs::oc_lmstudio_refreshes_the_catalog_when_lm_studio_models_change :: adapted: each listing discovers again; nothing polls
+174 :: ported :: tests/oc_local_models.rs::oc_lmstudio_discovers_from_configured_endpoints_with_bearer_authentication
+249 :: ported :: tests/oc_local_models.rs::oc_lmstudio_discovers_with_a_configured_key_and_keeps_sending_it :: adapted: the provider's key (configured, its variables or saved) is sent on every discovery
+308 :: ported :: tests/oc_local_models.rs::oc_lmstudio_discovers_with_a_configured_key_and_keeps_sending_it :: adapted: the provider's key is sent on every discovery
+369 :: design :: deliberate :: CodeSmith discovers once per listing, with no background plugin instances to share requests between
+409 :: ported :: tests/oc_local_models.rs::oc_lmstudio_replaces_the_models_dev_catalog_when_discovery_succeeds :: adapted: a kept list for the current endpoint stands in for the catalog's models
+@plugin/provider-ollama.test.ts
+30 :: design :: platform :: OpenCode workspaces have no local execution plane; CodeSmith always runs where it is
+49 :: ported :: tests/oc_local_models.rs::oc_ollama_discovers_local_completion_models_and_native_metadata
+127 :: ported :: tests/oc_local_models.rs::oc_ollama_refreshes_changed_digests_and_retains_inventory_through_transient_failures
+178 :: ported :: tests/oc_local_models.rs::oc_ollama_replaces_and_restores_the_same_id_catalog_provider :: adapted: configured models stay beside the discovered ones
+242 :: ported :: tests/oc_local_models.rs::oc_ollama_reloads_layered_endpoint_and_bearer_authentication_settings
+@plugin/provider-vllm.test.ts
+39 :: ported :: tests/oc_local_models.rs::oc_vllm_waits_for_readiness_and_discovers_official_vllm_model_metadata :: adapted: a server that is not ready fails that listing; the next one discovers
+103 :: design :: deliberate :: an explicit `codesmith models vllm` waits 15 seconds as OpenCode does; the unprompted listing gives a loopback server 5, and nothing keeps waiting in the background
+145 :: design :: deliberate :: endpoints change with config, not under a running background discovery, so there is no stale attempt to report
+204 :: ported :: tests/oc_local_models.rs::oc_vllm_refreshes_inventory_while_retaining_the_last_success_through_transient_failures
+241 :: ported :: tests/oc_local_models.rs::oc_lmstudio_replaces_the_models_dev_catalog_when_discovery_succeeds :: adapted: the same kept-list rule for every local provider
+306 :: ported :: tests/oc_local_models.rs::oc_vllm_reloads_layered_custom_endpoint_and_bearer_authentication_settings

@@ -133,6 +133,7 @@ from `settings.apiKey` in config.
 | `ollama` | OpenAI Chat | none (`http://127.0.0.1:11434/v1`) |
 | `lmstudio` | OpenAI Chat | none (`http://127.0.0.1:1234/v1`) |
 | `llamacpp` | OpenAI Chat | none (`http://127.0.0.1:8080/v1`) |
+| `vllm` | OpenAI Chat | none (`http://127.0.0.1:8000/v1`) |
 | `amazon-bedrock` | Bedrock Converse (Mantle models: Responses, Chat or Messages) | `AWS_BEARER_TOKEN_BEDROCK`, else SigV4 with AWS credentials; see [Amazon Bedrock](#amazon-bedrock) |
 | `google-vertex` | Gemini, Anthropic Messages for Claude, OpenAI Chat for partner models | Application Default Credentials, or `GOOGLE_VERTEX_API_KEY` (Express Mode); see [Google Vertex AI](#google-vertex-ai) |
 | `google-vertex-anthropic` | Anthropic Messages | as `google-vertex` |
@@ -718,6 +719,42 @@ catalog's; nothing is fetched in the background. For `modal` the list is the
 proxy's `<baseURL>/models` (with `MODAL_PROXY_TOKEN` or a saved key), each
 live model built on the catalog model of its base model (`base_model_id`,
 else `hugging_face_id`), as in OpenCode. Run it again to pick up changes.
+
+### Local model discovery (Ollama, LM Studio, vLLM, llama.cpp)
+
+The local providers list what their server has loaded, as OpenCode's
+provider plugins do: LM Studio's `/api/v1/models` (language and decision
+models, with the smallest loaded context), Ollama's `/api/tags` with
+`/api/show` for each model (models that complete text, with their tool and
+vision support and context length; details are asked again only when a
+model's digest changes), vLLM's `/health` then `/v1/models` (the models it
+serves itself, with `max_model_len`), and for `llamacpp` the OpenAI
+`/v1/models`. A discovered model resolves with what the server said (its
+context window, tools, images); what it does not say takes OpenCode's
+defaults for a custom model (200,000 tokens of context, no tools).
+
+Only the provider's own endpoint is asked: the configured `settings.baseURL`
+(with `settings.apiKey` or the saved key sent as a bearer token), else the
+default address in the table above. `codesmith models` asks every local
+provider whose endpoint is on this machine (`localhost`, `127.0.0.0/8`,
+`::1`), giving each half a second to connect, so a server that is not
+running is skipped; `codesmith models <provider>` asks that provider's
+endpoint wherever it is. The list is kept in `live-models.json` for the
+endpoint it came from, through outages until the next success; an empty
+answer brings the catalog's models back.
+
+Any other OpenAI-compatible server (oMLX, a llama.cpp server on another
+port) opts in with `settings.discovery`: `openai` (`GET /v1/models`, reading
+`max_model_len`, `context_length` or llama.cpp's `meta.n_ctx_train` for the
+context), `lmstudio`, `ollama` or `vllm`:
+
+```jsonc
+"providers": {
+  "omlx": {
+    "settings": { "baseURL": "http://127.0.0.1:8000/v1", "discovery": "openai" }
+  }
+}
+```
 
 ### Responses over WebSocket
 

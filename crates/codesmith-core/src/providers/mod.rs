@@ -14,6 +14,7 @@ pub mod digitalocean;
 pub mod gateways;
 pub mod gitlab;
 pub mod live;
+pub mod local;
 pub mod modal;
 pub mod oauth;
 pub mod poe;

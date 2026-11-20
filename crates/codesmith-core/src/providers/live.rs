@@ -85,6 +85,12 @@ pub fn derive(
 ) -> Vec<crate::catalog::Model> {
     let base = kept["baseURL"].as_str().unwrap_or("");
     let raw: Vec<Value> = kept["models"].as_array().cloned().unwrap_or_default();
+    if kept["account"]
+        .as_str()
+        .is_some_and(|a| a.starts_with("endpoint:"))
+    {
+        return super::local::derive(provider, &raw);
+    }
     match provider {
         super::modal::ID => super::modal::derive(base, &super::modal::parse(&raw), templates),
         super::copilot::ID => {
@@ -154,7 +160,20 @@ pub async fn refresh(
             }
             .await,
         ),
-        _ => None,
+        _ => {
+            let kind = super::local::kind(provider_id, settings)?;
+            Some(
+                super::local::refresh(
+                    client,
+                    &file(),
+                    provider_id,
+                    kind,
+                    &p.base_url,
+                    p.api_key.as_deref(),
+                )
+                .await,
+            )
+        }
     }
 }
 

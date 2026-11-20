@@ -1146,6 +1146,12 @@ async fn run(cli: Cli) -> Result<()> {
         Some(Command::Models { provider: None, .. }) => {
             let loaded = config::load(&cwd)?;
             let c = &loaded.config;
+            // Local servers on this machine list what they serve now.
+            codesmith_core::providers::local::discover_local(
+                c,
+                &codesmith_core::providers::live::file(),
+            )
+            .await;
             let mut ids: Vec<String> = config::BUILTIN.iter().map(|b| b.0.to_string()).collect();
             ids.extend(
                 c.providers

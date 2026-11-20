@@ -214,6 +214,11 @@ pub struct ProviderSettings {
     /// `http`. OpenAI, xAI and v1 Azure endpoints default to `websocket`,
     /// every other provider to `http`.
     pub transport: Option<String>,
+    /// How the provider's models are discovered from the server itself:
+    /// `lmstudio`, `ollama`, `vllm` or `openai` (`GET /v1/models`). The
+    /// built-in local providers have their own; see
+    /// [`crate::providers::local`].
+    pub discovery: Option<String>,
     /// Settings of the providers in [`crate::providers`] (`region`,
     /// `profile`, `endpoint`, `auth`, `project`, `location`, …).
     #[serde(flatten)]
@@ -456,9 +461,17 @@ impl Config {
             .map(|p| p.models.as_slice())
             .unwrap_or(&[]);
         // A kept live list stands in for the catalog's models.
-        let live = crate::providers::live::models(provider, None, templates);
+        let live = crate::providers::live::models(
+            provider,
+            self.live_account(provider).as_deref(),
+            templates,
+        );
         for m in &live {
-            if m.enabled && !configured.contains_key(&m.id) && !out.contains(&m.id) {
+            if m.enabled
+                && types.contains(&m.kind.as_str())
+                && !configured.contains_key(&m.id)
+                && !out.contains(&m.id)
+            {
                 out.push(m.id.clone());
             }
         }
@@ -1208,6 +1221,13 @@ pub const BUILTIN: &[(&str, &str, Protocol, &str, &[&str])] = &[
         "http://127.0.0.1:8080/v1",
         &[],
     ),
+    (
+        "vllm",
+        "vLLM (local)",
+        Protocol::OpenaiChat,
+        "http://127.0.0.1:8000/v1",
+        &[],
+    ),
 ];
 
 fn builtin(id: &str) -> Option<ProviderConfig> {
@@ -1299,7 +1319,12 @@ impl Config {
         let catalog = self.models_dev.as_ref().map(|c| c.catalog());
         let cp = catalog.as_ref().and_then(|c| c.provider(pid));
         // A model of the provider's kept live list wins over the catalog's.
-        let live = live_model(cp, pid, m.id.as_deref().unwrap_or(mid));
+        let live = live_model(
+            cp,
+            pid,
+            self.live_account(pid).as_deref(),
+            m.id.as_deref().unwrap_or(mid),
+        );
         let cm = live.as_ref().or_else(|| {
             catalog.as_ref().and_then(|c| {
                 m.id.as_deref()
@@ -1632,10 +1657,11 @@ pub fn is_local_url(url: &str) -> bool {
 fn live_model(
     cp: Option<&crate::catalog::Snapshot>,
     pid: &str,
+    account: Option<&str>,
     id: &str,
 ) -> Option<crate::catalog::Model> {
     let templates = cp.map(|p| p.models.as_slice()).unwrap_or(&[]);
-    crate::providers::live::models(pid, None, templates)
+    crate::providers::live::models(pid, account, templates)
         .into_iter()
         .find(|m| m.id == id)
 }
@@ -1652,6 +1678,22 @@ fn native_compaction(v: Option<&Value>) -> Option<Option<codesmith_ai::CompactMe
         Some("endpoint") => Some(codesmith_ai::CompactMechanism::Endpoint),
         _ => None,
     })
+}
+
+impl Config {
+    /// The key of a provider: configured, from its key variables, or saved.
+    pub fn provider_key(&self, pid: &str, p: &ProviderConfig) -> Option<String> {
+        provider_key(pid, p)
+    }
+
+    /// The account a provider's kept live list must have been fetched for:
+    /// a local provider's endpoint (see [`crate::providers::local`]).
+    pub fn live_account(&self, pid: &str) -> Option<String> {
+        let p = self.provider(pid)?;
+        let kind = crate::providers::local::kind(pid, &p.settings)?;
+        let root = crate::providers::local::root(kind, p.settings.base_url.as_deref()?)?;
+        Some(crate::providers::local::account(&root))
+    }
 }
 
 /// The key of a provider: configured, from its key variables, or saved.
