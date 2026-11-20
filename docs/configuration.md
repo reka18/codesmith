@@ -429,7 +429,12 @@ An OpenAI-compatible server on another machine:
 ```
 
 `codesmith debug model box/qwen3.5` prints `local: yes` for a provider
-treated as local.
+treated as local. With `"discovery": "openai"` (and `"local": true` for a
+server on another machine), `codesmith models` and the model picker
+(`/model`) list what the server serves; the picker shows the list kept
+from the last time at once and asks the server again in the background,
+for at most three seconds, each time it opens (see
+[Local model discovery](#local-model-discovery-ollama-lm-studio-vllm-llamacpp)).
 
 CodeSmith asks two different questions of a server's address:
 

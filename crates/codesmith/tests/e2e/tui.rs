@@ -942,3 +942,77 @@ async fn oc_keeps_each_visited_session_open() {
     ui.quit().await;
     assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
 }
+
+/// A server that answers every request with the model list `ids`, counting
+/// the requests.
+async fn model_list_server(
+    ids: &'static [&'static str],
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = hits.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let data: Vec<_> = ids.iter().map(|id| json!({"id": id})).collect();
+                let body = json!({ "data": data }).to_string();
+                let _ = s
+                    .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                    .await;
+            });
+        }
+    });
+    (format!("http://{addr}/v1"), hits)
+}
+
+// The model picker lists what the local servers serve (as `codesmith
+// models` does), asking them again each time it opens.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_model_picker_lists_discovered_local_models() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    let (url, hits) = model_list_server(&["qwen-discovered"]).await;
+    // The built-in local providers are marked not local, so nothing else on
+    // this machine is asked.
+    let off = json!({"local": false});
+    e.config(
+        &m.url,
+        json!({"providers": {
+            "fake": {
+                "protocol": "openai-chat",
+                "settings": {"baseURL": m.url, "apiKey": "test-key"},
+                "models": {"m": {"limit": {"context": 100000}}}
+            },
+            "omlx": {"name": "oMLX", "settings": {"baseURL": url, "discovery": "openai"}},
+            "lmstudio": off, "ollama": off, "vllm": off, "llamacpp": off,
+        }}),
+    );
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("fake/m").await;
+    ui.send(b"/model\r").await;
+    ui.wait_for("omlx/qwen-discovered").await;
+    ui.wait_for("oMLX · local").await;
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // Esc closes the picker (alone, not as the start of a sequence).
+    ui.send(b"\x1b").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Opened again, it asks again.
+    ui.send(b"/model\r").await;
+    ui.wait_for("omlx/qwen-discovered").await;
+    let asked = tokio::time::timeout(Duration::from_secs(5), async {
+        while hits.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(asked.is_ok(), "the second open did not ask again");
+    ui.send(b"\x1b").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    ui.quit().await;
+}

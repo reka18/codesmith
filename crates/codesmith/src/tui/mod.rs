@@ -687,8 +687,11 @@ impl Runner {
             }
             "model" if self.idle_or_say() => {
                 if args.is_empty() {
+                    // The kept lists show at once; the local servers are
+                    // asked again meanwhile.
                     let items = model_items(&self.loaded.config, &self.app.header.model);
                     self.app.modal = Some(Modal::Picker(Picker::new(Pick::Model, "Models", items)));
+                    refresh_local_models(&self.loaded.config, self.tx.clone());
                 } else {
                     self.set_model(args)?;
                 }
@@ -1059,6 +1062,13 @@ impl Runner {
             Ev::Files(f) => {
                 self.app.set_files(f);
             }
+            Ev::LocalModels => {
+                if let Some(Modal::Picker(p)) = self.app.modal.as_mut() {
+                    if p.kind == Pick::Model {
+                        p.replace_items(model_items(&self.loaded.config, &self.app.header.model));
+                    }
+                }
+            }
             // An interrupted turn that finished anyway: already reloaded,
             // or reloading once `Stopped` arrives.
             Ev::Done { .. } if self.skip_done > 0 || self.stopping => {
@@ -1096,10 +1106,40 @@ fn ago(t: i64) -> String {
     }
 }
 
-/// Models for the picker: every configured model, then the built-in
-/// providers without listed models (choosing one prefills `/model p/`).
+/// How long the model picker waits for the local servers it asks.
+const LOCAL_MODELS_WAIT: Duration = Duration::from_secs(3);
+
+/// Ask the local servers that may be asked unprompted for their models (as
+/// `codesmith models` does), in the background and briefly, then send
+/// `Ev::LocalModels`. One refresh runs at a time.
+fn refresh_local_models(cfg: &config::Config, tx: UnboundedSender<Ev>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let cfg = cfg.clone();
+    tokio::spawn(async move {
+        let found = tokio::time::timeout(
+            LOCAL_MODELS_WAIT,
+            codesmith_core::providers::local::discover_local(
+                &cfg,
+                &codesmith_core::providers::live::file(),
+            ),
+        )
+        .await;
+        RUNNING.store(false, Ordering::SeqCst);
+        if found.is_ok_and(|ids| !ids.is_empty()) {
+            let _ = tx.send(Ev::LocalModels);
+        }
+    });
+}
+
+/// Models for the picker: every configured model, the models the local
+/// servers listed when last asked, then the built-in providers without
+/// listed models (choosing one prefills `/model p/`).
 fn model_items(cfg: &config::Config, current: &str) -> Vec<PickItem> {
-    let mut items = Vec::new();
+    let mut items: Vec<PickItem> = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for (pid, p) in &cfg.providers {
         let pname = p.name.clone().unwrap_or_else(|| pid.clone());
@@ -1113,6 +1153,29 @@ fn model_items(cfg: &config::Config, current: &str) -> Vec<PickItem> {
                     (Some(n), None) => format!("{n} · {pname}"),
                     (None, Some(c)) => format!("{pname} · {}K context", c / 1000),
                     (None, None) => pname.clone(),
+                },
+                label: spec.clone(),
+                id: spec,
+            });
+        }
+    }
+    for pid in codesmith_core::providers::local::providers(cfg) {
+        let Some(p) = cfg.provider(&pid) else {
+            continue;
+        };
+        let pname = p.name.clone().unwrap_or_else(|| pid.clone());
+        for mid in cfg.list_models(&pid, &[]) {
+            let spec = format!("{pid}/{mid}");
+            if items.iter().any(|i| i.id == spec) || codesmith_core::providers::hidden(&pid, &mid) {
+                continue;
+            }
+            seen.insert(pid.clone());
+            let context = cfg.resolve_model(&spec).ok().and_then(|m| m.context);
+            items.push(PickItem {
+                current: spec == current,
+                detail: match context {
+                    Some(c) => format!("{pname} · local · {}K context", c / 1000),
+                    None => format!("{pname} · local"),
                 },
                 label: spec.clone(),
                 id: spec,

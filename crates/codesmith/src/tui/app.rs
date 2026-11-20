@@ -227,6 +227,19 @@ impl Picker {
     pub fn selected(&self) -> Option<&PickItem> {
         self.shown.get(self.sel).map(|&i| &self.items[i])
     }
+
+    /// Replace the list (a refreshed one), keeping the filter and, when it
+    /// is still listed, the selected item.
+    pub fn replace_items(&mut self, items: Vec<PickItem>) {
+        let selected = self.selected().map(|i| i.id.clone());
+        self.items = items;
+        self.refilter();
+        if let Some(pos) =
+            selected.and_then(|id| self.shown.iter().position(|&i| self.items[i].id == id))
+        {
+            self.sel = pos;
+        }
+    }
 }
 
 pub enum Modal {
@@ -933,6 +946,7 @@ impl App {
             | Ev::Paste(_)
             | Ev::Resize
             | Ev::Files(_)
+            | Ev::LocalModels
             | Ev::Done { .. }
             | Ev::Stopped
             | Ev::Background
@@ -2180,6 +2194,35 @@ mod tests {
                 current: *l == "beta",
             })
             .collect()
+    }
+
+    #[test]
+    fn a_refreshed_picker_keeps_its_filter_and_selection() {
+        let item = |id: &str| PickItem {
+            id: id.into(),
+            label: id.into(),
+            detail: String::new(),
+            current: false,
+        };
+        let mut p = Picker::new(Pick::Model, "Models", vec![item("a/one"), item("a/two")]);
+        p.filter = "a/".into();
+        p.refilter();
+        p.sel = 1;
+        p.replace_items(vec![
+            item("a/new"),
+            item("a/one"),
+            item("a/two"),
+            item("b/x"),
+        ]);
+        assert_eq!(p.filter, "a/");
+        assert_eq!(p.shown.len(), 3, "b/x is filtered out");
+        assert_eq!(p.selected().unwrap().id, "a/two");
+        p.replace_items(vec![item("a/one")]);
+        assert_eq!(
+            p.selected().unwrap().id,
+            "a/one",
+            "a gone item moves the selection"
+        );
     }
 
     #[test]

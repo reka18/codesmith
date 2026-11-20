@@ -23,6 +23,9 @@ pub enum Ev {
     Resize,
     /// The project's files, listed in the background for `@` completion.
     Files(Vec<String>),
+    /// The local servers were asked for their models (the model picker
+    /// refreshes its list).
+    LocalModels,
     Text(String),
     Reasoning(String),
     /// A tool call started streaming its arguments.
