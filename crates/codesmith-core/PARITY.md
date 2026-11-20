@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 63 | 0 | 12 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 67 | 0 | 8 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1644** | **18** | **131** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1648** | **18** | **127** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (131 cases in 18 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (127 cases in 17 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -93,7 +93,6 @@ Missing features, by how many OpenCode test cases each would unlock (131 cases i
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
-| [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
@@ -231,15 +230,6 @@ Missing features, by how many OpenCode test cases each would unlock (131 cases i
 - `plugin/plan.test.ts`: allows external directories without asking
 - `plugin/plan.test.ts`: rewrites blocked mutation failures with the Plan directory
 - `plugin/plan.test.ts`: preserves mutation failures unrelated to permissions
-
-### Provider State Across Model Switches
-
-4 cases.
-
-- `session-runner-message.test.ts`: drops model-scoped continuation metadata after a model switch but keeps hosted result payloads
-- `session-runner-message.test.ts`: preserves provider metadata for a catalog alias with a different API model ID
-- `session-runner-message.test.ts`: drops assistant text provider state across model changes, aborts, and provider failures
-- `session-runner-message.test.ts`: preserves assistant text provider state for the same model
 
 ### Session Read State
 
@@ -1567,7 +1557,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (242 of 308)</summary>
+<details><summary>Sessions and their store (246 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1715,7 +1705,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D replays flat state under an OpenCode hosted model's route key — cloud: OpenCode hosted model route key
 - D retries a failed stream from its last local call that ran — deliberate: runner.rs: tools run after the stream ends, a failed stream is retried from the prompt
 - P omits unfinished reasoning from an interrupted assistant message — `src/runner.rs::oc_session_message_omits_reasoning_only_assistant_turns`
+- P drops model-scoped continuation metadata after a model switch but keeps hosted result payloads — `src/session.rs::oc_session_message_drops_model_scoped_continuation_metadata_after_a_model_switch_but_keeps_hosted_result_payloads` (adapted: state is stamped with the model that made it and dropped on another)
+- P preserves provider metadata for a catalog alias with a different API model ID — `src/session.rs::oc_session_message_preserves_provider_metadata_for_a_catalog_alias_with_a_different_api_model_id`
+- P drops assistant text provider state across model changes, aborts, and provider failures — `src/session.rs::oc_session_message_drops_assistant_text_provider_state_across_model_changes_aborts_and_provider_failures` (adapted: an aborted step keeps nothing in CodeSmith, so only model changes and failed streams are checked)
 - D replays tools migrated from V1, which never recorded when they ran — storage-model: V1-migrated tool rows
+- P preserves assistant text provider state for the same model — `src/session.rs::oc_session_message_preserves_assistant_text_provider_state_for_the_same_model`
 
 **`session-runner-recorded.test.ts`**
 

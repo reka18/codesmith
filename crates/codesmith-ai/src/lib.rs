@@ -173,6 +173,8 @@ pub struct Text {
     pub meta: Option<ReasoningMeta>,
 }
 
+// A transient serde form; never stored in bulk.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum TextRepr {
@@ -282,6 +284,8 @@ pub struct Reasoning {
     pub meta: Option<ReasoningMeta>,
 }
 
+// A transient serde form; never stored in bulk.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum ReasoningRepr {
@@ -351,6 +355,12 @@ impl Reasoning {
 pub struct ReasoningMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<Protocol>,
+    /// The model (`provider/model`, its catalog id) that produced it: state
+    /// scoped to one model is dropped when another one is asked (OpenCode
+    /// keeps provider metadata only for the same model). Absent in parts
+    /// stored before it existed, which replay as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Anthropic thinking signature, or Gemini `thoughtSignature`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,

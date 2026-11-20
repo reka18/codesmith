@@ -12,3 +12,8 @@
 263 :: ported :: tests/oc_effort_switch.rs::oc_session_ignores_switches_that_are_not_effort_changes_on_the_requested_model
 @session-runner.test.ts
 2427 :: ported :: tests/oc_effort_switch.rs::oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update
+@session-runner-message.test.ts
+1109 :: ported :: src/session.rs::oc_session_message_drops_model_scoped_continuation_metadata_after_a_model_switch_but_keeps_hosted_result_payloads :: adapted: state is stamped with the model that made it and dropped on another
+1200 :: ported :: src/session.rs::oc_session_message_preserves_provider_metadata_for_a_catalog_alias_with_a_different_api_model_id
+1231 :: ported :: src/session.rs::oc_session_message_drops_assistant_text_provider_state_across_model_changes_aborts_and_provider_failures :: adapted: an aborted step keeps nothing in CodeSmith, so only model changes and failed streams are checked
+1599 :: ported :: src/session.rs::oc_session_message_preserves_assistant_text_provider_state_for_the_same_model

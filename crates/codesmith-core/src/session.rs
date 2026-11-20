@@ -421,6 +421,60 @@ fn resume_backoff(failures: u32) -> Duration {
 /// Put the agent's request headers and body fields over the model's: a
 /// numeric `temperature` sets the request's temperature, and the rest go
 /// into the body as they are.
+/// What a stream that failed for good keeps: what it showed, without its
+/// calls, and its text without provider state (a Responses phase), since
+/// that item never closed as the provider would replay it. Finished
+/// reasoning keeps its signature.
+fn failed_partial(parts: Vec<Part>) -> Vec<Part> {
+    parts
+        .into_iter()
+        .filter(|p| !matches!(p, Part::ToolCall { .. }))
+        .map(|p| match p {
+            Part::Text(t) => Part::Text(codesmith_ai::Text { meta: None, ..t }),
+            p => p,
+        })
+        .collect()
+}
+
+/// Stamp the provider state in `parts` that names no model with `model`.
+fn stamp_model(parts: &mut [Part], model: &str) {
+    for p in parts {
+        let meta = match p {
+            Part::Text(t) => t.meta.as_mut(),
+            Part::Reasoning(r) => r.meta.as_mut(),
+            Part::ToolCall { meta, .. } => meta.as_mut(),
+            _ => None,
+        };
+        if let Some(m) = meta.filter(|m| m.model.is_none()) {
+            m.model = Some(model.to_string());
+        }
+    }
+}
+
+/// Drop the provider state another model produced (OpenCode's
+/// model-scoped continuation metadata: reasoning signatures, encrypted
+/// reasoning, Responses item ids and phases) before asking `model`.
+/// Hosted tool results keep their payloads, which replay on any model of
+/// the provider; state stamped with no model (stored before stamping)
+/// replays as before.
+fn scope_provider_state(messages: &mut [Message], model: &str) {
+    let foreign = |m: &Option<codesmith_ai::ReasoningMeta>| {
+        m.as_ref()
+            .and_then(|m| m.model.as_deref())
+            .is_some_and(|made| made != model)
+    };
+    for m in messages.iter_mut().filter(|m| m.role == Role::Assistant) {
+        for p in &mut m.parts {
+            match p {
+                Part::Text(t) if foreign(&t.meta) => t.meta = None,
+                Part::Reasoning(r) if foreign(&r.meta) => r.meta = None,
+                Part::ToolCall { meta, .. } if foreign(meta) => *meta = None,
+                _ => {}
+            }
+        }
+    }
+}
+
 fn apply_agent_request(model: &mut ModelRef, agent: &Agent) {
     for (k, v) in &agent.request.headers {
         model
@@ -808,7 +862,13 @@ impl Session {
     }
 
     /// Save a message (creating the session row on first use) and keep it in memory.
-    fn push(&mut self, message: Message) -> Result<()> {
+    /// An assistant message's provider state is stamped with the model
+    /// that made it (see [`scope_provider_state`]).
+    fn push(&mut self, mut message: Message) -> Result<()> {
+        if message.role == Role::Assistant {
+            let model = crate::config::split_variant(&self.model_spec).0.to_string();
+            stamp_model(&mut message.parts, &model);
+        }
         let seq = self.record(&Record::Message {
             message: message.clone(),
         })?;
@@ -1362,6 +1422,7 @@ impl Session {
         let mut all = Vec::with_capacity(history.len() + 1);
         all.extend(self.date_note.clone().map(Message::system));
         all.extend_from_slice(history);
+        scope_provider_state(&mut all, crate::config::split_variant(&self.model_spec).0);
         crate::media::sendable(&runner::model_messages(&all), self.model.input.as_deref())
     }
 
@@ -3774,12 +3835,7 @@ impl Session {
                 Ok(r) => return Ok(r),
                 Err(codesmith_ai::Failure { error: e, partial }) => {
                     let Some(wait) = policy.next(&e, std::time::Instant::now()) else {
-                        let kept: Vec<Part> = partial
-                            .map(|p| p.parts)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|p| !matches!(p, Part::ToolCall { .. }))
-                            .collect();
+                        let kept = failed_partial(partial.map(|p| p.parts).unwrap_or_default());
                         if !kept.is_empty() {
                             self.push(Message {
                                 role: Role::Assistant,
@@ -4547,6 +4603,135 @@ mod tests {
                 cache_write: 8,
                 ..Default::default()
             }
+        );
+    }
+
+    // Ported from OpenCode's `session-runner-message.test.ts` (MIT):
+    // provider state across model switches.
+
+    fn meta(model: &str) -> Option<codesmith_ai::ReasoningMeta> {
+        Some(codesmith_ai::ReasoningMeta {
+            protocol: Some(codesmith_ai::Protocol::OpenaiResponses),
+            model: Some(model.into()),
+            phase: Some(Some("commentary".into())),
+            signature: Some("sig".into()),
+            ..Default::default()
+        })
+    }
+
+    fn answer(model: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            parts: vec![
+                Part::Reasoning(codesmith_ai::Reasoning {
+                    text: "Visible thought".into(),
+                    meta: meta(model),
+                }),
+                Part::Text(codesmith_ai::Text {
+                    text: "Checking.".into(),
+                    meta: meta(model),
+                }),
+                Part::ToolCall {
+                    id: "local".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"path": "README.md"}),
+                    meta: meta(model),
+                },
+                Part::Hosted(codesmith_ai::Hosted {
+                    id: "hosted".into(),
+                    name: "web_search".into(),
+                    input: serde_json::json!({"query": "Effect"}),
+                    protocol: codesmith_ai::Protocol::OpenaiResponses,
+                    result: Some(codesmith_ai::HostedResult {
+                        value: serde_json::json!({"signature": "result-sig"}),
+                        is_error: false,
+                        media: vec![],
+                    }),
+                }),
+            ],
+        }
+    }
+
+    fn metas(m: &Message) -> Vec<bool> {
+        m.parts
+            .iter()
+            .map(|p| match p {
+                Part::Text(t) => t.meta.is_some(),
+                Part::Reasoning(r) => r.meta.is_some(),
+                Part::ToolCall { meta, .. } => meta.is_some(),
+                _ => true,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn oc_session_message_drops_model_scoped_continuation_metadata_after_a_model_switch_but_keeps_hosted_result_payloads(
+    ) {
+        let mut ms = vec![answer("provider/old-model")];
+        let hosted = ms[0].parts[3].clone();
+        scope_provider_state(&mut ms, "provider/new-model");
+        assert_eq!(metas(&ms[0]), [false, false, false, true]);
+        assert_eq!(ms[0].parts[3], hosted);
+    }
+
+    #[test]
+    fn oc_session_message_preserves_provider_metadata_for_a_catalog_alias_with_a_different_api_model_id(
+    ) {
+        // State is scoped by the catalog id the session names, not the id
+        // sent to the provider.
+        let mut ms = vec![answer("provider/fast")];
+        scope_provider_state(&mut ms, "provider/fast");
+        assert_eq!(metas(&ms[0]), [true, true, true, true]);
+    }
+
+    #[test]
+    fn oc_session_message_preserves_assistant_text_provider_state_for_the_same_model() {
+        let mut ms = vec![answer("provider/same")];
+        scope_provider_state(&mut ms, "provider/same");
+        assert!(matches!(&ms[0].parts[1], Part::Text(t) if t.meta == meta("provider/same")));
+        // Unstamped state (stored before stamping) replays as before.
+        let mut old = answer("x");
+        stamp_model(&mut old.parts, "x");
+        for p in &mut old.parts {
+            if let Part::Text(t) = p {
+                t.meta.as_mut().unwrap().model = None;
+            }
+        }
+        scope_provider_state(std::slice::from_mut(&mut old), "provider/other");
+        assert!(matches!(&old.parts[1], Part::Text(t) if t.meta.is_some()));
+    }
+
+    #[test]
+    fn oc_session_message_drops_assistant_text_provider_state_across_model_changes_aborts_and_provider_failures(
+    ) {
+        let mut switched = vec![answer("provider/old")];
+        scope_provider_state(&mut switched, "provider/new");
+        assert!(matches!(&switched[0].parts[1], Part::Text(t) if t.meta.is_none()));
+        // A stream that failed for good keeps its text without state, its
+        // finished reasoning with it, and no calls.
+        let kept = failed_partial(answer("provider/same").parts);
+        assert_eq!(
+            metas(&Message {
+                role: Role::Assistant,
+                parts: kept.clone()
+            }),
+            [true, false, true]
+        );
+        assert!(!kept.iter().any(|p| matches!(p, Part::ToolCall { .. })));
+    }
+
+    #[test]
+    fn stamping_keeps_a_model_already_named() {
+        let mut parts = answer("provider/a").parts;
+        if let Part::Text(t) = &mut parts[1] {
+            t.meta.as_mut().unwrap().model = None;
+        }
+        stamp_model(&mut parts, "provider/b");
+        assert!(
+            matches!(&parts[0], Part::Reasoning(r) if r.meta.as_ref().unwrap().model.as_deref() == Some("provider/a"))
+        );
+        assert!(
+            matches!(&parts[1], Part::Text(t) if t.meta.as_ref().unwrap().model.as_deref() == Some("provider/b"))
         );
     }
 }
