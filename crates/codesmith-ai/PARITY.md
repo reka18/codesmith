@@ -12,7 +12,9 @@ cost, compatibility overrides and request encoding in
 [`src/parity_endpoint.rs`](src/parity_endpoint.rs), hosted tools in
 [`src/parity_hosted.rs`](src/parity_hosted.rs), the Responses
 WebSocket transport and incremental continuation in
-[`src/parity_ws.rs`](src/parity_ws.rs) (and the two
+[`src/parity_ws.rs`](src/parity_ws.rs), declared reasoning fields, signed
+text and tool namespaces in
+[`src/parity_metadata.rs`](src/parity_metadata.rs) (and the two
 default-auth cases in `codesmith-core/src/config.rs`), the partial JSON parser in
 [`src/partial_json.rs`](src/partial_json.rs), and the session's handling of a
 failed step's partial output in `codesmith-core/tests/runner_parity.rs`).
@@ -25,8 +27,8 @@ Every OpenCode test in these files was examined and put in one bucket:
 - **ported**: CodeSmith already behaved this way; the test is ported.
 - **ported after a fix**: CodeSmith was wrong or missing something cheap that
   matters with real providers; it was fixed and the test ported.
-- **gap**: the test depends on a feature CodeSmith does not have (the roadmap
-  below), on behaviour CodeSmith differs on by design, or does not apply.
+- **gap**: the test depends on a feature CodeSmith does not have, on
+  behaviour CodeSmith differs on by design, or does not apply.
 
 Files: `provider/openai-chat`, `provider/openai-compatible-chat` (both counted
 as OpenAI Chat), `provider/openai-responses`, `provider/anthropic-messages`,
@@ -39,15 +41,15 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 92 | 8 |
-| OpenAI Responses | 159 | 22 | 129 | 8 |
-| Anthropic Messages | 95 | 9 | 83 | 3 |
-| Gemini | 61 | 12 | 46 | 3 |
-| Shared | 85 | 10 | 60 | 15 |
-| **Total** | **515** | **68** | **410** | **37** |
+| OpenAI Chat | 115 | 15 | 100 | 0 |
+| OpenAI Responses | 159 | 22 | 133 | 4 |
+| Anthropic Messages | 95 | 11 | 84 | 0 |
+| Gemini | 61 | 12 | 48 | 1 |
+| Shared | 85 | 10 | 61 | 14 |
+| **Total** | **515** | **70** | **426** | **19** |
 
-Of the gaps, 18 are missing provider features (the roadmap) and
-19 are by design or not applicable.
+Every remaining gap is by design or not applicable; no missing provider
+feature is left on the roadmap.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
 or a configuration knob it has no equivalent for), the case says so in its
@@ -463,8 +465,12 @@ Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
   OpenCode's session usage does.
 - OpenAI Chat takes explicit overrides of what it detects (OpenCode's model
   `compatibility`): `maxTokensField`, `streamUsage: false`,
-  `requireReasoning`, `requireAssistantAfterTool` and
-  `requireFinishReason`.
+  `requireReasoning`, `requireAssistantAfterTool`, `requireFinishReason`
+  and `reasoningField`; Anthropic Messages takes `requireSignature`.
+- Providers carry their configured id (`Provider.name`), for what OpenCode
+  detects by provider: the `deepseek` provider requires reasoning on Chat,
+  and the `kimi-for-coding`, `moonshotai`, `moonshotai-cn` and Xiaomi
+  providers take unsigned reasoning on Anthropic Messages.
 - "loads OpenAI default auth from Effect Config" and "lets explicit auth
   override OpenAI default API key auth" already held (config resolves the
   key from `settings.apiKey`, then the provider's variables); they are
@@ -517,7 +523,51 @@ Strict stream validation (every protocol; `src/shape.rs`)
 - Anthropic: a `message_delta` needs a delta, a `tool_use` block an index
   and id, and a recognized event name JSON data.
 
+Declared reasoning fields, signed text and tool namespaces (`lib.rs`,
+`openai.rs`, `anthropic.rs`, `gemini.rs`, `responses.rs`;
+`src/parity_metadata.rs`)
+- Chat `compatibility.reasoningField`: the declared field is read before
+  the known ones while streaming and stored as the reasoning's field; every
+  assistant message's reasoning is written there (empty when there was none,
+  since a declared field makes reasoning required unless `requireReasoning:
+  false`); `reasoning_details` and `reasoning_opaque` from earlier turns are
+  sent only when no field, or `reasoning_details`, is declared. A field that
+  is one of the message's own (`role`, `content`, `refusal`, `tool_calls`)
+  is an `Error::Invalid` before anything is sent.
+- Chat reasoning that is only state (empty `reasoning_details`, an opaque
+  value) opens its block before the output that follows, so it is stored
+  before that text; the `Collector` keeps a started reasoning block's place
+  until its state arrives and drops it if none does.
+- Anthropic `compatibility.requireSignature` overrides whether unsigned
+  reasoning is dropped or replayed with an empty signature.
+- Gemini signatures on visible text (`thoughtSignature` on a text part,
+  also an empty one that closes the block) are kept in the text part's
+  provider state (an `Event::PartMeta` at the block's end) and replayed on
+  that text.
+- Tool namespaces (`Request.namespaces`, OpenCode's `ToolNamespace`):
+  Responses declares them natively (`type: namespace`, a default
+  description, nested levels flattened into `<nested>_<name>` leaves),
+  decodes a call's `namespace` and replays declared calls with it and
+  their item id; the other protocols declare the leaves flat as
+  `<namespace>_<name>`, after the plain tools (so cache breakpoints land on
+  the last leaf). Calls are stored under the flat name on every protocol.
+
 ## Partially ported
+
+- `openai-responses` "preserves tool namespaces through streaming and history
+  replay": the call is stored as `crm_lookup` rather than `lookup` with a
+  namespace, and replays with its namespace only when the request declares
+  that namespace.
+- `anthropic-messages` "round-trips compatible provider metadata in its own
+  namespace": the stop sequence is not kept, and state is not keyed by a
+  namespace. "prepares the composed native continuation request" checks a
+  plain-string system prompt (OpenCode sends one text block).
+- `cache-policy` "marks the final leaf inside a tool namespace" checks the
+  lowered Anthropic body, not the policy's output.
+- `gemini` "preserves thoughtSignature on visible text parts" and "flushes a
+  trailing empty signed text part": the signature is checked on the stored
+  part and the `PartMeta` event after the text's end, not on OpenCode's
+  text-delta metadata.
 
 - Responses WebSocket (`src/parity_ws.rs`): errors carry no HTTP context,
   cause or OpenCode reason tag, so the rejection and control-event cases
@@ -547,9 +597,6 @@ Strict stream validation (every protocol; `src/shape.rs`)
 
 - `openai-compatible-chat` "matches AI SDK compatible tool request body
   fixture": no `tool_choice` or `strict`.
-- `openai-compatible-chat` "requires reasoning for DeepSeek …": no
-  provider-name detection (CodeSmith detects from the endpoint and model id)
-  and no `reasoningField` override.
 - `anthropic-messages` "prepares Anthropic Messages target": a system-only
   cache policy stands for OpenCode's manual system hint.
 - `openai-compatible-chat` "prepares generic Chat target": no `strict` flag
@@ -564,9 +611,7 @@ Strict stream validation (every protocol; `src/shape.rs`)
 - Provider options and reasoning replay (`src/parity_options.rs`):
   "forwards standard Gemini generation
   options" passes the knobs as options (CodeSmith's request has only
-  `max_tokens` and `temperature` as fields); "infers empty-signature
-  compatibility across Kimi providers" by endpoint and model id, without the
-  provider-id-only case; "reconciles reasoning summaries that arrive only
+  `max_tokens` and `temperature` as fields); "reconciles reasoning summaries that arrive only
   as finals" and "joins streamed summary blocks …" add the answer that
   follows the reasoning (see deliberate differences); "replays the latest
   reasoning_opaque …" and "accepts empty IDs …" check the stored part, not
@@ -602,63 +647,6 @@ Strict stream validation (every protocol; `src/shape.rs`)
 - Chat: a system update right after tool results still gets the Mistral
   assistant bridge (OpenCode bridges only before user messages); Mistral
   rejects user content straight after a tool message.
-
-## Roadmap: provider features CodeSmith lacks
-
-
-### Configured Chat reasoning fields (8 tests)
-
-Reasoning details, `reasoning_opaque` and the field a model streamed reasoning under are stored and replayed, but a model cannot declare its reasoning field (`compatibility.reasoningField`, `requireReasoning`).
-
-_OpenAI Chat 8._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — writes reasoning to a configured custom field on every assistant message
-- `openai-chat` — preserves observed reasoning fields when reasoning is required
-- `openai-chat` — omits empty configured reasoning fields when reasoning is explicitly optional
-- `openai-chat` — rejects reasoning fields that conflict with assistant message fields
-- `openai-chat` — orders metadata-only reasoning before refusal output
-- `openai-chat` — does not replay reasoning details when the model declares another reasoning field
-- `openai-chat` — keeps replayed reasoning details when the model declares reasoning_details
-- `openai-chat` — parses and replays a configured custom reasoning field
-
-</details>
-
-
-### Signed text and signature overrides (5 tests)
-
-Anthropic thinking signatures, redacted thinking and Gemini thought signatures are stored and replayed, but plain text parts carry no provider state (Gemini signs visible text too), there is no per-model `requireSignature` override, and composed continuations and server-tool metadata are not modelled.
-
-_Anthropic Messages 3, Gemini 2._
-
-<details><summary>Tests</summary>
-
-- `anthropic-messages` — prepares the composed native continuation request
-- `anthropic-messages` — lets an explicit signature requirement override inference
-- `anthropic-messages` — round-trips compatible provider metadata in its own namespace
-- `gemini` — preserves thoughtSignature on visible text parts
-- `gemini` — flushes a trailing empty signed text part at block close
-
-</details>
-
-
-### Tool namespaces (5 tests)
-
-Responses tool namespaces (grouped tools) are not used.
-
-_OpenAI Responses 4, Shared 1._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — lowers tool namespaces without flattening leaf names
-- `openai-responses` — flattens nested levels within a native tool namespace
-- `openai-responses` — defaults tool namespace descriptions
-- `openai-responses` — preserves tool namespaces through streaming and history replay
-- `cache-policy` — marks the final leaf inside a tool namespace
-
-</details>
-
 
 ## By design or not applicable
 
