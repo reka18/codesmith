@@ -112,6 +112,9 @@ pub enum Modal {
         feedback: String,
         /// The edit being asked about, when known.
         diff: Option<Diff>,
+        /// First row of the request text shown when it is too long to fit
+        /// (the view clamps it).
+        scroll: std::cell::Cell<usize>,
     },
     Question {
         prompts: Vec<Prompt>,
@@ -350,6 +353,7 @@ impl App {
                     reply: Some(reply),
                     feedback: String::new(),
                     diff,
+                    scroll: Default::default(),
                 });
             }
             Ev::Question(prompts, reply) => {
@@ -657,15 +661,35 @@ impl App {
         }
         match self.modal.as_mut().unwrap() {
             Modal::Permission {
-                feedback, reply, ..
+                feedback,
+                reply,
+                scroll,
+                ..
             } => {
                 let answer = match k.code {
                     KeyCode::Char('y') if feedback.is_empty() => Some(Reply::Once),
                     KeyCode::Char('a') if feedback.is_empty() => Some(Reply::Always),
                     KeyCode::Char('n') if feedback.is_empty() => Some(Reply::Reject(None)),
                     KeyCode::Esc => Some(Reply::Reject(None)),
-                    KeyCode::Enter if feedback.trim().is_empty() => Some(Reply::Once),
+                    // Allowing takes a deliberate y or a: a stray Enter rejects.
+                    KeyCode::Enter if feedback.trim().is_empty() => Some(Reply::Reject(None)),
                     KeyCode::Enter => Some(Reply::Reject(Some(feedback.trim().to_string()))),
+                    KeyCode::Up => {
+                        scroll.set(scroll.get().saturating_sub(1));
+                        None
+                    }
+                    KeyCode::Down => {
+                        scroll.set(scroll.get() + 1);
+                        None
+                    }
+                    KeyCode::PageUp => {
+                        scroll.set(scroll.get().saturating_sub(10));
+                        None
+                    }
+                    KeyCode::PageDown => {
+                        scroll.set(scroll.get() + 10);
+                        None
+                    }
                     KeyCode::Backspace => {
                         feedback.pop();
                         None
@@ -1034,7 +1058,17 @@ mod tests {
             (vec![key(KeyCode::Char('y'))], Reply::Once),
             (vec![key(KeyCode::Char('a'))], Reply::Always),
             (vec![key(KeyCode::Char('n'))], Reply::Reject(None)),
-            (vec![key(KeyCode::Enter)], Reply::Once),
+            // An empty Enter rejects (it used to allow once).
+            (vec![key(KeyCode::Enter)], Reply::Reject(None)),
+            (vec![key(KeyCode::Esc)], Reply::Reject(None)),
+            (
+                vec![
+                    key(KeyCode::Down),
+                    key(KeyCode::Up),
+                    key(KeyCode::Char('y')),
+                ],
+                Reply::Once,
+            ),
             (
                 vec![
                     key(KeyCode::Char('u')),

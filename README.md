@@ -86,7 +86,13 @@ session here, `-s ID` a specific one, `--prompt "..."` sends a first message):
   the model's `limit.context` when configured), the session's cost when the
   model has a `cost`, and token totals.
 - **Prompts**: permission requests and questions open as dialogs; an edit or
-  write request previews its diff.
+  write request previews its diff. In a permission dialog **y** allows once,
+  **a** always allows, and **n**, **Esc** or **Enter** rejects (typing
+  first turns Enter into "reject with this feedback"); allowing always takes
+  a deliberate key. The request is shown with control characters escaped
+  (`\x1b`, `\u{202e}`) and long runs of spaces or blank lines counted
+  (`␣×700`), and a request too long to fit says how much is hidden and
+  scrolls with **↑/↓**/**PgUp/PgDn**.
 - **Esc** interrupts a running turn; **Ctrl+C** on an empty prompt quits
 - `/new`, `/sessions`, `/undo`, `/redo`, `/agent`, `/model`, `/compact`,
   `/clear`, `/thinking`, `/help`, `/exit`, plus every custom and built-in
@@ -114,7 +120,10 @@ codesmith run --agent plan "how should I restructure the config module?"
 | `--title TEXT` | Title a new session (otherwise one is generated) |
 
 Without `--auto`, CodeSmith asks on the terminal before any action a rule
-marks `ask`: allow once, always allow, or reject with feedback for the model.
+marks `ask`: `y` allow once, `a` always allow, `n` reject, or type feedback
+for the model to reject with it. A bare Enter rejects (`[y/a/v/N]`). The
+request is escaped the same way as in the UI, and one over 2000 characters
+is shortened; `v` prints it in full.
 
 ## Skills and commands
 
