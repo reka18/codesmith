@@ -321,6 +321,8 @@ pub fn builtin_variants(
             builtin_variants(Protocol::AnthropicMessages, model, output_limit)
         }
         Protocol::BedrockConverse => vec![],
+        // Claude Code lists each model's efforts (see `claude_agent`).
+        Protocol::ClaudeAgent => vec![],
         Protocol::OpenaiChat => {
             if id.contains('/') {
                 // Gateways (OpenRouter style) take a `reasoning` object.

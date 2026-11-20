@@ -516,6 +516,7 @@ pub fn protocol_package(p: codesmith_ai::Protocol) -> &'static str {
         AnthropicMessages => "@opencode/ai/providers/anthropic",
         GoogleGemini => "@opencode/ai/providers/google",
         BedrockConverse => "@opencode/ai/providers/amazon-bedrock",
+        ClaudeAgent => "@opencode/claude-agent",
     }
 }
 

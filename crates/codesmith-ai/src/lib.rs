@@ -6,6 +6,7 @@ pub mod aws;
 pub mod bedrock;
 mod billing;
 mod cache;
+pub mod claude_agent;
 #[cfg(test)]
 mod compaction_tests;
 pub mod copilot;
@@ -1003,6 +1004,9 @@ pub enum Protocol {
     GoogleGemini,
     /// Amazon Bedrock Converse (`ConverseStream`, AWS event-stream framing).
     BedrockConverse,
+    /// The user's own Claude Code, driven over its stream-json control
+    /// protocol (see [`claude_agent`]).
+    ClaudeAgent,
 }
 
 impl Protocol {
@@ -1014,6 +1018,7 @@ impl Protocol {
             Protocol::OpenaiResponses => "OpenAI Responses",
             Protocol::GoogleGemini => "Gemini",
             Protocol::BedrockConverse => "Bedrock Converse",
+            Protocol::ClaudeAgent => "Claude Agent",
         }
     }
 }
@@ -1193,6 +1198,7 @@ impl Provider {
             Protocol::OpenaiResponses => responses::stream(p, client, req).await,
             Protocol::GoogleGemini => gemini::stream(p, client, req).await,
             Protocol::BedrockConverse => bedrock::stream(p, client, req).await,
+            Protocol::ClaudeAgent => claude_agent::stream(p, req).await,
         }
     }
 
@@ -1260,6 +1266,11 @@ impl Provider {
             Protocol::OpenaiResponses => responses::request(p, client, &req),
             Protocol::GoogleGemini => gemini::request(p, client, &req),
             Protocol::BedrockConverse => bedrock::request(p, client, &req)?,
+            Protocol::ClaudeAgent => {
+                return Err(Error::Invalid(
+                    "Claude Agent requests run through Claude Code, not HTTP".into(),
+                ))
+            }
         };
         Ok(rb.build()?)
     }
@@ -1618,6 +1629,7 @@ pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
         Protocol::OpenaiResponses => responses::check(req),
         Protocol::GoogleGemini => gemini::check(req),
         Protocol::BedrockConverse => bedrock::check(req),
+        Protocol::ClaudeAgent => Ok(()),
     }
 }
 

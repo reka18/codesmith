@@ -649,6 +649,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "http",
+ "libc",
  "reqwest",
  "ring",
  "rustls",
