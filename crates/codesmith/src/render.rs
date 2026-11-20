@@ -90,6 +90,22 @@ pub fn describe(name: &str, input: &Value) -> String {
             }
         }
         "shell" => s("command").lines().next().unwrap_or("").to_string(),
+        // Tools the provider runs itself.
+        "web_search" | "web_search_preview" => s("query").to_string(),
+        "web_fetch" => s("url").to_string(),
+        "code_execution" | "code_interpreter" | "bash_code_execution" => {
+            let code = [s("code"), s("command")]
+                .into_iter()
+                .find(|c| !c.is_empty());
+            code.unwrap_or("").lines().next().unwrap_or("").to_string()
+        }
+        "google_search" => input["queries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
         _ => input.to_string(),
     }
 }

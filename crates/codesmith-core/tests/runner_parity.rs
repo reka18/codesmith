@@ -910,6 +910,86 @@ async fn oc_session_retries_an_incomplete_stream_before_output() {
     assert_eq!(texts(&t.s), ["Recovered"]);
 }
 
+/// A tool the provider runs (OpenCode's `providerExecuted`) shows as a
+/// settled tool row, never runs here, does not continue the turn, and is
+/// replayed to the provider in its own blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn hosted_tool_calls_settle_without_running_or_continuing() {
+    let mut t = start(Setup {
+        protocol: "anthropic-messages",
+        models: json!({"m": {"options": {"hostedTools": ["web_search"]}}}),
+        ..Default::default()
+    })
+    .await;
+    let ev = |v: Value| format!("event: {}\ndata: {v}\n\n", v["type"].as_str().unwrap());
+    let found =
+        json!([{"type": "web_search_result", "url": "https://example.com", "title": "Example"}]);
+    let stream: String = [
+        json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"query\":\"rust\"}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": found}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": "Found it."}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
+        json!({"type": "message_stop"}),
+    ]
+    .into_iter()
+    .map(ev)
+    .collect();
+    t.push([http(200, "text/event-stream", &stream)]);
+    t.prompt("Search").await.unwrap();
+    assert_eq!(
+        t.requests().len(),
+        1,
+        "a hosted call does not continue the turn"
+    );
+    assert!(t.requests()[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["type"] == "web_search_20250305" && t["name"] == "web_search"));
+    {
+        let seen = t.seen.lock().unwrap();
+        assert!(seen.lifecycle.contains(&"start srvtoolu_1".to_string()));
+        assert_eq!(
+            seen.tools,
+            [("web_search".to_string(), "1 result".to_string(), false)]
+        );
+    }
+    assert!(results(&t.s).is_empty());
+    assert_eq!(texts(&t.s), ["Found it."]);
+
+    t.push([http(
+        200,
+        "text/event-stream",
+        &[
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
+            json!({"type": "message_stop"}),
+        ]
+        .into_iter()
+        .map(ev)
+        .collect::<String>(),
+    )]);
+    t.prompt("More").await.unwrap();
+    let replayed = &t.requests()[1]["messages"][1];
+    assert_eq!(replayed["role"], "assistant");
+    let blocks: Vec<&str> = replayed["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        blocks,
+        ["server_tool_use", "web_search_tool_result", "text"]
+    );
+    assert_eq!(replayed["content"][1]["content"], found);
+}
+
 // --- Interrupted turns ---
 
 #[tokio::test(flavor = "multi_thread")]

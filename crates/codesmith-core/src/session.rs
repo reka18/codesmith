@@ -2101,8 +2101,10 @@ impl Session {
         // Parts in stream order, reasoning with its provider signature. A
         // stream that ends without finishing was cut off, and is retried.
         let mut inputs = InputPairs::default();
+        let mut hosted = HostedRows::default();
         let r = codesmith_ai::assemble(stream, |ev| {
             inputs.push(ev, &mut *sink);
+            hosted.push(ev, &mut *sink);
             match ev {
                 Event::TextDelta(d) => sink.text(d),
                 Event::ReasoningDelta(d) => sink.reasoning(d),
@@ -2111,6 +2113,7 @@ impl Session {
         })
         .await;
         inputs.settle(sink);
+        hosted.settle(sink);
         let r = r?;
         Ok((r.parts, r.reason, r.usage))
     }
@@ -2161,6 +2164,49 @@ impl InputPairs {
     fn settle(self, sink: &mut dyn Sink) {
         for input in self.ended.into_iter().chain(self.forming) {
             sink.tool_input_end(&input, None);
+        }
+    }
+}
+
+/// Shows the tools the provider ran itself (web search, code execution) as
+/// tool rows: started at their call, settled by their result. They never
+/// run here, and a call whose result never came settles as an error, as in
+/// OpenCode.
+#[derive(Default)]
+struct HostedRows {
+    /// Calls shown without a result yet: id and name.
+    open: Vec<(String, String)>,
+}
+
+impl HostedRows {
+    fn push(&mut self, ev: &Event, sink: &mut dyn Sink) {
+        match ev {
+            Event::HostedCall(h) => {
+                self.open.push((h.id.clone(), h.name.clone()));
+                sink.tool_start(&h.id, &h.name, &h.input);
+            }
+            Event::HostedResult(h) => {
+                match self.open.iter().position(|(id, _)| *id == h.id) {
+                    Some(i) => {
+                        self.open.remove(i);
+                    }
+                    None => sink.tool_start(&h.id, &h.name, &h.input),
+                }
+                if let Some(r) = &h.result {
+                    if !r.media.is_empty() {
+                        sink.tool_media(&h.id, &r.media);
+                    }
+                    let summary = h.summary().unwrap_or_default();
+                    sink.tool_end(&h.id, &h.name, &summary, r.is_error);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn settle(self, sink: &mut dyn Sink) {
+        for (id, name) in self.open {
+            sink.tool_end(&id, &name, "Tool result missing", true);
         }
     }
 }

@@ -1400,6 +1400,21 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                         ..Default::default()
                     }))
                 }
+                // A tool the provider ran: already settled.
+                (Role::Assistant, Part::Hosted(h)) => {
+                    let (output, failed) = match h.summary() {
+                        Some(s) => (s, h.result.as_ref().is_some_and(|r| r.is_error)),
+                        None => ("Tool result missing".to_string(), true),
+                    };
+                    out.push(Entry::Tool(Tool {
+                        id: h.id.clone(),
+                        name: h.name.clone(),
+                        detail: crate::render::describe(&h.name, &h.input),
+                        result: Some((first_line(&output), failed)),
+                        output,
+                        ..Default::default()
+                    }))
+                }
                 (
                     Role::User,
                     Part::ToolResult {

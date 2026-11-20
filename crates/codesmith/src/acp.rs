@@ -1531,6 +1531,20 @@ impl Agent {
                             );
                         }
                     }
+                    // A tool the provider ran: already settled.
+                    (Role::Assistant, Part::Hosted(h)) => {
+                        let mut call = tool_call(&s.cwd, &h.id, &h.name, &h.input, "pending");
+                        call["sessionUpdate"] = json!("tool_call");
+                        self.conn.update(id, call);
+                        let (output, failed, media) = match &h.result {
+                            Some(r) => (h.summary().unwrap_or_default(), r.is_error, &r.media[..]),
+                            None => ("Tool result missing".to_string(), true, &[][..]),
+                        };
+                        self.conn.update(
+                            id,
+                            result_update(&s.cwd, &h.id, &h.name, &h.input, &output, failed, media),
+                        );
+                    }
                     _ => {}
                 }
             }
