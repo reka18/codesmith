@@ -4,14 +4,16 @@
 //! back when the call is replayed. It rides along in the tool-call id
 //! (`<id>~<signature>`), so stored conversations need no extra fields.
 
-use crate::openai::Utf8;
 use crate::{
-    merge_body, post, sse, Error, Event, EventStream, Message, Part, Provider, Request, Role, Usage,
+    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
+    Event, EventStream, Message, Part, Provider, Request, Role, Usage,
 };
-use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 
 const SIG: char = '~';
+/// Replayed on unsigned calls so Gemini 3 accepts history it did not sign
+/// (calls made by another model, or before signatures existed).
+pub const SKIP_SIGNATURE: &str = "skip_thought_signature_validator";
 
 /// Split a tool-call id into its id and any thought signature.
 pub fn split_id(id: &str) -> (&str, Option<&str>) {
@@ -21,113 +23,58 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// JSON Schema trimmed to the OpenAPI subset Gemini accepts.
-pub fn schema(v: &Value) -> Value {
-    const KEEP: [&str; 20] = [
-        "type",
-        "format",
-        "title",
-        "description",
-        "nullable",
-        "enum",
-        "maxItems",
-        "minItems",
-        "properties",
-        "required",
-        "minProperties",
-        "maxProperties",
-        "minLength",
-        "maxLength",
-        "pattern",
-        "anyOf",
-        "items",
-        "minimum",
-        "maximum",
-        "default",
-    ];
-    let Value::Object(m) = v else {
-        return v.clone();
-    };
-    let mut out = Map::new();
-    for (k, val) in m {
-        if !KEEP.contains(&k.as_str()) {
-            continue;
-        }
-        let val = match k.as_str() {
-            "properties" => Value::Object(
-                val.as_object()
-                    .map(|p| p.iter().map(|(n, s)| (n.clone(), schema(s))).collect())
-                    .unwrap_or_default(),
-            ),
-            "items" => schema(val),
-            "anyOf" => Value::Array(
-                val.as_array()
-                    .map(|a| a.iter().map(schema).collect())
-                    .unwrap_or_default(),
-            ),
-            "enum" => Value::Array(
-                val.as_array()
-                    .map(|a| {
-                        a.iter()
-                            .map(|e| {
-                                e.as_str()
-                                    .map(|s| json!(s))
-                                    .unwrap_or_else(|| json!(e.to_string()))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            ),
-            "type" if val.is_array() => {
-                // ["string", "null"] → "string" + nullable
-                let types: Vec<&str> = val
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect();
-                if types.contains(&"null") {
-                    out.insert("nullable".into(), json!(true));
-                }
-                json!(types.into_iter().find(|t| *t != "null").unwrap_or("string"))
-            }
-            _ => val.clone(),
-        };
-        out.insert(k.clone(), val);
-    }
-    if out.get("type").and_then(Value::as_str) == Some("object")
-        && out
-            .get("properties")
-            .map(|p| p.as_object().is_some_and(|o| o.is_empty()))
-            .unwrap_or(true)
-    {
-        out.remove("properties");
-        out.remove("required");
-    }
-    Value::Object(out)
+/// Gemini 1.x and 2.x reject explicit function call ids; every other model
+/// (Gemini 3+, Gemma, anything unrecognized) gets them.
+pub fn omits_call_ids(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    let rest = m
+        .strip_prefix("gemini-live-")
+        .or_else(|| m.strip_prefix("gemini-"));
+    let major: String = rest
+        .unwrap_or("")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    major.parse::<u32>().is_ok_and(|n| n < 3)
 }
 
-fn parts(m: &Message) -> Vec<Value> {
+fn parts(m: &Message, omit_ids: bool) -> Vec<Value> {
     let mut out = Vec::new();
+    // A parallel batch may carry one signature, on its first call; unsigned
+    // siblings after it are valid as they are.
+    let mut signed = false;
     for p in &m.parts {
         match p {
             Part::Text(t) if !t.is_empty() => out.push(json!({"text": t})),
             Part::ToolCall { id, name, input } => {
-                let (_, sig) = split_id(id);
-                let mut v = json!({"functionCall": {"name": name, "args": if input.is_object() { input.clone() } else { json!({}) }}});
-                if let Some(s) = sig {
-                    v["thoughtSignature"] = json!(s);
+                let (base, sig) = split_id(id);
+                let mut call = json!({"name": name, "args": if input.is_object() { input.clone() } else { json!({}) }});
+                if !omit_ids {
+                    call["id"] = json!(base);
+                }
+                let mut v = json!({ "functionCall": call });
+                match sig {
+                    Some(s) => {
+                        v["thoughtSignature"] = json!(s);
+                        signed = true;
+                    }
+                    None if !signed => v["thoughtSignature"] = json!(SKIP_SIGNATURE),
+                    None => {}
                 }
                 out.push(v);
             }
             Part::ToolResult {
+                id,
                 name,
                 content,
                 is_error,
-                ..
             } => {
                 let key = if *is_error { "error" } else { "output" };
-                out.push(json!({"functionResponse": {"name": name, "response": {key: content}}}));
+                let mut r = json!({"name": name, "response": {key: content}});
+                if !omit_ids {
+                    r["id"] = json!(split_id(id).0);
+                }
+                out.push(json!({ "functionResponse": r }));
             }
             _ => {}
         }
@@ -135,21 +82,36 @@ fn parts(m: &Message) -> Vec<Value> {
     out
 }
 
+fn is_response_turn(c: &Value) -> bool {
+    c["parts"]
+        .as_array()
+        .is_some_and(|ps| ps.iter().any(|p| p.get("functionResponse").is_some()))
+}
+
 pub fn body(req: &Request) -> Value {
+    let omit_ids = omits_call_ids(&req.model);
     let mut contents: Vec<Value> = Vec::new();
-    for m in &req.messages {
+    for m in &normalize_tool_history(&req.messages) {
         let role = if m.role == Role::User {
             "user"
         } else {
             "model"
         };
-        let ps = parts(m);
-        if ps.is_empty() {
-            continue;
-        }
-        match contents.last_mut() {
-            Some(last) if last["role"] == role => last["parts"].as_array_mut().unwrap().extend(ps),
-            _ => contents.push(json!({"role": role, "parts": ps})),
+        // Function responses get a user turn of their own: Gemini rejects a
+        // function-response turn that carries other parts.
+        let (responses, rest): (Vec<Value>, Vec<Value>) = parts(m, omit_ids)
+            .into_iter()
+            .partition(|p| p.get("functionResponse").is_some());
+        for (ps, responding) in [(responses, true), (rest, false)] {
+            if ps.is_empty() {
+                continue;
+            }
+            match contents.last_mut() {
+                Some(last) if last["role"] == role && is_response_turn(last) == responding => {
+                    last["parts"].as_array_mut().unwrap().extend(ps)
+                }
+                _ => contents.push(json!({"role": role, "parts": ps})),
+            }
         }
     }
     let mut body = json!({"contents": contents});
@@ -157,7 +119,7 @@ pub fn body(req: &Request) -> Value {
         body["systemInstruction"] = json!({"parts": [{"text": req.system}]});
     }
     if !req.tools.is_empty() {
-        let decls: Vec<Value> = req.tools.iter().map(|t| json!({"name": t.name, "description": t.description, "parameters": schema(&t.parameters)})).collect();
+        let decls: Vec<Value> = req.tools.iter().map(|t| json!({"name": t.name, "description": t.description, "parametersJsonSchema": schema::project(&t.parameters, Some(schema::Sanitizer::Gemini))})).collect();
         body["tools"] = json!([{"functionDeclarations": decls}]);
     }
     let mut gen = Map::new();
@@ -177,22 +139,43 @@ pub fn body(req: &Request) -> Value {
 #[derive(Default)]
 pub struct State {
     usage: Usage,
-    calls: usize,
+    ids: Vec<String>,
     finish: Option<String>,
 }
 
+/// Finish reasons that mean the output is unusable; the first three are
+/// worth a retry.
+const FAILED: [&str; 6] = [
+    "MALFORMED_RESPONSE",
+    "MALFORMED_FUNCTION_CALL",
+    "UNEXPECTED_TOOL_CALL",
+    "NO_IMAGE",
+    "TOO_MANY_TOOL_CALLS",
+    "MISSING_THOUGHT_SIGNATURE",
+];
+
 pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
-    if let Some(e) = v.get("error") {
-        return Err(Error::Decode(
-            e["message"]
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| e.to_string()),
-        ));
+    if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
+        let code = e["status"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| e["code"].as_u64().map(|n| n.to_string()));
+        let err = stream_error(code.as_deref(), e["message"].as_str(), v, true);
+        return Err(
+            match (err, e["message"].as_str().filter(|m| !m.is_empty())) {
+                (Error::Provider { retryable, .. }, Some(m)) => Error::Provider {
+                    message: m.to_string(),
+                    retryable,
+                },
+                (err, _) => err,
+            },
+        );
     }
     let mut out = Vec::new();
-    if let Some(u) = v.get("usageMetadata") {
-        let prompt = u["promptTokenCount"].as_u64().unwrap_or(0);
+    if let Some(u) = v.get("usageMetadata").filter(|u| u.is_object()) {
+        // Tool-use prompt tokens are input too.
+        let prompt = u["promptTokenCount"].as_u64().unwrap_or(0)
+            + u["toolUsePromptTokenCount"].as_u64().unwrap_or(0);
         let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
         state.usage.input = prompt.saturating_sub(cached);
         state.usage.cache_read = cached;
@@ -207,11 +190,13 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     };
     for p in c["content"]["parts"].as_array().into_iter().flatten() {
         if let Some(f) = p.get("functionCall") {
+            // A repeated or missing id gets a fresh one.
             let base = f["id"]
                 .as_str()
+                .filter(|id| !id.is_empty() && !state.ids.iter().any(|s| s == id))
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("call_{}", state.calls));
-            state.calls += 1;
+                .unwrap_or_else(crate::fresh_id);
+            state.ids.push(base.clone());
             let id = match p["thoughtSignature"].as_str() {
                 Some(s) => format!("{base}{SIG}{s}"),
                 None => base,
@@ -219,7 +204,11 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
             out.push(Event::ToolCall {
                 id,
                 name: f["name"].as_str().unwrap_or("").to_string(),
-                input: f.get("args").cloned().unwrap_or_else(|| json!({})),
+                input: f
+                    .get("args")
+                    .filter(|a| a.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
             });
         } else if let Some(t) = p["text"].as_str().filter(|t| !t.is_empty()) {
             if p["thought"].as_bool() == Some(true) {
@@ -230,6 +219,12 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
         }
     }
     if let Some(f) = c["finishReason"].as_str() {
+        if FAILED.contains(&f) {
+            return Err(Error::Provider {
+                message: format!("Gemini stopped with {f}"),
+                retryable: FAILED[..3].contains(&f),
+            });
+        }
         state.finish = Some(match f {
             "STOP" => "stop".into(),
             "MAX_TOKENS" => "length".into(),
@@ -240,7 +235,7 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
 }
 
 pub fn finish(state: &mut State) -> Event {
-    let reason = if state.calls > 0 {
+    let reason = if !state.ids.is_empty() {
         "tool_calls".to_string()
     } else {
         state.finish.take().unwrap_or_else(|| "stop".into())
@@ -248,6 +243,25 @@ pub fn finish(state: &mut State) -> Event {
     Event::Finish {
         reason,
         usage: state.usage,
+    }
+}
+
+#[derive(Default)]
+pub struct Decode {
+    state: State,
+}
+
+impl Decoder for Decode {
+    fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error> {
+        let v: Value =
+            serde_json::from_str(&f.data).map_err(|e| Error::Decode(format!("{e}: {}", f.data)))?;
+        handle(&mut self.state, &v)
+    }
+    fn done(&self) -> bool {
+        false
+    }
+    fn end(&mut self) -> Result<Vec<Event>, Error> {
+        Ok(vec![finish(&mut self.state)])
     }
 }
 
@@ -269,37 +283,7 @@ pub async fn stream(
         rb = rb.header(k, v);
     }
     let resp = post(rb, &body(req)).await?;
-    let mut bytes = resp.bytes_stream();
-    Ok(async_stream::stream! {
-        let mut parser = sse::Parser::default();
-        let mut state = State::default();
-        let mut utf8 = Utf8::default();
-        let mut frames = Vec::new();
-        while let Some(chunk) = bytes.next().await {
-            let chunk = match chunk { Ok(c) => c, Err(e) => { yield Err(Error::from(e)); return; } };
-            frames.extend(parser.push(&utf8.push(&chunk)));
-            for frame in frames.drain(..) {
-                let v: Value = match serde_json::from_str(&frame.data) {
-                    Ok(v) => v,
-                    Err(e) => { yield Err(Error::Decode(format!("{e}: {}", frame.data))); return; }
-                };
-                match handle(&mut state, &v) {
-                    Ok(evs) => for ev in evs { yield Ok(ev); },
-                    Err(e) => { yield Err(e); return; }
-                }
-            }
-        }
-        if let Some(frame) = parser.finish() {
-            if let Ok(v) = serde_json::from_str::<Value>(&frame.data) {
-                match handle(&mut state, &v) {
-                    Ok(evs) => for ev in evs { yield Ok(ev); },
-                    Err(e) => { yield Err(e); return; }
-                }
-            }
-        }
-        yield Ok(finish(&mut state));
-    }
-    .boxed())
+    Ok(drive(resp, Decode::default()))
 }
 
 #[cfg(test)]
@@ -355,33 +339,28 @@ mod tests {
         let c = b["contents"].as_array().unwrap();
         assert_eq!(
             c.len(),
-            3,
-            "the tool result and the next user text merge into one user turn"
+            4,
+            "the tool result keeps a turn of its own; the next user text follows it"
         );
         assert_eq!(c[1]["role"], "model");
         assert_eq!(
             c[1]["parts"],
-            json!([{"text": "ok"}, {"functionCall": {"name": "read", "args": {"path": "a"}}, "thoughtSignature": "SIGX"}])
+            json!([{"text": "ok"}, {"functionCall": {"id": "call_0", "name": "read", "args": {"path": "a"}}, "thoughtSignature": "SIGX"}])
         );
         assert_eq!(
-            c[2]["parts"][0],
-            json!({"functionResponse": {"name": "read", "response": {"output": "data"}}})
+            c[2]["parts"],
+            json!([{"functionResponse": {"id": "call_0", "name": "read", "response": {"output": "data"}}}])
         );
-        assert_eq!(c[2]["parts"][1]["text"], "<shell>done</shell>");
-        let p = &b["tools"][0]["functionDeclarations"][0]["parameters"];
+        assert_eq!(
+            c[3],
+            json!({"role": "user", "parts": [{"text": "<shell>done</shell>"}]})
+        );
+        let p = &b["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"];
         assert_eq!(
             p,
-            &json!({"type": "object", "properties": {"path": {"type": "string", "nullable": true, "description": "p"}, "n": {"type": "integer", "enum": ["1", "2"]}}, "required": ["path"]})
+            &json!({"type": "object", "additionalProperties": false, "properties": {"path": {"type": ["string", "null"], "description": "p"}, "n": {"type": "integer", "enum": [1, 2]}}, "required": ["path"]})
         );
         assert_eq!(b["generationConfig"]["maxOutputTokens"], 100);
-    }
-
-    #[test]
-    fn empty_object_schemas_drop_properties() {
-        assert_eq!(
-            schema(&json!({"type": "object", "properties": {}})),
-            json!({"type": "object"})
-        );
     }
 
     #[test]
@@ -396,14 +375,11 @@ mod tests {
             ]
         );
         let b = handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"functionCall": {"name": "read", "args": {"path": "a"}}, "thoughtSignature": "S1"}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 50, "cachedContentTokenCount": 20, "candidatesTokenCount": 7, "thoughtsTokenCount": 3}})).unwrap();
-        assert_eq!(
-            b,
-            vec![Event::ToolCall {
-                id: "call_0~S1".into(),
-                name: "read".into(),
-                input: json!({"path": "a"})
-            }]
-        );
+        assert!(matches!(
+            &b[..],
+            [Event::ToolCall { id, name, input }]
+                if id.starts_with("tool_") && id.ends_with("~S1") && name == "read" && *input == json!({"path": "a"})
+        ));
         assert_eq!(
             finish(&mut s),
             Event::Finish {

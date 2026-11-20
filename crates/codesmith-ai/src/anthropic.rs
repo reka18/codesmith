@@ -1,18 +1,24 @@
 //! Anthropic Messages streaming.
 
-use crate::openai::Utf8;
+use crate::gemini::split_id;
+use crate::openai::scrub_id;
 use crate::{
-    merge_body, post, sse, Error, Event, EventStream, Part, Provider, Request, Role, Usage,
+    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
+    Event, EventStream, Part, Provider, Request, Role, Usage,
 };
-use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 pub(crate) const VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 32_000;
 
+/// Anthropic accepts tool ids matching `[A-Za-z0-9_-]+` (any length).
+fn tool_id(id: &str) -> String {
+    scrub_id(split_id(id).0)
+}
+
 pub fn body(req: &Request) -> Value {
     let mut messages: Vec<Value> = Vec::new();
-    for m in &req.messages {
+    for m in &normalize_tool_history(&req.messages) {
         let role = match m.role {
             Role::User => "user",
             Role::Assistant => "assistant",
@@ -21,10 +27,15 @@ pub fn body(req: &Request) -> Value {
             .parts
             .iter()
             .filter_map(|p| match p {
-                Part::Text(t) if !t.is_empty() => Some(json!({"type": "text", "text": t})),
-                Part::ToolCall { id, name, input } => Some(json!({"type": "tool_use", "id": id, "name": name, "input": input})),
+                // Whitespace-only text blocks are rejected.
+                Part::Text(t) if !t.trim().is_empty() => Some(json!({"type": "text", "text": t})),
+                Part::ToolCall { id, name, input } => Some(json!({"type": "tool_use", "id": tool_id(id), "name": name, "input": input})),
                 Part::ToolResult { id, content, is_error, .. } => {
-                    Some(json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error}))
+                    let mut b = json!({"type": "tool_result", "tool_use_id": tool_id(id), "content": content});
+                    if *is_error {
+                        b["is_error"] = json!(true);
+                    }
+                    Some(b)
                 }
                 _ => None,
             })
@@ -39,18 +50,29 @@ pub fn body(req: &Request) -> Value {
             messages.push(json!({"role": role, "content": content}));
         }
     }
+    // Tool results must lead their user turn.
+    for m in messages.iter_mut().filter(|m| m["role"] == "user") {
+        let blocks = m["content"].as_array_mut().unwrap();
+        let (mut results, rest): (Vec<Value>, Vec<Value>) =
+            blocks.drain(..).partition(|b| b["type"] == "tool_result");
+        results.extend(rest);
+        *blocks = results;
+    }
     let mut body = json!({
         "model": req.model,
-        "system": req.system,
         "messages": messages,
         "max_tokens": req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         "stream": true,
     });
+    if !req.system.is_empty() {
+        body["system"] = json!(req.system);
+    }
     if !req.tools.is_empty() {
+        let sanitizer = schema::for_model(&req.model);
         body["tools"] = req
             .tools
             .iter()
-            .map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.parameters}))
+            .map(|t| json!({"name": t.name, "description": t.description, "input_schema": schema::project(&t.parameters, sanitizer)}))
             .collect();
     }
     if let Some(t) = req.temperature {
@@ -60,12 +82,58 @@ pub fn body(req: &Request) -> Value {
     body
 }
 
+#[derive(Debug, Default, Clone)]
+struct Block {
+    kind: String,
+    id: String,
+    name: String,
+    json: String,
+    /// Complete input sent with `content_block_start`.
+    input: Option<Value>,
+    stopped: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct State {
-    /// Open content blocks by index: (kind, id, name, accumulated json).
-    blocks: Vec<(String, String, String, String)>,
+    /// Content blocks by index.
+    blocks: Vec<Option<Block>>,
     reason: Option<String>,
     usage: Usage,
+    pub done: bool,
+}
+
+impl State {
+    fn block(&self, i: usize) -> Option<&Block> {
+        self.blocks.get(i).and_then(Option::as_ref)
+    }
+}
+
+fn tool_call(b: &Block) -> Event {
+    let input = if !b.json.trim().is_empty() {
+        serde_json::from_str(&b.json).unwrap_or_else(|_| json!({"__invalid_json": b.json}))
+    } else {
+        b.input
+            .clone()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}))
+    };
+    Event::ToolCall {
+        id: b.id.clone(),
+        name: b.name.clone(),
+        input,
+    }
+}
+
+/// The error inside an `error` event (`{type, message}`).
+fn failure(v: &Value) -> Error {
+    let e = &v["error"];
+    if !e.is_object() {
+        return Error::Provider {
+            message: "Anthropic Messages stream error".into(),
+            retryable: false,
+        };
+    }
+    stream_error(e["type"].as_str(), e["message"].as_str(), v, false)
 }
 
 pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, Error> {
@@ -81,32 +149,38 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
         "content_block_start" => {
             let i = v["index"].as_u64().unwrap_or(0) as usize;
             while state.blocks.len() <= i {
-                state.blocks.push(Default::default());
+                state.blocks.push(None);
             }
             let b = &v["content_block"];
-            state.blocks[i] = (
-                b["type"].as_str().unwrap_or("").to_string(),
-                b["id"].as_str().unwrap_or("").to_string(),
-                b["name"].as_str().unwrap_or("").to_string(),
-                String::new(),
-            );
-            if let Some(t) = b["text"].as_str().filter(|s| !s.is_empty()) {
-                out.push(Event::TextDelta(t.to_string()));
+            let kind = b["type"].as_str().unwrap_or("").to_string();
+            if kind == "text" {
+                if let Some(t) = b["text"].as_str().filter(|s| !s.is_empty()) {
+                    out.push(Event::TextDelta(t.to_string()));
+                }
             }
+            state.blocks[i] = Some(Block {
+                kind,
+                id: b["id"].as_str().unwrap_or("").to_string(),
+                name: b["name"].as_str().unwrap_or("").to_string(),
+                input: b.get("input").cloned(),
+                ..Default::default()
+            });
         }
         "content_block_delta" => {
             let i = v["index"].as_u64().unwrap_or(0) as usize;
             let d = &v["delta"];
+            // Deltas go to their block; one never started is taken at its word.
+            let kind = state.block(i).map(|b| b.kind.as_str());
             match d["type"].as_str() {
-                Some("text_delta") => out.push(Event::TextDelta(
-                    d["text"].as_str().unwrap_or("").to_string(),
-                )),
-                Some("thinking_delta") => out.push(Event::ReasoningDelta(
-                    d["thinking"].as_str().unwrap_or("").to_string(),
-                )),
+                Some("text_delta") if matches!(kind, None | Some("text")) => out.push(
+                    Event::TextDelta(d["text"].as_str().unwrap_or("").to_string()),
+                ),
+                Some("thinking_delta") if matches!(kind, None | Some("thinking")) => out.push(
+                    Event::ReasoningDelta(d["thinking"].as_str().unwrap_or("").to_string()),
+                ),
                 Some("input_json_delta") => {
-                    if let Some(b) = state.blocks.get_mut(i) {
-                        b.3.push_str(d["partial_json"].as_str().unwrap_or(""));
+                    if let Some(Some(b)) = state.blocks.get_mut(i) {
+                        b.json.push_str(d["partial_json"].as_str().unwrap_or(""));
                     }
                 }
                 _ => {}
@@ -114,15 +188,10 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
         }
         "content_block_stop" => {
             let i = v["index"].as_u64().unwrap_or(0) as usize;
-            if let Some((kind, id, name, json)) = state.blocks.get(i).cloned() {
-                if kind == "tool_use" {
-                    let input = if json.trim().is_empty() {
-                        json!({})
-                    } else {
-                        serde_json::from_str(&json)
-                            .unwrap_or_else(|_| json!({"__invalid_json": json}))
-                    };
-                    out.push(Event::ToolCall { id, name, input });
+            if let Some(Some(b)) = state.blocks.get_mut(i) {
+                if b.kind == "tool_use" && !b.stopped {
+                    b.stopped = true;
+                    out.push(tool_call(b));
                 }
             }
         }
@@ -145,15 +214,70 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
             }
         }
         "message_stop" => {
+            // Tool blocks whose stop never came settle here.
+            for b in state.blocks.iter_mut().flatten() {
+                if b.kind == "tool_use" && !b.stopped {
+                    b.stopped = true;
+                    out.push(tool_call(b));
+                }
+            }
+            state.done = true;
             out.push(Event::Finish {
                 reason: state.reason.take().unwrap_or_else(|| "end_turn".into()),
                 usage: state.usage,
             });
         }
-        "error" => return Err(Error::Decode(v["error"].to_string())),
+        "error" => return Err(failure(v)),
+        // An untyped envelope carrying an error is still an error.
+        "" if v.get("error").is_some_and(Value::is_object) => return Err(failure(v)),
         _ => {}
     }
     Ok(out)
+}
+
+const EVENTS: [&str; 8] = [
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop",
+    "error",
+    "ping",
+];
+
+#[derive(Default)]
+pub struct Decode {
+    state: State,
+}
+
+impl Decoder for Decode {
+    fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error> {
+        let v: Value = match serde_json::from_str(&f.data) {
+            Ok(v) => v,
+            // Proxies add named events of their own; skip what is not ours.
+            Err(_) if f.event.as_deref().is_some_and(|e| !EVENTS.contains(&e)) => {
+                return Ok(vec![])
+            }
+            Err(e) => return Err(Error::Decode(format!("{e}: {}", f.data))),
+        };
+        let kind = f
+            .event
+            .clone()
+            .or_else(|| v["type"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        handle(&mut self.state, &kind, &v)
+    }
+    fn done(&self) -> bool {
+        self.state.done
+    }
+    fn end(&mut self) -> Result<Vec<Event>, Error> {
+        if self.state.done {
+            Ok(vec![])
+        } else {
+            Err(Error::Transport("stream ended before message_stop".into()))
+        }
+    }
 }
 
 pub async fn stream(
@@ -170,34 +294,7 @@ pub async fn stream(
         rb = rb.header(k, v);
     }
     let resp = post(rb, &body(req)).await?;
-    let mut bytes = resp.bytes_stream();
-    Ok(async_stream::stream! {
-        let mut parser = sse::Parser::default();
-        let mut state = State::default();
-        let mut utf8 = Utf8::default();
-        let mut finished = false;
-        while let Some(chunk) = bytes.next().await {
-            let chunk = match chunk { Ok(c) => c, Err(e) => { yield Err(Error::from(e)); return; } };
-            for frame in parser.push(&utf8.push(&chunk)) {
-                let v: Value = match serde_json::from_str(&frame.data) {
-                    Ok(v) => v,
-                    Err(e) => { yield Err(Error::Decode(format!("{e}: {}", frame.data))); return; }
-                };
-                let kind = frame.event.clone().or_else(|| v["type"].as_str().map(str::to_string)).unwrap_or_default();
-                match handle(&mut state, &kind, &v) {
-                    Ok(evs) => for ev in evs {
-                        if matches!(ev, Event::Finish { .. }) { finished = true; }
-                        yield Ok(ev);
-                    },
-                    Err(e) => { yield Err(e); return; }
-                }
-            }
-        }
-        if !finished {
-            yield Err(Error::Transport("stream ended before message_stop".into()));
-        }
-    }
-    .boxed())
+    Ok(drive(resp, Decode::default()))
 }
 
 #[cfg(test)]

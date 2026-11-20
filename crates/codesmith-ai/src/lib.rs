@@ -5,8 +5,11 @@ mod anthropic;
 mod gemini;
 mod openai;
 #[cfg(test)]
+mod parity_tests;
+#[cfg(test)]
 mod replay_tests;
 mod responses;
+mod schema;
 mod sse;
 
 use futures_util::stream::BoxStream;
@@ -118,6 +121,10 @@ pub enum Error {
     Transport(String),
     #[error("bad response: {0}")]
     Decode(String),
+    /// An error the provider reported inside a 2xx stream (an `error` event,
+    /// `response.failed`, a failing finish reason).
+    #[error("{message}")]
+    Provider { message: String, retryable: bool },
 }
 
 impl Error {
@@ -129,6 +136,7 @@ impl Error {
             }
             Error::Transport(_) => true,
             Error::Decode(_) => false,
+            Error::Provider { retryable, .. } => *retryable,
         }
     }
 }
@@ -253,6 +261,241 @@ pub(crate) fn merge_body(body: &mut Value, extra: &serde_json::Map<String, Value
             map.insert(k.clone(), v.clone());
         }
     }
+}
+
+/// An error reported inside a stream, from its code (or type) and message.
+/// The text reads `code: message`, falling back to whichever is present and
+/// then to the raw payload. Rate limits, overloads and server faults are
+/// retryable; so is a payload without any detail when `bare_is_transient`.
+pub(crate) fn stream_error(
+    code: Option<&str>,
+    message: Option<&str>,
+    raw: &Value,
+    bare_is_transient: bool,
+) -> Error {
+    let code = code.filter(|c| !c.is_empty());
+    let message = message.filter(|m| !m.is_empty());
+    let text = match (code, message) {
+        (Some(c), Some(m)) => format!("{c}: {m}"),
+        (Some(c), None) => c.to_string(),
+        (None, Some(m)) => m.to_string(),
+        (None, None) => raw.to_string(),
+    };
+    let retryable = match code {
+        Some(c) => transient_code(c),
+        None => message.is_none() && bare_is_transient,
+    };
+    Error::Provider {
+        message: text,
+        retryable,
+    }
+}
+
+/// Error codes, types and statuses that name a transient provider fault.
+pub(crate) fn transient_code(code: &str) -> bool {
+    let c = code.to_ascii_lowercase();
+    if let Ok(n) = c.parse::<u16>() {
+        return n == 408 || n == 409 || n == 429 || n >= 500;
+    }
+    [
+        "rate_limit",
+        "ratelimit",
+        "too_many_requests",
+        "usage_limit",
+        "overloaded",
+        "server_error",
+        "internal",
+        "unavailable",
+        "timeout",
+        "deadline",
+        "resource_exhausted",
+        "network",
+        "api_error",
+        "capacity",
+    ]
+    .iter()
+    .any(|k| c.contains(k))
+}
+
+/// A fresh tool-call id for providers that send none (or repeat one). Unique
+/// across requests too, so ids never collide later in a conversation.
+pub(crate) fn fresh_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("tool_{t:x}{n:x}")
+}
+
+const MISSING_RESULT: &str = "Tool result missing";
+const EMPTY_RESULT: &str = "(no tool output)";
+
+/// Repair tool history before it is sent (after OpenCode's
+/// `normalizeToolHistory`). Providers reject a tool call without a result,
+/// other content between a call and its result, and (some) empty results, so:
+/// every call gets a result before the next assistant turn (a missing one
+/// becomes an error result), user text that arrives while calls are pending
+/// moves after their results, empty results say so, and results take their
+/// name from the matching call.
+pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
+    let mut names = std::collections::HashMap::new();
+    for m in messages {
+        for p in &m.parts {
+            if let Part::ToolCall { id, name, .. } = p {
+                names.insert(id.clone(), name.clone());
+            }
+        }
+    }
+    let user = |parts: Vec<Part>| Message {
+        role: Role::User,
+        parts,
+    };
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len() + 1);
+    // Calls of the latest assistant turn still waiting for a result, and user
+    // content held back until they have one.
+    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut deferred: Vec<Message> = Vec::new();
+    let settle = |out: &mut Vec<Message>,
+                  pending: &mut Vec<(String, String)>,
+                  deferred: &mut Vec<Message>| {
+        if !pending.is_empty() {
+            out.push(user(
+                pending
+                    .drain(..)
+                    .map(|(id, name)| Part::ToolResult {
+                        id,
+                        name,
+                        content: MISSING_RESULT.into(),
+                        is_error: true,
+                    })
+                    .collect(),
+            ));
+        }
+        out.append(deferred);
+    };
+    for m in messages {
+        if m.role == Role::Assistant {
+            settle(&mut out, &mut pending, &mut deferred);
+            pending = m
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::ToolCall { id, name, .. } => Some((id.clone(), name.clone())),
+                    _ => None,
+                })
+                .collect();
+            out.push(m.clone());
+            continue;
+        }
+        if !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. })) && pending.is_empty() {
+            out.push(m.clone());
+            continue;
+        }
+        let mut results = Vec::new();
+        let mut rest = Vec::new();
+        for p in &m.parts {
+            match p {
+                Part::ToolResult {
+                    id,
+                    name,
+                    content,
+                    is_error,
+                } => {
+                    pending.retain(|(pid, _)| pid != id);
+                    results.push(Part::ToolResult {
+                        id: id.clone(),
+                        name: names.get(id).cloned().unwrap_or_else(|| name.clone()),
+                        content: if content.is_empty() {
+                            EMPTY_RESULT.into()
+                        } else {
+                            content.clone()
+                        },
+                        is_error: *is_error,
+                    });
+                }
+                other => rest.push(other.clone()),
+            }
+        }
+        if !results.is_empty() {
+            out.push(user(results));
+        }
+        if !rest.is_empty() {
+            if pending.is_empty() {
+                out.push(user(rest));
+            } else {
+                deferred.push(user(rest));
+            }
+        }
+        if pending.is_empty() {
+            out.append(&mut deferred);
+        }
+    }
+    settle(&mut out, &mut pending, &mut deferred);
+    out
+}
+
+/// One protocol's stream decoding, frame by frame, independent of I/O.
+pub(crate) trait Decoder: Send + 'static {
+    /// Events for one SSE frame.
+    fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error>;
+    /// Whether the stream is complete; later frames are not read.
+    fn done(&self) -> bool;
+    /// Events once input ends (or `done`), or an error for a truncated stream.
+    fn end(&mut self) -> Result<Vec<Event>, Error>;
+}
+
+/// Decode a complete SSE body; used by tests to run the real decoders.
+#[cfg(test)]
+pub(crate) fn decode_all<D: Decoder>(mut d: D, body: &str) -> Result<Vec<Event>, Error> {
+    let mut parser = sse::Parser::default();
+    let mut frames = parser.push(body);
+    frames.extend(parser.finish());
+    let mut out = Vec::new();
+    for f in &frames {
+        if d.done() {
+            break;
+        }
+        out.extend(d.frame(f)?);
+    }
+    out.extend(d.end()?);
+    Ok(out)
+}
+
+pub(crate) fn drive<D: Decoder>(resp: reqwest::Response, mut d: D) -> EventStream {
+    use futures_util::StreamExt;
+    let mut bytes = resp.bytes_stream();
+    async_stream::stream! {
+        let mut parser = sse::Parser::default();
+        let mut utf8 = openai::Utf8::default();
+        'read: while let Some(chunk) = bytes.next().await {
+            let chunk = match chunk { Ok(c) => c, Err(e) => { yield Err(Error::from(e)); return; } };
+            for frame in parser.push(&utf8.push(&chunk)) {
+                match d.frame(&frame) {
+                    Ok(evs) => for ev in evs { yield Ok(ev); },
+                    Err(e) => { yield Err(e); return; }
+                }
+                if d.done() { break 'read; }
+            }
+        }
+        if !d.done() {
+            // A last frame without its blank line; a torn one is dropped.
+            if let Some(frame) = parser.finish() {
+                match d.frame(&frame) {
+                    Ok(evs) => for ev in evs { yield Ok(ev); },
+                    Err(Error::Decode(_)) => {}
+                    Err(e) => { yield Err(e); return; }
+                }
+            }
+        }
+        match d.end() {
+            Ok(evs) => for ev in evs { yield Ok(ev); },
+            Err(e) => yield Err(e),
+        }
+    }
+    .boxed()
 }
 
 #[cfg(test)]

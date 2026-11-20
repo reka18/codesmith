@@ -12,7 +12,7 @@
 //! no longer triggers fails the run so the list stays honest.
 
 use crate::openai::Utf8;
-use crate::{anthropic, gemini, openai, responses, sse, Error, Event, Usage};
+use crate::{anthropic, gemini, openai, responses, sse, Decoder, Error, Event, Usage};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -176,74 +176,26 @@ fn frames(body: &str) -> Vec<sse::Frame> {
     out
 }
 
-fn parse(f: &sse::Frame) -> Result<Value, Error> {
-    serde_json::from_str(&f.data).map_err(|e| Error::Decode(format!("{e}: {}", f.data)))
-}
-
-/// Mirrors the per-frame logic of each protocol's `stream()` loop.
+/// Runs a body through the protocol's real decoder, frame by frame.
 fn run(proto: Proto, body: &str) -> Result<Vec<Event>, Error> {
-    let frames = frames(body);
-    let mut out = Vec::new();
-    match proto {
-        Proto::Chat => {
-            let mut state = openai::State::default();
-            for f in &frames {
-                if f.data.trim() == "[DONE]" {
-                    break;
-                }
-                let v = parse(f)?;
-                if let Some(e) = v.get("error") {
-                    return Err(Error::Decode(e.to_string()));
-                }
-                out.extend(openai::handle(&mut state, &v));
+    fn go<D: Decoder>(mut d: D, frames: &[sse::Frame]) -> Result<Vec<Event>, Error> {
+        let mut out = Vec::new();
+        for f in frames {
+            if d.done() {
+                break;
             }
-            out.extend(openai::finish(&mut state));
+            out.extend(d.frame(f)?);
         }
-        Proto::Anthropic => {
-            let mut state = anthropic::State::default();
-            for f in &frames {
-                let v = parse(f)?;
-                let kind = f
-                    .event
-                    .clone()
-                    .or_else(|| v["type"].as_str().map(str::to_string))
-                    .unwrap_or_default();
-                out.extend(anthropic::handle(&mut state, &kind, &v)?);
-            }
-            if !out.iter().any(|e| matches!(e, Event::Finish { .. })) {
-                return Err(Error::Transport("stream ended before message_stop".into()));
-            }
-        }
-        Proto::Responses => {
-            let mut state = responses::State::default();
-            for f in &frames {
-                if f.data.trim() == "[DONE]" {
-                    continue;
-                }
-                let v = parse(f)?;
-                let kind = v["type"]
-                    .as_str()
-                    .map(str::to_string)
-                    .or(f.event.clone())
-                    .unwrap_or_default();
-                out.extend(responses::handle(&mut state, &kind, &v)?);
-                if state.done {
-                    return Ok(out);
-                }
-            }
-            return Err(Error::Transport(
-                "stream ended before response.completed".into(),
-            ));
-        }
-        Proto::Gemini => {
-            let mut state = gemini::State::default();
-            for f in &frames {
-                out.extend(gemini::handle(&mut state, &parse(f)?)?);
-            }
-            out.push(gemini::finish(&mut state));
-        }
+        out.extend(d.end()?);
+        Ok(out)
     }
-    Ok(out)
+    let frames = frames(body);
+    match proto {
+        Proto::Chat => go(openai::Decode::default(), &frames),
+        Proto::Anthropic => go(anthropic::Decode::default(), &frames),
+        Proto::Responses => go(responses::Decode::default(), &frames),
+        Proto::Gemini => go(gemini::Decode::default(), &frames),
+    }
 }
 
 /// What one model call produced, in comparable form.
@@ -521,12 +473,17 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                 }
             }
             let u = &r["usage"];
+            // OpenCode: non-cached input excludes cache reads and writes
+            // (openai-responses.test.ts "parses text and usage stream fixtures").
             let cached = n(&u["input_tokens_details"]["cached_tokens"]).unwrap_or(0);
+            let written = n(&u["input_tokens_details"]["cache_write_tokens"]).unwrap_or(0);
             s.usage = Usage {
-                input: n(&u["input_tokens"]).unwrap_or(0).saturating_sub(cached),
+                input: n(&u["input_tokens"])
+                    .unwrap_or(0)
+                    .saturating_sub(cached + written),
                 output: n(&u["output_tokens"]).unwrap_or(0),
                 cache_read: cached,
-                cache_write: 0,
+                cache_write: written,
             };
             s.finish = if !s.tools.is_empty() {
                 "tool-calls".into()

@@ -1,22 +1,22 @@
 //! OpenAI Responses API streaming (`POST /responses`), stateless: every
 //! request carries the whole conversation and nothing is stored server-side.
 
-use crate::openai::Utf8;
+use crate::gemini::split_id;
 use crate::{
-    merge_body, post, sse, Error, Event, EventStream, Part, Provider, Request, Role, Usage,
+    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
+    Event, EventStream, Part, Provider, Request, Role, Usage,
 };
-use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 pub fn body(req: &Request) -> Value {
     let mut input = Vec::new();
-    for m in &req.messages {
+    for m in &normalize_tool_history(&req.messages) {
         for p in &m.parts {
             match (&m.role, p) {
-                (Role::User, Part::Text(t)) => input.push(json!({"role": "user", "content": [{"type": "input_text", "text": t}]})),
-                (Role::Assistant, Part::Text(t)) if !t.is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
-                (_, Part::ToolCall { id, name, input: args }) => input.push(json!({"type": "function_call", "call_id": id, "name": name, "arguments": args.to_string()})),
-                (_, Part::ToolResult { id, content, .. }) => input.push(json!({"type": "function_call_output", "call_id": id, "output": content})),
+                (Role::User, Part::Text(t)) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]})),
+                (Role::Assistant, Part::Text(t)) if !t.trim().is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
+                (_, Part::ToolCall { id, name, input: args }) => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
+                (_, Part::ToolResult { id, content, .. }) => input.push(json!({"type": "function_call_output", "call_id": split_id(id).0, "output": content})),
                 _ => {}
             }
         }
@@ -26,7 +26,8 @@ pub fn body(req: &Request) -> Value {
         body["instructions"] = json!(req.system);
     }
     if !req.tools.is_empty() {
-        body["tools"] = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": t.parameters, "strict": false})).collect();
+        let sanitizer = schema::for_model(&req.model);
+        body["tools"] = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false})).collect();
     }
     if let Some(n) = req.max_tokens {
         body["max_output_tokens"] = json!(n);
@@ -38,90 +39,226 @@ pub fn body(req: &Request) -> Value {
     body
 }
 
+/// A function call between `output_item.added` and its completion.
+#[derive(Debug, Default, Clone)]
+struct Pending {
+    output_index: Option<u64>,
+    item_id: String,
+    call_id: String,
+    name: String,
+    args: String,
+}
+
 #[derive(Default)]
 pub struct State {
     calls: usize,
+    pending: Vec<Pending>,
     pub done: bool,
+}
+
+impl State {
+    /// The pending call an event refers to: by output index, then item id.
+    fn find(&mut self, v: &Value) -> Option<&mut Pending> {
+        let idx = v["output_index"].as_u64();
+        let item = v["item_id"].as_str();
+        let at = self
+            .pending
+            .iter()
+            .position(|p| idx.is_some() && p.output_index == idx)
+            .or_else(|| {
+                self.pending
+                    .iter()
+                    .position(|p| item.is_some_and(|i| p.item_id == i))
+            })?;
+        Some(&mut self.pending[at])
+    }
+
+    fn call(&mut self, call_id: &str, item_id: &str, name: &str, args: &str) -> Event {
+        let input = if args.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(args).unwrap_or_else(|_| json!({"__invalid_json": args}))
+        };
+        let id = [call_id, item_id]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(crate::fresh_id);
+        self.calls += 1;
+        Event::ToolCall {
+            id,
+            name: name.to_string(),
+            input,
+        }
+    }
+}
+
+fn item_str<'a>(it: &'a Value, key: &str) -> &'a str {
+    it[key].as_str().unwrap_or("")
+}
+
+/// `code: message` from an error object, with the raw payload as fallback.
+fn failure(e: &Value, raw: &Value, bare_is_transient: bool) -> Error {
+    stream_error(
+        e["code"].as_str().or(e["type"].as_str()),
+        e["message"].as_str(),
+        raw,
+        bare_is_transient,
+    )
 }
 
 pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Error> {
     let mut out = Vec::new();
     match kind {
-        "response.output_text.delta" => out.push(Event::TextDelta(
+        // Refusals are ordinary assistant text.
+        "response.output_text.delta" | "response.refusal.delta" => out.push(Event::TextDelta(
             v["delta"].as_str().unwrap_or("").to_string(),
         )),
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => out.push(
             Event::ReasoningDelta(v["delta"].as_str().unwrap_or("").to_string()),
         ),
         "response.reasoning_summary_part.done" => out.push(Event::ReasoningDelta("\n\n".into())),
+        "response.output_item.added" if v["item"]["type"] == "function_call" => {
+            let it = &v["item"];
+            state.pending.push(Pending {
+                output_index: v["output_index"].as_u64(),
+                item_id: item_str(it, "id").into(),
+                call_id: item_str(it, "call_id").into(),
+                name: item_str(it, "name").into(),
+                args: item_str(it, "arguments").into(),
+            });
+        }
+        "response.function_call_arguments.delta" => {
+            if let Some(p) = state.find(v) {
+                p.args.push_str(v["delta"].as_str().unwrap_or(""));
+            }
+        }
+        "response.function_call_arguments.done" => {
+            if let (Some(p), Some(a)) = (state.find(v), v["arguments"].as_str()) {
+                p.args = a.to_string();
+            }
+        }
+        // The completed item is authoritative, even with empty arguments.
         "response.output_item.done" if v["item"]["type"] == "function_call" => {
             let it = &v["item"];
-            let args = it["arguments"].as_str().unwrap_or("");
-            let input = if args.trim().is_empty() {
-                json!({})
-            } else {
-                serde_json::from_str(args).unwrap_or_else(|_| json!({"__invalid_json": args}))
-            };
-            let id = it["call_id"]
-                .as_str()
-                .or(it["id"].as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("call_{}", state.calls));
-            state.calls += 1;
-            out.push(Event::ToolCall {
-                id,
-                name: it["name"].as_str().unwrap_or("").to_string(),
-                input,
-            });
+            let item_id = item_str(it, "id");
+            state
+                .pending
+                .retain(|p| !(p.item_id == item_id && !item_id.is_empty()));
+            out.push(state.call(
+                item_str(it, "call_id"),
+                item_id,
+                item_str(it, "name"),
+                item_str(it, "arguments"),
+            ));
         }
         "response.completed" | "response.incomplete" => {
             let r = &v["response"];
+            let complete = kind == "response.completed";
+            // Calls never completed by an output item: the final response
+            // output wins, then what streamed. An incomplete response's
+            // calls are cut off, so they are dropped.
+            for p in std::mem::take(&mut state.pending) {
+                if !complete {
+                    continue;
+                }
+                let done = r["output"].as_array().into_iter().flatten().find(|o| {
+                    o["type"] == "function_call"
+                        && ((!p.item_id.is_empty() && o["id"] == p.item_id.as_str())
+                            || (!p.call_id.is_empty() && o["call_id"] == p.call_id.as_str()))
+                });
+                let args = done
+                    .and_then(|o| o["arguments"].as_str())
+                    .unwrap_or(&p.args);
+                let name = done.and_then(|o| o["name"].as_str()).unwrap_or(&p.name);
+                let ev = state.call(&p.call_id, &p.item_id, name, args);
+                out.push(ev);
+            }
             let u = &r["usage"];
-            let cached = u["input_tokens_details"]["cached_tokens"]
-                .as_u64()
-                .unwrap_or(0);
+            let details = &u["input_tokens_details"];
+            let cached = details["cached_tokens"].as_u64().unwrap_or(0);
+            let written = details["cache_write_tokens"].as_u64().unwrap_or(0);
             let usage = Usage {
                 input: u["input_tokens"]
                     .as_u64()
                     .unwrap_or(0)
-                    .saturating_sub(cached),
+                    .saturating_sub(cached + written),
                 output: u["output_tokens"].as_u64().unwrap_or(0),
                 cache_read: cached,
-                cache_write: 0,
+                cache_write: written,
             };
-            let reason = if state.calls > 0 {
-                "tool_calls".to_string()
-            } else {
-                match r["incomplete_details"]["reason"].as_str() {
-                    Some("max_output_tokens") => "length".into(),
-                    Some(other) => other.to_string(),
-                    None => "stop".into(),
-                }
+            let reason = match r["incomplete_details"]["reason"].as_str() {
+                Some("max_output_tokens") => "length".to_string(),
+                Some(other) => other.to_string(),
+                None if state.calls > 0 => "tool_calls".into(),
+                None if complete => "stop".into(),
+                None => "incomplete".into(),
             };
             state.done = true;
             out.push(Event::Finish { reason, usage });
         }
         "response.failed" => {
-            let e = &v["response"]["error"];
-            return Err(Error::Decode(
-                e["message"]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| e.to_string()),
-            ));
+            let r = &v["response"];
+            return Err(match r.get("error").filter(|e| e.is_object()) {
+                Some(e) => failure(e, v, false),
+                None => stream_error(None, None, v, false),
+            });
         }
         "error" => {
-            return Err(Error::Decode(
-                v["message"]
-                    .as_str()
-                    .or(v["error"]["message"].as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| v.to_string()),
-            ))
+            // The error sits under `error`, (from some proxies) under
+            // `response.error`, or at the top level.
+            return Err(
+                match [&v["error"], &v["response"]["error"]]
+                    .into_iter()
+                    .find(|e| e.is_object())
+                {
+                    Some(e) => failure(e, v, true),
+                    // An explicit `error: null` is no sign of a transient fault.
+                    None => stream_error(
+                        v["code"].as_str(),
+                        v["message"].as_str(),
+                        v,
+                        v.get("error").is_none(),
+                    ),
+                },
+            );
         }
         _ => {}
     }
     Ok(out)
+}
+
+#[derive(Default)]
+pub struct Decode {
+    state: State,
+}
+
+impl Decoder for Decode {
+    fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error> {
+        if f.data.trim() == "[DONE]" {
+            return Ok(vec![]);
+        }
+        let v: Value =
+            serde_json::from_str(&f.data).map_err(|e| Error::Decode(format!("{e}: {}", f.data)))?;
+        let kind = v["type"]
+            .as_str()
+            .map(str::to_string)
+            .or(f.event.clone())
+            .unwrap_or_default();
+        handle(&mut self.state, &kind, &v)
+    }
+    fn done(&self) -> bool {
+        self.state.done
+    }
+    fn end(&mut self) -> Result<Vec<Event>, Error> {
+        if self.state.done {
+            Ok(vec![])
+        } else {
+            Err(Error::Transport(
+                "stream ended before response.completed".into(),
+            ))
+        }
+    }
 }
 
 pub async fn stream(
@@ -138,30 +275,7 @@ pub async fn stream(
         rb = rb.header(k, v);
     }
     let resp = post(rb, &body(req)).await?;
-    let mut bytes = resp.bytes_stream();
-    Ok(async_stream::stream! {
-        let mut parser = sse::Parser::default();
-        let mut state = State::default();
-        let mut utf8 = Utf8::default();
-        while let Some(chunk) = bytes.next().await {
-            let chunk = match chunk { Ok(c) => c, Err(e) => { yield Err(Error::from(e)); return; } };
-            for frame in parser.push(&utf8.push(&chunk)) {
-                if frame.data.trim() == "[DONE]" { continue; }
-                let v: Value = match serde_json::from_str(&frame.data) {
-                    Ok(v) => v,
-                    Err(e) => { yield Err(Error::Decode(format!("{e}: {}", frame.data))); return; }
-                };
-                let kind = v["type"].as_str().map(str::to_string).or(frame.event.clone()).unwrap_or_default();
-                match handle(&mut state, &kind, &v) {
-                    Ok(evs) => for ev in evs { yield Ok(ev); },
-                    Err(e) => { yield Err(e); return; }
-                }
-                if state.done { return; }
-            }
-        }
-        yield Err(Error::Transport("stream ended before response.completed".into()));
-    }
-    .boxed())
+    Ok(drive(resp, Decode::default()))
 }
 
 #[cfg(test)]
@@ -214,7 +328,7 @@ mod tests {
         assert_eq!(
             b["input"],
             json!([
-                {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
                 {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
                 {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{\"path\":\"a\"}"},
                 {"type": "function_call_output", "call_id": "c1", "output": "data"}

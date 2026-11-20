@@ -627,6 +627,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "futures-util",
+ "http",
  "reqwest",
  "serde",
  "serde_json",
