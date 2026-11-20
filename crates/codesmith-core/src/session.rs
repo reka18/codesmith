@@ -443,6 +443,8 @@ impl Session {
         if !config.websearch.enabled() {
             tools.retain(|t| *t != Tool::Websearch);
         }
+        // GPT-5 and later edit with `patch`; other models with `edit` and `write`.
+        tool::apply_patch::offer_for_spec(&mut tools, &model_spec, &model.model_id);
         let lsp = crate::lsp::Lsp::new(config.lsp.as_ref(), loaded.root.clone()).map(Arc::new);
         if lsp.is_none() {
             tools.retain(|t| *t != Tool::Lsp);
@@ -1296,9 +1298,12 @@ impl Session {
                 }) {
                     failure = Some(e);
                 }
-                if let (false, Some((path, old))) = (is_error, before) {
-                    if let Err(e) = self.record_change(&id, path, old) {
-                        failure = Some(e);
+                // A patch that failed midway changed the files it wrote first.
+                if !is_error || name == Tool::Patch.name() {
+                    for (path, old) in before {
+                        if let Err(e) = self.record_change(&id, path, old) {
+                            failure = Some(e);
+                        }
                     }
                 }
                 if !media.is_empty() {
@@ -2411,31 +2416,48 @@ impl Session {
         Ok(())
     }
 
-    /// The file a built-in edit or write call is about to change, and its
-    /// text (`None`: it does not exist yet), so the change can be recorded.
-    fn file_before(
-        &self,
-        name: &str,
-        input: &serde_json::Value,
-    ) -> Option<(PathBuf, Option<String>)> {
-        if !matches!(Tool::from_name(name), Some(Tool::Edit | Tool::Write)) || self.store.is_none()
-        {
-            return None;
+    /// The files a built-in edit, write or patch call is about to change,
+    /// each with its text (`None`: it does not exist yet), so the changes
+    /// can be recorded. A patch's moved file is listed at its destination
+    /// with its source's text.
+    fn file_before(&self, name: &str, input: &serde_json::Value) -> Vec<(PathBuf, Option<String>)> {
+        if self.store.is_none() {
+            return vec![];
         }
-        let p = input["path"].as_str().or(input["filePath"].as_str())?;
-        let path = tool::normalize(&self.cwd.join(p));
-        let old = std::fs::read_to_string(&path).ok();
-        if old.as_ref().is_some_and(|o| o.len() > store::CHANGE_MAX) {
-            return None;
-        }
-        Some((path, old))
+        let files: Vec<(PathBuf, PathBuf)> = match Tool::from_name(name) {
+            Some(Tool::Edit | Tool::Write) => {
+                let Some(p) = input["path"].as_str().or(input["filePath"].as_str()) else {
+                    return vec![];
+                };
+                let path = tool::normalize(&self.cwd.join(p));
+                vec![(path.clone(), path)]
+            }
+            Some(Tool::Patch) => tool::apply_patch::touched(
+                &self.cwd,
+                input["patchText"].as_str().unwrap_or_default(),
+            ),
+            _ => return vec![],
+        };
+        files
+            .into_iter()
+            .filter_map(|(path, source)| {
+                let old = std::fs::read_to_string(&source).ok();
+                if old.as_ref().is_some_and(|o| o.len() > store::CHANGE_MAX) {
+                    return None;
+                }
+                Some((path, old))
+            })
+            .collect()
     }
 
     /// Record what call `id` changed in `path`, when the change is small
-    /// enough to keep.
+    /// enough to keep. A file that existed and is gone was deleted: its new
+    /// text is empty.
     fn record_change(&mut self, id: &str, path: PathBuf, old: Option<String>) -> Result<()> {
-        let Ok(new) = std::fs::read_to_string(&path) else {
-            return Ok(());
+        let new = match std::fs::read_to_string(&path) {
+            Ok(new) => new,
+            Err(_) if old.is_some() && !path.exists() => String::new(),
+            Err(_) => return Ok(()),
         };
         let size = new.len() + old.as_ref().map_or(0, String::len);
         if old.as_deref() == Some(new.as_str()) || size > store::CHANGE_MAX {

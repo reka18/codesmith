@@ -405,7 +405,7 @@ pub fn miss_hint(source: &str, old: &str, new: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
-const INVALID_UTF8: &str = "file is not valid UTF-8. It was left unchanged because rewriting it as text would replace every byte that is not UTF-8 with U+FFFD; change it with a tool that preserves its bytes, or convert it to UTF-8 first";
+pub(super) const INVALID_UTF8: &str = "file is not valid UTF-8. It was left unchanged because rewriting it as text would replace every byte that is not UTF-8 with U+FFFD; change it with a tool that preserves its bytes, or convert it to UTF-8 first";
 
 /// Split leading UTF-8 BOMs off `text` (OpenCode's `Bom.split`).
 fn split_bom(text: &str) -> (bool, &str) {
@@ -415,7 +415,7 @@ fn split_bom(text: &str) -> (bool, &str) {
 
 /// One lock per edited file, so concurrent edits to it apply in turn
 /// (OpenCode's `fileMutation.withLock`).
-fn file_lock(path: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+pub(super) fn file_lock(path: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
     static LOCKS: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();

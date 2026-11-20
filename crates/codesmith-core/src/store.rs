@@ -65,8 +65,9 @@ pub enum Record {
         ms: u64,
         error: bool,
     },
-    /// The text of the file an edit or write call `call` changed, before
-    /// (`None`: it was new) and after, so a replay can show the diff.
+    /// The text of a file an edit, write or patch call `call` changed,
+    /// before (`None`: it was new) and after (empty when a patch deleted
+    /// it), so a replay can show the diff. A patch records one per file.
     /// Recorded only while both fit in [`CHANGE_MAX`].
     Change {
         call: String,

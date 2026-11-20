@@ -1,11 +1,13 @@
 //! Built-in tools the model can call. Each tool has a name, a description and
 //! a JSON Schema (ported from OpenCode), and runs against a `Ctx`.
 
+pub mod apply_patch;
 mod edit;
 mod glob;
 mod grep;
 pub mod html_markdown;
 mod lsp;
+pub mod patch;
 pub(crate) mod read;
 pub mod shell;
 pub mod shell_scan;
@@ -65,28 +67,25 @@ impl Ctx<'_> {
     /// Run the formatter on a file just written. Returns a note for the
     /// model when the file changed, so it re-reads before editing again.
     pub fn format(&self, path: &std::path::Path, written: &str) -> String {
-        let Some(f) = &self.format else {
-            return String::new();
-        };
-        let handle = tokio::runtime::Handle::current();
-        let Some(name) = tokio::task::block_in_place(|| handle.block_on(f.file(path))) else {
-            return String::new();
-        };
-        match std::fs::read_to_string(path) {
-            Ok(mut now) => {
-                // Keep a UTF-8 BOM the formatter dropped, as OpenCode's `syncTextBom` does.
-                if written.starts_with('\u{feff}') && !now.starts_with('\u{feff}') {
-                    now.insert(0, '\u{feff}');
-                    let _ = std::fs::write(path, &now);
-                }
-                if now != written {
-                    format!("\n\nThe file was reformatted by {name}, so it now differs from what you wrote; read it again before editing it.")
-                } else {
-                    String::new()
-                }
-            }
-            Err(_) => String::new(),
+        match self.format_name(path, written) {
+            Some(name) => format!("\n\nThe file was reformatted by {name}, so it now differs from what you wrote; read it again before editing it."),
+            None => String::new(),
         }
+    }
+
+    /// Run the formatter on a file just written; the formatter's name when
+    /// it changed the file from `written`.
+    pub fn format_name(&self, path: &std::path::Path, written: &str) -> Option<String> {
+        let f = self.format.as_ref()?;
+        let handle = tokio::runtime::Handle::current();
+        let name = tokio::task::block_in_place(|| handle.block_on(f.file(path)))?;
+        let mut now = std::fs::read_to_string(path).ok()?;
+        // Keep a UTF-8 BOM the formatter dropped, as OpenCode's `syncTextBom` does.
+        if written.starts_with('\u{feff}') && !now.starts_with('\u{feff}') {
+            now.insert(0, '\u{feff}');
+            let _ = std::fs::write(path, &now);
+        }
+        (now != written).then_some(name)
     }
 
     /// Tell the language servers a file changed and return the errors they
@@ -152,6 +151,7 @@ pub enum Tool {
     Read,
     Write,
     Edit,
+    Patch,
     Glob,
     Grep,
     Shell,
@@ -164,10 +164,11 @@ pub enum Tool {
     Lsp,
 }
 
-pub const ALL: [Tool; 13] = [
+pub const ALL: [Tool; 14] = [
     Tool::Read,
     Tool::Write,
     Tool::Edit,
+    Tool::Patch,
     Tool::Glob,
     Tool::Grep,
     Tool::Shell,
@@ -186,6 +187,7 @@ impl Tool {
             Tool::Read => "read",
             Tool::Write => "write",
             Tool::Edit => "edit",
+            Tool::Patch => "patch",
             Tool::Glob => "glob",
             Tool::Grep => "grep",
             Tool::Shell => "shell",
@@ -211,10 +213,11 @@ impl Tool {
         ALL.into_iter().find(|t| t.name() == name)
     }
 
-    /// The permission action that guards this tool (`write` shares `edit`).
+    /// The permission action that guards this tool (`write` and `patch`
+    /// share `edit`).
     pub fn action(self) -> &'static str {
         match self {
-            Tool::Write | Tool::Edit => "edit",
+            Tool::Write | Tool::Edit | Tool::Patch => "edit",
             t => t.name(),
         }
     }
@@ -224,6 +227,7 @@ impl Tool {
             Tool::Read => read::spec(),
             Tool::Write => write::spec(),
             Tool::Edit => edit::spec(),
+            Tool::Patch => apply_patch::spec(),
             Tool::Glob => glob::spec(),
             Tool::Grep => grep::spec(),
             Tool::Shell => shell::spec(shell),
@@ -247,6 +251,7 @@ impl Tool {
             Tool::Read => read::run(ctx, input),
             Tool::Write => write::run(ctx, input),
             Tool::Edit => edit::run(ctx, input),
+            Tool::Patch => apply_patch::run(ctx, input),
             Tool::Glob => glob::run(ctx, input),
             Tool::Grep => grep::run(ctx, input),
             Tool::Shell => shell::run(ctx, input).await,
