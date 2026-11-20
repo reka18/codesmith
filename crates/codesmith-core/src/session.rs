@@ -903,6 +903,7 @@ impl Session {
             &self.messages[n - 2],
             &self.messages[n - 1],
             &self.messages,
+            &|names| self.gate.allows("read", names),
         );
         for text in texts {
             self.push(Message::user(text))?;

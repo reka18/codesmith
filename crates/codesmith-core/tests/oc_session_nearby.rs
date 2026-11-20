@@ -196,3 +196,69 @@ async fn a_read_outside_the_project_injects_nothing() {
     read(&mut h, json!({"path": path})).await;
     assert!(injected(&h).is_empty());
 }
+
+/// Not in OpenCode: an instruction file that is a symlink is not followed
+/// (it could point out of the project), even to a file the project holds.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_symlinked_instruction_file_is_not_given() {
+    let mut h = H::new().await;
+    let dir = h.root();
+    let outside = h.outside.path().canonicalize().unwrap();
+    write(&outside.join("secret.txt"), "outside-secret");
+    write(&dir.join("sub/file.txt"), "content");
+    std::os::unix::fs::symlink(outside.join("secret.txt"), dir.join("sub/AGENTS.md")).unwrap();
+    write(&dir.join("in/real.md"), "inside");
+    write(&dir.join("in/sub/file.txt"), "content");
+    std::os::unix::fs::symlink(dir.join("in/real.md"), dir.join("in/sub/AGENTS.md")).unwrap();
+    read(&mut h, json!({"path": "sub/file.txt"})).await;
+    read(&mut h, json!({"path": "in/sub/file.txt"})).await;
+    assert!(injected(&h).is_empty(), "{:?}", injected(&h));
+}
+
+/// Not in OpenCode: a file the read rules would not allow without asking
+/// is left out, without asking; and dependency folders give nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn instruction_files_follow_the_read_rules_and_skip_dependencies() {
+    let mut h = H::with(
+        json!({"permissions": [
+            {"action": "read", "resource": "private/AGENTS.md", "effect": "deny"},
+            {"action": "read", "resource": "asked/AGENTS.md", "effect": "ask"},
+        ]}),
+        None,
+    )
+    .await;
+    let dir = h.root();
+    for d in ["private", "asked", "node_modules/pkg", "open"] {
+        write(&dir.join(d).join("AGENTS.md"), &format!("{d}-instructions"));
+        write(&dir.join(d).join("f.txt"), "content");
+    }
+    for d in ["private", "asked", "node_modules/pkg", "open"] {
+        read(&mut h, json!({"path": format!("{d}/f.txt")})).await;
+    }
+    let got = injected(&h);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains("open-instructions"));
+}
+
+/// Not in OpenCode: a large instruction file is cut, with a note.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_instruction_file_is_capped() {
+    let mut h = H::new().await;
+    let dir = h.root();
+    write(
+        &dir.join("big/AGENTS.md"),
+        &"x".repeat(nearby::MAX_BYTES * 2),
+    );
+    write(&dir.join("big/f.txt"), "content");
+    read(&mut h, json!({"path": "big/f.txt"})).await;
+    let got = injected(&h);
+    assert_eq!(got.len(), 1);
+    assert!(got[0].len() < nearby::MAX_BYTES + 500);
+    assert!(got[0].contains("(Truncated: only the first 64 KiB"));
+    // Its path is still recognised as given.
+    assert_eq!(
+        nearby::paths_of(&got[0]).unwrap(),
+        [dir.join("big/AGENTS.md")]
+    );
+}
