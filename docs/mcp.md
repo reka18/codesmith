@@ -135,6 +135,10 @@ own: the only way out is the listed tools. Limits:
 `codemode::child_main_if_requested` runs programs on a thread instead, where
 only the loop, recursion and size caps apply.)
 
+While a program runs, its `execute` call reports a row for each tool call
+it makes, as OpenCode does (the server's `tool_progress`): at most one
+update per 100 ms, and a failed program's latest rows before its result.
+
 Images in tool results reach the model as images when tools are called
 directly. In Code Mode, whose results are JSON for the program, images are
 replaced by a note.

@@ -1823,7 +1823,20 @@ impl Session {
                     _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
                     _ if refused.is_some() => (refused.clone().unwrap_or_default(), true),
                     _ if name == crate::codemode::TOOL && !self.code_entries().is_empty() => {
-                        self.run_code(&input).await
+                        // The program's call rows, as the call's progress.
+                        let (tx, mut rows) = tokio::sync::mpsc::unbounded_channel();
+                        let run = self.run_code(&input, tx);
+                        tokio::pin!(run);
+                        let r = loop {
+                            tokio::select! {
+                                r = &mut run => break r,
+                                Some(m) = rows.recv() => sink.tool_progress(&id, &m),
+                            }
+                        };
+                        while let Ok(m) = rows.try_recv() {
+                            sink.tool_progress(&id, &m);
+                        }
+                        r
                     }
                     _ if name == crate::automation::TOOL && self.store.is_some() => {
                         self.run_automation(&input).await
@@ -2758,11 +2771,19 @@ impl Session {
         }
     }
 
-    async fn run_code(&self, input: &serde_json::Value) -> (String, bool) {
+    async fn run_code(
+        &self,
+        input: &serde_json::Value,
+        rows: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) -> (String, bool) {
         let input = tool::repair(input);
         let Some(code) = input["code"].as_str().filter(|c| !c.trim().is_empty()) else {
             return ("Missing required string parameter `code`".into(), true);
         };
+        let progress = crate::codemode::progress::Progress::new(move |m| {
+            let _ = rows.send(m);
+        });
+        let progress = &progress;
         let entries = self.code_entries();
         let builtins: Vec<&str> = entries
             .iter()
@@ -2776,14 +2797,17 @@ impl Session {
             crate::codemode::MAX_TOOL_CALLS,
             crate::codemode::TIMEOUT,
             |tool, args| async move {
-                if builtins.contains(&tool.as_str()) {
-                    let (text, failed) = self.run_builtin_in_code(&tool, &args).await;
-                    return if failed { Err(text) } else { Ok(text) };
-                }
-                // Code Mode hands results to code as JSON, so images and
-                // PDFs are noted rather than passed on.
-                let (text, failed, media) = self.run_mcp(&tool, &args).await;
-                let text = crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+                let row = progress.start(&tool, Some(&args));
+                let (text, failed) = if builtins.contains(&tool.as_str()) {
+                    self.run_builtin_in_code(&tool, &args).await
+                } else {
+                    // Code Mode hands results to code as JSON, so images
+                    // and PDFs are noted rather than passed on.
+                    let (text, failed, media) = self.run_mcp(&tool, &args).await;
+                    let text = crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+                    (text, failed)
+                };
+                progress.settle(row, !failed);
                 if failed {
                     Err(text)
                 } else {
@@ -2792,6 +2816,7 @@ impl Session {
             },
         )
         .await;
+        progress.finish(out.result.is_ok());
         let (text, is_error) = out.render();
         (
             tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),

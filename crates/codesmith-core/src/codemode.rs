@@ -25,6 +25,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub mod placement;
+pub mod progress;
 mod search;
 pub mod signature;
 mod web;

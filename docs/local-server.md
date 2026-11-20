@@ -93,7 +93,7 @@ Each Server-Sent Event is a JSON object with a `type`:
 | `reasoning` | `delta` |
 | `media` | `mime`, `name` (or `null`), and `size` in bytes, or `url` for a remote file: an image or other file the model generated. Only its metadata is sent; read the bytes from the session's messages (`GET /sessions/{id}`). |
 | `tool_start` | `id`, `name`, `input` |
-| `tool_progress` | `id`, `metadata`: `{"shellID": "shell_1"}` once a `shell` call's command starts |
+| `tool_progress` | `id`, `metadata`: `{"shellID": "shell_1"}` once a `shell` call's command starts; for `execute`, `{"toolCalls": [{"tool", "status", "input"?}]}`, one row per call the program made (`running`, then `completed` or `error`), at most one update per 100 ms, each replacing the last |
 | `tool_output` | `id`, `delta`: output a foreground command printed, a few times a second while its call waits (under a flood, only the latest 64 KiB of each interval) |
 | `tool_end` | `id`, `name`, `output`, `error` |
 | `step_end` | `reason` (`stop`, `length`, `tool-calls`, `content-filter`, `error` or `unknown`), `finish` (`normalized`, the providers `raw` reason and, for a content filter, its `category` and `explanation`), `usage` |

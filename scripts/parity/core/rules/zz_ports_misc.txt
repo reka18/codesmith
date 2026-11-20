@@ -67,3 +67,6 @@
 108 :: ported :: tests/oc_tool_placement.rs::oc_model_tools_keeps_non_strong_and_absent_models_direct_when_full_code_mode_is_on_hiding_websearch_when_unavailable
 239 :: ported :: tests/oc_tool_placement.rs::oc_select_keeps_strong_model_tools_direct_when_full_codemode_is_off
 248 :: ported :: tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode :: adapted: `full_codemode` in config; MCP instruction wording and an unavailable model's ref fallback are not covered
+@tool-execute.test.ts
+759 :: ported :: tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows :: adapted: the row throttle driven directly; the session sends the rows as `tool_progress`
+788 :: ported :: tests/oc_codemode_progress.rs::oc_execute_interrupted_sends_its_latest_progress_rows_before_it_settles :: adapted: a stopped turn drops the program; the rows go out from the drop
