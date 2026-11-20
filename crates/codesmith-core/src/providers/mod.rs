@@ -11,6 +11,7 @@ pub mod copilot;
 pub mod gateways;
 pub mod oauth;
 pub mod poe;
+pub mod sap;
 pub mod snowflake;
 pub mod vertex;
 
@@ -59,6 +60,16 @@ pub struct Settings {
     pub account: Option<String>,
     /// Snowflake Cortex: a programmatic access or bearer token.
     pub token: Option<String>,
+    /// SAP AI Core: the service key (JSON), under `AICORE_SERVICE_KEY`.
+    #[serde(alias = "serviceKey")]
+    pub service_key: Option<String>,
+    /// SAP AI Core: the deployment (default `AICORE_DEPLOYMENT_ID`).
+    #[serde(alias = "deploymentId")]
+    pub deployment_id: Option<String>,
+    /// SAP AI Core: the resource group (default `AICORE_RESOURCE_GROUP`,
+    /// then `default`).
+    #[serde(alias = "resourceGroup")]
+    pub resource_group: Option<String>,
 }
 
 /// What a provider plugin is given.
@@ -225,6 +236,8 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
     // SNOWFLAKE_ACCOUNT, which models.dev lists too, names the endpoint;
     // the token variables are read by the plugin, ahead of a saved login.
     (snowflake::ID, "Snowflake Cortex", &[]),
+    // The service key is read by the plugin; it is not a bearer key.
+    (sap::ID, "SAP AI Core", &[]),
     (
         cloudflare::WORKERS,
         "Cloudflare Workers AI",
@@ -263,6 +276,7 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
         cloudflare::WORKERS => return cloudflare::workers(input).map(Some),
         poe::ID => return poe::route(input).map(Some),
         snowflake::ID => return snowflake::route(input).map(Some),
+        sap::ID => return sap::route(input).map(Some),
         _ => {}
     }
     Ok(None)
@@ -281,6 +295,7 @@ pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
             vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
         }
         poe::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
+        sap::ID => env(sap::KEY_VAR).is_some() || set(&settings.service_key).is_some(),
         snowflake::ID => {
             snowflake::env_token(env).is_some()
                 || crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth")

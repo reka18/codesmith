@@ -1550,3 +1550,124 @@ fn oc_cloudflare_resolves_bundled_models_through_the_gateway_and_workers_ai() {
         "https://gateway.ai.cloudflare.com/v1/acct-from-env/default/anthropic/v1"
     );
 }
+
+// plugin/provider-sap-ai-core.test.ts
+
+use codesmith_core::providers::sap;
+
+fn service_key(api: &str, auth: &str) -> String {
+    json!({
+        "clientid": "sb-client",
+        "clientsecret": "secret",
+        "url": auth,
+        "serviceurls": {"AI_API_URL": api},
+    })
+    .to_string()
+}
+
+fn sap_case(s: Value, e: &[(&str, &str)]) -> Case {
+    let mut c = Case::new("sap-ai-core", s);
+    c.env = env(e);
+    c
+}
+
+#[test]
+fn oc_sap_copies_service_key_option_into_aicore_service_key_but_keeps_sdk_options_to_deployment_metadata(
+) {
+    let key = service_key("https://api.ai.example", "https://auth.example");
+    let r = sap_case(
+        json!({"serviceKey": key}),
+        &[
+            ("AICORE_DEPLOYMENT_ID", "deployment"),
+            ("AICORE_RESOURCE_GROUP", "resource-group"),
+        ],
+    )
+    .ok();
+    assert_eq!(
+        r.base_url,
+        "https://api.ai.example/v2/inference/deployments/deployment"
+    );
+    assert_eq!(
+        r.headers,
+        [(
+            "AI-Resource-Group".to_string(),
+            "resource-group".to_string()
+        )]
+    );
+    assert_eq!(sigv4(&r), "SAP AI Core service key sb-client");
+    assert_eq!(r.api_key, None);
+}
+
+#[test]
+fn oc_sap_preserves_existing_aicore_service_key_over_service_key_option() {
+    let r = sap_case(
+        json!({"serviceKey": service_key("https://option.example", "https://auth.example")}),
+        &[
+            (
+                "AICORE_SERVICE_KEY",
+                &service_key("https://env.example", "https://auth.example"),
+            ),
+            ("AICORE_DEPLOYMENT_ID", "deployment"),
+            ("AICORE_RESOURCE_GROUP", "resource-group"),
+        ],
+    )
+    .ok();
+    assert_eq!(
+        r.base_url,
+        "https://env.example/v2/inference/deployments/deployment"
+    );
+}
+
+#[test]
+fn oc_sap_omits_deployment_and_resource_group_sdk_options_when_no_service_key_is_available() {
+    let e = [
+        ("AICORE_DEPLOYMENT_ID", "deployment"),
+        ("AICORE_RESOURCE_GROUP", "resource-group"),
+    ];
+    let mut c = sap_case(json!({"baseURL": "https://proxy.example/v1"}), &e);
+    c.key = Some("plain-key");
+    let r = c.ok();
+    assert_eq!(r.base_url, "https://proxy.example/v1");
+    assert!(r.headers.is_empty());
+    assert_eq!(r.auth, Auth::Bearer);
+    assert_eq!(r.api_key.as_deref(), Some("plain-key"));
+    let err = sap_case(json!({}), &e).route().unwrap_err().to_string();
+    assert!(err.contains("AICORE_SERVICE_KEY"), "{err}");
+}
+
+#[test]
+fn oc_sap_ignores_non_sap_ai_core_providers() {
+    let mut c = Case::new(
+        "openai",
+        json!({"serviceKey": service_key("https://api.ai.example", "https://auth.example")}),
+    );
+    c.env = env(&[("AICORE_DEPLOYMENT_ID", "deployment")]);
+    assert!(c.route().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn oc_sap_fetches_client_credentials_tokens_from_the_service_key() {
+    let f = fixture(vec![(
+        "/oauth/token",
+        vec![(
+            200,
+            json!({"access_token": "sap-token", "expires_in": 3600}).to_string(),
+        )],
+    )])
+    .await;
+    let key = sap::parse_key(&service_key("https://api.ai.example", &f.url)).unwrap();
+    let a = sap::ClientCredentials::new(key);
+    let client = reqwest::Client::new();
+    assert_eq!(a.token(&client).await.unwrap(), "sap-token");
+    assert_eq!(a.token(&client).await.unwrap(), "sap-token");
+    let seen = f.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "cached");
+    use base64::Engine;
+    let basic = base64::engine::general_purpose::STANDARD.encode("sb-client:secret");
+    assert!(seen[0].to_ascii_lowercase().contains(&format!(
+        "authorization: basic {}",
+        basic.to_ascii_lowercase()
+    )));
+    assert!(seen[0].ends_with("grant_type=client_credentials"));
+    assert!(sap::parse_key("not json").is_err());
+}

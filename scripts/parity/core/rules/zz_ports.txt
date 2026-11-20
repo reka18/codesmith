@@ -389,3 +389,9 @@
 220 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_uses_environment_tokens_rather_than_the_account_identifier_and_bypasses_expired_stored_oauth
 252 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_requires_a_token_separately_from_the_account_and_supports_environment_pats
 269 :: ported :: tests/oc_provider_logins.rs::oc_snowflake_refreshes_expired_oauth_during_native_model_resolution_and_persists_rotated_credentials
+@plugin/provider-sap-ai-core.test.ts
+40 :: ported :: tests/oc_providers.rs::oc_sap_copies_service_key_option_into_aicore_service_key_but_keeps_sdk_options_to_deployment_metadata :: adapted: the key and deployment give the route (no SAP AI SDK; the process environment is left alone)
+58 :: ported :: tests/oc_providers.rs::oc_sap_preserves_existing_aicore_service_key_over_service_key_option
+80 :: ported :: tests/oc_providers.rs::oc_sap_omits_deployment_and_resource_group_sdk_options_when_no_service_key_is_available
+98 :: design :: deliberate :: plugin.rs: no AI SDK; CodeSmith speaks Chat Completions to the deployment itself
+112 :: ported :: tests/oc_providers.rs::oc_sap_ignores_non_sap_ai_core_providers

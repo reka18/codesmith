@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 169 | 0 | 265 | 325 | 37 | 0 |
+| Providers, models and credentials | 796 | 173 | 0 | 260 | 326 | 37 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1076** | **15** | **766** | **2334** | **1397** | **0** |
+| **Total** | **5588** | **1080** | **15** | **761** | **2335** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,12 +78,12 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (766 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (761 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Provider Plugins](#provider-plugins) | 97 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
+| [Provider Plugins](#provider-plugins) | 92 | GitHub Copilot; Modal; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
@@ -143,94 +143,6 @@ Missing features, by how many OpenCode test cases each would unlock (766 cases i
 | [Provider Media Capabilities](#provider-media-capabilities) | 1 | per-provider image formats (xAI) |
 | [Directory Attachments](#directory-attachments) | 1 | a directory attached to a prompt, listed in model context |
 | [Session Title Search](#session-title-search) | 1 | case-insensitive title search |
-
-### Provider Plugins
-
-97 cases.
-
-- `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
-- `github-copilot/models.test.ts`: prices cache reads from either token price spelling
-- `modal/models.test.ts`: modal plugin is registered
-- `modal/models.test.ts`: maps live Modal models onto catalog templates
-- `modal/models.test.ts`: keeps template cost and limits when the proxy omits them
-- `modal/models.test.ts`: throws on proxy failure so the plugin can fail soft
-- `plugin/provider-azure.test.ts`: hides Azure CLI authentication when the Azure CLI is not installed
-- `plugin/provider-azure.test.ts`: asks for the resource name as text without calling Azure
-- `plugin/provider-azure.test.ts`: starts without calling Azure, then lists deployments
-- `plugin/provider-azure.test.ts`: shows the deployments listed with an API key, named after the deployment
-- `plugin/provider-azure.test.ts`: lists Azure CLI deployments through the management API before the resource's own list
-- `plugin/provider-azure.test.ts`: falls back to the resource's own list when the Azure CLI cannot read the management API
-- `plugin/provider-azure.test.ts`: keeps the catalog for a custom endpoint without listing deployments
-- `plugin/provider-azure.test.ts`: publishes the management list only after its last page
-- `plugin/provider-azure.test.ts`: keeps the last complete list when a later page fails
-- `plugin/provider-azure.test.ts`: reports the management API error when the resource's own list fails too
-- `plugin/provider-azure.test.ts`: never sends the management token to a page link outside the management endpoint
-- `plugin/provider-azure.test.ts`: keeps a model that is configured explicitly
-- `plugin/provider-azure.test.ts`: loads again when the API key changes in place
-- `plugin/provider-azure.test.ts`: shows the new account without waiting for the previous account's discovery
-- `plugin/provider-azure.test.ts`: authorizes Azure, Foundry, and WebSocket requests with a token for their audience
-- `plugin/provider-azure.test.ts`: {item.name} (6 cases)
-- `plugin/provider-azure.test.ts`: leaves models unchanged and uncloned without a resource name
-- `plugin/provider-azure.test.ts`: prefers WebSockets on the provider for the Azure Responses API only
-- `plugin/provider-digitalocean.test.ts`: is registered alongside the other provider plugins
-- `plugin/provider-digitalocean.test.ts`: registers browser OAuth alongside generic key and environment methods
-- `plugin/provider-digitalocean.test.ts`: loads routers for the signed-in account
-- `plugin/provider-digitalocean.test.ts`: loads nothing and logs nothing at startup when the access token has expired
-- `plugin/provider-digitalocean.test.ts`: refreshes routers in the background with the latest access token
-- `plugin/provider-digitalocean.test.ts`: loads on credential changes and clears the previous account's routers
-- `plugin/provider-digitalocean.test.ts`: shows a returning account's cached routers at once and refreshes them in the background
-- `plugin/provider-digitalocean.test.ts`: completes browser OAuth independently of router discovery and releases the listener
-- `plugin/provider-digitalocean.test.ts`: rejects ${fixture.name} and releases the listener (5 cases)
-- `plugin/provider-dynamic.test.ts`: creates an SDK from a provider factory export
-- `plugin/provider-dynamic.test.ts`: does not override an SDK already supplied by an earlier plugin
-- `plugin/provider-dynamic.test.ts`: loads npm packages through their resolved import entrypoint
-- `plugin/provider-dynamic.test.ts`: wraps missing npm entrypoint failures as AISDK init errors
-- `plugin/provider-dynamic.test.ts`: wraps dynamic import failures as AISDK init errors
-- `plugin/provider-dynamic.test.ts`: wraps missing provider factory exports as AISDK init errors
-- `plugin/provider-dynamic.test.ts`: uses the model modelID for the default language model
-- `plugin/provider-github-copilot.test.ts`: reloads providers only when a refreshed model list changes
-- `plugin/provider-github-copilot.test.ts`: names sessions with the utility model as a free background request
-- `plugin/provider-github-copilot.test.ts`: sends the utility title request through the host's fetch
-- `plugin/provider-github-copilot.test.ts`: fails the utility title on rate limits so the billable path can run
-- `plugin/provider-github-copilot.test.ts`: fails the utility title on an empty completion
-- `plugin/provider-github-copilot.test.ts`: routes Auto through Copilot's router and keeps the pick until compaction
-- `plugin/provider-gitlab-oauth.test.ts`: is registered alongside the other provider plugins
-- `plugin/provider-gitlab-oauth.test.ts`: registers PKCE OAuth alongside the generic key/env methods from ModelsDevPlugin
-- `plugin/provider-gitlab-oauth.test.ts`: exchanges a PKCE code for a native GitLab OAuth credential against gitlab.com by default
-- `plugin/provider-gitlab-oauth.test.ts`: uses the answered self-managed instance URL, including a relative URL root
-- `plugin/provider-gitlab-oauth.test.ts`: fails early for self-managed instances without GITLAB_OAUTH_CLIENT_ID
-- `plugin/provider-gitlab-oauth.test.ts`: refreshes an OAuth credential using its stored instance URL and includes redirect_uri
-- `plugin/provider-gitlab-oauth.test.ts`: shares one token exchange between concurrent refreshes of the same credential
-- `plugin/provider-gitlab-oauth.test.ts`: refreshes credentials without a client ID with the opencode-gitlab-auth application
-- `plugin/provider-gitlab-oauth.test.ts`: refreshes only with the recorded client ID when the credential has one
-- `plugin/provider-gitlab-oauth.test.ts`: reports a revoked refresh token with a sign-in-again hint instead of authorization-code hints
-- `plugin/provider-gitlab-oauth.test.ts`: rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) (4 cases)
-- `plugin/provider-gitlab-oauth.test.ts`: preserves the active connection after a failed token exchange (${response.status}) (3 cases)
-- `plugin/provider-gitlab-oauth.test.ts`: reports EADDRINUSE with a clear message when the callback port is occupied
-- `plugin/provider-gitlab-oauth.test.ts`: honors GITLAB_OAUTH_CLIENT_ID for self-managed applications
-- `plugin/provider-gitlab.test.ts`: discovers workflow models for the location and exposes their refs in the model registry
-- `plugin/provider-gitlab.test.ts`: uses OAuth access tokens for discovery
-- `plugin/provider-gitlab.test.ts`: sends requests to the instance an OAuth login was issued against
-- `plugin/provider-gitlab.test.ts`: does not discover with only an ambient GITLAB_TOKEN or configured apiKey
-- `plugin/provider-gitlab.test.ts`: discovers with a stored login without replacing configured model definitions
-- `plugin/provider-gitlab.test.ts`: scopes the SDK discovery cache to the active account
-- `plugin/provider-gitlab.test.ts`: gives up on unresponsive discovery so later account switches still load
-- `plugin/provider-gitlab.test.ts`: skips unauthenticated discovery and refreshes after credential changes, including failures
-- `plugin/provider-gitlab.test.ts`: creates SDKs with legacy default instance URL, token env, headers, and feature flags
-- `plugin/provider-gitlab.test.ts`: uses GITLAB_INSTANCE_URL when instanceUrl is not configured
-- `plugin/provider-gitlab.test.ts`: keeps configured instance URL, apiKey, aiGatewayHeaders, and featureFlags over env/defaults
-- `plugin/provider-gitlab.test.ts`: ignores non-GitLab SDK packages
-- `plugin/provider-gitlab.test.ts`: uses workflowChat for duo workflow models and preserves selectedModelRef
-- `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
-- `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
-- `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-- `plugin/provider-openrouter.test.ts`: filters OpenRouter's gpt-5 chat alias
-- `plugin/provider-openrouter.test.ts`: does not disable gpt-5-chat-latest for non-OpenRouter providers
-- `plugin/provider-sap-ai-core.test.ts`: copies serviceKey option into AICORE_SERVICE_KEY but keeps SDK options to deployment metadata
-- `plugin/provider-sap-ai-core.test.ts`: preserves existing AICORE_SERVICE_KEY over serviceKey option
-- `plugin/provider-sap-ai-core.test.ts`: omits deployment and resourceGroup SDK options when no service key is available
-- `plugin/provider-sap-ai-core.test.ts`: uses the callable SDK for language selection
-- `plugin/provider-sap-ai-core.test.ts`: ignores non-SAP AI Core providers
 
 ### Patch Tool (apply_patch)
 
@@ -328,6 +240,89 @@ Missing features, by how many OpenCode test cases each would unlock (766 cases i
 - `tool-patch.test.ts`: adds files by overwriting existing targets
 - `tool-patch.test.ts`: overwrites an add target that appears during permission approval
 - `tool-patch.test.ts`: preserves a later commit defect after earlier sequential applications
+
+### Provider Plugins
+
+92 cases.
+
+- `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
+- `github-copilot/models.test.ts`: prices cache reads from either token price spelling
+- `modal/models.test.ts`: modal plugin is registered
+- `modal/models.test.ts`: maps live Modal models onto catalog templates
+- `modal/models.test.ts`: keeps template cost and limits when the proxy omits them
+- `modal/models.test.ts`: throws on proxy failure so the plugin can fail soft
+- `plugin/provider-azure.test.ts`: hides Azure CLI authentication when the Azure CLI is not installed
+- `plugin/provider-azure.test.ts`: asks for the resource name as text without calling Azure
+- `plugin/provider-azure.test.ts`: starts without calling Azure, then lists deployments
+- `plugin/provider-azure.test.ts`: shows the deployments listed with an API key, named after the deployment
+- `plugin/provider-azure.test.ts`: lists Azure CLI deployments through the management API before the resource's own list
+- `plugin/provider-azure.test.ts`: falls back to the resource's own list when the Azure CLI cannot read the management API
+- `plugin/provider-azure.test.ts`: keeps the catalog for a custom endpoint without listing deployments
+- `plugin/provider-azure.test.ts`: publishes the management list only after its last page
+- `plugin/provider-azure.test.ts`: keeps the last complete list when a later page fails
+- `plugin/provider-azure.test.ts`: reports the management API error when the resource's own list fails too
+- `plugin/provider-azure.test.ts`: never sends the management token to a page link outside the management endpoint
+- `plugin/provider-azure.test.ts`: keeps a model that is configured explicitly
+- `plugin/provider-azure.test.ts`: loads again when the API key changes in place
+- `plugin/provider-azure.test.ts`: shows the new account without waiting for the previous account's discovery
+- `plugin/provider-azure.test.ts`: authorizes Azure, Foundry, and WebSocket requests with a token for their audience
+- `plugin/provider-azure.test.ts`: {item.name} (6 cases)
+- `plugin/provider-azure.test.ts`: leaves models unchanged and uncloned without a resource name
+- `plugin/provider-azure.test.ts`: prefers WebSockets on the provider for the Azure Responses API only
+- `plugin/provider-digitalocean.test.ts`: is registered alongside the other provider plugins
+- `plugin/provider-digitalocean.test.ts`: registers browser OAuth alongside generic key and environment methods
+- `plugin/provider-digitalocean.test.ts`: loads routers for the signed-in account
+- `plugin/provider-digitalocean.test.ts`: loads nothing and logs nothing at startup when the access token has expired
+- `plugin/provider-digitalocean.test.ts`: refreshes routers in the background with the latest access token
+- `plugin/provider-digitalocean.test.ts`: loads on credential changes and clears the previous account's routers
+- `plugin/provider-digitalocean.test.ts`: shows a returning account's cached routers at once and refreshes them in the background
+- `plugin/provider-digitalocean.test.ts`: completes browser OAuth independently of router discovery and releases the listener
+- `plugin/provider-digitalocean.test.ts`: rejects ${fixture.name} and releases the listener (5 cases)
+- `plugin/provider-dynamic.test.ts`: creates an SDK from a provider factory export
+- `plugin/provider-dynamic.test.ts`: does not override an SDK already supplied by an earlier plugin
+- `plugin/provider-dynamic.test.ts`: loads npm packages through their resolved import entrypoint
+- `plugin/provider-dynamic.test.ts`: wraps missing npm entrypoint failures as AISDK init errors
+- `plugin/provider-dynamic.test.ts`: wraps dynamic import failures as AISDK init errors
+- `plugin/provider-dynamic.test.ts`: wraps missing provider factory exports as AISDK init errors
+- `plugin/provider-dynamic.test.ts`: uses the model modelID for the default language model
+- `plugin/provider-github-copilot.test.ts`: reloads providers only when a refreshed model list changes
+- `plugin/provider-github-copilot.test.ts`: names sessions with the utility model as a free background request
+- `plugin/provider-github-copilot.test.ts`: sends the utility title request through the host's fetch
+- `plugin/provider-github-copilot.test.ts`: fails the utility title on rate limits so the billable path can run
+- `plugin/provider-github-copilot.test.ts`: fails the utility title on an empty completion
+- `plugin/provider-github-copilot.test.ts`: routes Auto through Copilot's router and keeps the pick until compaction
+- `plugin/provider-gitlab-oauth.test.ts`: is registered alongside the other provider plugins
+- `plugin/provider-gitlab-oauth.test.ts`: registers PKCE OAuth alongside the generic key/env methods from ModelsDevPlugin
+- `plugin/provider-gitlab-oauth.test.ts`: exchanges a PKCE code for a native GitLab OAuth credential against gitlab.com by default
+- `plugin/provider-gitlab-oauth.test.ts`: uses the answered self-managed instance URL, including a relative URL root
+- `plugin/provider-gitlab-oauth.test.ts`: fails early for self-managed instances without GITLAB_OAUTH_CLIENT_ID
+- `plugin/provider-gitlab-oauth.test.ts`: refreshes an OAuth credential using its stored instance URL and includes redirect_uri
+- `plugin/provider-gitlab-oauth.test.ts`: shares one token exchange between concurrent refreshes of the same credential
+- `plugin/provider-gitlab-oauth.test.ts`: refreshes credentials without a client ID with the opencode-gitlab-auth application
+- `plugin/provider-gitlab-oauth.test.ts`: refreshes only with the recorded client ID when the credential has one
+- `plugin/provider-gitlab-oauth.test.ts`: reports a revoked refresh token with a sign-in-again hint instead of authorization-code hints
+- `plugin/provider-gitlab-oauth.test.ts`: rejects invalid or denied callbacks (${JSON.stringify(invalid.params)}) (4 cases)
+- `plugin/provider-gitlab-oauth.test.ts`: preserves the active connection after a failed token exchange (${response.status}) (3 cases)
+- `plugin/provider-gitlab-oauth.test.ts`: reports EADDRINUSE with a clear message when the callback port is occupied
+- `plugin/provider-gitlab-oauth.test.ts`: honors GITLAB_OAUTH_CLIENT_ID for self-managed applications
+- `plugin/provider-gitlab.test.ts`: discovers workflow models for the location and exposes their refs in the model registry
+- `plugin/provider-gitlab.test.ts`: uses OAuth access tokens for discovery
+- `plugin/provider-gitlab.test.ts`: sends requests to the instance an OAuth login was issued against
+- `plugin/provider-gitlab.test.ts`: does not discover with only an ambient GITLAB_TOKEN or configured apiKey
+- `plugin/provider-gitlab.test.ts`: discovers with a stored login without replacing configured model definitions
+- `plugin/provider-gitlab.test.ts`: scopes the SDK discovery cache to the active account
+- `plugin/provider-gitlab.test.ts`: gives up on unresponsive discovery so later account switches still load
+- `plugin/provider-gitlab.test.ts`: skips unauthenticated discovery and refreshes after credential changes, including failures
+- `plugin/provider-gitlab.test.ts`: creates SDKs with legacy default instance URL, token env, headers, and feature flags
+- `plugin/provider-gitlab.test.ts`: uses GITLAB_INSTANCE_URL when instanceUrl is not configured
+- `plugin/provider-gitlab.test.ts`: keeps configured instance URL, apiKey, aiGatewayHeaders, and featureFlags over env/defaults
+- `plugin/provider-gitlab.test.ts`: ignores non-GitLab SDK packages
+- `plugin/provider-gitlab.test.ts`: uses workflowChat for duo workflow models and preserves selectedModelRef
+- `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
+- `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
+- `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
+- `plugin/provider-openrouter.test.ts`: filters OpenRouter's gpt-5 chat alias
+- `plugin/provider-openrouter.test.ts`: does not disable gpt-5-chat-latest for non-OpenRouter providers
 
 ### Claude Agent SDK Provider
 
@@ -2030,7 +2025,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 538 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 539 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
@@ -3456,7 +3451,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (494 of 796)</summary>
+<details><summary>Providers, models and credentials (499 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3719,6 +3714,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P preserves the active connection after a failed token exchange (${response.status}: ${response.body}) ×6 — `tests/oc_provider_logins.rs::oc_poe_preserves_the_active_connection_after_a_failed_token_exchange` (adapted: a failed login leaves the saved key)
 - P waits for the token exchange and consumes the callback once (cancel: ${cancel}) ×2 — `tests/oc_provider_logins.rs::oc_poe_waits_for_the_token_exchange_and_consumes_the_callback_once`
 - P keeps near-expiry keys usable and requires a new login after expiry — `tests/oc_provider_logins.rs::oc_poe_keeps_near_expiry_keys_usable_and_requires_a_new_login_after_expiry`
+
+**`plugin/provider-sap-ai-core.test.ts`**
+
+- P copies serviceKey option into AICORE_SERVICE_KEY but keeps SDK options to deployment metadata — `tests/oc_providers.rs::oc_sap_copies_service_key_option_into_aicore_service_key_but_keeps_sdk_options_to_deployment_metadata` (adapted: the key and deployment give the route (no SAP AI SDK; the process environment is left alone))
+- P preserves existing AICORE_SERVICE_KEY over serviceKey option — `tests/oc_providers.rs::oc_sap_preserves_existing_aicore_service_key_over_service_key_option`
+- P omits deployment and resourceGroup SDK options when no service key is available — `tests/oc_providers.rs::oc_sap_omits_deployment_and_resource_group_sdk_options_when_no_service_key_is_available`
+- D uses the callable SDK for language selection — deliberate: plugin.rs: no AI SDK; CodeSmith speaks Chat Completions to the deployment itself
+- P ignores non-SAP AI Core providers — `tests/oc_providers.rs::oc_sap_ignores_non_sap_ai_core_providers`
 
 **`plugin/provider-snowflake-cortex.test.ts`**
 

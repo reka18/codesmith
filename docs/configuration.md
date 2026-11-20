@@ -138,6 +138,7 @@ from `settings.apiKey` in config.
 | `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) |
 | `poe` | OpenAI Chat | `POE_API_KEY`, or `codesmith auth login poe --oauth`; see [Poe](#poe) |
 | `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) |
+| `sap-ai-core` | OpenAI Chat | `AICORE_SERVICE_KEY` (the service key JSON) and the deployment; see [SAP AI Core](#sap-ai-core) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -514,6 +515,30 @@ even over an expired login.
 Models get `max_completion_tokens` for the output limit, and Claude models
 explicit Anthropic-style cache breakpoints (`cacheFormat: anthropic`), which
 is how Cortex caches them.
+
+### SAP AI Core
+
+`sap-ai-core` sends requests to a deployment of SAP's generative AI hub with
+the service instance's key. The service key (the JSON SAP BTP shows for the
+AI Core instance) comes from `AICORE_SERVICE_KEY`, else
+`settings.serviceKey`. CodeSmith gets OAuth tokens with the key's client
+credentials (`<url>/oauth/token`) and sends the resource group in
+`AI-Resource-Group` (`settings.resourceGroup`, `AICORE_RESOURCE_GROUP`, or
+`default`). Requests go to `settings.baseURL`, else `AICORE_DEPLOYMENT_URL`,
+else `<AI_API_URL>/v2/inference/deployments/<id>` with the id from
+`settings.deploymentId` or `AICORE_DEPLOYMENT_ID`.
+
+```jsonc
+"providers": { "sap-ai-core": {
+  "settings": { "deploymentId": "d1234567890", "resourceGroup": "default",
+                "queryParams": { "api-version": "2024-10-21" } }
+} }
+```
+
+OpenCode drives SAP's AI SDK here; CodeSmith speaks Chat Completions to the
+deployment itself, which suits deployments that serve that API (OpenAI
+models; set `"protocol"` for others). Without a service key the deployment
+settings are not used and `settings.baseURL` takes a plain key.
 
 ### Responses over WebSocket
 
