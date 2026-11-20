@@ -1204,7 +1204,12 @@ impl Runner {
                 p.cursor = msg.cursor().map(str::to_string);
             }
             set_position(db, id, &p).map_err(fatal)?;
-            *attempt = 0;
+            // A stream that only acknowledged its opening has not been
+            // healthy yet: reconnects in a row are counted until it sends
+            // an event or a heartbeat, as OpenCode counts them.
+            if !matches!(msg, EventMessage::Active { .. }) {
+                *attempt = 0;
+            }
         }
     }
 

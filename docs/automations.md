@@ -168,7 +168,10 @@ extension, as in OpenCode):
 - The watch saves the server's cursor after every message (for an event,
   when its run starts), so pausing and resuming, a restart, or another
   process taking over picks up where it left off without running an event
-  twice. A stream that breaks is reopened up to three times.
+  twice. A stream that breaks is reopened on a new connection from the saved
+  cursor, 1, 2 and 4 seconds later; after three reopened streams in a row
+  that send no event or heartbeat, the watch pauses. A stream that sent
+  something starts the count again.
 - A watch that cannot go on is paused, with the reason shown in
   `automation list`. That happens for a refused or ended subscription, a
   server that can't replay from the saved cursor, an event that doesn't match

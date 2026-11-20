@@ -4,10 +4,17 @@ MCP Events (the draft io.modelcontextprotocol/events extension) with push
 delivery, cursors and replay.
 
 Event streams take `arguments.queue`: "reject" refuses the stream,
-"truncate" reports that it skipped events, anything else streams two
-tickets (cursors c1, c2) and then heartbeats. Resuming from cursor cN
-replays from event N on, so the client must skip what already ran."""
-import json, sys, threading, time
+"truncate" reports that it skipped events, "plan" follows the plan file
+`arguments.plan` (below), anything else streams two tickets (cursors c1,
+c2) and then heartbeats. Resuming from cursor cN replays from event N on,
+so the client must skip what already ran.
+
+A plan is a JSON list, one entry per connection, in order: `{"events":
+[[id, cursor, title], ...], "exit": true}` sends those events and then
+exits (a broken stream); without `exit` the stream heartbeats. Each
+stream's resume cursor is appended to `<plan>.log`, one JSON value a
+line."""
+import json, os, sys, threading, time
 
 lock = threading.Lock()
 grown = False
@@ -42,6 +49,8 @@ def stream(mid, params):
     if queue == "truncate":
         note("notifications/events/active", {"cursor": "c9", "truncated": True, "_meta": meta})
     cursor = params.get("cursor")
+    if queue == "plan":
+        return planned(mid, params, meta, cursor)
     start = int(cursor[1:]) - 1 if cursor else 0
     last = cursor or "c0"
     note("notifications/events/active", {"cursor": last, "_meta": meta})
@@ -49,6 +58,32 @@ def stream(mid, params):
         note("notifications/events/event", {"eventId": eid, "name": "ticket.created", "timestamp": "2026-11-19T10:00:00Z", "data": data, "cursor": cur, "_meta": meta})
         last = cur
     note("notifications/events/error", {"error": {"code": -1, "message": "one upstream fetch failed"}, "_meta": meta})
+
+    def beat():
+        while mid not in cancelled:
+            time.sleep(0.2)
+            note("notifications/events/heartbeat", {"cursor": last, "_meta": meta})
+
+    threading.Thread(target=beat, daemon=True).start()
+
+
+def planned(mid, params, meta, cursor):
+    plan = params["arguments"]["plan"]
+    with open(plan + ".log", "a") as f:
+        f.write(json.dumps(cursor) + "\n")
+    with open(plan + ".log") as f:
+        n = len(f.readlines()) - 1
+    with open(plan) as f:
+        steps = json.load(f)
+    step = steps[n] if n < len(steps) else {"events": []}
+    last = cursor or "c0"
+    note("notifications/events/active", {"cursor": last, "_meta": meta})
+    for eid, cur, title in step.get("events", []):
+        note("notifications/events/event", {"eventId": eid, "name": "ticket.created", "timestamp": "2026-11-19T10:00:00Z", "data": {"title": title}, "cursor": cur, "_meta": meta})
+        last = cur
+    if step.get("exit"):
+        time.sleep(0.2)
+        os._exit(0)
 
     def beat():
         while mid not in cancelled:
@@ -111,7 +146,7 @@ while True:
     elif method == "events/list":
         reply(mid, {"events": [
             {"name": "ticket.created", "description": "A new ticket", "delivery": ["push"],
-             "inputSchema": {"type": "object", "properties": {"queue": {"type": "string"}}, "required": ["queue"]},
+             "inputSchema": {"type": "object", "properties": {"queue": {"type": "string"}, "plan": {"type": "string"}}, "required": ["queue"]},
              "payloadSchema": {"type": "object", "properties": {"title": {"type": "string"}}}},
             {"name": "polled", "delivery": ["poll"]},
         ]})

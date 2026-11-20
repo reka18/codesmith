@@ -70,3 +70,7 @@
 @tool-execute.test.ts
 759 :: ported :: tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows :: adapted: the row throttle driven directly; the session sends the rows as `tool_progress`
 788 :: ported :: tests/oc_codemode_progress.rs::oc_execute_interrupted_sends_its_latest_progress_rows_before_it_settles :: adapted: a stopped turn drops the program; the rows go out from the drop
+@automation-event.test.ts
+363 :: ported :: tests/oc_automation_stream.rs::oc_automation_event_a_broken_stream_opens_on_the_replacement_connection_replaying_from_the_last_committed_event :: adapted: a prompt automation; every reconnect connects the server afresh
+395 :: ported :: tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor
+415 :: fixed :: tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output :: the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever
