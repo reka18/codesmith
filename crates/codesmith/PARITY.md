@@ -49,8 +49,8 @@ Where the tests live:
   `tests/fixtures/oc_codemode.json`: 1126 assertions from
   `packages/codemode/test` (the programs and the values they expect,
   extracted as text from the test files; Test262-derived cases under the BSD
-  license in `fixtures/LICENSE.test262`), run through Code Mode on Boa. 962
-  pass; the other 164 are listed in the test with their reason, and the test
+  license in `fixtures/LICENSE.test262`), run through Code Mode on Boa. 974
+  pass; the other 152 are listed in the test with their reason, and the test
   fails if any other case fails or a listed one starts passing.
 - `src/acp.rs`: the `oc_acp_*` tests, with the ACP tests not ported listed
   above its test module.
@@ -64,11 +64,11 @@ Where the tests live:
 | tui: main UI | 1250 | 13 | 10 | 718 | 496 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
-| codemode | 1666 | 647 | 0 | 267 | 537 | 215 |
+| codemode | 1666 | 647 | 11 | 267 | 526 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **19** | **1504** | **2113** | **259** |
+| **Total** | **4637** | **742** | **30** | **1504** | **2102** | **259** |
 
 ## Fixes made while porting
 
@@ -124,6 +124,19 @@ Where the tests live:
   OpenCode's `activityCalendar`, a week now belongs to the month of its
   Thursday, kept inside the range, and a label is drawn only where it fits
   in its month's weeks, or for the last month.
+- **Code Mode runs programs in strict mode** (`codemode/test/parity`,
+  `descriptors`, `stdlib`): programs ran as sloppy-mode async arrows, so
+  writes to frozen, sealed or read-only properties were silently ignored,
+  plain calls got the global object as `this`, and so did the program
+  itself. They now run as strict-mode async functions, as OpenCode applies
+  those checks; a program that repeats a parameter name (OpenCode accepts
+  it, strict mode rejects it while parsing, before anything runs) runs in
+  sloppy mode. 12 more assertions pass, completing 11 tests: 9 of the 15
+  strict-mode ones, and 2 counted with OpenCode's restrictions (array
+  `length` is not configurable; `Uint8Array` writes out of range are
+  ignored). One difference this adds: top-level `arguments` is the
+  wrapper's empty arguments object where OpenCode throws a
+  `ReferenceError`.
 
 ## Differences found but not fixed
 
@@ -655,11 +668,11 @@ for larger ones).
 | cli: client/server frontends | by design | 48 | 7 | run and the UI drive the session in-process, not through a server; run reads the session in-process, not by reconciling server events; sessions are resolved locally, no server locations; subagents run inside the turn |
 | codemode: Boa departures | by design | 39 | 15 | Boa 0.22 departs from the specification here |
 | tui: client/server state | by design | 38 | 10 | the UI runs the session in-process |
-| codemode: OpenCode restrictions and result conversion | by design | 30 | 10 | opaque references, cycles, typed arrays, errors as {name,message}, awaited result promises, UTC dates |
+| codemode: OpenCode restrictions and result conversion | by design | 28 | 10 | opaque references, cycles, typed arrays, errors as {name,message}, awaited result promises, UTC dates |
 | server: auth and transport | by design | 28 | 7 | a bearer token instead of Basic auth, pairing and CORS; browsers are refused |
 | codemode: error wording | by design | 25 | 5 | Boa's messages; OpenCode's error kinds, locations and suggestions |
 | cli: integrations | by design | 24 | 4 | hosted, OAuth and command integrations through a server; integration login URLs; plugin-defined login forms; CodeSmith saves API keys; the /connect integration catalog |
-| codemode: strict-mode checks | by design | 15 | 3 | programs run as sloppy-mode async functions |
+| codemode: strict-mode checks | by design | 6 | 3 | Boa's strict mode words frozen-write errors differently, rejects early what OpenCode accepts (`delete` of a variable, a parameter named `arguments`), and misses two read-only writes |
 | acp: child sessions | by design | 13 | 3 | subagents run inside the parent turn; subagents run inside the parent turn; no steering |
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
 | tui: attachments | by design | 7 | 1 | attachments are read on send by path; SVG is not media; no remote server |
@@ -692,7 +705,7 @@ for larger ones).
 | cli: migrations | n/a | 1 | 1 | credential import from older versions |
 ### Code Mode on Boa
 
-Of the 1126 Code Mode assertions run, 164 fail on purpose, by reason (the
+Of the 1126 Code Mode assertions run, 152 fail on purpose, by reason (the
 test names each one):
 
 | Reason | Assertions | Bucket |
@@ -700,14 +713,13 @@ test names each one):
 | Web globals Boa does not provide (`URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`, `structuredClone`, `crypto`, `atob`, `Buffer`) | 39 | missing feature |
 | OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs) | 46 | by design |
 | Boa 0.22 departs from the specification or lacks a recent addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag, `substr`, `super` in arrows, some TDZ and property-order cases; one labeled `continue` loops forever) | 43 | by design (engine) |
-| Strict-mode checks OpenCode applies (frozen and read-only writes throw, plain calls get `this` undefined); CodeSmith runs programs as sloppy-mode async functions | 16 | by design |
+| Strict-mode checks where Boa's strict mode still differs from OpenCode's (wording of frozen-write errors, an early `SyntaxError` for `delete` of a variable or a parameter named `arguments`, no `TypeError` writing a named function expression's name or in one frozen-array case) | 6 | by design |
 | Boa's error wording | 16 | by design |
 | CodeSmith's limits (400 nested calls where OpenCode allows 10000, 64 MiB buffers) | 4 | by design |
 
-Running programs in strict mode would pass 10 more of these and fail 3 that
-pass now (OpenCode accepts duplicate parameters, which strict mode
-rejects); it is left as a choice to make, not a fix.
-
+Programs run in strict mode, as OpenCode applies strict-mode checks; one
+that repeats a parameter name, which OpenCode accepts and strict mode
+rejects as it parses, runs in sloppy mode instead.
 
 ## Not ported yet
 

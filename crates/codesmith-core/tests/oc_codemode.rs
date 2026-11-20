@@ -67,10 +67,13 @@ const WEB: &str = "web globals Boa does not provide";
 /// errors returned as `{ name, message }`, promises awaited inside results,
 /// deterministic UTC dates and `en-US` locale formatting, empty programs.
 const BOUNDARY: &str = "OpenCode-specific restriction or result conversion";
-/// OpenCode applies strict-mode checks (frozen and read-only writes throw,
-/// plain calls get `this` undefined, unmapped `arguments`); CodeSmith runs
-/// programs as sloppy-mode async functions.
-const STRICT: &str = "strict-mode checks OpenCode applies";
+/// Strict-mode checks where Boa's strict mode (Code Mode runs programs in
+/// strict mode, as OpenCode applies its checks) still differs: other
+/// wording for writes to frozen objects, an early `SyntaxError` for what
+/// OpenCode accepts (`delete` of a variable, a parameter named
+/// `arguments`), and no `TypeError` for writing a named function
+/// expression's own name or, in one case, a frozen array.
+const STRICT: &str = "strict-mode checks Boa's strict mode differs on";
 /// The same error, worded differently by Boa.
 const MESSAGE: &str = "Boa's error message wording";
 /// CodeSmith's own limits: 400 nested calls (OpenCode allows 10000) and
@@ -449,12 +452,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         BOUNDARY,
     ),
     (
-        "parity.test.ts",
-        r#"property deletion > array length is not configurable"#,
-        1,
-        BOUNDARY,
-    ),
-    (
         "promise-test262.test.ts",
         r#"Test262 Promise statics > Promise.race([]) returns a promise whose CodeMode failure is catchable"#,
         1,
@@ -518,12 +515,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         "stdlib.test.ts",
         r#"Uint8Array > constructs from a length, an array, an iterable, or another Uint8Array"#,
         5,
-        BOUNDARY,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"Uint8Array > index reads and writes clamp to a byte and ignore out-of-range writes, like JS"#,
-        2,
         BOUNDARY,
     ),
     (
@@ -612,73 +603,13 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "parity.test.ts",
-        r#"Object.freeze, seal, and preventExtensions > seal keeps writes, preventExtensions keeps deletes, and each returns its argument"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"Object.freeze, seal, and preventExtensions > sealed and non-extensible arrays allow exactly the writes JS does"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"Object.freeze, seal, and preventExtensions > typed arrays with elements cannot be frozen; wrappers freeze their properties only"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"functions are objects > functions hold own properties; name and length are read-only"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"iteration callbacks receive thisArg > arrows keep their lexical this, reduce takes an initial value instead, and opaque values are only bound"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"iteration callbacks receive thisArg > arrows keep their lexical this, reduce takes an initial value instead, and opaque values are only bound"#,
-        2,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
         r#"property deletion > a non-reference operand is evaluated and the result is true; a variable cannot be deleted"#,
         1,
         STRICT,
     ),
     (
         "parity.test.ts",
-        r#"tagged templates > raw is read-only"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
         r#"this, arguments, and Function.prototype.call/apply/bind > arguments is an unmapped array-like that arrows and parameters interact with as in JS"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"this, arguments, and Function.prototype.call/apply/bind > call, apply, and bind set this and arguments on program functions and built-ins"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"this, arguments, and Function.prototype.call/apply/bind > this is the call receiver for non-arrow functions and lexical for arrows"#,
-        1,
-        STRICT,
-    ),
-    (
-        "parity.test.ts",
-        r#"this, arguments, and Function.prototype.call/apply/bind > this reaches generator and async methods and plain-function callbacks"#,
         1,
         STRICT,
     ),

@@ -383,9 +383,26 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
     if let Err(e) = ctx.eval(Source::from_bytes(prelude(&entries).as_bytes())) {
         return fail(format!("prelude: {e}"), &count);
     }
-    let wrapped = format!("(async () => {{\n{}\n}})()", program(&code));
-    let promise = match ctx.eval(Source::from_bytes(wrapped.as_bytes())) {
+    // Strict mode, as OpenCode's interpreter applies its checks (writes to
+    // frozen or read-only properties throw, plain calls get `this`
+    // undefined, assigning an undeclared name throws). OpenCode still
+    // accepts repeated parameter names, which strict mode rejects as it
+    // parses, before anything runs: such a program runs in sloppy mode, as
+    // before.
+    let body = program(&code);
+    // A function rather than an arrow, so `this` at the top is undefined as
+    // in OpenCode; the directive shares the first line so error positions
+    // keep their line numbers.
+    let strict = format!("(async function () {{ \"use strict\";\n{body}\n}})()");
+    let promise = match ctx.eval(Source::from_bytes(strict.as_bytes())) {
         Ok(v) => v,
+        Err(e) if e.to_string().contains("Duplicate parameter name") => {
+            let sloppy = format!("(async () => {{\n{body}\n}})()");
+            match ctx.eval(Source::from_bytes(sloppy.as_bytes())) {
+                Ok(v) => v,
+                Err(e) => return fail(e.to_string(), &count),
+            }
+        }
         Err(e) => return fail(e.to_string(), &count),
     };
     if let Err(e) = ctx.run_jobs() {
@@ -1090,6 +1107,34 @@ mod tests {
         assert!(out.result.unwrap_err().contains("SyntaxError"));
         let (out, _) = run("const r = await Promise.allSettled([tools.gh.issues({repo: 'a'}), tools.gh['get-issue']({n: 404})])\nr.map(x => x.status)").await;
         assert_eq!(out.result, Ok(json!(["fulfilled", "rejected"])));
+    }
+
+    /// Programs run in strict mode, as OpenCode applies its checks; one
+    /// repeating a parameter name (which OpenCode accepts) runs sloppy.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn programs_run_in_strict_mode() {
+        let (out, _) = run_in(None, "const o = Object.freeze({a: 1})\ntry { o.a = 2; return 'wrote' } catch (e) { return e.name }").await;
+        assert_eq!(out.result, Ok(json!("TypeError")));
+        let (out, _) = run_in(
+            None,
+            "function f() { return typeof this }\nreturn [typeof this, f()]",
+        )
+        .await;
+        assert_eq!(out.result, Ok(json!(["undefined", "undefined"])));
+        let (out, _) = run_in(
+            None,
+            "try { undeclared = 1; return 'global' } catch (e) { return e.name }",
+        )
+        .await;
+        assert_eq!(out.result, Ok(json!("ReferenceError")));
+        let (out, _) = run_in(
+            None,
+            "function f(a, b, a) { return [a, b] }\nreturn f(1, 2, 3)",
+        )
+        .await;
+        assert_eq!(out.result, Ok(json!([3, 2])));
+        let (out, _) = run_in(None, "let x = (").await;
+        assert!(out.result.unwrap_err().contains("SyntaxError"));
     }
 
     #[cfg(unix)]
