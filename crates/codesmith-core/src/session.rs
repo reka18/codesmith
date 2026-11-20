@@ -146,6 +146,20 @@ pub struct Session {
     format: Option<Arc<crate::format::Formatter>>,
     lsp: Option<Arc<crate::lsp::Lsp>>,
     turn: Turn,
+    shared: Shared,
+}
+
+/// What keeps a session consistent with other processes using the same
+/// stored session (an automation run, another window).
+struct Shared {
+    /// The newest record sequence number this session has seen.
+    seen: i64,
+    /// Another writer appended in between this session's own records.
+    stale: bool,
+    /// This session's name in turn leases.
+    holder: String,
+    /// Wait for a turn another holder is running (else fail with `Busy`).
+    wait: bool,
 }
 
 /// Per-session state of the running turn, kept apart from the rest.
@@ -195,10 +209,12 @@ impl Session {
         store: Option<Store>,
     ) -> Result<Session> {
         let config = &loaded.config;
+        let mut seen = 0;
         let resumed: Option<Resumed> = match (&opts.resume, &store) {
             (Some(id), Some(s)) => {
                 let info = s.get(id)?.ok_or_else(|| anyhow!("no session {id}"))?;
                 let entries = s.entries(id)?;
+                seen = entries.last().map_or(0, |e| e.seq);
                 Some((info, store::history_with_seqs(&entries)))
             }
             (Some(_), None) => {
@@ -359,7 +375,54 @@ impl Session {
                 offered: Vec::new(),
                 retry_scale: 1.0,
             },
+            shared: Shared {
+                seen,
+                stale: false,
+                holder: format!("{}-{}", std::process::id(), new_id()),
+                wait: true,
+            },
         })
+    }
+
+    /// Whether a turn waits while another process runs one in this session
+    /// (the default), or fails at once with [`store::Busy`] (the automation
+    /// scheduler, which defers the run instead).
+    pub fn set_wait_for_turn(&mut self, wait: bool) {
+        self.shared.wait = wait;
+    }
+
+    /// Take the session's turn lease, so one turn runs at a time across
+    /// every process sharing the store, then pick up records another
+    /// process appended since this session last looked (an automation run
+    /// sent to it, a turn from another window).
+    async fn take_turn(&mut self, sink: &mut dyn Sink) -> Result<Option<store::TurnLease>> {
+        let Some(path) = self.store.as_ref().and_then(|s| s.path()) else {
+            return Ok(None);
+        };
+        let lease = store::TurnLease::acquire(
+            &path,
+            &self.id,
+            &self.shared.holder,
+            self.shared.wait,
+            || sink.notice("Waiting for a turn running in this session elsewhere to finish"),
+        )
+        .await?;
+        let st = self.store.as_ref().expect("checked above");
+        if self.stored {
+            let last = st.last_seq(&self.id)?;
+            if self.shared.stale || last > self.shared.seen {
+                let entries = st.entries(&self.id)?;
+                let (seqs, messages) = store::history_with_seqs(&entries).into_iter().unzip();
+                self.messages = messages;
+                self.seqs = seqs;
+                if let Some(info) = st.get(&self.id)? {
+                    self.usage = info.usage;
+                }
+                self.shared.seen = last;
+                self.shared.stale = false;
+            }
+        }
+        Ok(Some(lease))
     }
 
     /// Save a message (creating the session row on first use) and keep it in memory.
@@ -442,7 +505,12 @@ impl Session {
             })?;
             self.stored = true;
         }
-        Ok(Some(s.append(&self.id, record)?))
+        let seq = s.append(&self.id, record)?;
+        if seq != self.shared.seen + 1 {
+            self.shared.stale = true;
+        }
+        self.shared.seen = seq;
+        Ok(Some(seq))
     }
 
     fn request(&self) -> Request {
@@ -597,6 +665,7 @@ impl Session {
         media: Vec<codesmith_ai::Media>,
         sink: &mut dyn Sink,
     ) -> Result<()> {
+        let _lease = self.take_turn(sink).await?;
         // Subagents share the parent's turn snapshot.
         let mut snapshots = None;
         if self.parent.is_none()

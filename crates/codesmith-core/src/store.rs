@@ -137,6 +137,121 @@ fn wal(conn: &Connection) -> rusqlite::Result<()> {
     }
 }
 
+const LEASE_TABLE: &str = "CREATE TABLE IF NOT EXISTS session_lease (
+    session_id TEXT PRIMARY KEY, holder TEXT NOT NULL, expires INTEGER NOT NULL);";
+
+/// Run a write transaction, retrying for a while when another connection
+/// holds the write lock past the busy timeout.
+fn retry_busy<T>(mut f: impl FnMut() -> rusqlite::Result<T>) -> Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match f() {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(
+                    e.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => return Ok(r?),
+        }
+    }
+}
+
+/// A session is running a turn in another process (or another session
+/// object), and the caller asked not to wait.
+#[derive(Debug)]
+pub struct Busy {
+    pub session: String,
+}
+
+impl std::fmt::Display for Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "session {} is busy running another turn", self.session)
+    }
+}
+
+impl std::error::Error for Busy {}
+
+/// How long a turn lease lasts without renewal, and how often it is renewed.
+pub const TURN_LEASE_MS: i64 = 30_000;
+const TURN_RENEW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The turn lease on one session, held while a turn runs. It is renewed in
+/// the background and released when dropped (also when the turn's future
+/// is cancelled).
+pub struct TurnLease {
+    store: std::sync::Arc<Store>,
+    id: String,
+    holder: String,
+    renew: tokio::task::JoinHandle<()>,
+}
+
+impl TurnLease {
+    /// Take the lease on session `id` in the database at `path`. When
+    /// another holder has it: with `wait`, call `waiting` once and poll
+    /// until it is free; without, fail with [`Busy`].
+    pub async fn acquire(
+        path: &Path,
+        id: &str,
+        holder: &str,
+        wait: bool,
+        waiting: impl FnOnce(),
+    ) -> Result<TurnLease> {
+        let store = std::sync::Arc::new(Store::open(path)?);
+        let mut waiting = Some(waiting);
+        loop {
+            let taken = {
+                let st = store.clone();
+                let (id, holder) = (id.to_string(), holder.to_string());
+                tokio::task::spawn_blocking(move || st.lease_session(&id, &holder, TURN_LEASE_MS))
+                    .await??
+            };
+            if taken {
+                break;
+            }
+            if !wait {
+                return Err(Busy {
+                    session: id.to_string(),
+                }
+                .into());
+            }
+            if let Some(w) = waiting.take() {
+                w();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        let renew = {
+            let st = store.clone();
+            let (id, holder) = (id.to_string(), holder.to_string());
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(TURN_RENEW).await;
+                    let (st, id, holder) = (st.clone(), id.clone(), holder.clone());
+                    let _ = tokio::task::spawn_blocking(move || {
+                        st.lease_session(&id, &holder, TURN_LEASE_MS)
+                    })
+                    .await;
+                }
+            })
+        };
+        Ok(TurnLease {
+            store,
+            id: id.to_string(),
+            holder: holder.to_string(),
+            renew,
+        })
+    }
+}
+
+impl Drop for TurnLease {
+    fn drop(&mut self) {
+        self.renew.abort();
+        let _ = self.store.release_session(&self.id, &self.holder);
+    }
+}
+
 impl Store {
     /// Open (or create) the database at `path`. Sessions hold code and
     /// possibly secrets, so the file is owner-only (0600) — an existing one
@@ -292,22 +407,92 @@ impl Store {
     }
 
     /// Append with an explicit time (milliseconds), e.g. when importing.
+    ///
+    /// The next sequence number is read and the record written in one
+    /// `BEGIN IMMEDIATE` transaction, so two connections (a UI and an
+    /// automation in another process) appending to the same session cannot
+    /// pick the same number.
     pub fn append_at(&self, id: &str, record: &Record, t: i64) -> Result<i64> {
+        let body = serde_json::to_string(record)?;
+        let mut conn = self.conn.lock().unwrap();
+        retry_busy(|| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let seq: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM record WHERE session_id = ?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
+                params![id, seq, t, body],
+            )?;
+            tx.execute(
+                "UPDATE session SET updated = ?2 WHERE id = ?1",
+                params![id, t],
+            )?;
+            tx.commit()?;
+            Ok(seq)
+        })
+    }
+
+    /// The newest record's sequence number in a session (0 if none).
+    pub fn last_seq(&self, id: &str) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM record WHERE session_id = ?1",
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM record WHERE session_id = ?1",
             [id],
             |r| r.get(0),
-        )?;
+        )?)
+    }
+
+    /// Take or renew the turn lease on a session for `ttl` ms: true if
+    /// `holder` has it now. A session runs one turn at a time across every
+    /// process sharing the database; an expired lease (its holder died) is
+    /// taken over.
+    pub fn lease_session(&self, id: &str, holder: &str, ttl: i64) -> Result<bool> {
+        let now = now();
+        let mut conn = self.conn.lock().unwrap();
+        retry_busy(|| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute_batch(LEASE_TABLE)?;
+            tx.execute(
+                "INSERT INTO session_lease (session_id, holder, expires) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET holder = ?2, expires = ?3
+                 WHERE session_lease.expires < ?4 OR session_lease.holder = ?2",
+                params![id, holder, now + ttl, now],
+            )?;
+            let h: String = tx.query_row(
+                "SELECT holder FROM session_lease WHERE session_id = ?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            tx.commit()?;
+            Ok(h == holder)
+        })
+    }
+
+    /// Give up the turn lease if `holder` has it.
+    pub fn release_session(&self, id: &str, holder: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(LEASE_TABLE)?;
         conn.execute(
-            "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
-            params![id, seq, t, serde_json::to_string(record)?],
+            "DELETE FROM session_lease WHERE session_id = ?1 AND holder = ?2",
+            params![id, holder],
         )?;
-        conn.execute(
-            "UPDATE session SET updated = ?2 WHERE id = ?1",
-            params![id, t],
-        )?;
-        Ok(seq)
+        Ok(())
+    }
+
+    /// Who is running a turn in the session now (an unexpired lease).
+    pub fn session_holder(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(LEASE_TABLE)?;
+        Ok(conn
+            .query_row(
+                "SELECT holder FROM session_lease WHERE session_id = ?1 AND expires >= ?2",
+                params![id, now()],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     pub fn entries(&self, id: &str) -> Result<Vec<Entry>> {
@@ -547,6 +732,83 @@ pub fn redo_target(entries: &[Entry]) -> Option<(i64, String)> {
 mod tests {
     use super::*;
     use codesmith_ai::{Part, Role};
+
+    /// Regression: `append_at` read MAX(seq) and inserted outside a
+    /// transaction, so two connections appending to one session could pick
+    /// the same number and fail with "UNIQUE constraint failed".
+    #[test]
+    fn concurrent_appends_from_two_connections_get_distinct_seqs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        let db = Store::open(&path).unwrap();
+        db.create(&Info {
+            id: "s".into(),
+            directory: "/p".into(),
+            title: None,
+            agent: "build".into(),
+            model: "m".into(),
+            parent_id: None,
+            created: 0,
+            updated: 0,
+            usage: Usage::default(),
+        })
+        .unwrap();
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let st = Store::open(&path).unwrap();
+                    for _ in 0..50 {
+                        st.append("s", &Record::Unknown).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let seqs: Vec<i64> = db.entries("s").unwrap().iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, (1..=200).collect::<Vec<_>>());
+        assert_eq!(db.last_seq("s").unwrap(), 200);
+    }
+
+    #[test]
+    fn session_turn_leases() {
+        let db = Store::memory().unwrap();
+        assert_eq!(db.session_holder("s").unwrap(), None);
+        assert!(db.lease_session("s", "a", 10_000).unwrap());
+        assert!(db.lease_session("s", "a", 10_000).unwrap(), "renewing");
+        assert!(!db.lease_session("s", "b", 10_000).unwrap());
+        assert_eq!(db.session_holder("s").unwrap().as_deref(), Some("a"));
+        db.release_session("s", "b").unwrap();
+        assert_eq!(
+            db.session_holder("s").unwrap().as_deref(),
+            Some("a"),
+            "only the holder releases"
+        );
+        db.release_session("s", "a").unwrap();
+        assert!(db.lease_session("s", "b", -1).unwrap());
+        assert_eq!(db.session_holder("s").unwrap(), None, "expired");
+        assert!(
+            db.lease_session("s", "a", 10_000).unwrap(),
+            "an expired lease is taken over"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_lease_is_exclusive_and_released_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        let lease = TurnLease::acquire(&path, "s", "a", false, || {})
+            .await
+            .unwrap();
+        let busy = TurnLease::acquire(&path, "s", "b", false, || {}).await;
+        assert!(busy.err().unwrap().downcast_ref::<Busy>().is_some());
+        drop(lease);
+        let _b = TurnLease::acquire(&path, "s", "b", false, || {})
+            .await
+            .unwrap();
+    }
 
     /// Regression: a second process opening a new database while the first
     /// was creating its tables failed with "table session already exists"

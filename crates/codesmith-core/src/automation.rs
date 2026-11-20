@@ -574,6 +574,19 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
     })
 }
 
+/// Undo the claim of a timed run whose session was busy: the run count goes
+/// back down and it is due again now, so the next tick retries it.
+fn defer(db: &Store, a: &Automation) -> Result<()> {
+    db.with_conn(|c| {
+        c.execute(
+            "UPDATE automation SET runs = MAX(runs - 1, 0), next_due = ?2, last_outcome = 'deferred',
+             status = CASE WHEN status = 'done' THEN 'active' ELSE status END WHERE id = ?1",
+            params![a.id, crate::store::now()],
+        )?;
+        Ok(())
+    })
+}
+
 fn finish(
     db: &Store,
     a: &Automation,
@@ -1032,12 +1045,16 @@ impl Runner {
         )
     }
 
+    /// Send `prompt` to the target. A session another process is running a
+    /// turn in is waited for when `wait`, else the run fails with
+    /// [`crate::store::Busy`] (and is deferred).
     async fn prompt(
         &self,
         a: &Automation,
         loaded: &Loaded,
         prompt: &str,
         to: &Target,
+        wait: bool,
     ) -> Result<(String, String)> {
         let dir = Path::new(&a.directory);
         let mut s = match to {
@@ -1064,6 +1081,7 @@ impl Runner {
                 .await?
             }
         };
+        s.set_wait_for_turn(wait);
         let mut out = Quiet(String::new());
         s.prompt(prompt, &mut out).await?;
         // The session is dropped next, which would stop its background commands.
@@ -1089,6 +1107,10 @@ impl Runner {
         };
         let r = self.act(&db, a, ok, event).await;
         if let Err(e) = &r {
+            if e.downcast_ref::<crate::store::Busy>().is_some() {
+                // Its session is running a turn elsewhere: try again next tick.
+                return defer(&db, a).map_err(|e| format!("{e:#}"));
+            }
             let _ = finish(&db, a, "failed", None, &format!("{e:#}"), None, false);
         }
         r.map_err(|e| format!("{e:#}"))
@@ -1103,7 +1125,9 @@ impl Runner {
                     Some(e) => event_prompt(prompt, e)?,
                     None => prompt.clone(),
                 };
-                let (sid, answer) = self.prompt(a, &loaded, &text, to).await?;
+                // A timed run into a busy session is deferred; an event's
+                // run waits, since the event cannot be fetched again.
+                let (sid, answer) = self.prompt(a, &loaded, &text, to, event.is_some()).await?;
                 finish(db, a, ok, Some(&sid), &answer, None, false)
             }
             Action::Code { code, args } => {
@@ -1173,7 +1197,8 @@ impl Runner {
                             },
                         },
                     };
-                    let (sid, answer) = self.prompt(a, &loaded, prompt, &to).await?;
+                    // The program already ran, so wait rather than run it again.
+                    let (sid, answer) = self.prompt(a, &loaded, prompt, &to, true).await?;
                     session = Some(sid);
                     detail.push_str(&format!("\n\nSent: {prompt}\n{answer}"));
                 }

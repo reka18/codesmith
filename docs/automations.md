@@ -40,6 +40,22 @@ Each automation has exactly one trigger:
 
 Each run's outcome, session and answer are kept for `automation log ID`.
 
+### Prompts sent to an existing session
+
+A session runs one turn at a time, across every CodeSmith process that
+shares the session database: a turn holds a lease on its session while it
+runs. When a timed run's session is busy (you are in the middle of a turn in
+the UI, say), the run is **deferred**: its last outcome reads `deferred` and
+it is tried again on the next tick, about 15 seconds later. An event's run,
+or a Code Mode program's `send`, waits for the turn to finish instead, since
+it can't be repeated. Your own turn likewise waits while an automation's
+turn runs in the session.
+
+A session you have open picks up what an automation added the next time you
+send it a message, so the model sees the automation's prompt and answer.
+The UI's transcript shows them once you reopen the session. Undo in that
+session undoes the newest turn, which may be the automation's.
+
 ## Who runs them
 
 Automations are stored with your sessions. Whichever CodeSmith is open runs

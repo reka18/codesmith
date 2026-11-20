@@ -602,3 +602,119 @@ async fn the_automation_tool_asks_and_keeps_agents_in_bounds() {
     assert!(out.0.contains("not general"), "{}", out.0);
     assert_eq!(count(), 4);
 }
+
+/// Regression: the scheduler opened its own session object on a session a
+/// live process was using, so the two raced and the live one never saw the
+/// automation's messages.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_session_defers_runs_and_a_live_session_catches_up() {
+    use codesmith_core::permission::{Fixed, Reply};
+    use codesmith_core::session::{Options, Session};
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let db = Store::open(&dbp).unwrap();
+    let base = model().await;
+    let loaded = (loader(base.clone()))(dir.path()).unwrap();
+    let mut live = Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("live".into()),
+            parent: None,
+            questioner: None,
+            mcp: None,
+        },
+        Arc::new(Fixed(Reply::Once)),
+        Some(Store::open(&dbp).unwrap()),
+    )
+    .unwrap();
+    let mut out = Collect(String::new());
+    live.prompt("hello", &mut out).await.unwrap();
+    let sid = live.id.clone();
+    assert_eq!(
+        db.session_holder(&sid).unwrap(),
+        None,
+        "released after the turn"
+    );
+
+    let a = au::create(
+        &db,
+        au::New {
+            name: "ping".into(),
+            directory: dir.path().display().to_string(),
+            session_id: Some(sid.clone()),
+            trigger: Trigger::Every {
+                every: "1 hour".into(),
+                tz: None,
+            },
+            action: Action::Prompt {
+                prompt: "ping".into(),
+                to: Target::Session {
+                    session: sid.clone(),
+                },
+            },
+        },
+    )
+    .unwrap();
+    // Another process is running a turn in the session: the run is deferred.
+    assert!(db.lease_session(&sid, "other-process", 30_000).unwrap());
+    due_now(&db, &a.id);
+    let runner = Runner::new(dbp.clone(), loader(base.clone()));
+    runner.tick().await.unwrap();
+    let d = au::get(&db, &a.id).unwrap().unwrap();
+    assert_eq!(d.last_outcome.as_deref(), Some("deferred"));
+    assert_eq!(d.runs, 0, "the claim was undone");
+    assert!(d.next_due.unwrap() <= codesmith_core::store::now());
+    assert!(au::runs(&db, &a.id).unwrap().is_empty());
+    assert_eq!(texts(&db, &sid).len(), 2, "nothing was sent");
+
+    // Once it is free, the next tick runs it.
+    db.release_session(&sid, "other-process").unwrap();
+    runner.tick().await.unwrap();
+    let f = au::get(&db, &a.id).unwrap().unwrap();
+    assert_eq!((f.last_outcome.as_deref(), f.runs), (Some("fired"), 1));
+    assert_eq!(texts(&db, &sid).len(), 4);
+
+    // The live session picks the automation's exchange up before its next turn.
+    live.prompt("again", &mut out).await.unwrap();
+    let seen: Vec<String> = live
+        .messages
+        .iter()
+        .filter_map(|m| match m.parts.first() {
+            Some(Part::Text(t)) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            "hello",
+            "answer to: hello",
+            "ping",
+            "answer to: ping",
+            "again",
+            "answer to: again"
+        ]
+    );
+    assert_eq!(texts(&db, &sid).len(), 6);
+
+    // A live turn waits for a turn running elsewhere instead of racing it.
+    assert!(db.lease_session(&sid, "other-process", 30_000).unwrap());
+    let path = dbp.clone();
+    let id = sid.clone();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        Store::open(&path)
+            .unwrap()
+            .release_session(&id, "other-process")
+            .unwrap();
+    });
+    let started = std::time::Instant::now();
+    live.prompt("third", &mut out).await.unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(500));
+    assert!(out.0.contains("answer to: third"));
+    release.await.unwrap();
+}
