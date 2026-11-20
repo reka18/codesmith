@@ -84,9 +84,14 @@ Names keep only `[A-Za-z0-9_-]`, so two tools can end up with the same name
 (server `x` with tool `y_z`, and server `x_y` with tool `z`, are both
 `x_y_z`). Then neither gets it: each is named with a suffix from a hash of
 its server and tool, such as `x_y_z_1a2b3c4d`, stable across restarts, and
-its description says which server and tool it is. A rule written for the
-shared name matches neither; use the suffixed names (`codesmith mcp list`
-shows them) or rename a server.
+its description says which server and tool it is. A rule denying the
+shared name still denies both; one allowing it (or asking) applies to
+neither, so use the suffixed names for those (`codesmith mcp list` shows
+them) or rename a server.
+
+Providers accept tool names of at most 64 characters. A longer name is cut
+and given a hash suffix the same way (stable, and distinct from other cut
+names), and so is a suffixed name.
 
 A tool denied for `*` is hidden from the model. In Code Mode, every call a
 program makes is checked the same way as a direct call.

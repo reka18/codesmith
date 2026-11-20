@@ -191,3 +191,74 @@ async fn mcp_in_a_session() {
     let plain = Mcp::connect(&McpConfig::default(), Path::new("/")).await;
     assert!(plain.resource_servers().is_empty());
 }
+
+/// Fixed: a tool renamed after a name collision (`my srv` and `my_srv`
+/// both offer `my_srv_echo`) escaped a rule denying the shared name, which
+/// the user wrote before the collision. A deny on either name now wins.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deny_on_a_shared_name_still_denies_the_renamed_tools() {
+    let Some(py) = python() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let base = model(log.clone()).await;
+    let fixture = format!("{}/tests/fixtures/mcp_stdio.py", env!("CARGO_MANIFEST_DIR"));
+    let config: Config = serde_json::from_value(json!({
+        "model": "fake/m", "snapshots": false, "codemode": false,
+        "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
+        "mcp": {"servers": {
+            "my srv": {"type": "local", "command": [py, fixture]},
+            "my_srv": {"type": "local", "command": [py, fixture]}
+        }},
+        "permissions": [{"action": "my_srv_echo", "resource": "*", "effect": "deny"}]
+    }))
+    .unwrap();
+    let loaded = Loaded {
+        config,
+        files: vec![],
+        root: dir.path().to_path_buf(),
+    };
+    let mcp: Arc<Mcp> = Mcp::connect(&loaded.config.mcp, &loaded.root).await;
+    let echoes: Vec<String> = mcp
+        .tools()
+        .into_iter()
+        .filter(|t| t.remote == "echo")
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(echoes.len(), 2);
+    assert!(echoes.iter().all(|n| n != "my_srv_echo"), "{echoes:?}");
+    let mut s = Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("t".into()),
+            parent: None,
+            questioner: None,
+            mcp: Some(mcp.clone()),
+        },
+        Arc::new(Fixed(Reply::Once)),
+        None,
+    )
+    .unwrap();
+    for name in &echoes {
+        let mut out = Collect(String::new());
+        s.prompt(&format!("call {name} {{\"text\": \"hi\"}}"), &mut out)
+            .await
+            .unwrap();
+        assert!(!out.0.contains("echo: hi"), "{name} ran: {}", out.0);
+    }
+    let req = log.lock().unwrap()[0].clone();
+    let offered: Vec<&str> = req["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(offered.iter().all(|n| !n.contains("echo")), "{offered:?}");
+    assert!(
+        offered.iter().any(|n| n.contains("fail_now")),
+        "{offered:?}"
+    );
+}

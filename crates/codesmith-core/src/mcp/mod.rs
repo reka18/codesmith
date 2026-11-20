@@ -173,9 +173,45 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
+/// The longest tool name providers accept (OpenAI, Anthropic and Gemini
+/// all stop at 64 characters).
+pub const MAX_TOOL_NAME: usize = 64;
+
+/// How much of a name is kept before an 8-digit hash suffix (`_1a2b3c4d`)
+/// so the whole stays within [`MAX_TOOL_NAME`].
+const HASHED_BASE: usize = MAX_TOOL_NAME - 9;
+
+/// The first 8 hex digits of the SHA-256 of `server` and `tool`.
+fn tool_hash(server: &str, tool: &str) -> String {
+    use sha2::Digest;
+    let h = sha2::Sha256::digest(format!("{server}\0{tool}").as_bytes());
+    h[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `name` cut to [`HASHED_BASE`] with the suffix `_<hash>`. Sanitized names
+/// are ASCII, so cutting by bytes keeps whole characters.
+fn hashed(name: &str, hex: &str) -> String {
+    format!("{}_{hex}", &name[..name.len().min(HASHED_BASE)])
+}
+
 /// `<server>_<tool>` with anything outside `[A-Za-z0-9_-]` turned into `_`.
+/// A longer name than [`MAX_TOOL_NAME`] is cut and given a hash of the
+/// server and tool, so it is accepted and stays distinct.
 pub fn tool_name(server: &str, tool: &str) -> String {
-    sanitize(&format!("{server}_{tool}"))
+    let name = sanitize(&format!("{server}_{tool}"));
+    if name.len() <= MAX_TOOL_NAME {
+        return name;
+    }
+    hashed(&name, &tool_hash(server, tool))
+}
+
+impl McpTool {
+    /// The name [`tool_name`] gives it, which it was offered under unless it
+    /// collided with another tool's and got a suffix. Rules for that name
+    /// still deny it: a session checks both names, and a deny on either wins.
+    pub fn shared_name(&self) -> String {
+        tool_name(&self.server, &self.remote)
+    }
 }
 
 /// Tools with their final names, each with its index in `tools`. Names come
@@ -184,10 +220,10 @@ pub fn tool_name(server: &str, tool: &str) -> String {
 /// tool sharing a name with a different tool gets a suffix made from a hash
 /// of its server and tool (`x_y_z_1a2b3c4d`), with a note in its
 /// description, so no call meant for one server reaches another and no
-/// rule written for the shared name applies to either. A tool a server
-/// lists twice is kept once.
+/// rule allowing the shared name applies to either (one denying it still
+/// does: [`McpTool::shared_name`]). The suffixed name is cut to stay within
+/// [`MAX_TOOL_NAME`]. A tool a server lists twice is kept once.
 fn disambiguate(tools: Vec<McpTool>) -> Vec<(usize, McpTool)> {
-    use sha2::Digest;
     let mut owners: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for t in &tools {
         let o = owners.entry(t.name.clone()).or_default();
@@ -200,13 +236,12 @@ fn disambiguate(tools: Vec<McpTool>) -> Vec<(usize, McpTool)> {
     let mut out = Vec::new();
     for (i, mut t) in tools.into_iter().enumerate() {
         if owners[&t.name].len() > 1 {
-            let h = sha2::Sha256::digest(format!("{}\0{}", t.server, t.remote).as_bytes());
-            let hex: String = h[..4].iter().map(|b| format!("{b:02x}")).collect();
+            let named = hashed(&t.name, &tool_hash(&t.server, &t.remote));
             let note = format!(
-                "(Named {}_{hex}: the name {} is shared with another MCP tool. This is tool {:?} on server {:?}.)",
-                t.name, t.name, t.remote, t.server
+                "(Named {named}: the name {} is shared with another MCP tool. This is tool {:?} on server {:?}.)",
+                t.name, t.remote, t.server
             );
-            t.name = format!("{}_{hex}", t.name);
+            t.name = named;
             t.description = if t.description.is_empty() {
                 note
             } else {
@@ -223,9 +258,12 @@ fn disambiguate(tools: Vec<McpTool>) -> Vec<(usize, McpTool)> {
 }
 
 /// A permission pattern matching every tool name a server's tools get
-/// (`<server>_*`, including names disambiguated after a collision).
+/// (`<server>_*`, including names disambiguated after a collision). For a
+/// server name too long to stay whole in a tool name, the part every one
+/// keeps, which may match other servers' tools too.
 pub fn tools_pattern(server: &str) -> String {
-    format!("{}_*", sanitize(server))
+    let prefix = format!("{}_", sanitize(server));
+    format!("{}*", &prefix[..prefix.len().min(HASHED_BASE)])
 }
 
 /// The slash command that runs a server's prompt: `server:prompt`, as in OpenCode.
@@ -1723,6 +1761,47 @@ mod tests {
             started.elapsed() < Duration::from_secs(8),
             "it did not wait for a timeout"
         );
+    }
+
+    #[test]
+    fn tool_names_stay_within_provider_limits() {
+        let long = "s".repeat(40);
+        let tool = "t".repeat(40);
+        let a = tool_name(&long, &tool);
+        let b = tool_name(&long, &format!("{tool}x"));
+        assert_eq!(a.len(), MAX_TOOL_NAME, "{a}");
+        assert_eq!(b.len(), MAX_TOOL_NAME, "{b}");
+        assert_ne!(a, b, "cut names stay distinct");
+        assert_eq!(a, tool_name(&long, &tool), "and stable");
+        let pattern = tools_pattern(&long);
+        for n in [&a, &b] {
+            assert!(
+                crate::wildcard::matches(n, &pattern, false),
+                "{pattern} {n}"
+            );
+        }
+        assert!(!crate::wildcard::matches(&a, &tools_pattern("x"), false));
+        // Colliding long names get a suffix and still fit.
+        let t = |server: &str, remote: &str| McpTool {
+            name: tool_name(server, remote),
+            server: server.into(),
+            remote: remote.into(),
+            description: String::new(),
+            schema: json!({}),
+            codemode: false,
+        };
+        let base = "a".repeat(30);
+        let named = disambiguate(vec![
+            t(&base, &format!("b_{base}")),
+            t(&format!("{base}_b"), &base),
+        ]);
+        assert_eq!(named.len(), 2);
+        for (_, n) in &named {
+            assert!(n.name.len() <= MAX_TOOL_NAME, "{}", n.name);
+            assert_ne!(n.name, n.shared_name());
+        }
+        assert_ne!(named[0].1.name, named[1].1.name);
+        assert_eq!(named[0].1.shared_name(), named[1].1.shared_name());
     }
 
     #[test]

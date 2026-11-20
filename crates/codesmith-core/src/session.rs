@@ -1603,15 +1603,18 @@ impl Session {
         }
     }
 
-    /// MCP tools this agent may use: hidden when its rules deny the tool outright.
+    /// MCP tools this agent may use: hidden when its rules deny the tool
+    /// outright, by the name it is offered under or, for a tool renamed
+    /// after a collision, by the shared name rules were written for.
     fn permitted_mcp(&self) -> Vec<crate::mcp::McpTool> {
         let rules = &self.agent.permissions;
+        let denied = |name: &str| {
+            crate::permission::evaluate(name, "*", rules) == crate::permission::Effect::Deny
+        };
         self.mcp
             .tools()
             .into_iter()
-            .filter(|t| {
-                crate::permission::evaluate(&t.name, "*", rules) != crate::permission::Effect::Deny
-            })
+            .filter(|t| !denied(&t.name) && !denied(&t.shared_name()))
             .collect()
     }
 
@@ -1953,12 +1956,20 @@ impl Session {
         name: &str,
         input: &serde_json::Value,
     ) -> (String, bool, Vec<codesmith_ai::Media>) {
-        if !self.permitted_mcp().iter().any(|t| t.name == name) {
+        let Some(t) = self.permitted_mcp().into_iter().find(|t| t.name == name) else {
             return (
                 format!("The {name} tool is not available to this agent."),
                 true,
                 vec![],
             );
+        };
+        let shared = t.shared_name();
+        if shared != name {
+            // Renamed after a collision: a rule denying the shared name
+            // (configured or not) still denies it.
+            if let Err(e) = self.gate.assert_not_denied(&shared, &["*".to_string()]) {
+                return (e.to_string(), true, vec![]);
+            }
         }
         let args = tool::repair(input);
         let title = format!("Run MCP tool {name}");
