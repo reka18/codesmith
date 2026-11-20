@@ -449,8 +449,35 @@ impl Default for Cache {
 
 /// The output of a `git` command that succeeded, or its error text.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    run_git(dir, args, false)
+}
+
+/// Settings every git command here runs with. A checkout's contents come
+/// from a remote CodeSmith does not control, and the agent's tools can
+/// reach the cache, so nothing in a checkout's config may run a program:
+/// no hooks, no fsmonitor, no `ext::` transport, and no `file://`
+/// transport unless the reference itself is a local repository.
+fn hardening(allow_file: bool) -> [String; 8] {
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    [
+        "-c".into(),
+        format!("core.hooksPath={null}"),
+        "-c".into(),
+        "core.fsmonitor=false".into(),
+        "-c".into(),
+        "protocol.ext.allow=never".into(),
+        "-c".into(),
+        format!(
+            "protocol.file.allow={}",
+            if allow_file { "always" } else { "never" }
+        ),
+    ]
+}
+
+fn run_git(dir: &Path, args: &[&str], allow_file: bool) -> Result<String, String> {
     let mut cmd = Command::new("git");
-    cmd.args(args)
+    cmd.args(hardening(allow_file))
+        .args(args)
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove(crate::SERVER_TOKEN_VAR)
@@ -628,6 +655,10 @@ impl Cache {
         let parent = local.parent().unwrap_or(local);
         std::fs::create_dir_all(parent).map_err(|e| op("ensure cache directory", e))?;
         let target = parse(&r.remote).unwrap_or_else(|| r.clone());
+        // Only a reference that is itself a local repository may use the
+        // file transport (a remote one never needs it).
+        let file = r.remote.starts_with("file:");
+        let git = |dir: &Path, args: &[&str]| run_git(dir, args, file);
         // `git` walks upward, so an enclosing repository with a matching
         // origin could pass for the checkout: it must live exactly here.
         let reuse = local.is_dir()

@@ -434,7 +434,31 @@ pub fn base_rules() -> Vec<Rule> {
         Rule::new("read", "*.env.*", Effect::Ask),
         Rule::new("read", "*.env.example", Effect::Allow),
     ]);
+    // Reference checkouts are read-only to tools: CodeSmith runs git in
+    // them, and a planted config or hook must not get there.
+    for dir in reference_cache_dirs() {
+        rules.push(Rule::new("edit", &dir, Effect::Deny));
+        rules.push(Rule::new("edit", &format!("{dir}/*"), Effect::Deny));
+    }
     rules
+}
+
+/// The reference checkout cache and its state, as written and resolved.
+fn reference_cache_dirs() -> Vec<String> {
+    let mut out = Vec::new();
+    for dir in [
+        crate::paths::data_dir().join("repos"),
+        crate::paths::data_dir().join("repos-state"),
+    ] {
+        let real = dir.canonicalize().ok();
+        for d in std::iter::once(dir).chain(real) {
+            let d = d.display().to_string();
+            if !out.contains(&d) {
+                out.push(d);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -485,6 +509,23 @@ mod tests {
         assert_eq!(evaluate("read", ".env.example", &r), Effect::Allow);
         assert_eq!(evaluate("edit", ".env", &r), Effect::Allow);
         assert_eq!(evaluate("shell", "cat .env", &r), Effect::Allow);
+    }
+
+    #[test]
+    fn base_rules_keep_reference_checkouts_read_only() {
+        let r = base_rules();
+        let repos = crate::paths::data_dir().join("repos");
+        let file = repos.join("github.com/o/r/.git/config");
+        for res in [repos.display().to_string(), file.display().to_string()] {
+            assert_eq!(evaluate("edit", &res, &r), Effect::Deny, "{res}");
+            assert_eq!(evaluate("read", &res, &r), Effect::Allow, "{res}");
+        }
+        let state = crate::paths::data_dir().join("repos-state/x.json");
+        assert_eq!(
+            evaluate("edit", &state.display().to_string(), &r),
+            Effect::Deny
+        );
+        assert_eq!(evaluate("edit", "src/main.rs", &r), Effect::Allow);
     }
 
     #[test]

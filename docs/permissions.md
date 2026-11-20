@@ -89,12 +89,18 @@ Every agent starts from these rules, in this order:
   { "action": "external_directory", "resource": "<data>/tool-output/*", "effect": "allow" },
   { "action": "read", "resource": "*.env", "effect": "ask" },
   { "action": "read", "resource": "*.env.*", "effect": "ask" },
-  { "action": "read", "resource": "*.env.example", "effect": "allow" }
+  { "action": "read", "resource": "*.env.example", "effect": "allow" },
+  // reference checkouts are read-only to tools
+  { "action": "edit", "resource": "<data>/repos/*", "effect": "deny" },
+  { "action": "edit", "resource": "<data>/repos-state/*", "effect": "deny" }
 ]
 ```
 
 So by default everything inside the project is allowed, except reading
-`.env` files, which asks. Anything outside the project asks. Each built-in
+`.env` files, which asks. Anything outside the project asks. Tools can never
+write into the cache of [reference](configuration.md#references) checkouts, where
+CodeSmith runs git itself (without hooks, fsmonitor or the `ext` and `file`
+transports). Each built-in
 agent then adds its own rules on top:
 
 | Agent | Adds |

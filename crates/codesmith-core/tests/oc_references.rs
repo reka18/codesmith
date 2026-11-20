@@ -765,3 +765,54 @@ fn oc_repository_cache_returns_typed_branch_and_clone_failures() {
         Err(CacheError::CloneFailed { .. })
     ));
 }
+
+/// A checkout whose config was tampered with (hooks, fsmonitor, an `ext::`
+/// remote) runs none of it when CodeSmith refreshes it.
+#[cfg(unix)]
+#[test]
+fn a_tampered_checkout_runs_nothing_on_refresh() {
+    use std::os::unix::fs::PermissionsExt;
+    if !has_git() {
+        return;
+    }
+    let f = Fixture::new();
+    let checkout = f.ensure(None, Refresh::Daily).unwrap().local_path;
+    let marker = |name: &str| f.root.join(format!("ran-{name}"));
+    let script = |name: &str| {
+        let p = f.root.join(format!("{name}.sh"));
+        std::fs::write(
+            &p,
+            format!("#!/bin/sh\ntouch '{}'\n", marker(name).display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+    let hooks = checkout.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    for hook in ["post-checkout", "reference-transaction", "post-merge"] {
+        std::fs::copy(script("hook"), hooks.join(hook)).unwrap();
+    }
+    let fsmonitor = script("fsmonitor");
+    git(
+        &checkout,
+        &["config", "core.fsmonitor", fsmonitor.to_str().unwrap()],
+    );
+    let ext = format!("ext::sh -c touch% {}", marker("ext").display());
+    git(&checkout, &["remote", "add", "evil", &ext]);
+    f.commit("two\n", "advance main");
+    let _ = f.ensure(None, Refresh::Force);
+    for name in ["hook", "fsmonitor", "ext"] {
+        assert!(!marker(name).exists(), "{name} ran");
+    }
+    // Without the planted remote the refresh works as before.
+    git(&checkout, &["remote", "remove", "evil"]);
+    assert_eq!(
+        f.ensure(None, Refresh::Force).unwrap().status,
+        Status::Refreshed
+    );
+    assert_eq!(read(&checkout), "two\n");
+    for name in ["hook", "fsmonitor"] {
+        assert!(!marker(name).exists(), "{name} ran");
+    }
+}
