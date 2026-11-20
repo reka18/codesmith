@@ -23,6 +23,13 @@ See [CLI](cli.md#codesmith) for every flag.
   command shows the last lines it printed (marked `│`) until its result
   replaces them. Images and files a tool returned, and images a model
   generates (Gemini image models), are listed by type and size (`▣`).
+  A `subagent` call's row follows its subagent, as OpenCode's does
+  (`│ General Subagent — <description>`): while it runs, its latest three
+  tool calls and a status line (`running · shell · 4 tool calls`); once it
+  ends, `✓` (or `✗`, `■` when interrupted) and how it ended. **Ctrl+O**
+  shows its latest 20 calls and the text it wrote last. A permission prompt
+  from a subagent says which one asks (`asked by the general subagent ·
+  <description>`).
 - **Header.** The agent, model, session id and title.
 - **Status line.** Context in use (the last call's tokens, and the share of
   the model's `limit.context` when it is configured), the session's cost when
@@ -57,7 +64,7 @@ Pastes go in at the cursor.
 | **Esc** | Interrupt the running turn; when idle, clear the prompt. |
 | **Ctrl+C** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
 | **Ctrl+D** on an empty prompt | Quit. |
-| **Ctrl+O** | Expand or collapse all tool output. |
+| **Ctrl+O** | Expand or collapse all tool output and subagent activity. |
 | **Ctrl+T** | Show or hide the model's reasoning. |
 | **PgUp/PgDn** | Scroll the transcript. |
 | **Ctrl+End** | Follow the bottom again. |

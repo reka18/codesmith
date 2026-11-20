@@ -13,6 +13,8 @@ use codesmith_core::tool::todo::Todo;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::oneshot;
 
+// Tool rows are most of a transcript, so boxing them would not save room.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
@@ -43,10 +45,70 @@ pub struct Tool {
     pub live: String,
     /// Labels of the images and files the call returned.
     pub media: Vec<String>,
+    /// The subagent a `subagent` call runs, once it started.
+    pub sub: Option<Box<Sub>>,
 }
 
 /// Most bytes of a running command's output kept for its row.
 pub const LIVE_KEEP: usize = 64 * 1024;
+/// Most of a subagent's latest tool calls kept for its row.
+pub const SUB_TOOLS_KEEP: usize = 50;
+/// Most bytes of a subagent's latest text kept for its row.
+pub const SUB_TEXT_KEEP: usize = 8 * 1024;
+
+/// How a subagent run stands.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SubStatus {
+    #[default]
+    Running,
+    Completed,
+    Interrupted,
+    Failed(String),
+}
+
+/// A subagent's activity, shown in the row of the call that runs it (as
+/// OpenCode's task rows sum up their child session).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Sub {
+    pub session: String,
+    /// The agent it runs, such as `explore`.
+    pub agent: String,
+    /// The call's description, the child session's title.
+    pub title: String,
+    pub status: SubStatus,
+    /// Its latest tool calls (and its subagents'), at most [`SUB_TOOLS_KEEP`].
+    pub tools: std::collections::VecDeque<Tool>,
+    /// Every tool call it made.
+    pub calls: usize,
+    /// The text it wrote last (its latest [`SUB_TEXT_KEEP`] bytes).
+    pub text: String,
+    /// A tool call came after `text`: the next text starts over.
+    text_done: bool,
+}
+
+impl Sub {
+    fn push_text(&mut self, delta: &str) {
+        if std::mem::take(&mut self.text_done) {
+            self.text.clear();
+        }
+        self.text.push_str(delta);
+        if self.text.len() > SUB_TEXT_KEEP {
+            let mut cut = self.text.len() - SUB_TEXT_KEEP;
+            while !self.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.text.drain(..cut);
+        }
+    }
+
+    /// The running call `id` among its latest ones.
+    fn running(&mut self, id: &str) -> Option<&mut Tool> {
+        self.tools
+            .iter_mut()
+            .rev()
+            .find(|t| t.result.is_none() && t.id == id)
+    }
+}
 
 impl Tool {
     /// Add what the running call printed, keeping the latest
@@ -155,6 +217,8 @@ pub enum Modal {
         feedback: String,
         /// The edit being asked about, when known.
         diff: Option<Diff>,
+        /// The subagent asking, when one is: `explore subagent · Find the adder`.
+        from: Option<String>,
         /// First row of the request text shown when it is too long to fit
         /// (the view clamps it).
         scroll: std::cell::Cell<usize>,
@@ -236,6 +300,18 @@ pub struct App {
     pub cwd: std::path::PathBuf,
     /// The session's background commands still running.
     pub background: usize,
+    /// The subagents running now, outermost first.
+    children: Vec<Child>,
+    /// The call running the outermost of them, whose row shows them.
+    sub_call: Option<String>,
+}
+
+/// A running subagent, as the UI tracks it.
+#[derive(Debug, Clone, PartialEq)]
+struct Child {
+    id: String,
+    agent: String,
+    title: String,
 }
 
 pub const HELP: &str = "Enter send · Shift/Alt+Enter or Ctrl+J newline · ↑/↓ lines, then history
@@ -340,8 +416,68 @@ impl App {
         })
     }
 
+    /// The activity of the running outermost subagent, in its call's row.
+    fn sub(&mut self) -> Option<&mut Sub> {
+        let id = self.sub_call.clone()?;
+        self.running(&id)?.sub.as_deref_mut()
+    }
+
+    /// A subagent's event, when one runs and its row is shown: `None`
+    /// once handled.
+    fn child_event(&mut self, ev: Ev) -> Option<Ev> {
+        if self.children.is_empty() {
+            return Some(ev);
+        }
+        let Some(sub) = self.sub() else {
+            return Some(ev);
+        };
+        match ev {
+            Ev::ToolStart {
+                id,
+                name,
+                detail,
+                diff,
+            } => {
+                // "explore › read" is the subagent's own "read".
+                let name = match name.split_once(" › ") {
+                    Some((_, rest)) => rest.to_string(),
+                    None => name,
+                };
+                sub.tools.push_back(Tool {
+                    id,
+                    name,
+                    detail,
+                    diff,
+                    ..Default::default()
+                });
+                if sub.tools.len() > SUB_TOOLS_KEEP {
+                    sub.tools.pop_front();
+                }
+                sub.calls += 1;
+                sub.text_done = true;
+            }
+            Ev::ToolEnd {
+                id, output, error, ..
+            } => {
+                if let Some(t) = sub.running(&id) {
+                    // Only the summary is kept: the parent's row stays small.
+                    t.result = Some((first_line(&output), error));
+                    t.diff = None;
+                }
+            }
+            Ev::ChildText(d) => sub.push_text(&d),
+            // A subagent's command output and media stay in its session.
+            Ev::ToolOutput { .. } | Ev::ToolMedia { .. } => {}
+            other => return Some(other),
+        }
+        None
+    }
+
     /// Apply a session event.
     pub fn on_event(&mut self, ev: Ev) {
+        let Some(ev) = self.child_event(ev) else {
+            return;
+        };
         match ev {
             Ev::Text(d) => match self.entries.last_mut() {
                 Some(Entry::Assistant(t)) => t.push_str(&d),
@@ -431,6 +567,48 @@ impl App {
                 }
             }
             Ev::Media(label) => self.entries.push(Entry::Media(label)),
+            Ev::ChildStart { id, title, agent } => {
+                if self.children.is_empty() {
+                    let call = self.entries.iter_mut().rev().find_map(|e| match e {
+                        Entry::Tool(t)
+                            if t.result.is_none()
+                                && !t.forming
+                                && t.sub.is_none()
+                                && t.base() == "subagent" =>
+                        {
+                            Some(t)
+                        }
+                        _ => None,
+                    });
+                    if let Some(t) = call {
+                        t.sub = Some(Box::new(Sub {
+                            session: id.clone(),
+                            agent: agent.clone(),
+                            title: title.clone(),
+                            ..Default::default()
+                        }));
+                        self.sub_call = Some(t.id.clone());
+                    }
+                }
+                self.children.push(Child { id, agent, title });
+            }
+            Ev::ChildEnd { id, status, error } => {
+                if let Some(at) = self.children.iter().rposition(|c| c.id == id) {
+                    self.children.truncate(at);
+                }
+                if self.children.is_empty() {
+                    if let Some(sub) = self.sub() {
+                        sub.status = match status.as_str() {
+                            "completed" => SubStatus::Completed,
+                            "interrupted" => SubStatus::Interrupted,
+                            _ => SubStatus::Failed(error.unwrap_or_default()),
+                        };
+                    }
+                    self.sub_call = None;
+                }
+            }
+            // Text of a subagent whose row is not shown.
+            Ev::ChildText(_) => {}
             Ev::Todos(t) => {
                 self.entries.retain(|e| !matches!(e, Entry::Todos(_)));
                 self.entries.push(Entry::Todos(t));
@@ -446,21 +624,43 @@ impl App {
                 self.context = u.input + u.cache_read + u.cache_write + u.output;
             }
             Ev::Permission(req, reply) => {
+                // Prompts come in order with the events, so the asker is
+                // the innermost running subagent, when one runs.
+                let from = self.children.last().map(|c| {
+                    let agent = if c.agent.is_empty() {
+                        "subagent".to_string()
+                    } else {
+                        format!("{} subagent", c.agent)
+                    };
+                    format!("{agent} · {}", c.title)
+                });
                 // The asking tool is the latest one still running.
-                let diff = if req.action == "edit" {
-                    self.entries.iter().rev().find_map(|e| match e {
-                        Entry::Tool(t) if t.result.is_none() && !t.forming => Some(t.diff.clone()),
-                        _ => None,
-                    })
-                } else {
+                let diff = if req.action != "edit" {
                     None
-                }
-                .flatten();
+                } else if let Some(sub) = self.sub() {
+                    sub.tools
+                        .iter()
+                        .rev()
+                        .find(|t| t.result.is_none())
+                        .and_then(|t| t.diff.clone())
+                } else {
+                    self.entries
+                        .iter()
+                        .rev()
+                        .find_map(|e| match e {
+                            Entry::Tool(t) if t.result.is_none() && !t.forming => {
+                                Some(t.diff.clone())
+                            }
+                            _ => None,
+                        })
+                        .flatten()
+                };
                 self.modal = Some(Modal::Permission {
                     req,
                     reply: Some(reply),
                     feedback: String::new(),
                     diff,
+                    from,
                     scroll: Default::default(),
                 });
             }
@@ -484,10 +684,16 @@ impl App {
     }
 
     /// The turn is over: calls shown while they streamed that never ran
-    /// (the turn stopped first) go.
+    /// (the turn stopped first) go, and a subagent it stopped is
+    /// interrupted.
     pub fn drop_forming(&mut self) {
         self.entries
             .retain(|e| !matches!(e, Entry::Tool(t) if t.forming));
+        if let Some(sub) = self.sub() {
+            sub.status = SubStatus::Interrupted;
+        }
+        self.children.clear();
+        self.sub_call = None;
     }
 
     /// Cancel an open prompt (the session sees a rejection or dismissal).

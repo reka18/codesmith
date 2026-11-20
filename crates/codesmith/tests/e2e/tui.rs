@@ -558,3 +558,73 @@ async fn a_running_command_shows_its_output_as_it_prints() {
     ui.quit().await;
     m.assert_done();
 }
+
+// A subagent's run is drawn in the row of the call that runs it, as
+// OpenCode's subagent rows are: `General Subagent — <description>`, its
+// calls as they run, and how it ended. Its permission prompt says which
+// subagent asks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_activity_is_drawn_in_its_row() {
+    use codesmith::core::tool::subagent::PREAMBLE;
+    let e = Env::new();
+    let parent = M::tools()
+        .and(M::prompt("delegate it"))
+        .and(M::prompt(PREAMBLE).not());
+    let child = M::tools().and(M::prompt(PREAMBLE));
+    let m = Model::start(
+        Script::new()
+            .titled("Delegated")
+            .then(
+                "delegate",
+                parent.clone().and(M::step(0)),
+                Reply::call(
+                    "subagent",
+                    json!({"agent": "general", "description": "Run the check", "prompt": "Run the check."}),
+                ),
+            )
+            .then(
+                "child-run",
+                child.clone().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo child-ran", "description": "Check"}),
+                ),
+            )
+            .then(
+                "child-answer",
+                child.and(M::step(1)),
+                Reply::text("The check ran."),
+            )
+            .then(
+                "answer",
+                parent.and(M::step(1)),
+                Reply::text("Delegated fine."),
+            ),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}),
+    );
+    let Some(mut ui) = Ui::start(&e, "--prompt 'delegate it'") else {
+        return;
+    };
+    ui.wait_for("asked by the general subagent · Run the check")
+        .await;
+    assert!(plain(&ui.screen).contains("General Subagent — Run the check"));
+    ui.send(b"y").await;
+    ui.wait_for("Delegated fine.").await;
+    // Drawn before the answer (only changed cells are redrawn, so its
+    // text may be split up).
+    assert!(
+        plain(&ui.screen).contains("completed"),
+        "{}",
+        plain(&ui.screen)
+    );
+    // Expanded, its calls and its text are shown.
+    ui.send(b"\x0f").await;
+    ui.wait_for("The check ran.").await;
+    assert!(plain(&ui.screen).contains("shell"));
+    ui.quit().await;
+    m.assert_done();
+}

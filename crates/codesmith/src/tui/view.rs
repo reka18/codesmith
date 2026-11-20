@@ -1,7 +1,7 @@
 //! Drawing the UI: transcript, input box, autocomplete, status line and
 //! dialogs.
 
-use super::app::{App, Entry, Modal, Picker, Tool, HELP};
+use super::app::{App, Entry, Modal, Picker, Sub, SubStatus, Tool, HELP};
 use super::complete::Kind;
 use super::diff::{self, Diff};
 use super::editor;
@@ -235,6 +235,7 @@ const PERMISSION_FEEDBACK: &str =
 /// how much is hidden. The diff preview takes whatever is left after that.
 fn permission_lines(
     req: &codesmith_core::permission::Request,
+    from: Option<&str>,
     feedback: &str,
     diff: Option<&Diff>,
     scroll: &std::cell::Cell<usize>,
@@ -252,13 +253,13 @@ fn permission_lines(
     };
     let must = hints.len() + fb.len();
     // Optional rows, shed (last first) until the request text gets room.
-    let (mut action, mut blank, mut show_fb_hint, mut fb_blank) =
-        (true, true, true, !fb.is_empty());
-    let fixed = |a: bool, b: bool, h: bool, f: bool| {
-        must + a as usize + b as usize + if h { fb_hint.len() } else { 0 } + f as usize
+    let (mut source, mut action, mut blank, mut show_fb_hint, mut fb_blank) =
+        (from.is_some(), true, true, true, !fb.is_empty());
+    let fixed = |s: bool, a: bool, b: bool, h: bool, f: bool| {
+        must + s as usize + a as usize + b as usize + if h { fb_hint.len() } else { 0 } + f as usize
     };
     let want = title.len().min(3);
-    while rows < fixed(action, blank, show_fb_hint, fb_blank) + want {
+    while rows < fixed(source, action, blank, show_fb_hint, fb_blank) + want {
         if fb_blank {
             fb_blank = false;
         } else if show_fb_hint {
@@ -267,12 +268,20 @@ fn permission_lines(
             blank = false;
         } else if action {
             action = false;
+        } else if source {
+            source = false;
         } else {
             break;
         }
     }
-    let mut budget = rows.saturating_sub(fixed(action, blank, show_fb_hint, fb_blank));
+    let mut budget = rows.saturating_sub(fixed(source, action, blank, show_fb_hint, fb_blank));
     let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(from) = from.filter(|_| source) {
+        lines.push(Line::from(Span::styled(
+            cut(&display_safe(&format!("asked by the {from}")), width),
+            Style::default().fg(Color::Magenta),
+        )));
+    }
     if title.len() <= budget {
         scroll.set(0);
         lines.extend(
@@ -469,8 +478,133 @@ fn live_lines(live: &str, max: usize, w: usize) -> Vec<Line<'static>> {
 }
 
 fn tool_lines(t: &Tool, expand: bool, w: usize) -> Vec<Line<'static>> {
+    if let Some(sub) = &t.sub {
+        return sub_lines(t, sub, expand, w);
+    }
     let mut out = tool_body(t, expand, w);
     out.extend(t.media.iter().map(|m| media_line(m, w)));
+    out
+}
+
+/// A subagent's latest tool calls shown while it runs (and when expanded,
+/// at most [`SUB_EXPANDED`]).
+const SUB_COLLAPSED: usize = 3;
+const SUB_EXPANDED: usize = 20;
+/// Rows of a subagent's latest text shown when expanded.
+const SUB_TEXT_ROWS: usize = 12;
+
+/// `explore` as OpenCode titles it: `Explore`.
+fn titlecase(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// A `subagent` call's row once its subagent started: OpenCode's
+/// `Explore Subagent — description`, then (while it runs, or expanded) its
+/// latest tool calls, its latest text when expanded, and how it stands.
+fn sub_lines(t: &Tool, sub: &Sub, expand: bool, w: usize) -> Vec<Line<'static>> {
+    let agent = if sub.agent.is_empty() {
+        "Subagent".to_string()
+    } else {
+        format!("{} Subagent", titlecase(&sub.agent))
+    };
+    let running = sub.status == SubStatus::Running;
+    let (mark, color) = match (&sub.status, &t.result) {
+        (SubStatus::Running, _) | (_, None) => ("│", Color::Cyan),
+        (SubStatus::Completed, Some((_, false))) => ("✓", Color::Green),
+        (SubStatus::Interrupted, _) => ("■", Color::Yellow),
+        _ => ("✗", Color::Red),
+    };
+    let mut head = vec![
+        Span::styled(format!("{mark} "), Style::default().fg(color)),
+        Span::styled(agent, Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!(" — {}", escape_controls(&sub.title).replace('\n', " ")),
+            dim(),
+        ),
+    ];
+    if t.result.is_none() {
+        head.push(Span::styled(" …", dim()));
+    }
+    let mut out = vec![Line::from(head)];
+    let rail = |s: String, style: Style| {
+        Line::from(vec![
+            Span::styled("  │ ", dim()),
+            Span::styled(cut(&s, w.saturating_sub(4)), style),
+        ])
+    };
+    let shown = match (running, expand) {
+        (_, true) => SUB_EXPANDED,
+        (true, false) => SUB_COLLAPSED,
+        (false, false) => 0,
+    };
+    let skip = sub.tools.len().saturating_sub(shown);
+    for c in sub.tools.iter().skip(skip) {
+        let detail = escape_controls(&c.detail).replace('\n', " ");
+        let (tail, style) = match &c.result {
+            None => (" …".to_string(), Style::default()),
+            Some((_, true)) => (" ✗".to_string(), Style::default().fg(Color::Red)),
+            Some((first, false)) if first.is_empty() => (String::new(), dim()),
+            Some((first, false)) => (format!(" → {}", escape_controls(first)), dim()),
+        };
+        out.push(rail(format!("⚙ {} {detail}{tail}", c.name), style));
+    }
+    if expand && !sub.text.trim().is_empty() {
+        let text = escape_controls(sub.text.trim());
+        let rows = wrap(&text, w.saturating_sub(4));
+        let skip = rows.len().saturating_sub(SUB_TEXT_ROWS);
+        if skip > 0 {
+            out.push(rail("…".into(), dim()));
+        }
+        for r in rows.into_iter().skip(skip) {
+            out.push(rail(r, Style::default()));
+        }
+    }
+    let calls = match sub.calls {
+        0 => String::new(),
+        1 => " · 1 tool call".into(),
+        n => format!(" · {n} tool calls"),
+    };
+    let more = if !expand && (sub.tools.len() > shown || !sub.text.trim().is_empty()) {
+        " (Ctrl+O to expand)"
+    } else {
+        ""
+    };
+    let (status, style) = match &sub.status {
+        SubStatus::Running => {
+            let now = sub
+                .tools
+                .back()
+                .filter(|c| c.result.is_none())
+                .map(|c| format!(" · {}", c.name))
+                .unwrap_or_default();
+            (format!("running{now}{calls}"), dim())
+        }
+        SubStatus::Completed => (format!("completed{calls}"), dim()),
+        SubStatus::Interrupted => (
+            format!("interrupted{calls}"),
+            Style::default().fg(Color::Yellow),
+        ),
+        SubStatus::Failed(e) => {
+            let why = e.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", escape_controls(why))
+            };
+            (
+                format!("failed{why}{calls}"),
+                Style::default().fg(Color::Red),
+            )
+        }
+    };
+    out.push(Line::from(vec![
+        Span::styled("  └ ", dim()),
+        Span::styled(cut(&format!("{status}{more}"), w.saturating_sub(4)), style),
+    ]));
     out
 }
 
@@ -950,14 +1084,22 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal) {
             req,
             feedback,
             diff,
+            from,
             scroll,
             ..
         } => {
             let width = MODAL_WIDTH
                 .min(area.width.saturating_sub(2))
                 .saturating_sub(2);
-            let lines =
-                permission_lines(req, feedback, diff.as_ref(), scroll, width as usize, room);
+            let lines = permission_lines(
+                req,
+                from.as_deref(),
+                feedback,
+                diff.as_ref(),
+                scroll,
+                width as usize,
+                room,
+            );
             ("Permission required".into(), lines, Color::Yellow)
         }
         Modal::Question {
@@ -1306,6 +1448,263 @@ mod tests {
         );
     }
 
+    fn subagent_running(a: &mut App) {
+        use crate::tui::bridge::Ev;
+        a.on_event(Ev::ToolStart {
+            id: "task".into(),
+            name: "subagent".into(),
+            detail: "explore: Find the adder".into(),
+            diff: None,
+        });
+        a.on_event(Ev::ChildStart {
+            id: "ses_child".into(),
+            title: "Find the adder".into(),
+            agent: "explore".into(),
+        });
+        for (i, (tool, detail)) in [("glob", "**/*.sh"), ("grep", "add"), ("read", "src/add.sh")]
+            .iter()
+            .enumerate()
+        {
+            a.on_event(Ev::ToolStart {
+                id: format!("c{i}"),
+                name: format!("explore › {tool}"),
+                detail: detail.to_string(),
+                diff: None,
+            });
+            a.on_event(Ev::ToolEnd {
+                id: format!("c{i}"),
+                name: format!("explore › {tool}"),
+                output: format!("{tool} ok\nmore"),
+                error: i == 1,
+            });
+        }
+        a.on_event(Ev::ToolStart {
+            id: "c9".into(),
+            name: "explore › shell".into(),
+            detail: "sh src/add.sh 1 2".into(),
+            diff: None,
+        });
+        // Its command output stays out of the parent's row.
+        a.on_event(Ev::ToolOutput {
+            id: "c9".into(),
+            delta: "3\n".into(),
+        });
+    }
+
+    // A subagent's activity is summed up in the row of the call that runs
+    // it (OpenCode's `Explore Subagent — description` row): its latest
+    // calls and status while it runs, its text when expanded.
+    #[test]
+    fn a_subagent_row_shows_its_activity() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        subagent_running(&mut a);
+        assert_eq!(a.entries.len(), 1, "child calls are not rows of their own");
+        assert_eq!(
+            text(&transcript(&a, 70)),
+            [
+                "│ Explore Subagent — Find the adder …",
+                "  │ ⚙ grep add ✗",
+                "  │ ⚙ read src/add.sh → read ok",
+                "  │ ⚙ shell sh src/add.sh 1 2 …",
+                "  └ running · shell · 4 tool calls (Ctrl+O to expand)",
+            ]
+        );
+        a.on_event(Ev::ChildText(
+            "It is in src/add.sh.\nIt adds two numbers.".into(),
+        ));
+        a.expand_tools = true;
+        let t = text(&transcript(&a, 70));
+        assert_eq!(t[1], "  │ ⚙ glob **/*.sh → glob ok");
+        assert_eq!(
+            t[5..],
+            [
+                "  │ It is in src/add.sh.",
+                "  │ It adds two numbers.",
+                "  └ running · shell · 4 tool calls",
+            ]
+        );
+        a.expand_tools = false;
+        a.on_event(Ev::ToolEnd {
+            id: "c9".into(),
+            name: "explore › shell".into(),
+            output: "3".into(),
+            error: false,
+        });
+        a.on_event(Ev::ChildEnd {
+            id: "ses_child".into(),
+            status: "completed".into(),
+            error: None,
+        });
+        a.on_event(Ev::ToolEnd {
+            id: "task".into(),
+            name: "subagent".into(),
+            output: "<subagent sessionID=\"ses_child\">\nIt is in src/add.sh.\n</subagent>".into(),
+            error: false,
+        });
+        // The parent's own calls are rows again.
+        a.on_event(Ev::ToolStart {
+            id: "p1".into(),
+            name: "read".into(),
+            detail: "src/add.sh".into(),
+            diff: None,
+        });
+        let t = text(&transcript(&a, 70));
+        assert_eq!(
+            t,
+            [
+                "✓ Explore Subagent — Find the adder",
+                "  └ completed · 4 tool calls (Ctrl+O to expand)",
+                "⚙ read src/add.sh …",
+            ]
+        );
+        let lines = transcript(&a, 70);
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Green));
+        a.expand_tools = true;
+        let t = text(&transcript(&a, 70));
+        assert_eq!(t.len(), 1 + 4 + 2 + 1 + 1, "{t:?}");
+        assert_eq!(t[7], "  └ completed · 4 tool calls");
+    }
+
+    #[test]
+    fn a_subagent_row_is_bounded_and_ends_failed_or_interrupted() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        subagent_running(&mut a);
+        for i in 0..500 {
+            a.on_event(Ev::ToolStart {
+                id: format!("x{i}"),
+                name: "explore › general › read".into(),
+                detail: format!("f{i}.rs"),
+                diff: None,
+            });
+            a.on_event(Ev::ChildText("x".repeat(100)));
+        }
+        // Its text since the latest call is kept, up to a bound.
+        for i in 0..2000 {
+            a.on_event(Ev::ChildText(format!("line {i}\n")));
+        }
+        let Entry::Tool(t) = &a.entries[0] else {
+            panic!()
+        };
+        let sub = t.sub.as_ref().unwrap();
+        assert_eq!(sub.tools.len(), crate::tui::app::SUB_TOOLS_KEEP);
+        assert_eq!(sub.calls, 504);
+        assert!(sub.text.len() <= crate::tui::app::SUB_TEXT_KEEP);
+        assert!(!sub.text.contains('x') && sub.text.ends_with("line 1999\n"));
+        a.expand_tools = true;
+        let t = text(&transcript(&a, 70));
+        assert_eq!(t.len(), 1 + SUB_EXPANDED + 1 + SUB_TEXT_ROWS + 1, "{t:?}");
+        assert_eq!(t[SUB_EXPANDED + 1], "  │ …");
+        assert_eq!(t[SUB_EXPANDED + 1 + SUB_TEXT_ROWS], "  │ line 1999");
+        assert!(
+            t[SUB_EXPANDED].contains("⚙ general › read f499.rs …"),
+            "{t:?}"
+        );
+        a.expand_tools = false;
+        a.on_event(Ev::ChildEnd {
+            id: "ses_child".into(),
+            status: "failed".into(),
+            error: Some("model error: overloaded\nmore".into()),
+        });
+        a.on_event(Ev::ToolEnd {
+            id: "task".into(),
+            name: "subagent".into(),
+            output: "failed".into(),
+            error: true,
+        });
+        assert_eq!(
+            text(&transcript(&a, 90)),
+            [
+                "✗ Explore Subagent — Find the adder",
+                "  └ failed: model error: overloaded · 504 tool calls (Ctrl+O to expand)",
+            ]
+        );
+        // A turn stopped while its subagent runs leaves it interrupted.
+        let mut a = App::new();
+        subagent_running(&mut a);
+        a.drop_forming();
+        let t = text(&transcript(&a, 70));
+        assert_eq!(
+            t.last().unwrap(),
+            "  └ interrupted · 4 tool calls (Ctrl+O to expand)"
+        );
+        assert!(t[0].starts_with("│ Explore Subagent"), "{t:?}");
+    }
+
+    // A subagent's permission prompt says which subagent asks.
+    #[test]
+    fn a_subagents_permission_prompt_names_it() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        subagent_running(&mut a);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        a.on_event(Ev::Permission(
+            codesmith_core::permission::Request {
+                action: "shell".into(),
+                resources: vec!["sh src/add.sh 1 2".into()],
+                save: vec![],
+                title: "$ sh src/add.sh 1 2".into(),
+            },
+            tx,
+        ));
+        let s = screen(&a, 80, 24).join("\n");
+        assert!(
+            s.contains("asked by the explore subagent · Find the adder"),
+            "{s}"
+        );
+        assert!(s.contains("[y] allow once"), "{s}");
+        // A small terminal sheds the line before the request and the keys.
+        let s = screen(&a, 60, 8).join("\n");
+        assert!(
+            s.contains("$ sh src/add.sh") && s.contains("[y] allow once"),
+            "{s}"
+        );
+        // The parent's own prompts do not name one.
+        a.on_event(Ev::ChildEnd {
+            id: "ses_child".into(),
+            status: "completed".into(),
+            error: None,
+        });
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        a.on_event(Ev::Permission(
+            codesmith_core::permission::Request {
+                action: "shell".into(),
+                resources: vec!["ls".into()],
+                save: vec![],
+                title: "$ ls".into(),
+            },
+            tx,
+        ));
+        assert!(!screen(&a, 80, 24).join("\n").contains("asked by"));
+    }
+
+    // An edit a subagent asks about previews its diff.
+    #[test]
+    fn a_subagents_edit_prompt_previews_its_diff() {
+        use crate::tui::bridge::Ev;
+        let mut a = App::new();
+        subagent_running(&mut a);
+        a.on_event(Ev::ToolStart {
+            id: "e1".into(),
+            name: "explore › edit".into(),
+            detail: "a.rs".into(),
+            diff: Some(diff::diff("old\n", "new\n", 3)),
+        });
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        a.on_event(Ev::Permission(
+            codesmith_core::permission::Request {
+                action: "edit".into(),
+                resources: vec!["a.rs".into()],
+                save: vec![],
+                title: "Edit a.rs".into(),
+            },
+            tx,
+        ));
+        let s = screen(&a, 80, 24).join("\n");
+        assert!(s.contains("3 - old") && s.contains("3 + new"), "{s}");
+    }
+
     #[test]
     fn failed_tools_show_their_error() {
         let mut a = App::new();
@@ -1418,6 +1817,7 @@ mod tests {
             reply: None,
             feedback: String::new(),
             diff: Some(diff::diff("old\n", "new\n", 3)),
+            from: None,
             scroll: Default::default(),
         });
         let s = screen(&a, 80, 24).join("\n");
@@ -1438,6 +1838,7 @@ mod tests {
             reply: None,
             feedback: String::new(),
             diff: None,
+            from: None,
             scroll: Default::default(),
         }
     }

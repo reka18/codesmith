@@ -104,6 +104,44 @@ fn bench_transcript() {
         term.draw(|f| view::draw(f, &a)).unwrap();
     });
     report("tui live output frame (2k entries)", t, "");
+    // A subagent runs: every frame it starts and ends a call and writes.
+    use super::bridge::Ev;
+    a.on_event(Ev::ToolStart {
+        id: "task".into(),
+        name: "subagent".into(),
+        detail: "explore: survey".into(),
+        diff: None,
+    });
+    a.on_event(Ev::ChildStart {
+        id: "ses_child".into(),
+        title: "Survey the crate".into(),
+        agent: "explore".into(),
+    });
+    let mut n = 0;
+    let t = time(50, || {
+        n += 1;
+        a.on_event(Ev::ToolStart {
+            id: format!("c{n}"),
+            name: "explore › read".into(),
+            detail: format!("src/mod{n}.rs"),
+            diff: None,
+        });
+        a.on_event(Ev::ToolEnd {
+            id: format!("c{n}"),
+            name: "explore › read".into(),
+            output: format!("Read file src/mod{n}.rs, lines 1-200"),
+            error: false,
+        });
+        a.on_event(Ev::ChildText(format!("Module {n} wires the builder. ")));
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui subagent frame (2k entries)", t, "");
+    a.expand_tools = true;
+    let t = time(50, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui subagent frame expanded", t, "");
+    a.expand_tools = false;
     let mut w = 80;
     let t = time(10, || {
         w = if w == 80 { 100 } else { 80 };

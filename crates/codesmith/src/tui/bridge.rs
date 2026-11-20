@@ -59,6 +59,21 @@ pub enum Ev {
     },
     /// The label of an image (or other file) the model generated.
     Media(String),
+    /// A subagent session started (`agent` is the one its call named).
+    /// Until its `ChildEnd`, tool calls are its own (or its subagents').
+    ChildStart {
+        id: String,
+        title: String,
+        agent: String,
+    },
+    /// The subagent ended: `completed`, `interrupted` or `failed`.
+    ChildEnd {
+        id: String,
+        status: String,
+        error: Option<String>,
+    },
+    /// Text the running subagent wrote.
+    ChildText(String),
     Todos(Vec<Todo>),
     Notice(String),
     Compacted(u64, u64),
@@ -80,11 +95,17 @@ pub struct ChanSink {
     pub tx: UnboundedSender<Ev>,
     /// The session's directory, for reading files an edit is about to change.
     pub cwd: PathBuf,
+    /// The agent the latest `subagent` call named, for its `child_start`.
+    agent: String,
 }
 
 impl ChanSink {
     pub fn new(tx: UnboundedSender<Ev>, cwd: PathBuf) -> Self {
-        ChanSink { tx, cwd }
+        ChanSink {
+            tx,
+            cwd,
+            agent: String::new(),
+        }
     }
 }
 
@@ -108,6 +129,11 @@ impl Sink for ChanSink {
         });
     }
     fn tool_start(&mut self, id: &str, name: &str, input: &serde_json::Value) {
+        if name.rsplit(" › ").next() == Some("subagent") {
+            if let Some(a) = input.get("agent").and_then(|a| a.as_str()) {
+                self.agent = a.to_string();
+            }
+        }
         let _ = self.tx.send(Ev::ToolStart {
             id: id.to_string(),
             name: name.to_string(),
@@ -155,6 +181,23 @@ impl Sink for ChanSink {
     }
     fn notice(&mut self, message: &str) {
         let _ = self.tx.send(Ev::Notice(message.to_string()));
+    }
+    fn child_start(&mut self, child: &codesmith_core::session::ChildSession) {
+        let _ = self.tx.send(Ev::ChildStart {
+            id: child.id.clone(),
+            title: child.title.clone(),
+            agent: std::mem::take(&mut self.agent),
+        });
+    }
+    fn child_end(&mut self, id: &str, status: &str, error: Option<&str>) {
+        let _ = self.tx.send(Ev::ChildEnd {
+            id: id.to_string(),
+            status: status.to_string(),
+            error: error.map(str::to_string),
+        });
+    }
+    fn child_text(&mut self, delta: &str) {
+        let _ = self.tx.send(Ev::ChildText(delta.to_string()));
     }
 }
 
