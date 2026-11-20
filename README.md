@@ -225,13 +225,36 @@ and refreshed automatically; `codesmith mcp logout <name>` forgets them. Set
 `"oauth": {"clientId": "...", "clientSecret": "...", "scope": "...", "port": 19876}`
 to use a pre-registered client, or `"oauth": false` to turn it off.
 
+## Local server
+
+`codesmith serve` exposes sessions to other programs on this machine (an
+editor, a script) over HTTP on `127.0.0.1:4096`. It is opt-in and local:
+anything but loopback requires `--token` (or `$CODESMITH_SERVER_TOKEN`), which
+clients send as `Authorization: Bearer <token>`. `--auto` approves permission
+requests instead of asking the client.
+
+| Route | |
+| --- | --- |
+| `GET /health` | version, directory, model |
+| `GET /sessions` · `POST /sessions {agent?, model?}` | list, create |
+| `GET /sessions/{id}` · `DELETE /sessions/{id}` | info and messages, delete |
+| `POST /sessions/{id}/messages {text}` | run a turn; streams Server-Sent Events |
+| `POST /sessions/{id}/abort` | stop the running turn |
+| `POST /sessions/{id}/permissions/{rid} {reply, message?}` | answer `once`, `always` or `reject` |
+| `POST /sessions/{id}/questions/{qid} {answers}` or `{dismiss: true}` | answer the agent's questions |
+| `POST /sessions/{id}/undo` · `/redo` | undo or redo the latest turn's file changes |
+
+A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
+`retry`, `compacted`, `todos`, `notice`, `permission`, `question` and finally
+`done` (with `error` set if the turn failed or was aborted).
+
 ## Roadmap
 
 1. ~~Working agent: `run`, core tools, permissions, config, instructions~~
 2. Sessions: ~~persistence, continue, titles, compaction, subagents, todos,
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
-3. ~~Interactive terminal UI~~; local server API
+3. ~~Interactive terminal UI, local server API~~
 4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys~~ and logins, formatters, worktrees, stats
 5. Native Rust plugins, code mode, ACP, automations
 

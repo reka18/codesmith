@@ -20,5 +20,11 @@ codesmith-ai.workspace = true
 codesmith-core.workspace = true
 tokio.workspace = true
 ratatui.workspace = true
+axum.workspace = true
+async-stream.workspace = true
+futures-util.workspace = true
 textwrap.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

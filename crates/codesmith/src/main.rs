@@ -1,6 +1,7 @@
 //! `codesmith`: a terminal coding agent (a Rust port of OpenCode).
 
 mod render;
+mod serve;
 mod tui;
 
 use anyhow::{anyhow, Context, Result};
@@ -50,6 +51,20 @@ enum Command {
     Models {
         /// A provider id: list the models its API reports.
         provider: Option<String>,
+    },
+    /// Serve a local HTTP API for driving sessions from other programs.
+    Serve {
+        /// Address to listen on. Anything but loopback requires --token.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 4096)]
+        port: u16,
+        /// Require `Authorization: Bearer <token>` (also $CODESMITH_SERVER_TOKEN).
+        #[arg(long, env = "CODESMITH_SERVER_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// Approve every permission request that isn't denied instead of asking the client.
+        #[arg(long)]
+        auto: bool,
     },
     /// Save, list or remove API keys stored on this machine.
     Auth {
@@ -443,6 +458,25 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what),
+        Some(Command::Serve {
+            host,
+            port,
+            token,
+            auto,
+        }) => {
+            let token = token.filter(|t| !t.is_empty());
+            let loopback = host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback());
+            if !loopback && token.is_none() {
+                return Err(anyhow!("listening on {host} exposes this machine's files and shell; set --token (or $CODESMITH_SERVER_TOKEN) to do that"));
+            }
+            let loaded = config::load(&cwd)?;
+            let mcp = connect_mcp(&loaded, true).await;
+            let st = serve::Server::new(loaded, cwd, store::default_path(), auto, token, mcp);
+            serve::run(st, &host, port).await
+        }
         Some(Command::Session { what }) => session_cmd(cwd, what),
         Some(Command::Debug { what }) => debug(cwd, what),
     }

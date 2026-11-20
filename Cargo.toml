@@ -10,10 +10,11 @@ repository = "https://github.com/Skeptic-Dog-Software/codesmith"
 rust-version = "1.85"
 
 [workspace.dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
 anyhow = "1"
 async-stream = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 futures-util = "0.3"
 globset = "0.4"
