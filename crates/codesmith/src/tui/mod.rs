@@ -690,7 +690,10 @@ impl Runner {
             "help" => self.app.modal = Some(Modal::Help(0)),
             "themes" | "theme" => self.theme_command(args),
             "clear" => self.app.set_entries(Vec::new()),
-            "editor" => self.edit = true,
+            "editor" => {
+                self.app.editor_slash(args);
+                self.edit = true;
+            }
             "diff" => {
                 let dir = self
                     .session
@@ -965,10 +968,7 @@ impl Runner {
             return Ok(());
         }
         let next = match name {
-            "" => match current.and_then(|c| variants.iter().position(|v| v == c)) {
-                None => variants.first().cloned(),
-                Some(i) => variants.get(i + 1).cloned(),
-            },
+            "" => mini::variant::cycle(current, &variants),
             "default" => None,
             n => Some(n.to_string()),
         };

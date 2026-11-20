@@ -10,11 +10,14 @@
 //! writes it and the footer; [`footer`] lays the footer out.
 
 pub mod commit;
+pub mod editor;
 pub mod footer;
+pub mod menu;
 pub mod queue;
 pub mod settings;
 pub mod splash;
 pub mod surface;
+pub mod variant;
 pub mod width;
 
 pub use settings::Settings;

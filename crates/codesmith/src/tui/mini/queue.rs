@@ -37,13 +37,12 @@ pub struct Queued {
 pub struct Queue {
     pub items: Vec<Queued>,
     /// The menu's selection while it is open.
-    pub menu: Option<usize>,
+    pub menu: Option<super::menu::Menu>,
     /// An interrupted or failed turn stopped the queue from running.
     pub held: bool,
 }
 
-/// Most rows of prompts the menu shows at once.
-const MENU_ROWS: usize = 8;
+const MENU_ROWS: usize = super::menu::ROWS;
 
 impl Queue {
     pub fn is_empty(&self) -> bool {
@@ -76,8 +75,8 @@ impl Queue {
         if self.items.is_empty() {
             self.menu = None;
             self.held = false;
-        } else if let Some(i) = self.menu {
-            self.menu = Some(i.min(self.items.len() - 1));
+        } else if let Some(m) = &mut self.menu {
+            m.reconcile(self.items.len(), MENU_ROWS);
         }
     }
 
@@ -141,15 +140,16 @@ impl App {
             return false;
         }
         self.popup = None;
-        self.queue.menu = Some(0);
+        self.queue.menu = Some(Default::default());
         true
     }
 
     /// A key while the menu is open.
     pub fn queue_key(&mut self, k: KeyEvent) {
-        let Some(sel) = self.queue.menu else {
+        let Some(mut menu) = self.queue.menu else {
             return;
         };
+        let sel = menu.selected;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let found = keymap::stroke(&k)
             .map(|s| self.keymap.lookup(keymap::scope::QUEUE, &[s]).exact)
@@ -170,10 +170,22 @@ impl App {
                 }
             }
             _ => match k.code {
-                KeyCode::Up => self.queue.menu = Some((sel + n - 1) % n),
-                KeyCode::Down => self.queue.menu = Some((sel + 1) % n),
-                KeyCode::Char('p') if ctrl => self.queue.menu = Some((sel + n - 1) % n),
-                KeyCode::Char('n') if ctrl => self.queue.menu = Some((sel + 1) % n),
+                KeyCode::Up => {
+                    menu.step(-1, n, MENU_ROWS);
+                    self.queue.menu = Some(menu);
+                }
+                KeyCode::Down => {
+                    menu.step(1, n, MENU_ROWS);
+                    self.queue.menu = Some(menu);
+                }
+                KeyCode::Char('p') if ctrl => {
+                    menu.step(-1, n, MENU_ROWS);
+                    self.queue.menu = Some(menu);
+                }
+                KeyCode::Char('n') if ctrl => {
+                    menu.step(1, n, MENU_ROWS);
+                    self.queue.menu = Some(menu);
+                }
                 // Send this one next.
                 KeyCode::Enter => {
                     let q = self.queue.items.remove(sel);
@@ -205,14 +217,20 @@ pub fn status_action(app: &App) -> Option<super::width::Action> {
 
 /// Draw the menu in `area` (its [`Queue::menu_rows`] high).
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let Some(sel) = app.queue.menu else {
+    let Some(menu) = app.queue.menu else {
         return;
     };
+    let sel = menu.selected;
     let p = theme::current();
     let mono = app.mini.as_ref().is_some_and(|s| s.mono);
     let width = area.width as usize;
     let rows = (area.height as usize).saturating_sub(2).max(1);
-    let first = (sel + 1).saturating_sub(rows);
+    // The menu's own scroll, kept in view of the rows there are.
+    let first = if sel < menu.offset || sel >= menu.offset + rows {
+        (sel + 1).saturating_sub(rows)
+    } else {
+        menu.offset
+    };
     let mut lines = vec![Line::from(Span::styled(
         "Pending prompts",
         Style::default().fg(p.text).add_modifier(Modifier::BOLD),
