@@ -138,6 +138,17 @@ pub fn key_form(
     }
 }
 
+/// Models a provider's list leaves out: chat-only aliases that clash with
+/// the provider's own routes (Copilot's `gpt-5-chat-latest`, OpenRouter's
+/// `openai/gpt-5-chat`).
+pub fn hidden(provider_id: &str, model: &str) -> bool {
+    match provider_id {
+        copilot::ID => copilot::hidden(model),
+        "openrouter" => model == "openai/gpt-5-chat",
+        _ => false,
+    }
+}
+
 /// Compatibility settings and provider options a plugin gives a model, under
 /// the configured ones.
 pub fn defaults(

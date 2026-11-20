@@ -395,3 +395,6 @@
 80 :: ported :: tests/oc_providers.rs::oc_sap_omits_deployment_and_resource_group_sdk_options_when_no_service_key_is_available
 98 :: design :: deliberate :: plugin.rs: no AI SDK; CodeSmith speaks Chat Completions to the deployment itself
 112 :: ported :: tests/oc_providers.rs::oc_sap_ignores_non_sap_ai_core_providers
+@plugin/provider-openrouter.test.ts
+46 :: ported :: tests/oc_providers.rs::oc_openrouter_filters_openrouters_gpt_5_chat_alias :: adapted: left out of `codesmith models`
+69 :: ported :: tests/oc_providers.rs::oc_openrouter_does_not_disable_gpt_5_chat_latest_for_non_openrouter_providers

@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 173 | 0 | 260 | 326 | 37 | 0 |
+| Providers, models and credentials | 796 | 175 | 0 | 251 | 333 | 37 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1080** | **15** | **761** | **2335** | **1397** | **0** |
+| **Total** | **5588** | **1082** | **15** | **752** | **2342** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,12 +78,12 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (761 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (752 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
-| [Provider Plugins](#provider-plugins) | 92 | GitHub Copilot; Modal; … |
+| [Provider Plugins](#provider-plugins) | 83 | GitHub Copilot; Modal; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
@@ -243,7 +243,7 @@ Missing features, by how many OpenCode test cases each would unlock (761 cases i
 
 ### Provider Plugins
 
-92 cases.
+83 cases.
 
 - `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
 - `github-copilot/models.test.ts`: prices cache reads from either token price spelling
@@ -278,13 +278,6 @@ Missing features, by how many OpenCode test cases each would unlock (761 cases i
 - `plugin/provider-digitalocean.test.ts`: shows a returning account's cached routers at once and refreshes them in the background
 - `plugin/provider-digitalocean.test.ts`: completes browser OAuth independently of router discovery and releases the listener
 - `plugin/provider-digitalocean.test.ts`: rejects ${fixture.name} and releases the listener (5 cases)
-- `plugin/provider-dynamic.test.ts`: creates an SDK from a provider factory export
-- `plugin/provider-dynamic.test.ts`: does not override an SDK already supplied by an earlier plugin
-- `plugin/provider-dynamic.test.ts`: loads npm packages through their resolved import entrypoint
-- `plugin/provider-dynamic.test.ts`: wraps missing npm entrypoint failures as AISDK init errors
-- `plugin/provider-dynamic.test.ts`: wraps dynamic import failures as AISDK init errors
-- `plugin/provider-dynamic.test.ts`: wraps missing provider factory exports as AISDK init errors
-- `plugin/provider-dynamic.test.ts`: uses the model modelID for the default language model
 - `plugin/provider-github-copilot.test.ts`: reloads providers only when a refreshed model list changes
 - `plugin/provider-github-copilot.test.ts`: names sessions with the utility model as a free background request
 - `plugin/provider-github-copilot.test.ts`: sends the utility title request through the host's fetch
@@ -321,8 +314,6 @@ Missing features, by how many OpenCode test cases each would unlock (761 cases i
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-- `plugin/provider-openrouter.test.ts`: filters OpenRouter's gpt-5 chat alias
-- `plugin/provider-openrouter.test.ts`: does not disable gpt-5-chat-latest for non-OpenRouter providers
 
 ### Claude Agent SDK Provider
 
@@ -2025,7 +2016,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 539 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 546 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
@@ -3451,7 +3442,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (499 of 796)</summary>
+<details><summary>Providers, models and credentials (508 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3624,6 +3615,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P fills the base URL from a bare host — `tests/oc_providers.rs::oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme`
 - P fills the base URL from a host that includes the scheme — `tests/oc_providers.rs::oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme`
 
+**`plugin/provider-dynamic.test.ts`**
+
+- D creates an SDK from a provider factory export · does not override an SDK already supplied by an earlier plugin · loads npm packages through their resolved import entrypoint · wraps missing npm entrypoint failures as AISDK init errors · wraps dynamic import failures as AISDK init errors · wraps missing provider factory exports as AISDK init errors · uses the model modelID for the default language model — deliberate: plugin.rs: provider plugins are compiled in; there is no JS runtime to load npm provider packages into
+
 **`plugin/provider-github-copilot.test.ts`**
 
 - P prefers the account-specific Copilot API endpoint — `tests/oc_providers.rs::oc_copilot_prefers_the_account_specific_copilot_api_endpoint`
@@ -3703,6 +3698,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D is registered so legacy OpenRouter behavior can be applied — deliberate: plugin.rs: provider plugins are compiled in
 - P applies legacy referer headers only to openrouter — `tests/oc_providers.rs::oc_openrouter_applies_referer_headers` (adapted: the headers name CodeSmith)
+- P filters OpenRouter's gpt-5 chat alias — `tests/oc_providers.rs::oc_openrouter_filters_openrouters_gpt_5_chat_alias` (adapted: left out of `codesmith models`)
+- P does not disable gpt-5-chat-latest for non-OpenRouter providers — `tests/oc_providers.rs::oc_openrouter_does_not_disable_gpt_5_chat_latest_for_non_openrouter_providers`
 
 **`plugin/provider-poe.test.ts`**
 

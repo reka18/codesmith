@@ -1671,3 +1671,18 @@ async fn oc_sap_fetches_client_credentials_tokens_from_the_service_key() {
     assert!(seen[0].ends_with("grant_type=client_credentials"));
     assert!(sap::parse_key("not json").is_err());
 }
+
+// plugin/provider-openrouter.test.ts
+
+#[test]
+fn oc_openrouter_filters_openrouters_gpt_5_chat_alias() {
+    assert!(providers::hidden("openrouter", "openai/gpt-5-chat"));
+    assert!(!providers::hidden("openrouter", "openai/gpt-5"));
+    assert!(!providers::hidden("openai", "openai/gpt-5-chat"));
+}
+
+#[test]
+fn oc_openrouter_does_not_disable_gpt_5_chat_latest_for_non_openrouter_providers() {
+    assert!(!providers::hidden("custom-openrouter", "gpt-5-chat-latest"));
+    assert!(!providers::hidden("openrouter", "gpt-5-chat-latest"));
+}

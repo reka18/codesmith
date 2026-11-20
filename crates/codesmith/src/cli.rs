@@ -1013,9 +1013,7 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("{id}/*  ({name}; `codesmith models {id}` lists its models)");
                 }
                 for m in models {
-                    if id == codesmith_core::providers::copilot::ID
-                        && codesmith_core::providers::copilot::hidden(&m)
-                    {
+                    if codesmith_core::providers::hidden(&id, &m) {
                         continue;
                     }
                     println!("{id}/{m}");

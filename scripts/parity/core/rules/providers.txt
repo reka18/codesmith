@@ -148,7 +148,7 @@
 @plugin/provider-digitalocean.test.ts
 * :: feature :: Provider Plugins :: DigitalOcean
 @plugin/provider-dynamic.test.ts
-* :: feature :: Provider Plugins :: dynamic providers
+* :: design :: deliberate :: plugin.rs: provider plugins are compiled in; there is no JS runtime to load npm provider packages into
 @plugin/provider-kilo.test.ts
 * :: feature :: Provider Plugins :: Kilo
 @plugin/provider-llmgateway.test.ts
