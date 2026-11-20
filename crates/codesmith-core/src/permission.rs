@@ -528,7 +528,7 @@ fn safe_saves(req: &Request) -> Vec<String> {
     let mut out = Vec::new();
     for s in &req.save {
         let base = s.strip_suffix("/*").unwrap_or(s);
-        if s == "*" || broad(base) {
+        if s == "*" || broad(base) || shared_dir(std::path::Path::new(base)) {
             for r in &req.resources {
                 if !r.ends_with("/*") && !out.contains(r) {
                     out.push(r.clone());
@@ -539,6 +539,33 @@ fn safe_saves(req: &Request) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether other local users can put files in `dir`: a system temporary
+/// directory, or (for a directory that does not exist yet, its nearest
+/// existing ancestor) one that is world-writable or owned by a user other
+/// than this one or root. Approving a file there must not approve the
+/// directory: someone else decides what else is in it.
+pub fn shared_dir(dir: &std::path::Path) -> bool {
+    const TMP: [&str; 4] = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"];
+    let shown = dir.display().to_string();
+    if TMP.contains(&shown.trim_end_matches('/')) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Some(m) = dir.ancestors().find_map(|d| std::fs::metadata(d).ok()) else {
+            return false;
+        };
+        // SAFETY: geteuid has no preconditions.
+        let me = unsafe { libc::geteuid() };
+        m.mode() & 0o002 != 0 || (m.uid() != me && m.uid() != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Narrow the base rules' tool-output allowance (see [`base_rules`]) to one

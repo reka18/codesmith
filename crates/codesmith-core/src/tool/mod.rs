@@ -937,11 +937,69 @@ pub(crate) fn unique_id() -> String {
 /// `.hg`) as `<repo>/*`, else the directory itself. A repository at the
 /// home folder or above still saves only the file
 /// ([`crate::permission::always_saves`]).
+///
+/// Only a repository this user controls counts (see [`trusted_repository`]):
+/// a `.git` another user planted in a shared folder such as `/tmp` must not
+/// turn one approval into all of it. A shared folder itself saves only the
+/// file ([`crate::permission::shared_dir`]).
 pub fn repository_glob(dir: &Path) -> String {
     let root = crate::vcs::marker(dir)
         .map(|(r, _)| r)
+        .filter(|r| trusted_repository(r))
         .unwrap_or_else(|| dir.to_path_buf());
     format!("{}/*", root.display())
+}
+
+/// Whether `root` (a folder [`crate::vcs::marker`] found) is a repository
+/// this user controls: the folder is owned by this user and not
+/// world-writable, and its marker is a real `.git` or `.hg` directory, or a
+/// `.git` file (a worktree's) naming an existing git directory.
+pub fn trusted_repository(root: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions.
+        let me = unsafe { libc::geteuid() };
+        let owned = |m: &std::fs::Metadata| m.uid() == me && m.mode() & 0o002 == 0;
+        let Ok(dir) = std::fs::metadata(root) else {
+            return false;
+        };
+        if !dir.is_dir() || !owned(&dir) || crate::permission::shared_dir(root) {
+            return false;
+        }
+        let is_owned_dir =
+            |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && owned(&m));
+        let git = root.join(".git");
+        match std::fs::symlink_metadata(&git) {
+            Ok(m) if m.is_dir() => owned(&m),
+            Ok(m) if m.is_file() => {
+                if !owned(&m) {
+                    return false;
+                }
+                let Ok(text) = std::fs::read_to_string(&git) else {
+                    return false;
+                };
+                let Some(target) = text.lines().next().and_then(|l| l.strip_prefix("gitdir:"))
+                else {
+                    return false;
+                };
+                let target = Path::new(target.trim());
+                let target = if target.is_absolute() {
+                    target.to_path_buf()
+                } else {
+                    root.join(target)
+                };
+                std::fs::metadata(&target).is_ok_and(|m| m.is_dir())
+            }
+            Ok(_) => false,
+            Err(_) => is_owned_dir(&root.join(".hg")),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1095,6 +1153,89 @@ mod tests {
     use super::testing::Env;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_a_repository_this_user_controls_widens_an_external_approval() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().canonicalize().unwrap();
+        let mode = |p: &Path, m: u32| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+        };
+        // A real repository: the folder and its .git directory are ours.
+        let repo = base.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        assert!(trusted_repository(&repo));
+        assert_eq!(
+            repository_glob(&repo.join("src")),
+            format!("{}/*", repo.display())
+        );
+        // A worktree's .git file must name an existing git directory.
+        let wt = base.join("wt");
+        std::fs::create_dir_all(wt.join("sub")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /nonexistent/git/dir\n").unwrap();
+        assert!(!trusted_repository(&wt));
+        assert_eq!(
+            repository_glob(&wt.join("sub")),
+            format!("{}/*", wt.join("sub").display())
+        );
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git").display()),
+        )
+        .unwrap();
+        assert!(trusted_repository(&wt));
+        // A .git that is a symlink, or a marker anything can write to, is not.
+        let linked = base.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(repo.join(".git"), linked.join(".git")).unwrap();
+        assert!(!trusted_repository(&linked));
+        let shared = base.join("shared");
+        std::fs::create_dir_all(shared.join(".git")).unwrap();
+        std::fs::create_dir_all(shared.join("victim")).unwrap();
+        mode(&shared, 0o1777);
+        assert!(!trusted_repository(&shared));
+        assert_eq!(
+            repository_glob(&shared.join("victim")),
+            format!("{}/*", shared.join("victim").display())
+        );
+        mode(&shared, 0o755);
+        mode(&shared.join(".git"), 0o777);
+        assert!(!trusted_repository(&shared));
+        mode(&shared.join(".git"), 0o755);
+        assert!(trusted_repository(&shared));
+    }
+
+    #[test]
+    fn always_in_a_shared_folder_saves_only_the_file() {
+        use crate::permission::{always_saves, Request};
+        use std::os::unix::fs::PermissionsExt;
+        let req = |file: &str, save: &str| Request {
+            action: "external_directory".into(),
+            resources: vec![file.into()],
+            save: vec![save.into()],
+            title: String::new(),
+        };
+        for tmp in ["/tmp", "/private/tmp", "/var/tmp"] {
+            let file = format!("{tmp}/x.txt");
+            assert_eq!(always_saves(&req(&file, &format!("{tmp}/*"))), [file]);
+        }
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().canonicalize().unwrap();
+        let file = base.join("x.txt").display().to_string();
+        let glob = format!("{}/*", base.display());
+        assert_eq!(always_saves(&req(&file, &glob)), vec![glob.clone()]);
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert_eq!(always_saves(&req(&file, &glob)), vec![file.clone()]);
+        // A folder that does not exist yet is judged by the one it would be made in.
+        let deeper = base.join("new/y.txt").display().to_string();
+        assert_eq!(
+            always_saves(&req(&deeper, &format!("{}/new/*", base.display()))),
+            [deeper]
+        );
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
 
     // Only a bounded regular file is read: a FIFO or a device is skipped
     // without blocking or reading without end.
