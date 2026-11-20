@@ -428,6 +428,38 @@ turns tabs off (see [configuration](configuration.md#session-tabs-tuitabs));
 they are on by default except inside the herdr multiplexer, and mini mode
 has none. With no mouse, there are no clicks, drags or tab menus.
 
+## The terminal title, notifications and exit
+
+As in OpenCode, the UI keeps the terminal window's title on the shown
+session's: `CS | <title>` (cut to 40 characters), or `CodeSmith` until the
+session has one. `tui.terminal.title: false` leaves the title alone, and
+the `terminal.title.toggle` command (unbound by default) switches it off
+and on. The title is cleared on exit, and when the terminal hangs up
+(`SIGHUP`) the UI closes as on exit.
+
+With `tui.attention` (see
+[configuration](configuration.md#notifications-and-sounds-tuiattention)),
+the UI tells you when a session needs you: a permission request, a
+question, a turn that finished or failed, in any tab. A system
+notification (`OSC 9`, or `OSC 777` in VTE terminals, foot and urxvt;
+passed through tmux) is shown while the terminal is out of focus, and a
+sound plays whatever the focus: the terminal's bell, or a sound file you
+configure. A subagent finishing only sounds. Each request notifies once,
+and a failed turn does not also notify that it is done. Notification text
+is stripped of escape sequences and control characters.
+
+In terminals that show progress reports (Ghostty, Windows Terminal,
+ConEmu), the tab or taskbar shows when a session is working and when one
+waits for you. OpenCode reports each session separately through OpenTUI's
+program status records; CodeSmith reports the summary with `OSC 9;4`.
+
+On exit the UI prints the session and the command that continues it:
+
+```
+  Session   Fix the failing test
+  Continue  codesmith -s ses_19a4b2c3d4e123abc
+```
+
 ## Permission and question dialogs
 
 Permission requests and the agent's questions open as dialogs:

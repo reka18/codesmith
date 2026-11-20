@@ -58,6 +58,45 @@ pub struct Settings {
     pub mini: super::mini::Settings,
     /// `tabs`: the session tabs.
     pub tabs: super::tabs::Settings,
+    /// `terminal.title`: keep the terminal window's title on the session's.
+    pub terminal_title: bool,
+    /// `attention`: system notifications and sounds.
+    pub attention: Attention,
+}
+
+/// The attention sounds, as OpenCode names them.
+pub const SOUND_NAMES: &[&str] = &[
+    "default",
+    "question",
+    "permission",
+    "error",
+    "done",
+    "subagent_done",
+];
+
+/// `tui.attention`, as OpenCode's: whether to show system notifications
+/// and play sounds (both off by default), the volume, and sound files by
+/// event (CodeSmith ships no sounds of its own: without a file, a sound is
+/// the terminal's bell).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attention {
+    pub notifications: bool,
+    pub sound: bool,
+    /// 0 to 1; 0 is silent.
+    pub volume: f64,
+    /// Sound files by name (one of [`SOUND_NAMES`]).
+    pub sounds: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for Attention {
+    fn default() -> Self {
+        Attention {
+            notifications: false,
+            sound: false,
+            volume: 0.4,
+            sounds: Default::default(),
+        }
+    }
 }
 
 /// `tui.diffs`, as OpenCode's `diffs` settings: the source the diff viewer
@@ -91,6 +130,8 @@ impl Default for Settings {
             diffs: Diffs::default(),
             mini: super::mini::Settings::default(),
             tabs: super::tabs::Settings::default(),
+            terminal_title: true,
+            attention: Attention::default(),
         }
     }
 }
@@ -258,6 +299,58 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
                 Some(_) => {
                     errors.push("tui.diffs.view: must be \"auto\", \"split\" or \"unified\"".into())
                 }
+            }
+        }
+    }
+    match get(&v, &["terminal", "title"]) {
+        None => {}
+        Some(b) => match b.as_bool() {
+            Some(b) => s.terminal_title = b,
+            None => errors.push("tui.terminal.title: must be true or false".into()),
+        },
+    }
+    match v.get("attention") {
+        None => {}
+        Some(a) if !a.is_object() => errors.push("tui.attention: must be an object".into()),
+        Some(a) => {
+            for (key, slot) in [
+                ("notifications", &mut s.attention.notifications),
+                ("sound", &mut s.attention.sound),
+            ] {
+                match a.get(key) {
+                    None => {}
+                    Some(b) => match b.as_bool() {
+                        Some(b) => *slot = b,
+                        None => errors.push(format!("tui.attention.{key}: must be true or false")),
+                    },
+                }
+            }
+            match a.get("volume") {
+                None => {}
+                Some(n) => match n.as_f64().filter(|n| (0.0..=1.0).contains(n)) {
+                    Some(n) => s.attention.volume = n,
+                    None => {
+                        errors.push("tui.attention.volume: must be a number from 0 to 1".into())
+                    }
+                },
+            }
+            match a.get("sounds") {
+                None => {}
+                Some(Value::Object(m)) => {
+                    // As in OpenCode, a sound name it does not have is dropped.
+                    for (k, f) in m {
+                        match f.as_str() {
+                            Some(f) if SOUND_NAMES.contains(&k.as_str()) => {
+                                s.attention.sounds.insert(k.clone(), f.to_string());
+                            }
+                            Some(_) => {}
+                            None => errors
+                                .push(format!("tui.attention.sounds.{k}: must be a file path")),
+                        }
+                    }
+                }
+                Some(_) => errors
+                    .push("tui.attention.sounds: must be an object of sound names to files".into()),
             }
         }
     }

@@ -13,6 +13,7 @@
 
 mod app;
 pub(crate) mod attach;
+mod attention;
 #[cfg(test)]
 mod bench;
 mod bridge;
@@ -28,6 +29,7 @@ pub(crate) mod keymap;
 mod markdown;
 mod mention;
 pub(crate) mod mini;
+mod outside;
 #[cfg(test)]
 mod parity;
 #[cfg(test)]
@@ -43,6 +45,7 @@ mod parity_ui;
 pub(crate) mod settings;
 mod tabs;
 mod tabs_host;
+mod term;
 pub(crate) mod theme;
 mod view;
 
@@ -142,6 +145,8 @@ struct Runner {
     /// The open session tabs; the fields above from `app` to `jobs` are
     /// the shown tab's (see `tabs_host`).
     tabs: tabs_host::Host,
+    /// The window title, notifications and program status.
+    outside: outside::Outside,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -439,6 +444,7 @@ impl Runner {
         self.stopping = false;
         self.task = None;
         self.app.busy = false;
+        self.app.ended = Some(app::TurnEnd::Interrupted);
         self.app.drop_forming();
         self.app.notice("interrupted");
         if let Err(e) = self.reload() {
@@ -1004,10 +1010,43 @@ impl Runner {
                     .notice(format!("theme mode: {} (pinned)", self.themes.mode().key()));
             }
             "terminal.suspend" => self.suspend = true,
+            "terminal.title.toggle" => {
+                let on = self.outside.toggle_title();
+                self.app.notice(if on {
+                    "terminal title: on"
+                } else {
+                    "terminal title: off"
+                });
+            }
             "app.clear" => self.clear = true,
             id if id.starts_with("session.tab.") => self.tab_command(id),
             _ => {}
         }
+    }
+
+    /// Bring the title, notifications and program status up to date, and
+    /// write what changed.
+    fn attend(&mut self) {
+        let views = self.tab_views();
+        let title = self.app.header.title.clone();
+        self.outside.observe(views, title.as_deref());
+        for (_, file) in std::mem::take(&mut self.outside.sounds) {
+            match file {
+                Some(f) => outside::play(f, self.outside.attention.volume),
+                None => self.outside.out.push('\x07'),
+            }
+        }
+        self.flush_outside();
+    }
+
+    fn flush_outside(&mut self) {
+        if self.outside.out.is_empty() {
+            return;
+        }
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(std::mem::take(&mut self.outside.out).as_bytes());
+        let _ = out.flush();
     }
 
     async fn handle(&mut self, ev: Ev) {
@@ -1086,6 +1125,14 @@ impl Runner {
             }
             Ev::Paste(s) => self.app.on_paste(&s),
             Ev::Resize => {}
+            Ev::Focus(f) => {
+                self.outside.focus = if f {
+                    attention::Focus::Focused
+                } else {
+                    attention::Focus::Blurred
+                }
+            }
+            Ev::Hangup => self.app.quit = true,
             Ev::Files(f) => {
                 self.app.set_files(f);
             }
@@ -1109,6 +1156,10 @@ impl Runner {
                 self.task = None;
                 self.app.busy = false;
                 self.app.drop_forming();
+                self.app.ended = Some(match &result {
+                    Ok(()) => app::TurnEnd::Done,
+                    Err(e) => app::TurnEnd::Failed(e.clone()),
+                });
                 if let Err(e) = result {
                     self.app.error(e);
                 }
@@ -1233,12 +1284,32 @@ fn model_items(cfg: &config::Config, current: &str) -> Vec<PickItem> {
     items
 }
 
+/// Close as on exit when the terminal hangs up.
+fn spawn_hangup(tx: UnboundedSender<Ev>) {
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let Ok(mut s) = signal(SignalKind::hangup()) else {
+            return;
+        };
+        while s.recv().await.is_some() {
+            if tx.send(Ev::Hangup).is_err() {
+                break;
+            }
+        }
+    });
+    #[cfg(not(unix))]
+    drop(tx);
+}
+
 fn spawn_input(tx: UnboundedSender<Ev>) {
     std::thread::spawn(move || loop {
         let ev = match event::read() {
             Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => Ev::Key(k),
             Ok(Event::Paste(s)) => Ev::Paste(s),
             Ok(Event::Resize(..)) => Ev::Resize,
+            Ok(Event::FocusGained) => Ev::Focus(true),
+            Ok(Event::FocusLost) => Ev::Focus(false),
             Ok(_) => continue,
             Err(_) => break,
         };
@@ -1354,6 +1425,9 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         clear: false,
         diffs: settings::Diffs::default(),
         tabs,
+        outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
+            std::env::var(k).ok()
+        }),
     };
     let keymap = keymap::Keymap::new(&tui.keybinds, tui.leader_timeout, cfg!(unix));
     for w in tui_warnings
@@ -1421,7 +1495,11 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         None => Screen::Full(ratatui::init()),
         Some(_) => Screen::Mini(Box::new(mini_screen(&r.cwd)?)),
     };
-    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let _ = execute!(
+        std::io::stdout(),
+        EnableBracketedPaste,
+        ratatui::crossterm::event::EnableFocusChange
+    );
     if let Some(c) = cursor_style(tui.cursor) {
         let _ = execute!(std::io::stdout(), c);
     }
@@ -1433,11 +1511,13 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         r.themes.set_palette(colors);
     }
     r.apply_theme();
+    spawn_hangup(tx.clone());
     spawn_input(tx);
     let result: Result<()> = async {
         loop {
             r.watch_all();
             r.sync_tabs();
+            r.attend();
             let tick = match &mut screen {
                 Screen::Full(t) => {
                     t.draw(|f| view::draw(f, &r.app))?;
@@ -1492,9 +1572,12 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         // Let it stop writing to the store before the process exits.
         let _ = tokio::time::timeout(Duration::from_secs(2), &mut t).await;
     }
+    r.outside.close();
+    r.flush_outside();
     let _ = execute!(
         std::io::stdout(),
         DisableBracketedPaste,
+        ratatui::crossterm::event::DisableFocusChange,
         ratatui::crossterm::cursor::SetCursorStyle::DefaultUserShape
     );
     let banner = match screen {
@@ -1509,11 +1592,23 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             r.app.mini.as_ref().is_some_and(|s| s.splash)
         }
     };
-    if !r.session_id.is_empty() && !banner {
-        println!(
-            "Session {} — continue with: codesmith -s {}",
-            r.session_id, r.session_id
-        );
+    // What continues the session, once it is in the store.
+    let stored = (!r.session_id.is_empty())
+        .then(open_store)
+        .flatten()
+        .and_then(|db| db.get(&r.session_id).ok().flatten());
+    if let Some(info) = stored.filter(|_| !banner) {
+        let title = info
+            .title
+            .unwrap_or_else(|| tabs::NEW_SESSION_TITLE.to_string());
+        let command = if mini_opts.is_some() {
+            "codesmith mini"
+        } else {
+            "codesmith"
+        };
+        if let Some(text) = term::epilogue(Some((&title, &info.id)), command, None) {
+            println!("{text}");
+        }
     }
     result
 }

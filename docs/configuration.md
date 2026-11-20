@@ -1436,6 +1436,25 @@ The open tabs are kept in `~/.local/share/codesmith/tui-tabs.json`, in
 OpenCode's shape (each tab's `sessionID` and `title`, plus when it was last
 shown).
 
+### Notifications and sounds: `tui.attention`
+
+How the UI [tells you a session needs you](interactive-ui.md#the-terminal-title-notifications-and-exit),
+as OpenCode's `attention` settings; both are off by default:
+
+```jsonc
+{ "tui": { "attention": { "notifications": true, "sound": true, "sounds": { "done": "~/sounds/done.wav" } } } }
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `notifications` | `false` | Show a system notification (through the terminal) while it is out of focus. |
+| `sound` | `false` | Play a sound: the terminal's bell, or the file `sounds` names. |
+| `volume` | `0.4` | From 0 to 1, for sound files (`0` is silent). |
+| `sounds` | `{}` | Sound files by event: `default`, `question`, `permission`, `error`, `done`, `subagent_done`, played with `afplay` on macOS and `paplay` elsewhere (for at most ten seconds). CodeSmith ships no sounds of its own. |
+
+`terminal.title` (default `true`) keeps the terminal window's title on the
+session's.
+
 ### Mini mode: `tui.mini`
 
 What [mini mode](interactive-ui.md#mini-mode) (`codesmith mini`) writes to
@@ -1466,7 +1485,7 @@ OpenCode's first TUI format (its `tui.json`) works here too and is read as
 the current one: `"theme": "name"`, `leader_timeout`, and keybind names
 like `session_list`. A name set both ways takes the command id's value.
 Settings OpenCode has for features CodeSmith lacks (`mouse`, `scroll`,
-`attention`, …) are ignored. A value that does not fit,
+`attention.sound_pack`, …) are ignored. A value that does not fit,
 an unknown command or key, and two configured bindings that clash are
 reported when the UI opens; the default is used instead.
 

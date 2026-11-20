@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 304 | 263 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 326 | 241 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 8 | 9 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **571** | **708** | **2357** | **259** |
+| **Total** | **4637** | **742** | **593** | **686** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -573,6 +573,28 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/thinking` | leaves content without a leading title in its body | after a fix | oc_leaves_content_without_a_leading_title_in_its_body |
 | `util/src/session-mention` | session tokens round-trip independently of the title | after a fix | oc_session_tokens_round_trip_independently_of_the_title (`tui/mention.rs`; adapted: CodeSmith's 17-character IDs are mentions too) |
 | `util/src/session-mention` | does not parse malformed or embedded IDs: %s (7 cases) | after a fix | oc_does_not_parse_malformed_or_embedded_ids |
+| `tui/test/app-lifecycle` | boots on the simulation renderer with the terminal title enabled | after a fix | oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summary (e2e; adapted: in a pty) |
+| `tui/test/app-lifecycle` | SIGHUP clears title and disposes scoped resources once | after a fix | oc_sighup_clears_the_title_and_closes_the_ui (e2e; adapted: the UI closes as on exit) |
+| `tui/test/app-lifecycle` | session lifecycle updates the terminal title and prints the epilogue after cleanup | after a fix | oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summary (e2e) |
+| `tui/test/app-lifecycle` | session title generated while an untitled session is loading remains visible | after a fix | oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summary (e2e; adapted: the title comes with the turn that generated it and the window title never goes back) |
+| `tui/test/app-lifecycle` | automatic rename refreshes the displayed title before settling, even without a renamed event | after a fix | oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summary (e2e; adapted: the header and window title take the title from the turn's end, no rename event) |
+| `tui/test/util/presentation` | prints nothing without a session or update | after a fix | oc_prints_nothing_without_a_session_or_update |
+| `tui/test/util/presentation` | formats session continuation summary | after a fix | oc_formats_the_session_continuation_summary |
+| `tui/test/util/presentation` | tells the user to start OpenCode again after an update | after a fix | oc_tells_the_user_to_start_codesmith_again_after_an_update (adapted: no update check yet, so nothing passes a version) |
+| `tui/test/util/presentation` | keeps the session continuation after an update | after a fix | oc_keeps_the_session_continuation_after_an_update |
+| `tui/test/context/program-status` | reports a blocked session on the root and its own record | after a fix | oc_reports_a_blocked_session_on_the_root_and_its_own_record (adapted: the root goes out as `OSC 9;4`, see below) |
+| `tui/test/context/program-status` | summarizes several pending sessions and clears resolved ones | after a fix | oc_summarizes_several_pending_sessions_and_clears_resolved_ones |
+| `tui/test/context/program-status` | keeps record IDs within the protocol's name rules | after a fix | oc_keeps_record_ids_within_the_protocols_name_rules |
+| `tui/test/context/program-status` | clips long titles to the protocol byte limit | after a fix | oc_clips_long_titles_to_the_protocol_byte_limit |
+| `tui/test/cli/cmd/tui/notifications` | shows execution failures as session-scoped toasts without needing an assistant message | after a fix | oc_shows_execution_failures_as_session_scoped_toasts (`tui/attention.rs`; adapted: a usage limit stands for OpenCode's free and Go limits, and the UI shows the failure as its error row) |
+| `tui/test/cli/cmd/tui/notifications` | notifies for form and permission requests with blurred notifications and always-on sounds | after a fix | oc_notifies_for_forms_and_permissions (adapted: a question is OpenCode's form) |
+| `tui/test/cli/cmd/tui/notifications` | notifies for global forms once the TUI can render them | after a fix | oc_notifies_for_global_forms |
+| `tui/test/cli/cmd/tui/notifications` | dedupes pending forms and permissions until they are resolved | after a fix | oc_dedupes_pending_forms_and_permissions_until_resolved |
+| `tui/test/cli/cmd/tui/notifications` | notifies for terminal lifecycle events even when attached after execution started | after a fix | oc_notifies_for_lifecycle_events_attached_after_start |
+| `tui/test/cli/cmd/tui/notifications` | uses sound-only notifications and subagent_done sound for subagent sessions | after a fix | oc_subagents_only_sound |
+| `tui/test/cli/cmd/tui/notifications` | plays done only once none of the session's direct children is running | after a fix | oc_plays_done_once_no_direct_child_runs |
+| `tui/test/cli/cmd/tui/notifications` | notifies session errors once and suppresses the following idle done notification | after a fix | oc_notifies_errors_once_and_suppresses_the_done |
+| `tui/test/config` | defines attention sound names | after a fix | oc_defines_attention_sound_names |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -764,23 +786,14 @@ transport and its tool presentation.
 - `cli/test/acp/translate`: skips a running compaction on replay
 - `cli/test/acp/translate`: replays a compaction as a marker when the client lacks the capability
 
-### tui: notifications (toasts, sounds, completion notices) (19)
+### tui: toasts and completion notices (10)
 
 - `tui/test/completion-notices`: shell completion notices do not navigate at width %s (2 cases)
 - `tui/test/completion-notices`: subagent completion notices navigate to the child session (2 cases)
 - `tui/test/plugin-toast`: toast for %s's family shows as-is while %s is open (3 cases)
-- `tui/test/cli/cmd/tui/notifications`: shows execution failures as session-scoped toasts without needing an assistant message
-- `tui/test/cli/cmd/tui/notifications`: notifies for form and permission requests with blurred notifications and always-on sounds
-- `tui/test/cli/cmd/tui/notifications`: notifies for global forms once the TUI can render them
-- `tui/test/cli/cmd/tui/notifications`: dedupes pending forms and permissions until they are resolved
-- `tui/test/cli/cmd/tui/notifications`: notifies for terminal lifecycle events even when attached after execution started
-- `tui/test/cli/cmd/tui/notifications`: uses sound-only notifications and subagent_done sound for subagent sessions
-- `tui/test/cli/cmd/tui/notifications`: plays done only once none of the session's direct children is running
-- `tui/test/cli/cmd/tui/notifications`: notifies session errors once and suppresses the following idle done notification
 - `tui/test/cli/tui/toast`: activation runs an action and keeps a queued toast paused
 - `tui/test/cli/tui/toast`: activation dismisses a toast without an action
 - `tui/test/cli/tui/toast`: toast hides only the terminal cursor it covers, until dismissed
-- `tui/test/config`: defines attention sound names
 
 ### tui: persistent prompt history and drafts (16)
 
@@ -899,14 +912,6 @@ transport and its tool presentation.
 - `tui/test/feature-plugins/sidebar-context`: sidebar omits context before usage is available
 - `tui/test/feature-plugins/sidebar-context`: sidebar shows available context usage
 
-### tui: terminal title (5)
-
-- `tui/test/app-lifecycle`: boots on the simulation renderer with the terminal title enabled
-- `tui/test/app-lifecycle`: SIGHUP clears title and disposes scoped resources once
-- `tui/test/app-lifecycle`: session lifecycle updates the terminal title and prints the epilogue after cleanup
-- `tui/test/app-lifecycle`: session title generated while an untitled session is loading remains visible
-- `tui/test/app-lifecycle`: automatic rename refreshes the displayed title before settling, even without a renamed event
-
 ### tui: MCP dialog (status, OAuth) (4)
 
 - `tui/test/cli/tui/dialog-mcp`: starts OAuth with %s for an MCP server requiring authentic (2 cases)
@@ -917,20 +922,6 @@ transport and its tool presentation.
 
 - `tui/test/copy-session-id`: Copy session ID from Ctrl+P (%s) (3 cases)
 - `tui/test/cli/tui/command-palette`: searches settings globally and opens the matching setting
-
-### tui: exit summary with the resume command (4)
-
-- `tui/test/util/presentation`: prints nothing without a session or update
-- `tui/test/util/presentation`: formats session continuation summary
-- `tui/test/util/presentation`: tells the user to start OpenCode again after an update
-- `tui/test/util/presentation`: keeps the session continuation after an update
-
-### tui: terminal status reporting (4)
-
-- `tui/test/context/program-status`: reports a blocked session on the root and its own record
-- `tui/test/context/program-status`: summarizes several pending sessions and clears resolved ones
-- `tui/test/context/program-status`: keeps record IDs within the protocol's name rules
-- `tui/test/context/program-status`: clips long titles to the protocol byte limit
 
 ### cli: worktree from a subfolder (3)
 

@@ -383,6 +383,29 @@ pub struct App {
     /// The titles of sessions the transcript mentions, by ID (`None` for
     /// one that is archived or not in the store), which its links show.
     pub session_labels: std::collections::HashMap<String, Option<String>>,
+    /// Permission requests and questions shown so far (each one's number,
+    /// for the notifications).
+    pub asks: u64,
+    /// How the last turn ended, until the notifications have seen it.
+    pub ended: Option<TurnEnd>,
+    /// Subagents that started or ended, until the notifications have seen
+    /// them.
+    pub child_log: Vec<ChildMark>,
+}
+
+/// How a turn ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnEnd {
+    Done,
+    Failed(String),
+    Interrupted,
+}
+
+/// A subagent starting (with its title) or ending (with its status).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChildMark {
+    Started { id: String, title: String },
+    Ended { id: String, end: TurnEnd },
 }
 
 /// A running subagent, as the UI tracks it.
@@ -690,6 +713,11 @@ impl App {
         out
     }
 
+    /// A subagent of this tab's session still runs.
+    pub fn running_child(&self) -> bool {
+        !self.children.is_empty()
+    }
+
     /// The share of the context window in use, as a percentage.
     pub fn context_percent(&self) -> Option<u64> {
         let limit = self.header.context_limit.filter(|l| *l > 0)?;
@@ -884,9 +912,21 @@ impl App {
                         self.sub_call = Some(t.id.clone());
                     }
                 }
+                self.child_log.push(ChildMark::Started {
+                    id: id.clone(),
+                    title: title.clone(),
+                });
                 self.children.push(Child { id, agent, title });
             }
             Ev::ChildEnd { id, status, error } => {
+                self.child_log.push(ChildMark::Ended {
+                    id: id.clone(),
+                    end: match status.as_str() {
+                        "completed" => TurnEnd::Done,
+                        "interrupted" => TurnEnd::Interrupted,
+                        _ => TurnEnd::Failed(error.clone().unwrap_or_else(|| "failed".into())),
+                    },
+                });
                 if let Some(at) = self.children.iter().rposition(|c| c.id == id) {
                     self.children.truncate(at);
                 }
@@ -924,6 +964,7 @@ impl App {
                 self.context = u.input + u.cache_read + u.cache_write + u.output;
             }
             Ev::Permission(req, reply) => {
+                self.asks += 1;
                 // Prompts come in order with the events, so the asker is
                 // the innermost running subagent, when one runs.
                 let from = self.children.last().map(|c| {
@@ -965,6 +1006,7 @@ impl App {
                 });
             }
             Ev::Question(prompts, reply) => {
+                self.asks += 1;
                 self.modal = Some(Modal::Question {
                     prompts,
                     idx: 0,
@@ -976,6 +1018,8 @@ impl App {
             Ev::Key(_)
             | Ev::Paste(_)
             | Ev::Resize
+            | Ev::Focus(_)
+            | Ev::Hangup
             | Ev::Files(_)
             | Ev::LocalModels
             | Ev::Done { .. }
@@ -1155,6 +1199,7 @@ impl App {
                 return Some(Some(Action::Quit));
             }
             "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
+            "terminal.title.toggle" => return Some(Some(Action::Run("terminal.title.toggle"))),
             // Tab commands while tabs are on, as OpenCode enables them.
             id if id.starts_with("session.tab.") => {
                 self.tabs.as_ref()?;

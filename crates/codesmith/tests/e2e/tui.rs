@@ -199,6 +199,25 @@ impl Ui {
         self.stdin.flush().await.unwrap();
     }
 
+    /// Read all the UI writes until it exits.
+    pub(crate) async fn read_to_end(&mut self) {
+        let mut buf = [0u8; 8192];
+        let (stdout, term, screen) = (&mut self.stdout, &mut self.term, &mut self.screen);
+        let _ = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        term.process(&buf[..n]);
+                        screen.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    }
+                }
+            }
+        })
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(20), self.child.wait()).await;
+    }
+
     /// Quit with Ctrl+D on the empty prompt.
     pub(crate) async fn quit(mut self) {
         self.quit_reading().await;
@@ -1015,4 +1034,80 @@ async fn the_model_picker_lists_discovered_local_models() {
     ui.send(b"\x1b").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     ui.quit().await;
+}
+
+// app-lifecycle.test.tsx: "boots on the simulation renderer with the
+// terminal title enabled", "session lifecycle updates the terminal title
+// and prints the epilogue after cleanup" and "session title generated
+// while an untitled session is loading remains visible" (adapted: the
+// title comes with the turn that generated it; the window title follows
+// it and never goes back, then is cleared on exit, before the summary).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summary() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Greeting").then(
+        "hello",
+        M::tools().and(M::prompt("say hello")),
+        Reply::text("Hello from the scripted model."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--prompt 'say hello'") else {
+        return;
+    };
+    ui.wait_for("Hello from the scripted model.").await;
+    ui.wait_for("110 tokens").await;
+    ui.quit_reading().await;
+    let raw = ui.screen.clone();
+    let boot = raw.find("\x1b]0;CodeSmith\x07").expect("the boot title");
+    let titled = raw
+        .find("\x1b]0;CS | Greeting\x07")
+        .expect("the session title");
+    let cleared = raw.rfind("\x1b]0;\x07").expect("the title cleared on exit");
+    assert!(boot < titled && titled < cleared, "{raw:?}");
+    assert!(!raw[titled..].contains("\x1b]0;CodeSmith\x07"), "{raw:?}");
+    let id = e.store().list(None, false).unwrap()[0].id.clone();
+    let after = plain(&raw[cleared..]);
+    assert!(after.contains("Session Greeting"), "{after}");
+    assert!(
+        after.contains(&format!("Continue codesmith -s {id}")),
+        "{after}"
+    );
+    m.assert_done();
+}
+
+// app-lifecycle.test.tsx: "SIGHUP clears title and disposes scoped
+// resources once" (adapted: the UI closes as on exit).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_sighup_clears_the_title_and_closes_the_ui() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("/help for commands").await;
+    let script = ui.child.id().unwrap();
+    // `script` runs the UI as its child.
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new("pgrep")
+            .args(["-P", &script.to_string()])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let pid: i32 = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+        .expect("the UI's process");
+    // SAFETY: signalling a process this test started.
+    unsafe {
+        libc::kill(pid, libc::SIGHUP);
+    }
+    ui.read_to_end().await;
+    assert!(ui.screen.contains("\x1b]0;\x07"), "{:?}", ui.screen);
 }

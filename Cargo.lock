@@ -626,6 +626,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde_json",
+ "sha2",
  "similar",
  "syntect",
  "tempfile",

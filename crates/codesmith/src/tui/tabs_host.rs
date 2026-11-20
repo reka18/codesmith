@@ -412,6 +412,40 @@ impl Runner {
         }
     }
 
+    /// How every open tab stands, for the title, notifications and
+    /// program status (what ended or started since is taken).
+    pub(super) fn tab_views(&mut self) -> Vec<super::outside::TabView> {
+        let view = |key: u64, app: &mut App, session: &str, stopping: bool| {
+            let ask = match attention(app) {
+                Some(Attention::Permission) => Some((super::term::Kind::Permission, app.asks)),
+                Some(Attention::Question) => Some((super::term::Kind::Question, app.asks)),
+                None => None,
+            };
+            super::outside::TabView {
+                key,
+                session: session.to_string(),
+                title: app.header.title.clone(),
+                busy: app.busy || stopping,
+                ask,
+                ended: app.ended.take(),
+                children: std::mem::take(&mut app.child_log),
+                running_child: app.running_child(),
+            }
+        };
+        let mut out = Vec::new();
+        for (i, e) in self.tabs.entries.iter_mut().enumerate() {
+            match &mut e.state {
+                State::Shown => {}
+                State::Live(s) => out.push(view(e.id, &mut s.app, &s.session_id, s.stopping)),
+                State::Dormant => continue,
+            }
+            if i == self.tabs.shown {
+                out.push(view(e.id, &mut self.app, &self.session_id, self.stopping));
+            }
+        }
+        out
+    }
+
     /// Before each frame: every open session watches its background
     /// commands (and resumes when one finished), shown or not.
     pub(super) fn watch_all(&mut self) {

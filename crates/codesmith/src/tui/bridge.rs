@@ -21,6 +21,10 @@ pub enum Ev {
     Diff(Box<super::diff_view::Response>),
     Paste(String),
     Resize,
+    /// The terminal gained (`true`) or lost the focus.
+    Focus(bool),
+    /// The terminal went away (`SIGHUP`): close as on exit.
+    Hangup,
     /// The project's files, listed in the background for `@` completion.
     Files(Vec<String>),
     /// The local servers were asked for their models (the model picker

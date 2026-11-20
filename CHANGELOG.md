@@ -64,6 +64,13 @@ replays of its recorded provider traffic.
   and `tui.tabs` takes OpenCode's `mode`, `scope`, `layout` and
   `indicators`. Switching sessions no longer stops the old one's
   background commands; closing its tab does.
+- **Terminal title, notifications and exit summary:** the window title
+  follows the shown session (`tui.terminal.title`); `tui.attention` shows
+  system notifications (`OSC 9`/`777`) and plays sounds when a permission,
+  a question, a finished or failed turn needs you, in any tab; terminals
+  that read progress reports show when a session works or waits; on exit
+  the session and the command that continues it are printed. Mentions of
+  other sessions (`ses_…`) in replies are shown with their titles.
 - **Mini mode:** `codesmith mini` is OpenCode's split-footer interface:
   finished transcript rows are written once into the terminal's own
   scrollback (searchable and selectable after exit) while a live footer
