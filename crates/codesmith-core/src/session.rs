@@ -168,6 +168,48 @@ pub const DEFAULT_MAX_STEPS: u32 = 200;
 const TITLE_MAX_TOKENS: u32 = 256;
 const SUMMARY_SYSTEM: &str = "You are a helpful assistant that writes concise, structured summaries of coding sessions so another agent can resume the work.";
 
+/// Variant names that are reasoning efforts (OpenCode's `ReasoningEfforts`).
+const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// The model spec a stored session's history last ran with: its latest
+/// visible step's, with the variant of an effort update stored after that
+/// step (written for a turn that then made no step).
+fn last_step_model(entries: &[store::Entry]) -> Option<String> {
+    let hidden = store::hidden_ranges(entries);
+    let mut update: Option<Option<String>> = None;
+    for e in entries.iter().rev() {
+        if hidden
+            .iter()
+            .any(|(from, to)| e.seq >= *from && e.seq < *to)
+        {
+            continue;
+        }
+        match &e.record {
+            Record::Message { message } if update.is_none() => {
+                if let (Role::System, [Part::Effort { effort, .. }]) =
+                    (&message.role, message.parts.as_slice())
+                {
+                    update = Some(effort.clone());
+                }
+            }
+            Record::Step { model, .. } => {
+                return Some(match update {
+                    None => model.clone(),
+                    Some(effort) => {
+                        let base = crate::config::split_variant(model).0;
+                        match effort {
+                            Some(v) => format!("{base}#{v}"),
+                            None => base.to_string(),
+                        }
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// A stored session being continued: its row and its history with sequence numbers.
 type Resumed = (Info, Vec<(Option<i64>, Message)>);
 
@@ -198,6 +240,9 @@ pub struct Session {
     pub messages: Vec<Message>,
     /// Store sequence number of each message (`None` for a checkpoint).
     seqs: Vec<Option<i64>>,
+    /// The model spec the history last ran with (its latest step's), to
+    /// tell a variant switch since then: see [`Session::effort_switch`].
+    ran_with: Option<String>,
     pub usage: Usage,
     pub title: Option<String>,
     last_prompt_tokens: u64,
@@ -287,11 +332,13 @@ impl Session {
     ) -> Result<Session> {
         let config = &loaded.config;
         let mut seen = 0;
+        let mut ran_with = None;
         let resumed: Option<Resumed> = match (&opts.resume, &store) {
             (Some(id), Some(s)) => {
                 let info = s.get(id)?.ok_or_else(|| anyhow!("no session {id}"))?;
                 let entries = s.entries(id)?;
                 seen = entries.last().map_or(0, |e| e.seq);
+                ran_with = last_step_model(&entries);
                 Some((info, store::history_with_seqs(&entries)))
             }
             (Some(_), None) => {
@@ -417,6 +464,7 @@ impl Session {
             tools,
             messages,
             seqs,
+            ran_with,
             usage,
             title,
             last_prompt_tokens: 0,
@@ -495,6 +543,7 @@ impl Session {
                 let (seqs, messages) = store::history_with_seqs(&entries).into_iter().unzip();
                 self.messages = messages;
                 self.seqs = seqs;
+                self.ran_with = last_step_model(&entries);
                 if let Some(info) = st.get(&self.id)? {
                     self.usage = info.usage;
                 }
@@ -503,6 +552,40 @@ impl Session {
             }
         }
         Ok(Some(lease))
+    }
+
+    /// The effort update a variant switch since the history last ran makes
+    /// (OpenCode lowers its `model-switched` message the same way): on the
+    /// same model, from one effort variant (or the default) to another.
+    /// Routes that take it natively keep the request's top-level effort,
+    /// and with it the cached prefix, as it was; the others drop it and
+    /// send the new effort. Other switches (another model, or a variant
+    /// that is not an effort name) make none.
+    pub fn effort_switch(&self) -> Option<Message> {
+        if self.messages.is_empty() {
+            return None;
+        }
+        let (from_model, from) = crate::config::split_variant(self.ran_with.as_deref()?);
+        let (to_model, to) = crate::config::split_variant(&self.model_spec);
+        let effort = |v: Option<&str>| match v {
+            None | Some("default") => Some(None),
+            Some(v) if EFFORTS.contains(&v) => Some(Some(v.to_string())),
+            Some(_) => None,
+        };
+        let (effort, previous) = (effort(to)?, effort(from)?);
+        (from_model == to_model && effort != previous).then(|| Message {
+            role: Role::System,
+            parts: vec![Part::Effort { effort, previous }],
+        })
+    }
+
+    /// Store the effort update of a variant switch, if there was one.
+    fn note_effort_switch(&mut self) -> Result<()> {
+        if let Some(m) = self.effort_switch() {
+            self.push(m)?;
+        }
+        self.ran_with = Some(self.model_spec.clone());
+        Ok(())
     }
 
     /// Save a message (creating the session row on first use) and keep it in memory.
@@ -777,6 +860,7 @@ impl Session {
         if let Some(results) = runner::unsettled(&self.messages) {
             self.push(results)?;
         }
+        self.note_effort_switch()?;
         self.turn.stopped = None;
         // Commands that finished since the last turn ended come first, in
         // the order things happened.
@@ -867,6 +951,7 @@ impl Session {
                 model: self.model_spec.clone(),
                 usage,
             })?;
+            self.ran_with = Some(self.model_spec.clone());
             crate::plugin::active().event(
                 &self.loaded.config,
                 &crate::plugin::Event::StepEnd {
@@ -1241,6 +1326,7 @@ impl Session {
         if let Some(results) = runner::unsettled(&self.messages) {
             self.push(results)?;
         }
+        self.note_effort_switch()?;
         self.turn.stopped = None;
         let result = self.run_steps(sink).await;
         // Another end tree for the same turn: undo then covers these changes too.

@@ -272,8 +272,10 @@ OpenCode's `effort-updates.test.ts`, not counted above)
   effort drops its updates. Other routes drop the updates, and
   `normalize_tool_history` holds them after pending results like other
   system updates. The Anthropic message tail's cache marker skips a
-  trailing update. Sessions do not write effort updates yet: a variant
-  switch still changes the request's effort.
+  trailing update. A session writes one (stored) when its variant changes
+  between turns on the same model, from one effort name or the default to
+  another, as OpenCode lowers its `model-switched` message
+  (`codesmith-core/tests/effort_session.rs`).
 
 Prompt caching (`cache.rs`, every protocol), on by default as in OpenCode
 - `Request.cache` is OpenCode's cache policy: `auto` (the default), off, or

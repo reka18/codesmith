@@ -323,6 +323,14 @@ in the UI, and editors over ACP show them as an Effort option (see
 `anthropic/claude-sonnet-4-5#high`, `openai/gpt-5#low` and
 `google/gemini-3-pro-preview#high`.
 
+Switching between effort variants (`none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, or back to the default) of the same model in a
+running session stores an effort update in the conversation, as OpenCode
+does. Models that take it in place (Claude Opus 5, Claude 5.1 and later,
+GPT-6 and later on Responses) keep the effort the conversation started with
+at the top of the request, so its prompt cache survives the switch; other
+models get the new effort for the whole request.
+
 ```jsonc
 "models": { "gpt-5": {
   "options": { "textVerbosity": "low" },
