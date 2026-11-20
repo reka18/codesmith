@@ -1,5 +1,18 @@
 //! Session titles, generated from the first message. The prompt is ported
-//! from OpenCode's hidden `title` agent.
+//! from OpenCode's hidden `title` agent, and the rules are pinned to
+//! OpenCode's `SessionTitle` by the `oc_title_*` tests (from
+//! `packages/core/test/session-title.test.ts`; the session-level ones are in
+//! `tests/parity.rs`).
+//!
+//! Deliberate differences:
+//! - When the model fails or replies with nothing, the title falls back to
+//!   the message's first line, so a session is never listed untitled;
+//!   OpenCode leaves it untitled and tries again on the next turn.
+//! - Beyond OpenCode's first-non-empty-line rule, a `Title:` label and
+//!   wrapping quotes, emphasis and a trailing period are removed.
+//! - The title is written by the session's own model (no small-model or
+//!   variant selection, no title hooks, no regeneration from later history),
+//!   and a very long first message is clipped to its start and end.
 
 pub const SYSTEM: &str = r#"You name conversations so the user can find them later in a list of past sessions.
 
@@ -22,6 +35,7 @@ Examples:
 "Investigate https://github.com/acme/app/issues/412, don't make edits" -> Issue #412
 "hey" -> Greeting"#;
 
+/// The longest title, in UTF-16 code units as OpenCode counts it.
 pub const MAX_CHARS: usize = 100;
 
 pub fn request(first_message: &str) -> String {
@@ -53,15 +67,26 @@ pub fn clean(reply: &str) -> Option<String> {
     if line.is_empty() {
         return None;
     }
-    Some(if line.chars().count() > MAX_CHARS {
-        line.chars()
-            .take(MAX_CHARS)
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    } else {
-        line.to_string()
-    })
+    Some(truncate(line))
+}
+
+/// OpenCode's title truncation: over [`MAX_CHARS`] UTF-16 units, keep the
+/// first `MAX_CHARS - 3` units (never half a character) and add `...`.
+pub fn truncate(title: &str) -> String {
+    if title.encode_utf16().count() <= MAX_CHARS {
+        return title.to_string();
+    }
+    let mut units = 0;
+    let mut out = String::new();
+    for c in title.chars() {
+        units += c.len_utf16();
+        if units > MAX_CHARS - 3 {
+            break;
+        }
+        out.push(c);
+    }
+    out.push_str("...");
+    out
 }
 
 /// A fallback title when the model gives none: the message's first line, shortened.
@@ -98,7 +123,10 @@ mod tests {
         );
         assert_eq!(clean("**Greeting**").as_deref(), Some("Greeting"));
         assert_eq!(clean("   \n"), None);
-        assert_eq!(clean(&"x".repeat(300)).unwrap().len(), MAX_CHARS);
+        assert_eq!(
+            clean(&"x".repeat(300)).unwrap(),
+            format!("{}...", "x".repeat(97))
+        );
     }
 
     #[test]
@@ -115,5 +143,42 @@ mod tests {
             r.contains("<message>\nhey\n</message>") && r.ends_with("Reply with only the title.")
         );
         assert!(!SYSTEM.to_lowercase().contains("opencode"));
+    }
+
+    // --- Ported from OpenCode's session-title tests (`oc_title_*`). ---
+
+    #[test]
+    fn oc_title_clips_a_long_title_without_splitting_an_emoji() {
+        let b = "b".repeat(20);
+        for (prefix, stored) in [
+            (95, format!("{}😀...", "a".repeat(95))),
+            (96, format!("{}...", "a".repeat(96))),
+            (97, format!("{}...", "a".repeat(97))),
+        ] {
+            let reply = format!("{}😀{b}", "a".repeat(prefix));
+            assert_eq!(clean(&reply).unwrap(), stored, "{prefix}");
+        }
+        let exact = "x".repeat(MAX_CHARS);
+        assert_eq!(truncate(&exact), exact, "100 units fit");
+    }
+
+    #[test]
+    fn oc_title_takes_the_first_non_empty_line() {
+        assert_eq!(
+            clean("Generated Title\n").as_deref(),
+            Some("Generated Title")
+        );
+        assert_eq!(
+            clean("\n  Read-only performance investigation  \nmore").as_deref(),
+            Some("Read-only performance investigation")
+        );
+    }
+
+    #[test]
+    fn oc_title_frames_the_message_as_text_to_name() {
+        assert_eq!(
+            request("Help me debug the failing build"),
+            "Here is the first message of the conversation:\n\n<message>\nHelp me debug the failing build\n</message>\n\nReply with only the title."
+        );
     }
 }

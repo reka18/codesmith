@@ -4,12 +4,28 @@
 //!   1. `<config dir>/codesmith.json[c]` (global)
 //!   2. the file named by `$CODESMITH_CONFIG`
 //!   3. from the project root down to the working directory, each folder's
-//!      `codesmith.json[c]` and `.codesmith/codesmith.json[c]`
-//!      (skipped when `$CODESMITH_DISABLE_PROJECT_CONFIG` is set)
-//!   4. inline JSON in `$CODESMITH_CONFIG_CONTENT`
+//!      `codesmith.json[c]`
+//!   4. then, in the same order, each folder's `.codesmith/codesmith.json[c]`
+//!      (3 and 4 are skipped when `$CODESMITH_DISABLE_PROJECT_CONFIG` is set)
+//!   5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 //!
 //! Objects merge key by key; `permissions` and `instructions` lists append,
-//! so a later file's rules come after (and so override) earlier ones.
+//! so a later file's rules come after (and so override) earlier ones. A file
+//! reached twice loads once.
+//!
+//! Pinned to OpenCode's config loading by the `oc_config_*` tests (ported
+//! from `packages/core/test/config/config.test.ts` and `model.test.ts`).
+//! Deliberate differences:
+//! - Only `codesmith.json[c]` and `.codesmith/` are read, never
+//!   `opencode.json`; there is no system, MDM, well-known or integration
+//!   config, no v1 format migration (so `normalization.test.ts` has no
+//!   counterpart) and no live reload or file watching.
+//! - The project walk stops at the project root (the nearest `.git`), where
+//!   OpenCode keeps walking to the filesystem root.
+//! - A file that does not parse is an error naming the file. OpenCode skips
+//!   it and loads the rest; skipping silently could drop `deny` rules.
+//! - Named maps (`providers`, `agents`, `commands`) are ordered by key, not by
+//!   source order, and model references have no `#variant` suffix.
 
 use crate::paths;
 use crate::permission::Rule;
@@ -65,6 +81,8 @@ pub struct Config {
     pub websearch: crate::tool::websearch::WebSearchConfig,
     /// Commands defined inline: name → template and options.
     pub commands: BTreeMap<String, crate::command::Command>,
+    /// When to compact and how much recent history to keep verbatim.
+    pub compaction: crate::compaction::Settings,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -174,22 +192,56 @@ pub fn project_root(dir: &Path) -> PathBuf {
         .to_path_buf()
 }
 
+/// Where [`load_from`] looks. [`Sources::from_env`] is what [`load`] uses.
+#[derive(Debug, Clone)]
+pub struct Sources {
+    /// The global config folder (`codesmith.json[c]` there loads first).
+    pub global_dir: PathBuf,
+    /// An explicit file (`$CODESMITH_CONFIG`), above the global config.
+    pub file: Option<PathBuf>,
+    /// Inline JSON (`$CODESMITH_CONFIG_CONTENT`), above everything.
+    pub content: Option<String>,
+    /// Whether to look for project files (`$CODESMITH_DISABLE_PROJECT_CONFIG` turns it off).
+    pub project: bool,
+}
+
+impl Sources {
+    pub fn from_env() -> Sources {
+        Sources {
+            global_dir: paths::config_dir(),
+            file: std::env::var_os("CODESMITH_CONFIG").map(PathBuf::from),
+            content: std::env::var("CODESMITH_CONFIG_CONTENT").ok(),
+            project: std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_none(),
+        }
+    }
+}
+
 /// Config file candidates in precedence order (lowest first).
 pub fn candidates(cwd: &Path, root: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = NAMES.iter().map(|n| paths::config_dir().join(n)).collect();
-    if let Some(p) = std::env::var_os("CODESMITH_CONFIG") {
-        out.push(PathBuf::from(p));
+    candidates_from(cwd, root, &Sources::from_env())
+}
+
+/// Candidates for `sources`: global, explicit file, then every folder's
+/// `codesmith.json[c]` from the project root down to `cwd`, then every
+/// folder's `.codesmith/codesmith.json[c]` in the same order (as OpenCode
+/// ranks its `.opencode/` folders above all plain project files).
+pub fn candidates_from(cwd: &Path, root: &Path, sources: &Sources) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = NAMES.iter().map(|n| sources.global_dir.join(n)).collect();
+    if let Some(p) = &sources.file {
+        out.push(p.clone());
     }
-    if std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_none() {
+    if sources.project {
         let mut dirs: Vec<&Path> = cwd
             .ancestors()
             .take_while(|d| d.starts_with(root))
             .collect();
         dirs.reverse();
-        for d in dirs {
+        for d in &dirs {
             for n in NAMES {
                 out.push(d.join(n));
             }
+        }
+        for d in &dirs {
             for n in NAMES {
                 out.push(d.join(".codesmith").join(n));
             }
@@ -199,13 +251,25 @@ pub fn candidates(cwd: &Path, root: &Path) -> Vec<PathBuf> {
 }
 
 pub fn load(cwd: &Path) -> Result<Loaded> {
+    load_from(cwd, &Sources::from_env())
+}
+
+pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     let root = project_root(cwd);
     let mut merged = Value::Object(Map::new());
-    let mut files = Vec::new();
-    for path in candidates(cwd, &root) {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for path in candidates_from(cwd, &root, sources) {
         if !path.is_file() {
             continue;
         }
+        // A file reached twice (the project walk passing through the global
+        // folder, or `$CODESMITH_CONFIG` naming a project file) loads once.
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.contains(&canonical) {
+            continue;
+        }
+        seen.push(canonical);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let v = parse(&text, path.parent().unwrap_or(Path::new(".")))
@@ -213,10 +277,10 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
         merge(&mut merged, v);
         files.push(path);
     }
-    if let Ok(text) = std::env::var("CODESMITH_CONFIG_CONTENT") {
+    if let Some(text) = &sources.content {
         merge(
             &mut merged,
-            parse(&text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?,
+            parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?,
         );
     }
     let mut config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
@@ -236,28 +300,57 @@ pub fn parse(text: &str, base: &Path) -> Result<Value> {
 }
 
 /// Replace `{env:VAR}` with the variable and `{file:path}` with the file's
-/// contents (relative to `base`, `~/` expanded). Missing values become empty.
-/// Values are JSON-string-escaped, since they appear inside JSON strings.
+/// contents (relative to `base`, `~/` expanded, trimmed). Missing or
+/// unreadable values become empty. As in OpenCode, variables go in raw (so
+/// `"snapshots": {env:FLAG}` or an already-escaped value keep their meaning)
+/// unless that breaks the JSON, in which case they are JSON-string-escaped
+/// (a Windows path, a value with quotes). File contents are always escaped.
+/// A `{file:}` on a `//` comment line is left alone.
 pub fn substitute(text: &str, base: &Path) -> String {
-    let re = regex::Regex::new(r"\{(env|file):([^}]+)\}").unwrap();
-    re.replace_all(text, |c: &regex::Captures| {
-        let value = match &c[1] {
-            "env" => std::env::var(&c[2]).unwrap_or_default(),
-            _ => {
-                let raw = &c[2];
-                let p = match raw.strip_prefix("~/") {
-                    Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
-                    None => base.join(raw),
-                };
-                std::fs::read_to_string(p)
-                    .map(|s| s.trim_end().to_string())
-                    .unwrap_or_default()
-            }
+    let raw = substitute_with(text, base, false);
+    if !text.contains("{env:") || serde_json::from_str::<Value>(&strip_jsonc(&raw)).is_ok() {
+        return raw;
+    }
+    substitute_with(text, base, true)
+}
+
+fn escaped(value: &str) -> String {
+    let quoted = serde_json::to_string(value).unwrap();
+    quoted[1..quoted.len() - 1].to_string()
+}
+
+fn substitute_with(text: &str, base: &Path, escape_env: bool) -> String {
+    let env = regex::Regex::new(r"\{env:([^}]+)\}").unwrap();
+    let text = env.replace_all(text, |c: &regex::Captures| {
+        let value = std::env::var(&c[1]).unwrap_or_default();
+        if escape_env {
+            escaped(&value)
+        } else {
+            value
+        }
+    });
+    let file = regex::Regex::new(r"\{file:([^}]+)\}").unwrap();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for c in file.captures_iter(&text) {
+        let m = c.get(0).unwrap();
+        out.push_str(&text[cursor..m.start()]);
+        cursor = m.end();
+        let line_start = text[..m.start()].rfind('\n').map_or(0, |i| i + 1);
+        if text[line_start..m.start()].trim_start().starts_with("//") {
+            out.push_str(m.as_str());
+            continue;
+        }
+        let raw = &c[1];
+        let p = match raw.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None => base.join(raw),
         };
-        let quoted = serde_json::to_string(&value).unwrap();
-        quoted[1..quoted.len() - 1].to_string()
-    })
-    .into_owned()
+        let content = std::fs::read_to_string(p).unwrap_or_default();
+        out.push_str(&escaped(content.trim()));
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 
 /// Remove `//` and `/* */` comments and trailing commas outside strings.
@@ -718,5 +811,364 @@ mod tests {
             c.resolve_model("p/m").unwrap().provider.api_key.as_deref(),
             Some("kb")
         );
+    }
+
+    // --- Ported from OpenCode's config tests (`oc_config_*`). ---
+
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().canonicalize().unwrap();
+        (d, p)
+    }
+
+    fn write(p: &Path, text: &str) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn sources(global: &Path) -> Sources {
+        Sources {
+            global_dir: global.to_path_buf(),
+            file: None,
+            content: None,
+            project: true,
+        }
+    }
+
+    /// A project folder with its own `.git`, so the walk stops there.
+    fn project(t: &Path) -> PathBuf {
+        let p = t.join("project");
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        p
+    }
+
+    #[test]
+    fn oc_config_loads_explicit_file_and_content_overrides_in_priority_order() {
+        let (_d, t) = tmp();
+        let (global, project) = (t.join("global"), project(&t));
+        let explicit = t.join("custom.json");
+        write(&global.join("codesmith.json"), r#"{"shell": "global"}"#);
+        write(&explicit, r#"{"shell": "explicit"}"#);
+        write(&project.join("codesmith.json"), r#"{"shell": "project"}"#);
+        let mut src = sources(&global);
+        src.file = Some(explicit.clone());
+        let l = load_from(&project, &src).unwrap();
+        assert_eq!(
+            l.files,
+            vec![
+                global.join("codesmith.json"),
+                explicit,
+                project.join("codesmith.json")
+            ]
+        );
+        assert_eq!(l.config.shell.as_deref(), Some("project"));
+        src.content = Some(r#"{"shell": "content"}"#.into());
+        let l = load_from(&project, &src).unwrap();
+        assert_eq!(l.config.shell.as_deref(), Some("content"));
+    }
+
+    #[test]
+    fn oc_config_skips_project_configuration_when_project_discovery_is_disabled() {
+        let (_d, t) = tmp();
+        let (global, project) = (t.join("global"), project(&t));
+        write(&global.join("codesmith.json"), r#"{"shell": "global"}"#);
+        write(&project.join("codesmith.json"), r#"{"shell": "project"}"#);
+        let mut src = sources(&global);
+        src.project = false;
+        let l = load_from(&project, &src).unwrap();
+        assert_eq!(l.config.shell.as_deref(), Some("global"));
+        assert_eq!(l.files, vec![global.join("codesmith.json")]);
+    }
+
+    #[test]
+    fn oc_config_returns_the_latest_defined_scalar() {
+        let mut v = json!({});
+        for doc in [
+            json!({"model": "openrouter/openai/gpt-5"}),
+            json!({}),
+            json!({"model": "openrouter/openai/gpt-5.5"}),
+        ] {
+            merge(&mut v, doc);
+        }
+        let c: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(c.model.as_deref(), Some("openrouter/openai/gpt-5.5"));
+        assert_eq!(c.default_agent, None);
+    }
+
+    #[test]
+    fn oc_config_returns_an_empty_configuration_when_no_files_exist() {
+        let (_d, t) = tmp();
+        let project = project(&t);
+        let l = load_from(&project, &sources(&t.join("global"))).unwrap();
+        assert!(l.files.is_empty());
+        assert!(l.config.model.is_none() && l.config.providers.is_empty());
+        assert_eq!(l.root, project);
+    }
+
+    #[test]
+    fn oc_config_loads_json_and_jsonc_files_from_lowest_to_highest_priority() {
+        let (_d, t) = tmp();
+        let project = project(&t);
+        let provider = r#"{"settings": {"baseURL": "http://x"}}"#;
+        write(
+            &project.join("codesmith.json"),
+            &format!(r#"{{"$schema": "base", "providers": {{"base": {provider}}}}}"#),
+        );
+        write(
+            &project.join("codesmith.jsonc"),
+            &format!(
+                "{{\n  // Later files override scalar fields while retaining providers.\n  \"$schema\": \"last\",\n  \"providers\": {{ \"last\": {provider} }},\n}}"
+            ),
+        );
+        let l = load_from(&project, &sources(&t.join("global"))).unwrap();
+        assert_eq!(
+            l.files,
+            vec![
+                project.join("codesmith.json"),
+                project.join("codesmith.jsonc")
+            ]
+        );
+        assert_eq!(l.config.schema.as_deref(), Some("last"));
+        let ids: Vec<&str> = l.config.providers.keys().map(String::as_str).collect();
+        assert_eq!(ids, ["base", "last"]);
+    }
+
+    #[test]
+    fn oc_config_substitutes_environment_variables_and_relative_file_contents() {
+        let (_d, t) = tmp();
+        std::env::set_var("CODESMITH_OC_TEST_FLAG", "false");
+        std::env::set_var("CODESMITH_OC_TEST_TOKEN", r#"C:\Users\new\"secret""#);
+        std::env::remove_var("CODESMITH_OC_TEST_MISSING");
+        write(&t.join("token.txt"), "file\n\"token\"\n");
+        let text = r#"{
+            // Ignored reference: {file:.}
+            "username": "user-{env:CODESMITH_OC_TEST_MISSING}",
+            "snapshots": {env:CODESMITH_OC_TEST_FLAG},
+            "headers": {
+                "Authorization": "Bearer {env:CODESMITH_OC_TEST_TOKEN}",
+                "X-Token": "{file:token.txt}",
+                "X-Missing": "Bearer {file:~/.codesmith-test-missing/key}",
+                "X-Folder": "{file:.}"
+            }
+        }"#;
+        let v = parse(text, &t).unwrap();
+        assert_eq!(v["username"], "user-");
+        assert_eq!(v["snapshots"], false);
+        assert_eq!(
+            v["headers"],
+            json!({
+                "Authorization": r#"Bearer C:\Users\new\"secret""#,
+                "X-Token": "file\n\"token\"",
+                "X-Missing": "Bearer ",
+                "X-Folder": ""
+            })
+        );
+    }
+
+    #[test]
+    fn oc_config_keeps_env_values_unescaped_when_the_config_already_parses() {
+        std::env::set_var("CODESMITH_OC_TEST_QUOTED", r#"a\"b"#);
+        std::env::set_var("CODESMITH_OC_TEST_FRAGMENT", r#"{"k":"v"}"#);
+        let v = parse(
+            r#"{ "quoted": "{env:CODESMITH_OC_TEST_QUOTED}", "fragment": {env:CODESMITH_OC_TEST_FRAGMENT} }"#,
+            Path::new("/"),
+        )
+        .unwrap();
+        assert_eq!(v, json!({"quoted": "a\"b", "fragment": {"k": "v"}}));
+    }
+
+    #[test]
+    fn oc_config_leaves_file_references_in_line_comments_alone() {
+        let (_d, t) = tmp();
+        write(&t.join("x.txt"), "x");
+        assert_eq!(
+            substitute("// {file:x.txt}\n\"{file:x.txt}\"", &t),
+            "// {file:x.txt}\n\"x\""
+        );
+    }
+
+    #[test]
+    fn oc_config_does_not_load_legacy_or_opencode_config_files() {
+        let (_d, t) = tmp();
+        let project = project(&t);
+        write(&project.join("config.json"), r#"{"$schema": "legacy"}"#);
+        write(&project.join("opencode.json"), r#"{"$schema": "opencode"}"#);
+        write(
+            &project.join(".opencode/opencode.json"),
+            r#"{"$schema": "opencode"}"#,
+        );
+        let l = load_from(&project, &sources(&t.join("global"))).unwrap();
+        assert!(l.files.is_empty());
+        assert_eq!(l.config.schema, None);
+    }
+
+    #[test]
+    fn oc_config_accepts_schema_metadata_without_writing_it_into_config_files() {
+        let (_d, t) = tmp();
+        let project = project(&t);
+        let file = project.join("codesmith.json");
+        let contents = r#"{"shell":"/bin/zsh","providers":{"local":{}}}"#;
+        write(&file, contents);
+        let l = load_from(&project, &sources(&t.join("global"))).unwrap();
+        assert_eq!(l.config.schema, None);
+        assert_eq!(l.config.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), contents);
+    }
+
+    #[test]
+    fn oc_config_loads_supported_scalar_and_resource_configuration() {
+        let c: Config = serde_json::from_value(json!({
+            "shell": "/bin/bash",
+            "model": "anthropic/claude",
+            "default_agent": "reviewer",
+            "permissions": [
+                {"action": "shell", "resource": "*", "effect": "ask"},
+                {"action": "shell", "resource": "git status", "effect": "allow"}
+            ],
+            "agents": {"reviewer": {
+                "model": "openrouter/openai/gpt-5",
+                "description": "Review changes for correctness",
+                "system": "Find regressions.",
+                "mode": "subagent",
+                "steps": 12,
+                "disabled": false,
+                "permissions": [{"action": "edit", "resource": "*", "effect": "deny"}]
+            }},
+            "snapshots": false,
+            "tool_output": {"max_lines": 1000, "max_bytes": 32768},
+            "compaction": {"auto": true, "keep": {"tokens": 2000}, "buffer": 10000},
+            "skills": ["./skills", "~/shared-skills"],
+            "instructions": ["CONTRIBUTING.md", ".cursor/rules/*.md"],
+            "commands": {}
+        }))
+        .unwrap();
+        assert_eq!(c.shell.as_deref(), Some("/bin/bash"));
+        assert_eq!(c.model.as_deref(), Some("anthropic/claude"));
+        assert_eq!(c.default_agent.as_deref(), Some("reviewer"));
+        let rules: Vec<(String, String)> = c
+            .permissions
+            .iter()
+            .map(|r| (r.action.clone(), r.resource.clone()))
+            .collect();
+        assert_eq!(
+            rules,
+            [("shell", "*"), ("shell", "git status")].map(|(a, r)| (a.to_string(), r.to_string()))
+        );
+        let reviewer = &c.agents["reviewer"];
+        assert_eq!(reviewer.model.as_deref(), Some("openrouter/openai/gpt-5"));
+        assert_eq!(reviewer.system.as_deref(), Some("Find regressions."));
+        assert_eq!(reviewer.mode.as_deref(), Some("subagent"));
+        assert_eq!(reviewer.steps, Some(12));
+        assert!(!reviewer.disabled);
+        assert_eq!(reviewer.permissions.len(), 1);
+        assert_eq!(c.snapshots, Some(false), "an explicit false is kept");
+        assert_eq!(
+            (c.tool_output.max_lines, c.tool_output.max_bytes),
+            (1000, 32768)
+        );
+        assert!(c.compaction.auto());
+        assert_eq!(c.compaction.keep(), 2000);
+        assert_eq!(c.compaction.ceiling(100_000), 90_000);
+        assert_eq!(c.skills, ["./skills", "~/shared-skills"]);
+        assert_eq!(c.instructions, ["CONTRIBUTING.md", ".cursor/rules/*.md"]);
+    }
+
+    /// Deliberate difference: OpenCode skips a file that does not parse.
+    #[test]
+    fn oc_config_an_invalid_file_is_an_error_naming_it() {
+        let (_d, t) = tmp();
+        let project = project(&t);
+        write(&project.join("codesmith.json"), r#"{"$schema": "base"}"#);
+        write(&project.join("codesmith.jsonc"), "{ invalid");
+        let e = load_from(&project, &sources(&t.join("global"))).unwrap_err();
+        assert!(format!("{e:#}").contains("codesmith.jsonc"), "{e:#}");
+    }
+
+    #[test]
+    fn oc_config_loads_global_and_ancestor_configuration_in_order() {
+        let (_d, t) = tmp();
+        let global = t.join("global");
+        let root = t.join("repo");
+        let parent = root.join("packages");
+        let directory = parent.join("app");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        let files = [
+            (t.join("codesmith.json"), "outside"),
+            (global.join("codesmith.json"), "global"),
+            (root.join("codesmith.json"), "root"),
+            (parent.join("codesmith.jsonc"), "parent"),
+            (directory.join("codesmith.json"), "directory"),
+            (root.join(".codesmith/codesmith.json"), "root-dot"),
+            (
+                directory.join(".codesmith/codesmith.jsonc"),
+                "directory-dot",
+            ),
+        ];
+        for (p, schema) in &files {
+            write(
+                p,
+                &format!(r#"{{"$schema": "{schema}", "instructions": ["{schema}"]}}"#),
+            );
+        }
+        let l = load_from(&directory, &sources(&global)).unwrap();
+        // OpenCode also loads "outside" (above the project root) after "global".
+        assert_eq!(
+            l.config.instructions,
+            [
+                "global",
+                "root",
+                "parent",
+                "directory",
+                "root-dot",
+                "directory-dot"
+            ]
+        );
+        assert_eq!(l.config.schema.as_deref(), Some("directory-dot"));
+        assert_eq!(l.files.len(), 6);
+    }
+
+    #[test]
+    fn oc_config_loads_the_global_config_once_when_the_project_walk_reaches_it() {
+        let (_d, t) = tmp();
+        let global = t.join("global");
+        std::fs::create_dir_all(global.join(".git")).unwrap();
+        write(
+            &global.join("codesmith.json"),
+            r#"{"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}"#,
+        );
+        let l = load_from(&global, &sources(&global)).unwrap();
+        assert_eq!(l.files, vec![global.join("codesmith.json")]);
+        assert_eq!(
+            l.config.permissions.len(),
+            1,
+            "rules are not appended twice"
+        );
+    }
+
+    #[test]
+    fn oc_config_normalizes_short_model_selections() {
+        let m = Config::default()
+            .resolve_model("openrouter/openai/gpt-5")
+            .unwrap();
+        assert_eq!(
+            (m.provider_id.as_str(), m.model_id.as_str()),
+            ("openrouter", "openai/gpt-5")
+        );
+        assert!(Config::default().resolve_model("gpt-5").is_err());
+    }
+
+    #[test]
+    fn oc_config_compaction_buffer_shares_and_invalid_values() {
+        use crate::compaction::Buffer;
+        let c: Config = serde_json::from_value(json!({"compaction": {"buffer": "12.5%"}})).unwrap();
+        assert_eq!(c.compaction.buffer, Some(Buffer::Share("12.5%".into())));
+        assert_eq!(c.compaction.ceiling(100_000), 87_500);
+        for bad in ["0%", "100%", "150%", "lots"] {
+            assert_eq!(Buffer::Share(bad.into()).tokens(100_000), None, "{bad}");
+        }
+        let c: Config = serde_json::from_value(json!({"compaction": {"auto": false}})).unwrap();
+        assert!(!c.compaction.auto());
+        assert_eq!(c.compaction.keep(), crate::compaction::KEEP_TOKENS);
     }
 }

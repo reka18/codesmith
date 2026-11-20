@@ -1,6 +1,14 @@
 //! Skills: folders with a `SKILL.md` (a `name`/`description` header plus
 //! instructions) that the model loads on demand with the `skill` tool.
 //! Ported from OpenCode, local skills only (no remote skill indexes).
+//!
+//! The `oc_skill_*` tests port OpenCode's frontmatter cases
+//! (`packages/core/test/config/markdown.test.ts`, `config/skill.test.ts`).
+//! Deliberate differences: frontmatter is read as flat `key: value` lines
+//! (so an unquoted colon or a leading `[tag]` in a value just works, and
+//! lists stay text), a skill without a `description` is skipped since the
+//! model picks skills by it, skills are only `<id>/SKILL.md` folders (no
+//! single-file `<id>.md`), and `disable-model-invocation` is not supported.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -302,6 +310,46 @@ mod tests {
                 .position(|p| p == Path::new("/r/.codesmith/skills"))
                 < r.iter()
                     .position(|p| p == Path::new("/r/a/.codesmith/skills"))
+        );
+    }
+
+    #[test]
+    fn oc_skill_frontmatter_values_with_colons_and_brackets() {
+        let (m, b) = frontmatter(
+            "---\ndescription: Use when the user needs to crawl pages. Keywords: crawl, scrape\n---\nbody",
+        );
+        assert_eq!(
+            m["description"],
+            "Use when the user needs to crawl pages. Keywords: crawl, scrape"
+        );
+        assert_eq!(b.trim(), "body");
+        let (m, _) =
+            frontmatter("---\ndescription: [Team] Does a thing\ntools: [read, edit]\n---\nbody");
+        assert_eq!(m["description"], "[Team] Does a thing");
+        let (m, b) = frontmatter("just body");
+        assert!(m.is_empty());
+        assert_eq!(b, "just body");
+    }
+
+    #[test]
+    fn oc_skill_ids_come_from_the_folder_and_name_defaults_to_it() {
+        let d = tempfile::tempdir().unwrap();
+        write(
+            d.path(),
+            "manual",
+            "---\nname: Manual\ndescription: Manual only\n---\n# manual",
+        );
+        write(d.path(), "plain", "---\ndescription: d\n---\n# plain");
+        let skills = discover(&[d.path().to_path_buf()]);
+        assert_eq!(
+            skills
+                .iter()
+                .map(|s| (s.id.as_str(), s.name.as_str(), s.content.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("manual", "Manual", "# manual"),
+                ("plain", "plain", "# plain")
+            ]
         );
     }
 }

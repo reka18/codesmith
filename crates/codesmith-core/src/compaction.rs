@@ -1,9 +1,78 @@
 //! Context compaction: when a conversation nears the model's context window,
 //! older history is replaced by a structured summary (a checkpoint) and only
 //! the newest exchanges are kept verbatim. The prompt and budget rules are
-//! ported from OpenCode's `SessionCompaction`.
+//! ported from OpenCode's `SessionCompaction`, and pinned to it by the
+//! `oc_compaction_*` tests (from `packages/core/test/session-compaction.test.ts`
+//! and `config/compaction.test.ts`; the session-level ones are in
+//! `tests/parity.rs`).
+//!
+//! Deliberate differences:
+//! - The kept tail stays as real messages, not a text transcript, so it must
+//!   fit `keep` tokens: the cut moves forward to the next turn start, where
+//!   OpenCode moves it back to the start of the turn it falls in.
+//! - The prompt size is the provider's count from the last step or a
+//!   four-characters-per-token estimate, whichever is larger; there are no
+//!   per-media estimates, input-only limits, background (precomputed)
+//!   summaries, native provider compaction, compaction hooks or a separate
+//!   compaction model, and a summary request is not shrunk and retried.
+//! - The update prompt has no legacy-checkpoint rewrite variant.
 
 use codesmith_ai::{Message, Part, Role};
+use serde::Deserialize;
+
+/// The `compaction` config section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// `false` leaves compaction to `/compact`, context overflows included
+    /// (default true).
+    pub auto: Option<bool>,
+    /// Room kept free below the window before compacting.
+    pub buffer: Option<Buffer>,
+    pub keep: Keep,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(default)]
+pub struct Keep {
+    /// Tokens of recent history kept verbatim (default [`KEEP_TOKENS`]).
+    pub tokens: Option<u64>,
+}
+
+/// Tokens, or a share of the window such as `"20%"`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum Buffer {
+    Tokens(u64),
+    Share(String),
+}
+
+impl Buffer {
+    /// The buffer in tokens for `window`; `None` for a share that is not a
+    /// percentage strictly between 0 and 100.
+    pub fn tokens(&self, window: u64) -> Option<u64> {
+        match self {
+            Buffer::Tokens(t) => Some(*t),
+            Buffer::Share(s) => {
+                let p: f64 = s.trim().strip_suffix('%')?.trim().parse().ok()?;
+                (p > 0.0 && p < 100.0).then(|| (window as f64 * p / 100.0).round() as u64)
+            }
+        }
+    }
+}
+
+impl Settings {
+    pub fn auto(&self) -> bool {
+        self.auto.unwrap_or(true)
+    }
+    pub fn keep(&self) -> u64 {
+        self.keep.tokens.unwrap_or(KEEP_TOKENS)
+    }
+    /// The prompt size at which automatic compaction starts.
+    pub fn ceiling(&self, window: u64) -> u64 {
+        ceiling_with(window, self.buffer.as_ref())
+    }
+}
 
 /// The least of the window kept free for the last reply and the summary.
 pub const RESERVE_MIN: u64 = 16_000;
@@ -88,6 +157,17 @@ pub fn is_summary(text: &str) -> bool {
 
 /// The prompt size at which automatic compaction starts, for a context window.
 pub fn ceiling(window: u64) -> u64 {
+    ceiling_with(window, None)
+}
+
+/// [`ceiling`] with a configured buffer. A buffer that leaves no room (one
+/// set for a larger model, say) is ignored in favour of the default reserve.
+pub fn ceiling_with(window: u64, buffer: Option<&Buffer>) -> u64 {
+    if let Some(t) = buffer.and_then(|b| b.tokens(window)) {
+        if t < window {
+            return window - t;
+        }
+    }
     let reserve = ((window as f64 * RESERVE_SHARE) as u64).max(if window >= 2 * RESERVE_MIN {
         RESERVE_MIN
     } else {
@@ -123,17 +203,29 @@ pub fn starts_turn(m: &Message) -> bool {
 
 /// Index of the first message to keep verbatim: the earliest turn start whose
 /// suffix fits in `keep` tokens, never index 0 (something must be summarized).
+/// When everything after the first message fits, only the latest turn is kept,
+/// rather than repeating the whole conversation beside its summary.
 /// `messages.len()` means keep nothing.
 pub fn split(messages: &[Message], keep: u64) -> usize {
     let mut best = messages.len();
     let mut tail = 0u64;
+    let mut all_fit = true;
     for i in (1..messages.len()).rev() {
         tail += estimate_one(&messages[i]);
         if tail > keep {
+            all_fit = false;
             break;
         }
         if starts_turn(&messages[i]) {
             best = i;
+        }
+    }
+    if all_fit {
+        if let Some(latest) = (1..messages.len())
+            .rev()
+            .find(|&i| starts_turn(&messages[i]))
+        {
+            return latest;
         }
     }
     best
@@ -365,5 +457,122 @@ mod tests {
         ));
         assert!(is_overflow("HTTP 413: payload"));
         assert!(!is_overflow("HTTP 401: invalid api key"));
+    }
+
+    // --- Ported from OpenCode's session-compaction tests (`oc_compaction_*`). ---
+
+    #[test]
+    fn oc_compaction_prompt_preserves_detailed_work_state_and_relevant_files() {
+        let p = prompt(false);
+        for h in [
+            "## Work State",
+            "### Completed",
+            "### Active",
+            "### Blocked",
+            "## Relevant Files",
+        ] {
+            assert!(p.contains(h), "{h}");
+        }
+    }
+
+    #[test]
+    fn oc_compaction_prompt_requires_the_checkpoint_headings_in_order() {
+        let p = prompt(false);
+        let headings: Vec<&str> = p
+            .lines()
+            .filter(|l| {
+                (l.starts_with("## ") || l.starts_with("### "))
+                    && l.trim_start_matches('#').len() > 1
+            })
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                "## Objective",
+                "## Requirements",
+                "## Decisions",
+                "## Work State",
+                "### Completed",
+                "### Active",
+                "### Blocked",
+                "## Next Move",
+                "## Relevant Files",
+                "## Important Context",
+            ]
+        );
+    }
+
+    #[test]
+    fn oc_compaction_prompts_prohibit_task_execution() {
+        for update in [false, true] {
+            assert!(prompt(update).contains("Do not continue the task or call tools"));
+        }
+    }
+
+    #[test]
+    fn oc_compaction_update_prompt_has_no_legacy_rewrite() {
+        // OpenCode adds this only for checkpoints in its earlier format.
+        assert!(
+            !prompt(true).contains("The existing checkpoint was written with an earlier format")
+        );
+    }
+
+    /// The ceiling cases of "auto compaction estimates current content
+    /// against the buffered prompt ceiling" that apply without input limits.
+    #[test]
+    fn oc_compaction_auto_ceiling_and_buffers() {
+        // The summary's 16k reserve is more than 15% of a 100k window, so it sets the ceiling.
+        assert_eq!(ceiling(100_000), 84_000);
+        // 15% of a 128k window (OpenCode's overstated-input case lands here too).
+        assert_eq!(ceiling(128_000), 108_800);
+        // A buffer that leaves the model no room falls back to the default reserve.
+        let huge = Buffer::Tokens(100_000);
+        assert_eq!(ceiling_with(100_000, Some(&huge)), 84_000);
+        // A percentage buffer is a share of the window.
+        assert_eq!(
+            ceiling_with(100_000, Some(&Buffer::Share("25%".into()))),
+            75_000
+        );
+        assert_eq!(ceiling_with(100_000, Some(&Buffer::Tokens(10_000))), 90_000);
+        // A window too small to give up the 16k minimum keeps 15%.
+        assert_eq!(ceiling(20_000), 17_000);
+    }
+
+    #[test]
+    fn oc_compaction_keeps_only_the_latest_exchange_when_everything_fits() {
+        let m = vec![
+            user("a"),
+            asst("b"),
+            user("c"),
+            call(),
+            result(10),
+            asst("d"),
+            user("e"),
+            asst("f"),
+        ];
+        assert_eq!(split(&m, KEEP_TOKENS), 6);
+    }
+
+    #[test]
+    fn oc_compaction_one_exchange_is_summarized_whole() {
+        let m = vec![user("a"), call(), result(10), asst("b")];
+        assert_eq!(split(&m, KEEP_TOKENS), m.len());
+    }
+
+    #[test]
+    fn oc_compaction_truncation_does_not_split_characters() {
+        let prefix = "a".repeat(1_249);
+        let text = format!("{prefix}😀{}", "b".repeat(5_000));
+        let c = clip(&text, 1_250);
+        assert!(
+            c.starts_with(&format!("{prefix}😀\n")),
+            "cut after whole characters"
+        );
+        let whole = "😀".repeat(1_250);
+        assert_eq!(
+            clip(&whole, 1_250),
+            whole,
+            "short enough in characters, so kept"
+        );
     }
 }

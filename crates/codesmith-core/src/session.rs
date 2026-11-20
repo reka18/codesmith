@@ -525,7 +525,11 @@ impl Session {
             }
             let (parts, reason, usage) = match self.step(sink).await {
                 Ok(r) => r,
-                Err(e) if !overflow_compacted && compaction::is_overflow(&e.to_string()) => {
+                Err(e)
+                    if !overflow_compacted
+                        && self.loaded.config.compaction.auto()
+                        && compaction::is_overflow(&e.to_string()) =>
+                {
                     overflow_compacted = true;
                     self.compact(sink).await?;
                     continue;
@@ -1259,12 +1263,13 @@ impl Session {
 
     fn due_for_compaction(&self) -> bool {
         // Only a checkpoint (or nothing) left: compacting again cannot help.
-        if self.messages.len() < 2 {
+        let settings = &self.loaded.config.compaction;
+        if self.messages.len() < 2 || !settings.auto() {
             return false;
         }
         match self.model.context {
             Some(window) if window > 0 => {
-                self.last_prompt_tokens.max(self.estimate_prompt()) > compaction::ceiling(window)
+                self.last_prompt_tokens.max(self.estimate_prompt()) > settings.ceiling(window)
             }
             _ => false,
         }
@@ -1273,11 +1278,15 @@ impl Session {
     /// Replace older history with a structured summary, keeping the newest turns.
     pub async fn compact(&mut self, sink: &mut dyn Sink) -> Result<()> {
         let before = self.estimate_prompt();
-        let k = compaction::split(&self.messages, compaction::KEEP_TOKENS);
+        let k = compaction::split(&self.messages, self.loaded.config.compaction.keep());
         if k == 0 || self.messages.is_empty() {
             return Err(anyhow!("nothing to compact yet"));
         }
-        let update = self.seqs.first() == Some(&None);
+        // Unstored sessions have no sequence numbers at all, so look at the text.
+        let update = self.seqs.first() == Some(&None)
+            && self.messages.first().is_some_and(|m| {
+                matches!(m.parts.first(), Some(Part::Text(t)) if t.starts_with("<conversation-checkpoint>"))
+            });
         let mut convo = compaction::for_summary(&self.messages[..k]);
         convo.push(Message::user(compaction::prompt(update)));
         let (mut summary, _) =
@@ -1345,6 +1354,10 @@ impl Session {
             return;
         };
         if let Ok(Ok(Some(t))) = tokio::time::timeout(Duration::from_secs(20), task).await {
+            // A title set while this one was generating wins.
+            if self.title.is_some() {
+                return;
+            }
             if let (Some(s), true) = (&self.store, self.stored) {
                 let _ = s.set_title(&self.id, &t);
             }

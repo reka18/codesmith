@@ -127,11 +127,26 @@ commas allowed), lowest to highest precedence:
 
 1. `~/.config/codesmith/codesmith.json` (global)
 2. the file named by `$CODESMITH_CONFIG`
-3. from the project root (nearest `.git`) down to the working directory: each
-   folder's `codesmith.json` and `.codesmith/codesmith.json`
-4. inline JSON in `$CODESMITH_CONFIG_CONTENT`
+3. from the project root (nearest `.git`) down to the working directory, each
+   folder's `codesmith.json`
+4. then, in the same order, each folder's `.codesmith/codesmith.json`
+5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 
-`{env:VAR}` and `{file:path}` are substituted anywhere in the text.
+`{env:VAR}` and `{file:path}` are substituted anywhere in the text (not on `//`
+comment lines). A variable goes in as is, so `"snapshots": {env:FLAG}` works,
+unless that breaks the JSON, in which case it is escaped as string content;
+file contents are trimmed and always escaped.
+
+**Compaction** starts when the prompt nears the model's `limit.context`,
+leaving 15% (at least 16k tokens) free, and keeps about 15k tokens of the
+newest turns verbatim beside the summary:
+
+```jsonc
+{ "compaction": { "auto": true, "buffer": "20%", "keep": { "tokens": 15000 } } }
+```
+
+`buffer` is tokens or a share of the window; `"auto": false` leaves
+compaction to `/compact`, even when the provider rejects a prompt as too long.
 
 ```jsonc
 {
@@ -174,9 +189,12 @@ the project. `*` matches anything; a trailing ` *` also matches the bare
 command (`git *` matches `git`). By default everything is allowed except
 reading `.env` files, which asks.
 
-**Instructions**: `AGENTS.md` files from the project root down to the working
-directory (with `CLAUDE.md` as a fallback), plus
-`~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
+**Instructions**: `~/.config/codesmith/AGENTS.md` (else
+`~/.claude/CLAUDE.md`), then `AGENTS.md` files from the working directory up,
+nearest first, to the project root, or to your home folder when the project
+is inside it (with `CLAUDE.md` as a fallback in each folder), then anything
+listed under `instructions`: paths or globs, `~/` for home, relative ones
+looked for from the working directory up to the project root.
 
 ## Stats
 

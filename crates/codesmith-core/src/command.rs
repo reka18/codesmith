@@ -1,8 +1,15 @@
 //! Custom commands: prompt templates run as `/name args`. Defined in config
 //! (`commands`) or as markdown files in `commands/` folders, with an
 //! optional `description`/`agent`/`model` header. `$ARGUMENTS` is the whole
-//! argument string and `$1`…`$9` the individual arguments; with neither, the
-//! arguments are appended. Ported from OpenCode.
+//! argument string and `$1`, `$2`… the individual arguments (the last one
+//! used takes the rest); with neither, the arguments are appended. Ported
+//! from OpenCode and pinned to its template rules by the `oc_command_*`
+//! tests (from `packages/core/test/config/command.test.ts`).
+//!
+//! Deliberate differences: no `` !`cmd` `` shell interpolation, command files
+//! are read from the top of each `commands/` folder only (no `nested/name`
+//! commands, since `/a/b` reads as a path), commands defined in config
+//! override command files wherever they sit, and there is no `subtask` mode.
 
 use crate::skill::frontmatter;
 use serde::Deserialize;
@@ -138,27 +145,40 @@ pub fn parse_args(input: &str) -> Vec<String> {
         .collect()
 }
 
-/// Fill a template with arguments.
+/// Fill a template with arguments in one pass, so text that arrives in the
+/// arguments (`$1`, `$ARGUMENTS`, `$&`) is never expanded again. The highest
+/// `$N` in the template takes all remaining arguments.
 pub fn expand(template: &str, args: &str) -> String {
     let value = args.trim();
-    let positional = regex::Regex::new(r"\$([1-9])").unwrap();
-    let has_positional = positional.is_match(template);
-    if template.contains("$ARGUMENTS") || has_positional {
-        let parts = parse_args(value);
-        let t = template.replace("$ARGUMENTS", value);
-        return positional
-            .replace_all(&t, |c: &regex::Captures| {
-                let i: usize = c[1].parse().unwrap();
-                parts.get(i - 1).cloned().unwrap_or_default()
-            })
-            .into_owned();
+    let placeholder = regex::Regex::new(r"\$(?:ARGUMENTS|([1-9]\d*))").unwrap();
+    let positions: Vec<usize> = placeholder
+        .captures_iter(template)
+        .filter_map(|c| c.get(1)?.as_str().parse().ok())
+        .collect();
+    if positions.is_empty() && !template.contains("$ARGUMENTS") {
+        return [template.trim(), value]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n");
     }
-    [template.trim_end(), value]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let last = positions.iter().copied().max().unwrap_or(0);
+    let parts = parse_args(value);
+    placeholder
+        .replace_all(template, |c: &regex::Captures| {
+            let Some(n) = c.get(1) else {
+                return value.to_string();
+            };
+            let position: usize = n.as_str().parse().unwrap_or(usize::MAX);
+            match parts.get(position - 1..) {
+                Some(rest) if !rest.is_empty() && position == last => rest.join(" "),
+                Some(rest) if !rest.is_empty() => rest[0].clone(),
+                _ => String::new(),
+            }
+        })
+        .trim()
+        .to_string()
 }
 
 /// `/name rest` → (name, rest), if the message is a command invocation.
@@ -189,12 +209,91 @@ mod tests {
             expand("Compare $1 with $2", "\"file a.rs\" b.rs"),
             "Compare file a.rs with b.rs"
         );
-        assert_eq!(expand("Missing $3", "a"), "Missing ");
+        assert_eq!(
+            expand("Missing $3", "a"),
+            "Missing",
+            "trimmed, as in OpenCode"
+        );
         assert_eq!(
             expand("Review the code", "focus on errors"),
             "Review the code\n\nfocus on errors"
         );
         assert_eq!(expand("Review the code\n", ""), "Review the code");
+    }
+
+    /// OpenCode's interpolation cases, verbatim.
+    #[test]
+    fn oc_command_interpolates_literal_input() {
+        let mut cases: Vec<(&str, String, String)> = Vec::new();
+        for input in ["$&", "$$", "$`", "$'"] {
+            cases.push((
+                "Explain $ARGUMENTS.",
+                input.into(),
+                format!("Explain {input}."),
+            ));
+            cases.push((
+                "Explain $1.",
+                format!("\"{input}\""),
+                format!("Explain {input}."),
+            ));
+            cases.push(("Explain.", input.into(), format!("Explain.\n\n{input}")));
+        }
+        for input in ["abc", "", "alpha beta", "\"alpha beta\"", "$1", "$<name>"] {
+            cases.push((
+                "Explain $ARGUMENTS.",
+                input.into(),
+                format!("Explain {input}."),
+            ));
+        }
+        for (t, i, e) in [
+            (
+                "First $1. Rest $2.",
+                "\"alpha beta\" gamma delta",
+                "First alpha beta. Rest gamma delta.",
+            ),
+            (
+                "Run awk '{print $0}' on $1.",
+                "app.log",
+                "Run awk '{print $0}' on app.log.",
+            ),
+            (
+                "Run awk '{print $0}'.",
+                "app.log",
+                "Run awk '{print $0}'.\n\napp.log",
+            ),
+            (
+                "First $1. Rest $2.",
+                "\"$ARGUMENTS\" tail",
+                "First $ARGUMENTS. Rest tail.",
+            ),
+            ("$ARGUMENTS / $ARGUMENTS", "$& $$", "$& $$ / $& $$"),
+        ] {
+            cases.push((t, i.into(), e.into()));
+        }
+        for (template, input, expected) in cases {
+            assert_eq!(
+                expand(template, &input),
+                expected,
+                "{template:?} with {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn oc_command_appends_input_to_a_file_command_without_placeholders() {
+        let c = from_markdown("---\ndescription: File review\nagent: reviewer\n---\nReview files");
+        assert_eq!(c.description.as_deref(), Some("File review"));
+        assert_eq!(expand(&c.template, "latest"), "Review files\n\nlatest");
+        assert_eq!(expand("Write docs", "details"), "Write docs\n\ndetails");
+        assert_eq!(
+            from_markdown("").template,
+            "",
+            "an empty file is an empty command"
+        );
+        assert_eq!(
+            expand("Use $10 and $1", "a b c d e f g h i j k"),
+            "Use j k and a"
+        );
     }
 
     #[test]
