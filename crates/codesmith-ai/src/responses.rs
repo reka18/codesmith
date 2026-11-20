@@ -1,11 +1,12 @@
 //! OpenAI Responses API streaming (`POST /responses`), stateless: every
 //! request carries the whole conversation and nothing is stored server-side.
 
+use crate::cache;
 use crate::gemini::split_id;
 use crate::{
     drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
     Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta,
-    Request, Role, Usage,
+    Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -72,7 +73,7 @@ fn lower_options(req: &Request) -> Map<String, Value> {
     if let Some(n) = o.int("maxToolCalls") {
         put("max_tool_calls", json!(n));
     }
-    if let Some(b) = o.bool("parallelToolCalls") {
+    if let Some(b) = o.bool("parallelToolCalls").or(req.parallel_tool_calls) {
         put("parallel_tool_calls", json!(b));
     }
     for (key, wire) in [
@@ -228,6 +229,25 @@ pub fn body(req: &Request) -> Value {
     if !req.tools.is_empty() {
         let sanitizer = schema::for_model(&req.model);
         body["tools"] = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false})).collect();
+        // An `allowedTools` option (in `lower_options`) wins.
+        if let Some(c) = &req.tool_choice {
+            body["tool_choice"] = match c {
+                ToolChoice::Auto => json!("auto"),
+                ToolChoice::None => json!("none"),
+                ToolChoice::Required => json!("required"),
+                ToolChoice::Tool(name) => json!({"type": "function", "name": name}),
+            };
+        }
+    }
+    // Sent unless caching is off or a `setCacheKey: false` option says the
+    // server rejects it.
+    if let Some(k) =
+        cache::prompt_cache_key(req).filter(|_| req.options.bool("setCacheKey") != Some(false))
+    {
+        body["prompt_cache_key"] = json!(k);
+    }
+    if let Some((k, v)) = cache::openai_ttl(req.cache.lifetime()) {
+        body[k] = v;
     }
     if let Some(n) = req.max_tokens {
         body["max_output_tokens"] = json!(n);
@@ -585,7 +605,7 @@ pub async fn stream(
     if let Some(k) = &p.api_key {
         rb = rb.bearer_auth(k);
     }
-    for (k, v) in &p.headers {
+    for (k, v) in crate::openai::headers(p, req) {
         rb = rb.header(k, v);
     }
     let resp = post(rb, &body(req)).await?;
@@ -636,6 +656,7 @@ mod tests {
             temperature: None,
             options: Default::default(),
             body: Default::default(),
+            ..Default::default()
         };
         let b = body(&req);
         assert!(b.get("instructions").is_none());

@@ -2,6 +2,7 @@
 //! into a stream of provider-neutral `Event`s.
 
 mod anthropic;
+mod cache;
 mod gemini;
 mod openai;
 mod options;
@@ -13,6 +14,7 @@ mod responses;
 mod schema;
 mod sse;
 
+pub use cache::{Cache, Messages as CacheMessages, Placement as CachePlacement};
 pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
 
 use futures_util::stream::BoxStream;
@@ -340,6 +342,31 @@ pub struct Request {
     pub options: Options,
     /// Extra top-level body fields, merged last (e.g. `chat_template_kwargs`).
     pub body: serde_json::Map<String, Value>,
+    /// Prompt caching; on by default (see [`Cache`]).
+    pub cache: Cache,
+    /// A key that stays the same for a conversation (the session id), so
+    /// OpenAI-style providers route its requests to the same prompt cache.
+    pub prompt_cache_key: Option<String>,
+    /// How the model may use the declared tools; `None` leaves it to the
+    /// provider (the model chooses). Sent only when tools are declared.
+    pub tool_choice: Option<ToolChoice>,
+    /// Whether the model may call several tools in one turn; `None` keeps
+    /// the provider default. A `parallelToolCalls` option wins over it.
+    pub parallel_tool_calls: Option<bool>,
+}
+
+/// OpenCode's `toolChoice`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolChoice {
+    /// The model chooses whether to call tools.
+    Auto,
+    /// No tool calls; the tool definitions stay (and with them the cached
+    /// prefix).
+    None,
+    /// The model must call some tool.
+    Required,
+    /// The model must call this tool.
+    Tool(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -380,6 +407,18 @@ pub enum Protocol {
     OpenaiResponses,
     /// Google Gemini generateContent.
     GoogleGemini,
+}
+
+impl Protocol {
+    /// The protocol's name in errors (OpenCode's route names).
+    pub fn route(self) -> &'static str {
+        match self {
+            Protocol::OpenaiChat => "OpenAI Chat",
+            Protocol::AnthropicMessages => "Anthropic Messages",
+            Protocol::OpenaiResponses => "OpenAI Responses",
+            Protocol::GoogleGemini => "Gemini",
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -565,6 +604,14 @@ pub fn collect<'a>(events: impl IntoIterator<Item = &'a Event>) -> Vec<Part> {
 /// Reject a request with media `protocol` cannot carry, or (Anthropic)
 /// malformed provider options, before sending it.
 pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
+    if let Some(ToolChoice::Tool(name)) = &req.tool_choice {
+        if name.is_empty() {
+            return Err(Error::Invalid(format!(
+                "{} tool choice requires a tool name",
+                protocol.route()
+            )));
+        }
+    }
     match protocol {
         Protocol::OpenaiChat => openai::check(req),
         Protocol::AnthropicMessages => anthropic::check(req),

@@ -546,6 +546,11 @@ impl Session {
             temperature: self.model.temperature,
             options: self.model.options.clone(),
             body: self.model.body.clone(),
+            cache: self.model.cache.clone(),
+            // Stable for the session, so its requests reach the same cache.
+            prompt_cache_key: Some(self.id.clone()),
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 
@@ -1972,8 +1977,8 @@ impl Session {
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
         if final_step {
             req.messages.push(Message::user(runner::MAX_STEPS_PROMPT));
-            let (key, value) = runner::tool_choice_none(self.model.provider.protocol);
-            req.body.entry(key).or_insert(value);
+            // The tool definitions stay, so the cached prefix does too.
+            req.tool_choice = Some(codesmith_ai::ToolChoice::None);
         }
         let mut policy = retry::Policy::default();
         let mut attempt = 0;
@@ -2095,6 +2100,8 @@ async fn complete_with(
             model.options.clone()
         },
         body: model.body.clone(),
+        cache: model.cache.clone(),
+        ..Default::default()
     };
     loop {
         let mut out = String::new();

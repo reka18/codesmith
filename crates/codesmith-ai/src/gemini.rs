@@ -7,7 +7,7 @@
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
     stream_error, Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol,
-    Provider, ReasoningMeta, Request, Role, Usage,
+    Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -192,6 +192,15 @@ pub fn body(req: &Request) -> Value {
     if !req.tools.is_empty() {
         let decls: Vec<Value> = req.tools.iter().map(|t| json!({"name": t.name, "description": t.description, "parametersJsonSchema": schema::project(&t.parameters, Some(schema::Sanitizer::Gemini))})).collect();
         body["tools"] = json!([{"functionDeclarations": decls}]);
+        if let Some(c) = &req.tool_choice {
+            let config = match c {
+                ToolChoice::Auto => json!({"mode": "AUTO"}),
+                ToolChoice::None => json!({"mode": "NONE"}),
+                ToolChoice::Required => json!({"mode": "ANY"}),
+                ToolChoice::Tool(name) => json!({"mode": "ANY", "allowedFunctionNames": [name]}),
+            };
+            body["toolConfig"] = json!({"functionCallingConfig": config});
+        }
     }
     let mut gen = Map::new();
     if let Some(n) = req.max_tokens {
@@ -462,6 +471,7 @@ mod tests {
             temperature: None,
             options: Default::default(),
             body: Map::new(),
+            ..Default::default()
         }
     }
 

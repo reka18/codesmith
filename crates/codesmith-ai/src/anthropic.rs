@@ -1,12 +1,13 @@
 //! Anthropic Messages streaming.
 
+use crate::cache;
 use crate::gemini::split_id;
 use crate::openai::scrub_id;
 use crate::options::{claude_version, field, fit_budget, number};
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
     stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Part,
-    Protocol, Provider, ReasoningMeta, Request, Role, Usage,
+    Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -98,9 +99,22 @@ fn lower_thinking(v: &Value, max_tokens: u32) -> Result<Value, Error> {
     Ok(Value::Object(out))
 }
 
-fn is_ttl(s: &str) -> bool {
-    let digits = s.chars().take_while(char::is_ascii_digit).count();
-    digits > 0 && matches!(&s[digits..], "ms" | "s" | "m" | "h" | "d")
+/// The wire `tool_choice` (after OpenCode's `lowerToolChoice`): `auto`,
+/// `none`, `any` or a named `tool`, with `disable_parallel_tool_use` when
+/// the request says whether parallel calls are allowed.
+fn tool_choice(req: &Request) -> Option<Value> {
+    let disable = req.parallel_tool_calls.map(|p| !p);
+    let mut v = match &req.tool_choice {
+        None if disable.is_none() => return None,
+        None | Some(ToolChoice::Auto) => json!({"type": "auto"}),
+        Some(ToolChoice::None) => return Some(json!({"type": "none"})),
+        Some(ToolChoice::Required) => json!({"type": "any"}),
+        Some(ToolChoice::Tool(name)) => json!({"type": "tool", "name": name}),
+    };
+    if let Some(d) = disable {
+        v["disable_parallel_tool_use"] = json!(d);
+    }
+    Some(v)
 }
 
 /// Body fields from the request's provider options (after OpenCode's
@@ -200,8 +214,9 @@ fn lower_options(req: &Request) -> Result<Map<String, Value>, Error> {
         out.insert("container".into(), c.clone());
     }
     if let Some(c) = o.get("cacheControl") {
-        let ok =
-            c["type"] == "ephemeral" && c.get("ttl").is_none_or(|t| t.as_str().is_some_and(is_ttl));
+        let ok = c["type"] == "ephemeral"
+            && c.get("ttl")
+                .is_none_or(|t| t.as_str().is_some_and(cache::is_ttl));
         if !ok {
             return Err(invalid_option(
                 "cache_control",
@@ -454,6 +469,10 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
             .iter()
             .map(|t| json!({"name": t.name, "description": t.description, "input_schema": schema::project(&t.parameters, sanitizer)}))
             .collect();
+        // Anthropic rejects `tool_choice` without tools.
+        if let Some(c) = tool_choice(req) {
+            body["tool_choice"] = c;
+        }
     }
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
@@ -463,6 +482,8 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
         merge_body(&mut body, &fields);
     }
     merge_body(&mut body, &req.body);
+    let policy = cache::resolve(&req.cache, cache::AUTO);
+    cache::mark_anthropic(&mut body, policy, req.cache.lifetime());
     body
 }
 
@@ -756,6 +777,7 @@ mod tests {
                 },
                 Message::user("more"),
             ],
+            cache: crate::Cache::off(),
             ..Default::default()
         };
         let b = body(&req);

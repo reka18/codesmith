@@ -118,6 +118,9 @@ pub struct ProviderConfig {
     /// Provider options for every model of this provider (see
     /// [`ModelConfig::options`]).
     pub options: Map<String, Value>,
+    /// Prompt caching for every model of this provider (see
+    /// [`ModelConfig::cache`]).
+    pub cache: Option<Value>,
     pub models: BTreeMap<String, ModelConfig>,
 }
 
@@ -128,6 +131,8 @@ pub struct ProviderSettings {
     pub base_url: Option<String>,
     #[serde(alias = "apiKey")]
     pub api_key: Option<String>,
+    /// OpenCode's spelling of the provider's `cache`.
+    pub cache: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -158,6 +163,11 @@ pub struct ModelConfig {
     /// OpenCode's list of `{"id", "settings", "body", "headers"}`. They add
     /// to (and override) the built-in reasoning variants.
     pub variants: Option<Value>,
+    /// Prompt caching, on by default: `false` (or `"none"`) turns it off,
+    /// `{"ttl": "1h"}` sets the cache lifetime, and `tools`, `system` and
+    /// `messages` choose breakpoints exactly. Also read from `options`
+    /// (`settings`), OpenCode's place for it. Variants cannot change it.
+    pub cache: Option<Value>,
 }
 
 impl ModelConfig {
@@ -552,6 +562,8 @@ pub struct ModelRef {
     /// Input modalities (`text`, `image`, `pdf`, …); `None` when unknown,
     /// in which case images and PDFs are sent.
     pub input: Option<Vec<String>>,
+    /// Prompt caching for this model's requests.
+    pub cache: codesmith_ai::Cache,
 }
 
 /// Built-in providers: (id, name, protocol, base URL, key variables).
@@ -669,7 +681,7 @@ fn builtin(id: &str) -> Option<ProviderConfig> {
         env: env.iter().map(|s| s.to_string()).collect(),
         settings: ProviderSettings {
             base_url: Some(url.to_string()),
-            api_key: None,
+            ..Default::default()
         },
         ..Default::default()
     })
@@ -689,10 +701,12 @@ impl Config {
                 settings: ProviderSettings {
                     base_url: c.settings.base_url.or(b.settings.base_url),
                     api_key: c.settings.api_key.or(b.settings.api_key),
+                    cache: c.settings.cache,
                 },
                 headers: c.headers,
                 body: c.body,
                 options: c.options,
+                cache: c.cache,
                 models: c.models,
             }),
         }
@@ -734,6 +748,13 @@ impl Config {
         body.extend(m.body.clone());
         let mut options = codesmith_ai::Options::from_map(p.options.clone());
         options.merge(&codesmith_ai::Options::from_map(m.options.clone()));
+        let cache = cache_setting(&p, &m)
+            .map(|v| {
+                codesmith_ai::Cache::from_value(&v)
+                    .ok_or_else(|| anyhow!("model {base:?} has an invalid cache setting: {v}"))
+            })
+            .transpose()?
+            .unwrap_or_default();
         let mut headers: Vec<(String, String)> = p.headers.into_iter().collect();
         // Built-in reasoning variants, then the configured ones (which win).
         let mut variants = codesmith_ai::builtin_variants(protocol, &model_id, m.limit.output);
@@ -762,6 +783,8 @@ impl Config {
                 headers.push((k.clone(), val.clone()));
             }
         }
+        // The cache belongs to the model, not to a request option.
+        options.remove("cache");
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id,
@@ -779,8 +802,20 @@ impl Config {
             context: m.limit.context,
             temperature: m.temperature,
             input,
+            cache,
         })
     }
+}
+
+/// The model's `cache` setting: the model's own (field, then options), then
+/// the provider's (field, `settings`, options).
+fn cache_setting(p: &ProviderConfig, m: &ModelConfig) -> Option<Value> {
+    m.cache
+        .clone()
+        .or_else(|| m.options.get("cache").cloned())
+        .or_else(|| p.cache.clone())
+        .or_else(|| p.settings.cache.clone())
+        .or_else(|| p.options.get("cache").cloned())
 }
 
 #[cfg(test)]
@@ -881,6 +916,38 @@ mod tests {
         assert_eq!(m.provider.api_key.as_deref(), Some("k"));
         assert_eq!(m.max_output, Some(8192));
         assert_eq!(m.body["chat_template_kwargs"]["enable_thinking"], false);
+    }
+
+    #[test]
+    fn prompt_cache_settings() {
+        use codesmith_ai::Cache;
+        let c: Config = serde_json::from_value(json!({"providers": {
+            "anthropic": {"cache": false, "models": {
+                "claude-on": {"cache": {"ttl": "1h"}},
+                "claude-opts": {"options": {"cache": true}},
+            }},
+            "openai": {"settings": {"cache": {"ttl": "24h"}}},
+            "custom": {"settings": {"baseURL": "http://x/v1"}, "options": {"cache": "none"}},
+        }}))
+        .unwrap();
+        let m = |spec: &str| c.resolve_model(spec).unwrap();
+        assert_eq!(m("anthropic/claude-x").cache, Cache::off());
+        let on = m("anthropic/claude-on");
+        assert!(on.cache.enabled());
+        assert_eq!(on.cache.ttl.as_deref(), Some("1h"));
+        let opts = m("anthropic/claude-opts");
+        assert_eq!(opts.cache, Cache::default());
+        assert!(opts.options.get("cache").is_none(), "not sent as an option");
+        assert_eq!(m("openai/gpt-x").cache.ttl.as_deref(), Some("24h"));
+        assert_eq!(m("custom/any").cache, Cache::off());
+        assert_eq!(
+            Config::default().resolve_model("google/g").unwrap().cache,
+            Cache::default()
+        );
+        let bad: Config =
+            serde_json::from_value(json!({"providers": {"openai": {"cache": "sometimes"}}}))
+                .unwrap();
+        assert!(bad.resolve_model("openai/gpt-x").is_err());
     }
 
     #[test]

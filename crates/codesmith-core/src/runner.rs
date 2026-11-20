@@ -14,8 +14,8 @@
 //!   so a failed stream never leaves a half-run tool behind; retrying it
 //!   starts from the prompt.
 
-use codesmith_ai::{Message, Part, Protocol, Role};
-use serde_json::{json, Value};
+use codesmith_ai::{Message, Part, Role};
+use serde_json::Value;
 
 pub const MAX_STEPS_PROMPT: &str = "CRITICAL - MAXIMUM STEPS REACHED
 
@@ -129,19 +129,6 @@ pub fn is_content_filter(reason: &str) -> bool {
             | "spii"
             | "image_safety"
     )
-}
-
-/// The body fields that stop a provider from calling tools, so a forced
-/// final step can keep its tool definitions (and the cached prefix).
-pub fn tool_choice_none(protocol: Protocol) -> (&'static str, Value) {
-    match protocol {
-        Protocol::OpenaiChat | Protocol::OpenaiResponses => ("tool_choice", json!("none")),
-        Protocol::AnthropicMessages => ("tool_choice", json!({"type": "none"})),
-        Protocol::GoogleGemini => (
-            "toolConfig",
-            json!({"functionCallingConfig": {"mode": "NONE"}}),
-        ),
-    }
 }
 
 /// An assistant message with nothing to replay.
@@ -308,6 +295,7 @@ pub fn unsettled(history: &[Message]) -> Option<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn assistant(parts: Vec<Part>) -> Message {
         Message {
@@ -476,19 +464,6 @@ mod tests {
         assert!(invalid_input(&long, false).ends_with("\n[truncated]"));
         assert!(invalid_input(&long, false).contains("(first 2048 of 3000 characters)"));
         assert_eq!(invalid_input("", false), INPUT_MALFORMED);
-    }
-
-    #[test]
-    fn tool_choice_none_per_protocol() {
-        assert_eq!(
-            tool_choice_none(Protocol::OpenaiChat),
-            ("tool_choice", json!("none"))
-        );
-        assert_eq!(
-            tool_choice_none(Protocol::AnthropicMessages),
-            ("tool_choice", json!({"type": "none"}))
-        );
-        assert_eq!(tool_choice_none(Protocol::GoogleGemini).0, "toolConfig");
     }
 
     #[test]

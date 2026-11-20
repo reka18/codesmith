@@ -178,6 +178,7 @@ Provider fields:
 | `env` | Environment variables that may hold the key, in order. |
 | `headers` | Extra HTTP headers. |
 | `body` | Extra request-body fields for every model of this provider, merged into each request. |
+| `cache` | [Prompt caching](#prompt-caching) for every model of this provider (`settings.cache` also works). |
 | `models` | Per-model settings, keyed by the id you use in `provider/model`. |
 
 Model fields:
@@ -193,6 +194,7 @@ Model fields:
 | `cost` | Dollars per million tokens: `input`, `output`, `cache_read`, `cache_write`. Used for the session cost and `codesmith stats --cost`. |
 | `modalities` | `{"input": [...], "output": [...]}`, as in OpenCode and models.dev. See [images and PDFs](tools.md#images-and-pdfs). |
 | `attachment` | OpenCode's older flag: `false` means text input only. |
+| `cache` | [Prompt caching](#prompt-caching) for this model, over the provider's (`options.cache` also works). |
 
 `codesmith debug model provider/model[#variant]` shows what a model resolves
 to: the URL, protocol, limits, extra body, the provider options sent with each
@@ -230,6 +232,55 @@ Reasoning is sent back with what each provider needs to accept it
 reasoning, Gemini thought signatures), so thinking models keep their
 reasoning across tool calls. Sessions that contain signed reasoning can't be
 opened by CodeSmith builds older than this feature.
+
+### Prompt caching
+
+Prompt caching is on by default, as in OpenCode, so a long session pays the
+cached-input price for the prefix it has already sent:
+
+- **Anthropic Messages** (Anthropic, and Anthropic-format endpoints such as
+  Moonshot, MiniMax, Z.ai and DashScope): `cache_control` breakpoints
+  on the last tool definition, the system prompt and the last message, at
+  most four per request. The breakpoint on the last message moves forward
+  each step, so every tool loop step reads the previous one from the cache.
+- **OpenAI Chat gateways that take Anthropic's breakpoints**: OpenRouter for
+  `anthropic/...` models (and `qwen/...`, without the tool breakpoint),
+  DigitalOcean, and DashScope Qwen models. Any other Chat server gets them
+  when the model's options declare `"cacheFormat": "anthropic"` (or
+  `"alibaba"`, which leaves tools out).
+- **OpenAI Responses**: a `prompt_cache_key` that stays the same for the
+  session (its id), so requests go to the same cache.
+- **OpenAI Chat**: the same `prompt_cache_key` where the server takes it
+  (OpenAI, Azure, OpenRouter, Cerebras, DeepInfra, DigitalOcean, Fireworks,
+  Moonshot, Venice). xAI gets it as the `x-grok-conv-id` header instead.
+  Option `"setCacheKey": true` sends it to any other Chat server, and
+  `"setCacheKey": false` stops it on Responses servers that reject it.
+- **Gemini** caches repeated prefixes on its own; an explicit cache goes in
+  the `cachedContent` option.
+
+The `cache` setting on a provider or a model changes this (a model's wins):
+
+```jsonc
+"providers": {
+  "anthropic": {
+    "cache": { "ttl": "1h" },            // longer-lived cache entries
+    "models": { "claude-haiku-4-5": { "cache": false } }   // no caching for this model
+  },
+  "local": { "cache": false }            // a server that rejects cache fields
+}
+```
+
+| Value | Meaning |
+|---|---|
+| `true`, `"auto"` | The default placement above. |
+| `false`, `"none"` | No breakpoints, no `prompt_cache_key`, no lifetime. |
+| `{"ttl": "1h"}` | The default placement with this cache lifetime: `5m` or `1h` on Anthropic's breakpoints; on OpenAI `24h` is sent as `prompt_cache_retention` and anything else as `prompt_cache_options.ttl`. |
+| `{"tools": true, "system": true, "messages": 2}` | Exactly these breakpoints: the last tool, the system prompt, and the last 2 messages (`messages` also takes `{"tail": n}`, `"latest-user-message"` or `"latest-assistant"`). |
+
+Variants can't change caching: the cache belongs to the model. Cache reads
+and writes are counted separately in usage, and `cost.cache_read` and
+`cost.cache_write` price them (writes cost more than plain input on
+Anthropic, reads much less).
 
 ### Saved keys
 

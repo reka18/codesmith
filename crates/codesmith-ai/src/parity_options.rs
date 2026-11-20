@@ -219,7 +219,7 @@ fn openai_responses_options() {
                 assert_eq!(resp_body(json!({"serviceTier": tier}))["service_tier"], tier);
             }
         }),
-        ("openai-responses :: maps OpenAI provider options to Responses options (without the prompt cache key)", || {
+        ("openai-responses :: maps OpenAI provider options to Responses options (with the prompt cache key and tool choice)", || {
             let mut r = with(
                 req("gpt-5.2", vec![user("think")]),
                 json!({"presencePenalty": 0.25, "frequencyPenalty": -0.25,
@@ -230,8 +230,11 @@ fn openai_responses_options() {
                     "parallelToolCalls": false}),
             );
             r.tools = vec![tool("read", json!({"type": "object"})), tool("grep", json!({"type": "object"}))];
+            r.prompt_cache_key = Some("session_123".into());
+            r.tool_choice = Some(crate::ToolChoice::None);
             let b = responses::body(&r);
             assert_eq!(b["store"], false);
+            assert_eq!(b["prompt_cache_key"], "session_123");
             assert_eq!(b["include"], json!(["reasoning.encrypted_content"]));
             assert_eq!(b["reasoning"], json!({"effort": "high", "summary": "auto"}));
             assert!(b.get("text").is_none());
@@ -618,6 +621,7 @@ fn anthropic_reasoning_replay() {
                 vec![user("Say hello."), asst(collect(&evs)), results(vec![result("call_1", "lookup", "sunny")])],
             );
             r.tools = vec![lookup()];
+            r.cache = crate::Cache::off();
             assert_eq!(
                 anthropic::body(&r)["messages"],
                 json!([

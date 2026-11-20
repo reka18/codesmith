@@ -14,8 +14,9 @@
 //! are decoded with each protocol's real `Decoder`.
 
 use crate::{
-    anthropic, check, decode_all, gemini, normalize_tool_history, openai, responses, schema, Error,
-    Event, Media, Message, Part, Protocol, Request, Role, ToolSpec, Usage,
+    anthropic, check, decode_all, gemini, normalize_tool_history, openai, responses, schema, Cache,
+    CacheMessages, CachePlacement, Error, Event, Media, Message, Part, Protocol, Request, Role,
+    ToolChoice, ToolSpec, Usage,
 };
 use serde_json::{json, Value};
 
@@ -24,6 +25,9 @@ const MISTRAL_ID: &str = "<mistral-hashed>";
 
 #[path = "parity_options.rs"]
 mod options;
+
+#[path = "parity_cache.rs"]
+mod cache;
 
 /// Run named cases, reporting every failing name rather than the first.
 fn run(cases: &[(&str, fn())]) {
@@ -115,6 +119,12 @@ fn media(m: Media) -> Part {
 
 fn data_url(url: &str) -> Media {
     Media::from_data_url(url).unwrap()
+}
+
+/// The request with prompt caching off (OpenCode's `cache: "none"`).
+fn off(mut r: Request) -> Request {
+    r.cache = Cache::off();
+    r
 }
 
 fn req(model: &str, messages: Vec<Message>) -> Request {
@@ -1174,11 +1184,21 @@ fn openai_responses_errors() {
 fn anthropic_messages_requests() {
     run(&[
         (
-            "anthropic-messages :: prepares Anthropic Messages target (without cache hints)",
+            "anthropic-messages :: prepares Anthropic Messages target (adapted: a system-only policy for the system hint)",
             || {
+                let mut r = hello("claude-sonnet-4-5");
+                r.cache = Cache {
+                    placement: CachePlacement::Custom {
+                        tools: false,
+                        system: true,
+                        messages: None,
+                    },
+                    ttl: None,
+                };
                 assert_eq!(
-                    anthropic::body(&hello("claude-sonnet-4-5")),
-                    json!({"model": "claude-sonnet-4-5", "system": "You are concise.",
+                    anthropic::body(&r),
+                    json!({"model": "claude-sonnet-4-5",
+                    "system": [{"type": "text", "text": "You are concise.", "cache_control": {"type": "ephemeral"}}],
                     "messages": [{"role": "user", "content": [{"type": "text", "text": "Say hello."}]}],
                     "stream": true, "max_tokens": 20, "temperature": 0.0})
                 );
@@ -1188,6 +1208,7 @@ fn anthropic_messages_requests() {
             "anthropic-messages :: omits empty system text while preserving whitespace",
             || {
                 let mut r = hello("claude-sonnet-4-5");
+                r.cache = Cache::off();
                 r.system = String::new();
                 assert!(anthropic::body(&r).get("system").is_none());
                 r.system = " ".into();
@@ -1212,6 +1233,7 @@ fn anthropic_messages_requests() {
                         asst(vec![thinking("")]),
                     ],
                 );
+                let r = off(r);
                 assert_eq!(
                     anthropic::body(&r)["messages"],
                     json!([{"role": "user", "content": [{"type": "text", "text": "  Keep this spacing.  "}]}])
@@ -1229,6 +1251,7 @@ fn anthropic_messages_requests() {
                         results(vec![result("call_1", "lookup", "{\"forecast\":\"sunny\"}")]),
                     ],
                 );
+                let r = off(r);
                 assert_eq!(
                     anthropic::body(&r),
                     json!({"model": "claude-sonnet-4-5", "messages": [
@@ -1280,7 +1303,7 @@ fn anthropic_messages_requests() {
                         )]),
                     ],
                 );
-                let m = anthropic::body(&r)["messages"].clone();
+                let m = anthropic::body(&off(r))["messages"].clone();
                 assert_eq!(m.as_array().unwrap().len(), 3);
                 assert_eq!(
                     m[2],
@@ -1303,7 +1326,7 @@ fn anthropic_messages_requests() {
                     ],
                 );
                 assert_eq!(
-                    anthropic::body(&r)["messages"],
+                    anthropic::body(&off(r))["messages"],
                     json!([
                         {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}]},
                         {"role": "user", "content": [
@@ -2001,22 +2024,30 @@ fn gemini_streams() {
 #[test]
 fn empty_tool_choice() {
     run(&[(
-        "empty-tool-choice :: openai-chat / openai-responses omit tool choice without active tools",
+        "empty-tool-choice :: ${route.id} omits ${choice.type} tool choice without active tools (×8)",
         || {
-            for messages in [
-                vec![user("Say OK.")],
-                vec![
-                    user("Look up the value."),
-                    asst(vec![call("call_1", "lookup", json!({}))]),
-                    results(vec![result("call_1", "lookup", "OK")]),
-                ],
+            for choice in [
+                ToolChoice::Auto,
+                ToolChoice::None,
+                ToolChoice::Required,
+                ToolChoice::Tool("lookup".into()),
             ] {
-                let r = req("gpt-4.1-mini", messages);
-                for b in [chat_at(OPENAI, &r), responses::body(&r)] {
-                    assert!(
-                        b.get("tool_choice").is_none() && b.get("tools").is_none(),
-                        "{b}"
-                    );
+                for messages in [
+                    vec![user("Say OK.")],
+                    vec![
+                        user("Look up the value."),
+                        asst(vec![call("call_1", "lookup", json!({}))]),
+                        results(vec![result("call_1", "lookup", "OK")]),
+                    ],
+                ] {
+                    let mut r = off(req("gpt-4.1-mini", messages));
+                    r.tool_choice = Some(choice.clone());
+                    for b in [chat_at(OPENAI, &r), responses::body(&r)] {
+                        assert!(
+                            b.get("tool_choice").is_none() && b.get("tools").is_none(),
+                            "{b}"
+                        );
+                    }
                 }
             }
         },
@@ -2782,8 +2813,9 @@ fn anthropic_messages_media() {
                 media(pdf("JVBERi0xLjQ=").named("report.pdf")),
             ])]);
             assert!(check(Protocol::AnthropicMessages, &r).is_ok());
+            // The default policy marks the message's last text block.
             assert_eq!(anthropic::body(&r)["messages"], json!([{"role": "user", "content": [
-                {"type": "text", "text": "What is in this image?"},
+                {"type": "text", "text": "What is in this image?", "cache_control": {"type": "ephemeral"}},
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAECAw=="}},
                 {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQ="}, "title": "report.pdf"},
             ]}]));

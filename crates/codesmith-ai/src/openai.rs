@@ -1,10 +1,11 @@
 //! OpenAI Chat Completions streaming (and OpenAI-compatible servers).
 
+use crate::cache;
 use crate::gemini::split_id;
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
     stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Message,
-    Part, Protocol, Provider, ReasoningMeta, Request, Role, Usage,
+    Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -28,6 +29,29 @@ pub struct Compat {
     pub require_reasoning: bool,
     /// Z.ai GLM models after 4.5 stream tool calls only with `tool_stream`.
     pub zai_tool_stream: bool,
+    /// The server takes a body `prompt_cache_key` (OpenAI, Azure, and the
+    /// compatible APIs OpenCode enables it for); a `setCacheKey` option
+    /// overrides.
+    pub prompt_cache_key: bool,
+    /// Which Anthropic-format cache breakpoints the server takes.
+    pub cache_markers: Markers,
+    /// xAI: the prompt cache key goes in the `x-grok-conv-id` header.
+    pub xai: bool,
+}
+
+/// Cache breakpoints a Chat server accepts (`cache_control` in Anthropic's
+/// format), after OpenCode's route list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Markers {
+    /// None: the server caches by prefix on its own.
+    #[default]
+    None,
+    /// Breakpoints for every model (DigitalOcean).
+    All,
+    /// A gateway: breakpoints for Anthropic and Qwen models (OpenRouter).
+    Gateway,
+    /// Alibaba DashScope: Qwen models, without tool breakpoints.
+    Alibaba,
 }
 
 impl Compat {
@@ -51,6 +75,57 @@ impl Compat {
                     id.as_str(),
                     "glm-4.5" | "glm-4.5-air" | "glm-4.5-flash" | "glm-4.5v"
                 ),
+            prompt_cache_key: openai
+                || [
+                    "api.cerebras.ai",
+                    "api.deepinfra.com",
+                    "inference.do-ai.run",
+                    "api.fireworks.ai",
+                    "api.llama.com",
+                    "api.moonshot.ai",
+                    "api.moonshot.cn",
+                    "openrouter.ai",
+                    "api.venice.ai",
+                ]
+                .iter()
+                .any(|h| url.contains(h)),
+            cache_markers: if url.contains("openrouter.ai") {
+                Markers::Gateway
+            } else if url.contains("inference.do-ai.run") {
+                Markers::All
+            } else if url.contains("dashscope") {
+                Markers::Alibaba
+            } else {
+                Markers::None
+            },
+            xai: url.contains("api.x.ai"),
+        }
+    }
+
+    /// The breakpoints this request gets (after OpenCode's `selectPolicy`):
+    /// a `cacheFormat` option (`anthropic` or `alibaba`) declares the
+    /// format for any server; otherwise the server's own.
+    fn cache_policy(&self, req: &Request) -> cache::Policy {
+        let auto = req.cache.placement == crate::CachePlacement::Auto;
+        let resolved = |p| cache::resolve(&req.cache, p);
+        match req.options.str("cacheFormat") {
+            Some("alibaba") if auto => return cache::QWEN,
+            Some("alibaba") => {
+                return cache::Policy {
+                    tools: false,
+                    ..resolved(cache::AUTO)
+                }
+            }
+            Some("anthropic") => return resolved(cache::AUTO),
+            _ => {}
+        }
+        match self.cache_markers {
+            Markers::None => cache::NONE,
+            _ if !auto => resolved(cache::NONE),
+            Markers::All => cache::AUTO,
+            Markers::Gateway => cache::gateway_policy(&req.model),
+            Markers::Alibaba if req.model.to_ascii_lowercase().starts_with("qwen") => cache::QWEN,
+            Markers::Alibaba => cache::NONE,
         }
     }
 
@@ -160,6 +235,30 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
             .iter()
             .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer)}}))
             .collect();
+        if let Some(c) = &req.tool_choice {
+            body["tool_choice"] = match c {
+                ToolChoice::Auto => json!("auto"),
+                ToolChoice::None => json!("none"),
+                ToolChoice::Required => json!("required"),
+                ToolChoice::Tool(name) => json!({"type": "function", "function": {"name": name}}),
+            };
+        }
+        // OpenAI rejects `parallel_tool_calls` without tools.
+        if let Some(p) = req.parallel_tool_calls {
+            body["parallel_tool_calls"] = json!(p);
+        }
+    }
+    let policy = compat.cache_policy(req);
+    let key_ok = req
+        .options
+        .bool("setCacheKey")
+        .unwrap_or(compat.prompt_cache_key);
+    if let Some(k) = cache::prompt_cache_key(req).filter(|_| key_ok && !compat.xai) {
+        body["prompt_cache_key"] = json!(k);
+    }
+    // Breakpoints carry the lifetime when there are any.
+    if let Some((k, v)) = cache::openai_ttl(req.cache.lifetime()).filter(|_| !policy.places()) {
+        body[k] = v;
     }
     if let Some(n) = req.max_tokens {
         let field = if compat.openai {
@@ -177,7 +276,26 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
     }
     merge_body(&mut body, &lower_options(req, compat));
     merge_body(&mut body, &req.body);
+    cache::mark_chat(&mut body, policy, req.cache.lifetime());
     body
+}
+
+/// Request headers: the provider's own, and xAI's conversation affinity
+/// header carrying the prompt cache key (sent whether or not caching is on,
+/// as OpenCode does).
+pub fn headers(p: &Provider, req: &Request) -> Vec<(String, String)> {
+    let mut out = p.headers.clone();
+    if p.base_url.to_ascii_lowercase().contains("api.x.ai") {
+        if let Some(k) = req.prompt_cache_key.as_deref().filter(|k| !k.is_empty()) {
+            if !out
+                .iter()
+                .any(|(h, _)| h.eq_ignore_ascii_case("x-grok-conv-id"))
+            {
+                out.push(("x-grok-conv-id".into(), k.into()));
+            }
+        }
+    }
+    out
 }
 
 /// Body fields from the request's provider options (after OpenCode's Chat
@@ -787,7 +905,7 @@ pub async fn stream(
     if let Some(k) = &p.api_key {
         rb = rb.bearer_auth(k);
     }
-    for (k, v) in &p.headers {
+    for (k, v) in headers(p, req) {
         rb = rb.header(k, v);
     }
     let compat = Compat::detect(&p.base_url, &req.model);

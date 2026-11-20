@@ -4,7 +4,8 @@ CodeSmith's provider protocols (`src/openai.rs`, `src/responses.rs`,
 `src/anthropic.rs`, `src/gemini.rs`) are pinned to OpenCode's by porting
 OpenCode's provider unit tests (`packages/ai/test`, MIT) as table-driven Rust
 tests in [`src/parity_tests.rs`](src/parity_tests.rs) (provider options and
-reasoning replay in [`src/parity_options.rs`](src/parity_options.rs)).
+reasoning replay in [`src/parity_options.rs`](src/parity_options.rs), prompt
+caching and tool choice in [`src/parity_cache.rs`](src/parity_cache.rs)).
 Response parsing is also checked against OpenCode's recorded traffic in
 `src/replay_tests.rs`; this matrix covers the unit tests, which are mostly
 about how requests are built.
@@ -22,27 +23,28 @@ as OpenAI Chat), `provider/openai-responses`, `provider/anthropic-messages`,
 `provider/anthropic-thinking-binding` (Anthropic), `provider/gemini`, and, as
 Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 `tool-schema-projection`, `tool-history`, `request-encoding`, `partial-json`,
-`sanitize`, `error-partial`. Parametrized tests count once per generated case.
+`sanitize`, `error-partial`, `cache-policy`. Parametrized tests count once per generated case.
 
 ## Summary
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 62 | 38 |
-| OpenAI Responses | 159 | 20 | 60 | 79 |
-| Anthropic Messages | 95 | 9 | 49 | 37 |
-| Gemini | 61 | 12 | 26 | 23 |
-| Shared | 56 | 10 | 10 | 36 |
-| **Total** | **486** | **66** | **207** | **213** |
+| OpenAI Chat | 115 | 15 | 70 | 30 |
+| OpenAI Responses | 159 | 20 | 65 | 74 |
+| Anthropic Messages | 95 | 9 | 54 | 32 |
+| Gemini | 61 | 12 | 27 | 22 |
+| Shared | 85 | 10 | 44 | 31 |
+| **Total** | **515** | **66** | **260** | **189** |
 
-Of the gaps, 184 are missing provider features (the roadmap) and
-29 are by design or not applicable.
+Of the gaps, 157 are missing provider features (the roadmap) and
+32 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
 or a configuration knob it has no equivalent for), the case says so in its
 name or the list below; "(adapted)" marks a case rephrased for CodeSmith's
 message model (user text where OpenCode has system-update or tool messages,
-string tool results).
+string tool results, and cache markers from a `body` override where OpenCode
+puts a manual cache hint on a part).
 
 ## Fixes made while porting
 
@@ -207,6 +209,50 @@ Reasoning replay (`lib.rs` and every protocol)
   streamed under (replayed under that field; fully structured reasoning gets
   no scalar field; Kimi details keep `reasoning_content`).
 
+Prompt caching (`cache.rs`, every protocol), on by default as in OpenCode
+- `Request.cache` is OpenCode's cache policy: `auto` (the default), off, or
+  exact placements (`tools`, `system`, `messages`: a tail count,
+  latest user or latest assistant message) with an optional `ttl`. Config:
+  `cache` on a provider or model (also `settings.cache` / `options.cache`):
+  `false`/`"none"`, `true`/`"auto"`, or `{ttl, tools, system, messages}`.
+- Anthropic Messages: `cache_control` breakpoints on the last tool, the first
+  and last system blocks (the system prompt becomes a block list) and the
+  last message's last text block (else its last block that is not
+  thinking), at most four per request (three beside the `cacheControl`
+  option's automatic caching), spent tools → system → messages.
+  Placed on the lowered body, so markers already there (a `body` override)
+  are kept, count against the cap, and the excess is dropped in that order.
+  The policy's `ttl` rides on every marker.
+- OpenAI Chat: the same breakpoints in Anthropic's format where the server
+  takes them: OpenRouter (Anthropic models; Qwen without tools; other
+  upstreams none), DigitalOcean, DashScope Qwen models, or any server whose
+  options declare `cacheFormat: anthropic | alibaba`. Tool objects carry the
+  marker beside `function`; system, user and tool messages carry it on a text
+  content part.
+- OpenAI Chat and Responses: `Request.prompt_cache_key` (the session id,
+  clamped to 64 characters) as `prompt_cache_key`: always on Responses
+  (unless `setCacheKey: false`), on Chat for OpenAI, Azure, Cerebras,
+  DeepInfra, DigitalOcean, Fireworks, Meta, Moonshot, OpenRouter and Venice
+  (or `setCacheKey: true`); xAI gets the `x-grok-conv-id` header instead. The
+  `ttl` goes out as `prompt_cache_retention` for `24h`, otherwise as
+  `prompt_cache_options.ttl`, unless breakpoints carry it. Caching off sends
+  neither key nor lifetime.
+- Gemini: nothing (implicit caching; `cachedContent` stays an option).
+
+Tool choice and parallel tool calls (every protocol)
+- `Request.tool_choice` (`Auto`, `None`, `Required`, `Tool(name)`), sent only
+  with declared tools: Chat `"auto"|"none"|"required"|{type: function,
+  function: {name}}`, Responses the same with `{type: function, name}` (an
+  `allowedTools` option wins), Anthropic `{type: auto|none|any|tool}`, Gemini
+  `toolConfig.functionCallingConfig` `AUTO|NONE|ANY` (`allowedFunctionNames`
+  for a named tool). A named choice without a name is an `Error::Invalid`.
+- `Request.parallel_tool_calls`: Chat `parallel_tool_calls` (with tools),
+  Responses `parallel_tool_calls`, Anthropic `disable_parallel_tool_use` on
+  the tool choice; a `parallelToolCalls` option wins.
+- The session's forced final step sends `ToolChoice::None` instead of a
+  per-protocol body field, keeping the tool definitions (and the cached
+  prefix).
+
 OpenAI Responses (`responses.rs`)
 - The system prompt leads `input` as a `developer` message, as in OpenCode
   (newer GPT models never cache top-level `instructions`), where it was sent
@@ -238,8 +284,10 @@ Shared (`lib.rs`, `schema.rs`)
   compatibility overrides and provider-name detection are not modelled.
 - `openai-responses` "preserves standard refusal content …": text only, no
   item id/phase replay.
-- `anthropic-messages` "prepares Anthropic Messages target": without the
-  system cache hint.
+- `anthropic-messages` "prepares Anthropic Messages target": a system-only
+  cache policy stands for OpenCode's manual system hint.
+- `openai-compatible-chat` "prepares generic Chat target": no endpoint query
+  parameters and no `strict` flag on tools.
 - `gemini` "merges parallel tool results into one function-response turn":
   CodeSmith's function response payload is `{"output": …}` / `{"error": …}`
   (Google's documented keys) where OpenCode sends `{name, content}`.
@@ -248,8 +296,7 @@ Shared (`lib.rs`, `schema.rs`)
   `sanitizer` override cases are omitted.
 - `tool-history` cases: provider-executed parts are omitted.
 - Provider options and reasoning replay (`src/parity_options.rs`):
-  "maps OpenAI provider options to Responses options" without the prompt
-  cache key (see prompt caching); "forwards standard Gemini generation
+  "forwards standard Gemini generation
   options" passes the knobs as options (CodeSmith's request has only
   `max_tokens` and `temperature` as fields); "infers empty-signature
   compatibility across Kimi providers" by endpoint and model id, without the
@@ -350,7 +397,7 @@ _OpenAI Responses 16, Anthropic Messages 5._
 
 ### Mid-conversation system messages (16 tests)
 
-CodeSmith has no system role inside the history; reminders are user text (`<system-reminder>`). OpenCode lowers chronological system updates natively (Anthropic) or as wrapped user/developer text.
+CodeSmith has no system role inside the history; its harness reminders (plan mode, the compaction continue prompt) are stored user text wrapped in `<system-reminder>`, which is what OpenCode sends to models without native system updates (wrapped user text). OpenCode also lowers them natively: Anthropic `role: "system"` messages for Claude Opus 4.8 and later families (held until the next assistant turn, after a user turn or tool result, with Vertex and fallback placement rules), Responses `developer` messages, and escaped `<system-update>` wrappers on Chat and Gemini. Doing that needs a system role in stored messages, which the session store, UI, ACP and stats read; the reminders work as they are, so this stays on the roadmap.
 
 _OpenAI Chat 3, OpenAI Responses 1, Anthropic Messages 10, Gemini 2._
 
@@ -372,32 +419,6 @@ _OpenAI Chat 3, OpenAI Responses 1, Anthropic Messages 10, Gemini 2._
 - `anthropic-messages` — keeps an ordinary terminal Vertex system update native
 - `gemini` — lowers chronological system updates to wrapped user text in order
 - `gemini` — flushes pending media before system update text
-
-</details>
-
-
-### Prompt caching (14 tests)
-
-No `cache_control` breakpoints (Anthropic, Anthropic-format Chat gateways), no `prompt_cache_key`/TTL options, no xAI conversation header. Cache usage is still parsed.
-
-_OpenAI Chat 6, OpenAI Responses 4, Anthropic Messages 4._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — maps the request prompt cache key when the compatibility flag is set
-- `openai-chat` — sends the cache TTL as a request option when no markers carry it
-- `openai-chat` — omits the prompt cache key without the compatibility flag
-- `openai-chat` — omits the prompt cache key when caching is disabled
-- `openai-chat` — maps the xAI Chat prompt cache key to conversation affinity header only
-- `openai-compatible-chat` — places cache breakpoints only when compatibility declares the format
-- `openai-responses` — sends the cache TTL as prompt_cache_options, or prompt_cache_retention for 24h
-- `openai-responses` — maps the request prompt cache key
-- `openai-responses` — omits the prompt cache key when caching is disabled
-- `openai-responses` — omits the prompt cache key when capabilities disable it
-- `anthropic-messages` — sends the hint ttl on cache_control
-- `anthropic-messages` — emits cache_control on tool definitions and tool-result blocks
-- `anthropic-messages` — drops cache_control breakpoints past the 4-per-request cap
-- `anthropic-messages` — spends breakpoint budget on tools before system before messages
 
 </details>
 
@@ -424,25 +445,6 @@ _Shared 14._
 - `error-partial` — stream keeps the output that arrived before a mid-stream failure
 - `error-partial` — loop reports only the failed step as partial
 - `error-partial` — rejects with the root-exported AIError carrying partial
-
-</details>
-
-
-### Tool choice and parallel tool calls (14 tests)
-
-CodeSmith always lets the model choose (`auto`): no `tool_choice` (`none`, `required`, named, allowed tools), no `parallel_tool_calls`.
-
-_OpenAI Chat 2, OpenAI Responses 1, Anthropic Messages 1, Gemini 1, Shared 9._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — maps disableParallelToolUse to parallel_tool_calls only when tools are present
-- `openai-compatible-chat` — prepares generic Chat target
-- `openai-responses` — maps the canonical parallel tool setting with provider-option precedence
-- `anthropic-messages` — keeps tools and sends tool_choice none
-- `gemini` — keeps tools and sends function calling mode NONE
-- `empty-tool-choice` — ${route.id} preserves ${choice.type} tool choice with active tools (×8)
-- `empty-tool-choice` — OpenAI Responses omits allowed tool choice without tool definitions
 
 </details>
 
@@ -610,11 +612,11 @@ _Anthropic Messages 3, Gemini 2._
 </details>
 
 
-### Tool namespaces (4 tests)
+### Tool namespaces (5 tests)
 
 Responses tool namespaces (grouped tools) are not used.
 
-_OpenAI Responses 4._
+_OpenAI Responses 4, Shared 1._
 
 <details><summary>Tests</summary>
 
@@ -622,6 +624,7 @@ _OpenAI Responses 4._
 - `openai-responses` — flattens nested levels within a native tool namespace
 - `openai-responses` — defaults tool namespace descriptions
 - `openai-responses` — preserves tool namespaces through streaming and history replay
+- `cache-policy` — marks the final leaf inside a tool namespace
 
 </details>
 
@@ -756,6 +759,21 @@ _OpenAI Responses 2, Gemini 1, Shared 1._
 - `openai-responses` — replays stateless reasoning without encrypted state
 - `gemini` — preserves candidate-less prompt safety blocks as content-filter outcomes
 - `conversation-lowering` — conversation lowering excludes generation settings and tool definitions
+
+</details>
+
+
+### Not applicable: cache policy internals (3 tests)
+
+Bedrock `cachePoint` markers (CodeSmith has no Bedrock Converse protocol), de-duplicating same-named tools before counting manual tool hints (CodeSmith has no per-part hints, and session tool names are unique), and `applyCachePolicy` returning the same object when nothing changes (a JavaScript identity check).
+
+_Shared 3._
+
+<details><summary>Tests</summary>
+
+- `cache-policy` — 'auto' on Bedrock emits cachePoint markers in the right places
+- `cache-policy` — deduplicates tools before counting cache hints
+- `cache-policy` — returns the same request reference when policy is a no-op (pure function)
 
 </details>
 
