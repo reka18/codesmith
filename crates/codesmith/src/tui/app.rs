@@ -269,6 +269,9 @@ pub struct App {
     pub input: Editor,
     pub history: Vec<String>,
     hist: Option<usize>,
+    /// What was typed before stepping into the history, restored when
+    /// stepping back past the newest entry.
+    draft: String,
     /// Lines scrolled up from the bottom of the transcript.
     pub scroll: usize,
     pub busy: bool,
@@ -354,6 +357,45 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("help", "keys and commands"),
     ("exit", "quit"),
 ];
+
+/// Pasted text without terminal escape sequences (CSI, OSC and other
+/// `ESC`-introduced ones), which could restyle or move the screen. Other
+/// control characters are kept.
+pub fn strip_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters and intermediates up to a final byte.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC, DCS, SOS, PM, APC: up to BEL or ESC \.
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // A two-character sequence (or a lone ESC at the end).
+            _ => {}
+        }
+    }
+    out
+}
 
 fn first_line(s: &str) -> String {
     s.lines()
@@ -729,8 +771,8 @@ impl App {
                             .push(super::attach::Pending { label, path });
                     }
                 } else {
-                    self.input
-                        .insert_str(&s.replace("\r\n", "\n").replace('\r', "\n"));
+                    let text = strip_escapes(s).replace("\r\n", "\n").replace('\r', "\n");
+                    self.input.insert_str(&text);
                 }
                 self.edited();
             }
@@ -845,6 +887,7 @@ impl App {
         if let Some(a) = self.popup_key(&k, ctrl) {
             return a;
         }
+        let browsing = self.hist.map(|_| self.input.text().to_string());
         let ed = &mut self.input;
         match k.code {
             KeyCode::Char('c') if ctrl => {
@@ -933,7 +976,12 @@ impl App {
             KeyCode::Char(c) => ed.insert(c),
             _ => return None,
         }
-        self.edited();
+        // Moving the cursor keeps the place in the history; editing leaves it.
+        if browsing.as_deref() == Some(self.input.text()) {
+            self.refresh_popup();
+        } else {
+            self.edited();
+        }
         None
     }
 
@@ -942,15 +990,20 @@ impl App {
             return;
         }
         let next = match (self.hist, dir) {
-            (None, -1) => Some(self.history.len() - 1),
+            (None, -1) => {
+                self.draft = self.input.text().to_string();
+                Some(self.history.len() - 1)
+            }
             (None, _) => return,
             (Some(i), -1) => Some(i.saturating_sub(1)),
             (Some(i), _) if i + 1 < self.history.len() => Some(i + 1),
             (Some(_), _) => None,
         };
         self.hist = next;
-        self.input
-            .set(next.map(|i| self.history[i].clone()).unwrap_or_default());
+        match next {
+            Some(i) => self.input.set(self.history[i].clone()),
+            None => self.input.set(std::mem::take(&mut self.draft)),
+        }
     }
 
     fn submit(&mut self) -> Option<Action> {
@@ -978,6 +1031,14 @@ impl App {
 
     fn modal_key(&mut self, k: KeyEvent, ctrl: bool) -> Option<Action> {
         if ctrl && k.code == KeyCode::Char('c') {
+            // Ctrl+C clears a picker's filter before it closes the picker.
+            if let Some(Modal::Picker(p)) = self.modal.as_mut() {
+                if !p.filter.is_empty() {
+                    p.filter.clear();
+                    p.refilter();
+                    return None;
+                }
+            }
             let was_prompt = matches!(
                 self.modal,
                 Some(Modal::Permission { .. } | Modal::Question { .. })

@@ -241,6 +241,27 @@ pub fn pasted_files(text: &str, cwd: &Path) -> Option<Vec<PathBuf>> {
     if text.is_empty() || text.starts_with("http://") || text.starts_with("https://") {
         return None;
     }
+    // A single path with spaces in it, pasted as is.
+    let whole = cwd.join(text);
+    if whole.is_file() && is_media_path(&whole) {
+        return Some(vec![whole]);
+    }
+    // A `text/uri-list` paste may carry `#` comment lines.
+    let uris: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let joined;
+    let text = if text.lines().any(|l| l.trim_start().starts_with('#'))
+        && !uris.is_empty()
+        && uris.iter().all(|l| l.starts_with("file://"))
+    {
+        joined = uris.join("\n");
+        joined.as_str()
+    } else {
+        text
+    };
     let paths = split_paths(text)?;
     let files: Vec<PathBuf> = paths.iter().map(|p| cwd.join(p)).collect();
     (!files.is_empty() && files.iter().all(|f| f.is_file() && is_media_path(f))).then_some(files)

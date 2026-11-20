@@ -20,6 +20,8 @@ mod complete;
 mod diff;
 mod editor;
 mod markdown;
+#[cfg(test)]
+mod parity;
 mod view;
 
 pub(crate) use view::display_safe;
