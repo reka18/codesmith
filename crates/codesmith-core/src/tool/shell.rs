@@ -349,13 +349,21 @@ struct Shared {
 
 impl Shared {
     async fn wait_any(&self) {
+        self.wait_more(0).await;
+    }
+
+    /// Wait until more than `seen` finished jobs are unreported, or none
+    /// runs.
+    async fn wait_more(&self, seen: usize) {
         loop {
             let notified = self.wake.notified();
             {
                 let jobs = self.jobs.lock().unwrap();
-                if jobs.iter().any(|j| j.ending.is_some() && !j.notified)
-                    || !jobs.iter().any(|j| j.ending.is_none())
-                {
+                let unreported = jobs
+                    .iter()
+                    .filter(|j| j.ending.is_some() && !j.notified)
+                    .count();
+                if unreported > seen || !jobs.iter().any(|j| j.ending.is_none()) {
                     return;
                 }
             }
@@ -414,6 +422,12 @@ impl Reaper {
     /// waits on while the session is idle, to resume it.
     pub async fn wait_any(&self) {
         self.0.wait_any().await;
+    }
+
+    /// Wait until another command finishes: more than `seen` finished
+    /// commands are unreported (or none runs).
+    pub async fn wait_more(&self, seen: usize) {
+        self.0.wait_more(seen).await;
     }
 }
 

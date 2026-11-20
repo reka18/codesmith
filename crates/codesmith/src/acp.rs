@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
@@ -1134,6 +1134,18 @@ struct Slot {
     /// a stopped turn dropped. Stopped by `session/close`,
     /// `session/delete` and the end of input.
     jobs: Jobs,
+    /// Finished commands a user's cancel left unreported: the session is
+    /// not woken for them, only once another one finishes.
+    held: AtomicUsize,
+    /// Resumed turns that failed in a row, and until when the next waits.
+    failures: AtomicU32,
+    backoff: Mutex<Option<tokio::time::Instant>>,
+}
+
+/// How long a session waits to resume again after `failures` resumed
+/// turns failed in a row: a second, doubling up to a minute.
+fn resume_backoff(failures: u32) -> Duration {
+    Duration::from_secs(1u64 << failures.saturating_sub(1).min(6)).min(Duration::from_secs(60))
 }
 
 pub type Loader = Arc<dyn Fn(&Path) -> Result<Loaded> + Send + Sync>;
@@ -1841,6 +1853,9 @@ impl Agent {
             shown: Default::default(),
             approvals,
             jobs,
+            held: AtomicUsize::new(0),
+            failures: AtomicU32::new(0),
+            backoff: Mutex::new(None),
         });
         let s = self.build(&slot)?;
         *slot.session.lock().await = Some(s);
@@ -2468,6 +2483,8 @@ impl Agent {
                 }
                 if let Some(s) = g.take() {
                     *queued = None;
+                    // Its turn reports what finished.
+                    slot.held.store(0, Ordering::SeqCst);
                     *slot.running.lock().unwrap() = Some(Running::Prompt(rpc.clone()));
                     return Ok(Some(s));
                 }
@@ -2493,7 +2510,24 @@ impl Agent {
                 return;
             }
             let Some(s) = g.as_ref() else { return };
-            if s.background_finished() > 0 {
+            let held = slot.held.load(Ordering::SeqCst);
+            let backoff = slot
+                .backoff
+                .lock()
+                .unwrap()
+                .filter(|t| *t > tokio::time::Instant::now());
+            if let (true, Some(until)) = (s.background_finished() > held, backoff) {
+                // The last resumed turn failed: try again later.
+                let slot2 = slot.clone();
+                let waiter = tokio::spawn(async move {
+                    tokio::time::sleep_until(until).await;
+                    slot2.waiter.lock().unwrap().take();
+                    self.wake(slot2).await;
+                });
+                if let Some(old) = slot.waiter.lock().unwrap().replace(waiter) {
+                    old.abort();
+                }
+            } else if s.background_finished() > held {
                 let s = g.take().unwrap();
                 *slot.running.lock().unwrap() = Some(Running::Resumed);
                 let task = tokio::spawn(self.clone().resumed(slot.clone(), s));
@@ -2501,7 +2535,7 @@ impl Agent {
             } else if s.background_running() > 0 {
                 let (reaper, slot2) = (s.reaper(), slot.clone());
                 let waiter = tokio::spawn(async move {
-                    reaper.wait_any().await;
+                    reaper.wait_more(held).await;
                     // From here a prompt no longer cancels the wake: it
                     // waits for the turn this may start.
                     slot2.waiter.lock().unwrap().take();
@@ -2527,8 +2561,25 @@ impl Agent {
             self.child_updates(),
         );
         let title_before = s.title.clone();
-        if let Err(e) = s.resume_background(&mut sink).await {
-            eprintln!("acp: resuming session {}: {e:#}", slot.id);
+        slot.held.store(0, Ordering::SeqCst);
+        #[cfg(test)]
+        let resumed = match tests::resume_hook(&slot.id).await {
+            Some(e) => Err(e),
+            None => s.resume_background(&mut sink).await,
+        };
+        #[cfg(not(test))]
+        let resumed = s.resume_background(&mut sink).await;
+        match resumed {
+            Ok(()) => {
+                slot.failures.store(0, Ordering::SeqCst);
+                *slot.backoff.lock().unwrap() = None;
+            }
+            Err(e) => {
+                eprintln!("acp: resuming session {}: {e:#}", slot.id);
+                let n = slot.failures.fetch_add(1, Ordering::SeqCst) + 1;
+                *slot.backoff.lock().unwrap() =
+                    Some(tokio::time::Instant::now() + resume_backoff(n));
+            }
         }
         sink.settle();
         {
@@ -2669,6 +2720,15 @@ impl Agent {
         }
     }
 
+    /// After a user's cancel: what finished and is unreported does not wake
+    /// the session again, only another command finishing does (the next
+    /// turn still reports them all).
+    async fn hold_finished(&self, slot: &Slot) {
+        if let Some(s) = slot.session.lock().await.as_ref() {
+            slot.held.store(s.background_finished(), Ordering::SeqCst);
+        }
+    }
+
     /// The session is over (closed, deleted, or the input ended): stop its
     /// turn and its background commands.
     async fn end(&self, sid: &str, slot: &Slot) {
@@ -2729,6 +2789,7 @@ impl Agent {
                 if let Ok(slot) = self.slot(&sid).await {
                     self.stop(&sid, &slot, true).await;
                     // Its background commands survived: wait for them.
+                    self.hold_finished(&slot).await;
                     self.clone().wake(slot).await;
                 }
             }
@@ -2756,6 +2817,7 @@ impl Agent {
                     let ours = matches!(slot.running.lock().unwrap().as_ref(), Some(Running::Prompt(r)) if r == id);
                     if ours {
                         self.stop(&sid, &slot, true).await;
+                        self.hold_finished(&slot).await;
                         self.clone().wake(slot).await;
                     }
                 }
@@ -2906,6 +2968,79 @@ mod tests {
     /// test can cancel in that gap.
     static PAUSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+    /// Sessions whose resumed turns fail at once, and those whose resumed
+    /// turns stop before they report; every resumed turn, by session.
+    static FAIL_RESUME: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static PARK_RESUME: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static RESUMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(super) async fn resume_hook(sid: &str) -> Option<anyhow::Error> {
+        RESUMES.lock().unwrap().push(sid.to_string());
+        if FAIL_RESUME.lock().unwrap().iter().any(|s| s == sid) {
+            return Some(anyhow!("resume failed"));
+        }
+        if PARK_RESUME.lock().unwrap().iter().any(|s| s == sid) {
+            std::future::pending::<()>().await;
+        }
+        None
+    }
+
+    fn resumes(sid: &str) -> usize {
+        RESUMES.lock().unwrap().iter().filter(|s| *s == sid).count()
+    }
+
+    // A resumed turn that fails is retried after a back-off (a second,
+    // doubling), not at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_resume_backs_off() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        FAIL_RESUME.lock().unwrap().push(sid.clone());
+        launch(&mut c, &sid, "sleep 0.5; echo done-fail").await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let n = resumes(&sid);
+        assert!((1..=3).contains(&n), "{n} resumes in 2.5s");
+        assert_eq!(resume_backoff(1), Duration::from_secs(1));
+        assert_eq!(resume_backoff(3), Duration::from_secs(4));
+        assert_eq!(resume_backoff(30), Duration::from_secs(60));
+        // Once it works again, it reports the command.
+        FAIL_RESUME.lock().unwrap().retain(|s| *s != sid);
+        let (m, _) = c
+            .wait(|m| chunk_text(m).is_some_and(|t| t.contains("woke")))
+            .await;
+        assert_eq!(chunk_text(&m), Some("woke: done-fail"));
+    }
+
+    // A user's cancel of a resumed turn that had not reported its commands
+    // yet does not wake the session again for them: only another command
+    // finishing does, and that turn reports both.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_resume_waits_for_another_command() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        PARK_RESUME.lock().unwrap().push(sid.clone());
+        launch(&mut c, &sid, "sleep 0.5; echo done-held").await;
+        for _ in 0..100 {
+            if resumes(&sid) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(resumes(&sid), 1);
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert_eq!(resumes(&sid), 1, "not woken again for the same command");
+        PARK_RESUME.lock().unwrap().retain(|s| *s != sid);
+        launch(&mut c, &sid, "sleep 1; echo done-later").await;
+        let (m, _) = c
+            .wait(|m| chunk_text(m).is_some_and(|t| t.contains("woke")))
+            .await;
+        assert_eq!(resumes(&sid), 2);
+        assert!(chunk_text(&m).unwrap().contains("done-"), "{m}");
+    }
+
     pub(super) async fn settle_pause(sid: &str) {
         if PAUSED.lock().unwrap().iter().any(|s| s == sid) {
             std::future::pending::<()>().await;
@@ -2913,7 +3048,10 @@ mod tests {
     }
     /// The background command notices the model answered, by marker.
     static WOKE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    const MARKERS: [&str; 8] = [
+    const MARKERS: [&str; 11] = [
+        "done-fail",
+        "done-held",
+        "done-later",
         "done-wake",
         "done-prompt",
         "done-cancel",
