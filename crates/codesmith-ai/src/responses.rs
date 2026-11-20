@@ -4,9 +4,9 @@
 use crate::cache;
 use crate::gemini::split_id;
 use crate::{
-    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
-    Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta,
-    Request, Role, ToolChoice, Usage,
+    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, system_text,
+    Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider,
+    ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -206,6 +206,11 @@ pub fn body(req: &Request) -> Value {
         }
         if m.role == Role::Assistant {
             assistant_items(m, &mut input);
+            continue;
+        }
+        // A system update is a developer message in place (after OpenCode).
+        if m.role == Role::System {
+            input.push(json!({"type": "message", "role": "developer", "content": system_text(m)}));
             continue;
         }
         for p in &m.parts {

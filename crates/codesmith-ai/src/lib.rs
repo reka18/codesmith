@@ -26,6 +26,17 @@ use serde_json::Value;
 pub enum Role {
     User,
     Assistant,
+    /// A mid-conversation system update: text the harness (not the user)
+    /// adds to the conversation, such as an instruction to carry on after a
+    /// compaction. Lowered per protocol (after OpenCode's `Message.system`):
+    /// a native `system` message on Claude models that take one, a
+    /// `developer` message on Responses, and escaped `<system-update>` user
+    /// text elsewhere. Only its text parts are sent.
+    ///
+    /// Stored as `"role": "system"`; sessions written before this role
+    /// existed never contain it, and older binaries cannot read records
+    /// that do.
+    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -319,6 +330,38 @@ impl Message {
             parts: vec![Part::Text(text.into())],
         }
     }
+
+    /// A mid-conversation system update (see [`Role::System`]).
+    pub fn system(text: impl Into<String>) -> Self {
+        Message {
+            role: Role::System,
+            parts: vec![Part::Text(text.into())],
+        }
+    }
+}
+
+/// The text of a system update: its text parts, one per line (OpenCode's
+/// `joinText`). System updates carry text only; other parts are not sent.
+pub(crate) fn system_text(m: &Message) -> String {
+    m.parts
+        .iter()
+        .filter_map(|p| match p {
+            Part::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A system update as user text, for routes without a native role for it
+/// (OpenCode's `wrapSystemUpdate`): visibly lower-authority, in its original
+/// place, and escaped so the text cannot close the wrapper.
+pub(crate) fn wrap_system_update(m: &Message) -> String {
+    let text = system_text(m)
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!("<system-update>\n{text}\n</system-update>")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -784,8 +827,8 @@ const EMPTY_RESULT: &str = "(no tool output)";
 /// `normalizeToolHistory`). Providers reject a tool call without a result,
 /// other content between a call and its result, and (some) empty results, so:
 /// every call gets a result before the next assistant turn (a missing one
-/// becomes an error result), user text that arrives while calls are pending
-/// moves after their results, empty results say so, and results take their
+/// becomes an error result), user text and system updates that arrive while
+/// calls are pending move after their results, empty results say so, and results take their
 /// name from the matching call. A call answered twice (a stopped turn whose
 /// result raced the one recorded for it later) keeps its first result only;
 /// providers reject a second.
@@ -890,10 +933,15 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
             out.push(user(results));
         }
         if !rest.is_empty() {
+            // User content or a system update, keeping its role.
+            let rest = Message {
+                role: m.role.clone(),
+                parts: rest,
+            };
             if pending.is_empty() {
-                out.push(user(rest));
+                out.push(rest);
             } else {
-                deferred.push(user(rest));
+                deferred.push(rest);
             }
         }
         if pending.is_empty() {

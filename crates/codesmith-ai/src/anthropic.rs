@@ -6,8 +6,9 @@ use crate::openai::scrub_id;
 use crate::options::{claude_version, field, fit_budget, number};
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
-    stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Part,
-    Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    stream_error, system_text, unsupported_media, wrap_system_update, Decoder, Error, Event,
+    EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta, Request, Role,
+    ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -400,14 +401,72 @@ fn lower_reasoning(r: &crate::Reasoning, require_signature: bool) -> Option<Valu
     }
 }
 
+/// Whether the model takes native mid-conversation system messages (after
+/// OpenCode's `supportsNativeSystemUpdates`): Claude Opus 4.8 and every
+/// Claude 5 model, and later versions. A `systemUpdates` option overrides
+/// the detection (OpenCode's `capabilities.systemUpdates`).
+fn system_updates(req: &Request) -> bool {
+    if let Some(b) = req.options.bool("systemUpdates") {
+        return b;
+    }
+    match claude_version(&req.model) {
+        Some((family, 4, minor)) if family == "opus" => minor >= 8,
+        Some((_, major, _)) => major >= 5,
+        None => false,
+    }
+}
+
+/// Add a text block to the latest user turn, or start one.
+fn append_to_user(messages: &mut Vec<Value>, text: String) {
+    let block = json!({"type": "text", "text": text});
+    match messages.last_mut().filter(|l| l["role"] == "user") {
+        Some(last) => last["content"].as_array_mut().unwrap().push(block),
+        None => messages.push(json!({"role": "user", "content": [block]})),
+    }
+}
+
+/// Send the held system updates: as native `system` messages after a user
+/// turn (tool results count), else as wrapped text in a user turn.
+fn release(messages: &mut Vec<Value>, held: &mut Vec<&Message>) {
+    let after_user = messages
+        .iter()
+        .rev()
+        .find(|m| m["role"] != "system")
+        .is_some_and(|m| m["role"] == "user");
+    for m in held.drain(..) {
+        if after_user {
+            messages.push(
+                json!({"role": "system", "content": [{"type": "text", "text": system_text(m)}]}),
+            );
+        } else {
+            append_to_user(messages, wrap_system_update(m));
+        }
+    }
+}
+
 /// The request body for a server at `base_url`.
 pub fn body_for(req: &Request, base_url: &str) -> Value {
     let require_signature = require_signature(base_url, &req.model);
     let mut messages: Vec<Value> = Vec::new();
-    for m in &normalize_tool_history(&req.messages) {
+    // System updates on models that take them natively are held until the
+    // next assistant turn (or the end), the nearest spot after a user turn
+    // where Anthropic accepts a `system` message; elsewhere they stay in
+    // place as wrapped user text.
+    let native = system_updates(req);
+    let mut held: Vec<&Message> = Vec::new();
+    let messages_in = normalize_tool_history(&req.messages);
+    for m in &messages_in {
         let role = match m.role {
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::System => {
+                if native {
+                    held.push(m);
+                } else {
+                    append_to_user(&mut messages, wrap_system_update(m));
+                }
+                continue;
+            }
         };
         let content: Vec<Value> = m
             .parts
@@ -438,6 +497,9 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
         if content.is_empty() {
             continue;
         }
+        if m.role == Role::Assistant {
+            release(&mut messages, &mut held);
+        }
         // The API requires alternating roles; fold consecutive same-role messages.
         if let Some(last) = messages.last_mut().filter(|l| l["role"] == role) {
             last["content"].as_array_mut().unwrap().extend(content);
@@ -445,6 +507,7 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
             messages.push(json!({"role": role, "content": content}));
         }
     }
+    release(&mut messages, &mut held);
     // Tool results must lead their user turn.
     for m in messages.iter_mut().filter(|m| m["role"] == "user") {
         let blocks = m["content"].as_array_mut().unwrap();

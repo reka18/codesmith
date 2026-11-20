@@ -6,8 +6,8 @@
 
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
-    stream_error, Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol,
-    Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, Media, MediaKind,
+    Message, Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -162,6 +162,15 @@ pub fn body(req: &Request) -> Value {
         if !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. })) {
             flush(&mut contents, &mut pending);
         }
+        // A system update is wrapped user text (after OpenCode), in a user
+        // turn of its own after function responses.
+        let wrapped;
+        let m = if m.role == Role::System {
+            wrapped = Message::user(wrap_system_update(m));
+            &wrapped
+        } else {
+            m
+        };
         let role = if m.role == Role::User {
             "user"
         } else {

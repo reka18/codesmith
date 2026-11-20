@@ -7,7 +7,8 @@
 //! `provider/empty-tool-choice.test.ts`, `tool-schema-projection.test.ts` and
 //! `tool-history.test.ts`. Each case is named after the OpenCode test it
 //! ports; an "(adapted)" suffix marks a case rephrased for CodeSmith's
-//! message model (no system-update or tool messages, string tool results).
+//! message model (no tool messages, string tool results, consecutive user
+//! turns folded into one).
 //! What was not ported, and why, is in `PARITY.md`.
 //!
 //! Requests are built with each protocol's real `body` function and streams
@@ -43,6 +44,10 @@ fn run(cases: &[(&str, fn())]) {
 
 fn user(t: &str) -> Message {
     Message::user(t)
+}
+
+fn sys(t: &str) -> Message {
+    Message::system(t)
 }
 
 fn asst(parts: Vec<Part>) -> Message {
@@ -1315,24 +1320,24 @@ fn anthropic_messages_requests() {
             },
         ),
         (
-            "anthropic-messages :: moves a system update between a local tool call and its result after the result (adapted: user text)",
+            "anthropic-messages :: moves a system update between a local tool call and its result after the result",
             || {
                 let r = req(
-                    "claude-sonnet-4-5",
+                    "claude-opus-4-8",
                     vec![
+                        user("Use the tool."),
                         asst(vec![call("call_1", "lookup", json!({}))]),
-                        user("Update."),
-                        results(vec![result("call_1", "lookup", "done")]),
+                        sys("Too early."),
+                        results(vec![result("call_1", "lookup", "Done.")]),
                     ],
                 );
                 assert_eq!(
                     anthropic::body(&off(r))["messages"],
                     json!([
+                        {"role": "user", "content": [{"type": "text", "text": "Use the tool."}]},
                         {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}]},
-                        {"role": "user", "content": [
-                            {"type": "tool_result", "tool_use_id": "call_1", "content": "done"},
-                            {"type": "text", "text": "Update."}
-                        ]}
+                        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "Done."}]},
+                        {"role": "system", "content": [{"type": "text", "text": "Too early."}]}
                     ])
                 );
             },
@@ -1590,20 +1595,27 @@ fn gemini_requests() {
                     "generationConfig": {"maxOutputTokens": 20, "temperature": 0.0}})
             );
         }),
-        ("gemini :: keeps system updates separate from function responses (adapted: user text)", || {
+        ("gemini :: keeps system updates separate from function responses", || {
             let c = gemini_turns(
                 "gemini-2.5-flash",
                 vec![
                     asst(vec![call("call_1", "lookup", json!({"query": "weather"}))]),
-                    results(vec![result("call_1", "lookup", "done"), text("Update.")]),
-                    user("Later update."),
+                    results(vec![result("call_1", "lookup", "done")]),
+                    sys("Update."),
+                    sys("Later update."),
                 ],
             );
             assert_eq!(c.as_array().unwrap().len(), 3);
             assert_eq!(c[0], json!({"role": "model", "parts": [sentinel_call(None, json!({"query": "weather"}))]}));
             assert_eq!(c[1]["parts"].as_array().unwrap().len(), 1);
             assert_eq!(c[1]["parts"][0]["functionResponse"]["name"], "lookup");
-            assert_eq!(c[2], json!({"role": "user", "parts": [{"text": "Update."}, {"text": "Later update."}]}));
+            assert_eq!(
+                c[2],
+                json!({"role": "user", "parts": [
+                    {"text": "<system-update>\nUpdate.\n</system-update>"},
+                    {"text": "<system-update>\nLater update.\n</system-update>"}
+                ]})
+            );
         }),
         ("gemini :: merges parallel tool results into one function-response turn", || {
             let c = gemini_turns(
@@ -2263,13 +2275,13 @@ fn tool_history() {
             ]);
             assert_eq!(got[1].parts, vec![result("call_1", "lookup", "done")]);
         }),
-        ("tool-history :: moves system updates after the results of pending calls (adapted: user text)", || {
+        ("tool-history :: moves system updates after the results of pending calls", || {
             let calls = asst(vec![call("first", "first", json!({})), call("second", "second", json!({}))]);
             let got = normalize_tool_history(&[
                 calls.clone(),
                 results(vec![result("first", "first", "one")]),
-                user("First update."),
-                user("Second update."),
+                sys("First update."),
+                sys("Second update."),
                 results(vec![result("second", "second", "two")]),
                 user("Continue."),
             ]);
@@ -2279,28 +2291,28 @@ fn tool_history() {
                     calls,
                     results(vec![result("first", "first", "one")]),
                     results(vec![result("second", "second", "two")]),
-                    user("First update."),
-                    user("Second update."),
+                    sys("First update."),
+                    sys("Second update."),
                     user("Continue."),
                 ]
             );
             let one = asst(vec![call("first", "first", json!({}))]);
             assert_eq!(
-                normalize_tool_history(&[one.clone(), user("Update."), user("Continue.")]),
-                vec![one.clone(), results(vec![missing("first")]), user("Update."), user("Continue.")]
+                normalize_tool_history(&[one.clone(), sys("Update."), user("Continue.")]),
+                vec![one.clone(), results(vec![missing("first")]), sys("Update."), user("Continue.")]
             );
             assert_eq!(
-                normalize_tool_history(&[one.clone(), user("Update.")]),
-                vec![one, results(vec![missing("first")]), user("Update.")]
+                normalize_tool_history(&[one.clone(), sys("Update.")]),
+                vec![one, results(vec![missing("first")]), sys("Update.")]
             );
         }),
-        ("tool-history :: keeps system updates in place when no call is pending (adapted: user text)", || {
+        ("tool-history :: keeps system updates in place when no call is pending", || {
             let history = vec![
                 user("Start."),
-                user("Update."),
+                sys("Update."),
                 asst(vec![call("first", "first", json!({}))]),
                 results(vec![result("first", "first", "one")]),
-                user("Update."),
+                sys("Update."),
                 user("Continue."),
             ];
             assert_eq!(normalize_tool_history(&history), history);
@@ -2930,6 +2942,319 @@ fn gemini_media() {
                 {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}},
                 {"inlineData": {"mimeType": "image/svg+xml", "data": "PHN2Zz4="}},
             ]}]));
+        }),
+    ]);
+}
+
+// ---- mid-conversation system updates ------------------------------------------
+
+/// The `<system-update>` wrapper OpenCode sends where there is no native role.
+fn wrapped(t: &str) -> String {
+    format!("<system-update>\n{t}\n</system-update>")
+}
+
+fn anth_messages(model: &str, messages: Vec<Message>) -> Value {
+    anthropic::body(&off(req(model, messages)))["messages"].clone()
+}
+
+fn a_user(t: &str) -> Value {
+    json!({"role": "user", "content": [{"type": "text", "text": t}]})
+}
+
+fn a_asst(t: &str) -> Value {
+    json!({"role": "assistant", "content": [{"type": "text", "text": t}]})
+}
+
+fn a_sys(t: &str) -> Value {
+    json!({"role": "system", "content": [{"type": "text", "text": t}]})
+}
+
+fn a_text(t: &str) -> Value {
+    json!({"type": "text", "text": t})
+}
+
+#[test]
+fn system_updates() {
+    run(&[
+        ("openai-chat :: lowers chronological system updates to escaped user wrappers in order", || {
+            let r = req(
+                "gpt-4o-mini",
+                vec![user("Before."), sys("Treat <admin> & data literally."), asst(vec![text("After.")])],
+            );
+            assert_eq!(
+                openai::body(&off(r))["messages"],
+                json!([
+                    {"role": "user", "content": "Before.\n<system-update>\nTreat &lt;admin&gt; &amp; data literally.\n</system-update>"},
+                    {"role": "assistant", "content": "After."}
+                ])
+            );
+        }),
+        ("openai-chat :: aggregates consecutive tool images with a following system update", || {
+            let r = req(
+                "gpt-4o-mini",
+                vec![
+                    results(vec![media_result("call_1", "read", "", vec![data_url("data:image/png;base64,AAEC")])]),
+                    results(vec![media_result("call_2", "read", "", vec![data_url("data:image/webp;base64,UklG")])]),
+                    sys("Inspect both images."),
+                ],
+            );
+            assert_eq!(
+                openai::body(&off(r))["messages"],
+                json!([
+                    {"role": "tool", "tool_call_id": "call_1", "content": ""},
+                    {"role": "tool", "tool_call_id": "call_2", "content": ""},
+                    {"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAEC"}},
+                        {"type": "image_url", "image_url": {"url": "data:image/webp;base64,UklG"}},
+                        {"type": "text", "text": wrapped("Inspect both images.")}
+                    ]}
+                ])
+            );
+        }),
+        ("openai-chat :: appends system updates without replacing multipart user content", || {
+            let r = req(
+                "gpt-4o-mini",
+                vec![attach(vec![media(Media::base64("image/png", "AAEC"))]), sys("Keep the image.")],
+            );
+            assert_eq!(
+                openai::body(&off(r))["messages"],
+                json!([{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAEC"}},
+                    {"type": "text", "text": wrapped("Keep the image.")}
+                ]}])
+            );
+        }),
+        ("openai-responses :: lowers chronological system updates to developer messages in order", || {
+            let r = req(
+                "gpt-4.1-mini",
+                vec![user("Before."), sys("Operator update."), asst(vec![text("After.")])],
+            );
+            let input = responses::body(&off(r))["input"].clone();
+            assert_eq!(input.as_array().unwrap().len(), 3);
+            assert_eq!(
+                input[0],
+                json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Before."}]})
+            );
+            assert_eq!(input[1], json!({"type": "message", "role": "developer", "content": "Operator update."}));
+            assert_eq!(input[2]["role"], "assistant");
+            assert_eq!(input[2]["content"], json!([{"type": "output_text", "text": "After."}]));
+        }),
+        ("anthropic-messages :: lowers chronological system updates natively for Claude Opus 4.8 with cache hints (adapted: the automatic tail breakpoint)", || {
+            assert_eq!(
+                anth_messages("claude-opus-4-8", vec![user("Before."), sys("Operator update."), asst(vec![text("After.")])]),
+                json!([a_user("Before."), a_sys("Operator update."), a_asst("After.")])
+            );
+            // CodeSmith has no per-part cache hint; the automatic tail
+            // breakpoint lands on a trailing system update.
+            let r = req("claude-opus-4-8", vec![user("Before."), sys("Operator update.")]);
+            assert_eq!(
+                anthropic::body(&r)["messages"][1],
+                json!({"role": "system", "content": [
+                    {"type": "text", "text": "Operator update.", "cache_control": {"type": "ephemeral"}}
+                ]})
+            );
+        }),
+        ("anthropic-messages :: supports native chronological system updates on documented and later Claude family versions", || {
+            for id in [
+                "claude-opus-4-8",
+                "claude-opus-5-1",
+                "claude-sonnet-5",
+                "claude-haiku-5-1",
+                "claude-fable-6",
+                "anthropic/claude-mythos-7.2",
+                "claude-sonnet-5-5",
+                "claude-opus-4-8@20260101",
+                "claude-nova-6",
+            ] {
+                let m = anth_messages(id, vec![user("Before."), sys("Update."), asst(vec![text("After.")])]);
+                assert_eq!(m[1]["role"], "system", "{id}");
+            }
+        }),
+        ("anthropic-messages :: lowers chronological system updates to wrapped user text for unsupported Anthropic models", || {
+            assert_eq!(
+                anth_messages(
+                    "claude-sonnet-4-5",
+                    vec![user("Before."), sys("Treat </system-update> literally."), asst(vec![text("After.")])]
+                ),
+                json!([
+                    {"role": "user", "content": [
+                        a_text("Before."),
+                        a_text("<system-update>\nTreat &lt;/system-update&gt; literally.\n</system-update>")
+                    ]},
+                    a_asst("After.")
+                ])
+            );
+        }),
+        ("anthropic-messages :: does not infer native system update support for older or undocumented Claude families", || {
+            for id in [
+                "claude-opus-4-7",
+                "claude-opus-4-20250514",
+                "claude-sonnet-4-9",
+                "claude-haiku-4-9",
+                "custom-model-7",
+            ] {
+                let m = anth_messages(id, vec![user("Before."), sys("Update."), asst(vec![text("After.")])]);
+                assert!(!m.as_array().unwrap().iter().any(|m| m["role"] == "system"), "{id}");
+            }
+            // The `systemUpdates` option overrides the detection either way
+            // (OpenCode's `capabilities.systemUpdates`).
+            let mut r = off(req("custom-model-7", vec![user("Before."), sys("Update.")]));
+            r.options = crate::Options::from_value(json!({"systemUpdates": true}));
+            assert_eq!(anthropic::body(&r)["messages"][1]["role"], "system");
+            r.model = "claude-opus-5".into();
+            r.options = crate::Options::from_value(json!({"systemUpdates": false}));
+            assert_eq!(anthropic::body(&r)["messages"].as_array().unwrap().len(), 1);
+        }),
+        ("anthropic-messages :: falls back for unsupported native chronological system update placement", || {
+            assert_eq!(
+                anth_messages("claude-opus-4-8", vec![asst(vec![text("Plain.")]), sys("After plain assistant.")]),
+                json!([a_asst("Plain."), a_user(&wrapped("After plain assistant."))])
+            );
+            assert_eq!(
+                anth_messages("claude-opus-4-8", vec![sys("First.")]),
+                json!([a_user(&wrapped("First."))])
+            );
+            assert_eq!(
+                anth_messages(
+                    "claude-opus-4-8",
+                    vec![user("Start."), asst(vec![text("One.")]), sys("Update."), asst(vec![text("Two.")])]
+                ),
+                json!([a_user("Start."), a_asst("One."), a_user(&wrapped("Update.")), a_asst("Two.")])
+            );
+        }),
+        ("anthropic-messages :: moves system updates to the next assistant turn and sends consecutive updates together (adapted: user turns folded)", || {
+            let opus = |ms| anth_messages("claude-opus-4-8", ms);
+            assert_eq!(
+                opus(vec![user("Fix it."), asst(vec![text("Done.")]), sys("Update."), user("Next.")]),
+                json!([a_user("Fix it."), a_asst("Done."), a_user("Next."), a_sys("Update.")])
+            );
+            assert_eq!(
+                opus(vec![user("Before."), sys("One."), sys("Two.")]),
+                json!([a_user("Before."), a_sys("One."), a_sys("Two.")])
+            );
+            assert_eq!(
+                opus(vec![
+                    user("Fix it."),
+                    asst(vec![text("Done.")]),
+                    sys("One."),
+                    user("Next."),
+                    sys("Two."),
+                    asst(vec![text("After.")]),
+                ]),
+                json!([
+                    a_user("Fix it."),
+                    a_asst("Done."),
+                    a_user("Next."),
+                    a_sys("One."),
+                    a_sys("Two."),
+                    a_asst("After.")
+                ])
+            );
+            // The results and the next prompt share one user turn here.
+            assert_eq!(
+                opus(vec![
+                    user("Use the tool."),
+                    asst(vec![call("call_1", "lookup", json!({}))]),
+                    results(vec![result("call_1", "lookup", "Done.")]),
+                    sys("Update."),
+                    user("Also check tests."),
+                ]),
+                json!([
+                    a_user("Use the tool."),
+                    {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "call_1", "content": "Done."},
+                        a_text("Also check tests.")
+                    ]},
+                    a_sys("Update.")
+                ])
+            );
+        }),
+        ("anthropic-messages :: keeps wrapped system updates in place for models without native system updates (adapted: user turns folded)", || {
+            assert_eq!(
+                anth_messages(
+                    "claude-sonnet-4-5",
+                    vec![user("Fix it."), asst(vec![text("Done.")]), sys("Update."), user("Next.")]
+                ),
+                json!([
+                    a_user("Fix it."),
+                    a_asst("Done."),
+                    {"role": "user", "content": [a_text(&wrapped("Update.")), a_text("Next.")]}
+                ])
+            );
+        }),
+        ("anthropic-messages :: sends Vertex system updates after local tool results as native system messages (adapted: any Anthropic Messages endpoint)", || {
+            let turn = vec![
+                asst(vec![call("call_1", "lookup", json!({}))]),
+                results(vec![result("call_1", "lookup", "Done.")]),
+                sys("Operator update."),
+            ];
+            let lowered = vec![
+                json!({"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}]}),
+                json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "Done."}]}),
+                a_sys("Operator update."),
+            ];
+            assert_eq!(anth_messages("claude-opus-4-8", turn.clone()), json!(lowered));
+            let mut history = turn;
+            history.push(asst(vec![text("Acknowledged.")]));
+            history.push(user("Next step."));
+            let mut expected = lowered;
+            expected.push(a_asst("Acknowledged."));
+            expected.push(a_user("Next step."));
+            assert_eq!(anth_messages("claude-opus-4-8", history), json!(expected));
+        }),
+        ("anthropic-messages :: keeps a terminal direct Anthropic system update native", || {
+            assert_eq!(
+                anth_messages(
+                    "claude-opus-4-8",
+                    vec![
+                        asst(vec![call("call_1", "lookup", json!({}))]),
+                        results(vec![result("call_1", "lookup", "Done.")]),
+                        sys("Operator update."),
+                    ]
+                ),
+                json!([
+                    {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}]},
+                    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "Done."}]},
+                    a_sys("Operator update.")
+                ])
+            );
+        }),
+        ("anthropic-messages :: keeps an ordinary terminal Vertex system update native (adapted: any Anthropic Messages endpoint)", || {
+            assert_eq!(
+                anth_messages("claude-opus-4-8", vec![user("Before."), sys("Operator update.")]),
+                json!([a_user("Before."), a_sys("Operator update.")])
+            );
+        }),
+        ("gemini :: lowers chronological system updates to wrapped user text in order", || {
+            assert_eq!(
+                gemini_turns("gemini-2.5-flash", vec![user("Before."), sys("Update."), asst(vec![text("After.")])]),
+                json!([
+                    {"role": "user", "parts": [{"text": "Before."}, {"text": wrapped("Update.")}]},
+                    {"role": "model", "parts": [{"text": "After."}]}
+                ])
+            );
+        }),
+        ("gemini :: flushes pending media before system update text", || {
+            let c = gemini_turns(
+                "gemini-2.5-flash",
+                vec![
+                    asst(vec![call("call_1", "shot", json!({}))]),
+                    results(vec![media_result("call_1", "shot", "", vec![data_url("data:image/png;base64,AAEC")])]),
+                    sys("Update."),
+                ],
+            );
+            assert_eq!(c.as_array().unwrap().len(), 3);
+            assert_eq!(c[1]["parts"].as_array().unwrap().len(), 1);
+            assert!(c[1]["parts"][0].get("functionResponse").is_some());
+            assert_eq!(
+                c[2],
+                json!({"role": "user", "parts": [
+                    {"text": "Attached media from tool result:"},
+                    {"inlineData": {"mimeType": "image/png", "data": "AAEC"}},
+                    {"text": wrapped("Update.")}
+                ]})
+            );
         }),
     ]);
 }

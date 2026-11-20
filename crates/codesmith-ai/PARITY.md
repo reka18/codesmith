@@ -29,21 +29,22 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 70 | 30 |
-| OpenAI Responses | 159 | 20 | 65 | 74 |
-| Anthropic Messages | 95 | 9 | 54 | 32 |
-| Gemini | 61 | 12 | 27 | 22 |
+| OpenAI Chat | 115 | 15 | 73 | 27 |
+| OpenAI Responses | 159 | 20 | 66 | 73 |
+| Anthropic Messages | 95 | 9 | 64 | 22 |
+| Gemini | 61 | 12 | 29 | 20 |
 | Shared | 85 | 10 | 44 | 31 |
-| **Total** | **515** | **66** | **260** | **189** |
+| **Total** | **515** | **66** | **276** | **173** |
 
-Of the gaps, 157 are missing provider features (the roadmap) and
+Of the gaps, 141 are missing provider features (the roadmap) and
 32 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
 or a configuration knob it has no equivalent for), the case says so in its
 name or the list below; "(adapted)" marks a case rephrased for CodeSmith's
-message model (user text where OpenCode has system-update or tool messages,
-string tool results, and cache markers from a `body` override where OpenCode
+message model (tool results in user messages where OpenCode has tool
+messages, consecutive user turns folded into one, string tool results, and
+cache markers from a `body` override where OpenCode
 puts a manual cache hint on a part).
 
 ## Fixes made while porting
@@ -275,6 +276,22 @@ Shared (`lib.rs`, `schema.rs`)
   `Decoder`s, which the replay harness and parity tests use directly; a last
   frame without its blank line is still decoded.
 
+Mid-conversation system updates (every protocol; `Role::System` in `lib.rs`,
+`src/parity_tests.rs` `system_updates`)
+- Messages have a `system` role for text the harness adds mid-conversation
+  (OpenCode's `Message.system`), lowered per protocol: on Anthropic Messages,
+  Claude Opus 4.8, every Claude 5 model and later versions (or any model with
+  a `systemUpdates: true` option) get native `role: "system"` messages, held
+  until the next assistant turn and sent after the latest user turn or tool
+  result, with consecutive updates together; where no user turn precedes
+  them, and on other models, they are `<system-update>` user text in place.
+  Responses sends a `developer` message in place; Chat and Gemini send
+  escaped `<system-update>` user text, joining the preceding user turn (Chat
+  also the media of preceding tool results; Gemini starts a user turn of its
+  own after function responses, after any pending tool media).
+- `normalize_tool_history` moves a system update that arrives while calls are
+  pending after their results, as it does user text.
+
 ## Partially ported
 
 - `openai-compatible-chat` "matches AI SDK compatible tool request body
@@ -320,6 +337,9 @@ Shared (`lib.rs`, `schema.rs`)
 - Finish reasons are raw provider strings; see "Normalized finish reasons".
 - Streams are decoded leniently; see "Strict stream validation".
 - Gemini prompt blocks without candidates are an error naming the block reason.
+- Chat: a system update right after tool results still gets the Mistral
+  assistant bridge (OpenCode bridges only before user messages); Mistral
+  rejects user content straight after a tool message.
 
 ## Roadmap: provider features CodeSmith lacks
 
@@ -391,34 +411,6 @@ _OpenAI Responses 16, Anthropic Messages 5._
 - `anthropic-messages` — decodes web_search_tool_result_error as provider-executed error result
 - `anthropic-messages` — round-trips provider-executed assistant content into server tool blocks
 - `anthropic-messages` — rejects round-trip for unknown server tool names
-
-</details>
-
-
-### Mid-conversation system messages (16 tests)
-
-CodeSmith has no system role inside the history; its harness reminders (plan mode, the compaction continue prompt) are stored user text wrapped in `<system-reminder>`, which is what OpenCode sends to models without native system updates (wrapped user text). OpenCode also lowers them natively: Anthropic `role: "system"` messages for Claude Opus 4.8 and later families (held until the next assistant turn, after a user turn or tool result, with Vertex and fallback placement rules), Responses `developer` messages, and escaped `<system-update>` wrappers on Chat and Gemini. Doing that needs a system role in stored messages, which the session store, UI, ACP and stats read; the reminders work as they are, so this stays on the roadmap.
-
-_OpenAI Chat 3, OpenAI Responses 1, Anthropic Messages 10, Gemini 2._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — lowers chronological system updates to escaped user wrappers in order
-- `openai-chat` — aggregates consecutive tool images with a following system update
-- `openai-chat` — appends system updates without replacing multipart user content
-- `openai-responses` — lowers chronological system updates to developer messages in order
-- `anthropic-messages` — lowers chronological system updates natively for Claude Opus 4.8 with cache hints
-- `anthropic-messages` — supports native chronological system updates on documented and later Claude family versions
-- `anthropic-messages` — lowers chronological system updates to wrapped user text for unsupported Anthropic models
-- `anthropic-messages` — does not infer native system update support for older or undocumented Claude families
-- `anthropic-messages` — falls back for unsupported native chronological system update placement
-- `anthropic-messages` — moves system updates to the next assistant turn and sends consecutive updates together
-- `anthropic-messages` — keeps wrapped system updates in place for models without native system updates
-- `anthropic-messages` — sends Vertex system updates after local tool results as native system messages
-- `anthropic-messages` — keeps a terminal direct Anthropic system update native
-- `anthropic-messages` — keeps an ordinary terminal Vertex system update native
-- `gemini` — lowers chronological system updates to wrapped user text in order
-- `gemini` — flushes pending media before system update text
 
 </details>
 

@@ -4,8 +4,8 @@ use crate::cache;
 use crate::gemini::split_id;
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
-    stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Message,
-    Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    stream_error, unsupported_media, wrap_system_update, Decoder, Error, Event, EventStream, Media,
+    MediaKind, Message, Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -186,6 +186,10 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
     // collected and sent as one user message after the tool messages.
     let mut attachments: Vec<Value> = Vec::new();
     for m in &normalize_tool_history(&req.messages) {
+        if m.role == Role::System {
+            system_update(&mut messages, &mut attachments, m, compat);
+            continue;
+        }
         if m.role == Role::Assistant {
             flush_attachments(&mut messages, &mut attachments, compat);
             messages.extend(convert(m, compat));
@@ -387,6 +391,38 @@ fn flush_attachments(messages: &mut Vec<Value>, attachments: &mut Vec<Value>, co
     messages.push(json!({"role": "user", "content": std::mem::take(attachments)}));
 }
 
+/// A system update (after OpenCode's Chat lowering): Chat has no role for
+/// one mid-conversation, so it is wrapped user text. It joins the media of
+/// the tool results before it, or the user message before it, or starts a
+/// user message of its own. Unlike OpenCode, Mistral still gets its
+/// assistant turn between tool results and the update.
+fn system_update(
+    messages: &mut Vec<Value>,
+    attachments: &mut Vec<Value>,
+    m: &Message,
+    compat: &Compat,
+) {
+    let text = wrap_system_update(m);
+    if !attachments.is_empty() {
+        bridge(messages, compat);
+        let mut content = std::mem::take(attachments);
+        content.push(json!({"type": "text", "text": text}));
+        messages.push(json!({"role": "user", "content": content}));
+        return;
+    }
+    match messages.last_mut().filter(|l| l["role"] == "user") {
+        Some(last) => match &mut last["content"] {
+            Value::String(prev) => *prev = format!("{prev}\n{text}"),
+            Value::Array(parts) => parts.push(json!({"type": "text", "text": text})),
+            other => *other = json!(text),
+        },
+        None => {
+            bridge(messages, compat);
+            messages.push(json!({"role": "user", "content": text}));
+        }
+    }
+}
+
 /// A media content part (after OpenCode's `lowerMedia`): PDFs as inline
 /// `file` parts, images and video by URL or data URL. `None` for media
 /// [`check`] rejects.
@@ -419,6 +455,8 @@ const ROUTE: &str = "OpenAI Chat";
 
 fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
     match m.role {
+        // Lowered by `system_update` before this is reached.
+        Role::System => vec![],
         Role::User => {
             let has_media = m.parts.iter().any(|p| matches!(p, Part::Media(_)));
             if has_media {
