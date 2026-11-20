@@ -1022,3 +1022,153 @@ async fn deleting_a_session_stops_its_background_commands() {
     assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
     m.assert_done();
 }
+
+// A subagent's run streams on the turn and on the session's events:
+// `child_start` names the call that started it, its calls and permission
+// requests carry its session, its text comes as `child_text`, and
+// `child_end` says how it ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_activity_streams_with_its_session() {
+    use codesmith::core::tool::subagent::PREAMBLE;
+    let e = Env::new();
+    let parent = M::tools()
+        .and(M::prompt("delegate it"))
+        .and(M::prompt(PREAMBLE).not());
+    let child = M::tools().and(M::prompt(PREAMBLE));
+    let m = Model::start(
+        Script::new()
+            .titled("Delegated")
+            .then(
+                "delegate",
+                parent.clone().and(M::step(0)),
+                Reply::call(
+                    "subagent",
+                    json!({"agent": "general", "description": "Run the check", "prompt": "Run the check."}),
+                ),
+            )
+            .then(
+                "child-run",
+                child.clone().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo child-ran", "description": "Check"}),
+                ),
+            )
+            .then(
+                "child-answer",
+                child.and(M::step(1)),
+                Reply::text("The check ran.").and_reasoning("It printed."),
+            )
+            .then(
+                "answer",
+                parent.and(M::step(1)),
+                Reply::text("Delegated fine."),
+            ),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}),
+    );
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut follow = s.watch(&sid).await;
+    let mut ev = s.turn(&sid, "delegate it").await;
+    let before = ev.until("permission").await;
+    let start = before
+        .iter()
+        .find(|e| e.0 == "child_start")
+        .map(|e| e.1.clone())
+        .expect("child_start");
+    let call = before
+        .iter()
+        .find(|e| e.0 == "tool_start" && e.1["name"] == "subagent")
+        .map(|e| e.1["id"].clone())
+        .unwrap();
+    let kid = start["session"].as_str().unwrap().to_string();
+    assert_ne!(kid, sid);
+    assert_eq!(
+        (&start["parent"], &start["depth"], &start["title"]),
+        (&json!(sid), &json!(1), &json!("Run the check")),
+        "{start}"
+    );
+    assert_eq!(
+        (&start["agent"], &start["tool"]),
+        (&json!("general"), &call)
+    );
+    let perm = &before.last().unwrap().1;
+    assert_eq!(perm["session"], json!(kid), "{perm}");
+    let rid = perm["id"].as_str().unwrap();
+    let (code, _) = s
+        .post(
+            &format!("/sessions/{sid}/permissions/{rid}"),
+            json!({"reply": "once"}),
+        )
+        .await;
+    assert_eq!(code, 200);
+    let rest = ev.until("done").await;
+    let all: Vec<(String, Value)> = before.into_iter().chain(rest).collect();
+    // The subagent's call names its session; the parent's calls do not.
+    for (name, v) in &all {
+        if name.starts_with("tool_") {
+            let theirs = v["id"] != call;
+            assert_eq!(v.get("session").is_some(), theirs, "{name} {v}");
+            if theirs {
+                assert_eq!(v["session"], json!(kid));
+            }
+        }
+    }
+    let shell = all
+        .iter()
+        .find(|e| e.0 == "tool_end" && e.1["name"] == "general › shell")
+        .expect("the child's call");
+    assert!(shell.1["output"].as_str().unwrap().contains("child-ran"));
+    let of = |t: &str| -> String {
+        all.iter()
+            .filter(|e| e.0 == t)
+            .map(|e| {
+                assert_eq!(e.1["session"], json!(kid), "{e:?}");
+                e.1["delta"].as_str().unwrap().to_string()
+            })
+            .collect()
+    };
+    assert_eq!(of("child_text"), "The check ran.");
+    assert_eq!(of("child_reasoning"), "It printed.");
+    let end = all.iter().find(|e| e.0 == "child_end").unwrap();
+    assert_eq!(
+        end.1,
+        json!({"type": "child_end", "session": kid, "status": "completed", "error": null})
+    );
+    // In order: started, ran, ended, then the parent's result and answer.
+    let at = |n: &str| all.iter().position(|e| e.0 == n).unwrap();
+    assert!(at("child_start") < at("child_text") && at("child_text") < at("child_end"));
+    let parent_end = all
+        .iter()
+        .position(|e| e.0 == "tool_end" && e.1["id"] == call)
+        .unwrap();
+    assert!(at("child_end") < parent_end);
+    let text: String = all
+        .iter()
+        .filter(|e| e.0 == "text")
+        .map(|e| e.1["delta"].as_str().unwrap())
+        .collect();
+    assert_eq!(text, "Delegated fine.");
+    // The follower saw the same subagent events.
+    let followed = follow.until("done").await;
+    let kinds = |v: &[(String, Value)]| -> Vec<String> {
+        v.iter()
+            .map(|e| e.0.clone())
+            .filter(|n| n.starts_with("child_") || n == "permission")
+            .collect()
+    };
+    assert_eq!(kinds(&followed), kinds(&all));
+    // The child session's messages are there for clients to read.
+    let (code, info) = s.get(&format!("/sessions/{kid}")).await;
+    assert_eq!(code, 200, "{info}");
+    assert!(
+        info["messages"].to_string().contains("The check ran."),
+        "{info}"
+    );
+    m.assert_done();
+}

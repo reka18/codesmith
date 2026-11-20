@@ -36,7 +36,8 @@ replays of its recorded provider traffic.
 - **Interfaces:** an interactive terminal UI, `codesmith run` for one-shot
   and scripted use, ACP for editors such as Zed, and a token-protected local
   HTTP server. Tool calls appear in the UI and over ACP while their
-  arguments are still streaming.
+  arguments are still streaming. The UI follows a running subagent in its
+  call's row and names it in its permission prompts.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
   web search, todos, questions, and image, PDF and video input (video only
   for models that take it).
@@ -46,7 +47,9 @@ replays of its recorded provider traffic.
   `background` route), cancelling one command, a per-session environment,
   and live output and shell ids for front ends.
 - **Local server:** sessions, turns as Server-Sent Events (including
-  `tool_progress` and `tool_output`), a follow stream for turns the server
+  `tool_progress`, `tool_output`, subagent activity as `child_start`,
+  `child_text`, `child_reasoning` and `child_end`, and generated media's
+  metadata as `media`), a follow stream for turns the server
   starts itself, permissions, questions, undo and redo, and routes for
   jobs, backgrounding, cancelling and the session environment.
 - **ACP:** modes, models and an Effort option for variants, plans, diffs

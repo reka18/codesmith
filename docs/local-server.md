@@ -69,6 +69,7 @@ Each Server-Sent Event is a JSON object with a `type`:
 |---|---|
 | `text` | `delta` |
 | `reasoning` | `delta` |
+| `media` | `mime`, `name` (or `null`), and `size` in bytes, or `url` for a remote file: an image or other file the model generated. Only its metadata is sent; read the bytes from the session's messages (`GET /sessions/{id}`). |
 | `tool_start` | `id`, `name`, `input` |
 | `tool_progress` | `id`, `metadata`: `{"shellID": "shell_1"}` once a `shell` call's command starts |
 | `tool_output` | `id`, `delta`: output a foreground command printed, a few times a second while its call waits (under a flood, only the latest 64 KiB of each interval) |
@@ -78,8 +79,12 @@ Each Server-Sent Event is a JSON object with a `type`:
 | `compacted` | `before`, `after` |
 | `todos` | `todos` |
 | `notice` | `message` |
-| `permission` | `id`, `action`, `resources`, `save`, `title`. Answer it with the permissions route. |
+| `permission` | `id`, `action`, `resources`, `save`, `title`, and `session` when a [subagent](#subagents) asks. Answer it with the permissions route. |
 | `question` | `id`, `prompts`. Answer it with the questions route. |
+| `child_start` | `session`, `parent`, `depth`, `title`, `agent`, `tool`: a [subagent](#subagents) started |
+| `child_text` | `session`, `delta`: text the subagent wrote |
+| `child_reasoning` | `session`, `delta` |
+| `child_end` | `session`, `status` (`completed`, `interrupted` or `failed`), `error` |
 | `done` | `error` (set if the turn failed or was aborted), `usage`, `title`; `resumed: true` on a turn the server started for a finished background command |
 
 An open permission request or question is shown again to every client that
@@ -89,6 +94,30 @@ When no client can see it any more (the turn's stream closed and no one
 follows) for 30 seconds, a permission request is refused ("No client is
 connected to approve this.") and a question is dismissed, so the turn does
 not wait forever.
+
+### Subagents
+
+When the model delegates with the `subagent` tool, the subagent runs as a
+child session inside the call, and its activity streams on the same turn
+(and to followers), as OpenCode's child-session events do:
+
+1. `tool_start` for the `subagent` call (in the parent, no `session`).
+2. `child_start`: `session` is the child session's id, `parent` the session
+   that started it (this one, or a subagent for nested subagents), `depth`
+   1 for a subagent of this session, `title` the call's description,
+   `agent` the agent it runs, and `tool` the id of the `subagent` call.
+3. The child's own calls as `tool_start`, `tool_progress`, `tool_output`
+   and `tool_end`, with `session` set to the child and `name` prefixed with
+   its agent (`general › shell`). Its permission requests carry `session`
+   too. Its text and reasoning come as `child_text` and `child_reasoning`,
+   not as the parent's `text`.
+4. `child_end` with the `status`, and `error` when it failed.
+5. `tool_end` for the `subagent` call, whose `output` is the subagent's
+   report to the parent.
+
+Every event names the innermost subagent running. The child session is
+stored like any session (with the parent as its `parent_id`), so
+`GET /sessions/{session}` shows its messages once it is over.
 
 `GET /sessions/{id}` returns the session's info, `messages` and `todos`,
 `busy` (a turn is running) and, while idle, `background`: how many

@@ -17,8 +17,9 @@
 //! - `GET    /sessions` · `POST /sessions {agent?, model?}`
 //! - `GET    /sessions/{id}` (info and messages) · `DELETE /sessions/{id}`
 //! - `POST   /sessions/{id}/messages {text, attachments?}` → SSE: text,
-//!   reasoning, tool_start, tool_end, step_end, retry, compacted, todos,
-//!   notice, permission, question, done. `attachments` are images or PDFs,
+//!   reasoning, media, tool_start, tool_progress, tool_output, tool_end,
+//!   child_start, child_text, child_reasoning, child_end, step_end, retry,
+//!   compacted, todos, notice, permission, question, done. `attachments` are images or PDFs,
 //!   each `{data: base64, mime?, name?}` or `{path}`; the bytes decide the
 //!   type. A path is read as the `read` tool would, so it is asked about
 //!   (`external_directory`, `read`) over the stream before the turn starts.
@@ -86,9 +87,25 @@ struct Prompter {
     /// Open prompts by id, with the event that showed them (replayed to
     /// followers that connect while they are open).
     pending: Mutex<HashMap<String, (Pending, Value)>>,
+    /// The subagents running in the current turn, innermost last.
+    children: Mutex<Children>,
+}
+
+/// The subagents a turn runs, as its events name them.
+#[derive(Default)]
+struct Children {
+    /// Running subagent sessions, outermost first.
+    stack: Vec<String>,
+    /// The latest `subagent` call and the agent it named, for the next
+    /// `child_start`.
+    call: Option<(String, Option<String>)>,
 }
 
 impl Prompter {
+    /// The running subagent whose events these are, if any.
+    fn child(&self) -> Option<String> {
+        self.children.lock().unwrap().stack.last().cloned()
+    }
     fn set(&self, tx: Option<Tx>) {
         *self.events.lock().unwrap() = tx;
     }
@@ -192,7 +209,11 @@ impl Asker for Prompter {
     fn ask(&self, req: &Request) -> Reply {
         let (tx, rx) = oneshot::channel();
         let id = self.id("perm");
-        let ev = json!({"type": "permission", "id": id, "action": req.action, "resources": req.resources, "save": req.save, "title": req.title});
+        let mut ev = json!({"type": "permission", "id": id, "action": req.action, "resources": req.resources, "save": req.save, "title": req.title});
+        // Asked by a subagent: prompts come in order with its events.
+        if let Some(child) = self.child() {
+            ev["session"] = json!(child);
+        }
         match self.open(id, ev, Pending::Permission(tx), rx) {
             Shown::Answered(r) => r,
             Shown::Unseen => Reply::Reject(Some("No client is connected to approve this.".into())),
@@ -219,6 +240,26 @@ impl JsonSink {
     fn send(&self, v: Value) {
         self.0.send(v);
     }
+    /// Send a tool event, naming the subagent whose call it is.
+    fn send_tool(&self, mut v: Value) {
+        if let Some(child) = self.0.child() {
+            v["session"] = json!(child);
+        }
+        self.send(v);
+    }
+}
+
+/// A generated file's metadata (its bytes are in the session's messages).
+fn media_event(m: &codesmith_ai::Media) -> Value {
+    let mut ev = json!({"type": "media", "mime": m.mime, "name": m.filename});
+    match &m.source {
+        codesmith_ai::Source::Base64(b) => {
+            let pad = b.bytes().rev().take_while(|c| *c == b'=').count();
+            ev["size"] = json!((b.len() / 4 * 3).saturating_sub(pad));
+        }
+        codesmith_ai::Source::Url(u) => ev["url"] = json!(u),
+    }
+    ev
 }
 
 impl Sink for JsonSink {
@@ -228,11 +269,49 @@ impl Sink for JsonSink {
     fn reasoning(&mut self, delta: &str) {
         self.send(json!({"type": "reasoning", "delta": delta}));
     }
+    fn media(&mut self, media: &codesmith_ai::Media) {
+        self.send(media_event(media));
+    }
     fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
-        self.send(json!({"type": "tool_start", "id": id, "name": name, "input": input}));
+        if name.rsplit(" › ").next() == Some("subagent") {
+            let agent = input["agent"].as_str().map(str::to_string);
+            self.0.children.lock().unwrap().call = Some((id.to_string(), agent));
+        }
+        self.send_tool(json!({"type": "tool_start", "id": id, "name": name, "input": input}));
     }
     fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
-        self.send(json!({"type": "tool_end", "id": id, "name": name, "output": output, "error": is_error}));
+        self.send_tool(json!({"type": "tool_end", "id": id, "name": name, "output": output, "error": is_error}));
+    }
+    fn child_start(&mut self, child: &session::ChildSession) {
+        let (call, agent) = {
+            let mut c = self.0.children.lock().unwrap();
+            c.stack.push(child.id.clone());
+            c.call.take().unzip()
+        };
+        self.send(json!({
+            "type": "child_start",
+            "session": child.id,
+            "parent": child.parent_id,
+            "depth": child.depth,
+            "title": child.title,
+            "agent": agent.flatten(),
+            "tool": call,
+        }));
+    }
+    fn child_end(&mut self, id: &str, status: &str, error: Option<&str>) {
+        {
+            let mut c = self.0.children.lock().unwrap();
+            if let Some(at) = c.stack.iter().rposition(|s| s == id) {
+                c.stack.truncate(at);
+            }
+        }
+        self.send(json!({"type": "child_end", "session": id, "status": status, "error": error}));
+    }
+    fn child_text(&mut self, delta: &str) {
+        self.send(json!({"type": "child_text", "session": self.0.child(), "delta": delta}));
+    }
+    fn child_reasoning(&mut self, delta: &str) {
+        self.send(json!({"type": "child_reasoning", "session": self.0.child(), "delta": delta}));
     }
     fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
         self.send(json!({"type": "step_end", "reason": reason.normalized, "finish": reason, "usage": usage}));
@@ -250,10 +329,10 @@ impl Sink for JsonSink {
         self.send(json!({"type": "notice", "message": message}));
     }
     fn tool_progress(&mut self, id: &str, metadata: &Value) {
-        self.send(json!({"type": "tool_progress", "id": id, "metadata": metadata}));
+        self.send_tool(json!({"type": "tool_progress", "id": id, "metadata": metadata}));
     }
     fn tool_output(&mut self, id: &str, delta: &str) {
-        self.send(json!({"type": "tool_output", "id": id, "delta": delta}));
+        self.send_tool(json!({"type": "tool_output", "id": id, "delta": delta}));
     }
 }
 
@@ -1166,6 +1245,74 @@ pub async fn serve_on(st: St, listener: tokio::net::TcpListener, host: &str) -> 
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+
+    // Generated media is announced by its metadata only; clients read the
+    // bytes from the session's messages.
+    #[test]
+    fn media_events_carry_metadata_not_bytes() {
+        let p = Arc::new(Prompter::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        p.follow(tx);
+        let mut sink = JsonSink(p);
+        let png = codesmith_ai::Media::base64("image/png", "iVBORw0KGgo=").named("cat.png");
+        sink.media(&png);
+        let ev = rx.try_recv().unwrap();
+        assert_eq!(
+            ev,
+            json!({"type": "media", "mime": "image/png", "name": "cat.png", "size": 8})
+        );
+        let mut url = codesmith_ai::Media::base64("image/jpeg", "");
+        url.source = codesmith_ai::Source::Url("https://example.com/a.jpg".into());
+        sink.media(&url);
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            json!({"type": "media", "mime": "image/jpeg", "name": null, "url": "https://example.com/a.jpg"})
+        );
+    }
+
+    // Nested subagents: events name the innermost one running, and the
+    // parent's again once they end.
+    #[test]
+    fn child_events_name_the_innermost_subagent() {
+        let p = Arc::new(Prompter::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        p.follow(tx);
+        let mut sink = JsonSink(p);
+        let child = |id: &str, parent: &str, depth| session::ChildSession {
+            id: id.into(),
+            parent_id: parent.into(),
+            depth,
+            title: format!("t-{id}"),
+        };
+        sink.tool_start("t1", "subagent", &json!({"agent": "general"}));
+        sink.child_start(&child("c1", "top", 1));
+        sink.tool_start("t2", "general › subagent", &json!({"agent": "explore"}));
+        sink.child_start(&child("c2", "c1", 2));
+        sink.child_text("deep");
+        sink.child_end("c2", "completed", None);
+        sink.tool_end("t2", "general › subagent", "ok", false);
+        sink.child_end("c1", "failed", Some("boom"));
+        sink.tool_end("t1", "subagent", "failed", true);
+        let evs: Vec<Value> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let s = |i: usize| evs[i].get("session").cloned().unwrap_or(Value::Null);
+        assert_eq!(evs[1]["tool"], "t1");
+        assert_eq!(evs[1]["agent"], "general");
+        assert_eq!(
+            (s(2), &evs[3]["tool"], &evs[3]["agent"]),
+            (json!("c1"), &json!("t2"), &json!("explore"))
+        );
+        assert_eq!(
+            (s(3), &evs[3]["parent"], &evs[3]["depth"]),
+            (json!("c2"), &json!("c1"), &json!(2))
+        );
+        assert_eq!((s(4), &evs[4]["delta"]), (json!("c2"), &json!("deep")));
+        assert_eq!(s(6), json!("c1"), "{:?}", evs[6]);
+        assert_eq!(
+            evs[7],
+            json!({"type": "child_end", "session": "c1", "status": "failed", "error": "boom"})
+        );
+        assert_eq!(s(8), Value::Null, "the parent's own call");
+    }
 
     /// An OpenAI-compatible model: asks to run `echo served`, then reports the result.
     async fn fake_model() -> String {
