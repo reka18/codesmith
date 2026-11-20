@@ -1539,3 +1539,42 @@ echo}\
 env --iP ../binn =rm F
 %%
 env --unset X rm F
+%% ---- fourth mutation round
+comman=d bash cc 'rm F'
+%%
+bash rm F
+%%
+sh -e rm F
+%%
+repeat 1 r=m F
+%%
+repeat 1 X=1 rm F
+%%
+noglob X=1 rm F
+%%
+e''xec -a x rmF
+%%
+echo x| &> ''ou{t
+%%
+echo x > ""~	+/ou
+%%
+echo x > ""~
+%%
+cd ""~ && echo x > ou
+%%
+((] (\
+rm F) ; (touch G) ))
+%%
+((] (rm F) ))
+%%
+(( ] ; rm F ))
+%%
+((rm F))
+%%
+echo $((rm F))
+%%
+echo $(( (rm F) ))
+%%
+echo $((](rm F)))
+%%
+echo $(( ] ; rm F ))

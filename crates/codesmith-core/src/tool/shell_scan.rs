@@ -64,8 +64,9 @@ pub struct Scanned {
 pub type Opaque = &'static str;
 
 /// Every command in `input`, outer commands before the ones substituted into them.
+/// Readings only some shell gives ([`Command::alternate`]) are left out.
 pub fn scan(input: &str) -> Result<Vec<Command>, Opaque> {
-    scan_all(input).map(|s| s.commands)
+    scan_all(input).map(|s| s.commands.into_iter().filter(|c| !c.alternate).collect())
 }
 
 /// [`scan`], plus whether the input evaluates text as code at run time.
@@ -1091,6 +1092,8 @@ impl<'a> Scanner<'a> {
                     // Arithmetic expansion: bounded by its matching `))`.
                     let end = self.arithmetic_end(start + 1)?;
                     self.arithmetic(start + 3, end - 2, nested)?;
+                    let alternates = self.dash_reading(start + 3, end - 2);
+                    nested.extend(alternates);
                     self.pos = end;
                 }
                 Some('[') => {
@@ -1758,14 +1761,17 @@ impl<'a> Scanner<'a> {
             span: Some((p, end)),
         });
         self.out.extend(inner);
-        self.dash_reading(p + 2, end - 2);
+        let alternates = self.dash_reading(p + 2, end - 2);
+        self.out.extend(alternates);
         self.trailing_redirects()
     }
 
-    /// `((text))` as Dash reads it: subshells running `text`.
-    fn dash_reading(&mut self, a: usize, b: usize) {
+    /// `((text))` as Dash reads it: subshells running `text`. Zsh reads
+    /// `((text))` and `$((text))` that way too when `text` is not arithmetic.
+    fn dash_reading(&mut self, a: usize, b: usize) -> Vec<Item> {
+        let mut out = Vec::new();
         if self.depth + 1 >= MAX_DEPTH {
-            return;
+            return out;
         }
         // Dash removes line continuations before reading.
         let mut chars: Vec<char> = Vec::with_capacity(b - a);
@@ -1786,13 +1792,32 @@ impl<'a> Scanner<'a> {
         let mut sub = Scanner::new(&chars, self.depth + 1);
         sub.dash = true;
         if !matches!(sub.list(), Ok((_, Stop::Eof))) || !sub.heredocs.is_empty() {
-            return; // A syntax error in Dash too.
+            // Zsh also falls back to subshells when the text is not
+            // arithmetic, with grammar this scanner does not read: take
+            // every run between separators as a possible command.
+            let text: String = chars.iter().collect();
+            for part in text.split(|c: char| ";&|()\n`".contains(c)) {
+                let words: Vec<String> = part.split_whitespace().map(str::to_string).collect();
+                if words.is_empty() {
+                    continue;
+                }
+                let cmd = Command {
+                    resource: words.join(" "),
+                    raw_words: words.clone(),
+                    words,
+                    alternate: true,
+                    ..Default::default()
+                };
+                out.push(Item { cmd, span: None });
+            }
+            return out;
         }
         for mut cmd in sub.finish() {
             cmd.alternate = true;
             cmd.writes.clear();
-            self.out.push(Item { cmd, span: None });
+            out.push(Item { cmd, span: None });
         }
+        out
     }
 
     fn function_body(&mut self) -> Result<(), Opaque> {
@@ -2347,6 +2372,13 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
                     .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
                     .flatten(),
             });
+            if tilde_prefix(raw, value) && !raw.starts_with('~') {
+                // `""~/x`: `$HOME/x` in Zsh, `./~/x` in Bash.
+                out.writes.push(Write {
+                    raw: raw.clone(),
+                    path: static_command_name(raw).then(|| value.clone()),
+                });
+            }
         }
         if item.declaration {
             continue;
@@ -2481,6 +2513,17 @@ fn delegate(
         out.delegated.push((resource, save));
         delegate(&raw[at..], words, cwd, depth + 1, out)
     };
+    if ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "ash"].contains(&base) {
+        // `bash name args`: Bash looks `name` up on PATH when no such file
+        // is here, so check it as the command `name args` too.
+        let (at, c) = shell_options(cooked, 1);
+        if !c && at < cooked.len() && !cooked[at].contains('/') {
+            let words = &cooked[at..];
+            let resource = words.join(" ");
+            out.delegated
+                .push((resource.clone(), save_pattern(words, &resource)));
+        }
+    }
     if let Some(script) = shell_string(base, raw, cooked) {
         return match script {
             Some(code) => run_string(&code, cwd, depth, out),
@@ -2646,29 +2689,7 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
                 }
                 i = 2;
             }
-            let mut c = false;
-            while i < cooked.len() {
-                let w = &cooked[i];
-                if w == "--" || w == "-" {
-                    i += 1;
-                    break;
-                }
-                if ["-o", "+o", "-O", "+O", "--rcfile", "--init-file"].contains(&w.as_str()) {
-                    i += 2;
-                    continue;
-                }
-                if let Some(flags) = w.strip_prefix(['-', '+']) {
-                    if !w.starts_with("--") && flags.contains('c') {
-                        c = true;
-                    }
-                    if w == "--command" {
-                        c = true;
-                    }
-                    i += 1;
-                    continue;
-                }
-                break;
-            }
+            let (i, c) = shell_options(cooked, i);
             if !c {
                 // A shell given no script file runs its standard input
                 // (`echo 'rm x' | sh`), as does `-s`; a script from a pipe or
@@ -2742,6 +2763,32 @@ fn computed_source(raw: &str, cooked: &str) -> bool {
         || raw.starts_with(">(")
         || ["/dev/", "/proc/", "/fd/"].iter().any(|d| path.contains(d))
         || !is_static_word(raw)
+}
+
+/// Past a shell's options from `i`: where its operands start, and whether
+/// it was given `-c`.
+fn shell_options(cooked: &[String], mut i: usize) -> (usize, bool) {
+    let mut c = false;
+    while i < cooked.len() {
+        let w = &cooked[i];
+        if w == "--" || w == "-" {
+            i += 1;
+            break;
+        }
+        if ["-o", "+o", "-O", "+O", "--rcfile", "--init-file"].contains(&w.as_str()) {
+            i += 2;
+            continue;
+        }
+        if let Some(flags) = w.strip_prefix(['-', '+']) {
+            if (!w.starts_with("--") && flags.contains('c')) || w == "--command" {
+                c = true;
+            }
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    (i, c)
 }
 
 /// Where the command a wrapper runs starts: `Some(Some(i))`, `Some(None)`
@@ -2857,12 +2904,11 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     if base == "nice" && cooked.get(i).is_some_and(|w| w.starts_with('-')) {
         i += 1;
     }
-    if matches!(base, "time" | "coproc") {
-        // Reserved words: the command after them may start with
-        // assignments (`time X=1 rm x`).
-        while cooked.get(i).is_some_and(|w| assignment_word(w)) {
-            i += 1;
-        }
+    // Reserved words and Zsh's precommand modifiers parse assignments
+    // after them (`time X=1 rm x`, `repeat 1 X=1 rm x`); for other wrappers
+    // `X=1` would be a command name no PATH holds, so skipping is safe.
+    while cooked.get(i).is_some_and(|w| assignment_word(w)) {
+        i += 1;
     }
     Some(Some(i))
 }
@@ -2949,6 +2995,13 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
         })
         .collect();
     let complete = resolved.iter().all(Option::is_some);
+    let mut resolved = resolved;
+    for (r, v) in &operands {
+        if is_static_word(r) && tilde_prefix(r, v) && !r.starts_with('~') {
+            // `cd ""~`: home in Zsh, `./~` in Bash.
+            resolved.push(Some(v.to_string()));
+        }
+    }
     (resolved.into_iter().flatten().collect(), complete)
 }
 
@@ -4409,6 +4462,11 @@ mod tests {
             "=env 'BASH_FUNC_ls%%=() { rm F; }' bash -c ls",
             "env --iP ../binn =rm F",
             "eco hi >\\ >(rm F)",
+            "echo $(( ] ; rm F ))",
+            "((] (\\\nrm F) ; (touch G) ))",
+            "bash rm F",
+            "comman=d bash rm F",
+            "repeat 1 X=1 rm F",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
@@ -4473,5 +4531,14 @@ mod tests {
             Some(home().join("f").display().to_string())
         );
         assert_eq!(full("'cd' /tmp; echo x > f").directories, ["/tmp"]);
+        let paths: Vec<Option<String>> = full("echo x > \"\"~")
+            .writes
+            .into_iter()
+            .map(|w| w.path)
+            .collect();
+        assert_eq!(
+            paths,
+            [Some(home().display().to_string()), Some("~".into())]
+        );
     }
 }

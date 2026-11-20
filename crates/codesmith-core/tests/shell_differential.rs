@@ -436,6 +436,7 @@ fn verdict(input: &str, cwd: &Path) -> Verdict {
             let redirect_only = a.commands.iter().chain(&a.delegated).any(|(r, _)| {
                 r.trim_start()
                     .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start_matches('&')
                     .starts_with(['<', '>'])
             });
             Verdict::Checked {
@@ -488,7 +489,8 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
             // A name looked up and not found ran nothing; it matters only if
             // a PATH could hold it and the input spells it (not `exec -a`'s
             // argv[0], or a word a shell reads differently).
-            let argv0_set = input.contains("exec -") || input.contains("ARGV0");
+            let argv0_set =
+                input.contains("ARGV0") || resources.iter().any(|r| r.contains("exec -"));
             if lookup && (implausible(&name) || argv0_set || !input.contains(name.as_str())) {
                 continue;
             }
