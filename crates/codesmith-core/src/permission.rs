@@ -563,6 +563,9 @@ pub fn base_rules() -> Vec<Rule> {
         Rule::new("read", "*.env", Effect::Ask),
         Rule::new("read", "*.env.*", Effect::Ask),
         Rule::new("read", "*.env.example", Effect::Allow),
+        // Generating images and videos spends money with the provider: ask.
+        Rule::new("experimental_image_generate", "*", Effect::Ask),
+        Rule::new("experimental_video_generate", "*", Effect::Ask),
     ]);
     // Reference checkouts are read-only to tools: CodeSmith runs git in
     // them, and a planted config or hook must not get there.
@@ -639,6 +642,20 @@ mod tests {
         assert_eq!(evaluate("read", ".env.example", &r), Effect::Allow);
         assert_eq!(evaluate("edit", ".env", &r), Effect::Allow);
         assert_eq!(evaluate("shell", "cat .env", &r), Effect::Allow);
+    }
+
+    #[test]
+    fn base_rules_ask_before_paid_media_generation() {
+        let r = base_rules();
+        assert_eq!(
+            evaluate("experimental_image_generate", "*", &r),
+            Effect::Ask
+        );
+        assert_eq!(
+            evaluate("experimental_video_generate", "*", &r),
+            Effect::Ask
+        );
+        assert_eq!(evaluate("websearch", "*", &r), Effect::Allow);
     }
 
     #[test]

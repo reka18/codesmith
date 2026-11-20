@@ -25,7 +25,7 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 | `<server>_<tool>` | An MCP tool, as a direct call. | `codemode` is off for that server |
 | `list_mcp_resources`, `read_mcp_resource` | Browse and read MCP resources. | a connected server has resources ([MCP](mcp.md#resources)) |
 | `experimental_image_generate` | Make or edit an image with an image model, in the background. See [below](#generating-images-and-videos). | an image model is reachable and `experimental.image_generate` is not `false` |
-| `experimental_video_generate` | Make a video with a video model, in the background. See [below](#generating-images-and-videos). | a video model is reachable, the session is stored, and `experimental.video_generate` is not `false` |
+| `experimental_video_generate` | Make a video with a video model, in the background. See [below](#generating-images-and-videos). | a video model is reachable, the session is stored, and `experimental.video_generate` is `true` or `{"model": …}` (off by default) |
 
 [Plugins](plugins.md) can add tools of their own.
 
@@ -213,6 +213,11 @@ configured model that can't serve a call is skipped, and the result says so.
 "experimental": { "image_generate": { "model": "openai/gpt-image-1" } }  // or false to turn it off
 ```
 
+Both tools ask before every call by default, since generating images and
+videos is billed by the provider; an `allow` rule for
+`experimental_image_generate` or `experimental_video_generate` in
+[`permissions`](permissions.md) stops the asking.
+
 A call asks for `experimental_image_generate` permission (on the model),
 `edit` on the path it saves to, `read` on input files and `webfetch` on
 input URLs, then starts a background job and returns. Input images are PNG,
@@ -224,7 +229,9 @@ Generated images are at most 20 MiB and are kept in the session's [blob
 store](configuration.md#media-limits) too. Cancelling the job (as a
 background command is cancelled) stops it.
 
-`experimental_video_generate` makes a video from a prompt, optionally
+`experimental_video_generate` is off until config turns it on
+(`"experimental": {"video_generate": true}` or `{"model": …}`). It makes a
+video from a prompt, optionally
 starting (`start`) or ending (`end`) on given images and guided by
 `references` (images, videos or audio), with `duration`, `aspect`
 (`16:9`, `auto`), `resolution` and `sound`. xAI and Google video models are

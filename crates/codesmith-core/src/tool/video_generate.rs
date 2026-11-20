@@ -49,10 +49,15 @@ pub fn spec() -> (String, Value) {
     )
 }
 
-/// Whether config leaves the tool on (`experimental.video_generate:
-/// false` turns it off).
+/// Whether config turns the tool on: off unless `experimental.video_generate`
+/// is `true` or a `{"model": …}` object. Video generation is slow and costly,
+/// so (as in OpenCode's release builds) it is opt-in.
 pub fn enabled(config: &Config) -> bool {
-    config.experimental.video_generate.as_ref() != Some(&Value::Bool(false))
+    match config.experimental.video_generate.as_ref() {
+        Some(Value::Bool(on)) => *on,
+        Some(Value::Object(_)) => true,
+        _ => false,
+    }
 }
 
 /// Offered while a video model is reachable and config leaves it on.
@@ -395,4 +400,21 @@ pub fn track(t: Track) {
         )
     };
     jobs.spawn_task(&id, &title, task, cancelled);
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn video_generation_is_opt_in() {
+        let mut c = Config::default();
+        assert!(!enabled(&c));
+        c.experimental.video_generate = Some(Value::Bool(true));
+        assert!(enabled(&c));
+        c.experimental.video_generate = Some(serde_json::json!({"model": "xai/grok-video"}));
+        assert!(enabled(&c));
+        c.experimental.video_generate = Some(Value::Bool(false));
+        assert!(!enabled(&c));
+    }
 }
