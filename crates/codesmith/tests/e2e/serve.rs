@@ -1198,3 +1198,97 @@ async fn a_subagents_activity_streams_with_its_session() {
     );
     m.assert_done();
 }
+
+impl Server {
+    /// `GET /events`: the server's `filesystem.changed` stream.
+    async fn fs_events(&self) -> Events {
+        let r = self
+            .req(reqwest::Method::GET, "/events")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        Events {
+            body: Box::pin(r.bytes_stream()),
+            buf: String::new(),
+        }
+    }
+}
+
+/// Wait for a `filesystem.changed` for `file`, rewriting it meanwhile (a
+/// native watch arms asynchronously).
+async fn fs_change(ev: &mut Events, file: &std::path::Path, write: impl Fn()) -> Value {
+    let want = file.display().to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        write();
+        if let Ok(Some((name, v))) =
+            tokio::time::timeout(Duration::from_millis(300), ev.next()).await
+        {
+            if name == "filesystem.changed" && v["file"] == want {
+                return v;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no filesystem.changed for {want}"
+        );
+    }
+}
+
+/// OpenCode's `fs.watch`: a watched file's changes, and the branch
+/// metadata's, arrive on `GET /events` as `filesystem.changed`; only
+/// existing files inside the directory can be watched.
+#[tokio::test(flavor = "multi_thread")]
+async fn watched_files_and_the_branch_publish_filesystem_changed() {
+    need_git!();
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    e.write("src/a.ts", "start\n");
+    let s = Server::start(&e, &[]).await;
+    let mut ev = s.fs_events().await;
+
+    let (code, body) = s.post("/fs/watch", json!({"path": "missing.ts"})).await;
+    assert_eq!(
+        (code, body["error"].as_str()),
+        (404, Some("File not found: missing.ts"))
+    );
+    let (code, _) = s.post("/fs/watch", json!({"path": "../outside.ts"})).await;
+    assert_eq!(code, 404);
+    let (code, _) = s.post("/fs/watch", json!({"path": "src/a.ts"})).await;
+    assert_eq!(code, 200);
+
+    let a = e.project.join("src/a.ts");
+    let v = fs_change(&mut ev, &a, || {
+        std::fs::write(&a, format!("{:?}\n", std::time::Instant::now())).unwrap()
+    })
+    .await;
+    assert_eq!(v["event"], "change");
+    assert_eq!(v["location"], e.project.display().to_string());
+
+    let head = e.project.join(".git/HEAD");
+    let v = fs_change(&mut ev, &head, || {
+        std::fs::write(&head, "ref: refs/heads/main\n").unwrap()
+    })
+    .await;
+    assert_eq!(v["type"], "filesystem.changed");
+
+    let (code, _) = s.post("/fs/unwatch", json!({"path": "src/a.ts"})).await;
+    assert_eq!(code, 200);
+}
+
+/// `CODESMITH_DISABLE_FILEWATCHER` refuses watches with 503.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_watching_can_be_turned_off() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    e.write("a.ts", "x\n");
+    let s = Server::start_with(&e, &[], &[("CODESMITH_DISABLE_FILEWATCHER", "1")]).await;
+    let (code, body) = s.post("/fs/watch", json!({"path": "a.ts"})).await;
+    assert_eq!(
+        (code, body["error"].as_str()),
+        (503, Some("File watching is disabled"))
+    );
+}

@@ -30,6 +30,13 @@
 //! - `POST   /sessions/{id}/permissions/{rid} {reply: once|always|reject, message?}`
 //! - `POST   /sessions/{id}/questions/{qid} {answers: [[...]]}` or `{dismiss: true}`
 //! - `POST   /sessions/{id}/undo` · `POST /sessions/{id}/redo`
+//! - `GET    /events` → SSE: `filesystem.changed` (`{location, file,
+//!   event: add|change|unlink}`) for the files watched below and the
+//!   project's branch metadata (`.git/HEAD`)
+//! - `POST   /fs/watch {path}` · `POST /fs/unwatch {path}`: watch one file
+//!   of the directory for 24 hours (watching it again renews that), as
+//!   OpenCode's `fs.watch`; 404 when it is not an existing file inside the
+//!   directory, 503 when file watching is off
 
 use anyhow::Result;
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request as HttpRequest, State};
@@ -48,6 +55,7 @@ use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::Store;
 use codesmith_core::tool::shell::Jobs;
 use codesmith_core::tool::todo::Todo;
+use codesmith_core::watch;
 use futures_util::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -373,6 +381,48 @@ pub struct Server {
     /// wildcard address). Set when it starts listening.
     hosts: OnceLock<Option<Vec<String>>>,
     live: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Live>>>>,
+    /// File watching, started when the server starts listening (or on
+    /// first use).
+    watching: OnceLock<Watching>,
+}
+
+/// The server's file watches and where their changes go.
+struct Watching {
+    events: watch::Events,
+    files: watch::file_watch::FileWatch,
+    _location: watch::location::LocationWatcher,
+    _ignore: watch::policy::Registration,
+}
+
+impl Watching {
+    /// Watch `cwd`'s branch metadata (in the background) and be ready for
+    /// file watches; `watcher.ignore` is the policy.
+    fn start(cwd: &Path, ignore: Vec<String>) -> Watching {
+        let watcher = watch::global();
+        let events = watch::Events::new();
+        let files = if watcher.enabled() {
+            watch::file_watch::FileWatch::new(watcher.clone(), events.clone())
+        } else {
+            watch::file_watch::FileWatch::disabled()
+        };
+        let policy = watch::policy::Policy::new();
+        let reg = policy.transform(move |e| e.add(&ignore));
+        let vcs = watch::location::Vcs::detect(cwd);
+        let location = watch::location::LocationWatcher::start(
+            cwd,
+            watcher,
+            policy,
+            events.clone(),
+            watch::location::discover(cwd, vcs),
+            None,
+        );
+        Watching {
+            events,
+            files,
+            _location: location,
+            _ignore: reg,
+        }
+    }
 }
 
 type St = Arc<Server>;
@@ -420,7 +470,13 @@ impl Server {
             mcp,
             hosts: OnceLock::new(),
             live: Default::default(),
+            watching: OnceLock::new(),
         })
+    }
+
+    fn watching(&self) -> &Watching {
+        self.watching
+            .get_or_init(|| Watching::start(&self.cwd, self.loaded.config.watcher.ignore.clone()))
     }
 
     /// Whether a stored session belongs to this server's directory.
@@ -653,6 +709,9 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/jobs/{jid}/cancel", post(cancel_job))
         .route("/sessions/{id}/undo", post(undo))
         .route("/sessions/{id}/redo", post(redo))
+        .route("/events", get(fs_events))
+        .route("/fs/watch", post(fs_watch))
+        .route("/fs/unwatch", post(fs_unwatch))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn_with_state(st.clone(), guard))
         .with_state(st)
@@ -825,6 +884,62 @@ async fn events(
     // still be answered from here.
     g.prompter.follow(tx);
     Ok(sse(rx))
+}
+
+/// `filesystem.changed` for the server's directory, from now on.
+async fn fs_events(State(st): State<St>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = st.watching().events.subscribe();
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(c) => {
+                    let mut v = json!(c);
+                    v["type"] = json!("filesystem.changed");
+                    yield Ok(Event::default().event("filesystem.changed").data(v.to_string()));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// The absolute path of `{path}` in a watch request, and whether it is an
+/// existing file inside the server's directory (the same confinement as
+/// reading it).
+fn watch_target(st: &Server, b: &Value) -> Result<(PathBuf, bool), ApiError> {
+    let rel = b["path"]
+        .as_str()
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "path is required".into()))?;
+    let file = watch::absolute(&st.cwd.join(rel));
+    let inside = match (std::fs::canonicalize(&file), std::fs::canonicalize(&st.cwd)) {
+        (Ok(f), Ok(root)) => f.starts_with(&root) && f.is_file(),
+        _ => false,
+    };
+    let inside = inside && file.starts_with(&st.cwd);
+    Ok((file, inside))
+}
+
+async fn fs_watch(State(st): State<St>, Json(b): Json<Value>) -> Result<Json<Value>, ApiError> {
+    let (file, ok) = watch_target(&st, &b)?;
+    if !ok {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("File not found: {}", b["path"].as_str().unwrap_or_default()),
+        ));
+    }
+    st.watching()
+        .files
+        .watch(&st.cwd, &file)
+        .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn fs_unwatch(State(st): State<St>, Json(b): Json<Value>) -> Result<Json<Value>, ApiError> {
+    let (file, _) = watch_target(&st, &b)?;
+    st.watching().files.unwatch(&st.cwd, &file);
+    Ok(Json(json!({"ok": true})))
 }
 
 /// `g`'s session is idle: if a background command of it finished, resume
@@ -1237,6 +1352,8 @@ pub async fn run(st: St, host: &str, port: u16) -> Result<()> {
 /// Serve on an already bound listener; `host` is what it was bound as.
 pub async fn serve_on(st: St, listener: tokio::net::TcpListener, host: &str) -> Result<()> {
     let _ = st.hosts.set(allowed_hosts(host, listener.local_addr()?));
+    // Cheap: the branch watch finds its target in the background.
+    st.watching();
     axum::serve(listener, router(st)).await?;
     Ok(())
 }
