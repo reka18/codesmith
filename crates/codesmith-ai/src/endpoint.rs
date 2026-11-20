@@ -8,6 +8,36 @@ use crate::{Error, Protocol, Provider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Hooks around the HTTP requests (and Responses WebSocket frames) a
+/// provider sends, run just before each request goes out and as each
+/// response comes in: after the credentials are applied, so a hook sees and
+/// may change what is actually sent. A request a hook leaves alone is sent
+/// as it was built, body untouched. Responses and inbound frames come from
+/// the network and are untrusted.
+pub trait Interceptor: Send + Sync {
+    /// Change the request (headers, URL, body) or leave it.
+    fn request(&self, _req: &mut reqwest::Request) {}
+    /// Look at, or replace, the response before it is read.
+    fn response(&self, _res: &mut reqwest::Response) {}
+    /// Change the URL or headers a WebSocket opens with (a change opens a
+    /// new socket).
+    fn ws_handshake(&self, _handshake: &mut crate::ws::Handshake) {}
+    /// Change an outbound frame; the replacement is sent verbatim.
+    fn ws_send(&self, _frame: &mut String) {}
+    /// Change an inbound frame before it is decoded.
+    fn ws_receive(&self, _frame: &mut String) {}
+}
+
+/// A provider's [`Interceptor`].
+#[derive(Clone)]
+pub struct Hooks(pub std::sync::Arc<dyn Interceptor>);
+
+impl std::fmt::Debug for Hooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hooks")
+    }
+}
+
 /// How the API key is sent.
 #[derive(Debug, Clone, Default)]
 pub enum Auth {
@@ -298,14 +328,23 @@ pub(crate) async fn send(
     p: &Provider,
     rb: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, Error> {
-    let (client, req) = p.authorized(rb).await?;
+    let (client, mut req) = p.authorized(rb).await?;
     let again = req.try_clone();
+    if let Some(h) = &p.hooks {
+        h.0.request(&mut req);
+    }
     let mut resp = client.execute(req).await?;
     if let (Auth::Dynamic(a), Some(mut again)) = (&p.auth, again) {
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED && a.rejected(&client).await {
             a.authorize(&client, &mut again).await?;
+            if let Some(h) = &p.hooks {
+                h.0.request(&mut again);
+            }
             resp = client.execute(again).await?;
         }
+    }
+    if let Some(h) = &p.hooks {
+        h.0.response(&mut resp);
     }
     let status = resp.status();
     if !status.is_success() {
@@ -391,6 +430,7 @@ mod tests {
             auth: Auth::Dynamic(std::sync::Arc::new(Renewing::default())),
             encoding: Encoding::None,
             compat: Compatibility::default(),
+            hooks: None,
         };
         let client = reqwest::Client::new();
         let resp = send(&p, client.post(p.url("x")).body("{}")).await.unwrap();

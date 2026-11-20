@@ -284,6 +284,8 @@ pub struct Channel {
     /// The `response.create` message as a whole request.
     pub message: Map<String, Value>,
     pub route: Route,
+    /// The provider's hooks, for the handshake (already applied) and frames.
+    pub hooks: Option<crate::Hooks>,
 }
 
 impl Channel {
@@ -352,8 +354,13 @@ pub fn prepare(
         if route == Route::OpenAI && !headers.iter().any(|(k, _)| k == "openai-beta") {
             headers.push(("openai-beta".into(), PROTOCOL_HEADER.into()));
         }
+        let mut handshake = Handshake { url, headers };
+        if let Some(h) = &provider.hooks {
+            h.0.ws_handshake(&mut handshake);
+        }
         Some(Channel {
-            handshake: Handshake { url, headers },
+            hooks: provider.hooks.clone(),
+            handshake,
             rotate_after: route.rotate_after(),
             message: message_with_type,
             route,

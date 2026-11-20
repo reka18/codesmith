@@ -30,9 +30,13 @@ mod sse;
 pub mod ws;
 
 pub use cache::{Cache, Messages as CacheMessages, Placement as CachePlacement};
-pub use endpoint::{azure_endpoint, azure_resource_url, Auth, Authorizer, Compatibility, Encoding};
+pub use endpoint::{
+    azure_endpoint, azure_resource_url, Auth, Authorizer, Compatibility, Encoding, Hooks,
+    Interceptor,
+};
 pub use hosted::{Hosted, HostedResult};
 pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
+pub use reqwest;
 
 use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -1136,6 +1140,9 @@ pub struct Provider {
     pub encoding: Encoding,
     /// Explicit overrides of detected OpenAI Chat behaviour.
     pub compat: Compatibility,
+    /// Hooks around the requests this provider sends (plugins' HTTP and
+    /// WebSocket hooks); `None` costs nothing.
+    pub hooks: Option<Hooks>,
 }
 
 impl Provider {

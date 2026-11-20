@@ -973,6 +973,12 @@ impl Session {
     }
 
     fn request(&self) -> Request {
+        self.request_for(crate::plugin::RequestKind::Primary)
+    }
+
+    /// The request a `kind` model call starts from, after the plugins'
+    /// request hooks.
+    fn request_for(&self, _kind: crate::plugin::RequestKind) -> Request {
         let plugins = crate::plugin::active();
         let mut req = self.base_request(&plugins);
         plugins.request(&self.loaded.config, &self.id, &mut req);
@@ -1024,6 +1030,25 @@ impl Session {
     /// headers and prompt cache key (see [`Tag`]).
     fn tag(&self) -> Tag {
         Tag::new(&self.id, self.parent.as_deref())
+    }
+
+    /// The model, with the plugins' HTTP hooks for a `kind` request when
+    /// any plugin is enabled.
+    fn model_for(&self, kind: crate::plugin::RequestKind) -> std::borrow::Cow<'_, ModelRef> {
+        let scope = crate::plugin::RequestScope {
+            session_id: self.id.clone(),
+            agent: self.agent.id.clone(),
+            model: self.model_spec.clone(),
+            kind,
+        };
+        match crate::plugin::active().http_hooks(&self.loaded.config, scope) {
+            Some(h) => {
+                let mut m = self.model.clone();
+                m.provider.hooks = Some(h);
+                std::borrow::Cow::Owned(m)
+            }
+            None => std::borrow::Cow::Borrowed(&self.model),
+        }
     }
 
     /// The system prompt: the base and the instruction baseline, Code Mode
@@ -2718,6 +2743,36 @@ impl Session {
         }
     }
 
+    /// A side request with this session's context (OpenCode's
+    /// `session.generate`): the system prompt, history and tools the next
+    /// step would send, then `prompt` as a user message, with tool calls
+    /// switched off (the tools stay declared, and with them the cached
+    /// prefix). Nothing is saved to the history; its tokens count toward
+    /// the session's usage.
+    pub async fn generate(&mut self, prompt: &str) -> Result<String> {
+        let (text, usage) = self.generate_text(prompt).await?;
+        self.count_side_call(usage)?;
+        Ok(text)
+    }
+
+    /// [`Session::generate`] without counting its usage.
+    async fn generate_text(&self, prompt: &str) -> Result<(String, Usage)> {
+        let mut req = self.request_for(crate::plugin::RequestKind::Generate);
+        req.messages.push(Message::user(prompt));
+        req.tool_choice = Some(codesmith_ai::ToolChoice::None);
+        req.interaction = codesmith_ai::Interaction::Background;
+        let model = self.model_for(crate::plugin::RequestKind::Generate);
+        let (text, usage, _) = stream_text(
+            &self.client,
+            &model,
+            &req,
+            retry::Policy::default(),
+            &mut |_| {},
+        )
+        .await?;
+        Ok((text, usage))
+    }
+
     /// Record what call `id` changed in `path`, when the change is small
     /// enough to keep. A file that existed and is gone was deleted: its new
     /// text is empty.
@@ -2757,7 +2812,9 @@ impl Session {
 
     fn spawn_title(&self, first: &str) -> tokio::task::JoinHandle<(Option<String>, Usage)> {
         let client = self.client.clone();
-        let model = self.model.clone();
+        let model = self
+            .model_for(crate::plugin::RequestKind::Title)
+            .into_owned();
         let prompt = title::request(first);
         let msg = vec![Message::user(prompt.clone())];
         let fallback = title::fallback(first);
@@ -2884,13 +2941,14 @@ impl Session {
         req: &Request,
         sink: &mut dyn Sink,
     ) -> Result<(Vec<Part>, FinishReason, Usage), codesmith_ai::Failure> {
-        let stream = match self.model.websocket {
+        let model = self.model_for(crate::plugin::RequestKind::Primary);
+        let stream = match model.websocket {
             Some(route) => {
                 self.ws
-                    .stream(&self.model.provider, &self.client, req, route)
+                    .stream(&model.provider, &self.client, req, route)
                     .await
             }
-            None => self.model.provider.stream(&self.client, req).await,
+            None => model.provider.stream(&self.client, req).await,
         };
         let stream = stream.map_err(|error| codesmith_ai::Failure {
             error,
@@ -3152,7 +3210,7 @@ async fn complete_streaming(
     system: &str,
     messages: &[Message],
     max_tokens: Option<u32>,
-    mut policy: retry::Policy,
+    policy: retry::Policy,
     delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<(String, Usage, Option<FinishReason>)> {
     let req = Request {
@@ -3181,12 +3239,23 @@ async fn complete_streaming(
         headers: tag.headers.clone(),
         ..Default::default()
     };
+    stream_text(client, model, &req, policy, delta).await
+}
+
+/// Send `req`, retrying under `policy`, and collect its text.
+async fn stream_text(
+    client: &reqwest::Client,
+    model: &ModelRef,
+    req: &Request,
+    mut policy: retry::Policy,
+    delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<(String, Usage, Option<FinishReason>)> {
     loop {
         let mut out = String::new();
         let mut usage = Usage::default();
         let mut reason = None;
         let res: Result<(), codesmith_ai::Error> = async {
-            let mut s = model.provider.stream(client, &req).await?;
+            let mut s = model.provider.stream(client, req).await?;
             while let Some(ev) = s.next().await {
                 match ev? {
                     Event::TextDelta(d) => {

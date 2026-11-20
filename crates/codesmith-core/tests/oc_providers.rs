@@ -2047,6 +2047,7 @@ fn utility_provider(url: &str) -> codesmith_ai::Provider {
         auth: Auth::Bearer,
         encoding: Default::default(),
         compat: Default::default(),
+        hooks: None,
     }
 }
 

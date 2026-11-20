@@ -225,7 +225,11 @@ impl SessionTransport {
         if create.mode == Mode::Full {
             open.checkpoint = None;
         }
-        match open.conn.outbound.send_text(create.message.clone()).await {
+        let mut message = create.message.clone();
+        if let Some(h) = &channel.hooks {
+            h.0.ws_send(&mut message);
+        }
+        match open.conn.outbound.send_text(message).await {
             Ok(()) => Ok(Start::Sent(create)),
             Err(e) => {
                 state.close_open().await;
@@ -314,7 +318,12 @@ impl SessionTransport {
                             yield Err(exchange.fail(e).await);
                             return;
                         }
-                        Ok(Some(Ok(Frame::Text(t)))) => t,
+                        Ok(Some(Ok(Frame::Text(mut t)))) => {
+                            if let Some(h) = &channel.hooks {
+                                h.0.ws_receive(&mut t);
+                            }
+                            t
+                        }
                     };
                     observed = true;
                     let observation = match driver.observe(&create, &frame) {

@@ -1546,6 +1546,7 @@ impl Config {
                 auth,
                 encoding,
                 compat,
+                hooks: None,
             },
             body,
             options,

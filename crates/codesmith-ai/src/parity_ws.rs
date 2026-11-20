@@ -690,6 +690,7 @@ fn shapes_the_incremental_send_with_the_route_continuation() {
         rotate_after: xai.rotate_after(),
         message: req.as_object().unwrap().clone(),
         route: xai,
+        hooks: None,
     };
     let trimmed = chan(&second_req).driver().create(Some(&saved));
     assert_eq!(trimmed.mode, Mode::Incremental);

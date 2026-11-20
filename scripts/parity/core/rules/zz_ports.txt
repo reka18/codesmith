@@ -458,3 +458,7 @@
 5381 :: ported :: tests/oc_request_headers.rs::oc_adds_session_correlation_headers_to_model_requests :: adapted: `x-codesmith-*` names for OpenCode's `x-opencode-*`, and no project header (CodeSmith has no project ids)
 5395 :: ported :: tests/oc_request_headers.rs::oc_uses_parent_cache_affinity_for_child_model_requests :: adapted: `x-codesmith-*` names
 5440 :: ported :: tests/oc_request_headers.rs::oc_bounds_64_character_session_prompt_cache_keys
+@session-model-request-hooks.test.ts
+80 :: ported :: tests/oc_http_hooks.rs::oc_tags_every_session_request_kind_on_http_request_and_http_response :: adapted: `Plugin::http_request`/`http_response` with a `RequestScope`
+120 :: ported :: tests/oc_http_hooks.rs::oc_sends_a_kept_requests_original_body_and_a_replaced_requests_new_body :: adapted: the hook gets the `reqwest::Request`
+203 :: ported :: tests/oc_http_hooks.rs::oc_offers_the_websocket_executor_alongside_http_hooks_and_routes_the_websocket_hooks :: adapted: a scripted `Connector`; the hooks ride on the provider

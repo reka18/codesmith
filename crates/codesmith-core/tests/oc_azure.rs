@@ -451,6 +451,7 @@ fn key_provider(key: &str) -> codesmith_ai::Provider {
         auth: codesmith_ai::Auth::Header("api-key".into()),
         encoding: Default::default(),
         compat: Default::default(),
+        hooks: None,
     }
 }
 

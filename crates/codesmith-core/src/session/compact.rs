@@ -338,7 +338,10 @@ impl Session {
             estimated: 0,
         };
         let plan = self.plan_on(anchor.index, Reason::Auto, anchor.index, Some(measured));
-        let (client, model) = (self.client.clone(), self.model.clone());
+        let client = self.client.clone();
+        let model = self
+            .model_for(crate::plugin::RequestKind::Compaction)
+            .into_owned();
         let outcome: Arc<Mutex<Option<Outcome>>> = Arc::default();
         let slot = outcome.clone();
         let task = tokio::spawn(async move {
@@ -457,7 +460,10 @@ impl Session {
         let end = self.messages.len();
         let plan = self.plan_on(end, reason, k, self.measured_prompt());
         let mut delta = |d: &str| sink.compaction_delta(d);
-        let (result, usages) = deliver(&self.client, &self.model, plan, &mut delta).await;
+        let model = self
+            .model_for(crate::plugin::RequestKind::Compaction)
+            .into_owned();
+        let (result, usages) = deliver(&self.client, &model, plan, &mut delta).await;
         for u in usages {
             self.count_side_call(u)?;
         }
@@ -515,7 +521,8 @@ impl Session {
             return Ok(Native::Summary(s.summary));
         }
         use codesmith_ai::CompactMechanism::{Endpoint, Trigger};
-        let provider = &self.model.provider;
+        let model = self.model_for(crate::plugin::RequestKind::Compaction);
+        let provider = &model.provider;
         let mechanism = match self.model.native_compaction.flatten() {
             Some(m) if provider.can_compact(m) => Some(m),
             Some(_) => None,

@@ -11,6 +11,12 @@
 //! hooks around tool calls, shell commands, model requests, compactions,
 //! permission prompts, session events and going idle.
 
+mod request;
+
+pub use request::{RequestKind, RequestScope};
+/// The HTTP types the request hooks take.
+pub use reqwest;
+
 use crate::config::Config;
 use crate::permission::{Reply, Request};
 use codesmith_ai::Usage;
@@ -212,6 +218,35 @@ pub trait Plugin: Send + Sync {
     fn idle(&self, _idle: &Idle) -> Option<String> {
         None
     }
+
+    // --- HTTP and WebSocket hooks (OpenCode's session `http.request`,
+    // `http.response` and `experimental.ws.*`). They run for every model
+    // request a session makes (`scope.kind` says which), after the
+    // provider's credentials are applied. Responses and inbound frames come
+    // from the network: treat them as untrusted input. ---
+
+    /// Change a model request just before it is sent: headers, URL or body.
+    /// A request left alone is sent as it was built.
+    fn http_request(&self, _scope: &RequestScope, _req: &mut reqwest::Request) {}
+
+    /// Look at, or replace, a model response before it is read.
+    fn http_response(&self, _scope: &RequestScope, _res: &mut reqwest::Response) {}
+
+    /// Change the URL or headers a Responses WebSocket opens with; a change
+    /// opens a new socket.
+    fn ws_handshake(
+        &self,
+        _scope: &RequestScope,
+        _url: &mut String,
+        _headers: &mut Vec<(String, String)>,
+    ) {
+    }
+
+    /// Change an outbound WebSocket frame; the replacement is sent verbatim.
+    fn ws_send(&self, _scope: &RequestScope, _frame: &mut String) {}
+
+    /// Change an inbound WebSocket frame before it is decoded.
+    fn ws_receive(&self, _scope: &RequestScope, _frame: &mut String) {}
 }
 
 /// How many times `idle` may continue one turn.
@@ -346,6 +381,15 @@ impl Registry {
         for p in self.enabled(config) {
             p.event(e);
         }
+    }
+
+    /// The provider hooks that run the enabled plugins' HTTP and WebSocket
+    /// hooks for one request; `None` without plugins, so a build without
+    /// any pays nothing.
+    pub fn http_hooks(&self, config: &Config, scope: RequestScope) -> Option<codesmith_ai::Hooks> {
+        let plugins: Vec<Arc<dyn Plugin>> = self.enabled(config).cloned().collect();
+        (!plugins.is_empty())
+            .then(|| codesmith_ai::Hooks(Arc::new(request::Bridge { plugins, scope })))
     }
 
     pub fn idle(&self, config: &Config, idle: &Idle) -> Option<String> {
