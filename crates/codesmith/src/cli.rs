@@ -107,6 +107,11 @@ enum Command {
         #[command(subcommand)]
         what: WorktreeCmd,
     },
+    /// Schedule prompts or Code Mode programs to run later or repeatedly.
+    Automation {
+        #[command(subcommand)]
+        what: AutomationCmd,
+    },
     /// Speak the Agent Client Protocol on stdin/stdout, for editors such as Zed.
     Acp,
     /// Serve a local HTTP API for driving sessions from other programs.
@@ -184,6 +189,65 @@ struct RunArgs {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once from the command line
+enum AutomationCmd {
+    /// List automations (this project's, or --all).
+    List {
+        #[arg(long)]
+        all: bool,
+    },
+    /// Add an automation: one trigger and one action.
+    Add {
+        #[arg(long)]
+        name: String,
+        /// Repeat on an interval ("10 minutes", "2 hours").
+        #[arg(long, group = "when")]
+        every: Option<String>,
+        /// Run on a cron schedule ("0 9 * * 1-5").
+        #[arg(long, group = "when")]
+        cron: Option<String>,
+        /// Run once ("in 30 minutes", "2026-10-27T09:00").
+        #[arg(long, group = "when")]
+        at: Option<String>,
+        /// IANA time zone for --cron and --at (default: local).
+        #[arg(long)]
+        tz: Option<String>,
+        /// The prompt to send on each run.
+        #[arg(long, group = "what")]
+        prompt: Option<String>,
+        /// A file with a Code Mode program to run instead of a prompt.
+        #[arg(long, group = "what")]
+        code_file: Option<PathBuf>,
+        /// JSON passed to the program as input.args.
+        #[arg(long)]
+        args: Option<String>,
+        /// Send the prompt to this session (default: a new session each run).
+        #[arg(long)]
+        session: Option<String>,
+        /// Agent for new sessions (default build).
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Pause {
+        id: String,
+    },
+    Resume {
+        id: String,
+    },
+    Remove {
+        id: String,
+    },
+    /// Show an automation's runs.
+    Log {
+        id: String,
+    },
+    /// Run automations in the foreground until stopped (for launchd or systemd).
+    Serve,
+    /// Fire whatever is due once and exit.
+    RunDue,
+}
+
+#[derive(Subcommand)]
 enum WorktreeCmd {
     /// List this repository's worktrees.
     List,
@@ -204,6 +268,113 @@ enum WorktreeCmd {
         #[arg(long)]
         force: bool,
     },
+}
+
+async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()> {
+    use codesmith_core::automation as au;
+    let db = open_store()?;
+    let dir = cwd.display().to_string();
+    let runner = || {
+        au::Runner::new(
+            store::default_path(),
+            Arc::new(|d: &std::path::Path| config::load(d)),
+        )
+    };
+    match what {
+        AutomationCmd::List { all } => println!(
+            "{}",
+            au::table(&au::list(&db, (!all).then_some(dir.as_str()))?)
+        ),
+        AutomationCmd::Add {
+            name,
+            every,
+            cron,
+            at,
+            tz,
+            prompt,
+            code_file,
+            args,
+            session,
+            agent,
+        } => {
+            let trigger = match (every, cron, at) {
+                (Some(every), _, _) => au::Trigger::Every { every, tz },
+                (_, Some(cron), _) => au::Trigger::Cron { cron, tz },
+                (_, _, Some(at)) => au::Trigger::At { at, tz },
+                _ => return Err(anyhow!("give one of --every, --cron or --at")),
+            };
+            let action = match (prompt, code_file) {
+                (Some(prompt), _) => au::Action::Prompt {
+                    prompt,
+                    to: match session {
+                        Some(session) => au::Target::Session { session },
+                        None => au::Target::Subagent {
+                            subagent: agent.unwrap_or_else(|| "build".into()),
+                        },
+                    },
+                },
+                (_, Some(f)) => au::Action::Code {
+                    code: std::fs::read_to_string(&f)
+                        .with_context(|| format!("reading {}", f.display()))?,
+                    args: args
+                        .map(|a| serde_json::from_str(&a))
+                        .transpose()
+                        .context("--args must be JSON")?,
+                },
+                _ => return Err(anyhow!("give --prompt or --code-file")),
+            };
+            let a = au::create(
+                &db,
+                au::New {
+                    name,
+                    directory: dir,
+                    session_id: None,
+                    trigger,
+                    action,
+                },
+            )?;
+            println!(
+                "Created {} ({}); first run {}",
+                a.id,
+                au::describe(&a.trigger),
+                au::when(a.next_due)
+            );
+            println!("It runs while CodeSmith is open here, or keep `codesmith automation serve` running.");
+        }
+        AutomationCmd::Pause { id } => {
+            println!("{} is {}", id, au::set_status(&db, &id, "paused")?.status)
+        }
+        AutomationCmd::Resume { id } => {
+            let a = au::set_status(&db, &id, "active")?;
+            println!("{id} is active; next run {}", au::when(a.next_due));
+        }
+        AutomationCmd::Remove { id } => println!(
+            "{}",
+            if au::remove(&db, &id)? {
+                format!("Removed {id}")
+            } else {
+                format!("No automation {id}")
+            }
+        ),
+        AutomationCmd::Log { id } => {
+            for r in au::runs(&db, &id)? {
+                println!(
+                    "#{} {} {}{}\n  {}",
+                    r.run,
+                    au::when(Some(r.at)),
+                    r.outcome,
+                    r.session_id.map(|s| format!(" · {s}")).unwrap_or_default(),
+                    r.detail.lines().take(6).collect::<Vec<_>>().join("\n  ")
+                );
+            }
+        }
+        AutomationCmd::Serve => {
+            eprintln!("running automations; Ctrl+C to stop");
+            runner().run_forever().await;
+        }
+        AutomationCmd::RunDue => println!("{} fired", runner().tick().await?),
+    }
+    Ok(())
 }
 
 /// Create a worktree for `--worktree` and return the folder to work in.
@@ -578,6 +749,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what),
         Some(Command::Acp) => acp::run().await,
+        Some(Command::Automation { what }) => automation_cmd(&cwd, what).await,
         Some(Command::Stats {
             days,
             year,

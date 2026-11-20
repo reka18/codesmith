@@ -766,6 +766,11 @@ where
 
 pub async fn run() -> Result<()> {
     let load: Loader = Arc::new(|cwd: &Path| config::load(cwd));
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(l) = config::load(&cwd) {
+            codesmith_core::automation::spawn_scheduler(&l);
+        }
+    }
     serve(
         tokio::io::BufReader::new(tokio::io::stdin()),
         tokio::io::stdout(),

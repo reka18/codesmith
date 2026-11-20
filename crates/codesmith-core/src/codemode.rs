@@ -181,7 +181,20 @@ pub fn program(code: &str) -> String {
         "class ",
         "}",
         "//",
+        "/*",
         "try",
+        "async function",
+        "throw ",
+        "switch",
+        "do ",
+        "do{",
+        "break",
+        "continue",
+        "else",
+        "case ",
+        "default:",
+        "import ",
+        "export ",
     ]
     .iter()
     .any(|k| last.starts_with(k));
@@ -471,6 +484,12 @@ mod tests {
             program("for (const x of y) {\n f(x)\n}"),
             "for (const x of y) {\n f(x)\n}"
         );
+        assert_eq!(
+            program("throw new Error('x')"),
+            "throw new Error('x')",
+            "statements are not wrapped"
+        );
+        assert_eq!(program("if (a) b()\nelse c()"), "if (a) b()\nelse c()");
     }
 
     async fn run(code: &str) -> (Outcome, Vec<(String, Value)>) {

@@ -45,6 +45,9 @@ pub struct Config {
     pub formatter: Option<crate::format::Setting>,
     /// Where `--worktree` creates worktrees and what it runs in them.
     pub worktree: crate::worktree::WorktreeConfig,
+    /// `false` keeps this process from running automations (the UI,
+    /// `serve` and `acp` run them by default).
+    pub automations: Option<bool>,
     /// `false` offers every MCP tool as a direct tool call instead of
     /// through Code Mode (useful for models that write JavaScript poorly).
     pub codemode: Option<bool>,

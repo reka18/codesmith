@@ -388,6 +388,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         prompter.clone()
     };
     let questioner: Option<Arc<dyn Questioner>> = if opts.auto { None } else { Some(prompter) };
+    codesmith_core::automation::spawn_scheduler(&loaded);
     let mcp = crate::connect_mcp(&loaded, false).await;
     let mcp_failures: Vec<String> = mcp
         .statuses

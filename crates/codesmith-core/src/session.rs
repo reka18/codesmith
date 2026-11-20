@@ -367,6 +367,21 @@ impl Session {
                 crate::codemode::instructions(&code)
             )
         };
+        let automation = self
+            .store
+            .as_ref()
+            .filter(|_| {
+                crate::permission::evaluate(crate::automation::TOOL, "*", &self.agent.permissions)
+                    != crate::permission::Effect::Deny
+            })
+            .map(|_| {
+                let (description, parameters) = crate::automation::tool_spec();
+                codesmith_ai::ToolSpec {
+                    name: crate::automation::TOOL.into(),
+                    description,
+                    parameters,
+                }
+            });
         let execute = (!code.is_empty()).then(|| {
             let (description, parameters) = crate::codemode::spec();
             codesmith_ai::ToolSpec {
@@ -417,6 +432,7 @@ impl Session {
                         }),
                 )
                 .chain(execute)
+                .chain(automation)
                 .collect(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
@@ -599,6 +615,9 @@ impl Session {
                     _ if refused.is_some() => (refused.clone().unwrap_or_default(), true),
                     _ if name == crate::codemode::TOOL && !self.code_entries().is_empty() => {
                         self.run_code(&input).await
+                    }
+                    _ if name == crate::automation::TOOL && self.store.is_some() => {
+                        self.run_automation(&input)
                     }
                     _ if self.mcp_tools().any(|t| t.name == name) => {
                         self.run_mcp(&name, &input).await
@@ -794,6 +813,94 @@ impl Session {
                 schema: t.schema.clone(),
             })
             .collect()
+    }
+
+    fn run_automation(&self, input: &serde_json::Value) -> (String, bool) {
+        use crate::automation as au;
+        let input = tool::repair(input);
+        let Some(db) = &self.store else {
+            return ("Automations need the session store.".into(), true);
+        };
+        let s = |k: &str| {
+            input[k]
+                .as_str()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let dir = self.cwd.display().to_string();
+        let action = s("action").unwrap_or_default();
+        let result: anyhow::Result<String> = (|| match action.as_str() {
+            "list" => Ok(au::table(&au::list(db, Some(&dir))?)),
+            "create" => {
+                let trigger: au::Trigger = serde_json::from_value(input["trigger"].clone())
+                    .map_err(|e| anyhow!("trigger: {e}"))?;
+                let prompt = s("prompt").ok_or_else(|| anyhow!("`prompt` is required"))?;
+                let to = match s("agent") {
+                    Some(a) => {
+                        crate::agent::resolve(&self.loaded.config, &a)
+                            .ok_or_else(|| anyhow!("unknown agent {a}"))?;
+                        au::Target::Subagent { subagent: a }
+                    }
+                    None => au::Target::Session {
+                        session: self.id.clone(),
+                    },
+                };
+                let name = s("name").unwrap_or_else(|| prompt.chars().take(40).collect());
+                let title = format!("Schedule \"{name}\" ({})", au::describe(&trigger));
+                self.allowed(au::TOOL, "create", title)
+                    .map_err(|e| anyhow!(e))?;
+                let a = au::create(
+                    db,
+                    au::New {
+                        name,
+                        directory: dir.clone(),
+                        session_id: Some(self.id.clone()),
+                        trigger,
+                        action: au::Action::Prompt { prompt, to },
+                    },
+                )?;
+                Ok(format!("Created {} ({}); first run {}. It runs while any CodeSmith is open, or under `codesmith automation serve`.", a.id, au::describe(&a.trigger), au::when(a.next_due)))
+            }
+            "pause" | "resume" | "remove" => {
+                let id = s("id").ok_or_else(|| anyhow!("`id` is required"))?;
+                let a = au::get(db, &id)?
+                    .filter(|a| a.directory == dir)
+                    .ok_or_else(|| anyhow!("no automation {id} in this project"))?;
+                self.allowed(
+                    au::TOOL,
+                    &action,
+                    format!("{action} automation \"{}\"", a.name),
+                )
+                .map_err(|e| anyhow!(e))?;
+                if action == "remove" {
+                    au::remove(db, &id)?;
+                    Ok(format!("Removed {id}."))
+                } else {
+                    let a = au::set_status(
+                        db,
+                        &id,
+                        if action == "pause" {
+                            "paused"
+                        } else {
+                            "active"
+                        },
+                    )?;
+                    Ok(format!(
+                        "{id} is {}; next run {}.",
+                        a.status,
+                        au::when(a.next_due)
+                    ))
+                }
+            }
+            other => Err(anyhow!(
+                "unknown action {other:?}; use create, list, pause, resume or remove"
+            )),
+        })();
+        match result {
+            Ok(t) => (t, false),
+            Err(e) => (format!("{e:#}"), true),
+        }
     }
 
     async fn run_code(&self, input: &serde_json::Value) -> (String, bool) {

@@ -120,6 +120,12 @@ impl Store {
         Self::init(conn)
     }
 
+    /// Run `f` with the connection (for other tables kept in the same database).
+    pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let conn = self.conn.lock().unwrap();
+        f(&conn)
+    }
+
     /// The database file, or `None` for an in-memory store.
     pub fn path(&self) -> Option<PathBuf> {
         self.conn

@@ -534,6 +534,7 @@ async fn undo_redo(
 }
 
 pub async fn run(st: St, host: &str, port: u16) -> Result<()> {
+    codesmith_core::automation::spawn_scheduler(&st.loaded);
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
     eprintln!(
         "codesmith serving {} on http://{}{}",

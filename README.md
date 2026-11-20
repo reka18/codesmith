@@ -327,6 +327,37 @@ and refreshed automatically; `codesmith mcp logout <name>` forgets them. Set
 `"oauth": {"clientId": "...", "clientSecret": "...", "scope": "...", "port": 19876}`
 to use a pre-registered client, or `"oauth": false` to turn it off.
 
+## Automations
+
+Automations run a prompt — or a Code Mode program — later or on a schedule,
+without anyone at the keyboard, as in OpenCode. Ask the agent ("check the
+build every 10 minutes", "remind me at 17:00 to …"; it has an `automation`
+tool) or use the CLI:
+
+```sh
+codesmith automation add --name standup --cron "0 9 * * 1-5" --tz Europe/Paris \
+  --prompt "Summarize yesterday's commits in three bullets"
+codesmith automation add --name tidy --every "1 day" --agent build --prompt "…"
+codesmith automation add --name once --at "in 30 minutes" --session ses_… --prompt "…"
+codesmith automation list | pause ID | resume ID | remove ID | log ID
+```
+
+Triggers: `--at` (once: "in 30 minutes", "2026-10-27T09:00", or an RFC 3339
+time), `--every` ("10 minutes", "2 hours", "1 day") and `--cron` (five
+fields, in `--tz` or local time). A prompt goes to an existing session
+(`--session`) or to a new session with an agent on each run. A Code Mode
+program (`--code-file`) gets `input = {state, now, runs, args}` and may
+return `{state, done, send: {prompt, to: {subagent}}}` to keep state between
+runs, finish itself, or hand work to a session.
+
+Automations are stored with your sessions and run by whichever CodeSmith is
+open — the UI, `serve` or `acp` (`"automations": false` opts a process out) —
+or by `codesmith automation serve`, which you can keep running under launchd
+or systemd; a lease in the database keeps two processes from firing the same
+run. Runs are unattended: they follow your permission rules, but anything
+that would ask is refused. Each run's outcome, session and answer are kept for
+`automation log`. Triggers from MCP server events are not supported yet.
+
 ## Plugins
 
 Plugins are native Rust, compiled into your own build of CodeSmith — no
@@ -408,7 +439,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
 4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees, stats~~
-5. ~~ACP, native Rust plugins, Code Mode~~; automations
+5. ~~ACP, native Rust plugins, Code Mode, automations~~ (MCP event triggers to come)
 
 ## License
 
