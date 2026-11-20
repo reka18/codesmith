@@ -34,6 +34,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// The goal plugin [`super::builtin`] installs, for a front end to show
+/// a session's goal (OpenCode's goal RPC).
+pub fn shared() -> &'static GoalPlugin {
+    static SHARED: std::sync::OnceLock<GoalPlugin> = std::sync::OnceLock::new();
+    SHARED.get_or_init(GoalPlugin::new)
+}
+
 /// The plugin's id, in config and storage.
 pub const ID: &str = "goal";
 pub const MAX_OBJECTIVE: usize = 4_000;

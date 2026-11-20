@@ -176,6 +176,8 @@ struct Runner {
     selections: models::Selections,
     /// The `!command` running, until its turn is done.
     shell_command: Option<String>,
+    /// Goals written (`/goal`), for the status line.
+    goals: tokio::sync::broadcast::Receiver<codesmith_core::plugin::goal::Change>,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -230,6 +232,9 @@ impl Runner {
         self.app.header.model = format!("{}/{}", s.model.provider_id, s.model.model_id);
         self.app.header.session = s.id.clone();
         self.app.parent = s.parent().map(str::to_string);
+        self.app.goal = codesmith_core::plugin::goal::shared()
+            .get(&s.id)
+            .map(|g| g.status);
         self.app.header.title = s.title.clone();
         self.app.header.context_limit = s.model.context;
         self.app.header.cost = self.loaded.config.cost(&self.app.header.model);
@@ -1764,6 +1769,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         models: models::Repository::new(models::Repository::default_file()),
         selections: Default::default(),
         shell_command: None,
+        goals: codesmith_core::plugin::goal::shared().subscribe(),
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),
@@ -1866,6 +1872,11 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             r.sync_tabs();
             r.attend();
             r.keep_history();
+            while let Ok(c) = r.goals.try_recv() {
+                if c.session_id == r.app.header.session {
+                    r.app.goal = c.goal.map(|g| g.status);
+                }
+            }
             let following = r.sync_shells();
             let toast = r.app.toasts.tick(std::time::Instant::now());
             let tick = match &mut screen {

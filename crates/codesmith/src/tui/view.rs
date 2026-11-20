@@ -1275,6 +1275,19 @@ pub fn tokens(n: u64) -> String {
     }
 }
 
+/// The session's goal as OpenCode's prompt footer shows it: `◎ goal`
+/// (muted), `◎ goal paused` (warning) or `◎ goal met` (success); the
+/// objective is `/goal`'s to show.
+pub fn goal_label(app: &App) -> Option<(&'static str, Color)> {
+    use codesmith_core::plugin::goal::Status;
+    let p = theme::current();
+    Some(match app.goal? {
+        Status::Active => (" ◎ goal", p.muted),
+        Status::Paused => (" ◎ goal paused", p.warning),
+        Status::Complete => (" ◎ goal met", p.success),
+    })
+}
+
 /// The status line's text.
 pub fn status_text(app: &App, scrolled: usize) -> String {
     let mut parts = Vec::new();
@@ -1464,10 +1477,13 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
 
     draw_input(f, app, input);
 
-    f.render_widget(
-        Paragraph::new(Span::styled(status_text(app, scroll), dim())),
-        status,
-    );
+    let mut line = Vec::new();
+    if let Some((label, color)) = goal_label(app) {
+        line.push(Span::styled(label, fg(color)));
+        line.push(Span::styled(" · ", dim()));
+    }
+    line.push(Span::styled(status_text(app, scroll), dim()));
+    f.render_widget(Paragraph::new(Line::from(line)), status);
 
     if app.modal.is_none() {
         draw_popup(f, app, body, input);

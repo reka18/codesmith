@@ -910,3 +910,43 @@ mod selection {
         );
     }
 }
+
+// ----- goal in the prompt footer (feature-plugins/prompt-footer) -----------
+
+// prompt-footer.test.tsx: "prompt footer shows the session's goal without its objective and opens it on click"
+// (adapted) no mouse: the click half is dropped; the goal follows the
+// goal plugin's changes through the runner.
+#[test]
+fn oc_prompt_footer_shows_the_sessions_goal_without_its_objective() {
+    use super::app::App;
+    use codesmith_core::plugin::goal::Status;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let draw = |a: &App| {
+        let mut t = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| super::view::draw(f, a)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let find = |buf: &ratatui::buffer::Buffer, s: &str| {
+        let w = buf.area.width;
+        (0..buf.area.height).find_map(|y| {
+            let line: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+            line.find(s).map(|i| (line[..i].chars().count() as u16, y))
+        })
+    };
+    let p = super::theme::current();
+    let mut a = App::new();
+    a.goal = Some(Status::Active);
+    let buf = draw(&a);
+    let (x, y) = find(&buf, "◎ goal").expect("the goal shows");
+    assert_eq!(buf[(x, y)].fg, p.muted);
+    let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(!text.contains("Make the test suite pass"));
+    a.goal = Some(Status::Paused);
+    let buf = draw(&a);
+    let (x, y) = find(&buf, "◎ goal paused").expect("paused shows");
+    assert_eq!(buf[(x, y)].fg, p.warning);
+    a.goal = None;
+    let text: String = draw(&a).content().iter().map(|c| c.symbol()).collect();
+    assert!(!text.contains("goal"));
+}

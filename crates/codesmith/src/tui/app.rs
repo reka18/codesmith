@@ -491,6 +491,8 @@ pub struct App {
     pub toasts: super::toast::Toasts,
     /// The session's parent, for a subagent's session.
     pub parent: Option<String>,
+    /// The session's goal (`/goal`), shown in the status line.
+    pub goal: Option<codesmith_core::plugin::goal::Status>,
 }
 
 /// How a turn ended.

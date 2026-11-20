@@ -352,7 +352,7 @@ pub fn set_host(host: Arc<Host>) {
 /// The plugins every CodeSmith build has: the goal plugin (`/goal`).
 /// `codesmith::main` installs them before a build's own.
 pub fn builtin() -> Vec<Arc<dyn Plugin>> {
-    vec![Arc::new(goal::GoalPlugin::new())]
+    vec![Arc::new(goal::shared().clone())]
 }
 
 /// Install the plugins for this process (called once at startup).

@@ -100,6 +100,8 @@ replays of its recorded provider traffic.
 - **Models by agent:** switching agents brings back the model each had in
   the session, else the agent's configured one.
 - **Line ranges:** `@file#12-20` attaches those lines of the file.
+- **Goal in the status line:** `◎ goal`, `◎ goal paused` or `◎ goal met`
+  while the session has a `/goal`.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump
