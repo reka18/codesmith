@@ -391,6 +391,13 @@ pub struct App {
     /// Subagents that started or ended, until the notifications have seen
     /// them.
     pub child_log: Vec<ChildMark>,
+    /// The transcript's width and height as last drawn.
+    pub view_size: std::cell::Cell<(u16, u16)>,
+    /// Blank rows below the transcript, so a message jumped to near the
+    /// end can be at the top.
+    pub nav_slack: usize,
+    /// The entry last jumped to.
+    pub nav: Option<usize>,
 }
 
 /// How a turn ended.
@@ -1148,6 +1155,36 @@ impl App {
         }))
     }
 
+    #[cfg(test)]
+    pub(super) fn end_navigation_for_tests(&mut self) {
+        self.end_navigation();
+        self.scroll = 0;
+    }
+
+    /// Forget a message jump and the room added for it.
+    fn end_navigation(&mut self) {
+        self.nav = None;
+        self.nav_slack = 0;
+    }
+
+    /// Jump to the next or previous message (prompt, with `user_only`).
+    pub(super) fn jump(&mut self, forward: bool, user_only: bool) -> Option<Option<Action>> {
+        let (w, h) = self.view_size.get();
+        let h = h as usize;
+        let (marks, content) = super::view::message_marks(self, w);
+        let height = content + self.nav_slack;
+        let scroll_top = height.saturating_sub(h + self.scroll);
+        let Some(t) =
+            super::navigation::find_boundary(&marks, forward, scroll_top, self.nav, user_only)
+        else {
+            return Some(None);
+        };
+        self.nav = Some(t.entry);
+        self.nav_slack = super::navigation::slack(t.top, h, height, self.nav_slack);
+        self.scroll = (content + self.nav_slack).saturating_sub(h + t.top);
+        Some(None)
+    }
+
     /// Scroll the transcript by `rows` (up when positive).
     fn scroll_by(&mut self, rows: i64) -> Option<Option<Action>> {
         self.scroll = if rows >= 0 {
@@ -1256,12 +1293,24 @@ impl App {
             "session.line.up" => return self.scroll_by(1),
             "session.line.down" => return self.scroll_by(-1),
             "session.first" => {
+                self.end_navigation();
                 self.scroll = usize::MAX / 2;
                 return Some(None);
             }
             "session.last" => {
+                self.end_navigation();
                 self.scroll = 0;
                 return Some(None);
+            }
+            "session.message.next" => return self.jump(true, false),
+            "session.message.previous" => return self.jump(false, false),
+            "session.message.user.next" => return self.jump(true, true),
+            "session.message.user.previous" => return self.jump(false, true),
+            "session.messages_last_user" => {
+                self.nav = None;
+                self.scroll = 0;
+                self.nav_slack = 0;
+                return self.jump(false, true);
             }
             "input.submit" => return Some(self.submit()),
             "input.newline" => self.input.insert('\n'),
@@ -1432,6 +1481,7 @@ impl App {
         self.hist = None;
         self.input.clear();
         self.scroll = 0;
+        self.end_navigation();
         if text == ":q" || text == ":Q" {
             // OpenCode's `isExitCommand` takes Vim's `:q` too.
             return Some(Action::Slash {

@@ -261,3 +261,54 @@ mod program_status {
         assert!(title.ends_with("é…"), "{title}");
     }
 }
+
+// Jumping between prompts scrolls the one jumped to to the top, adding
+// room below the last one.
+#[test]
+fn jumping_puts_the_prompt_at_the_top() {
+    use super::app::{App, Entry};
+    let mut a = App::new();
+    for i in 0..3 {
+        a.entries.push(Entry::User(format!("prompt {i}")));
+        a.entries.push(Entry::Assistant(
+            (0..20).map(|l| format!("line {l}\n\n")).collect(),
+        ));
+    }
+    a.view_size.set((80, 10));
+    let top = |a: &App| {
+        let mut lines = super::view::transcript(a, 80);
+        lines.extend(std::iter::repeat_n(Default::default(), a.nav_slack));
+        let start = lines.len().saturating_sub(10 + a.scroll);
+        lines[start..]
+            .iter()
+            .map(|l: &ratatui::text::Line| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+            })
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or_default()
+    };
+    // From the bottom, back to the last prompt, then the one before.
+    a.jump(false, true);
+    assert!(top(&a).contains("prompt 2"), "{}", top(&a));
+    // The last answer is short: blank room lets the prompt reach the top.
+    a.entries.push(Entry::User("prompt 3".into()));
+    a.entries.push(Entry::Assistant("short".into()));
+    a.end_navigation_for_tests();
+    a.jump(false, true);
+    assert!(top(&a).contains("prompt 2"), "{}", top(&a));
+    a.jump(true, true);
+    assert!(top(&a).contains("prompt 3"), "{}", top(&a));
+    assert!(a.nav_slack > 0);
+    a.jump(false, true);
+    a.jump(false, true);
+    assert!(top(&a).contains("prompt 1"), "{}", top(&a));
+    a.jump(true, true);
+    a.jump(true, true);
+    assert!(top(&a).contains("prompt 3"), "{}", top(&a));
+    // Past the last: stays.
+    a.jump(true, true);
+    assert!(top(&a).contains("prompt 3"), "{}", top(&a));
+}

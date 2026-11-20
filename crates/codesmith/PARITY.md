@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 331 | 236 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 339 | 228 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 8 | 9 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **598** | **681** | **2357** | **259** |
+| **Total** | **4637** | **742** | **606** | **673** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -600,6 +600,14 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/editor` | says which variable to set when no external editor is configured | after a fix | oc_says_which_variable_to_set_when_no_editor_is_configured |
 | `tui/test/editor` | normalizes a single trailing editor newline for one-line prompts | after a fix | oc_normalizes_a_single_trailing_editor_newline_for_one_line_prompts |
 | `tui/test/editor` | preserves multiline prompts that end with a newline | after a fix | oc_preserves_multiline_prompts_that_end_with_a_newline |
+| `tui/test/cli/tui/message-navigation` | adds only enough slack to align the selected message | after a fix | oc_adds_only_enough_slack_to_align_the_selected_message (`tui/navigation.rs`) |
+| `tui/test/cli/tui/message-navigation` | finds the next user message without stopping at an assistant message | after a fix | oc_finds_the_next_user_message_without_stopping_at_an_answer |
+| `tui/test/cli/tui/message-navigation` | finds the previous user message without stopping at an assistant message | after a fix | oc_finds_the_previous_user_message_without_stopping_at_an_answer |
+| `tui/test/cli/tui/message-navigation` | preserves navigation across both user and assistant messages | after a fix | oc_preserves_navigation_across_prompts_and_answers |
+| `tui/test/cli/tui/message-navigation` | uses the selected message when the viewport is too tall to scroll | after a fix | oc_uses_the_selected_message_when_the_viewport_cannot_scroll |
+| `tui/test/cli/tui/message-navigation` | stops at the first and last selected user message | after a fix | oc_stops_at_the_first_and_last_selected_user_message |
+| `tui/test/cli/tui/message-navigation` | keeps the logical boundary when layout temporarily moves it outside the viewport | after a fix | oc_keeps_the_logical_boundary_when_layout_moves_it |
+| `tui/test/cli/tui/message-navigation` | stops at the first and last message | after a fix | oc_stops_at_the_first_and_last_message |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -881,17 +889,6 @@ transport and its tool presentation.
 - `util/src/session-turn`: preserves missing-anchor fallbacks without including the absent assistant's tokens
 - `util/src/session-turn`: measures a marker-era turn from its first prompt across steers
 - `tui/test/config-v2`: shows the TPS default in session settings
-
-### tui: jump between messages (8)
-
-- `tui/test/cli/tui/message-navigation`: adds only enough slack to align the selected message
-- `tui/test/cli/tui/message-navigation`: finds the next user message without stopping at an assistant message
-- `tui/test/cli/tui/message-navigation`: finds the previous user message without stopping at an assistant message
-- `tui/test/cli/tui/message-navigation`: preserves navigation across both user and assistant messages
-- `tui/test/cli/tui/message-navigation`: uses the selected message when the viewport is too tall to scroll
-- `tui/test/cli/tui/message-navigation`: stops at the first and last selected user message
-- `tui/test/cli/tui/message-navigation`: keeps the logical boundary when layout temporarily moves it outside the viewport
-- `tui/test/cli/tui/message-navigation`: stops at the first and last message
 
 ### tui: turn usage footers (5)
 

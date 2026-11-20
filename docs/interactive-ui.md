@@ -96,6 +96,7 @@ dropped, and the UI takes the terminal back however the editor ended.
 | **ctrl+alt+u/d**, **ctrl+alt+y/e** | Scroll half a page, or a line. |
 | **home**, **ctrl+g** | Scroll to the top. |
 | **end**, **ctrl+end**, **ctrl+alt+g** | Follow the bottom again. |
+| **alt+end** | Jump to your last prompt. |
 | **ctrl+b** while a command runs | Move the running commands to the background. |
 | **ctrl+z** | Suspend to the shell (Unix); `fg` returns. |
 | **alt+↓** / **alt+↑**, **ctrl+tab** / **ctrl+shift+tab** | Next or previous [session tab](#session-tabs). |
@@ -106,7 +107,11 @@ dropped, and the UI takes the terminal back however the editor ended.
 Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
 `/thinking` shows or hides it. Nor have the verbosity and grouping
 commands (`session.verbosity.cycle`, `session.toggle.exploration_grouping`);
-`/verbosity` cycles the level.
+`/verbosity` cycles the level. As in OpenCode, jumping between messages
+is unbound by default: `session.message.next` and `.previous` move to the
+next or previous prompt or answer, `session.message.user.next` and
+`.previous` to prompts only, scrolling it to the top of the transcript
+(with blank room below the last one when needed).
 
 ### Key bindings
 

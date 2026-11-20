@@ -30,6 +30,7 @@ pub(crate) mod keymap;
 mod markdown;
 mod mention;
 pub(crate) mod mini;
+mod navigation;
 mod outside;
 #[cfg(test)]
 mod parity;

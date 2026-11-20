@@ -777,6 +777,47 @@ fn thought_visible(t: &str) -> bool {
 /// session costs what is on screen, not the whole history. A row is an
 /// entry, or a run of entries grouped as [`group`] says.
 pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
+    layout_tail(app, width, n, &mut |_, _| {})
+}
+
+/// Where each prompt and answer starts in the whole transcript (its row
+/// from the top, the user's prompts marked), and the transcript's height:
+/// what [`navigation::find_boundary`](super::navigation::find_boundary)
+/// moves between.
+pub fn message_marks(app: &App, width: u16) -> (Vec<super::navigation::Mark>, usize) {
+    let mut from_bottom = Vec::new();
+    let lines = layout_tail(app, width, usize::MAX, &mut |i, below| {
+        from_bottom.push((i, below))
+    });
+    let total = lines.len();
+    let mut marks: Vec<super::navigation::Mark> = from_bottom
+        .into_iter()
+        .filter_map(|(i, below)| {
+            let (user, text) = match &app.entries[i] {
+                Entry::User(t) => (true, t),
+                Entry::Assistant(t) => (false, t),
+                _ => return None,
+            };
+            (!text.trim().is_empty()).then(|| super::navigation::Mark {
+                entry: i,
+                // A prompt's first row is the blank above it.
+                y: total.saturating_sub(below) + usize::from(user),
+                user,
+            })
+        })
+        .collect();
+    marks.reverse();
+    (marks, total)
+}
+
+/// [`transcript_tail`], telling `mark` each entry drawn alone and the
+/// rows from its first to the bottom.
+fn layout_tail(
+    app: &App,
+    width: u16,
+    n: usize,
+    mark: &mut dyn FnMut(usize, usize),
+) -> Vec<Line<'static>> {
     let w = width.saturating_sub(4) as usize;
     let cx = Rows::new(app, w);
     let entries = &app.entries;
@@ -795,6 +836,7 @@ pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
         match path.first() {
             None => {
                 entry_lines(app, &entries[i], w, &mut lines);
+                mark(i, have + lines.len());
                 end = i;
             }
             Some(&kind) => {
@@ -1334,7 +1376,13 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let visible = body.height as usize;
-    let lines = transcript_tail(app, body.width, visible.saturating_add(app.scroll));
+    app.view_size.set((body.width, body.height));
+    let mut lines = transcript_tail(
+        app,
+        body.width,
+        visible.saturating_add(app.scroll.saturating_sub(app.nav_slack)),
+    );
+    lines.extend(std::iter::repeat_n(Line::default(), app.nav_slack));
     let max_scroll = lines.len().saturating_sub(visible);
     let scroll = app.scroll.min(max_scroll);
     let start = lines.len().saturating_sub(visible + scroll);
