@@ -275,6 +275,11 @@ fn datas(body: &str) -> Vec<(Option<String>, Value)> {
         .collect()
 }
 
+/// The cost a usage object reports billed: a non-negative number.
+fn billed(u: &Value) -> Option<f64> {
+    u["cost"].as_f64().filter(|c| *c >= 0.0)
+}
+
 /// Independent reading of a raw stream, following OpenCode's semantics.
 fn oracle(proto: Proto, body: &str) -> Summary {
     let mut s = Summary::default();
@@ -353,6 +358,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                     output: n(&u["completion_tokens"]).unwrap_or(0),
                     cache_read: cached,
                     cache_write: write,
+                    cost: billed(&u),
                 };
             }
             s.finish = normalize(finish.as_deref().unwrap_or("stop"));
@@ -421,6 +427,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                 output: n(&u["output_tokens"]).unwrap_or(0),
                 cache_read: n(&u["cache_read_input_tokens"]).unwrap_or(0),
                 cache_write: n(&u["cache_creation_input_tokens"]).unwrap_or(0),
+                cost: billed(&u),
             };
             s.finish = normalize(stop.as_deref().unwrap_or("end_turn"));
         }
@@ -485,6 +492,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                 output: n(&u["output_tokens"]).unwrap_or(0),
                 cache_read: cached,
                 cache_write: written,
+                cost: billed(u),
             };
             s.finish = if !s.tools.is_empty() {
                 "tool-calls".into()
@@ -505,6 +513,7 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                             + n(&u["thoughtsTokenCount"]).unwrap_or(0),
                         cache_read: cached,
                         cache_write: 0,
+                        cost: billed(u),
                     };
                 }
                 let c = &v["candidates"][0];

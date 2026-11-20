@@ -3,7 +3,7 @@
 use crate::cache;
 use crate::gemini::split_id;
 use crate::{
-    all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
+    all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
     stream_error, unsupported_media, wrap_system_update, Decoder, Error, Event, EventStream, Media,
     MediaKind, Message, Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
@@ -17,9 +17,11 @@ pub struct Compat {
     /// `max_tokens`) and an explicit `store: false`.
     pub openai: bool,
     /// Mistral-family models: 9-character alphanumeric tool call ids, an
-    /// assistant turn between tool results and user text, and no replayed
-    /// reasoning field.
+    /// assistant turn between tool results and user text (`bridge`), and no
+    /// replayed reasoning field.
     pub mistral: bool,
+    /// An assistant `Done.` turn between tool results and user content.
+    pub bridge: bool,
     /// Claude models behind a gateway: tool call ids limited to `[A-Za-z0-9_-]`.
     pub claude: bool,
     /// OpenAI models (direct or `openai/...` behind a gateway): tool call ids
@@ -37,6 +39,11 @@ pub struct Compat {
     pub cache_markers: Markers,
     /// xAI: the prompt cache key goes in the `x-grok-conv-id` header.
     pub xai: bool,
+    /// The token limit goes in `max_completion_tokens` (OpenAI and Azure)
+    /// rather than `max_tokens`.
+    pub max_completion_tokens: bool,
+    /// No `stream_options.include_usage` (only by explicit override).
+    pub no_stream_usage: bool,
 }
 
 /// Cache breakpoints a Chat server accepts (`cache_control` in Anthropic's
@@ -62,11 +69,13 @@ impl Compat {
             || url.contains(".openai.azure.com")
             || url.contains(".cognitiveservices.azure.com")
             || url.contains(".services.ai.azure.com");
+        let mistral = ["mistral", "devstral", "codestral", "pixtral", "mixtral"]
+            .iter()
+            .any(|f| id.contains(f));
         Compat {
             openai,
-            mistral: ["mistral", "devstral", "codestral", "pixtral", "mixtral"]
-                .iter()
-                .any(|f| id.contains(f)),
+            mistral,
+            bridge: mistral,
             claude: id.contains("claude"),
             short_ids: openai || id.starts_with("openai/"),
             require_reasoning: url.contains("deepseek.com") || id.contains("deepseek"),
@@ -99,7 +108,31 @@ impl Compat {
                 Markers::None
             },
             xai: url.contains("api.x.ai"),
+            max_completion_tokens: openai,
+            no_stream_usage: false,
         }
+    }
+
+    /// Detected behaviour with the provider's explicit overrides applied
+    /// (OpenCode's model `compatibility`).
+    pub fn for_provider(p: &Provider, model: &str) -> Self {
+        let mut c = Compat::detect(&p.base_url, model);
+        let o = &p.compat;
+        match o.max_tokens_field.as_deref() {
+            Some("max_completion_tokens") => c.max_completion_tokens = true,
+            Some("max_tokens") => c.max_completion_tokens = false,
+            _ => {}
+        }
+        if let Some(u) = o.stream_usage {
+            c.no_stream_usage = !u;
+        }
+        if let Some(r) = o.require_reasoning {
+            c.require_reasoning = r;
+        }
+        if let Some(b) = o.require_assistant_after_tool {
+            c.bridge = b;
+        }
+        c
     }
 
     /// The breakpoints this request gets (after OpenCode's `selectPolicy`):
@@ -229,6 +262,9 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
         "stream": true,
         "stream_options": {"include_usage": true},
     });
+    if compat.no_stream_usage {
+        body.as_object_mut().map(|b| b.remove("stream_options"));
+    }
     if compat.openai {
         body["store"] = json!(false);
     }
@@ -265,7 +301,7 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
         body[k] = v;
     }
     if let Some(n) = req.max_tokens {
-        let field = if compat.openai {
+        let field = if compat.max_completion_tokens {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -378,7 +414,7 @@ fn lower_options(req: &Request, compat: &Compat) -> Map<String, Value> {
 
 /// Mistral wants an assistant turn between tool results and user content.
 fn bridge(messages: &mut Vec<Value>, compat: &Compat) {
-    if compat.mistral && messages.last().is_some_and(|l| l["role"] == "tool") {
+    if compat.bridge && messages.last().is_some_and(|l| l["role"] == "tool") {
         messages.push(json!({"role": "assistant", "content": "Done."}));
     }
 }
@@ -723,6 +759,7 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     let mut out = Vec::new();
     if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
         state.usage = usage(u);
+        state.usage.cost = crate::billing::billed(u, &[v]);
     }
     let Some(choice) = v["choices"].get(0) else {
         return out;
@@ -861,6 +898,7 @@ fn usage(u: &Value) -> Usage {
         output: completion + extra,
         cache_read,
         cache_write,
+        cost: None,
     }
 }
 
@@ -988,17 +1026,23 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let url = format!("{}/chat/completions", p.base_url.trim_end_matches('/'));
-    let mut rb = client.post(url);
-    if let Some(k) = &p.api_key {
-        rb = rb.bearer_auth(k);
-    }
-    for (k, v) in headers(p, req) {
-        rb = rb.header(k, v);
-    }
-    let compat = Compat::detect(&p.base_url, &req.model);
-    let resp = post(rb, &body_for(req, &compat)).await?;
+    let resp = crate::endpoint::send(request(p, client, req)).await?;
     Ok(drive(resp, Decode::default()))
+}
+
+/// The Chat Completions request for `req`.
+pub(crate) fn request(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> reqwest::RequestBuilder {
+    let compat = Compat::for_provider(p, &req.model);
+    p.json_post(
+        client,
+        "chat/completions",
+        headers(p, req),
+        &body_for(req, &compat),
+    )
 }
 
 /// Incremental UTF-8 decoding that never splits a multi-byte character.
@@ -1139,7 +1183,8 @@ mod tests {
                     input: 6,
                     output: 3,
                     cache_read: 4,
-                    cache_write: 0
+                    cache_write: 0,
+                    ..Default::default()
                 }
             }]
         );
@@ -1156,7 +1201,8 @@ mod tests {
                 input: 3,
                 output: 4,
                 cache_read: 0,
-                cache_write: 5759
+                cache_write: 5759,
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -1165,7 +1211,8 @@ mod tests {
                 input: 0,
                 output: 9,
                 cache_read: 101,
-                cache_write: 0
+                cache_write: 0,
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -1176,7 +1223,8 @@ mod tests {
                 input: 10,
                 output: 1,
                 cache_read: 8,
-                cache_write: 2
+                cache_write: 2,
+                ..Default::default()
             }
         );
     }

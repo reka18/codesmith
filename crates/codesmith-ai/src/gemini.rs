@@ -5,8 +5,8 @@
 //! (`<id>~<signature>`), so stored conversations need no extra fields.
 
 use crate::{
-    all_media, drive_resuming, inline_required, merge_body, normalize_tool_history, post, schema,
-    sse, stream_error, wrap_system_update, Decoder, Error, Event, EventStream, Media, MediaKind,
+    all_media, drive_resuming, inline_required, merge_body, normalize_tool_history, schema, sse,
+    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, Media, MediaKind,
     Message, Part, Protocol, Provider, ReasoningMeta, Reopen, Request, Role, ToolChoice, Usage,
 };
 use futures_util::FutureExt;
@@ -291,6 +291,10 @@ pub struct State {
     /// and that of the earlier requests of a continued response.
     usage: Option<(u64, u64, u64)>,
     continued: Vec<(u64, u64, u64)>,
+    /// The cost this request reports billed, and the sum the earlier
+    /// requests of a continued response reported (each is billed on its own).
+    cost: Option<f64>,
+    continued_cost: Option<f64>,
     ids: Vec<String>,
     finish: Option<String>,
     /// The open thought block's id, and the signature it has so far.
@@ -306,6 +310,14 @@ pub struct State {
     raw_finish: Option<String>,
     /// Why the prompt was blocked, when it was.
     blocked: Option<String>,
+}
+
+/// The sum of two billed costs, either of which may be unreported.
+fn add_cost(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+    }
 }
 
 /// Gemini's finish reason for a response it continues in another request.
@@ -349,6 +361,7 @@ impl State {
             output,
             cache_read: first.1,
             cache_write: 0,
+            cost: add_cost(self.continued_cost, self.cost),
         }
     }
 }
@@ -390,6 +403,7 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
         let output = u["candidatesTokenCount"].as_u64().unwrap_or(0)
             + u["thoughtsTokenCount"].as_u64().unwrap_or(0);
         state.usage = Some((prompt, cached, output));
+        state.cost = crate::billing::billed(u, &[]);
     }
     let Some(c) = v["candidates"].get(0) else {
         if let Some(r) = v["promptFeedback"]["blockReason"].as_str() {
@@ -488,6 +502,7 @@ pub fn resume(state: &mut State, dropped: bool) -> Result<Option<String>, Error>
         Some(token) if unfinished => {
             // Usage is cumulative within one request; the next counts anew.
             state.continued.push(state.usage.take().unwrap_or_default());
+            state.continued_cost = add_cost(state.continued_cost, state.cost.take());
             state.blocked = None;
             Ok(Some(token))
         }
@@ -554,37 +569,35 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let url = format!(
-        "{}/models/{}:streamGenerateContent?alt=sse",
-        p.base_url.trim_end_matches('/'),
-        req.model
-    );
-    let mut rb = client.post(url);
-    if let Some(k) = &p.api_key {
-        rb = rb.header("x-goog-api-key", k);
-    }
-    for (k, v) in &p.headers {
-        rb = rb.header(k, v);
-    }
     let body = body(req);
-    let again = rb.try_clone();
-    let resp = post(rb, &body).await?;
+    let resp = crate::endpoint::send(post_body(p, client, &req.model, &body)).await?;
     // A response Gemini splits across requests continues with the same
     // body and the latest checkpoint's token.
-    let reopen: Option<Reopen> = again.map(|rb| {
-        Box::new(move |token: String| {
-            let rb = rb.try_clone();
-            let body = continued(&body, &token);
-            async move {
-                match rb {
-                    Some(rb) => post(rb, &body).await,
-                    None => Err(Error::Transport("cannot resend the request".into())),
-                }
-            }
-            .boxed()
-        }) as Reopen
+    let (p, client, model) = (p.clone(), client.clone(), req.model.clone());
+    let reopen: Reopen = Box::new(move |token: String| {
+        let rb = post_body(&p, &client, &model, &continued(&body, &token));
+        async move { crate::endpoint::send(rb).await }.boxed()
     });
-    Ok(drive_resuming(resp, Decode::default(), reopen))
+    Ok(drive_resuming(resp, Decode::default(), Some(reopen)))
+}
+
+/// The generateContent request for `req`.
+pub(crate) fn request(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> reqwest::RequestBuilder {
+    post_body(p, client, &req.model, &body(req))
+}
+
+fn post_body(
+    p: &Provider,
+    client: &reqwest::Client,
+    model: &str,
+    body: &Value,
+) -> reqwest::RequestBuilder {
+    let path = format!("models/{model}:streamGenerateContent?alt=sse");
+    p.json_post(client, &path, p.headers.clone(), body)
 }
 
 #[cfg(test)]
@@ -692,7 +705,8 @@ mod tests {
                     input: 30,
                     output: 10,
                     cache_read: 20,
-                    cache_write: 0
+                    cache_write: 0,
+                    ..Default::default()
                 }
             }
         );

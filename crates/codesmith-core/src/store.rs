@@ -1044,6 +1044,7 @@ mod tests {
                 output: 6,
                 cache_read: 7,
                 cache_write: 8,
+                ..Default::default()
             },
         )
         .unwrap();

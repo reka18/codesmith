@@ -793,6 +793,7 @@ impl Config {
                 base_url,
                 api_key,
                 headers,
+                ..Default::default()
             },
             body,
             options,

@@ -5,7 +5,7 @@ use crate::gemini::split_id;
 use crate::openai::scrub_id;
 use crate::options::{claude_version, field, fit_budget, number};
 use crate::{
-    all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
+    all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
     stream_error, system_text, unsupported_media, wrap_system_update, Decoder, Error, Event,
     EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta, Request, Role,
     ToolChoice, Usage,
@@ -746,6 +746,10 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
                     *field = n;
                 }
             }
+            // Copilot reports its billing beside the delta's usage.
+            if let Some(c) = crate::billing::billed(u, &[v]) {
+                state.usage.cost = Some(c);
+            }
         }
         "message_stop" => {
             // Blocks whose stop never came settle here.
@@ -818,17 +822,20 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let url = format!("{}/messages", p.base_url.trim_end_matches('/'));
-    let mut rb = client.post(url).header("anthropic-version", VERSION);
-    if let Some(k) = &p.api_key {
-        rb = rb.header("x-api-key", k);
-    }
-    let body = body_for(req, &p.base_url);
-    for (k, v) in headers(p, &body) {
-        rb = rb.header(k, v);
-    }
-    let resp = post(rb, &body).await?;
+    let resp = crate::endpoint::send(request(p, client, req)).await?;
     Ok(drive(resp, Decode::default()))
+}
+
+/// The Messages request for `req`.
+pub(crate) fn request(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> reqwest::RequestBuilder {
+    let body = body_for(req, &p.base_url);
+    let mut h = vec![("anthropic-version".to_string(), VERSION.to_string())];
+    h.extend(headers(p, &body));
+    p.json_post(client, "messages", h, &body)
 }
 
 #[cfg(test)]
@@ -952,7 +959,8 @@ mod tests {
                         input: 12,
                         output: 40,
                         cache_read: 5,
-                        cache_write: 0
+                        cache_write: 0,
+                        ..Default::default()
                     }
                 }
             ]
@@ -977,7 +985,8 @@ mod tests {
                     input: 290,
                     output: 27,
                     cache_read: 114,
-                    cache_write: 0
+                    cache_write: 0,
+                    ..Default::default()
                 }
             }]
         );

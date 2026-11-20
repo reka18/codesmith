@@ -341,6 +341,7 @@ fn fill_session(db: &Store, id: &str, records: usize, t0: i64) {
                     output: 100,
                     cache_read: 500,
                     cache_write: 0,
+                    ..Default::default()
                 },
             },
             t,

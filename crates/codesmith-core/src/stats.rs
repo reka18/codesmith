@@ -781,6 +781,7 @@ mod tests {
                     output: 200,
                     cache_read: 800,
                     cache_write: 0,
+                    ..Default::default()
                 },
             },
             day(10, 9),
@@ -840,6 +841,7 @@ mod tests {
                     output: 5,
                     cache_read: 0,
                     cache_write: 0,
+                    ..Default::default()
                 },
             },
             day(11, 9),
@@ -864,6 +866,7 @@ mod tests {
                     output: 5,
                     cache_read: 0,
                     cache_write: 0,
+                    ..Default::default()
                 },
             },
             day(11, 9),
@@ -876,6 +879,7 @@ mod tests {
             output: 50,
             cache_read: 0,
             cache_write: 0,
+            ..Default::default()
         };
         db.create(&old).unwrap();
         db.append_at(
@@ -957,7 +961,8 @@ mod tests {
                 input: 1065,
                 output: 260,
                 cache_read: 800,
-                cache_write: 0
+                cache_write: 0,
+                ..Default::default()
             }
         );
         let pm = s.models.iter().find(|m| m.model == "p/m").unwrap();

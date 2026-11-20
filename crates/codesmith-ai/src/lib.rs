@@ -2,7 +2,9 @@
 //! into a stream of provider-neutral `Event`s.
 
 mod anthropic;
+mod billing;
 mod cache;
+mod endpoint;
 mod gemini;
 mod openai;
 mod options;
@@ -16,6 +18,7 @@ mod schema;
 mod sse;
 
 pub use cache::{Cache, Messages as CacheMessages, Placement as CachePlacement};
+pub use endpoint::{azure_endpoint, azure_resource_url, Auth, Compatibility, Encoding};
 pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
 
 use futures_util::stream::BoxStream;
@@ -419,6 +422,11 @@ pub struct Usage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    /// The USD the endpoint reports it billed for the response
+    /// (OpenRouter's `cost`, GitHub Copilot's credits), when it reports
+    /// one. On a total, the sum of the steps that reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
 }
 
 /// One piece of a streamed response.
@@ -466,10 +474,11 @@ pub enum Event {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Protocol {
     /// OpenAI Chat Completions, also used by most OpenAI-compatible servers.
+    #[default]
     OpenaiChat,
     /// Anthropic Messages.
     AnthropicMessages,
@@ -531,13 +540,21 @@ impl From<reqwest::Error> for Error {
 
 pub type EventStream = BoxStream<'static, Result<Event, Error>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Provider {
     pub protocol: Protocol,
     /// Base URL including the version path, e.g. `https://api.openai.com/v1`.
     pub base_url: String,
     pub api_key: Option<String>,
     pub headers: Vec<(String, String)>,
+    /// Query parameters added to every request URL (Azure's `api-version`).
+    pub query: Vec<(String, String)>,
+    /// Which header carries `api_key`.
+    pub auth: Auth,
+    /// The request body's content encoding.
+    pub encoding: Encoding,
+    /// Explicit overrides of detected OpenAI Chat behaviour.
+    pub compat: Compatibility,
 }
 
 impl Provider {
@@ -564,6 +581,28 @@ impl Provider {
             Protocol::OpenaiResponses => responses::stream(self, client, req).await,
             Protocol::GoogleGemini => gemini::stream(self, client, req).await,
         }
+    }
+
+    /// The HTTP request `stream` would send for `req`, without sending it
+    /// (for `debug` output and tests).
+    pub fn prepare(
+        &self,
+        client: &reqwest::Client,
+        req: &Request,
+    ) -> Result<reqwest::Request, Error> {
+        let defaults = options::defaults(self.protocol, &self.base_url, &req.model);
+        let req = Request {
+            options: defaults.merged(&req.options),
+            ..req.clone()
+        };
+        check(self.protocol, &req)?;
+        let rb = match self.protocol {
+            Protocol::OpenaiChat => openai::request(self, client, &req),
+            Protocol::AnthropicMessages => anthropic::request(self, client, &req),
+            Protocol::OpenaiResponses => responses::request(self, client, &req),
+            Protocol::GoogleGemini => gemini::request(self, client, &req),
+        };
+        Ok(rb.build()?)
     }
 }
 
@@ -764,8 +803,9 @@ pub struct Failure {
     pub error: Error,
     /// What streamed before the failure, if anything did: its text,
     /// reasoning and complete tool calls, with the reason `"error"`. Tool
-    /// calls whose arguments were still streaming are left out.
-    pub partial: Option<Response>,
+    /// calls whose arguments were still streaming are left out. Boxed to
+    /// keep the error small.
+    pub partial: Option<Box<Response>>,
 }
 
 impl std::fmt::Display for Failure {
@@ -800,10 +840,12 @@ pub async fn assemble(
         let parts = parts.finish();
         Failure {
             error,
-            partial: (!parts.is_empty()).then(|| Response {
-                parts,
-                reason: "error".into(),
-                usage: finish.map(|f| f.1).unwrap_or_default(),
+            partial: (!parts.is_empty()).then(|| {
+                Box::new(Response {
+                    parts,
+                    reason: "error".into(),
+                    usage: finish.map(|f| f.1).unwrap_or_default(),
+                })
             }),
         }
     };
@@ -854,23 +896,10 @@ pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
 impl Provider {
     /// Model ids the provider reports, sorted.
     pub async fn list_models(&self, client: &reqwest::Client) -> Result<Vec<String>, Error> {
-        let base = self.base_url.trim_end_matches('/');
-        let mut rb = match self.protocol {
-            Protocol::GoogleGemini => client.get(format!("{base}/models?pageSize=1000")),
-            _ => client.get(format!("{base}/models")),
+        let rb = match self.protocol {
+            Protocol::GoogleGemini => self.get(client, "models?pageSize=1000"),
+            _ => self.get(client, "models"),
         };
-        if let Some(k) = &self.api_key {
-            rb = match self.protocol {
-                Protocol::AnthropicMessages => rb
-                    .header("x-api-key", k)
-                    .header("anthropic-version", anthropic::VERSION),
-                Protocol::GoogleGemini => rb.header("x-goog-api-key", k),
-                _ => rb.bearer_auth(k),
-            };
-        }
-        for (k, v) in &self.headers {
-            rb = rb.header(k, v);
-        }
         let resp = rb.send().await?;
         let status = resp.status();
         let text = resp.text().await?;
@@ -914,23 +943,6 @@ pub(crate) fn model_ids(protocol: Protocol, v: &Value) -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
-}
-
-/// Send a JSON POST and fail with the status and a bounded body on non-2xx.
-pub(crate) async fn post(
-    rb: reqwest::RequestBuilder,
-    body: &Value,
-) -> Result<reqwest::Response, Error> {
-    let resp = rb.json(body).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Status {
-            status: status.as_u16(),
-            body: text.chars().take(2000).collect(),
-        });
-    }
-    Ok(resp)
 }
 
 pub(crate) fn merge_body(body: &mut Value, extra: &serde_json::Map<String, Value>) {

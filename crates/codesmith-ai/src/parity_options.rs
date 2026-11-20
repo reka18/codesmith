@@ -70,6 +70,7 @@ fn anthropic_provider(headers: &[(&str, &str)]) -> Provider {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+        ..Default::default()
     }
 }
 

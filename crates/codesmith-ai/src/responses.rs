@@ -4,9 +4,9 @@
 use crate::cache;
 use crate::gemini::split_id;
 use crate::{
-    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, system_text,
-    Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider,
-    ReasoningMeta, Request, Role, ToolChoice, Usage,
+    drive, merge_body, normalize_tool_history, schema, sse, stream_error, system_text, Decoder,
+    Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta,
+    Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -649,6 +649,8 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 output: u["output_tokens"].as_u64().unwrap_or(0),
                 cache_read: cached,
                 cache_write: written,
+                // Copilot reports its billing beside `response`.
+                cost: crate::billing::billed(u, &[v]),
             };
             let reason = match r["incomplete_details"]["reason"].as_str() {
                 Some("max_output_tokens") => "length".to_string(),
@@ -729,16 +731,22 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let url = format!("{}/responses", p.base_url.trim_end_matches('/'));
-    let mut rb = client.post(url);
-    if let Some(k) = &p.api_key {
-        rb = rb.bearer_auth(k);
-    }
-    for (k, v) in crate::openai::headers(p, req) {
-        rb = rb.header(k, v);
-    }
-    let resp = post(rb, &body(req)).await?;
+    let resp = crate::endpoint::send(request(p, client, req)).await?;
     Ok(drive(resp, Decode::default()))
+}
+
+/// The Responses request for `req`.
+pub(crate) fn request(
+    p: &Provider,
+    client: &reqwest::Client,
+    req: &Request,
+) -> reqwest::RequestBuilder {
+    p.json_post(
+        client,
+        "responses",
+        crate::openai::headers(p, req),
+        &body(req),
+    )
 }
 
 #[cfg(test)]
@@ -853,7 +861,8 @@ mod tests {
                         input: 60,
                         output: 9,
                         cache_read: 40,
-                        cache_write: 0
+                        cache_write: 0,
+                        ..Default::default()
                     }
                 },
             ]

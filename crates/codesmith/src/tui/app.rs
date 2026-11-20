@@ -1218,6 +1218,7 @@ mod tests {
             output: 50,
             cache_read: 0,
             cache_write: 0,
+            ..Default::default()
         }));
         assert_eq!(a.context_percent(), Some(25));
         assert_eq!(a.cost(), None);

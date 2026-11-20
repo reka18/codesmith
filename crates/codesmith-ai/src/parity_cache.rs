@@ -124,6 +124,7 @@ fn prompt_caching() {
                 base_url: XAI.into(),
                 api_key: Some("test".into()),
                 headers: vec![],
+                ..Default::default()
             };
             assert!(openai::headers(&p, &r).contains(&("x-grok-conv-id".into(), "session_123".into())));
             assert!(chat_at(XAI, &r).get("prompt_cache_key").is_none());

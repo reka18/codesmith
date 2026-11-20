@@ -33,6 +33,9 @@ mod cache;
 #[path = "parity_stream.rs"]
 mod stream;
 
+#[path = "parity_endpoint.rs"]
+mod endpoint;
+
 /// Run named cases, reporting every failing name rather than the first.
 fn run(cases: &[(&str, fn())]) {
     let failed: Vec<&str> = cases
@@ -253,6 +256,7 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
         output,
         cache_read,
         cache_write,
+        ..Default::default()
     }
 }
 

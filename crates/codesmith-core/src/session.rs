@@ -2343,6 +2343,7 @@ mod tests {
                 output: 2,
                 cache_read: 3,
                 cache_write: 4,
+                ..Default::default()
             },
         );
         add(
@@ -2352,6 +2353,7 @@ mod tests {
                 output: 2,
                 cache_read: 3,
                 cache_write: 4,
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -2360,7 +2362,8 @@ mod tests {
                 input: 2,
                 output: 4,
                 cache_read: 6,
-                cache_write: 8
+                cache_write: 8,
+                ..Default::default()
             }
         );
     }
