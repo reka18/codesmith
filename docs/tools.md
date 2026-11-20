@@ -25,6 +25,7 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 | `<server>_<tool>` | An MCP tool, as a direct call. | `codemode` is off for that server |
 | `list_mcp_resources`, `read_mcp_resource` | Browse and read MCP resources. | a connected server has resources ([MCP](mcp.md#resources)) |
 | `experimental_image_generate` | Make or edit an image with an image model, in the background. See [below](#generating-images-and-videos). | an image model is reachable and `experimental.image_generate` is not `false` |
+| `experimental_video_generate` | Make a video with a video model, in the background. See [below](#generating-images-and-videos). | a video model is reachable, the session is stored, and `experimental.video_generate` is not `false` |
 
 [Plugins](plugins.md) can add tools of their own.
 
@@ -222,3 +223,18 @@ command](sessions.md#background-commands); `codesmith run` waits for it.
 Generated images are at most 20 MiB and are kept in the session's [blob
 store](configuration.md#media-limits) too. Cancelling the job (as a
 background command is cancelled) stops it.
+
+`experimental_video_generate` makes a video from a prompt, optionally
+starting (`start`) or ending (`end`) on given images and guided by
+`references` (images, videos or audio), with `duration`, `aspect`
+(`16:9`, `auto`), `resolution` and `sound`. xAI and Google video models are
+supported; the model is the call's, else `experimental.video_generate.model`,
+else the session provider's newest, else the newest. URLs go to the provider
+as they are (after a `webfetch` check); local files are read (at most 20
+MiB) and sent inline. The job is submitted at once, so a rejected request
+fails the call; then CodeSmith checks it every 5 seconds, for up to two
+hours, and keeps each finished video (at most 20 MiB) in the [blob
+store](configuration.md#media-limits). The job is kept in the session
+database, so it survives a restart; it is forgotten, with its stored videos,
+a day after it finishes. Each video is copied to `path` (the first) and next
+to it with `-1`, `-2`, … (the others), and the session is told.

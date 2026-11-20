@@ -51,6 +51,7 @@ pub mod title;
 pub mod tool;
 pub mod user_shell;
 pub mod vcs;
+pub mod video;
 pub mod warming;
 pub mod watch;
 pub mod wildcard;

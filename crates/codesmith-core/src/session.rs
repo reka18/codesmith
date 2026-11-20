@@ -1871,6 +1871,9 @@ impl Session {
                     _ if name == tool::image_generate::NAME && self.media_tools[0] => {
                         self.run_media_generate(&name, &input).await
                     }
+                    _ if name == tool::video_generate::NAME && self.media_tools[1] => {
+                        self.run_media_generate(&name, &input).await
+                    }
                     _ if self.mcp_tools().iter().any(|t| t.name == name) => {
                         let (content, is_error, m) = self.run_mcp(&name, &input).await;
                         media = m;
@@ -2649,10 +2652,14 @@ impl Session {
             jobs: self.jobs.clone(),
             retry: crate::generate::Options {
                 retry_scale: self.turn.retry_scale,
+                ..Default::default()
             },
         };
-        let _ = name;
-        let r = tool::image_generate::run(&ctx, env, &input).await;
+        let r = if name == tool::image_generate::NAME {
+            tool::image_generate::run(&ctx, env, &input).await
+        } else {
+            tool::video_generate::run(&ctx, env, &input).await
+        };
         match r {
             Ok(text) => (text, false),
             Err(e) => (e, true),

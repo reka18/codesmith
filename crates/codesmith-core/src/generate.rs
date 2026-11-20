@@ -314,11 +314,16 @@ fn message_of(e: &codesmith_ai::Error) -> String {
 pub struct Options {
     /// Multiplies every retry wait (tests shrink it).
     pub retry_scale: f64,
+    /// How often a waiting video job is checked.
+    pub poll: Duration,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { retry_scale: 1.0 }
+        Options {
+            retry_scale: 1.0,
+            poll: crate::video::INTERVAL,
+        }
     }
 }
 

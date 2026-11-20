@@ -16,6 +16,7 @@ pub(crate) mod shell_proc;
 pub mod shell_scan;
 pub mod subagent;
 pub mod todo;
+pub mod video_generate;
 mod webfetch;
 pub mod websearch;
 mod write;

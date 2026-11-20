@@ -114,7 +114,10 @@ impl Setup {
             store: Some(self.root().join("s.db")),
             gate: self.gate.clone(),
             jobs: self.jobs.clone(),
-            retry: generate::Options { retry_scale: 0.001 },
+            retry: generate::Options {
+                retry_scale: 0.001,
+                ..Default::default()
+            },
         };
         tool::run(&self.ctx(), env, &input).await
     }

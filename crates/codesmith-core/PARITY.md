@@ -34,7 +34,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
 | Tool registry, schemas, placement | 100 | 28 | 0 | 0 | 53 | 19 | 0 |
-| Media tools | 39 | 14 | 0 | 7 | 12 | 6 | 0 |
+| Media tools | 39 | 17 | 0 | 4 | 12 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
 | Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1528** | **16** | **279** | **2370** | **1395** | **0** |
+| **Total** | **5588** | **1531** | **16** | **276** | **2370** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -79,7 +79,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (279 cases in 26 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (276 cases in 25 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -100,7 +100,6 @@ Missing features, by how many OpenCode test cases each would unlock (279 cases i
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
-| [Video Generation](#video-generation) | 3 | video_generate tool; video jobs |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Built-in Skills](#built-in-skills) | 1 | skills shipped with the app |
@@ -443,14 +442,6 @@ Missing features, by how many OpenCode test cases each would unlock (279 cases i
 - `browser-attach.test.ts`: a replaced attachment's revoke never removes its replacement's grant
 - `browser-attach.test.ts`: disposing the plugin revokes the browser rules before the location finishes closing
 - `browser-idle.test.ts`: idle eviction ends the browser attachment and permits a fresh attachment
-
-### Video Generation
-
-3 cases.
-
-- `tool-video-generate.test.ts`: starts the job, saves every video it returns and lists them all in the notice
-- `video-generation.test.ts`: keeps video jobs across restarts and forgets them a day after they finish
-- `video-generation.test.ts`: waits for a job to finish and cancels a running one
 
 ### Voice
 
@@ -2326,7 +2317,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Media tools (26 of 39)</summary>
+<details><summary>Media tools (29 of 39)</summary>
 
 
 **`image-photon.test.ts`**
@@ -2353,6 +2344,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`tool-media-target-environment.test.ts`**
 
 - D reads its input and saves its output in the resolved target's environment, not the session's · asks only the deny rules before replacing the file its real extension renames · reads its input and saves its output in the resolved target's environment, not the session's — client-server: target environments
+
+**`tool-video-generate.test.ts`**
+
+- P starts the job, saves every video it returns and lists them all in the notice — `tests/oc_video_generate.rs::oc_video_tool_starts_the_job_saves_every_video_it_returns_and_lists_them_all_in_the_notice` (adapted: against a scripted Google Interactions endpoint)
+
+**`video-generation.test.ts`**
+
+- P keeps video jobs across restarts and forgets them a day after they finish — `tests/oc_video_generate.rs::oc_video_keeps_jobs_across_restarts_and_forgets_them_a_day_after_they_finish` (adapted: the stored videos go with the job's row)
+- P waits for a job to finish and cancels a running one — `tests/oc_video_generate.rs::oc_video_waits_for_a_job_to_finish_and_cancels_a_running_one`
 
 </details>
 
