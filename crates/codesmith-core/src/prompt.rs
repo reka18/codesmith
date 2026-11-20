@@ -5,6 +5,10 @@ use std::path::Path;
 const SYSTEM: &str = include_str!("prompt/system.txt");
 const GPT: &str = include_str!("prompt/gpt.txt");
 const ANTHROPIC: &str = include_str!("prompt/anthropic.txt");
+const ASTRA: &str = include_str!("prompt/gpt-astra.txt");
+const KIMI: &str = include_str!("prompt/kimi.txt");
+const TRINITY: &str = include_str!("prompt/trinity.txt");
+const META: &str = include_str!("prompt/meta.txt");
 
 /// Fill `${TOOL_GUIDANCE}` with advice for the tools actually available.
 pub fn render(template: &str, tools: &[&str]) -> String {
@@ -22,19 +26,63 @@ pub fn render(template: &str, tools: &[&str]) -> String {
     template.replace("${TOOL_GUIDANCE}", &lines.join("\n"))
 }
 
-/// The base prompt for a model: GPT models get their own; Claude models get
-/// the default plus a short appendix; everything else gets the default.
+/// The base prompt for a model by its id (see [`base_named`]).
 pub fn base(model_id: &str, tools: &[&str]) -> String {
-    let id = model_id.to_lowercase();
+    base_named(model_id, model_id, tools)
+}
+
+/// The base prompt for model `id` (the id in config or the catalog, not
+/// the API model name it may stand for), with the tool guidance for
+/// `tools`: OpenCode's model-lab prompts. GPT models get the GPT prompt
+/// (`astra` ones their own), Kimi, Arcee Trinity and Meta Muse models get
+/// theirs (Muse's names the model by `name`, its catalog name), Claude
+/// models get the default plus a short appendix, and everything else gets
+/// the default. An agent's own prompt replaces all of these.
+pub fn base_named(id: &str, name: &str, tools: &[&str]) -> String {
+    let id = id.to_lowercase();
     if id.contains("gpt") {
-        return render(GPT, tools);
+        return render(if id.contains("astra") { ASTRA } else { GPT }, tools);
+    }
+    if id.contains("kimi") {
+        return render(KIMI, tools);
+    }
+    if id.contains("trinity") {
+        return render(TRINITY, tools);
+    }
+    if id.contains("muse") {
+        return render(&META.replace("{{MODEL_NAME}}", name), tools);
     }
     let base = render(SYSTEM, tools);
     if id.contains("claude") {
-        format!("{base}\n\n{}", ANTHROPIC.trim_end())
+        format!("{base}\n\n{}", render(ANTHROPIC, tools).trim_end())
     } else {
         base
     }
+}
+
+/// The display name of `provider/model`: its configured `name`, else the
+/// catalog's, else its id.
+pub fn model_name(config: &crate::config::Config, spec: &str) -> String {
+    let base = crate::config::split_variant(spec).0;
+    let Some((p, m)) = base.split_once('/') else {
+        return base.to_string();
+    };
+    let configured = config.provider(p).and_then(|c| c.models.get(m).cloned());
+    if let Some(name) = configured.as_ref().and_then(|c| c.name.clone()) {
+        return name;
+    }
+    let catalog = config.models_dev.as_ref().map(|c| c.catalog());
+    catalog
+        .as_ref()
+        .and_then(|c| {
+            configured
+                .as_ref()
+                .and_then(|c| c.id.as_deref())
+                .and_then(|id| c.model(p, id))
+                .or_else(|| c.model(p, m))
+                .map(|cm| cm.name.clone())
+        })
+        .unwrap_or_else(|| m.to_string())
 }
 
 pub struct Environment<'a> {

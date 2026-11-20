@@ -505,7 +505,13 @@ impl Session {
         });
         let base_system = match &agent.system {
             Some(s) => s.clone(),
-            None => prompt::base(&model.model_id, &names),
+            None => {
+                // Chosen by the model's id in config or the catalog, as
+                // OpenCode's model-lab prompts are.
+                let base = crate::config::split_variant(&model_spec).0;
+                let key = base.split_once('/').map_or(base, |(_, m)| m);
+                prompt::base_named(key, &prompt::model_name(config, &model_spec), &names)
+            }
         };
         // Until the first observation, the base alone.
         let system = assemble_system(&base_system, "", agent.id == "plan");
