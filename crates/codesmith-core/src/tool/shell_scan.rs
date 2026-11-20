@@ -1797,7 +1797,12 @@ impl<'a> Scanner<'a> {
             // every run between separators as a possible command.
             let text: String = chars.iter().collect();
             for part in text.split(|c: char| ";&|()\n`".contains(c)) {
-                let words: Vec<String> = part.split_whitespace().map(str::to_string).collect();
+                // Quotes and escapes removed, roughly: `touc\h` is `touch`.
+                let words: Vec<String> = part
+                    .split_whitespace()
+                    .map(|w| w.replace(['\\', '\'', '"'], ""))
+                    .filter(|w| !w.is_empty())
+                    .collect();
                 if words.is_empty() {
                     continue;
                 }
