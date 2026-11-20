@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 451 | 100 | 671 | 13 |
+| tui: main UI | 1250 | 15 | 452 | 98 | 672 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **727** | **536** | **2371** | **259** |
+| **Total** | **4637** | **744** | **728** | **534** | **2372** | **259** |
 
 ## Fixes made while porting
 
@@ -283,6 +283,8 @@ Where the tests live:
 - **Models by agent** (`context/local-selection`): switching agents kept
   the session's model. Each agent now takes the model and variant it last
   had in the session, else its configured model.
+- **`@file` line ranges** (`prompt/parse`): `@file#12-20` named no file.
+  It now attaches those lines, parsed as OpenCode's `parseFileLineRange`.
 
 ## Differences found but not fixed
 
@@ -782,6 +784,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/context/local-selection` | switching agents restores their model and variant within the session | after a fix | oc_switching_agents_restores_their_model_and_variant_within_the_session (adapted: the runner's selection memory) |
 | `tui/test/context/local-selection` | agent and model drafts are isolated across sessions and survive navigation | after a fix | oc_agent_and_model_drafts_are_isolated_across_sessions (adapted: the agent is saved with the session) |
 | `tui/test/context/local-selection` | retains an unavailable saved session model instead of selecting a fallback | after a fix | oc_retains_an_unavailable_saved_session_model (adapted) |
+| `tui/test/prompt/parse` | preserves file line-range parsing semantics | after a fix | oc_preserves_file_line_range_parsing_semantics |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -982,11 +985,6 @@ transport and its tool presentation.
 - `cli/test/mcp-auth-choices`: offers only OAuth-capable MCP servers by their server identity
 - `cli/test/mcp-auth-choices`: mcp auth accepts an optional server name and rejects no-name noninteractive calls before connecting
 
-### tui: @file line ranges (2)
-
-- `tui/test/prompt/parse`: preserves file line-range parsing semantics
-- `tui/test/prompt/parse`: keeps frontend-specific slash separators
-
 ### cli: stats narrow layout (1)
 
 - `cli/test/stats`: uses compact layouts in narrow terminals
@@ -1066,7 +1064,7 @@ transport and its tool presentation.
 | tui: keys | by design | 1 | 1 | Tab and Shift+Tab both cycle agents (documented) |
 | tui: permission dialog | by design | 1 | 1 | the dialog shows the request title itself |
 | tui: interrupt | by design | 1 | 1 | Esc interrupts at once; no armed state |
-| tui: slash commands | by design | 1 | 1 | commands complete only at the start of the prompt |
+| tui: slash commands | by design | 2 | 2 | commands complete only at the start of the prompt; one parser for both UIs, where any whitespace (`\r` too) ends a command's name |
 | tui: OpenTUI internals | n/a | 272 | 41 | OpenTUI cell offsets; Solid config and keymap contexts, command object identity and keymap modes, developer tools; Solid batching and renderer internals; layout, virtualization, reactive data or event-stream internals; renderer lifecycle, caching and server sync; select widget layout and reconciliation; widgets, animation and layout helpers |
 | session-ui: web UI | n/a | 270 | 29 | web and desktop UI state machines |
 | util: helpers | n/a | 101 | 16 | TypeScript helpers with no CodeSmith counterpart (or covered by Rust std/crates) |

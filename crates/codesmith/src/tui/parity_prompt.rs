@@ -203,3 +203,64 @@ fn oc_does_not_reuse_a_label_when_attachment_metadata_differs() {
     a.on_paste("two.png");
     assert_eq!(a.input.text(), "[Image 1] [Image 2] ");
 }
+
+// ----- tui/test/prompt/parse --------------------------------------------------
+
+// parse.test.ts: "preserves file line-range parsing semantics"
+#[test]
+fn oc_preserves_file_line_range_parsing_semantics() {
+    use attach::{parse_line_range as p, LineRange as R};
+    let r = |start, end| Some(R { start, end });
+    let cases = [
+        ("src/app.ts#7", ("src/app.ts", r(7, None))),
+        ("src/app.ts#12-20", ("src/app.ts", r(12, Some(20)))),
+        ("src/app.ts#12-", ("src/app.ts", r(12, None))),
+        ("src/app.ts#12-12", ("src/app.ts", r(12, None))),
+        ("src/app.ts#bad", ("src/app.ts#bad", None)),
+        ("src/app.ts#", ("src/app.ts#", None)),
+        ("report#2026.md", ("report#2026.md", None)),
+        ("#notes.md", ("#notes.md", None)),
+        ("#3", ("#3", None)),
+        ("report#2026.md#3", ("report#2026.md", r(3, None))),
+        ("report#2026.md#3-10", ("report#2026.md", r(3, Some(10)))),
+        ("#notes.md#3", ("#notes.md", r(3, None))),
+        ("src/app.ts", ("src/app.ts", None)),
+    ];
+    for (input, want) in cases {
+        assert_eq!(p(input), want, "{input}");
+    }
+    let strip = |s| p(s).0;
+    assert_eq!(
+        [
+            strip("report#2026.md"),
+            strip("#notes.md"),
+            strip("report#2026.md#3"),
+            strip("src/app.ts#12-20")
+        ],
+        [
+            "report#2026.md",
+            "#notes.md",
+            "report#2026.md",
+            "src/app.ts"
+        ]
+    );
+}
+
+// (not in OpenCode's test) An `@file#from-to` mention attaches those lines.
+#[test]
+fn a_line_range_mention_attaches_its_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(dir.path().join("a.txt"), text).unwrap();
+    let e = attach::expand("see @a.txt#12-14", dir.path(), &Default::default());
+    assert_eq!(e.files, ["a.txt#12-14"]);
+    assert!(
+        e.text.contains("Read file a.txt#12-14, lines 12-14"),
+        "{}",
+        e.text
+    );
+    assert!(e.text.contains("12: line 12") && e.text.contains("14: line 14"));
+    assert!(!e.text.contains("15: line 15") && !e.text.contains("11: line 11"));
+    let e = attach::expand("see @a.txt#29", dir.path(), &Default::default());
+    assert!(e.text.contains("lines 29-30"), "{}", e.text);
+}

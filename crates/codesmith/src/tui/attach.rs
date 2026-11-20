@@ -30,7 +30,9 @@ pub fn mentions(text: &str, cwd: &Path) -> Vec<String> {
         if p.is_empty() || out.iter().any(|o| o == p) {
             continue;
         }
-        if cwd.join(p).exists() {
+        // `@file#12-20`: lines of a file, as OpenCode's line ranges.
+        let (base, range) = parse_line_range(p);
+        if cwd.join(p).exists() || (range.is_some() && cwd.join(base).is_file()) {
             out.push(p.to_string());
         }
     }
@@ -55,21 +57,61 @@ fn listing(dir: &Path) -> String {
     names.join("\n")
 }
 
-/// The Read tool's output for a whole file (its first page).
-fn read_text(path: &str, text: &str) -> String {
+/// Lines `start` to `end` (1-based; `None`: to the end) of a mentioned
+/// file, as `@file#12-20` or `@file#12` names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+    pub start: usize,
+    pub end: Option<usize>,
+}
+
+/// A mention's path and line range, as OpenCode's `parseFileLineRange`:
+/// the range follows the last `#` (`#7`, `#12-20`, `#12-`), and a `#`
+/// that starts the name or is not followed by one is part of the path.
+pub fn parse_line_range(input: &str) -> (&str, Option<LineRange>) {
+    let Some(hash) = input.rfind('#').filter(|h| *h > 0) else {
+        return (input, None);
+    };
+    let tail = &input[hash + 1..];
+    let (a, b) = match tail.split_once('-') {
+        Some((a, b)) => (a, Some(b)),
+        None => (tail, None),
+    };
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    if a.is_empty() || !digits(a) || b.is_some_and(|b| !digits(b)) {
+        return (input, None);
+    }
+    let Ok(start) = a.parse::<usize>() else {
+        return (input, None);
+    };
+    let end = b
+        .and_then(|b| b.parse::<usize>().ok())
+        .filter(|e| start < *e);
+    (&input[..hash], Some(LineRange { start, end }))
+}
+
+/// The Read tool's output for a whole file (its first page), or for the
+/// lines `range` names.
+fn read_text(path: &str, text: &str, range: Option<LineRange>) -> String {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines: Vec<&str> = text.split('\n').collect();
     if lines.last() == Some(&"") {
         lines.pop();
     }
     let total = lines.len();
-    let shown = total.min(MAX_LINES);
-    let mut out = vec![if total == 0 {
+    let first = range.map_or(1, |r| r.start.max(1));
+    let want = range
+        .and_then(|r| r.end)
+        .map_or(MAX_LINES, |e| (e + 1 - first).min(MAX_LINES));
+    let skip = first - 1;
+    let shown = total.saturating_sub(skip).min(want);
+    let mut out = vec![if shown == 0 {
         format!("Read file {path}, 0 lines")
     } else {
-        format!("Read file {path}, lines 1-{shown}")
+        format!("Read file {path}, lines {first}-{}", skip + shown)
     }];
-    for (i, l) in lines.iter().take(shown).enumerate() {
+    for (i, l) in lines.iter().skip(skip).take(shown).enumerate() {
+        let i = i + skip;
         let l = l.strip_suffix('\r').unwrap_or(l);
         let l: String = if l.chars().count() > MAX_LINE_CHARS {
             l.chars().take(MAX_LINE_CHARS).collect::<String>() + "..."
@@ -78,10 +120,10 @@ fn read_text(path: &str, text: &str) -> String {
         };
         out.push(format!("{}: {l}", i + 1));
     }
-    if total > shown {
+    if total > skip + shown && range.and_then(|r| r.end).is_none() {
         out.push(format!(
             "[Output truncated. Continue reading with offset: {}]",
-            shown + 1
+            skip + shown + 1
         ));
     }
     out.join("\n")
@@ -104,13 +146,18 @@ pub fn expand(text: &str, cwd: &Path, limits: &ImageLimits) -> Expanded {
     let mut out = text.to_string();
     let mut media = Vec::new();
     for m in &found {
-        let abs = cwd.join(m);
+        let (base, range) = parse_line_range(m);
+        let (abs, range) = if cwd.join(m).exists() {
+            (cwd.join(m), None)
+        } else {
+            (cwd.join(base), range)
+        };
         let attached = if abs.is_dir() {
             Ok(None)
         } else {
             codesmith_core::media::attachment(&abs, m, limits)
         };
-        out.push_str(&attachment(&abs, m, attached, &mut media));
+        out.push_str(&attachment_lines(&abs, m, attached, &mut media, range));
     }
     Expanded {
         text: out,
@@ -129,6 +176,17 @@ pub fn attachment(
     attached: Result<Option<Media>, String>,
     media: &mut Vec<Media>,
 ) -> String {
+    attachment_lines(abs, m, attached, media, None)
+}
+
+/// [`attachment`], of the lines `range` names when it is text.
+fn attachment_lines(
+    abs: &Path,
+    m: &str,
+    attached: Result<Option<Media>, String>,
+    media: &mut Vec<Media>,
+    range: Option<LineRange>,
+) -> String {
     let body = if let Err(e) = attached {
         e
     } else if abs.is_dir() {
@@ -142,7 +200,7 @@ pub fn attachment(
             Ok(bytes) if bytes.contains(&0) => {
                 format!("{m} is a binary file; its contents are not shown.")
             }
-            Ok(bytes) => read_text(m, &String::from_utf8_lossy(&bytes)),
+            Ok(bytes) => read_text(m, &String::from_utf8_lossy(&bytes), range),
             Err(e) => format!("Unable to read {m}: {e}"),
         }
     };

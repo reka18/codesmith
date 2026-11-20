@@ -412,6 +412,9 @@ and **Esc** closes the list.
 Each `@path` in a message that names a file is attached to the message as a
 `read` result, as in OpenCode, so the model sees it without a round trip. A
 directory is attached as its listing, and an image, PDF or video as itself.
+As in OpenCode, `@path#12-20` attaches lines 12 to 20, and `@path#12` (or
+`@path#12-`) from line 12 on; a `#` that is part of the file's name stays
+part of it (`@report#2026.md#3`).
 
 ## Attaching images and PDFs
 
