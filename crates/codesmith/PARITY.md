@@ -103,7 +103,7 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 37 | 15 | 52 | 165 | 0 |
+| cli | 269 | 40 | 15 | 49 | 165 | 0 |
 | cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 |
 | tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
@@ -112,7 +112,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **760** | **744** | **498** | **2376** | **259** |
+| **Total** | **4637** | **763** | **744** | **495** | **2376** | **259** |
 
 ## Fixes made while porting
 
@@ -753,6 +753,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/mini` | merges non-interactive argument and stdin input | already passing | run_cli.rs piped_stdin_attached_files_and_titles |
 | `cli/test/mini` | parses model variants from the model reference | already passing | oc_model_references_carry_nested_ids_and_variants |
 | `cli/test/mini` | keeps option-like prompt text after the argument separator | already passing | oc_option_like_prompt_text_after_the_separator_is_the_message |
+| `cli/test/session-target` | creates a worktree from the caller's checkout | already passing | oc_creates_a_worktree_from_the_callers_checkout (codesmith-core worktree.rs) |
+| `cli/test/session-target` | keeps the caller's subfolder in the new worktree | already passing | oc_keeps_the_callers_subfolder_in_the_new_worktree (codesmith-core worktree.rs) |
+| `cli/test/session-target` | uses the worktree root when the subfolder is not in the worktree | already passing | oc_uses_the_worktree_root_when_the_subfolder_is_not_in_the_worktree (codesmith-core worktree.rs) |
 | `cli/test/stats` | renders shared intensity levels and partial month labels | after a fix | oc_stats_labels_only_the_months_a_partial_range_shows (codesmith-core/tests/oc_stats.rs) |
 | `tui/test/util/form` | initializes configured and custom defaults | after a fix | oc_initializes_configured_and_custom_defaults |
 | `tui/test/util/form` | validates every supported field constraint | after a fix | oc_validates_every_supported_field_constraint (adapted: a string for NaN, which JSON lacks) |
@@ -973,12 +976,6 @@ transport and its tool presentation.
 
 - `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents (the object form of `model` with a variant)
 - `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit (no runner-level test harness yet)
-
-### cli: worktree from a subfolder (3)
-
-- `cli/test/session-target`: creates a worktree from the caller's checkout
-- `cli/test/session-target`: keeps the caller's subfolder in the new worktree
-- `cli/test/session-target`: uses the worktree root when the subfolder is not in the worktree
 
 ### cli: SSH askpass for git prompts (2)
 

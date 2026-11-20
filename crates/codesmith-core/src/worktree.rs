@@ -293,6 +293,52 @@ mod tests {
         d
     }
 
+    // OpenCode's `cli/test/session-target.test.ts` (MIT): where `--worktree`
+    // starts the session.
+    fn named(r: &Path, from: &Path, name: &str) -> (PathBuf, PathBuf, tempfile::TempDir) {
+        let base = tempfile::tempdir().unwrap();
+        let cfg = WorktreeConfig {
+            directory: Some(base.path().display().to_string()),
+            start: None,
+        };
+        let _ = r;
+        let (wt, sub) = create(
+            &cfg,
+            from,
+            &Create {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (wt, sub, base)
+    }
+
+    #[test]
+    fn oc_creates_a_worktree_from_the_callers_checkout() {
+        let d = repo();
+        let (wt, sub, _base) = named(d.path(), d.path(), "pr-12");
+        assert_eq!(wt.file_name().unwrap(), "pr-12");
+        assert_eq!(sub, wt);
+        assert!(wt.join("pkg/src/a.txt").exists());
+    }
+
+    #[test]
+    fn oc_keeps_the_callers_subfolder_in_the_new_worktree() {
+        let d = repo();
+        let (wt, sub, _base) = named(d.path(), &d.path().join("pkg/src"), "pr-12");
+        assert_eq!(sub, wt.join("pkg/src"));
+    }
+
+    #[test]
+    fn oc_uses_the_worktree_root_when_the_subfolder_is_not_in_the_worktree() {
+        let d = repo();
+        // An untracked folder is not checked out in the new worktree.
+        std::fs::create_dir_all(d.path().join("scratch")).unwrap();
+        let (wt, sub, _base) = named(d.path(), &d.path().join("scratch"), "pr-12");
+        assert_eq!(sub, wt);
+    }
+
     #[test]
     fn slugs() {
         let s = slug();
