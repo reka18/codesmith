@@ -21,7 +21,9 @@
 //!
 //! These routes sit behind the same guard as the rest (Host, Origin,
 //! bearer token); the WebSocket alone may instead carry a ticket, which
-//! must then be good.
+//! must then be good for that terminal. A repeated `ticket` is a 400, and
+//! a connect without credentials is refused (401/403) before the terminal
+//! is looked up.
 
 use super::{not_found, ApiError, St};
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
@@ -56,20 +58,60 @@ pub(super) fn routes() -> Router<St> {
         .route("/sessions/{id}/terminals/read", get(session_read))
 }
 
-/// Whether `req` is a WebSocket connect that carries a ticket, which the
-/// handler checks in place of the bearer token.
-pub(super) fn ticketed(req: &HttpRequest) -> bool {
-    let path = req.uri().path();
-    let connect = path
-        .strip_prefix("/pty/")
-        .and_then(|r| r.strip_suffix("/connect"))
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'));
-    connect
-        && req.method() == axum::http::Method::GET
-        && req.uri().query().is_some_and(|q| {
-            q.split('&')
-                .any(|kv| kv.strip_prefix("ticket=").is_some_and(|t| !t.is_empty()))
-        })
+/// The ticket the guard accepted in place of a bearer token, put on the
+/// request so the connect handler must consume exactly that ticket.
+#[derive(Clone, Debug)]
+pub(super) struct TicketAuth(pub String);
+
+/// Why a connect's query string was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum QueryError {
+    /// Not a valid query string.
+    Malformed,
+    /// `ticket` given more than once.
+    RepeatedTicket,
+}
+
+/// The connect query (`ticket`, `cursor`), parsed once by the one parser
+/// both the guard and the handler use. A repeated `ticket` is refused
+/// rather than letting one reader take the first and another the last.
+pub(super) fn connect_query(uri: &axum::http::Uri) -> Result<HashMap<String, String>, QueryError> {
+    let Query(pairs) =
+        Query::<Vec<(String, String)>>::try_from_uri(uri).map_err(|_| QueryError::Malformed)?;
+    let mut out = HashMap::new();
+    for (k, v) in pairs {
+        if out.insert(k.clone(), v).is_some() && k == "ticket" {
+            return Err(QueryError::RepeatedTicket);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `req` is a terminal's WebSocket connect, the one route that may
+/// carry a ticket in place of the bearer token.
+fn is_connect(req: &HttpRequest) -> bool {
+    req.method() == axum::http::Method::GET
+        && req
+            .uri()
+            .path()
+            .strip_prefix("/pty/")
+            .and_then(|r| r.strip_suffix("/connect"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// For a request without a good bearer token: the ticket it carries in
+/// place of one, when it is a connect with exactly one non-empty `ticket`.
+/// `Err` is the response to refuse it with (a repeated or unparsable
+/// query is a bad request; anything else lacks credentials).
+pub(super) fn ticket_auth(req: &HttpRequest) -> Result<TicketAuth, StatusCode> {
+    if !is_connect(req) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let q = connect_query(req.uri()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    match q.get("ticket") {
+        Some(t) if !t.is_empty() => Ok(TicketAuth(t.clone())),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }
 
 fn error(e: PtyError) -> ApiError {
@@ -162,11 +204,21 @@ async fn connect_token(
 async fn connect(
     State(st): State<St>,
     UrlPath(pty): UrlPath<String>,
-    Query(q): Query<HashMap<String, String>>,
     mut req: HttpRequest,
 ) -> Response {
-    if let Some(t) = q.get("ticket").filter(|t| !t.is_empty()) {
-        if !st.tickets.consume(&scope(&st, &pty), t) {
+    let Ok(q) = connect_query(req.uri()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    // Without a bearer token the guard let this through on a ticket alone:
+    // that exact ticket must be good for this terminal and directory, and
+    // it is checked before the terminal is looked up, so its existence
+    // stays hidden from anyone without one.
+    let ticket = match req.extensions().get::<TicketAuth>() {
+        Some(TicketAuth(t)) => Some(t.clone()),
+        None => q.get("ticket").filter(|t| !t.is_empty()).cloned(),
+    };
+    if let Some(t) = ticket {
+        if !st.tickets.consume(&scope(&st, &pty), &t) {
             return StatusCode::FORBIDDEN.into_response();
         }
     }

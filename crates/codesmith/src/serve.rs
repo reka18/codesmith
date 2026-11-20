@@ -765,17 +765,37 @@ async fn guard(State(st): State<St>, req: HttpRequest, next: Next) -> Response {
     let ok = text(header::AUTHORIZATION)
         .and_then(|v| v.strip_prefix("Bearer "))
         .is_some_and(|v| constant_eq(v.as_bytes(), st.token.as_bytes()));
-    // A terminal's WebSocket may carry a ticket instead, which its handler
-    // checks (a browser cannot set the header).
-    #[cfg(unix)]
-    let ok = ok || pty::ticketed(&req);
+    let mut req = req;
     if !ok {
-        return ApiError(
+        // A terminal's WebSocket may carry a ticket instead (a browser
+        // cannot set the header): the exact ticket goes on the request, and
+        // its handler must consume it before doing anything else.
+        #[cfg(unix)]
+        let refused = match pty::ticket_auth(&req) {
+            Ok(t) => {
+                req.extensions_mut().insert(t);
+                None
+            }
+            Err(StatusCode::BAD_REQUEST) => Some(ApiError(
+                StatusCode::BAD_REQUEST,
+                "a connect takes one ticket".into(),
+            )),
+            Err(_) => Some(ApiError(
+                StatusCode::UNAUTHORIZED,
+                "missing or wrong bearer token".into(),
+            )),
+        };
+        #[cfg(not(unix))]
+        let refused = Some(ApiError(
             StatusCode::UNAUTHORIZED,
             "missing or wrong bearer token".into(),
-        )
-        .into_response();
+        ));
+        if let Some(e) = refused {
+            return e.into_response();
+        }
     }
+    let h = req.headers();
+    let text = |name: header::HeaderName| h.get(name).and_then(|v| v.to_str().ok());
     let has_body = h.contains_key(header::TRANSFER_ENCODING)
         || text(header::CONTENT_LENGTH).is_some_and(|l| l.trim() != "0");
     if has_body && !matches!(*req.method(), Method::GET | Method::HEAD) {

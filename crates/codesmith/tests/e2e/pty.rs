@@ -304,6 +304,73 @@ async fn a_websocket_opens_with_a_single_use_ticket() {
     assert!(tokio_tungstenite::connect_async(req).await.is_err());
 }
 
+/// The status a WebSocket upgrade to `url` without a bearer token gets
+/// (101 when it opens).
+async fn ws_status(url: &str) -> u16 {
+    use tokio_tungstenite::tungstenite::Error;
+    match tokio_tungstenite::connect_async(url).await {
+        Ok(_) => 101,
+        Err(Error::Http(r)) => r.status().as_u16(),
+        Err(e) => panic!("{url}: {e}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ticketless_or_doubled_ticket_websocket_is_refused() {
+    let e = env();
+    let s = Serve::start(&e).await;
+    use reqwest::Method as V;
+    let (_, info) = s
+        .call(V::POST, "/pty", Some(json!({"command": "cat"})))
+        .await;
+    let id = info["id"].as_str().unwrap().to_string();
+    let plain = s.ws_url(&format!("/pty/{id}/connect"));
+    let mint = |pty: String| {
+        let s = &s;
+        async move {
+            let r = s
+                .http
+                .post(format!("{}/pty/{pty}/connect-token", s.url))
+                .bearer_auth(TOKEN)
+                .header("x-codesmith-ticket", "1")
+                .send()
+                .await
+                .unwrap();
+            let t: Value = r.json().await.unwrap();
+            t["ticket"].as_str().unwrap().to_string()
+        }
+    };
+
+    // The bypass: one non-empty ticket to pass the guard, an empty one
+    // last for the handler to read. Either order, any value: refused.
+    assert_eq!(ws_status(&format!("{plain}?ticket=x&ticket=")).await, 400);
+    assert_eq!(ws_status(&format!("{plain}?ticket=&ticket=x")).await, 400);
+    let good = mint(id.clone()).await;
+    assert_eq!(
+        ws_status(&format!("{plain}?ticket={good}&ticket={good}")).await,
+        400
+    );
+    // An empty ticket, or none, is no credential.
+    assert_eq!(ws_status(&format!("{plain}?ticket=")).await, 401);
+    assert_eq!(ws_status(&plain).await, 401);
+    assert_eq!(ws_status(&format!("{plain}?cursor=-1")).await, 401);
+    // A ticket for another terminal does not open this one.
+    let (_, other) = s
+        .call(V::POST, "/pty", Some(json!({"command": "cat"})))
+        .await;
+    let theirs = mint(other["id"].as_str().unwrap().to_string()).await;
+    assert_eq!(ws_status(&format!("{plain}?ticket={theirs}")).await, 403);
+    // An unknown terminal is not told apart from a known one without
+    // credentials: never 404.
+    let missing = s.ws_url("/pty/pty_missing/connect");
+    assert_eq!(ws_status(&missing).await, 401);
+    assert_eq!(ws_status(&format!("{missing}?ticket=nope")).await, 403);
+    assert_eq!(ws_status(&format!("{missing}?ticket=x&ticket=")).await, 400);
+    // The good ticket, alone, still opens it (once).
+    assert_eq!(ws_status(&format!("{plain}?ticket={good}")).await, 101);
+    assert_eq!(ws_status(&format!("{plain}?ticket={good}")).await, 403);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sessions_terminals_go_with_it() {
     let e = Env::new();
