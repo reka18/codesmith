@@ -23,6 +23,9 @@ struct Cli {
     /// Print logs to stderr.
     #[arg(long, global = true)]
     print_logs: bool,
+    /// Start in a new git worktree (optionally with this name) (interactive UI).
+    #[arg(short = 'w', long, num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
+    worktree: Option<String>,
     /// Continue the most recent session in this directory (interactive UI).
     #[arg(short, long)]
     r#continue: bool,
@@ -67,6 +70,11 @@ enum Command {
     Calibrate {
         #[arg(short, long)]
         model: Option<String>,
+    },
+    /// List, create or remove git worktrees for isolated sessions.
+    Worktree {
+        #[command(subcommand)]
+        what: WorktreeCmd,
     },
     /// Serve a local HTTP API for driving sessions from other programs.
     Serve {
@@ -137,6 +145,44 @@ struct RunArgs {
     /// Title for a new session (otherwise one is generated).
     #[arg(long)]
     title: Option<String>,
+    /// Run in a new git worktree, optionally with this name.
+    #[arg(short = 'w', long, num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
+    worktree: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum WorktreeCmd {
+    /// List this repository's worktrees.
+    List,
+    /// Create a worktree and print its path.
+    Create {
+        name: Option<String>,
+        /// Commit or branch to start from (default HEAD).
+        #[arg(long)]
+        from: Option<String>,
+        /// Create this new branch in it instead of a detached HEAD.
+        #[arg(short, long)]
+        branch: Option<String>,
+    },
+    /// Remove a worktree by name or path.
+    Remove {
+        name: String,
+        /// Remove even with uncommitted changes.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// Create a worktree for `--worktree` and return the folder to work in.
+fn enter_worktree(cwd: &std::path::Path, name: &str) -> Result<PathBuf> {
+    let loaded = config::load(cwd)?;
+    let opts = codesmith_core::worktree::Create {
+        name: (!name.is_empty()).then(|| name.to_string()),
+        ..Default::default()
+    };
+    let (wt, sub) = codesmith_core::worktree::create(&loaded.config.worktree, cwd, &opts)?;
+    eprintln!("\x1b[2mworking in new worktree {}\x1b[0m", wt.display());
+    Ok(sub)
 }
 
 #[derive(Subcommand)]
@@ -201,6 +247,7 @@ impl RunArgs {
             r#continue: false,
             session: None,
             title: None,
+            worktree: None,
         }
     }
 }
@@ -347,6 +394,10 @@ async fn run(cli: Cli) -> Result<()> {
             if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
                 return Err(anyhow!("the interactive UI needs a terminal; use `codesmith run \"your message\"` for scripts"));
             }
+            let cwd = match &cli.worktree {
+                Some(name) => enter_worktree(&cwd, name)?,
+                None => cwd,
+            };
             let resume = match (cli.session, cli.r#continue) {
                 (Some(id), _) => Some(id),
                 (None, true) => Some(
@@ -492,6 +543,37 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what),
+        Some(Command::Worktree { what }) => {
+            use codesmith_core::worktree;
+            let loaded = config::load(&cwd)?;
+            let cfg = &loaded.config.worktree;
+            match what {
+                WorktreeCmd::List => {
+                    for e in worktree::list(&cwd)? {
+                        let what = match (&e.branch, &e.head) {
+                            (Some(b), _) => b.clone(),
+                            (None, Some(h)) => format!("detached at {h}"),
+                            _ => String::new(),
+                        };
+                        println!(
+                            "{}{}  {what}",
+                            e.directory.display(),
+                            if e.main { "  (main)" } else { "" }
+                        );
+                    }
+                }
+                WorktreeCmd::Create { name, from, branch } => {
+                    let (wt, _) =
+                        worktree::create(cfg, &cwd, &worktree::Create { name, from, branch })?;
+                    println!("{}", wt.display());
+                }
+                WorktreeCmd::Remove { name, force } => {
+                    let d = worktree::remove(cfg, &cwd, &name, force)?;
+                    println!("Removed {}", d.display());
+                }
+            }
+            Ok(())
+        }
         Some(Command::Review {
             target,
             comment,
@@ -979,6 +1061,11 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             "no message: pass one as an argument or pipe it on stdin"
         ));
     }
+    // Only now, with a message to send, create the worktree.
+    let cwd = match &args.worktree {
+        Some(name) => enter_worktree(&cwd, name)?,
+        None => cwd,
+    };
     let loaded = config::load(&cwd)?;
     let (mut agent_arg, mut model_arg) = (args.agent, args.model);
     let mut native: Option<(String, String)> = None;

@@ -21,3 +21,4 @@ pub mod store;
 pub mod title;
 pub mod tool;
 pub mod wildcard;
+pub mod worktree;

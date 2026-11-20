@@ -177,6 +177,21 @@ reading `.env` files, which asks.
 directory (with `CLAUDE.md` as a fallback), plus
 `~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
+## Worktrees
+
+`codesmith -w` (or `codesmith run -w "..."`) starts the session in a new git
+worktree, so the agent works on a separate checkout while yours stays as it
+is; `-w name` names it, otherwise it gets a name like `swift-otter`.
+Worktrees go under the data dir's `worktree/<project>/` (or
+`"worktree": {"directory": "..."}`), start detached at `HEAD`, and keep you in
+the same subfolder you started from. CodeSmith config that git does not track
+(an uncommitted `codesmith.json`, `.codesmith/`) is copied in, and
+`"worktree": {"start": "npm ci"}` runs a setup command in each new one with
+`$CODESMITH_WORKTREE_BASE` and `$CODESMITH_WORKTREE_PATH` set.
+
+`codesmith worktree list`, `worktree create [name] [--from REF] [-b BRANCH]`
+and `worktree remove <name|path> [--force]` manage them.
+
 ## Formatters
 
 With `"formatter": true`, files the agent writes or edits are formatted
@@ -312,7 +327,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
-4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters~~ and logins, formatters, worktrees, stats
+4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees~~, stats
 5. Native Rust plugins, code mode, ACP, automations
 
 ## License
