@@ -2931,9 +2931,11 @@ pub async fn run() -> Result<()> {
 /// - full-file diffs on replay for files over 256 KiB (before and after
 ///   together), and for edits made before CodeSmith recorded them: those
 ///   replay their output only;
-/// - live and replayed `messageId`s differ (replay ids come from the log),
-///   and a step's reasoning replays as one part (`:reasoning:0`), since
-///   CodeSmith stores it that way;
+/// - live and replayed `messageId`s and compaction ids differ (replay ids
+///   come from the log), and a step's reasoning replays as one part
+///   (`:reasoning:0`), since CodeSmith stores it that way; a subagent's
+///   activity is not replayed (it lives in the child session), and its
+///   retry markers go to the session's own stream;
 /// - permissions settled elsewhere (no other client shares a session's
 ///   asks), and the `patch` tool (CodeSmith has none);
 /// - the server-unavailable and catalog error boundaries (no separate server).
