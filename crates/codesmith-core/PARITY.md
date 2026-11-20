@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 127 | 0 | 307 | 325 | 37 | 0 |
+| Providers, models and credentials | 796 | 142 | 0 | 292 | 325 | 37 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1034** | **15** | **808** | **2334** | **1397** | **0** |
+| **Total** | **5588** | **1049** | **15** | **793** | **2334** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,11 +78,11 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (808 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (793 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Provider Plugins](#provider-plugins) | 139 | GitHub Copilot; Modal; … |
+| [Provider Plugins](#provider-plugins) | 124 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
@@ -146,7 +146,7 @@ Missing features, by how many OpenCode test cases each would unlock (808 cases i
 
 ### Provider Plugins
 
-139 cases.
+124 cases.
 
 - `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
 - `github-copilot/models.test.ts`: prices cache reads from either token price spelling
@@ -172,21 +172,6 @@ Missing features, by how many OpenCode test cases each would unlock (808 cases i
 - `plugin/provider-azure.test.ts`: {item.name} (6 cases)
 - `plugin/provider-azure.test.ts`: leaves models unchanged and uncloned without a resource name
 - `plugin/provider-azure.test.ts`: prefers WebSockets on the provider for the Azure Responses API only
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: registers account and gateway forms when the environment does not provide them
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: uses environment account and gateway values without requesting form fields
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: requests only the gateway ID when the environment provides the account ID
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: gives the provider its environment account and gateway IDs
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: prefers configured IDs over environment IDs
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: gives the provider the account and gateway IDs of a stored form login
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: applies the account and gateway IDs of a form login made after startup
-- `plugin/provider-cloudflare-ai-gateway.test.ts`: leaves a configured endpoint URL untouched
-- `plugin/provider-cloudflare-workers-ai.test.ts`: registers an account form when the environment does not provide one
-- `plugin/provider-cloudflare-workers-ai.test.ts`: routes the OpenAI-compatible package to the native Workers AI package
-- `plugin/provider-cloudflare-workers-ai.test.ts`: gives the native Workers AI package its account ID
-- `plugin/provider-cloudflare-workers-ai.test.ts`: gives the native Workers AI package the account ID of a stored form login
-- `plugin/provider-cloudflare-workers-ai.test.ts`: follows the account ID when another form login becomes active
-- `plugin/provider-cloudflare-workers-ai.test.ts`: preserves a configured endpoint URL instead of deriving one from account ID
-- `plugin/provider-cloudflare-workers-ai.test.ts`: uses configured account ID over env account ID
 - `plugin/provider-digitalocean.test.ts`: is registered alongside the other provider plugins
 - `plugin/provider-digitalocean.test.ts`: registers browser OAuth alongside generic key and environment methods
 - `plugin/provider-digitalocean.test.ts`: loads routers for the signed-in account
@@ -3485,7 +3470,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (452 of 796)</summary>
+<details><summary>Providers, models and credentials (467 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3631,6 +3616,27 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P applies the legacy integration header — `tests/oc_providers.rs::oc_cerebras_applies_the_legacy_integration_header` (adapted: the header names CodeSmith)
 - P ignores non-Cerebras providers — `tests/oc_providers.rs::oc_cerebras_ignores_non_cerebras_providers`
 - P applies the integration header to custom native Cerebras providers — `tests/oc_providers.rs::oc_cerebras_applies_the_integration_header_to_custom_native_cerebras_providers`
+
+**`plugin/provider-cloudflare-ai-gateway.test.ts`**
+
+- P registers account and gateway forms when the environment does not provide them — `tests/oc_providers.rs::oc_cloudflare_gateway_registers_account_and_gateway_forms_when_the_environment_does_not_provide_them` (adapted: `codesmith auth login` asks the fields after the key)
+- P uses environment account and gateway values without requesting form fields — `tests/oc_providers.rs::oc_cloudflare_gateway_uses_environment_account_and_gateway_values_without_requesting_form_fields`
+- P requests only the gateway ID when the environment provides the account ID — `tests/oc_providers.rs::oc_cloudflare_gateway_requests_only_the_gateway_id_when_the_environment_provides_the_account_id`
+- P gives the provider its environment account and gateway IDs — `tests/oc_providers.rs::oc_cloudflare_gateway_gives_the_provider_its_environment_account_and_gateway_ids` (adapted: asserts the routes the ids give)
+- P prefers configured IDs over environment IDs — `tests/oc_providers.rs::oc_cloudflare_gateway_prefers_configured_ids_over_environment_ids`
+- P gives the provider the account and gateway IDs of a stored form login — `tests/oc_providers.rs::oc_cloudflare_gateway_gives_the_provider_the_account_and_gateway_ids_of_a_stored_form_login`
+- P applies the account and gateway IDs of a form login made after startup — `tests/oc_providers.rs::oc_cloudflare_gateway_applies_the_account_and_gateway_ids_of_a_form_login_made_after_startup` (adapted: routes read the saved login per resolution)
+- P leaves a configured endpoint URL untouched — `tests/oc_providers.rs::oc_cloudflare_gateway_leaves_a_configured_endpoint_url_untouched`
+
+**`plugin/provider-cloudflare-workers-ai.test.ts`**
+
+- P registers an account form when the environment does not provide one — `tests/oc_providers.rs::oc_cloudflare_workers_registers_an_account_form_when_the_environment_does_not_provide_one`
+- P routes the OpenAI-compatible package to the native Workers AI package — `tests/oc_providers.rs::oc_cloudflare_workers_routes_the_openai_compatible_package_to_the_native_workers_ai_package` (adapted: either package routes to the account's endpoint)
+- P gives the native Workers AI package its account ID — `tests/oc_providers.rs::oc_cloudflare_workers_gives_the_native_workers_ai_package_its_account_id`
+- P gives the native Workers AI package the account ID of a stored form login — `tests/oc_providers.rs::oc_cloudflare_workers_gives_the_native_workers_ai_package_the_account_id_of_a_stored_form_login`
+- P follows the account ID when another form login becomes active — `tests/oc_providers.rs::oc_cloudflare_workers_follows_the_account_id_when_another_form_login_becomes_active` (adapted: one saved login per provider; the latest login wins)
+- P preserves a configured endpoint URL instead of deriving one from account ID — `tests/oc_providers.rs::oc_cloudflare_workers_preserves_a_configured_endpoint_url_instead_of_deriving_one_from_account_id`
+- P uses configured account ID over env account ID — `tests/oc_providers.rs::oc_cloudflare_workers_uses_configured_account_id_over_env_account_id`
 
 **`plugin/provider-databricks.test.ts`**
 

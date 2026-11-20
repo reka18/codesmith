@@ -134,6 +134,8 @@ from `settings.apiKey` in config.
 | `google-vertex-anthropic` | Anthropic Messages | as `google-vertex` |
 | `github-copilot` | per model: Anthropic Messages, OpenAI Responses or Chat | `codesmith auth login github-copilot`, or `COPILOT_GITHUB_TOKEN`; see [GitHub Copilot](#github-copilot) |
 | `databricks` | OpenAI Chat | `DATABRICKS_TOKEN` (and `DATABRICKS_HOST`, with or without `https://`) |
+| `cloudflare-ai-gateway` | per model: OpenAI Responses, Anthropic Messages or OpenAI Chat | `CLOUDFLARE_API_TOKEN`, `CF_AIG_TOKEN` (and the account and gateway ids); see [Cloudflare](#cloudflare-ai-gateway-and-workers-ai) |
+| `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -449,6 +451,26 @@ who started the request (`x-initiator`), whether it carries images, and the
 kind of step (agent, subagent, title, compaction). Copilot's Auto model
 router and its free title model are not used.
 
+### Cloudflare AI Gateway and Workers AI
+
+Both need your Cloudflare account id, and AI Gateway its gateway id (else
+the gateway named `default`). `codesmith auth login cloudflare-ai-gateway`
+(or `cloudflare-workers-ai`) asks for the token and then for the ids the
+environment and config do not already give (`--field accountId=…
+--field gatewayId=…` answers without asking), and saves them with the token.
+The saved answers win over `settings.accountId` / `settings.gatewayId`,
+which win over `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_GATEWAY_ID`.
+
+AI Gateway sends `openai/…` models to the gateway's OpenAI passthrough
+(Responses) and `anthropic/…` models to its Anthropic passthrough
+(Messages, with the model id's dots as dashes), with the token in
+`cf-aig-authorization`; every other model goes to the account's
+OpenAI-compatible endpoint
+(`https://api.cloudflare.com/client/v4/accounts/<account>/ai/v1`) with the
+gateway in `cf-aig-gateway-id` (a `workers-ai/` prefix is dropped). Workers
+AI uses that endpoint with the token as a bearer token. A configured
+`settings.baseURL` is used for every model as given.
+
 ### Responses over WebSocket
 
 As in OpenCode, an `openai-responses` provider can carry a session's steps
@@ -664,7 +686,10 @@ comes from, and `codesmith auth logout <provider>` removes a saved key.
 Some providers sign in differently: `codesmith auth login github-copilot`
 (GitHub's device flow), `codesmith auth login amazon-bedrock --profile <name>`
 and `codesmith auth login google-vertex --project <id>` save a login instead
-of a key; `auth logout` removes those too.
+of a key; `auth logout` removes those too. Some key logins ask for more than the key (the
+account and gateway ids of [Cloudflare](#cloudflare-ai-gateway-and-workers-ai)):
+they are asked in the terminal after the key, or given with
+`--field KEY=VALUE`, and saved with it.
 
 ## Instructions
 

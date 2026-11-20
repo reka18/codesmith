@@ -130,5 +130,6 @@ pub fn route(input: &Input) -> Result<Route> {
         auth,
         api_key: key,
         headers: vec![],
+        model_id: None,
     })
 }

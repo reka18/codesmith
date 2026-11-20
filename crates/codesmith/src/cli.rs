@@ -509,6 +509,10 @@ enum AuthCmd {
         /// google-vertex: the location with --project (default global).
         #[arg(long)]
         location: Option<String>,
+        /// An answer the provider's login asks for beside the key, such as
+        /// `accountId=…` for Cloudflare (asked in the terminal otherwise).
+        #[arg(long = "field", value_name = "KEY=VALUE")]
+        fields: Vec<String>,
     },
     /// List providers with saved keys and where each provider's key comes from.
     List,
@@ -1226,6 +1230,9 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 },
                 match &m.provider.auth {
                     codesmith_ai::Auth::Header(h) => format!(" (sent in {h})"),
+                    codesmith_ai::Auth::BearerHeader(h) => {
+                        format!(" (sent as a bearer token in {h})")
+                    }
                     codesmith_ai::Auth::Bearer => " (sent as a bearer token)".into(),
                     codesmith_ai::Auth::Dynamic(a) => format!(" ({})", a.describe()),
                     codesmith_ai::Auth::Default => String::new(),
@@ -1413,6 +1420,18 @@ fn stdin_has_input() -> bool {
     true
 }
 
+/// A line typed in the terminal; `None` when stdin is not one.
+fn read_line(prompt: &str) -> Result<Option<String>> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(Some(line.trim().to_string()))
+}
+
 fn read_secret(prompt: &str) -> Result<String> {
     let mut line = String::new();
     if std::io::stdin().is_terminal() {
@@ -1561,6 +1580,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             project,
             location,
             client_id,
+            fields,
         } => {
             let login = PluginLogin {
                 profile,
@@ -1574,13 +1594,60 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 println!("{done}");
                 return Ok(());
             }
-            let key = read_secret(&format!("API key for {provider}: "))?;
+            let loaded = config::load(cwd)?;
+            let form = codesmith_core::providers::key_form(
+                &provider,
+                &loaded
+                    .config
+                    .provider(&provider)
+                    .unwrap_or_default()
+                    .settings,
+                &codesmith_core::providers::process_env(),
+            );
+            let mut given = serde_json::Map::new();
+            for f in &fields {
+                let (k, v) = f
+                    .split_once('=')
+                    .ok_or_else(|| anyhow!("--field takes KEY=VALUE, got {f:?}"))?;
+                given.insert(k.trim().to_string(), v.trim().into());
+            }
+            if form.is_none() && !given.is_empty() {
+                return Err(anyhow!(
+                    "{provider}'s login asks for nothing beside the key"
+                ));
+            }
+            let label = form.as_ref().map_or("API key", |f| f.label);
+            let key = read_secret(&format!("{label} for {provider}: "))?;
             if key.is_empty() {
                 return Err(anyhow!("no key entered"));
             }
-            auth::set_in(&file, &provider, &key)?;
+            match form {
+                Some(form) => {
+                    for field in &form.fields {
+                        if given.contains_key(field.key) {
+                            continue;
+                        }
+                        let answer =
+                            read_line(&format!("{} ({}): ", field.title, field.placeholder))?;
+                        match answer {
+                            Some(a) if !a.is_empty() => {
+                                given.insert(field.key.to_string(), a.into());
+                            }
+                            _ if field.required => {
+                                return Err(anyhow!(
+                                    "{provider} needs {}: pass --field {}=…",
+                                    field.key,
+                                    field.key
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                    codesmith_core::providers::save_key(&file, &provider, &key, given)?;
+                }
+                None => auth::set_in(&file, &provider, &key)?,
+            }
             println!("Saved a key for {provider} in {}", file.display());
-            let loaded = config::load(cwd)?;
             if loaded.config.provider(&provider).is_none() {
                 println!("note: {provider} is not a built-in provider; add it under \"providers\" in codesmith.json to use it");
             }

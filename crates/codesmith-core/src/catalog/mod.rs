@@ -483,6 +483,7 @@ pub fn protocol(package: &str) -> Option<codesmith_ai::Protocol> {
         | "minimax/chat"
         | "meta/chat"
         | "baseten"
+        | "cloudflare-workers-ai"
         | "cohere/chat" => OpenaiChat,
         "anthropic"
         | "anthropic-compatible"

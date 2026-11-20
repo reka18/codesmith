@@ -1236,3 +1236,317 @@ fn oc_databricks_fills_the_base_url_from_a_bare_host_or_one_with_a_scheme() {
         ["DATABRICKS_TOKEN"]
     );
 }
+
+// plugin/provider-cloudflare-ai-gateway.test.ts
+
+fn cf_form(id: &str, s: Value, e: &[(&str, &str)]) -> providers::KeyForm {
+    providers::key_form(id, &settings(s), &env(e)).unwrap()
+}
+
+fn field_keys(f: &providers::KeyForm) -> Vec<&'static str> {
+    f.fields.iter().map(|f| f.key).collect()
+}
+
+#[test]
+fn oc_cloudflare_gateway_registers_account_and_gateway_forms_when_the_environment_does_not_provide_them(
+) {
+    let f = cf_form("cloudflare-ai-gateway", json!({}), &[]);
+    assert_eq!(f.label, "Gateway API token");
+    assert_eq!(field_keys(&f), ["accountId", "gatewayId"]);
+    assert!(f.fields.iter().all(|f| f.required));
+}
+
+#[test]
+fn oc_cloudflare_gateway_uses_environment_account_and_gateway_values_without_requesting_form_fields(
+) {
+    let f = cf_form(
+        "cloudflare-ai-gateway",
+        json!({}),
+        &[
+            ("CLOUDFLARE_ACCOUNT_ID", "account"),
+            ("CLOUDFLARE_GATEWAY_ID", "gateway"),
+        ],
+    );
+    assert_eq!(f.label, "Gateway API token");
+    assert!(f.fields.is_empty());
+}
+
+#[test]
+fn oc_cloudflare_gateway_requests_only_the_gateway_id_when_the_environment_provides_the_account_id()
+{
+    let f = cf_form(
+        "cloudflare-ai-gateway",
+        json!({}),
+        &[("CLOUDFLARE_ACCOUNT_ID", "account")],
+    );
+    assert_eq!(field_keys(&f), ["gatewayId"]);
+}
+
+fn gateway_case(s: Value, e: &[(&str, &str)], model: &'static str) -> Case {
+    let mut c = Case::new("cloudflare-ai-gateway", s);
+    c.env = env(e);
+    c.model = model;
+    c.key = Some("cf-token");
+    c
+}
+
+#[test]
+fn oc_cloudflare_gateway_gives_the_provider_its_environment_account_and_gateway_ids() {
+    let e = [
+        ("CLOUDFLARE_ACCOUNT_ID", "account"),
+        ("CLOUDFLARE_GATEWAY_ID", "gateway"),
+    ];
+    // Models of OpenAI and Anthropic go to the gateway's passthroughs, with
+    // the token in cf-aig-authorization and their upstream model ids.
+    let r = gateway_case(json!({}), &e, "openai/gpt-5.4").ok();
+    assert_eq!(r.protocol, Protocol::OpenaiResponses);
+    assert_eq!(
+        r.base_url,
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/openai"
+    );
+    assert_eq!(r.auth, Auth::BearerHeader("cf-aig-authorization".into()));
+    assert_eq!(r.model_id.as_deref(), Some("gpt-5.4"));
+    let r = gateway_case(json!({}), &e, "anthropic/claude-sonnet-4.6").ok();
+    assert_eq!(r.protocol, Protocol::AnthropicMessages);
+    assert_eq!(
+        r.base_url,
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic/v1"
+    );
+    assert_eq!(r.model_id.as_deref(), Some("claude-sonnet-4-6"));
+    // The rest go to the account's REST API, naming the gateway.
+    let r = gateway_case(json!({}), &e, "workers-ai/@cf/meta/llama-3.1-8b").ok();
+    assert_eq!(r.protocol, Protocol::OpenaiChat);
+    assert_eq!(
+        r.base_url,
+        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1"
+    );
+    assert_eq!(r.auth, Auth::Bearer);
+    assert_eq!(
+        r.headers,
+        [("cf-aig-gateway-id".to_string(), "gateway".to_string())]
+    );
+    assert_eq!(r.model_id.as_deref(), Some("@cf/meta/llama-3.1-8b"));
+    assert_eq!(r.api_key.as_deref(), Some("cf-token"));
+}
+
+#[test]
+fn oc_cloudflare_gateway_prefers_configured_ids_over_environment_ids() {
+    let r = gateway_case(
+        json!({"accountId": "configured-account", "gatewayId": "configured-gateway"}),
+        &[
+            ("CLOUDFLARE_ACCOUNT_ID", "env-account"),
+            ("CLOUDFLARE_GATEWAY_ID", "env-gateway"),
+        ],
+        "openai/gpt-5.4",
+    )
+    .ok();
+    assert_eq!(
+        r.base_url,
+        "https://gateway.ai.cloudflare.com/v1/configured-account/configured-gateway/openai"
+    );
+}
+
+#[test]
+fn oc_cloudflare_gateway_gives_the_provider_the_account_and_gateway_ids_of_a_stored_form_login() {
+    let mut c = gateway_case(json!({}), &[], "openai/gpt-5.4");
+    c.stored = Some(
+        json!({"type": "api", "key": "token", "metadata": {"accountId": "form-account", "gatewayId": "form-gateway"}}),
+    );
+    assert_eq!(
+        c.ok().base_url,
+        "https://gateway.ai.cloudflare.com/v1/form-account/form-gateway/openai"
+    );
+    // Without any account id the route explains where to give one.
+    let e = gateway_case(json!({}), &[], "openai/gpt-5.4")
+        .route()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("codesmith auth login cloudflare-ai-gateway"),
+        "{e}"
+    );
+}
+
+#[test]
+fn oc_cloudflare_gateway_applies_the_account_and_gateway_ids_of_a_form_login_made_after_startup() {
+    // Routes read the saved login each time a model is resolved.
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let mut answers = serde_json::Map::new();
+    answers.insert("accountId".into(), "form-account".into());
+    answers.insert("gatewayId".into(), "form-gateway".into());
+    providers::save_key(&file, "cloudflare-ai-gateway", "token", answers).unwrap();
+    let mut c = gateway_case(json!({}), &[], "anthropic/claude-sonnet-4.6");
+    c.stored = codesmith_core::auth::entry_in(&file, "cloudflare-ai-gateway");
+    assert_eq!(
+        c.ok().base_url,
+        "https://gateway.ai.cloudflare.com/v1/form-account/form-gateway/anthropic/v1"
+    );
+    assert_eq!(
+        codesmith_core::auth::key_in(&file, "cloudflare-ai-gateway").as_deref(),
+        Some("token")
+    );
+}
+
+#[test]
+fn oc_cloudflare_gateway_leaves_a_configured_endpoint_url_untouched() {
+    let s = json!({"baseURL": "https://proxy.example/v1"});
+    let e = [
+        ("CLOUDFLARE_ACCOUNT_ID", "account"),
+        ("CLOUDFLARE_GATEWAY_ID", "gateway"),
+    ];
+    for model in ["openai/gpt-5.4", "anthropic/claude-sonnet-4.6", "x/y"] {
+        let r = gateway_case(s.clone(), &e, model).ok();
+        assert_eq!(r.base_url, "https://proxy.example/v1");
+        assert_eq!(r.model_id, None, "{model}: gateway model ids are kept");
+        assert_eq!(r.auth, Auth::Bearer);
+    }
+    assert!(cf_form("cloudflare-ai-gateway", s, &[]).fields.is_empty());
+}
+
+// plugin/provider-cloudflare-workers-ai.test.ts
+
+fn workers_case(s: Value, e: &[(&str, &str)]) -> Case {
+    let mut c = Case::new("cloudflare-workers-ai", s);
+    c.env = env(e);
+    c.model = "@cf/meta/llama-3.1-8b-instruct";
+    c.key = Some("key");
+    c
+}
+
+#[test]
+fn oc_cloudflare_workers_registers_an_account_form_when_the_environment_does_not_provide_one() {
+    let f = cf_form("cloudflare-workers-ai", json!({}), &[]);
+    assert_eq!(f.label, "API key");
+    assert_eq!(
+        f.fields,
+        [providers::Field {
+            key: "accountId",
+            title: "Enter your Cloudflare Account ID",
+            placeholder: "e.g. 1234567890abcdef1234567890abcdef",
+            required: true,
+        }]
+    );
+    let p = providers::builtin("cloudflare-workers-ai").unwrap();
+    assert_eq!(
+        p.env,
+        [
+            "CLOUDFLARE_API_KEY",
+            "CLOUDFLARE_WORKERS_AI_TOKEN",
+            "CLOUDFLARE_API_TOKEN"
+        ]
+    );
+}
+
+#[test]
+fn oc_cloudflare_workers_routes_the_openai_compatible_package_to_the_native_workers_ai_package() {
+    let e = [
+        ("CLOUDFLARE_ACCOUNT_ID", "acct"),
+        ("CLOUDFLARE_API_KEY", "key"),
+    ];
+    assert!(cf_form("cloudflare-workers-ai", json!({}), &e)
+        .fields
+        .is_empty());
+    for package in [
+        "@opencode/ai/providers/cloudflare-workers-ai",
+        "@opencode/ai/providers/openai-compatible",
+    ] {
+        let mut c = workers_case(json!({}), &e);
+        c.package = Some(package);
+        let r = c.ok();
+        assert_eq!(r.protocol, Protocol::OpenaiChat);
+        assert_eq!(
+            r.base_url,
+            "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1"
+        );
+        assert_eq!(r.auth, Auth::Bearer);
+    }
+}
+
+#[test]
+fn oc_cloudflare_workers_gives_the_native_workers_ai_package_its_account_id() {
+    let r = workers_case(json!({}), &[("CLOUDFLARE_ACCOUNT_ID", "acct")]).ok();
+    assert_eq!(
+        r.base_url,
+        "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1"
+    );
+}
+
+#[test]
+fn oc_cloudflare_workers_gives_the_native_workers_ai_package_the_account_id_of_a_stored_form_login()
+{
+    let mut c = workers_case(json!({}), &[]);
+    c.stored =
+        Some(json!({"type": "api", "key": "secret", "metadata": {"accountId": "form-acct"}}));
+    assert_eq!(
+        c.ok().base_url,
+        "https://api.cloudflare.com/client/v4/accounts/form-acct/ai/v1"
+    );
+}
+
+#[test]
+fn oc_cloudflare_workers_follows_the_account_id_when_another_form_login_becomes_active() {
+    // CodeSmith keeps one login per provider: a new login replaces it.
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let save = |acct: &str| {
+        let mut m = serde_json::Map::new();
+        m.insert("accountId".into(), acct.into());
+        providers::save_key(&file, "cloudflare-workers-ai", "secret", m).unwrap();
+        let mut c = workers_case(json!({}), &[]);
+        c.stored = codesmith_core::auth::entry_in(&file, "cloudflare-workers-ai");
+        c.ok().base_url
+    };
+    assert!(save("second-acct").contains("/accounts/second-acct/"));
+    assert!(save("first-acct").contains("/accounts/first-acct/"));
+}
+
+#[test]
+fn oc_cloudflare_workers_preserves_a_configured_endpoint_url_instead_of_deriving_one_from_account_id(
+) {
+    let r = workers_case(
+        json!({"baseURL": "https://proxy.example/v1"}),
+        &[("CLOUDFLARE_ACCOUNT_ID", "acct")],
+    )
+    .ok();
+    assert_eq!(r.base_url, "https://proxy.example/v1");
+}
+
+#[test]
+fn oc_cloudflare_workers_uses_configured_account_id_over_env_account_id() {
+    let r = workers_case(
+        json!({"accountId": "configured-acct"}),
+        &[("CLOUDFLARE_ACCOUNT_ID", "env-acct")],
+    )
+    .ok();
+    assert_eq!(
+        r.base_url,
+        "https://api.cloudflare.com/client/v4/accounts/configured-acct/ai/v1"
+    );
+}
+
+#[test]
+fn oc_cloudflare_resolves_bundled_models_through_the_gateway_and_workers_ai() {
+    let acct = json!({"settings": {"accountId": "acct-from-env"}});
+    let c = bundled(json!({"providers": {
+        "cloudflare-workers-ai": acct,
+        "cloudflare-ai-gateway": acct,
+    }}));
+    let m = c
+        .resolve_model("cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6")
+        .unwrap();
+    assert_eq!(m.provider.protocol, Protocol::OpenaiChat);
+    assert_eq!(
+        m.provider.base_url,
+        "https://api.cloudflare.com/client/v4/accounts/acct-from-env/ai/v1"
+    );
+    let m = c
+        .resolve_model("cloudflare-ai-gateway/anthropic/claude-opus-4.8")
+        .unwrap();
+    assert_eq!(m.provider.protocol, Protocol::AnthropicMessages);
+    assert_eq!(m.model_id, "claude-opus-4-8");
+    assert_eq!(
+        m.provider.base_url,
+        "https://gateway.ai.cloudflare.com/v1/acct-from-env/default/anthropic/v1"
+    );
+}

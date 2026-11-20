@@ -356,3 +356,20 @@
 522 :: ported :: tests/oc_variant.rs::oc_variant_spells_mantle_variants_for_the_api_each_model_is_routed_through
 540 :: ported :: tests/oc_variant.rs::oc_variant_spells_google_interactions_variants_as_thinking_levels
 551 :: ported :: tests/oc_variant.rs::oc_variant_reads_models_dev_v2_reasoning_as_variant_support
+@plugin/provider-cloudflare-ai-gateway.test.ts
+39 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_registers_account_and_gateway_forms_when_the_environment_does_not_provide_them :: adapted: `codesmith auth login` asks the fields after the key
+56 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_uses_environment_account_and_gateway_values_without_requesting_form_fields
+69 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_requests_only_the_gateway_id_when_the_environment_provides_the_account_id
+83 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_gives_the_provider_its_environment_account_and_gateway_ids :: adapted: asserts the routes the ids give
+93 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_prefers_configured_ids_over_environment_ids
+108 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_gives_the_provider_the_account_and_gateway_ids_of_a_stored_form_login
+130 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_applies_the_account_and_gateway_ids_of_a_form_login_made_after_startup :: adapted: routes read the saved login per resolution
+149 :: ported :: tests/oc_providers.rs::oc_cloudflare_gateway_leaves_a_configured_endpoint_url_untouched
+@plugin/provider-cloudflare-workers-ai.test.ts
+35 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_registers_an_account_form_when_the_environment_does_not_provide_one
+57 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_routes_the_openai_compatible_package_to_the_native_workers_ai_package :: adapted: either package routes to the account's endpoint
+74 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_gives_the_native_workers_ai_package_its_account_id
+86 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_gives_the_native_workers_ai_package_the_account_id_of_a_stored_form_login
+103 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_follows_the_account_id_when_another_form_login_becomes_active :: adapted: one saved login per provider; the latest login wins
+127 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_preserves_a_configured_endpoint_url_instead_of_deriving_one_from_account_id
+143 :: ported :: tests/oc_providers.rs::oc_cloudflare_workers_uses_configured_account_id_over_env_account_id

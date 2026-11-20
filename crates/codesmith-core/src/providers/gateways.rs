@@ -76,5 +76,6 @@ pub fn databricks(input: &Input) -> Result<Route> {
         auth: Auth::Default,
         api_key: input.api_key.clone(),
         headers: vec![],
+        model_id: None,
     })
 }

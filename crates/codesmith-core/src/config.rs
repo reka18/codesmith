@@ -1287,6 +1287,10 @@ impl Config {
             model_id: &model_id,
         })?;
         let protocol = plugin.as_ref().map_or(protocol, |r| r.protocol);
+        let wire_model = plugin
+            .as_ref()
+            .and_then(|r| r.model_id.clone())
+            .unwrap_or_else(|| model_id.clone());
         // A configured provider URL beats the catalog model's own (when the
         // catalog speaks this protocol there), which beats the provider's
         // default.
@@ -1460,7 +1464,7 @@ impl Config {
         let websocket = websocket_route(pid, protocol, &p.settings, &base_url)?;
         Ok(ModelRef {
             provider_id: pid.to_string(),
-            model_id,
+            model_id: wire_model,
             provider: codesmith_ai::Provider {
                 protocol,
                 name: pid.to_string(),
@@ -1547,9 +1551,11 @@ fn generated_variants(g: GeneratedVariants) -> Vec<(String, codesmith_ai::Varian
     use crate::catalog::{self, variant};
     // The catalog package when CodeSmith speaks it here, else the
     // protocol's own.
-    let same = g
-        .catalog_package
-        .filter(|p| catalog::protocol(p) == Some(g.protocol));
+    // Cloudflare AI Gateway's package spells each upstream route itself.
+    let same = g.catalog_package.filter(|p| {
+        catalog::protocol(p) == Some(g.protocol)
+            || *p == "@opencode/ai/providers/cloudflare-ai-gateway"
+    });
     let package = same.unwrap_or_else(|| catalog::protocol_package(g.protocol));
     let target = variant::Target {
         package: Some(package),

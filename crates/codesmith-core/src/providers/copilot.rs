@@ -173,6 +173,7 @@ pub fn route(input: &Input) -> Result<Route> {
         auth: Auth::Dynamic(authorizer(&token, &root, lookup)),
         api_key: None,
         headers: vec![],
+        model_id: None,
     })
 }
 

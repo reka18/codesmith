@@ -20,6 +20,10 @@ pub enum Auth {
     /// `Authorization` header is not sent, so a stale bearer token cannot
     /// ride along.
     Header(String),
+    /// The key as `Bearer <key>` in this header (Cloudflare AI Gateway's
+    /// `cf-aig-authorization`); a configured `Authorization` header is not
+    /// sent.
+    BearerHeader(String),
     /// The key as `Authorization: Bearer` whatever the protocol (Bedrock
     /// API keys, GitHub Copilot's Messages route).
     Bearer,
@@ -34,6 +38,7 @@ impl PartialEq for Auth {
         match (self, other) {
             (Auth::Default, Auth::Default) | (Auth::Bearer, Auth::Bearer) => true,
             (Auth::Header(a), Auth::Header(b)) => a == b,
+            (Auth::BearerHeader(a), Auth::BearerHeader(b)) => a == b,
             (Auth::Dynamic(a), Auth::Dynamic(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -200,12 +205,13 @@ impl Provider {
         if let Some(k) = key {
             out.push(match (&self.auth, self.protocol) {
                 (Auth::Header(h), _) => (h.clone(), k.to_string()),
+                (Auth::BearerHeader(h), _) => (h.clone(), format!("Bearer {k}")),
                 (Auth::Default, Protocol::AnthropicMessages) => ("x-api-key".into(), k.into()),
                 (Auth::Default, Protocol::GoogleGemini) => ("x-goog-api-key".into(), k.into()),
                 _ => ("authorization".into(), format!("Bearer {k}")),
             });
         }
-        let custom = matches!(self.auth, Auth::Header(_));
+        let custom = matches!(self.auth, Auth::Header(_) | Auth::BearerHeader(_));
         out.extend(
             headers
                 .into_iter()
