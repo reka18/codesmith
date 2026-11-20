@@ -68,6 +68,14 @@ replays of its recorded provider traffic.
   subagents, and user-defined agents.
 - **Skills and commands:** `SKILL.md` folders and prompt templates as
   `/commands`.
+- **Instructions that change:** instruction files, skills, MCP server
+  instructions, the Code Mode catalog and the date are read again before
+  each request; a change reaches the model as a short update in place,
+  and the system prompt (and its cached prefix) stays the same until a
+  compaction or an undo that removes an update.
+- **References:** other folders and Git repositories named under
+  `references`, listed to the model when they have a description; Git
+  checkouts are kept under the data folder and refreshed daily with `git`.
 - **Sessions:** stored locally in SQLite, with continue, per-turn undo and
   redo, export and import, automatic compaction, usage and cost statistics,
   and git worktrees.
