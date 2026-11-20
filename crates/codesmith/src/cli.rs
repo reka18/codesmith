@@ -230,10 +230,15 @@ enum AutomationCmd {
         /// JSON passed to the program as input.args.
         #[arg(long)]
         args: Option<String>,
-        /// Send the prompt to this session (default: a new session each run).
+        /// Run each time in a new child session of this session, with its
+        /// agent and model (default without it: a new build session each run).
         #[arg(long)]
         session: Option<String>,
-        /// Agent for new sessions (default build).
+        /// With --session: send the prompt into that session itself instead
+        /// of a new child of it.
+        #[arg(long, requires = "session", conflicts_with = "agent")]
+        in_session: bool,
+        /// Agent for new sessions (default: the --session's agent, else build).
         #[arg(long)]
         agent: Option<String>,
     },
@@ -301,6 +306,7 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
             code_file,
             args,
             session,
+            in_session,
             agent,
         } => {
             let trigger = match (every, cron, at, event) {
@@ -333,11 +339,32 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
                 }
                 _ => return Err(anyhow!("give one of --every, --cron, --at or --event")),
             };
+            // A prompt with --session runs in a new child of that session
+            // (in its directory, with its agent and model) unless --in-session.
+            let mut dir = dir;
+            let mut creator = None;
             let action = match (prompt, code_file) {
                 (Some(prompt), _) => au::Action::Prompt {
                     prompt,
                     to: match session {
-                        Some(session) => au::Target::Session { session },
+                        Some(session) => {
+                            let info = db
+                                .get(&session)?
+                                .ok_or_else(|| anyhow!("no session {session}"))?;
+                            dir = info.directory.clone();
+                            creator = Some(session.clone());
+                            match (in_session, agent) {
+                                (true, _) => au::Target::Session { session },
+                                (false, Some(agent)) => au::Target::Child {
+                                    child: session,
+                                    agent,
+                                    model: None,
+                                },
+                                (false, None) => {
+                                    au::Target::child_of(&session, &info.agent, &info.model)
+                                }
+                            }
+                        }
                         None => au::Target::Subagent {
                             subagent: agent.unwrap_or_else(|| "build".into()),
                         },
@@ -358,7 +385,7 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
                 au::New {
                     name,
                     directory: dir,
-                    session_id: None,
+                    session_id: creator,
                     trigger,
                     action,
                 },

@@ -73,10 +73,42 @@ pub struct EventPosition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Target {
-    /// Send the prompt to this existing session.
+    /// Send the prompt to this existing session, continuing it.
     Session { session: String },
     /// Start a new session with this agent on every run.
     Subagent { subagent: String },
+    /// Start a new child session of `child` (the session that created the
+    /// automation) on every run, with that session's agent and model as they
+    /// were when it was created. The default for new automations; ones
+    /// stored before it keep the target they were created with.
+    Child {
+        child: String,
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+}
+
+impl Target {
+    /// The default target for an automation created in session `id`: a new
+    /// child of it on each run, inheriting its agent and model.
+    pub fn child_of(id: &str, agent: &str, model: &str) -> Target {
+        Target::Child {
+            child: id.into(),
+            agent: agent.into(),
+            model: (!model.is_empty()).then(|| model.into()),
+        }
+    }
+}
+
+/// The title of the session a run starts: "<name> — <local time>".
+pub fn run_title(name: &str, at: i64) -> String {
+    let t = Local
+        .timestamp_millis_opt(at)
+        .single()
+        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default();
+    format!("{name} — {t}")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -743,10 +775,20 @@ pub fn describe_action(a: &Action, max: usize) -> String {
     match a {
         Action::Prompt { prompt, to } => {
             let to = match to {
-                Target::Session { session } => format!("to this session ({session})"),
+                Target::Session { session } => {
+                    format!("into session {session} itself, continuing its conversation")
+                }
                 Target::Subagent { subagent } => {
                     format!("to a new session with the {subagent} agent each run")
                 }
+                Target::Child {
+                    child,
+                    agent,
+                    model,
+                } => format!(
+                    "to a new child session of {child} on each run, not into {child} itself (agent {agent}, model {})",
+                    model.as_deref().unwrap_or("the agent's default")
+                ),
             };
             format!("sends this prompt {to}:\n{}", quote(prompt, max))
         }
@@ -1166,32 +1208,6 @@ impl Runner {
         }
     }
 
-    async fn session(
-        &self,
-        loaded: &Loaded,
-        dir: &Path,
-        resume: Option<String>,
-        agent: Option<String>,
-        title: String,
-        parent: Option<String>,
-    ) -> Result<Session> {
-        Session::new(
-            &unattended(loaded),
-            dir.to_path_buf(),
-            Options {
-                agent,
-                model: None,
-                resume,
-                title: Some(title),
-                parent,
-                questioner: None,
-                mcp: None,
-            },
-            Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
-            Some(Store::open(&self.db)?),
-        )
-    }
-
     /// Send `prompt` to the target. A session another process is running a
     /// turn in is waited for when `wait`, else the run fails with
     /// [`crate::store::Busy`] (and is deferred).
@@ -1203,31 +1219,45 @@ impl Runner {
         to: &Target,
         wait: bool,
     ) -> Result<(String, String)> {
-        let dir = Path::new(&a.directory);
-        let mut s = match to {
+        let db = Store::open(&self.db)?;
+        let title = run_title(&a.name, crate::store::now());
+        let (resume, agent, model, title, parent) = match to {
             Target::Session { session } => {
-                self.session(
-                    loaded,
-                    dir,
-                    Some(session.clone()),
-                    None,
-                    a.name.clone(),
-                    None,
-                )
-                .await?
+                (Some(session.clone()), None, None, a.name.clone(), None)
             }
-            Target::Subagent { subagent } => {
-                self.session(
-                    loaded,
-                    dir,
-                    None,
-                    Some(subagent.clone()),
-                    format!("{} #{}", a.name, a.runs),
-                    a.session_id.clone(),
-                )
-                .await?
+            Target::Subagent { subagent } => (
+                None,
+                Some(subagent.clone()),
+                None,
+                title,
+                a.session_id.clone(),
+            ),
+            Target::Child {
+                child,
+                agent,
+                model,
+            } => {
+                // A child of the creating session, so it lists under it. If
+                // that session was deleted, the run still goes ahead on its own.
+                let parent = db.get(child)?.map(|_| child.clone());
+                (None, Some(agent.clone()), model.clone(), title, parent)
             }
         };
+        let mut s = Session::new(
+            &unattended(loaded),
+            PathBuf::from(&a.directory),
+            Options {
+                agent,
+                model,
+                resume,
+                title: Some(title),
+                parent,
+                questioner: None,
+                mcp: None,
+            },
+            Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
+            Some(db),
+        )?;
         s.set_wait_for_turn(wait);
         let mut out = Quiet(String::new());
         let turn_failed = |e: anyhow::Error| {
@@ -1382,7 +1412,7 @@ impl Runner {
 pub const TOOL: &str = "automation";
 
 pub fn tool_spec() -> (String, Value) {
-    let description = "Schedule work to happen later, without the user present: a prompt sent to this session, or to a new session with a given agent on each run, once (`at`), on an interval (`every`), on a `cron` schedule, or on each event a connected MCP server pushes (`event`, for servers that offer MCP Events; the prompt receives the event as untrusted data). Also list, pause, resume or remove this project's automations. Creating, pausing, resuming or removing an automation, or watching events, asks the user unless a permission rule names it. A new session's agent must be this session's own agent or a read-only subagent (explore, review). Runs are unattended: shell commands, edits, web fetches, paths outside the project and MCP tools are denied unless the user's `automation.permissions` config allows them, runs cannot manage automations, and anything else that would need approval is refused, so schedule only work that fits. Use it when the user asks for something recurring or delayed (\"check the build every 10 minutes\", \"remind me at 5pm\").";
+    let description = "Schedule work to happen later, without the user present: a prompt run in a new child session of this session on each run (the default, with this session's agent and model), sent into this session itself (`target: \"session\"`), or run in a new session with a given agent, once (`at`), on an interval (`every`), on a `cron` schedule, or on each event a connected MCP server pushes (`event`, for servers that offer MCP Events; the prompt receives the event as untrusted data). Also list, pause, resume or remove this project's automations. Creating, pausing, resuming or removing an automation, or watching events, asks the user unless a permission rule names it. A new session's agent must be this session's own agent or a read-only subagent (explore, review). Runs are unattended: shell commands, edits, web fetches, paths outside the project and MCP tools are denied unless the user's `automation.permissions` config allows them, runs cannot manage automations, and anything else that would need approval is refused, so schedule only work that fits. Use it when the user asks for something recurring or delayed (\"check the build every 10 minutes\", \"remind me at 5pm\").";
     let params = json!({
         "type": "object",
         "properties": {
@@ -1399,7 +1429,8 @@ pub fn tool_spec() -> (String, Value) {
                 "args": {"type": "object", "description": "Subscription arguments matching the event's inputSchema (event)"}
             }, "required": ["type"]},
             "prompt": {"type": "string", "description": "What to do on each run (create)"},
-            "agent": {"type": "string", "description": "Run each time in a new session with this agent instead of this session: this session's own agent or a read-only subagent (create)"},
+            "target": {"type": "string", "enum": ["child", "session"], "description": "Where each run goes (create): \"child\" (default) starts a new child session of this session with this session's agent and model; \"session\" continues this session itself"},
+            "agent": {"type": "string", "description": "Run each time in a new session with this agent instead: this session's own agent or a read-only subagent (create; not with target \"session\")"},
             "id": {"type": "string", "description": "The automation (pause, resume, remove)"}
         },
         "required": ["action"]
@@ -1421,6 +1452,8 @@ pub fn table(list: &[Automation]) -> String {
                     match to {
                         Target::Session { session } => session.clone(),
                         Target::Subagent { subagent } => format!("new {subagent} session"),
+                        Target::Child { child, agent, .. } =>
+                            format!("new child of {child} ({agent})"),
                     }
                 ),
                 Action::Code { .. } => "Code Mode program".into(),
@@ -1897,7 +1930,18 @@ mod tests {
             },
         };
         let t = create_title("n", &trigger, &long);
-        assert!(t.contains("to this session (ses_1):\n"), "{t}");
+        assert!(
+            t.contains("into session ses_1 itself, continuing its conversation:\n"),
+            "{t}"
+        );
+        let child = Action::Prompt {
+            prompt: "p".into(),
+            to: Target::child_of("ses_1", "build", "openai/gpt-5"),
+        };
+        assert_eq!(
+            create_title("n", &trigger, &child),
+            "Schedule automation \"n\" (every 10 minutes). Each unattended run sends this prompt to a new child session of ses_1 on each run, not into ses_1 itself (agent build, model openai/gpt-5):\np"
+        );
         assert!(t.ends_with("y… (5 more chars)"), "{t}");
     }
 

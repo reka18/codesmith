@@ -168,10 +168,8 @@ async fn scheduled_runs() {
         texts(&db, &sid),
         ["u:check the build", "a:answer to: check the build"]
     );
-    assert_eq!(
-        db.get(&sid).unwrap().unwrap().title.as_deref(),
-        Some("nightly #1")
-    );
+    let title = db.get(&sid).unwrap().unwrap().title.unwrap();
+    assert!(title.starts_with("nightly — 20"), "{title}");
 
     // Into an existing session, unattended: an approval-needing command is refused.
     let s = au::create(
@@ -612,8 +610,12 @@ async fn the_automation_tool_asks_and_keeps_agents_in_bounds() {
         title.contains("Schedule automation \"job\" (every 1 hour)"),
         "{title}"
     );
+    // By default each run is a new child of this session, and the request says so.
     assert!(
-        title.contains(&format!("to this session ({})", s.id)),
+        title.contains(&format!(
+            "to a new child session of {} on each run, not into {} itself (agent build, model fake/m)",
+            s.id, s.id
+        )),
         "{title}"
     );
     assert!(title.ends_with(":\ndo it"), "{title}");
@@ -1016,4 +1018,262 @@ async fn an_event_watch_request_shows_the_server_event_args_and_prompt() {
         asked[1].0,
         "Watch ticket.created events from MCP server rich with arguments {\"queue\":\"ops\"}, for automation \"tickets\": each event runs it unattended with the event as untrusted data"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runs_start_a_child_of_the_creating_session_unless_told_to_continue_it() {
+    use codesmith_core::permission::Reply;
+    use codesmith_core::session::{Options, Session};
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let db = Store::open(&dbp).unwrap();
+    let base = model().await;
+    let allow =
+        json!({"permissions": [{"action": "automation", "resource": "*", "effect": "allow"}]});
+    let loaded = (open_loader(base.clone(), allow))(dir.path()).unwrap();
+    let asker = Arc::new(Record(Default::default(), Reply::Once, Default::default()));
+    // A plan session on a model other than the configured default.
+    let mut s = Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        Options {
+            agent: Some("plan".into()),
+            model: Some("fake/m2".into()),
+            resume: None,
+            title: Some("creator".into()),
+            parent: None,
+            questioner: None,
+            mcp: None,
+        },
+        asker.clone(),
+        Some(Store::open(&dbp).unwrap()),
+    )
+    .unwrap();
+    let create = |name: &str, prompt: &str, target: Option<&str>| {
+        let mut args = json!({"action": "create", "name": name, "prompt": prompt, "trigger": {"type": "every", "every": "1 hour"}});
+        if let Some(t) = target {
+            args["target"] = json!(t);
+        }
+        format!("call automation {args}")
+    };
+    let made = |name: &str| {
+        au::list(&db, None)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.name == name)
+            .unwrap()
+    };
+    let mut out = Collect(String::new());
+    s.prompt(&create("job", "check the build", None), &mut out)
+        .await
+        .unwrap();
+    assert!(out.0.contains("Created"), "{}", out.0);
+    let job = made("job");
+    assert_eq!(
+        job.action,
+        Action::Prompt {
+            prompt: "check the build".into(),
+            to: Target::Child {
+                child: s.id.clone(),
+                agent: "plan".into(),
+                model: Some("fake/m2".into()),
+            },
+        }
+    );
+    let own = texts(&db, &s.id).len();
+
+    // Each run is a new child session with the creator's agent and model.
+    let runner = Runner::new(dbp.clone(), open_loader(base.clone(), json!({})));
+    for _ in 0..2 {
+        due_now(&db, &job.id);
+        assert_eq!(runner.tick().await.unwrap(), 1);
+    }
+    let runs = runs_of(&db, &job.id);
+    let ids: Vec<String> = runs.iter().map(|r| r.session_id.clone().unwrap()).collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "a fresh session per run");
+    for (r, id) in runs.iter().zip(&ids) {
+        assert_eq!(
+            (r.outcome.as_str(), r.detail.as_str()),
+            ("fired", "answer to: check the build")
+        );
+        let info = db.get(id).unwrap().unwrap();
+        assert_eq!(info.parent_id.as_deref(), Some(s.id.as_str()));
+        assert_eq!(
+            (info.agent.as_str(), info.model.as_str()),
+            ("plan", "fake/m2")
+        );
+        assert_eq!(info.directory, dir.path().display().to_string());
+        let title = info.title.unwrap();
+        assert!(title.starts_with("job — 20"), "{title}");
+        assert_eq!(
+            texts(&db, id),
+            ["u:check the build", "a:answer to: check the build"]
+        );
+    }
+    assert_eq!(
+        texts(&db, &s.id).len(),
+        own,
+        "the creating session is untouched"
+    );
+
+    // `target: "session"` continues the creating session, and asks saying so.
+    let mut out = Collect(String::new());
+    s.prompt(&create("same", "ping", Some("session")), &mut out)
+        .await
+        .unwrap();
+    assert!(out.0.contains("Created"), "{}", out.0);
+    let same = made("same");
+    assert!(
+        matches!(&same.action, Action::Prompt { to: Target::Session { session }, .. } if *session == s.id),
+        "{:?}",
+        same.action
+    );
+    let own = texts(&db, &s.id).len();
+    due_now(&db, &same.id);
+    runner.tick().await.unwrap();
+    let r = &runs_of(&db, &same.id)[0];
+    assert_eq!(r.session_id.as_deref(), Some(s.id.as_str()));
+    assert_eq!(texts(&db, &s.id).len(), own + 2);
+
+    // `agent` can't go with target "session"; an unknown target is refused.
+    for (bad, want) in [
+        (
+            json!({"action": "create", "prompt": "x", "agent": "plan", "target": "session", "trigger": {"type": "every", "every": "1 hour"}}),
+            "can't go with target",
+        ),
+        (
+            json!({"action": "create", "prompt": "x", "target": "elsewhere", "trigger": {"type": "every", "every": "1 hour"}}),
+            "unknown target",
+        ),
+    ] {
+        let mut out = Collect(String::new());
+        s.prompt(&format!("call automation {bad}"), &mut out)
+            .await
+            .unwrap();
+        assert!(out.0.contains(want), "{}", out.0);
+    }
+    let titles = asker.2.lock().unwrap().clone();
+    assert!(titles.is_empty(), "the rule approved without asking");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stored_targets_keep_their_meaning_and_children_run_unattended() {
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let db = Store::open(&dbp).unwrap();
+    let base = model().await;
+    let d = dir.path().display().to_string();
+    let job = |name: &str, prompt: &str, to: Target| au::New {
+        name: name.into(),
+        directory: d.clone(),
+        session_id: None,
+        trigger: Trigger::Every {
+            every: "1 hour".into(),
+            tz: None,
+        },
+        action: Action::Prompt {
+            prompt: prompt.into(),
+            to,
+        },
+    };
+
+    // Rows written before child targets existed read back unchanged.
+    let old = au::create(
+        &db,
+        job(
+            "old",
+            "x",
+            Target::Subagent {
+                subagent: "build".into(),
+            },
+        ),
+    )
+    .unwrap();
+    for (raw, want) in [
+        (
+            r#"{"type":"prompt","prompt":"x","to":{"session":"ses_old"}}"#,
+            Target::Session {
+                session: "ses_old".into(),
+            },
+        ),
+        (
+            r#"{"type":"prompt","prompt":"x","to":{"subagent":"explore"}}"#,
+            Target::Subagent {
+                subagent: "explore".into(),
+            },
+        ),
+    ] {
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation SET action = ?2 WHERE id = ?1",
+                rusqlite::params![old.id, raw],
+            )?)
+        })
+        .unwrap();
+        let a = au::get(&db, &old.id).unwrap().unwrap();
+        assert_eq!(
+            a.action,
+            Action::Prompt {
+                prompt: "x".into(),
+                to: want
+            }
+        );
+    }
+    au::remove(&db, &old.id).unwrap();
+    // The child target's stored form.
+    let t = Target::child_of("ses_p", "build", "fake/m");
+    assert_eq!(
+        serde_json::to_value(&t).unwrap(),
+        json!({"child": "ses_p", "agent": "build", "model": "fake/m"})
+    );
+
+    // A child run is unattended like any other: shell is denied though the
+    // build agent allows it interactively.
+    let loaded = (open_loader(base.clone(), json!({})))(dir.path()).unwrap();
+    let mut parent = codesmith_core::session::Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        codesmith_core::session::Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("p".into()),
+            parent: None,
+            questioner: None,
+            mcp: None,
+        },
+        Arc::new(codesmith_core::permission::Fixed(
+            codesmith_core::permission::Reply::Once,
+        )),
+        Some(Store::open(&dbp).unwrap()),
+    )
+    .unwrap();
+    let mut out = Collect(String::new());
+    parent.prompt("hello", &mut out).await.unwrap();
+    let a = au::create(
+        &db,
+        job(
+            "child",
+            "use shell",
+            Target::child_of(&parent.id, "build", "fake/m"),
+        ),
+    )
+    .unwrap();
+    let runner = Runner::new(dbp.clone(), open_loader(base.clone(), json!({})));
+    due_now(&db, &a.id);
+    runner.tick().await.unwrap();
+    let r = &runs_of(&db, &a.id)[0];
+    assert!(r.detail.contains("No tool named \"shell\""), "{}", r.detail);
+    let info = db.get(r.session_id.as_deref().unwrap()).unwrap().unwrap();
+    assert_eq!(info.parent_id.as_deref(), Some(parent.id.as_str()));
+
+    // With the creating session gone, runs still go ahead, unparented.
+    db.delete(&parent.id).unwrap();
+    due_now(&db, &a.id);
+    runner.tick().await.unwrap();
+    let r = &runs_of(&db, &a.id)[1];
+    assert_eq!(r.outcome, "fired", "{}", r.detail);
+    let info = db.get(r.session_id.as_deref().unwrap()).unwrap().unwrap();
+    assert_eq!(info.parent_id, None);
 }

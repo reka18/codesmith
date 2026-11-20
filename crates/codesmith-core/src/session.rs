@@ -1497,16 +1497,31 @@ impl Session {
                 let trigger: au::Trigger = serde_json::from_value(input["trigger"].clone())
                     .map_err(|e| anyhow!("trigger: {e}"))?;
                 let prompt = s("prompt").ok_or_else(|| anyhow!("`prompt` is required"))?;
-                let to = match s("agent") {
-                    Some(a) => {
+                // By default each run is a new child of this session; only
+                // `target: "session"` continues this session itself.
+                let to = match (s("target").as_deref(), s("agent")) {
+                    (Some("session"), Some(_)) => {
+                        return Err(anyhow!(
+                            "`agent` starts a new session each run, so it can't go with target \"session\""
+                        ))
+                    }
+                    (Some("session"), None) => au::Target::Session {
+                        session: self.id.clone(),
+                    },
+                    (None | Some("child"), Some(a)) => {
                         let target = crate::agent::resolve(&self.loaded.config, &a)
                             .ok_or_else(|| anyhow!("unknown agent {a}"))?;
                         au::check_target(&self.agent.id, &target)?;
                         au::Target::Subagent { subagent: a }
                     }
-                    None => au::Target::Session {
-                        session: self.id.clone(),
-                    },
+                    (None | Some("child"), None) => {
+                        au::Target::child_of(&self.id, &self.agent.id, &self.model_spec)
+                    }
+                    (Some(other), _) => {
+                        return Err(anyhow!(
+                            "unknown target {other:?}; use \"child\" (the default) or \"session\""
+                        ))
+                    }
                 };
                 let name = s("name").unwrap_or_else(|| prompt.chars().take(40).collect());
                 let action = au::Action::Prompt { prompt, to };

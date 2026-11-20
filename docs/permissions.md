@@ -235,7 +235,9 @@ would ask is refused, and after all of your rules, the agents' included,
 and every MCP tool (each configured server's `<server>_*`, and the resource
 tools) are denied, so even an agent configured to allow them can't use them
 unattended. Rules under `automation.permissions` apply only to unattended
-runs and come after those denies, so they opt back in:
+runs and come after those denies, so they opt back in. This holds wherever
+a run goes: the new child session it starts by default, or the session it
+continues.
 
 ```jsonc
 {

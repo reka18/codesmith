@@ -10,6 +10,7 @@ codesmith automation add --name standup --cron "0 9 * * 1-5" --tz Europe/Paris \
   --prompt "Summarize yesterday's commits in three bullets"
 codesmith automation add --name tidy --every "1 day" --agent explore --prompt "List stale TODOs"
 codesmith automation add --name once --at "in 30 minutes" --session ses_... --prompt "Check the deploy"
+codesmith automation add --name ping --every "1 hour" --session ses_... --in-session --prompt "Any news?"
 codesmith automation add --name tickets --event tracker:ticket.created \
   --event-args '{"queue": "ops"}' --prompt "Triage the new ticket"
 codesmith automation list [--all] | pause ID | resume ID | remove ID | log ID
@@ -30,8 +31,20 @@ Each automation has exactly one trigger:
 
 ## Actions
 
-- **A prompt** (`--prompt`) goes to an existing session (`--session ID`), or
-  to a new session on each run, with `--agent` (default `build`).
+- **A prompt** (`--prompt`) runs, on each run, in one of:
+  - **a new child session of the session that created it** (the default).
+    The child inherits that session's agent, model and directory, lists
+    under it in the session list, and is titled
+    `<automation name> — <time>`. The creating session itself is left
+    alone. From the CLI, `--session ID` names the creating session
+    (`--agent` picks another agent, on that agent's default model).
+  - **the creating session itself**, continuing its conversation: ask the
+    agent for that (the tool's `target: "session"`), or pass
+    `--session ID --in-session`. See
+    [Prompts sent to an existing session](#prompts-sent-to-an-existing-session).
+  - **a new standalone session** with `--agent` (default `build`), when the
+    CLI is given no `--session`. The agent can also pick a new session with
+    another agent (the tool's `agent`), which is a child of its session too.
 - **A Code Mode program** (`--code-file FILE`, with optional `--args JSON`)
   runs over the MCP tools, like [Code Mode](mcp.md#code-mode). It gets
   `input = {state, now, runs, args}` and may return
@@ -39,6 +52,14 @@ Each automation has exactly one trigger:
   runs, finish itself, or hand work to a new session with that agent.
 
 Each run's outcome, session and answer are kept for `automation log ID`.
+
+Automations created before child sessions became the default keep the
+target they were stored with: one created to continue a session still
+continues it. Nothing is migrated; to switch one over, remove it and create
+it again. A child target records the agent and model when the automation
+is created, so later changes to the creating session don't change its
+runs. If the creating session is deleted, runs go on in new sessions
+without a parent.
 
 ### Prompts sent to an existing session
 
@@ -79,8 +100,9 @@ automations are kept on a short leash.
 - **Creating an automation asks you first**, and so does watching an MCP
   server's events, even though agents allow everything else by default. The
   request shows what you are approving: the name, the trigger, where the
-  prompt goes (this session, or a new session with which agent), and the
-  prompt itself, with control and invisible characters spelled out and
+  prompt goes (a new child session of this one on each run, with its agent
+  and model, which is the default; this session itself; or a new session
+  with which agent), and the prompt itself, with control and invisible characters spelled out and
   anything past 4000 characters cut with a "(N more chars)" note. An event
   watch's request names the server, the event and its arguments.
 - **Pausing, resuming and removing ask too**, showing the automation's
