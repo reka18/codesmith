@@ -1735,6 +1735,53 @@ impl std::fmt::Display for Status {
 
 impl std::error::Error for Status {}
 
+/// Whether a fetched catalog's URL template may fill `${name}` from the
+/// environment. The catalog is untrusted, so only names that configure
+/// where a provider lives (account, project, region, host, ...) qualify,
+/// never one that may hold a secret: anything else leaves the URL
+/// unresolved. These are the shapes models.dev's URLs use
+/// (`CLOUDFLARE_ACCOUNT_ID`, `GOOGLE_VERTEX_PROJECT`, `AWS_REGION`,
+/// `DATABRICKS_HOST`, `NEON_AI_GATEWAY_BASE_URL`, ...).
+pub fn url_variable(name: &str) -> bool {
+    const SUFFIXES: [&str; 14] = [
+        "_ACCOUNT",
+        "_ACCOUNT_ID",
+        "_GATEWAY_ID",
+        "_PRODUCT_ID",
+        "_PROJECT",
+        "_PROJECT_ID",
+        "_LOCATION",
+        "_REGION",
+        "_HOST",
+        "_ENDPOINT",
+        "_RESOURCE_NAME",
+        "_DEPLOYMENT_URL",
+        "_BASE_URL",
+        "_WORKSPACE",
+    ];
+    const SECRET: [&str; 6] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"];
+    let upper = name.to_ascii_uppercase();
+    SUFFIXES.iter().any(|s| upper.ends_with(s)) && !SECRET.iter().any(|s| upper.contains(s))
+}
+
+/// Whether a catalog base URL, once filled in, may be used: `https`, or
+/// `http` to this machine only.
+pub fn secure_url(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    match u.scheme() {
+        "https" => u.host().is_some(),
+        "http" => match u.host() {
+            Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 /// The largest catalog body read (models.dev's is under 10 MB).
 pub const MAX_BODY: usize = 32 * 1024 * 1024;
 

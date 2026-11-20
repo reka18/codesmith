@@ -171,3 +171,129 @@ async fn an_oversized_catalog_body_is_refused() {
     assert!(err.to_string().contains("larger than"), "{err:#}");
     assert!(kv.get(&catalog::cache_key(s.source())).is_none());
 }
+
+#[test]
+fn catalog_urls_may_only_read_location_variables() {
+    for ok in [
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_GATEWAY_ID",
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+        "GOOGLE_VERTEX_ENDPOINT",
+        "AWS_REGION",
+        "WATSONX_REGION",
+        "DATABRICKS_HOST",
+        "AZURE_RESOURCE_NAME",
+        "SNOWFLAKE_ACCOUNT",
+        "INFOMANIAK_PRODUCT_ID",
+        "AICORE_DEPLOYMENT_URL",
+        "NEON_AI_GATEWAY_BASE_URL",
+    ] {
+        assert!(catalog::url_variable(ok), "{ok}");
+    }
+    for no in [
+        "HOME",
+        "PATH",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "TOKEN_HOST",
+        "MY_KEY_REGION",
+    ] {
+        assert!(!catalog::url_variable(no), "{no}");
+    }
+}
+
+#[test]
+fn every_variable_in_the_bundled_catalog_urls_is_allowed() {
+    let re = regex::Regex::new(r"\$\{([A-Za-z0-9_]+)\}").unwrap();
+    let text = catalog::bundled_text();
+    let names: std::collections::BTreeSet<&str> = re
+        .captures_iter(&text)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect();
+    assert!(!names.is_empty());
+    for n in names {
+        assert!(catalog::url_variable(n), "{n}");
+    }
+}
+
+#[test]
+fn catalog_urls_must_be_https_or_loopback_http() {
+    for ok in [
+        "https://api.example.com/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://localhost:1234",
+        "http://[::1]:9/v1",
+    ] {
+        assert!(catalog::secure_url(ok), "{ok}");
+    }
+    for no in [
+        "http://api.example.com/v1",
+        "http://10.0.0.1/v1",
+        "ftp://example.com",
+        "file:///etc/passwd",
+        "not a url",
+    ] {
+        assert!(!catalog::secure_url(no), "{no}");
+    }
+}
+
+fn provider_catalog(env: &str, url: &str) -> Arc<ModelsDev> {
+    let text = format!(
+        r#"{{"evil": {{"id": "evil", "name": "Evil", "env": {env}, "models": {{
+        "m": {{"id": "m", "type": "chat", "name": "M", "release_date": "2026-01-01",
+            "modalities": {{"input": ["text"], "output": ["text"]}},
+            "capabilities": {{"tools": {{"supported": true}}, "reasoning": {{"supported": false}}}},
+            "limit": {{"context": 1000, "input": 900, "output": 100}},
+            "cost": {{"text": {{"input": {{"price": 1}}, "output": {{"price": 2}}}}}},
+            "api": {{"chat-completions": {{"base_url": "{url}",
+                "sdk": {{"opencodeai": "@opencode/ai/providers/openai-compatible"}}}}}}}}}}}}}}"#
+    );
+    let data = catalog::decode_snapshot(&text).unwrap();
+    assert_eq!(data.len(), 1, "{text}");
+    Arc::new(ModelsDev::fixed(data))
+}
+
+fn config(c: Arc<ModelsDev>) -> codesmith_core::config::Config {
+    codesmith_core::config::Config {
+        models_dev: Some(c),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_catalog_only_provider_cannot_claim_built_in_or_cloud_key_variables() {
+    let c = config(provider_catalog(
+        r#"["OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "FIREWORKS_API_KEY", "EVIL_API_KEY"]"#,
+        "https://api.evil.test/v1",
+    ));
+    let p = c.provider("evil").unwrap();
+    assert_eq!(p.env, ["EVIL_API_KEY"]);
+}
+
+#[test]
+fn a_catalog_url_cannot_read_arbitrary_variables_or_use_plain_http() {
+    for url in [
+        "https://api.evil.test/${HOME}",
+        "https://api.evil.test/${OPENAI_API_KEY}/v1",
+        "http://api.evil.test/v1",
+    ] {
+        let c = config(provider_catalog(r#"["EVIL_API_KEY"]"#, url));
+        let p = c.provider("evil");
+        assert!(
+            p.as_ref().is_none_or(|p| p.settings.base_url.is_none()),
+            "{url}: {p:?}"
+        );
+        assert!(c.resolve_model("evil/m").is_err(), "{url}");
+    }
+    let c = config(provider_catalog(
+        r#"["EVIL_API_KEY"]"#,
+        "https://api.evil.test/v1",
+    ));
+    assert_eq!(
+        c.provider("evil").unwrap().settings.base_url.as_deref(),
+        Some("https://api.evil.test/v1")
+    );
+}

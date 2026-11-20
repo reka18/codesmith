@@ -178,7 +178,21 @@ all. A model resolves from it like this:
   or Responses, Anthropic Messages, Gemini) works without a `providers` entry,
   on that API and with the key variables the catalog lists (`-m
   moonshotai/kimi-k3` with `MOONSHOT_API_KEY` set, for example). `${VAR}` in a
-  catalog URL is filled from the environment.
+  catalog URL is filled from the environment, but only for variables that
+  say where a provider lives (names ending in `_ACCOUNT`, `_ACCOUNT_ID`,
+  `_GATEWAY_ID`, `_PRODUCT_ID`, `_PROJECT`, `_PROJECT_ID`, `_LOCATION`,
+  `_REGION`, `_HOST`, `_ENDPOINT`, `_RESOURCE_NAME`, `_DEPLOYMENT_URL`,
+  `_BASE_URL` or `_WORKSPACE`, and none containing `KEY`, `TOKEN`, `SECRET`,
+  `PASSWORD`, `CREDENTIAL` or `AUTH`); a URL naming any other variable is not
+  used. A catalog URL must be `https` (`http` only to this machine).
+- **Catalog key variables are limited.** A provider that only the catalog
+  defines may not use a key variable a built-in provider reads
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FIREWORKS_API_KEY`, ...) or one
+  starting `AWS_`, `AZURE_`, `GOOGLE_`, `GEMINI_`, `ANTHROPIC_`, `OPENAI_`,
+  `GITHUB_`, `GH_` or `CODESMITH_`: a fetched catalog chooses where that
+  provider's requests go. To use one anyway, name it in the provider's `env`
+  in config (`"providers": {"fireworks-ai": {"env": ["FIREWORKS_API_KEY"]}}`),
+  or use the built-in provider.
 - **Configured providers keep their protocol.** An entry under `providers`
   with the same id as a catalog provider never takes the catalog's protocol:
   it uses its own `protocol`, `openai-chat` when unset, as any custom
@@ -215,7 +229,9 @@ The default server is the public models.dev catalog, read as its v1
 `/api.json`. A mirror is asked for the v2 API
 (`/experimental/v2.0/api.json`) first and its `/api.json` if it has none.
 A refresh revalidates with the cached ETag; an unchanged catalog only records
-the check, and a failed one keeps the cached copy. A fetch (retries included)
+the check, and a failed one keeps the cached copy. A fetched catalog is
+cached only when it is at most 32 MiB and reads in full; a cached copy that
+no longer reads is dropped for the bundled snapshot. A fetch (retries included)
 gives up after ten seconds. The request sends a generic `User-Agent`
 (`codesmith/<version>`) and nothing about you, your project or your config.
 `CODESMITH_DISABLE_MODELS_FETCH=1` forbids every fetch, `--refresh` included.

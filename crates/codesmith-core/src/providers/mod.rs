@@ -206,8 +206,9 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
     }
 }
 
-/// `${NAME}` in a URL template replaced by `value(NAME)`; `None` when one
-/// stays unresolved.
+/// `${NAME}` in a catalog URL template replaced by `value(NAME)`; `None`
+/// when one stays unresolved, names a variable a catalog may not read
+/// ([`crate::catalog::url_variable`]) or the result is not a secure URL.
 pub(crate) fn expand(template: &str, value: impl Fn(&str) -> Option<String>) -> Option<String> {
     let mut out = String::new();
     let mut rest = template;
@@ -215,11 +216,15 @@ pub(crate) fn expand(template: &str, value: impl Fn(&str) -> Option<String>) -> 
         out.push_str(&rest[..i]);
         let after = &rest[i + 2..];
         let end = after.find('}')?;
-        out.push_str(&value(&after[..end])?);
+        let name = &after[..end];
+        if !crate::catalog::url_variable(name) {
+            return None;
+        }
+        out.push_str(&value(name)?);
         rest = &after[end + 1..];
     }
     out.push_str(rest);
-    Some(out)
+    crate::catalog::secure_url(&out).then_some(out)
 }
 
 /// A string setting, empty counting as unset.

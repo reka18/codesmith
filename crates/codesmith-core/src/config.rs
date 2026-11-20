@@ -501,8 +501,7 @@ impl Config {
             .ids()
             .filter(|id| {
                 saved.iter().any(|s| s == id)
-                    || catalog
-                        .environment(id)
+                    || catalog_env(id, &catalog.environment(id))
                         .iter()
                         .any(|v| std::env::var(v).is_ok_and(|k| !k.is_empty()))
             })
@@ -526,20 +525,52 @@ impl Config {
 }
 
 /// `${VAR}` in a catalog URL, from the environment; `None` when a variable
-/// is unset.
+/// is unset or one a catalog may not read ([`crate::catalog::url_variable`]),
+/// or when the URL is not `https` (or `http` to this machine).
 fn expand_url(url: &str) -> Option<String> {
     let re = regex::Regex::new(r"\$\{([A-Za-z0-9_]+)\}").unwrap();
     let mut missing = false;
     let out = re.replace_all(url, |c: &regex::Captures| {
-        std::env::var(&c[1])
-            .ok()
+        Some(&c[1])
+            .filter(|v| crate::catalog::url_variable(v))
+            .and_then(|v| std::env::var(v).ok())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| {
                 missing = true;
                 String::new()
             })
     });
-    (!missing).then(|| out.into_owned())
+    (!missing && crate::catalog::secure_url(&out)).then(|| out.into_owned())
+}
+
+/// The key variables a catalog lists for provider `pid`. Built-in and
+/// plugin providers keep their own; a provider that only the (untrusted)
+/// catalog defines may not claim a variable a built-in provider reads, or
+/// one of the cloud and code-host credential families, since its key goes
+/// to whatever URL the catalog gives. Config's `env` can still name any.
+fn catalog_env(pid: &str, vars: &[String]) -> Vec<String> {
+    if builtin(pid).is_some() || crate::providers::builtin(pid).is_some() {
+        return vars.to_vec();
+    }
+    const FAMILIES: [&str; 9] = [
+        "AWS_",
+        "AZURE_",
+        "GOOGLE_",
+        "GEMINI_",
+        "ANTHROPIC_",
+        "OPENAI_",
+        "GITHUB_",
+        "GH_",
+        "CODESMITH_",
+    ];
+    let claimed = |v: &str| {
+        FAMILIES
+            .iter()
+            .any(|f| v.to_ascii_uppercase().starts_with(f))
+            || BUILTIN.iter().any(|b| b.4.contains(&v))
+            || crate::providers::PROVIDERS.iter().any(|p| p.2.contains(&v))
+    };
+    vars.iter().filter(|v| !claimed(v)).cloned().collect()
 }
 
 /// A catalog provider as provider config, when CodeSmith speaks its
@@ -550,7 +581,7 @@ fn catalog_provider(p: &crate::catalog::Snapshot) -> Option<ProviderConfig> {
     Some(ProviderConfig {
         name: Some(p.info.name.clone()),
         protocol: Some(protocol),
-        env: p.environment.clone(),
+        env: catalog_env(&p.info.id, &p.environment),
         settings: ProviderSettings {
             base_url: Some(expand_url(url)?),
             ..Default::default()
@@ -1168,7 +1199,7 @@ impl Config {
                     .and_then(|c| c.settings.base_url);
                 Some(ProviderConfig {
                     name: Some(p.info.name.clone()),
-                    env: p.environment.clone(),
+                    env: catalog_env(id, &p.environment),
                     settings: ProviderSettings {
                         base_url: url,
                         ..Default::default()
