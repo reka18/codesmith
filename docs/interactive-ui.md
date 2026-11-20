@@ -407,6 +407,18 @@ favourites. Each model's chosen [variant](configuration.md#provider-options-and-
 is remembered and comes back when you pick it again. They are kept in
 `~/.local/share/codesmith/model.json`, in OpenCode's shape.
 
+## MCP servers
+
+*List MCP servers* (`mcp.list`, unbound by default; in the command
+palette) shows each configured [MCP server](mcp.md) with its status:
+`Connected ✓`, `Disabled ○`, `Failed !` or `Sign in required →`. **Enter**
+or **Space** (`dialog.mcp.toggle`) on one that needs a sign-in starts its
+OAuth login, as `codesmith mcp auth` does: the browser opens and the
+dialog waits, then comes back to the list (the server connects when its
+session's servers next start). On one that failed it shows the error;
+**i** then opens a new session with a prompt to investigate it, to edit
+and send.
+
 ## Autocomplete and `@` mentions
 
 Typing `/` lists commands: built-in, custom, and MCP prompts. Typing `@`

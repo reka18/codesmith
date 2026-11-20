@@ -89,6 +89,11 @@ pub enum Ev {
     StepEnd(Usage),
     Permission(Request, oneshot::Sender<Reply>),
     Question(Vec<Prompt>, oneshot::Sender<Answers>),
+    /// An MCP server's OAuth login ended.
+    McpSignedIn {
+        server: String,
+        result: Result<(), String>,
+    },
     /// A whole form to answer (an MCP server's elicitation).
     Form(
         codesmith_core::form::Info,

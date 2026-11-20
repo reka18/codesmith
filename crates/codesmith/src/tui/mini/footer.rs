@@ -70,6 +70,7 @@ fn modal_rows(app: &App, m: &Modal, cols: u16, room: u16) -> u16 {
             (n + 6).min(room)
         }
         Modal::ShellOutput(_) => room,
+        Modal::Mcp(v) => ((v.servers.len().clamp(1, 12) + 6) as u16).min(room),
         Modal::Help(_) | Modal::DiffHelp(_) => room,
     }
 }

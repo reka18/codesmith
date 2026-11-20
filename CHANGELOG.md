@@ -105,6 +105,9 @@ replays of its recorded provider traffic.
 - **Prompt stash and file frecency:** `prompt.stash` and
   `prompt.stash.pop` put a prompt aside and bring it back; `@` lists the
   files mentioned most and lately first.
+- **MCP servers dialog:** `mcp.list` lists the MCP servers and their status,
+  signs in to one that needs OAuth, and drafts an investigation of one that
+  failed.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

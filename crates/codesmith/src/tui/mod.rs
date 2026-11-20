@@ -31,6 +31,7 @@ mod group;
 mod history;
 pub(crate) mod keymap;
 mod markdown;
+mod mcp_view;
 mod mention;
 pub(crate) mod mini;
 mod models;
@@ -1192,9 +1193,59 @@ impl Runner {
                 });
             }
             "app.clear" => self.clear = true,
+            "mcp.list" if self.app.modal.is_none() => {
+                let servers = self
+                    .mcp
+                    .statuses
+                    .iter()
+                    .map(|(n, s)| mcp_view::Server::from_core(n, s))
+                    .collect();
+                self.app.modal = Some(Modal::Mcp(mcp_view::McpView::new(servers)));
+            }
             id if id.starts_with("session.tab.") => self.tab_command(id),
             _ => {}
         }
+    }
+
+    /// Start a remote MCP server's OAuth login on a task (the browser
+    /// opens on its authorization page); the dialog hears how it ended.
+    fn mcp_sign_in(&mut self, name: String) {
+        use codesmith_core::mcp::{oauth, ServerConfig};
+        let tx = self.tx.clone();
+        let Some(ServerConfig::Remote {
+            url,
+            oauth: setting,
+            ..
+        }) = self.loaded.config.mcp.servers.get(&name).cloned()
+        else {
+            let _ = tx.send(Ev::McpSignedIn {
+                server: name,
+                result: Err("it is not a remote server".into()),
+            });
+            return;
+        };
+        if !oauth::Setting::enabled(setting.as_ref()) {
+            let _ = tx.send(Ev::McpSignedIn {
+                server: name,
+                result: Err("OAuth is turned off for it (\"oauth\": false)".into()),
+            });
+            return;
+        }
+        tokio::spawn(async move {
+            let r = oauth::login(
+                &reqwest::Client::new(),
+                &oauth::store_path(),
+                &name,
+                &url,
+                setting.as_ref(),
+                oauth::open_browser,
+            )
+            .await;
+            let _ = tx.send(Ev::McpSignedIn {
+                server: name,
+                result: r.map(|_| ()).map_err(|e| format!("{e:#}")),
+            });
+        });
     }
 
     /// Edit the prompt in the external editor, the terminal handed to it
@@ -1400,6 +1451,13 @@ impl Runner {
                         Ok(())
                     }
                     Some(Action::Preview(..) | Action::Cancelled(_)) => Ok(()),
+                    Some(Action::McpSignIn(name)) => {
+                        self.mcp_sign_in(name);
+                        Ok(())
+                    }
+                    Some(Action::Investigate(prompt)) => self.slash("new", "").map(|()| {
+                        self.app.restore_prompt(&prompt);
+                    }),
                     Some(Action::KillShell(id)) => {
                         self.jobs.cancel(&id);
                         Ok(())

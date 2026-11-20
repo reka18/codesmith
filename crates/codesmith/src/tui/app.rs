@@ -292,6 +292,8 @@ pub enum Modal {
     Picker(Picker),
     /// The subagent and shell panel.
     Panel(super::panel::Panel),
+    /// The MCP servers.
+    Mcp(super::mcp_view::McpView),
     /// A background command's output.
     ShellOutput(Box<super::panel::ShellView>),
     /// The help, scrolled this many rows.
@@ -343,6 +345,10 @@ pub enum Action {
     /// Add the model to the favourites, or take it off (ctrl+f in the
     /// model picker).
     Favorite(String),
+    /// Start the MCP server's OAuth login.
+    McpSignIn(String),
+    /// Open a new session with this prompt to send.
+    Investigate(String),
     /// Stop the background command (the shell panel's kill).
     KillShell(String),
     /// Open the URL in the browser (a form's external link).
@@ -1222,6 +1228,22 @@ impl App {
                 let form = super::form::Form::questions(&prompts);
                 self.ask_form(form, FormReply::Questions(prompts.len(), reply));
             }
+            Ev::McpSignedIn { server, result } => {
+                if let Some(Modal::Mcp(v)) = self.modal.as_mut() {
+                    v.signed_in(&server, result.is_ok());
+                }
+                let t = match result {
+                    Ok(()) => super::toast::Toast::new(
+                        super::toast::Variant::Success,
+                        format!("Signed in to {server}: it connects when the servers next start"),
+                    ),
+                    Err(e) => super::toast::Toast::new(
+                        super::toast::Variant::Error,
+                        format!("Sign-in to {server} failed: {e}"),
+                    ),
+                };
+                self.toast(t);
+            }
             Ev::Form(info, reply) => {
                 let form = super::form::Form::new(&info);
                 self.ask_form(form, FormReply::Form(reply));
@@ -1333,8 +1355,13 @@ impl App {
                 p.filter.push_str(s.lines().next().unwrap_or(""));
                 p.refilter();
             }
-            Some(Modal::Help(_) | Modal::DiffHelp(_) | Modal::Panel(_) | Modal::ShellOutput(_)) => {
-            }
+            Some(
+                Modal::Help(_)
+                | Modal::DiffHelp(_)
+                | Modal::Panel(_)
+                | Modal::ShellOutput(_)
+                | Modal::Mcp(_),
+            ) => {}
             None => {
                 if let Some(files) = super::attach::pasted_files(s, &self.cwd) {
                     for path in files {
@@ -1587,6 +1614,7 @@ impl App {
                 return Some(Some(Action::Quit));
             }
             "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
+            "mcp.list" => return Some(Some(Action::Run("mcp.list"))),
             "terminal.title.toggle" => return Some(Some(Action::Run("terminal.title.toggle"))),
             "prompt.editor" => return Some(Some(Action::Run("prompt.editor"))),
             "model.cycle_recent" => return Some(Some(Action::Run("model.cycle_recent"))),
@@ -2363,6 +2391,18 @@ impl App {
                 return self.preview(before);
             }
             Modal::Panel(_) => return self.panel_key(&k),
+            Modal::Mcp(v) => {
+                use super::mcp_view::Outcome;
+                match v.key(&k, &km) {
+                    Outcome::Nothing => {}
+                    Outcome::Close => self.modal = None,
+                    Outcome::SignIn(name) => return Some(Action::McpSignIn(name)),
+                    Outcome::Investigate(prompt) => {
+                        self.modal = None;
+                        return Some(Action::Investigate(prompt));
+                    }
+                }
+            }
             Modal::ShellOutput(v) => {
                 match (hits(&["dialog.select.page_up"]).is_empty(), k.code, typed) {
                     (_, KeyCode::Up, _) => v.scroll(-1),

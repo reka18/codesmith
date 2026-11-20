@@ -1528,6 +1528,7 @@ pub mod scope {
         "session.child.first",
         "prompt.stash",
         "prompt.stash.pop",
+        "mcp.list",
         "app.exit",
         "terminal.suspend",
         "terminal.title.toggle",
@@ -1645,6 +1646,7 @@ pub mod scope {
         "composer.shell.down",
         "composer.shell.select",
         "composer.shell.kill",
+        "dialog.mcp.toggle",
     ];
     pub const ALL: &[&[&str]] = &[
         AUTOCOMPLETE,

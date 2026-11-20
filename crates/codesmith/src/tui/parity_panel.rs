@@ -493,3 +493,82 @@ fn split_characters_and_controls_in_output() {
     let f = frame(&v.app, 100, 30);
     assert!(f.contains("\\x07bell"), "{f}");
 }
+
+// ----- cli/tui/dialog-mcp -----------------------------------------------------
+
+fn mcp(status: super::mcp_view::Status) -> App {
+    let mut a = App::new();
+    a.modal = Some(Modal::Mcp(super::mcp_view::McpView::new(vec![
+        super::mcp_view::Server {
+            name: "linear".into(),
+            status,
+        },
+    ])));
+    a
+}
+
+fn mcp_frame(a: &App) -> String {
+    frame(a, 100, 24)
+}
+
+// dialog-mcp.test.tsx: "starts OAuth with %s for an MCP server requiring authentication" (2 cases)
+#[test]
+fn oc_starts_oauth_for_an_mcp_server_requiring_authentication() {
+    for k in [KeyCode::Enter, KeyCode::Char(' ')] {
+        let mut a = mcp(super::mcp_view::Status::NeedsAuth);
+        let f = mcp_frame(&a);
+        assert!(
+            f.contains("Sign in required") && !f.contains("view error"),
+            "{f}"
+        );
+        assert_eq!(a.on_key(key(k)), Some(Action::McpSignIn("linear".into())));
+        assert!(mcp_frame(&a).contains("Waiting for authorization"));
+    }
+}
+
+// dialog-mcp.test.tsx: "returns to the MCP server list after OAuth completes"
+#[test]
+fn oc_returns_to_the_mcp_server_list_after_oauth_completes() {
+    let mut a = mcp(super::mcp_view::Status::NeedsAuth);
+    a.on_key(key(KeyCode::Enter));
+    assert!(mcp_frame(&a).contains("Waiting for authorization"));
+    a.on_event(super::bridge::Ev::McpSignedIn {
+        server: "linear".into(),
+        result: Ok(()),
+    });
+    let f = mcp_frame(&a);
+    assert!(
+        f.contains("MCP servers") && !f.contains("Waiting for authorization"),
+        "{f}"
+    );
+}
+
+// dialog-mcp.test.tsx: "opens an investigation draft for a failed MCP server at its originating location"
+// (adapted) one location: the draft goes to a new session in the UI's folder.
+#[test]
+fn oc_opens_an_investigation_draft_for_a_failed_mcp_server() {
+    let mut a = mcp(super::mcp_view::Status::Failed(
+        "MCP error -32000: Connection closed".into(),
+    ));
+    let f = mcp_frame(&a);
+    assert!(
+        f.contains("Failed !") && f.contains("view error enter"),
+        "{f}"
+    );
+    a.on_key(key(KeyCode::Enter));
+    assert!(mcp_frame(&a).contains("investigate i"));
+    let Some(Action::Investigate(prompt)) = a.on_key(key(KeyCode::Char('i'))) else {
+        panic!("no investigation")
+    };
+    assert!(a.modal.is_none());
+    for s in [
+        "OpenCode component failed in the current project",
+        "MCP server: linear",
+        "Status: failed",
+        "Configuration: mcp.servers.linear",
+        "MCP error -32000: Connection closed",
+        "project and global OpenCode configuration",
+    ] {
+        assert!(prompt.contains(s), "{s}");
+    }
+}

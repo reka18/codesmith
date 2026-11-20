@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 461 | 88 | 673 | 13 |
+| tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **737** | **524** | **2373** | **259** |
+| **Total** | **4637** | **744** | **741** | **520** | **2373** | **259** |
 
 ## Fixes made while porting
 
@@ -301,6 +301,12 @@ Where the tests live:
   `frecency.jsonl` records each mentioned file and orders the `@` list
   before anything is typed, both parsed as OpenCode's (bad lines skipped,
   latest kept); a prompt restored after a fork follows the typed one.
+- **MCP servers dialog** (`cli/tui/dialog-mcp`): `mcp.list` did nothing.
+  It now lists the servers with OpenCode's status labels, starts the OAuth
+  login of one that needs a sign-in (Enter or Space) and waits for it, and
+  shows a failed one's error with `i` to open a new session drafting
+  OpenCode's investigation prompt. Difference: a server signed in here
+  connects when its session's servers next start.
 
 ## Differences found but not fixed
 
@@ -809,6 +815,9 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/jsonl` | stash JSONL skips corruption and retains newest entries | after a fix | oc_stash_jsonl_skips_corruption_and_retains_newest_entries |
 | `tui/test/prompt/jsonl` | frecency JSONL skips corruption, keeps latest path state, and limits entries | after a fix | oc_frecency_jsonl_skips_corruption_keeps_latest_path_state_and_limits_entries |
 | `tui/test/prompt/history` | appends a prompt and shifts ranges by the %s offset (2 cases) | after a fix | oc_appends_a_prompt_after_the_typed_one (adapted: parts follow labels, not offsets) |
+| `tui/test/cli/tui/dialog-mcp` | starts OAuth with %s for an MCP server requiring authentication (2 cases) | after a fix | oc_starts_oauth_for_an_mcp_server_requiring_authentication |
+| `tui/test/cli/tui/dialog-mcp` | returns to the MCP server list after OAuth completes | after a fix | oc_returns_to_the_mcp_server_list_after_oauth_completes |
+| `tui/test/cli/tui/dialog-mcp` | opens an investigation draft for a failed MCP server at its originating location | after a fix | oc_opens_an_investigation_draft_for_a_failed_mcp_server (adapted: one location) |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -960,12 +969,6 @@ transport and its tool presentation.
 
 - `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents (the object form of `model` with a variant)
 - `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit (no runner-level test harness yet)
-
-### tui: MCP dialog (status, OAuth) (4)
-
-- `tui/test/cli/tui/dialog-mcp`: starts OAuth with %s for an MCP server requiring authentic (2 cases)
-- `tui/test/cli/tui/dialog-mcp`: returns to the MCP server list after OAuth completes
-- `tui/test/cli/tui/dialog-mcp`: opens an investigation draft for a failed MCP server at its originating location
 
 ### cli: worktree from a subfolder (3)
 

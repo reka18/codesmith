@@ -1868,6 +1868,7 @@ pub(super) fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             let lines = panel.lines(&subs, &app.shells, width as usize, &app.keymap);
             ("Subagents and shells".into(), lines, p.primary)
         }
+        Modal::Mcp(v) => (v.title(), v.lines(&app.keymap), p.primary),
         Modal::ShellOutput(v) => {
             let width = MODAL_WIDTH
                 .min(area.width.saturating_sub(2))
