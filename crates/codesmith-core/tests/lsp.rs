@@ -56,7 +56,10 @@ async fn diagnostics_follow_writes_and_edits() {
     let file = root.join("a.fake");
     // Let the fake server finish starting first: on a cold CI machine Python
     // can take longer than the short startup wait used below for slow servers.
-    assert!(lsp.has_clients(&file).await, "the fake language server started");
+    assert!(
+        lsp.has_clients(&file).await,
+        "the fake language server started"
+    );
 
     // write: errors in this file (warnings left out) and in other files.
     let (out, err) = tool::execute(
