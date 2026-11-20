@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 340 | 227 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 345 | 222 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **616** | **663** | **2357** | **259** |
+| **Total** | **4637** | **742** | **621** | **658** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -617,6 +617,11 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `util/src/session-turn` | preserves missing-anchor fallbacks without including the absent assistant's tokens | after a fix | oc_preserves_missing_anchor_fallbacks |
 | `util/src/session-turn` | measures a marker-era turn from its first prompt across steers | after a fix | oc_measures_a_marker_era_turn_from_its_first_prompt_across_steers |
 | `tui/test/config-v2` | shows the TPS default in session settings | after a fix | oc_shows_the_tps_default_in_session_settings (adapted: `tui.session.tps`) |
+| `tui/test/cli/tui/session-rows` | filters OpenAI cache quantization from cache reuse drops | after a fix | oc_filters_openai_cache_quantization_from_cache_reuse_drops (`tui/usage.rs`) |
+| `tui/test/cli/tui/session-rows` | compares cache reuse only for the same model | after a fix | oc_compares_cache_reuse_only_for_the_same_model |
+| `tui/test/cli/tui/session-rows` | carries model identity with the cross-turn cache baseline | after a fix | oc_carries_model_identity_with_the_cross_turn_cache_baseline |
+| `tui/test/cli/tui/session-rows` | resets the cross-turn cache baseline after compaction | after a fix | oc_resets_the_cross_turn_cache_baseline_after_compaction |
+| `tui/test/cli/tui/session-rows` | closes turn usage on the idle marker so steered steps share one footer | after a fix | oc_closes_turn_usage_on_the_idle_marker (adapted: the usage rows; the transcript rows are CodeSmith's own) |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -886,14 +891,6 @@ transport and its tool presentation.
 - `tui/test/cli/tui/composer-keymap`: configured composer bindings work with a focused textarea
 - `tui/test/cli/tui/composer-keymap`: ctrl+c closes the active composer
 - `tui/test/cli/tui/composer-keymap`: shell output respects a configured binding with a focused textarea
-
-### tui: turn usage footers (5)
-
-- `tui/test/cli/tui/session-rows`: filters OpenAI cache quantization from cache reuse drops
-- `tui/test/cli/tui/session-rows`: compares cache reuse only for the same model
-- `tui/test/cli/tui/session-rows`: carries model identity with the cross-turn cache baseline
-- `tui/test/cli/tui/session-rows`: resets the cross-turn cache baseline after compaction
-- `tui/test/cli/tui/session-rows`: closes turn usage on the idle marker so steered steps share one footer
 
 ### tui: sidebar and footer status (5)
 

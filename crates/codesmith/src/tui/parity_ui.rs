@@ -360,3 +360,45 @@ fn a_turn_ends_with_its_footer() {
     a.end_turn(false);
     assert_eq!(a.entries.len(), n);
 }
+
+// With `tui.debug.turn_tokens`, a turn's footer has its usage row, which
+// flags a step that read fewer cached tokens than the turn before.
+#[test]
+fn turn_usage_rows_flag_likely_cache_busts() {
+    use super::app::{App, Entry};
+    use super::bridge::Ev;
+    let mut a = App::new();
+    a.turn_tokens = true;
+    a.header.agent = "build".into();
+    a.header.model = "anthropic/claude".into();
+    for read in [10_000, 4_000] {
+        a.start_turn();
+        a.on_event(Ev::Text("hi".into()));
+        a.on_event(Ev::StepEnd(codesmith_ai::Usage {
+            input: 100,
+            output: 20,
+            cache_read: read,
+            ..Default::default()
+        }));
+        a.busy = false;
+        a.end_turn(false);
+    }
+    let footers: Vec<&super::app::Footer> = a
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Footer(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(footers[0].tokens[0].drop, None);
+    assert_eq!(footers[1].tokens[0].drop, Some(6_000));
+    let text: String = super::view::transcript(&a, 120)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(
+        text.contains("+ Tokens: 1 step · latest: 120 new · 4,000 cached · 4,120 total · ! 1 likely cache bust"),
+        "{text}"
+    );
+}

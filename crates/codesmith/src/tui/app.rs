@@ -42,6 +42,8 @@ pub struct Footer {
     /// Output tokens a second, when shown (`tui.session.tps`) and known.
     pub tps: Option<f64>,
     pub interrupted: bool,
+    /// Its steps' tokens, with `tui.debug.turn_tokens`.
+    pub tokens: Vec<super::usage::Step>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -417,6 +419,10 @@ pub struct App {
     pub tps: bool,
     /// The last turn's duration (ms) and throughput.
     pub last_turn: Option<(u64, Option<f64>)>,
+    /// `tui.debug.turn_tokens`: a usage row after each turn.
+    pub turn_tokens: bool,
+    /// The session's steps so far, for the turn usage rows.
+    pub usage_log: super::usage::Log,
 }
 
 /// How a turn ended.
@@ -694,6 +700,7 @@ impl App {
         to.verbosity = self.verbosity;
         to.grouping = self.grouping;
         to.tps = self.tps;
+        to.turn_tokens = self.turn_tokens;
         to.reasoning_source = self.reasoning_source;
         to.diff_prefs = self.diff_prefs;
         to.diff_source = self.diff_source;
@@ -762,10 +769,16 @@ impl App {
         let (ms, tps) = r.finish();
         let tps = tps.filter(|_| self.tps);
         self.last_turn = Some((ms, tps));
+        let model = super::usage::Model::parse(&self.header.model);
+        let mut tokens = self.usage_log.turn(&r.usage, &model);
+        if !self.turn_tokens {
+            tokens.clear();
+        }
         if self.mini.is_some() {
             return;
         }
         self.entries.push(Entry::Footer(Footer {
+            tokens,
             agent: self.header.agent.clone(),
             model: self.header.model.clone(),
             duration_ms: ms,
@@ -865,7 +878,8 @@ impl App {
                 Ev::Text(_) | Ev::Reasoning(_) | Ev::ToolInput { .. } => r.token(),
                 Ev::ToolEnd { .. } => r.tool_ended(),
                 Ev::StepEnd(u) if self.children.is_empty() => {
-                    r.step_ended(u.output.saturating_sub(u.reasoning), u.reasoning)
+                    r.step_ended(u.output.saturating_sub(u.reasoning), u.reasoning);
+                    r.usage.push((*u, false));
                 }
                 _ => {}
             }
@@ -1026,6 +1040,7 @@ impl App {
             }
             Ev::Notice(n) => self.notice(n),
             Ev::Compacted(b, a) => {
+                self.usage_log.compacted();
                 self.context = a;
                 self.notice(format!("compacted context: ~{b} → ~{a} tokens"))
             }

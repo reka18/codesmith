@@ -72,7 +72,9 @@ replays of its recorded provider traffic.
   the session and the command that continues it are printed. Mentions of
   other sessions (`ses_…`) in replies are shown with their titles.
 - **Turn footers:** each turn ends with its agent, model, duration and
-  throughput, measured as OpenCode measures them (`tui.session.tps`).
+  throughput, measured as OpenCode measures them (`tui.session.tps`);
+  `tui.debug.turn_tokens` adds each turn's token usage and flags likely
+  cache busts.
 - **Message navigation:** OpenCode's `session.message.*` commands jump
   to the next or previous prompt or answer; alt+end to the last prompt.
 - **External editor:** `<leader>e` or `/editor` edits the prompt in

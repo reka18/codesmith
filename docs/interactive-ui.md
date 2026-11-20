@@ -51,6 +51,11 @@ terminal's own scrollback.
   tokens over the time the model spent streaming them, so tool time and
   the wait for the first token are left out; `tui.session.tps: false`
   hides it. Mini mode adds the throughput to its turn summary.
+  With `tui.debug.turn_tokens`, a `Tokens` row follows it (`+ Tokens: 2
+  steps · latest: 1,234 new · 5,000 cached · 6,234 total`), flagging
+  likely cache busts: a step that read fewer cached tokens than the one
+  before it on the same model (OpenAI's one- to two-bucket moves aside).
+  **ctrl+o** opens the per-step table.
 - **Tabs.** The open [session tabs](#session-tabs) along the top: each
   one's title, its status, and `+ New session` for a new one.
 - **Header.** The agent, model, session id and title.

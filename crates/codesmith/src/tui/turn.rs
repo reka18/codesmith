@@ -109,6 +109,8 @@ pub struct Recorder {
     messages: Vec<Message>,
     /// The step under way: when its request went out, and its first token.
     step: Option<(u64, Option<u64>)>,
+    /// Each step's usage, and whether tool calls followed it.
+    pub usage: Vec<(codesmith_ai::Usage, bool)>,
 }
 
 impl Recorder {
@@ -121,6 +123,7 @@ impl Recorder {
                 ..Default::default()
             }],
             step: Some((0, None)),
+            usage: Vec::new(),
         }
     }
 
@@ -140,6 +143,9 @@ impl Recorder {
 
     /// A tool call ended: the next step's request goes out after it.
     pub fn tool_ended(&mut self) {
+        if let Some(last) = self.usage.last_mut() {
+            last.1 = true;
+        }
         let now = self.now();
         self.step = Some((now, None));
     }

@@ -58,6 +58,8 @@ pub struct Settings {
     pub mini: super::mini::Settings,
     /// `tabs`: the session tabs.
     pub tabs: super::tabs::Settings,
+    /// `debug.turn_tokens`: a token usage row after each turn.
+    pub turn_tokens: bool,
     /// `session.tps`: show a turn's throughput in its footer.
     pub tps: bool,
     /// `terminal.title`: keep the terminal window's title on the session's.
@@ -134,6 +136,7 @@ impl Default for Settings {
             tabs: super::tabs::Settings::default(),
             terminal_title: true,
             tps: true,
+            turn_tokens: false,
             attention: Attention::default(),
         }
     }
@@ -304,6 +307,13 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
                 }
             }
         }
+    }
+    match get(&v, &["debug", "turn_tokens"]) {
+        None => {}
+        // OpenCode's "verbose" also lists each step's tool calls.
+        Some(Value::Bool(b)) => s.turn_tokens = *b,
+        Some(Value::String(v)) if v == "verbose" => s.turn_tokens = true,
+        Some(_) => errors.push("tui.debug.turn_tokens: must be true, false or \"verbose\"".into()),
     }
     match get(&v, &["session", "tps"]) {
         None => {}

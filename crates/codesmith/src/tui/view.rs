@@ -580,6 +580,34 @@ fn footer_line(f: &super::app::Footer, w: usize) -> Line<'static> {
     ])
 }
 
+/// A turn's `Tokens` row (`tui.debug.turn_tokens`), and its per-step
+/// table when tool output is expanded.
+fn tokens_lines(steps: &[super::usage::Step], open: bool, w: usize) -> Vec<Line<'static>> {
+    if steps.is_empty() {
+        return Vec::new();
+    }
+    let p = theme::current();
+    let (head, warn) = super::usage::summary(steps, open);
+    let mut row = vec![Span::styled(cut(&head, w), fg(p.muted))];
+    if let Some(warn) = warn {
+        row.push(Span::styled(
+            cut(&warn, w.saturating_sub(head.width())),
+            fg(p.warning),
+        ));
+    }
+    let mut out = vec![Line::from(row)];
+    if open {
+        for (text, bust) in super::usage::table(steps) {
+            let style = if bust { fg(p.warning) } else { fg(p.muted) };
+            out.push(Line::from(Span::styled(
+                cut(&format!("  {text}"), w),
+                style,
+            )));
+        }
+    }
+    out
+}
+
 /// `explore` as OpenCode titles it: `Explore`.
 fn titlecase(s: &str) -> String {
     let mut c = s.chars();
@@ -1198,7 +1226,10 @@ fn entry_lines(app: &App, e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
         )),
         Entry::Notice(t) => out.extend(styled(wrap(t, w), "", fg(p.warning))),
         Entry::Media(label) => out.push(media_line(label, w)),
-        Entry::Footer(f) => out.push(footer_line(f, w)),
+        Entry::Footer(f) => {
+            out.push(footer_line(f, w));
+            out.extend(tokens_lines(&f.tokens, app.expand_tools, w));
+        }
         Entry::Error(t) => out.extend(styled(wrap(t, w), "error: ", fg(p.error))),
         Entry::Todos(todos) => {
             for t in todos {

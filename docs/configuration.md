@@ -1410,6 +1410,7 @@ theme):
 | `session.markdown` | `rendered` | Reasoning as rendered Markdown, or `source` for its highlighted Markdown text. |
 | `session.verbosity` | `low` | How much tool activity the transcript shows: `low` sums up each run of tool calls and thoughts on one row, `medium` shows calls on their own rows with reads and searches grouped, `high` also opens those groups. See [verbosity](interactive-ui.md#verbosity). |
 | `session.tps` | `true` | Show a turn's throughput (output tokens a second) in its footer. |
+| `debug.turn_tokens` | `false` | `true` (or OpenCode's `"verbose"`) adds a token usage row after each turn, with likely cache busts flagged. |
 | `session.grouping` | `auto` | `none` draws reads and searches one by one rather than as one `Explored` row. |
 | `diffs.source` | `branch` | What the [diff viewer](interactive-ui.md#the-diff-viewer-and-review-panel) opens on: `branch` (the branch's commits and local changes against its base), `committed`, `working` (uncommitted changes) or `turn` (the session's last turn). |
 | `diffs.view` | `auto` | `split` or `unified` patches; `auto` splits when the pane is 100 columns wide. |

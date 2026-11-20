@@ -50,6 +50,7 @@ mod tabs_host;
 mod term;
 pub(crate) mod theme;
 mod turn;
+mod usage;
 mod view;
 
 pub(crate) use view::display_safe;
@@ -209,6 +210,7 @@ impl Runner {
         self.app.header.cost = self.loaded.config.cost(&self.app.header.model);
         if s.id != self.session_id {
             self.app.context = 0;
+            self.app.usage_log = Default::default();
         }
         self.app.usage = s.usage;
         self.app.spend = s.spend();
@@ -1546,6 +1548,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     r.app.verbosity = tui.verbosity;
     r.app.grouping = tui.grouping;
     r.app.tps = tui.tps;
+    r.app.turn_tokens = tui.turn_tokens;
     r.diffs = tui.diffs;
     r.app.diff_source = tui.diffs.source;
     r.app.diff_prefs = diff_view::remembered(
