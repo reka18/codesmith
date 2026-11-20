@@ -128,11 +128,74 @@ A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
 take precedence over `codesmith auth login`.
 
-There is no model catalog. Any model id the provider accepts works, for
-example `-m anthropic/claude-sonnet-4-5` or `-m ollama/qwen3-coder`. Configure
-a model under its provider only when you want to set limits, prices or other
-options. The model id is everything after the first `/`, so ids that contain
-slashes work (`openrouter/qwen/qwen3-coder`).
+Any model id the provider accepts works, for example
+`-m anthropic/claude-sonnet-4-5` or `-m ollama/qwen3-coder`. What a model can
+do, its limits and its prices come from the [model catalog](#the-model-catalog-modelsdev)
+when it lists the model; configure a model under its provider only to set or
+override them, or for a model the catalog doesn't know. The model id is
+everything after the first `/`, so ids that contain slashes work
+(`openrouter/qwen/qwen3-coder`).
+
+### The model catalog (models.dev)
+
+As in OpenCode, CodeSmith reads the [models.dev](https://models.dev) catalog
+(its v2 API, served at `https://models.opencode.ai`): every provider it lists,
+with each model's input and output modalities, tool support, reasoning
+controls, context and output limits, and prices. A model resolves from it like
+this:
+
+- **Limits**: `limit.context` and `limit.output` come from the catalog unless
+  configured, so compaction knows the context window of any listed model. The
+  output limit asked for is the catalog's, capped at 256k tokens.
+- **Costs**: the catalog's default price is used for the session cost and
+  `codesmith stats` unless the model has a `cost` (context tiers above the
+  default are kept in the catalog but not applied).
+- **Modalities**: the catalog's input modalities decide whether images, PDFs,
+  audio and video are sent, unless `modalities`, `attachment` or
+  `capabilities.input` say otherwise.
+- **Variants**: the reasoning variants (`provider/model#high`) are generated
+  from the catalog's reasoning controls (its effort levels, thinking toggle or
+  budget), spelled for the model's API. A model moved to another `protocol`
+  by config gets them respelled; configured `variants` merge into generated
+  ones of the same name.
+- **Request extras**: the catalog's per-model base URL, reasoning field and
+  token-limit field apply unless configured. Its *modes* are models of their
+  own (`openai/gpt-5-fast`, for example), sent as the base model with the
+  mode's body and headers.
+- **Providers**: a catalog provider whose API CodeSmith speaks (OpenAI Chat
+  or Responses, Anthropic Messages, Gemini) works without a `providers` entry,
+  with the key variables the catalog lists (`-m moonshotai/kimi-k3` with
+  `MOONSHOT_API_KEY` set, for example). A configured entry overlays it, as it
+  does a built-in one. `${VAR}` in a catalog URL is filled from the
+  environment.
+
+Configured values always win, field by field. Deprecated models, chat models
+that don't take or make text, and models of other types (image, video,
+decision) are not offered for sessions.
+
+**Where it comes from.** Reading the catalog never waits for the network. The
+first source that has one wins: the file named by `$CODESMITH_MODELS_PATH`
+(a v2 or v1 models.dev catalog), the cached copy in
+`$XDG_CACHE_HOME/codesmith/models/` (else `~/.cache/codesmith/models/`), then
+the snapshot bundled with the binary. Only with none of these (which a normal
+build never lacks) is it fetched on the spot, waiting at most ten seconds.
+
+**Refreshing.** The interactive UI, `codesmith run`, `serve` and `acp`
+refresh the catalog in the background when the cached copy is more than five
+minutes old, and again every five minutes while they run, as OpenCode's
+server does. The request revalidates with the cached ETag; an unchanged
+catalog only records the check, and a failed one keeps the cached copy. A
+fetch (retries included) gives up after ten seconds. The request sends a
+generic `User-Agent` (`codesmith/<version>`) and nothing about you, your
+project or your config.
+
+| Variable | Effect |
+|---|---|
+| `CODESMITH_MODELS_URL` | Fetch from this mirror instead of `https://models.opencode.ai`. A mirror without the v2 API is read from its `/api.json` (v1). |
+| `CODESMITH_MODELS_PATH` | Read the catalog from this file instead of the cache (it is not refreshed into it). |
+| `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch; the cache or the bundled snapshot serves. |
+
+`scripts/models-snapshot.py` rebuilds the bundled snapshot.
 
 ### Adding or overriding a provider
 
@@ -205,13 +268,20 @@ Model fields:
 | `attachment` | OpenCode's older flag: `false` means text input only. |
 | `cache` | [Prompt caching](#prompt-caching) for this model, over the provider's (`options.cache` also works). |
 | `compatibility` | [Compatibility overrides](#compatibility-overrides) for this model, over the provider's. |
+| `capabilities` | OpenCode's capabilities, merged field by field over the catalog's: `input` and `output` modalities, `tools`, `temperature`, and `reasoning` (`{"supported": true, "effort": ["low", "high"]}`, `"toggle": true`, `"budget": {"min": 1024}`), which regenerates the reasoning variants. |
+| `type` | `chat` (the default), or `image`, `video` or `decision`; only chat models are offered for sessions. Unset keeps the catalog's. |
+| `interleaved` | OpenCode's older spelling of `compatibility.reasoningField`: the field name, or `{"field": name}`. |
+
+Unset `limit`, `cost`, `modalities` and variants come from the
+[model catalog](#the-model-catalog-modelsdev) when it lists the model.
 
 `codesmith debug model provider/model[#variant]` shows what a model resolves
 to: the URL, protocol, limits, extra body, the provider options sent with each
 request, the selected variant, and every variant the model has with its
-options. `codesmith models` lists providers and
-configured models, and `codesmith models <provider>` asks that provider's API
-which models it has.
+options. `codesmith models` lists the providers (built-in, configured, and
+catalog providers you have a key for) with their configured and catalog chat
+models, and `codesmith models <provider>` asks that provider's API which
+models it has.
 
 ### Azure OpenAI
 
@@ -540,11 +610,15 @@ set. Turn on SearXNG's JSON format in its `settings.yml`
 | `CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` | Don't read `.claude/skills` only. |
 | `CODESMITH_DB` | The session database (default `<data>/codesmith.db`). |
 | `XDG_DATA_HOME` | The data folder is `$XDG_DATA_HOME/codesmith`, else `~/.local/share/codesmith`. |
+| `XDG_CACHE_HOME` | The cache folder (the models.dev catalog) is `$XDG_CACHE_HOME/codesmith`, else `~/.cache/codesmith`. |
+| `CODESMITH_MODELS_URL` | Where the [model catalog](#the-model-catalog-modelsdev) is fetched from (default `https://models.opencode.ai`). |
+| `CODESMITH_MODELS_PATH` | A catalog file read instead of the cached one. |
+| `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog. |
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
 
 CodeSmith sets `CODESMITH_SESSION_ID` for commands the `shell` tool runs, and
 `CODESMITH_WORKTREE_BASE` and `CODESMITH_WORKTREE_PATH` for a worktree's
 `start` command.
 
-`codesmith debug paths` shows the config, data, tool-output and scratch
+`codesmith debug paths` shows the config, data, tool-output, scratch and cache
 folders in use.

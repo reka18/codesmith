@@ -102,6 +102,11 @@ pub struct Config {
     /// (`media.image`: `auto_resize`, `max_width`, `max_height`,
     /// `max_base64_bytes`).
     pub media: crate::media::MediaConfig,
+    /// The models.dev catalog that fills in what model config leaves out
+    /// (limits, costs, modalities, variants) and adds its providers. Set by
+    /// [`load`]; a config built any other way has none.
+    #[serde(skip)]
+    pub catalog: Option<std::sync::Arc<crate::catalog::ModelsDev>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -203,6 +208,70 @@ pub struct ModelConfig {
     /// `requireReasoning`, `requireAssistantAfterTool`. Merged over the
     /// provider's.
     pub compatibility: Map<String, Value>,
+    /// What the model can do (OpenCode's `capabilities`), merged field by
+    /// field over the catalog's: `input`, `output`, `tools`,
+    /// `temperature`, and `reasoning` (`{"supported": true, "effort":
+    /// [...]}`, `"toggle"`, `"budget"`), which regenerates the reasoning
+    /// variants.
+    pub capabilities: Option<CapabilitiesConfig>,
+    /// OpenCode's older `interleaved`: the reasoning field name (or
+    /// `{"field": name}`), the same as `compatibility.reasoningField`.
+    pub interleaved: Option<Value>,
+    /// The model type: `chat` (the default; the only type offered for
+    /// sessions), `decision`, `image` or `video`. Unset keeps the catalog's.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CapabilitiesConfig {
+    pub tools: Option<bool>,
+    pub input: Option<Vec<String>>,
+    pub output: Option<Vec<String>>,
+    pub temperature: Option<bool>,
+    pub reasoning: Option<ReasoningConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ReasoningConfig {
+    pub supported: bool,
+    pub toggle: Option<bool>,
+    pub effort: Option<Vec<String>>,
+    pub budget: Option<BudgetConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(default)]
+pub struct BudgetConfig {
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+}
+
+impl ReasoningConfig {
+    fn to_catalog(&self) -> crate::catalog::Reasoning {
+        crate::catalog::Reasoning {
+            supported: self.supported,
+            toggle: self.toggle,
+            effort: self.effort.clone(),
+            budget: self.budget.map(|b| crate::catalog::Budget {
+                min: b.min,
+                max: b.max,
+            }),
+        }
+    }
+}
+
+/// The reasoning field an `interleaved` value names: a string, or an
+/// object's `field` (OpenCode's `Model.compatibility`); `true` and `false`
+/// name none.
+pub fn interleaved_field(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(o) => o.get("field")?.as_str().map(str::to_string),
+        _ => None,
+    }
 }
 
 impl ModelConfig {
@@ -235,6 +304,9 @@ pub struct Modalities {
 impl ModelConfig {
     /// The input modalities, when configured.
     pub fn input(&self) -> Option<Vec<String>> {
+        if let Some(i) = self.capabilities.as_ref().and_then(|c| c.input.clone()) {
+            return Some(i);
+        }
         if let Some(m) = &self.modalities {
             return Some(m.input.clone());
         }
@@ -275,11 +347,162 @@ pub struct Cost {
 }
 
 impl Config {
-    /// The configured price of `provider/model`, if any.
+    /// The price of `provider/model`: the configured one, else the
+    /// catalog's default price.
     pub fn cost(&self, spec: &str) -> Option<Cost> {
         let (p, m) = split_variant(spec).0.split_once('/')?;
-        self.provider(p)?.models.get(m)?.cost
+        let configured = self.provider(p).and_then(|c| c.models.get(m).cloned());
+        if let Some(c) = configured.as_ref().and_then(|c| c.cost) {
+            return Some(c);
+        }
+        let id = configured.and_then(|c| c.id);
+        let catalog = self.catalog.as_ref()?.catalog();
+        let cm = id
+            .and_then(|id| catalog.model(p, &id))
+            .or_else(|| catalog.model(p, m))?;
+        let c = cm.base_cost()?;
+        Some(Cost {
+            input: c.input,
+            output: c.output,
+            cache_read: c.cache.read,
+            cache_write: c.cache.write,
+        })
     }
+
+    /// A provider's models of the given types (chat when empty): the
+    /// catalog's and the configured ones, by id. A configured `type`
+    /// replaces the catalog's.
+    pub fn list_models(&self, provider: &str, types: &[&str]) -> Vec<String> {
+        let types: &[&str] = if types.is_empty() { &["chat"] } else { types };
+        let configured = self
+            .provider(provider)
+            .map(|p| p.models)
+            .unwrap_or_default();
+        let catalog = self.catalog.as_ref().map(|c| c.catalog());
+        let catalog_kind = |id: &str| {
+            let p = catalog.as_ref()?.provider(provider)?;
+            p.models.iter().find(|m| m.id == id).map(|m| m.kind.clone())
+        };
+        let mut out: Vec<String> = Vec::new();
+        for (id, m) in &configured {
+            let kind = m
+                .kind
+                .clone()
+                .or_else(|| catalog_kind(m.id.as_deref().unwrap_or(id)))
+                .or_else(|| catalog_kind(id))
+                .unwrap_or_else(|| "chat".into());
+            if types.contains(&kind.as_str()) {
+                out.push(id.clone());
+            }
+        }
+        if let Some(p) = catalog.as_ref().and_then(|c| c.provider(provider)) {
+            for m in &p.models {
+                if !configured.contains_key(&m.id)
+                    && types.contains(&m.kind.as_str())
+                    && !out.contains(&m.id)
+                {
+                    out.push(m.id.clone());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// What `provider/model` can do: the catalog's capabilities (or, for a
+    /// model the catalog lacks, OpenCode's defaults for a custom model:
+    /// tools, text and image in, text out) with configured fields over them.
+    pub fn capabilities(&self, spec: &str) -> Option<crate::catalog::Capabilities> {
+        let (p, m) = split_variant(spec).0.split_once('/')?;
+        let configured = self
+            .provider(p)
+            .and_then(|c| c.models.get(m).cloned())
+            .unwrap_or_default();
+        let catalog = self.catalog.as_ref().map(|c| c.catalog());
+        let cm = catalog.as_ref().and_then(|c| {
+            configured
+                .id
+                .as_deref()
+                .and_then(|id| c.model(p, id))
+                .or_else(|| c.model(p, m))
+        });
+        let mut caps =
+            cm.map(|cm| cm.capabilities.clone())
+                .unwrap_or_else(|| crate::catalog::Capabilities {
+                    tools: true,
+                    input: vec!["text".into(), "image".into()],
+                    output: vec!["text".into()],
+                    ..Default::default()
+                });
+        if let Some(i) = configured.input() {
+            caps.input = i;
+        }
+        if let Some(o) = configured.modalities.as_ref().map(|m| m.output.clone()) {
+            if !o.is_empty() {
+                caps.output = o;
+            }
+        }
+        if let Some(c) = &configured.capabilities {
+            if let Some(t) = c.tools {
+                caps.tools = t;
+            }
+            if let Some(o) = &c.output {
+                caps.output = o.clone();
+            }
+            if c.temperature.is_some() {
+                caps.temperature = c.temperature;
+            }
+        }
+        Some(caps)
+    }
+
+    /// Catalog providers CodeSmith can run (a known protocol and a base
+    /// URL), by id.
+    pub fn catalog_providers(&self) -> Vec<String> {
+        let Some(c) = &self.catalog else {
+            return vec![];
+        };
+        c.catalog()
+            .providers
+            .iter()
+            .filter(|p| catalog_provider(p).is_some())
+            .map(|p| p.info.id.clone())
+            .collect()
+    }
+}
+
+/// `${VAR}` in a catalog URL, from the environment; `None` when a variable
+/// is unset.
+fn expand_url(url: &str) -> Option<String> {
+    let re = regex::Regex::new(r"\$\{([A-Za-z0-9_]+)\}").unwrap();
+    let mut missing = false;
+    let out = re.replace_all(url, |c: &regex::Captures| {
+        std::env::var(&c[1])
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| {
+                missing = true;
+                String::new()
+            })
+    });
+    (!missing).then(|| out.into_owned())
+}
+
+/// A catalog provider as provider config, when CodeSmith speaks its
+/// package's protocol and it has a usable base URL.
+fn catalog_provider(p: &crate::catalog::Snapshot) -> Option<ProviderConfig> {
+    let protocol = crate::catalog::protocol(&p.info.package)?;
+    let url = p.info.settings.as_ref()?.base_url.as_deref()?;
+    Some(ProviderConfig {
+        name: Some(p.info.name.clone()),
+        protocol: Some(protocol),
+        env: p.environment.clone(),
+        settings: ProviderSettings {
+            base_url: Some(expand_url(url)?),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -394,8 +617,11 @@ pub fn candidates_from(cwd: &Path, root: &Path, sources: &Sources) -> Vec<PathBu
     out
 }
 
+/// Load the config for `cwd`, with the process-wide models.dev catalog.
 pub fn load(cwd: &Path) -> Result<Loaded> {
-    load_from(cwd, &Sources::from_env())
+    let mut loaded = load_from(cwd, &Sources::from_env())?;
+    loaded.config.catalog = Some(crate::catalog::ModelsDev::global());
+    Ok(loaded)
 }
 
 pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
@@ -604,6 +830,10 @@ pub struct ModelRef {
     pub variant: Option<String>,
     /// Every variant the model offers, in order.
     pub variants: Vec<String>,
+    /// The same variants with their request overlays: the generated ones
+    /// (from the catalog's reasoning controls, else the built-in ones), with
+    /// the configured ones merged in.
+    pub variant_list: Vec<(String, codesmith_ai::Variant)>,
     pub max_output: Option<u32>,
     pub context: Option<u64>,
     pub temperature: Option<f32>,
@@ -746,9 +976,24 @@ fn builtin(id: &str) -> Option<ProviderConfig> {
 }
 
 impl Config {
-    /// The provider config for `id`: the built-in one (if any) overlaid by config.
+    /// The provider config for `id`: the built-in one, else the catalog's
+    /// (if any), overlaid by config.
     pub fn provider(&self, id: &str) -> Option<ProviderConfig> {
-        match (builtin(id), self.providers.get(id).cloned()) {
+        let base = builtin(id).or_else(|| {
+            let c = self.catalog.as_ref()?.catalog();
+            let p = c.provider(id)?;
+            catalog_provider(p).or_else(|| {
+                // Named and keyed by the catalog, but CodeSmith needs the
+                // protocol and URL from config.
+                self.providers.contains_key(id).then(|| ProviderConfig {
+                    name: Some(p.info.name.clone()),
+                    protocol: crate::catalog::protocol(&p.info.package),
+                    env: p.environment.clone(),
+                    ..Default::default()
+                })
+            })
+        });
+        match (base, self.providers.get(id).cloned()) {
             (None, None) => None,
             (Some(b), None) => Some(b),
             (None, Some(c)) => Some(c),
@@ -782,12 +1027,41 @@ impl Config {
         let p = self.provider(pid).ok_or_else(|| {
             anyhow!("unknown provider {pid:?}; add it under \"providers\" in codesmith.json")
         })?;
-        let protocol = p.protocol.unwrap_or(Protocol::OpenaiChat);
+        let user = self.providers.get(pid);
+        let m = p.models.get(mid).cloned().unwrap_or_default();
+        // The catalog's model, found by the configured model id, then the key.
+        let catalog = self.catalog.as_ref().map(|c| c.catalog());
+        let cp = catalog.as_ref().and_then(|c| c.provider(pid));
+        let cm = catalog.as_ref().and_then(|c| {
+            m.id.as_deref()
+                .and_then(|id| c.model(pid, id))
+                .or_else(|| c.model(pid, mid))
+        });
+        let catalog_package = cm
+            .and_then(|cm| cm.package.as_deref())
+            .or(cp.map(|p| p.info.package.as_str()));
+        // A catalog provider's model may speak another protocol than the
+        // provider's; a built-in or configured protocol stays.
+        let protocol = match (user.and_then(|u| u.protocol), builtin(pid)) {
+            (Some(p), _) => p,
+            (None, Some(b)) => b.protocol.unwrap_or(Protocol::OpenaiChat),
+            (None, None) => cm
+                .and_then(|cm| cm.package.as_deref())
+                .and_then(crate::catalog::protocol)
+                .or(p.protocol)
+                .unwrap_or(Protocol::OpenaiChat),
+        };
         let azure = pid == "azure";
-        let base_url = p
-            .settings
-            .base_url
-            .clone()
+        // A configured provider URL beats the catalog model's own, which
+        // beats the provider's default.
+        let catalog_url = cm
+            .and_then(|cm| cm.settings.as_ref()?.base_url.as_deref())
+            .and_then(expand_url);
+        let base_url = user
+            .and_then(|u| u.settings.base_url.clone())
+            .filter(|u| !u.is_empty())
+            .or(catalog_url)
+            .or_else(|| p.settings.base_url.clone())
             .filter(|u| !u.is_empty())
             .or_else(|| {
                 let r = p
@@ -815,8 +1089,10 @@ impl Config {
                     .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()))
             })
             .or_else(|| crate::auth::key(pid));
-        let m = p.models.get(mid).cloned().unwrap_or_default();
-        let model_id = m.id.clone().unwrap_or_else(|| mid.to_string());
+        let model_id =
+            m.id.clone()
+                .or_else(|| cm.map(|cm| cm.model_id.clone()))
+                .unwrap_or_else(|| mid.to_string());
         let query: Vec<(String, String)> = p.settings.query_params.clone().into_iter().collect();
         let (base_url, query) = match (azure, protocol) {
             // Claude on Foundry: Messages with the resource key as `x-api-key`.
@@ -842,12 +1118,42 @@ impl Config {
                 anyhow!("provider {pid:?} has an invalid encoding {e:?}; use gzip, zstd or none")
             })?,
         };
-        let mut compat = p.compatibility.clone();
+        // The catalog's compatibility, then the provider's, then the model's.
+        let mut compat = Map::new();
+        if let Some(c) = cm.and_then(|cm| cm.compatibility.as_ref()) {
+            if let Some(f) = &c.reasoning_field {
+                compat.insert("reasoningField".into(), f.clone().into());
+            }
+            if let Some(f) = &c.max_tokens_field {
+                compat.insert("maxTokensField".into(), f.clone().into());
+            }
+        }
+        compat.extend(p.compatibility.clone());
+        if let Some(f) = m.interleaved.as_ref().and_then(interleaved_field) {
+            compat.insert("reasoningField".into(), f.into());
+        }
         compat.extend(m.compatibility.clone());
         let compat: codesmith_ai::Compatibility = serde_json::from_value(Value::Object(compat))
             .map_err(|e| anyhow!("model {base:?} has an invalid compatibility setting: {e}"))?;
-        let input = m.input().or_else(|| known_input(&model_id));
+        let input = m
+            .input()
+            .or_else(|| {
+                cm.map(|cm| cm.capabilities.input.clone())
+                    .filter(|i| !i.is_empty())
+            })
+            .or_else(|| known_input(&model_id));
+        let context = m
+            .limit
+            .context
+            .or(cm.map(|cm| cm.limit.context).filter(|c| *c > 0));
+        // As in OpenCode, no reply asks for more than 256k tokens.
+        let max_output = m.limit.output.or(cm
+            .map(|cm| cm.limit.output.min(256_000) as u32)
+            .filter(|o| *o > 0));
         let mut body = p.body.clone();
+        if let Some(b) = cm.and_then(|cm| cm.body.as_ref()) {
+            body.extend(b.clone());
+        }
         body.extend(m.body.clone());
         let mut options = codesmith_ai::Options::from_map(p.options.clone());
         options.merge(&codesmith_ai::Options::from_map(m.options.clone()));
@@ -859,11 +1165,41 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
         let mut headers: Vec<(String, String)> = p.headers.into_iter().collect();
-        // Built-in reasoning variants, then the configured ones (which win).
-        let mut variants = codesmith_ai::builtin_variants(protocol, &model_id, m.limit.output);
+        for (k, v) in cm.and_then(|cm| cm.headers.as_ref()).into_iter().flatten() {
+            if let Some(v) = v.as_str() {
+                headers.retain(|(h, _)| !h.eq_ignore_ascii_case(k));
+                headers.push((k.clone(), v.to_string()));
+            }
+        }
+        // Generated reasoning variants, then the configured ones, which
+        // merge into a generated one of the same name.
+        let mut variants = generated_variants(GeneratedVariants {
+            protocol,
+            provider_id: pid,
+            model_id: &model_id,
+            output: max_output,
+            catalog: cm,
+            catalog_package,
+            reasoning: m
+                .capabilities
+                .as_ref()
+                .and_then(|c| c.reasoning.as_ref())
+                .map(ReasoningConfig::to_catalog),
+        });
         for (name, v) in m.variants() {
             match variants.iter_mut().find(|(n, _)| *n == name) {
-                Some(slot) => slot.1 = v,
+                Some(slot) => {
+                    slot.1.options.merge(&v.options);
+                    let mut b = Value::Object(std::mem::take(&mut slot.1.body));
+                    merge(&mut b, Value::Object(v.body));
+                    if let Value::Object(b) = b {
+                        slot.1.body = b;
+                    }
+                    for (k, val) in v.headers {
+                        slot.1.headers.retain(|(h, _)| !h.eq_ignore_ascii_case(&k));
+                        slot.1.headers.push((k, val));
+                    }
+                }
                 None => variants.push((name, v)),
             }
         }
@@ -906,15 +1242,60 @@ impl Config {
             body,
             options,
             variant: variant.map(str::to_string),
-            variants: variants.into_iter().map(|v| v.0).collect(),
-            max_output: m.limit.output,
-            context: m.limit.context,
+            variants: variants.iter().map(|v| v.0.clone()).collect(),
+            variant_list: variants,
+            max_output,
+            context,
             temperature: m.temperature,
             input,
             cache,
             websocket,
         })
     }
+}
+
+struct GeneratedVariants<'a> {
+    protocol: Protocol,
+    provider_id: &'a str,
+    model_id: &'a str,
+    output: Option<u32>,
+    catalog: Option<&'a crate::catalog::Model>,
+    catalog_package: Option<&'a str>,
+    reasoning: Option<crate::catalog::Reasoning>,
+}
+
+/// A model's reasoning variants before config adds its own: from configured
+/// reasoning controls, else the catalog's (respelled when the model runs on
+/// another protocol than its catalog package's), else the built-in ones.
+fn generated_variants(g: GeneratedVariants) -> Vec<(String, codesmith_ai::Variant)> {
+    use crate::catalog::{self, variant};
+    // The catalog package when CodeSmith speaks it here, else the
+    // protocol's own.
+    let same = g
+        .catalog_package
+        .filter(|p| catalog::protocol(p) == Some(g.protocol));
+    let package = same.unwrap_or_else(|| catalog::protocol_package(g.protocol));
+    let target = variant::Target {
+        package: Some(package),
+        provider_id: g.provider_id,
+        model_id: g.model_id,
+        output: g
+            .output
+            .map(i64::from)
+            .or(g.catalog.map(|c| c.limit.output as i64))
+            .unwrap_or(32_000),
+    };
+    let list = match (g.reasoning, g.catalog) {
+        (Some(r), _) => variant::resolve(&target, &variant::supports(&r)),
+        (None, Some(cm)) if same.is_some() => cm.variants.clone(),
+        // A catalog model without variants has no reasoning to respell.
+        (None, Some(cm)) if cm.variants.is_empty() => vec![],
+        (None, Some(_)) => variant::resolve(&target, &variant::default_supports()),
+        (None, None) => return codesmith_ai::builtin_variants(g.protocol, g.model_id, g.output),
+    };
+    list.iter()
+        .map(|v| (v.id.clone(), v.to_overlay()))
+        .collect()
 }
 
 /// The WebSocket route of a provider's session steps: its `transport`

@@ -31,6 +31,8 @@
 //! - `automation`: `automation add`/`run-due`/`log`.
 //! - `worktree`: `run -w`.
 //! - `tui`: the interactive UI in a pseudo-terminal.
+//! - `catalog`: the models.dev catalog: listing, resolution, background
+//!   refresh.
 //! - `oc_cli`: OpenCode's CLI tests that need the binary (see PARITY.md).
 
 mod harness;
@@ -38,6 +40,7 @@ mod model;
 
 mod acp;
 mod automation;
+mod catalog;
 mod delegation;
 mod limits;
 mod mcp;

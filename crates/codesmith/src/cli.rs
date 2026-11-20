@@ -763,6 +763,14 @@ pub async fn entry() -> i32 {
 
 async fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?.canonicalize()?;
+    // Sessions refresh the models.dev catalog in the background (never
+    // waiting for it), as OpenCode's server does.
+    if matches!(
+        cli.command,
+        None | Some(Command::Run(_)) | Some(Command::Acp) | Some(Command::Serve { .. })
+    ) {
+        codesmith_core::catalog::ModelsDev::global().spawn_refresh();
+    }
     match cli.command {
         None => {
             if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
@@ -910,13 +918,30 @@ async fn run(cli: Cli) -> Result<()> {
                     .cloned()
                     .collect::<Vec<_>>(),
             );
+            // Other catalog providers are listed once they have a key, as
+            // OpenCode lists the providers that are available.
+            for id in c.catalog_providers() {
+                if ids.contains(&id) {
+                    continue;
+                }
+                let keyed = c.provider(&id).is_some_and(|p| {
+                    p.env
+                        .iter()
+                        .any(|v| std::env::var(v).is_ok_and(|k| !k.is_empty()))
+                }) || codesmith_core::auth::key(&id).is_some();
+                if keyed {
+                    ids.push(id);
+                }
+            }
             for id in ids {
                 let p = c.provider(&id).unwrap_or_default();
                 let name = p.name.clone().unwrap_or_else(|| id.clone());
-                if p.models.is_empty() {
+                // The configured models and the catalog's chat models.
+                let models = c.list_models(&id, &[]);
+                if models.is_empty() {
                     println!("{id}/*  ({name}; `codesmith models {id}` lists its models)");
                 }
-                for m in p.models.keys() {
+                for m in models {
                     println!("{id}/{m}");
                 }
             }
@@ -1084,6 +1109,7 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             println!("data    {}", paths::data_dir().display());
             println!("output  {}", paths::tool_output_dir().display());
             println!("tmp     {}", paths::tmp_dir().display());
+            println!("cache   {}", paths::cache_dir().display());
         }
         Debug::Config => {
             let loaded = config::load(&cwd)?;
@@ -1109,7 +1135,6 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 .ok_or_else(|| anyhow!("no model given or configured"))?;
             let m = loaded.config.resolve_model(&spec)?;
             let base = config::split_variant(&spec).0;
-            let key = base.split_once('/').map(|x| x.1).unwrap_or("");
             println!("model:    {base} (sent as {})", m.model_id);
             println!("protocol: {:?}", m.provider.protocol);
             println!("url:      {}", m.provider.base_url);
@@ -1164,7 +1189,7 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             println!("body:     {}", serde_json::Value::Object(m.body.clone()));
             println!("options:  {}", serde_json::to_value(&m.options)?);
             println!("variant:  {}", m.variant.as_deref().unwrap_or("default"));
-            let lines = variant_lines(&loaded.config, &m, key)?;
+            let lines = variant_lines(&m)?;
             if lines.is_empty() {
                 println!("variants: none");
             } else {
@@ -1837,25 +1862,14 @@ async fn interrupt_signal() -> &'static str {
 }
 
 /// `debug model`'s variant list: each variant with its options (body and
-/// header names too), the selected one starred. The variants are built as
-/// `resolve_model` builds them: the built-in reasoning ones, then the
-/// configured ones, which win.
-fn variant_lines(c: &config::Config, m: &config::ModelRef, key: &str) -> Result<Vec<String>> {
-    let configured = c
-        .provider(&m.provider_id)
-        .and_then(|p| p.models.get(key).cloned())
-        .unwrap_or_default();
-    let mut variants =
-        codesmith_ai::builtin_variants(m.provider.protocol, &m.model_id, m.max_output);
-    for (name, v) in configured.variants() {
-        match variants.iter_mut().find(|(n, _)| *n == name) {
-            Some(slot) => slot.1 = v,
-            None => variants.push((name, v)),
-        }
-    }
+/// header names too), the selected one starred, as `resolve_model` built
+/// them: the generated reasoning ones (from the catalog, else built in),
+/// with the configured ones merged in.
+fn variant_lines(m: &config::ModelRef) -> Result<Vec<String>> {
+    let variants = &m.variant_list;
     let width = variants.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     let mut out = vec![];
-    for (name, v) in &variants {
+    for (name, v) in variants {
         let mark = if m.variant.as_deref() == Some(name.as_str()) {
             "*"
         } else {
@@ -1931,7 +1945,7 @@ mod tests {
         .unwrap();
         let m = c.resolve_model("f/m#fast").unwrap();
         assert_eq!(
-            variant_lines(&c, &m, "m").unwrap(),
+            variant_lines(&m).unwrap(),
             [
                 r#"  low     {"reasoningEffort":"low"}"#,
                 r#"  medium  {"reasoningEffort":"medium"}"#,

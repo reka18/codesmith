@@ -135,6 +135,8 @@ impl Env {
             ("XDG_STATE_HOME".into(), p(&self.home.join(".state"))),
             ("CODESMITH_CONFIG_DIR".into(), p(&self.config_dir)),
             ("CODESMITH_DB".into(), p(&self.db)),
+            // No test reaches models.dev; the bundled catalog serves.
+            ("CODESMITH_DISABLE_MODELS_FETCH".into(), "1".into()),
             ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
             ("GIT_AUTHOR_NAME".into(), "Tester".into()),
             ("GIT_AUTHOR_EMAIL".into(), "tester@example.com".into()),
