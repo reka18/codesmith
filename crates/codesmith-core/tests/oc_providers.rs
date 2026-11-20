@@ -1862,3 +1862,288 @@ async fn oc_modal_throws_on_proxy_failure_so_the_plugin_can_fail_soft() {
         .await
         .is_err());
 }
+
+// github-copilot/models.test.ts
+
+use codesmith_core::providers::copilot_models;
+
+fn copilot_template(id: &str, name: &str) -> codesmith_core::catalog::Model {
+    let mut m = modal_template(id);
+    m.provider_id = "github-copilot".into();
+    m.name = name.into();
+    m.family = None;
+    m.time.released = 0;
+    m
+}
+
+#[test]
+fn oc_copilot_models_defensively_syncs_advertised_copilot_models() {
+    let raw: Vec<Value> = serde_json::from_value(json!([
+        {
+            "model_picker_enabled": true,
+            "id": "gpt-5",
+            "name": "GPT-5 remote",
+            "version": "gpt-5-2026-06-01",
+            "supported_endpoints": ["/responses"],
+            "billing": {"token_prices": {"batch_size": 0, "default": {"input_price": 10, "output_price": 20, "cache_price": 5}}},
+            "capabilities": {
+                "family": "gpt",
+                "limits": {
+                    "max_context_window_tokens": 200000,
+                    "max_output_tokens": 16384,
+                    "max_prompt_tokens": 180000,
+                    "vision": {"max_prompt_image_size": 10000000, "max_prompt_images": 10, "supported_media_types": ["image/png", "application/pdf"]},
+                },
+                "supports": {"tool_calls": true, "vision": true, "reasoning_effort": ["low", "high"]},
+            },
+        },
+        {
+            "model_picker_enabled": true,
+            "id": "claude-sonnet",
+            "name": "Claude Sonnet",
+            "version": "claude-sonnet-2026-06-01",
+            "supported_endpoints": ["/v1/messages"],
+            "capabilities": {"family": "claude", "limits": {"max_output_tokens": 16384, "max_prompt_tokens": 180000}, "supports": {"tool_calls": true}},
+        },
+        {
+            "model_picker_enabled": true,
+            "id": "vision-only",
+            "name": "Vision only",
+            "version": "vision-only-2026-06-01",
+            "capabilities": {
+                "family": "vision",
+                "limits": {"max_output_tokens": 16384, "max_prompt_tokens": 180000, "vision": {"max_prompt_image_size": 10000000, "max_prompt_images": 10, "supported_media_types": ["image/png"]}},
+                "supports": {"tool_calls": true, "vision": true},
+            },
+        },
+        {
+            "model_picker_enabled": false,
+            "id": "utility",
+            "name": "Utility",
+            "version": "utility-2026-06-01",
+            "capabilities": {"family": "utility", "limits": {"max_output_tokens": 1000, "max_prompt_tokens": 8000}, "supports": {"tool_calls": false}},
+        },
+        {"model_picker_enabled": true, "id": "incomplete"},
+    ]))
+    .unwrap();
+    let root = "https://copilot.example";
+    let models = copilot_models::derive(
+        root,
+        &copilot_models::parse(&raw),
+        &[
+            copilot_template("gpt-5", "GPT-5 local"),
+            copilot_template("stale", "stale"),
+        ],
+    );
+    let get = |id: &str| models.iter().find(|m| m.id == id);
+    let m = get("gpt-5").unwrap();
+    assert_eq!(m.name, "GPT-5 local");
+    assert_eq!(
+        m.package.as_deref(),
+        Some("@opencode/ai/providers/openai-compatible-responses")
+    );
+    assert_eq!(m.settings.as_ref().unwrap().base_url.as_deref(), Some(root));
+    let c = m.cost[0];
+    assert_eq!(
+        (c.input, c.output, c.cache.read, c.cache.write),
+        (0.0, 0.0, 0.0, 0.0)
+    );
+    let v: Vec<&str> = m.variants.iter().map(|v| v.id.as_str()).collect();
+    assert_eq!(v, ["low", "high"]);
+    assert_eq!(m.capabilities.input, ["text", "image", "pdf"]);
+    assert_eq!(m.time.released, 1_780_272_000_000, "2026-06-01");
+    let claude = get("claude-sonnet").unwrap();
+    assert_eq!(
+        claude.package.as_deref(),
+        Some("@opencode/ai/providers/anthropic")
+    );
+    assert_eq!(
+        claude.settings.as_ref().unwrap().base_url.as_deref(),
+        Some("https://copilot.example/v1")
+    );
+    assert_eq!(
+        get("vision-only").unwrap().capabilities.input,
+        ["text", "image"]
+    );
+    assert!(!get("utility").unwrap().enabled);
+    assert!(get("stale").is_none());
+    assert!(get("incomplete").is_none());
+    // No Auto pool, no Auto model.
+    assert!(get("auto").is_none());
+}
+
+#[test]
+fn oc_copilot_models_prices_cache_reads_from_either_token_price_spelling() {
+    let item = |id: &str, prices: Value| {
+        let mut d = json!({"input_price": 250, "output_price": 1500});
+        d.as_object_mut()
+            .unwrap()
+            .extend(prices.as_object().unwrap().clone());
+        json!({
+            "model_picker_enabled": true,
+            "id": id,
+            "name": id,
+            "version": format!("{id}-2026-08-01"),
+            "supported_endpoints": ["/chat/completions"],
+            "billing": {"token_prices": {"batch_size": 1_000_000, "default": d}},
+            "capabilities": {"family": "gpt", "limits": {"max_output_tokens": 1000, "max_prompt_tokens": 8000}, "supports": {"tool_calls": true}},
+        })
+    };
+    let raw = vec![
+        item(
+            "renamed",
+            json!({"cache_read_price": 25, "cache_write_price": 0}),
+        ),
+        item("legacy", json!({"cache_price": 25})),
+        item("unpriced", json!({})),
+    ];
+    let models = copilot_models::derive("https://c", &copilot_models::parse(&raw), &[]);
+    for id in ["renamed", "legacy"] {
+        let c = models.iter().find(|m| m.id == id).unwrap().cost[0];
+        assert!(
+            (c.input - 2.5).abs() < 1e-9 && (c.output - 15.0).abs() < 1e-9,
+            "{id}"
+        );
+        assert!((c.cache.read - 0.25).abs() < 1e-9, "{id}");
+    }
+    let c = models.iter().find(|m| m.id == "unpriced").unwrap().cost[0];
+    assert_eq!(c.cache.read, 0.0);
+}
+
+#[test]
+fn oc_copilot_models_builds_auto_from_the_auto_pool() {
+    let item = |id: &str, ctx: u64, out: u64| {
+        json!({
+            "model_picker_enabled": true, "id": id, "name": id, "version": "1",
+            "billing": {"auto_discount": 0.1},
+            "capabilities": {"family": "x", "limits": {"max_context_window_tokens": ctx, "max_output_tokens": out, "max_prompt_tokens": ctx - 1000}, "supports": {"tool_calls": true}},
+        })
+    };
+    let raw = vec![item("a", 200_000, 64_000), item("b", 128_000, 16_000)];
+    let models = copilot_models::derive("https://c", &copilot_models::parse(&raw), &[]);
+    let auto = models.iter().find(|m| m.id == "auto").unwrap();
+    assert_eq!(auto.name, "Auto");
+    assert_eq!(
+        auto.package.as_deref(),
+        Some("@opencode/ai/providers/openai-compatible")
+    );
+    assert_eq!(
+        (auto.limit.context, auto.limit.input, auto.limit.output),
+        (128_000, Some(127_000), 16_000)
+    );
+    assert_eq!(auto.capabilities.input, ["text", "image"]);
+}
+
+// plugin/provider-github-copilot.test.ts: utility titles
+
+fn utility_provider(url: &str) -> codesmith_ai::Provider {
+    codesmith_ai::Provider {
+        protocol: Protocol::OpenaiResponses,
+        name: "github-copilot".into(),
+        base_url: url.to_string(),
+        api_key: Some("token".into()),
+        headers: vec![],
+        query: vec![],
+        auth: Auth::Bearer,
+        encoding: Default::default(),
+        compat: Default::default(),
+    }
+}
+
+async fn utility(url: &str) -> anyhow::Result<String> {
+    copilot::utility_title(
+        &reqwest::Client::new(),
+        &utility_provider(url),
+        "gpt-4o-mini",
+        "ses_title",
+        "You are a title generator.",
+        &[("user", "how do I make my python script faster")],
+        Some(32),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn oc_copilot_names_sessions_with_the_utility_model_as_a_free_background_request() {
+    let f = fixture(vec![(
+        "/chat/completions",
+        vec![(
+            200,
+            json!({"choices": [{"message": {"content": "  Speed Up Python Script\n"}}]})
+                .to_string(),
+        )],
+    )])
+    .await;
+    assert_eq!(utility(&f.url).await.unwrap(), "Speed Up Python Script");
+    let seen = f.seen.lock().unwrap()[0].clone();
+    let lower = seen.to_ascii_lowercase();
+    assert!(seen.starts_with("POST /chat/completions "));
+    for h in [
+        "authorization: bearer token",
+        "x-interaction-type: agent-session-name-generation",
+        "x-interaction-id: ses_title",
+        "x-initiator: agent",
+        "x-github-api-version: 2026-08-01",
+    ] {
+        assert!(lower.contains(h), "{h}: {seen}");
+    }
+    let body: Value = serde_json::from_str(seen.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "model": "gpt-4o-mini",
+            "stream": false,
+            "max_tokens": 32,
+            "messages": [
+                {"role": "system", "content": "You are a title generator."},
+                {"role": "user", "content": "how do I make my python script faster"},
+            ],
+        })
+    );
+}
+
+#[tokio::test]
+async fn oc_copilot_sends_the_utility_title_request_through_the_hosts_fetch() {
+    // The utility model is used when the account's kept list has it, and
+    // the request goes to the Copilot API root, also from a Messages route.
+    let mut m = modal_template("gpt-4o-mini");
+    m.model_id = "gpt-4o-mini".into();
+    assert_eq!(copilot::utility_title_model_in(&[m]), Some("gpt-4o-mini"));
+    assert_eq!(
+        copilot::utility_title_model_in(&[modal_template("gpt-5")]),
+        None
+    );
+    let f = fixture(vec![(
+        "/chat/completions",
+        vec![(
+            200,
+            json!({"choices": [{"message": {"content": "Faster Python"}}]}).to_string(),
+        )],
+    )])
+    .await;
+    assert_eq!(
+        utility(&format!("{}/v1", f.url)).await.unwrap(),
+        "Faster Python"
+    );
+}
+
+#[tokio::test]
+async fn oc_copilot_fails_the_utility_title_on_rate_limits_so_the_billable_path_can_run() {
+    let f = fixture(vec![("/chat/completions", vec![(429, "slow down".into())])]).await;
+    let e = utility(&f.url).await.unwrap_err().to_string();
+    assert!(e.contains("429"), "{e}");
+}
+
+#[tokio::test]
+async fn oc_copilot_fails_the_utility_title_on_an_empty_completion() {
+    let f = fixture(vec![(
+        "/chat/completions",
+        vec![(
+            200,
+            json!({"choices": [{"message": {"content": null}}]}).to_string(),
+        )],
+    )])
+    .await;
+    let e = utility(&f.url).await.unwrap_err().to_string();
+    assert!(e.contains("empty"), "{e}");
+}

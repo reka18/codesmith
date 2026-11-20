@@ -451,8 +451,18 @@ OpenCode, Responses for GPT-5 and later (but GPT-5 mini), Grok and MAI Code,
 and Chat for the rest. Requests go to the account's own API endpoint, looked
 up once per run (the one saved at login until then), with Copilot's headers:
 who started the request (`x-initiator`), whether it carries images, and the
-kind of step (agent, subagent, title, compaction). Copilot's Auto model
-router and its free title model are not used.
+kind of step (agent, subagent, title, compaction).
+
+`codesmith models github-copilot` fetches the account's model list and keeps
+it (see [Live model lists](#live-model-lists-modal-github-copilot)): models then resolve
+with the API, limits, prices and reasoning variants Copilot advertises, the
+catalog's Copilot models stay only while Copilot still lists them, and
+`github-copilot/auto` appears when the account has an Auto pool. With a kept
+list that has Copilot's free utility model (`gpt-4o-mini`), sessions on
+Copilot are named with it (marked as session-name generation, as Copilot's
+own client does), and only fall back to the billed title request when that
+fails. Copilot's Auto router (which picks a model per session) is not used
+yet: `auto` goes to Copilot as is.
 
 ### Cloudflare AI Gateway and Workers AI
 
@@ -540,7 +550,7 @@ deployment itself, which suits deployments that serve that API (OpenAI
 models; set `"protocol"` for others). Without a service key the deployment
 settings are not used and `settings.baseURL` takes a plain key.
 
-### Live model lists (Modal)
+### Live model lists (Modal, GitHub Copilot)
 
 Some providers serve a model list of their own for your account.
 `codesmith models <provider>` fetches it and keeps it in the data folder's

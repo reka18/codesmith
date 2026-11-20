@@ -261,7 +261,7 @@
 73 :: ported :: tests/oc_providers.rs::oc_copilot_prefers_the_account_specific_copilot_api_endpoint
 82 :: ported :: tests/oc_providers.rs::oc_copilot_rejects_accounts_without_copilot_chat_access
 90 :: ported :: tests/oc_providers.rs::oc_copilot_only_blocks_on_an_explicit_entitlement_denial
-142 :: feature :: Provider Plugins :: GitHub Copilot live model list (CodeSmith routes by the models.dev catalog)
+142 :: design :: deliberate :: CodeSmith fetches nothing in the background; `codesmith models github-copilot` refreshes the kept list on request
 164 :: ported :: tests/oc_providers.rs::oc_copilot_refreshes_the_account_api_endpoint_instead_of_keeping_the_one_stored_at_login :: adapted: looked up once per run
 183 :: ported :: tests/oc_providers.rs::oc_copilot_keeps_the_stored_endpoint_when_the_account_lookup_fails
 224 :: ported :: tests/oc_providers.rs::oc_copilot_serves_an_enterprise_login_from_its_own_host_until_the_first_model_list_arrives
@@ -273,7 +273,10 @@
 330,338,351,363 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind
 376 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind :: the kind comes from the step, never the agent name
 384 :: ported :: tests/oc_providers.rs::oc_copilot_ignores_other_providers_model_requests
-413,446,512,522 :: feature :: Provider Plugins :: GitHub Copilot free utility-model titles
+413 :: ported :: tests/oc_providers.rs::oc_copilot_names_sessions_with_the_utility_model_as_a_free_background_request
+446 :: ported :: tests/oc_providers.rs::oc_copilot_sends_the_utility_title_request_through_the_hosts_fetch :: adapted: the kept model list decides the utility model; the request uses the session's client and Copilot credentials
+512 :: ported :: tests/oc_providers.rs::oc_copilot_fails_the_utility_title_on_rate_limits_so_the_billable_path_can_run
+522 :: ported :: tests/oc_providers.rs::oc_copilot_fails_the_utility_title_on_an_empty_completion
 532 :: ported :: tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests
 557 :: ported :: tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests :: the Chat half
 583 :: ported :: tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind :: a declared agent step stays agent-initiated
@@ -403,3 +406,6 @@
 28 :: ported :: tests/oc_providers.rs::oc_modal_maps_live_modal_models_onto_catalog_templates
 101 :: ported :: tests/oc_providers.rs::oc_modal_keeps_template_cost_and_limits_when_the_proxy_omits_them
 131 :: ported :: tests/oc_providers.rs::oc_modal_throws_on_proxy_failure_so_the_plugin_can_fail_soft
+@github-copilot/models.test.ts
+11 :: ported :: tests/oc_providers.rs::oc_copilot_models_defensively_syncs_advertised_copilot_models :: adapted: the list `codesmith models github-copilot` keeps
+124 :: ported :: tests/oc_providers.rs::oc_copilot_models_prices_cache_reads_from_either_token_price_spelling

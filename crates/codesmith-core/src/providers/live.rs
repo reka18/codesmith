@@ -87,32 +87,102 @@ pub fn derive(
     let raw: Vec<Value> = kept["models"].as_array().cloned().unwrap_or_default();
     match provider {
         super::modal::ID => super::modal::derive(base, &super::modal::parse(&raw), templates),
+        super::copilot::ID => {
+            super::copilot_models::derive(base, &super::copilot_models::parse(&raw), templates)
+        }
         _ => vec![],
     }
 }
 
-/// Fetch and keep the live list of a provider that has one, for the
-/// resolved base URL and key: the model ids, or `None` when the provider
-/// has no live list.
+/// Fetch and keep the live list of a provider that has one, with the
+/// resolved provider's endpoint and credentials: the model ids, or `None`
+/// when the provider has no live list.
 pub async fn refresh(
     client: &reqwest::Client,
-    provider: &str,
-    base_url: &str,
-    key: Option<&str>,
+    provider_id: &str,
+    p: &codesmith_ai::Provider,
 ) -> Option<Result<Vec<String>>> {
-    match provider {
+    match provider_id {
         super::modal::ID => Some(
             async {
-                let key = key.ok_or_else(|| {
+                let key = p.api_key.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("Modal needs its proxy token: set MODAL_PROXY_TOKEN or run `codesmith auth login modal`")
                 })?;
-                let raw = super::modal::load(client, base_url, key).await?;
+                let raw = super::modal::load(client, &p.base_url, key).await?;
                 let ids = super::modal::parse(&raw).into_iter().map(|m| m.id).collect();
-                save(provider, &fingerprint(key), base_url, raw)?;
+                save(provider_id, &fingerprint(key), &p.base_url, raw)?;
+                Ok(ids)
+            }
+            .await,
+        ),
+        super::copilot::ID => Some(
+            async {
+                let (root, account, raw) = fetch_copilot(client, p).await?;
+                let models = super::copilot_models::parse(&raw);
+                let mut ids: Vec<String> = models.iter().filter(|m| m.picker).map(|m| m.id.clone()).collect();
+                if super::copilot_models::auto_model(&root, &models).is_some() {
+                    ids.push(super::copilot_models::AUTO.into());
+                }
+                save(provider_id, &account, &root, raw)?;
                 Ok(ids)
             }
             .await,
         ),
         _ => None,
     }
+}
+
+/// Copilot's `/models` for the account: the API root it answered from,
+/// the account's fingerprint, and the raw list.
+async fn fetch_copilot(
+    client: &reqwest::Client,
+    p: &codesmith_ai::Provider,
+) -> Result<(String, String, Vec<Value>)> {
+    let root = p
+        .base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_string();
+    let mut req = client
+        .get(format!("{root}/models"))
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    for (k, v) in &p.headers {
+        if let (Ok(k), Ok(v)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v),
+        ) {
+            req.headers_mut().insert(k, v);
+        }
+    }
+    let codesmith_ai::Auth::Dynamic(a) = &p.auth else {
+        anyhow::bail!("GitHub Copilot needs a login: run `codesmith auth login github-copilot`");
+    };
+    a.authorize(client, &mut req)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let account = req
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .map(fingerprint)
+        .unwrap_or_default();
+    let url = req.url().to_string();
+    let root = url.strip_suffix("/models").unwrap_or(&root).to_string();
+    let resp = client
+        .execute(req)
+        .await
+        .map_err(|e| anyhow::anyhow!("listing Copilot models: {}", codesmith_ai::Error::from(e)))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("listing Copilot models: HTTP {}", resp.status().as_u16());
+    }
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|_| anyhow::anyhow!("listing Copilot models: the answer is not JSON"))?;
+    let raw = v["data"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("listing Copilot models: the answer has no data list"))?;
+    Ok((root, account, raw))
 }

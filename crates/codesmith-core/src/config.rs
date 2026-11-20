@@ -433,7 +433,7 @@ impl Config {
             .map(|p| p.models.as_slice())
             .unwrap_or(&[]);
         for m in crate::providers::live::models(provider, None, templates) {
-            if !configured.contains_key(&m.id) && !out.contains(&m.id) {
+            if m.enabled && !configured.contains_key(&m.id) && !out.contains(&m.id) {
                 out.push(m.id);
             }
         }

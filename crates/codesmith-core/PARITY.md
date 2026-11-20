@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
-| Providers, models and credentials | 796 | 179 | 0 | 247 | 333 | 37 | 0 |
+| Providers, models and credentials | 796 | 185 | 0 | 240 | 334 | 37 | 0 |
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1086** | **15** | **748** | **2342** | **1397** | **0** |
+| **Total** | **5588** | **1092** | **15** | **741** | **2343** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,13 +78,13 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (748 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (741 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
-| [Provider Plugins](#provider-plugins) | 79 | GitHub Copilot; Azure (CLI auth, deployment discovery, WebSockets); … |
+| [Provider Plugins](#provider-plugins) | 72 | Azure (CLI auth, deployment discovery, WebSockets); DigitalOcean; … |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
@@ -329,10 +329,8 @@ Missing features, by how many OpenCode test cases each would unlock (748 cases i
 
 ### Provider Plugins
 
-79 cases.
+72 cases.
 
-- `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
-- `github-copilot/models.test.ts`: prices cache reads from either token price spelling
 - `plugin/provider-azure.test.ts`: hides Azure CLI authentication when the Azure CLI is not installed
 - `plugin/provider-azure.test.ts`: asks for the resource name as text without calling Azure
 - `plugin/provider-azure.test.ts`: starts without calling Azure, then lists deployments
@@ -360,11 +358,6 @@ Missing features, by how many OpenCode test cases each would unlock (748 cases i
 - `plugin/provider-digitalocean.test.ts`: shows a returning account's cached routers at once and refreshes them in the background
 - `plugin/provider-digitalocean.test.ts`: completes browser OAuth independently of router discovery and releases the listener
 - `plugin/provider-digitalocean.test.ts`: rejects ${fixture.name} and releases the listener (5 cases)
-- `plugin/provider-github-copilot.test.ts`: reloads providers only when a refreshed model list changes
-- `plugin/provider-github-copilot.test.ts`: names sessions with the utility model as a free background request
-- `plugin/provider-github-copilot.test.ts`: sends the utility title request through the host's fetch
-- `plugin/provider-github-copilot.test.ts`: fails the utility title on rate limits so the billable path can run
-- `plugin/provider-github-copilot.test.ts`: fails the utility title on an empty completion
 - `plugin/provider-github-copilot.test.ts`: routes Auto through Copilot's router and keeps the pick until compaction
 - `plugin/provider-gitlab-oauth.test.ts`: is registered alongside the other provider plugins
 - `plugin/provider-gitlab-oauth.test.ts`: registers PKCE OAuth alongside the generic key/env methods from ModelsDevPlugin
@@ -2012,7 +2005,7 @@ Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 546 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 547 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 325 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 220 |
@@ -3438,7 +3431,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (512 of 796)</summary>
+<details><summary>Providers, models and credentials (519 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3473,6 +3466,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P keeps a moved catalog model without reasoning variants free of variants — `tests/oc_catalog.rs::oc_catalog_keeps_a_moved_catalog_model_without_reasoning_variants_free_of_variants`
 - P builds configured reasoning variants after provider and model package normalization — `tests/oc_catalog.rs::oc_catalog_builds_configured_reasoning_variants_after_provider_and_model_package_normalization` (adapted: one provider per protocol)
 - P applies configured release date, temperature support, and reasoning field — `tests/oc_catalog.rs::oc_catalog_applies_configured_release_date_temperature_support_and_reasoning_field` (adapted: no release dates or freeform formats kept)
+
+**`github-copilot/models.test.ts`**
+
+- P defensively syncs advertised Copilot models — `tests/oc_providers.rs::oc_copilot_models_defensively_syncs_advertised_copilot_models` (adapted: the list `codesmith models github-copilot` keeps)
+- P prices cache reads from either token price spelling — `tests/oc_providers.rs::oc_copilot_models_prices_cache_reads_from_either_token_price_spelling`
 
 **`integration-refresh.test.ts`**
 
@@ -3627,6 +3625,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P prefers the account-specific Copilot API endpoint — `tests/oc_providers.rs::oc_copilot_prefers_the_account_specific_copilot_api_endpoint`
 - P rejects accounts without Copilot chat access — `tests/oc_providers.rs::oc_copilot_rejects_accounts_without_copilot_chat_access`
 - P only blocks on an explicit entitlement denial — `tests/oc_providers.rs::oc_copilot_only_blocks_on_an_explicit_entitlement_denial`
+- D reloads providers only when a refreshed model list changes — deliberate: CodeSmith fetches nothing in the background; `codesmith models github-copilot` refreshes the kept list on request
 - P refreshes the account's API endpoint instead of keeping the one stored at login — `tests/oc_providers.rs::oc_copilot_refreshes_the_account_api_endpoint_instead_of_keeping_the_one_stored_at_login` (adapted: looked up once per run)
 - P keeps the stored endpoint when the account lookup fails — `tests/oc_providers.rs::oc_copilot_keeps_the_stored_endpoint_when_the_account_lookup_fails`
 - P serves an Enterprise login from its own host until the first model list arrives — `tests/oc_providers.rs::oc_copilot_serves_an_enterprise_login_from_its_own_host_until_the_first_model_list_arrives`
@@ -3641,6 +3640,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P classifies compaction requests by kind rather than agent — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind`
 - P does not classify by agent name — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (the kind comes from the step, never the agent name)
 - P ignores other providers' model requests — `tests/oc_providers.rs::oc_copilot_ignores_other_providers_model_requests`
+- P names sessions with the utility model as a free background request — `tests/oc_providers.rs::oc_copilot_names_sessions_with_the_utility_model_as_a_free_background_request`
+- P sends the utility title request through the host's fetch — `tests/oc_providers.rs::oc_copilot_sends_the_utility_title_request_through_the_hosts_fetch` (adapted: the kept model list decides the utility model; the request uses the session's client and Copilot credentials)
+- P fails the utility title on rate limits so the billable path can run — `tests/oc_providers.rs::oc_copilot_fails_the_utility_title_on_rate_limits_so_the_billable_path_can_run`
+- P fails the utility title on an empty completion — `tests/oc_providers.rs::oc_copilot_fails_the_utility_title_on_an_empty_completion`
 - P flags images returned by tools in Responses requests — `tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests`
 - P treats tool images moved into a Chat Completions user message as agent-initiated — `tests/oc_providers.rs::oc_copilot_flags_images_returned_by_tools_in_responses_requests` (the Chat half)
 - P keeps a declared agent initiator when the body looks user-initiated — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (a declared agent step stays agent-initiated)

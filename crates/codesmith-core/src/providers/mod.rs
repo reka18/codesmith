@@ -8,6 +8,7 @@
 pub mod bedrock;
 pub mod cloudflare;
 pub mod copilot;
+pub mod copilot_models;
 pub mod gateways;
 pub mod live;
 pub mod modal;

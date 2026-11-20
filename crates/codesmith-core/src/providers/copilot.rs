@@ -379,3 +379,96 @@ pub async fn login(
 pub fn hidden(model: &str) -> bool {
     model == "gpt-5-chat-latest"
 }
+
+/// Copilot's small utility model, which names sessions for free (as
+/// Copilot's own client does); an account without it names them the
+/// usual, billed way.
+pub const UTILITY_TITLE_MODELS: [&str; 1] = ["gpt-4o-mini"];
+
+/// The utility model to name sessions with: one the account's kept model
+/// list (see [`super::live`]) advertises.
+pub fn utility_title_model() -> Option<&'static str> {
+    utility_title_model_in(&super::live::models(ID, None, &[]))
+}
+
+/// The utility model among `models`.
+pub fn utility_title_model_in(models: &[crate::catalog::Model]) -> Option<&'static str> {
+    UTILITY_TITLE_MODELS
+        .into_iter()
+        .find(|id| models.iter().any(|m| m.model_id == *id))
+}
+
+/// Name a session with Copilot's utility model: a stateless, non-streaming
+/// Chat Completions request marked as session-name generation, through the
+/// provider's Copilot credentials. Any failure (a rate limit, an empty
+/// answer) is an error, so the billed title path runs instead.
+pub async fn utility_title(
+    client: &reqwest::Client,
+    p: &codesmith_ai::Provider,
+    model: &str,
+    session_id: &str,
+    system: &str,
+    messages: &[(&str, &str)],
+    max_tokens: Option<u32>,
+) -> Result<String> {
+    let root = p.base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let mut msgs = vec![];
+    if !system.is_empty() {
+        msgs.push(json!({"role": "system", "content": system}));
+    }
+    for (role, text) in messages {
+        msgs.push(json!({"role": role, "content": text}));
+    }
+    let mut body = json!({"model": model, "messages": msgs, "stream": false});
+    if let Some(n) = max_tokens {
+        body["max_tokens"] = n.into();
+    }
+    let mut req = client
+        .post(format!("{root}/chat/completions"))
+        .header("content-type", "application/json")
+        .header("x-interaction-type", "agent-session-name-generation")
+        .header("x-interaction-id", session_id)
+        .header("x-initiator", "agent")
+        .header("user-agent", copilot::user_agent())
+        .header("x-github-api-version", copilot::API_VERSION)
+        .header("openai-intent", "conversation-edits")
+        .timeout(Duration::from_secs(20))
+        .body(body.to_string())
+        .build()?;
+    match &p.auth {
+        Auth::Dynamic(a) => a
+            .authorize(client, &mut req)
+            .await
+            .map_err(|e| anyhow!("{e}"))?,
+        _ => {
+            let key = p
+                .api_key
+                .as_deref()
+                .ok_or_else(|| anyhow!("GitHub Copilot needs a login"))?;
+            req.headers_mut().insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))?,
+            );
+        }
+    }
+    let resp = client.execute(req).await.map_err(|e| {
+        anyhow!(
+            "Utility title request failed: {}",
+            codesmith_ai::Error::from(e)
+        )
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(anyhow!("Utility title request failed: {}", status.as_u16()));
+    }
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|_| anyhow!("Utility title response is not JSON"))?;
+    v["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("Utility title response was empty"))
+}

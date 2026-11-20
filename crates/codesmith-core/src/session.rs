@@ -2719,9 +2719,31 @@ impl Session {
     fn spawn_title(&self, first: &str) -> tokio::task::JoinHandle<(Option<String>, Usage)> {
         let client = self.client.clone();
         let model = self.model.clone();
-        let msg = vec![Message::user(title::request(first))];
+        let prompt = title::request(first);
+        let msg = vec![Message::user(prompt.clone())];
         let fallback = title::fallback(first);
+        let session_id = self.id.to_string();
         tokio::spawn(async move {
+            // GitHub Copilot names sessions with its free utility model;
+            // when that fails the usual title request runs.
+            if let Some(utility) = (model.provider_id == crate::providers::copilot::ID)
+                .then(crate::providers::copilot::utility_title_model)
+                .flatten()
+            {
+                let named = crate::providers::copilot::utility_title(
+                    &client,
+                    &model.provider,
+                    utility,
+                    &session_id,
+                    title::SYSTEM,
+                    &[("user", &prompt)],
+                    Some(TITLE_MAX_TOKENS),
+                )
+                .await;
+                if let Some(t) = named.ok().and_then(|t| title::clean(&t)) {
+                    return (Some(t), Usage::default());
+                }
+            }
             let policy = retry::Policy::one_shot();
             let reply = complete_with(
                 &client,
