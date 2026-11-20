@@ -193,6 +193,32 @@ struct Scanner<'a> {
     flags: Flags,
 }
 
+/// Variables a shell evaluates as code or expands as prompts when they are
+/// set (or inherited from the environment): `ENV='$(cmd)' sh -i` runs `cmd`.
+const SHELL_EVALUATED: [&str; 21] = [
+    "PS0",
+    "PS1",
+    "PS2",
+    "PS3",
+    "PS4",
+    "PROMPT_COMMAND",
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "ZDOTDIR",
+    "NULLCMD",
+    "READNULLCMD",
+    "PROMPT",
+    "PROMPT2",
+    "PROMPT3",
+    "PROMPT4",
+    "RPROMPT",
+    "RPS1",
+    "SPROMPT",
+    "FCEDIT",
+];
+
 const TERMINATORS: [&str; 7] = ["then", "elif", "else", "fi", "do", "done", "esac"];
 const DECLARATIONS: [&str; 7] = [
     "declare", "typeset", "export", "readonly", "local", "unset", "unsetenv",
@@ -633,12 +659,14 @@ impl<'a> Scanner<'a> {
             match c {
                 ' ' | '\t' | '\n' | ';' | '&' | '|' | '(' | ')' | '<' | '>' => {
                     if c == '(' && assignment && raw.ends_with('=') {
-                        // Array assignment: `x=(a b)`.
-                        let end = self.balanced(self.pos)?;
-                        let t = self.text(self.pos, end);
+                        // Array assignment: `x=(a b)`. Its elements are
+                        // words, so `x=($(cmd))` and `x=([$(cmd)]=1)` run
+                        // `cmd`.
+                        let open = self.pos;
+                        self.array_elements(&mut nested)?;
+                        let t = self.text(open, self.pos);
                         raw.push_str(&t);
                         value.push_str(&t);
-                        self.pos = end;
                         continue;
                     }
                     break;
@@ -734,6 +762,41 @@ impl<'a> Scanner<'a> {
             assignment,
             nested,
         })
+    }
+
+    /// The elements of `name=(...)`, from the `(` to just past the `)`.
+    fn array_elements(&mut self, nested: &mut Vec<Item>) -> Result<(), Opaque> {
+        self.pos += 1;
+        loop {
+            match self.at(self.pos) {
+                None => return Err("invalid-structure"),
+                Some(' ') | Some('\t') | Some('\n') => self.pos += 1,
+                Some('\\') if self.at(self.pos + 1) == Some('\n') => self.pos += 2,
+                Some('#') => {
+                    while self.at(self.pos).is_some_and(|c| c != '\n') {
+                        self.pos += 1;
+                    }
+                }
+                Some(')') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                Some(c)
+                    if ";&|(".contains(c)
+                        || ("<>".contains(c) && self.at(self.pos + 1) != Some('(')) =>
+                {
+                    return Err("invalid-structure")
+                }
+                Some(_) => {
+                    let start = self.pos;
+                    let mut w = self.word()?;
+                    if self.pos == start {
+                        return Err("invalid-structure");
+                    }
+                    nested.append(&mut w.nested);
+                }
+            }
+        }
     }
 
     /// End (exclusive) of the parenthesized text starting at `p` (`(`).
@@ -849,6 +912,47 @@ impl<'a> Scanner<'a> {
                                     'f' => decoded.push('\x0c'),
                                     'v' => decoded.push('\x0b'),
                                     '\\' | '\'' | '"' | '?' => decoded.push(n),
+                                    'x' | 'u' | 'U' | '0'..='7' => {
+                                        // `\xHH`, `\uHHHH`, `\UHHHHHHHH`, `\NNN`:
+                                        // `$'\x72m'` is `rm`.
+                                        let (radix, max, from) = match n {
+                                            'x' => (16, 2, i + 2),
+                                            'u' => (16, 4, i + 2),
+                                            'U' => (16, 8, i + 2),
+                                            _ => (8, 3, i + 1),
+                                        };
+                                        let mut j = from;
+                                        let mut code = 0u32;
+                                        while j < from + max
+                                            && self.at(j).is_some_and(|c| c.is_digit(radix))
+                                        {
+                                            code = code * radix
+                                                + self.at(j).unwrap().to_digit(radix).unwrap();
+                                            j += 1;
+                                        }
+                                        if j == from {
+                                            decoded.push('\\');
+                                            decoded.push(n);
+                                            i += 2;
+                                        } else {
+                                            match char::from_u32(code) {
+                                                Some(ch) if code != 0 => decoded.push(ch),
+                                                // A NUL ends the string in Bash.
+                                                Some(_) => {}
+                                                None => return Err("invalid-structure"),
+                                            }
+                                            i = j;
+                                        }
+                                        continue;
+                                    }
+                                    'c' => {
+                                        // `\cX`: a control character.
+                                        let x = self.at(i + 2).ok_or("unterminated-quote")?;
+                                        decoded
+                                            .push(char::from_u32(x as u32 & 0x1f).unwrap_or('?'));
+                                        i += 3;
+                                        continue;
+                                    }
                                     other => {
                                         decoded.push('\\');
                                         decoded.push(other);
@@ -931,6 +1035,35 @@ impl<'a> Scanner<'a> {
                 }
                 Some(n) if n.is_ascii_digit() || "@*#?$!-".contains(n) => {
                     self.pos = start + 2;
+                }
+                Some(n) if "~=^+".contains(n) => {
+                    // Zsh's `$~x` (glob the value), `$=x` (split it), `$^x`,
+                    // `$+x`: an expansion of `x`.
+                    let mut i = start + 1;
+                    while self.at(i).is_some_and(|c| "~=^+".contains(c)) {
+                        i += 1;
+                    }
+                    match self.at(i) {
+                        Some('{') => {
+                            self.pos = i + 1;
+                            self.params += 1;
+                            let r = self.parameter(nested, self.params);
+                            self.params -= 1;
+                            r?;
+                        }
+                        Some(c) if is_name_start(c) => {
+                            while self.at(i).is_some_and(is_name_char) {
+                                i += 1;
+                            }
+                            self.pos = i;
+                        }
+                        _ => {
+                            raw.push('$');
+                            value.push('$');
+                            self.pos = start + 1;
+                            return Ok(());
+                        }
+                    }
                 }
                 _ => {
                     raw.push('$');
@@ -1526,11 +1659,14 @@ impl<'a> Scanner<'a> {
                 self.flags.sink = true;
             }
         }
-        if matches!(
-            name.trim_end_matches('+'),
-            "PS1" | "PS2" | "PS3" | "PS4" | "PROMPT_COMMAND"
-        ) {
+        let name = name.trim_end_matches('+');
+        if SHELL_EVALUATED.contains(&name) {
             self.flags.sink = true;
+        }
+        if name.starts_with("BASH_FUNC_") {
+            // An exported function a child Bash defines: `env
+            // 'BASH_FUNC_ls%%=() { rm x; }' bash -c ls` runs `rm x`.
+            self.flags.eval();
         }
         if let Some(list) = value.strip_prefix('(') {
             if list.contains('[') {
@@ -1555,6 +1691,21 @@ impl<'a> Scanner<'a> {
             return;
         };
         let args = &words[i + 1..];
+        let option = |c: &[char]| {
+            args.iter().any(|w| {
+                w.value.starts_with('-') && !w.value.starts_with("--") && w.value.contains(c)
+            })
+        };
+        // `mapfile -C cb` and `compgen -C cmd`/`-F f` run code; `fc` runs
+        // commands from the history, which `history -s`/`print -s` fill
+        // (`history -s 'rm x'; fc -s`).
+        if (matches!(name, "mapfile" | "readarray" | "compgen" | "complete") && option(&['C', 'F']))
+            || matches!(name, "fc" | "history")
+            || (name == "print" && option(&['s', 'S', 'z']))
+            || (name == "r" && args.is_empty())
+        {
+            self.flags.eval();
+        }
         let operand_evaluates = |w: &Word| w.value.contains('[') || w.raw.contains(['$', '`']);
         match name {
             "printf" | "print" | "test" | "[" | "wait" => {
@@ -1584,6 +1735,17 @@ impl<'a> Scanner<'a> {
                 }
             }
             "let" => self.flags.sink = true,
+            "env" => {
+                for w in args
+                    .iter()
+                    .take_while(|w| !w.value.starts_with('-') || w.value.contains('='))
+                {
+                    if w.value.contains('=') && !w.value.starts_with('-') {
+                        self.assignment_flags(&w.value);
+                    }
+                }
+            }
+
             "alias" if args.iter().any(|w| w.value.contains('=')) => self.flags.eval(),
             "hash" if args.iter().any(|w| w.value.starts_with("-p")) => self.flags.eval(),
             "enable" | "setopt" | "emulate" | "shopt" => self.flags.eval(),
@@ -1611,6 +1773,9 @@ impl<'a> Scanner<'a> {
         let mut nested = Vec::new();
         let mut heredoc = false;
         let mut writes = Vec::new();
+        // A command starting `{name}>`: with no words, Zsh reads `{name}` as
+        // the group `{ name }` and runs `name`.
+        let mut named_fd = false;
         loop {
             match self.peek()? {
                 Tok::Word(_) => {
@@ -1649,6 +1814,9 @@ impl<'a> Scanner<'a> {
                     let Tok::Redir(r) = self.next()? else {
                         unreachable!()
                     };
+                    if start.is_none() && self.at(r.start) == Some('{') {
+                        named_fd = true;
+                    }
                     start.get_or_insert(r.start);
                     end = r.end;
                     heredoc |= r.heredoc;
@@ -1663,6 +1831,9 @@ impl<'a> Scanner<'a> {
             return Err("invalid-structure");
         };
         if words.is_empty() {
+            if named_fd {
+                self.flags.eval();
+            }
             if let Some(&(_, op_end)) = redirects.first() {
                 self.push(
                     Command {
@@ -2015,9 +2186,26 @@ fn delegate(
         mark_dynamic(out, "dynamic-execution");
         return Ok(());
     }
-    let base = name.rsplit('/').next().unwrap_or(name);
+    let mut base = name.rsplit('/').next().unwrap_or(name);
+    if raw[0].starts_with('=') {
+        // Zsh's `=rm` runs the `rm` found on PATH.
+        base = base.strip_prefix('=').unwrap_or(base);
+    }
+    if base != name && !base.is_empty() {
+        // `../bin/rm x` runs an `rm` too: check it as one.
+        let mut words = cooked.to_vec();
+        words[0] = base.to_string();
+        let resource = words.join(" ");
+        out.delegated
+            .push((resource.clone(), save_pattern(&words, &resource)));
+    }
     let push_wrapped = |at: usize, out: &mut Analysis| -> Result<(), Opaque> {
         if at >= cooked.len() {
+            return Ok(());
+        }
+        if RESERVED.contains(&cooked[at].as_str()) {
+            // `repeat 1 { rm x }`: a compound command the words do not show.
+            mark_dynamic(out, "dynamic-execution");
             return Ok(());
         }
         let words = &cooked[at..];
@@ -2065,6 +2253,12 @@ fn delegate(
     }
     Ok(())
 }
+
+/// Words that start a compound command where a command name is expected.
+const RESERVED: [&str; 16] = [
+    "{", "}", "(", "if", "then", "for", "while", "until", "case", "select", "[[", "function",
+    "repeat", "foreach", "coproc", "!",
+];
 
 /// Scan a static code string run by `sh -c`, `eval` or `trap`.
 fn run_string(code: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> Result<(), Opaque> {
@@ -2118,6 +2312,12 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
     };
     match base {
         "eval" => Some(static_join(1).or_else(|| (cooked.len() == 1).then(String::new))),
+        "source" | "." => {
+            let i = 1 + usize::from(cooked.get(1).is_some_and(|w| w == "--"));
+            raw.get(i)
+                .is_some_and(|r| computed_source(r))
+                .then_some(None)
+        }
         "watch" => {
             let mut i = 1;
             while i < cooked.len() && cooked[i].starts_with('-') {
@@ -2172,7 +2372,14 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
                 break;
             }
             if !c {
-                return None;
+                // A shell given no script file runs its standard input
+                // (`echo 'rm x' | sh`), as does `-s`; a script from a pipe or
+                // a process substitution is code the words do not show.
+                let stdin = raw.get(i).is_none_or(|r| computed_source(r))
+                    || cooked[1..i].iter().any(|w| {
+                        w.starts_with('-') && !w.starts_with("--") && w.contains(['s', 'i'])
+                    });
+                return stdin.then_some(None);
             }
             Some(
                 raw.get(i)
@@ -2183,13 +2390,25 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
     }
 }
 
+/// A script operand whose contents come from a pipe, a process substitution
+/// or a computed name rather than a file in the repository.
+fn computed_source(raw: &str) -> bool {
+    raw == "-"
+        || raw.starts_with("<(")
+        || raw.starts_with(">(")
+        || raw.starts_with("/dev/")
+        || raw.starts_with("/proc/")
+        || !is_static_word(raw)
+}
+
 /// Where the command a wrapper runs starts: `Some(Some(i))`, `Some(None)`
 /// when it cannot be told, `None` when `base` is not a wrapper.
 fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     // Options that take a separate argument, per wrapper.
     let with_arg: &[&str] = match base {
         "env" => &["-u", "--unset", "-C", "--chdir"],
-        "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "caffeinate" => &[],
+        "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "caffeinate" | "noglob"
+        | "nocorrect" | "repeat" => &[],
         "exec" => &["-a"],
         "stdbuf" => &["-i", "-o", "-e"],
         "time" => &["-f", "-o", "--format", "--output"],
@@ -2244,8 +2463,8 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         }
         break;
     }
-    if base == "timeout" {
-        i += 1; // the duration
+    if base == "timeout" || base == "repeat" {
+        i += 1; // the duration, the count
     }
     if base == "nice" && cooked.get(i).is_some_and(|w| w.starts_with('-')) {
         i += 1;
@@ -2438,7 +2657,7 @@ fn is_static_word(raw: &str) -> bool {
         Ansi,
     }
     let expands = |n: Option<&char>| {
-        n.is_some_and(|n| n.is_ascii_alphanumeric() || "_@*#?$!({[-".contains(*n))
+        n.is_some_and(|n| n.is_ascii_alphanumeric() || "_@*#?$!({[-~=^+".contains(*n))
     };
     let chars: Vec<char> = raw.chars().collect();
     let mut seg = Segments::default();

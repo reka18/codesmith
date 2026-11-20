@@ -1,0 +1,890 @@
+%% Curated inputs for tests/shell_differential.rs. Each case starts with a
+%% line beginning `%%` (the rest of the line is a comment); `%% known: why`
+%% marks a gap left on purpose. Arguments name files in the scratch work
+%% directory only: the shells run real code against shims.
+%% ---- plain forms
+touch F
+%%
+rm -rf F; touch G
+%%
+git status && rm F
+%%
+false || curl http://x
+%%
+ls | cat | rm F
+%%
+ls |& rm F
+%%
+( rm F )
+%%
+{ rm F; }
+%%
+rm F &
+%%
+! rm F
+%% ---- quote / escape / assignment forms of command names
+r''m F
+%%
+r""m F
+%%
+\rm F
+%%
+"rm" F
+%%
+'rm' F
+%%
+$'rm' F
+%%
+$'\x72m' F
+%%
+$'\162m' F
+%%
+$'rm' F
+%% known: Zsh has no $"..." and looks up a command named `$rm`; the scan reports the Bash reading `rm F`, which only over-reports
+$"rm" F
+%%
+X=1 rm F
+%%
+X=1 Y=2 rm F
+%%
+X=$(echo y) rm F
+%%
+r\
+m F
+%%
+rm\
+ F
+%%
+command rm F
+%%
+builtin command rm F
+%%
+command -p rm F
+%%
+exec rm F
+%%
+exec -a foo rm F
+%%
+nohup rm F
+%%
+time rm F
+%% known: Zsh's `time` takes no options and looks up a command named `-p`, which no PATH provides
+time -p rm F
+%%
+nice -n 1 rm F
+%%
+env rm F
+%%
+env -u X rm F
+%%
+env X=1 rm F
+%%
+env -- rm F
+%%
+xargs rm F
+%%
+xargs -I{} rm {}
+%%
+timeout 1 rm F
+%% ---- path forms of command names
+../bin/rm F
+%%
+./../bin/rm F
+%%
+../b?n/rm F
+%%
+../bi[n]/rm F
+%%
+../b*/rm F
+%%
+../{bin,x}/rm F
+%%
+~/../bin/rm F
+%%
+$HOME/../bin/rm F
+%% ---- brace / glob / tilde in command position
+{rm,F}
+%%
+{r,}m F
+%%
+r{m,} F
+%%
+* F
+%%
+r? F
+%%
+[r]m F
+%%
+~+/../bin/rm F
+%% ---- substitutions everywhere
+echo $(rm F)
+%%
+echo `rm F`
+%%
+echo "$(rm F)"
+%%
+echo "`rm F`"
+%%
+echo ${x:-$(rm F)}
+%%
+echo ${x:=`rm F`}
+%%
+echo ${x/$(rm F)/y}
+%%
+echo ${x#$(rm F)}
+%%
+echo "${x:-"$(rm F)"}"
+%%
+x=$(rm F)
+%%
+x=`rm F` y=1
+%%
+echo x > $(rm F)
+%%
+cat < $(rm F)
+%%
+cat <(rm F)
+%%
+echo hi > >(rm F)
+%%
+diff <(rm F) <(touch G)
+%%
+echo $(echo $(echo $(rm F)))
+%%
+echo `echo \`rm F\``
+%%
+echo $(
+rm F
+)
+%%
+echo $( case x in x) rm F;; esac )
+%%
+echo $(cat <<EOF
+$(rm F)
+EOF
+)
+%% ---- here-docs
+cat <<EOF
+$(rm F)
+EOF
+%%
+cat <<EOF
+`rm F`
+EOF
+%%
+cat <<-EOF
+	$(rm F)
+	EOF
+%%
+cat <<EOF
+${x:-$(rm F)}
+EOF
+%%
+cat <<EOF
+$((1+$(rm F)))
+EOF
+%%
+cat <<'EOF'
+$(rm F)
+EOF
+%%
+cat <<"EOF"
+$(rm F)
+EOF
+%%
+cat <<E\OF
+$(rm F)
+EOF
+%%
+cat <<EOF; rm F
+x
+EOF
+%%
+cat <<A <<B
+$(rm F)
+A
+$(touch G)
+B
+%%
+cat <<EOF | rm F
+x
+EOF
+%%
+cat <<< "$(rm F)"
+%%
+cat <<< $(rm F)
+%% ---- arithmetic contexts
+echo $((0$(rm F)))
+%%
+echo $(( $(rm F) + 1 ))
+%%
+echo $[ $(rm F) ]
+%%
+(( $(rm F) ))
+%%
+(( x = $(rm F) ))
+%%
+x='a[$(rm F)]'; echo $((x))
+%%
+x='a[$(rm F)]'; (( x ))
+%%
+x='a[$(rm F)]'; echo ${y[x]}
+%%
+x='a[$(rm F)]'; echo ${y:x}
+%%
+x='a[$(rm F)]'; [[ x -eq 1 ]]
+%%
+x='a[$(rm F)]'; let x
+%%
+x='a[$(rm F)]'; declare -i y=x
+%%
+x='a[$(rm F)]'; test x -eq 1
+%%
+x='a[$(rm F)]'; [ x -eq 1 ]
+%%
+x='a[$(rm F)]'; printf %d x
+%%
+x='a[$(rm F)]'; printf -v y %d x
+%%
+x='a[$(rm F)]'; for ((i=x; i<0; i++)); do :; done
+%%
+x='a[$(rm F)]'; a=(1); echo ${a[x]}
+%%
+x='a[$(rm F)]'; echo $(( ${x} ))
+%%
+x='a[$(rm F)]'; case 1 in $((x))) ;; esac
+%%
+x='a[$(rm F)]'; ulimit -t x
+%%
+x='a[$(rm F)]'; shift x
+%%
+x='a[$(rm F)]'; return x 2>/dev/null
+%%
+x='a[$(rm F)]'; exit x
+%%
+x='a[$(rm F)]'; read -t x y </dev/null
+%%
+x='a[$(rm F)]'; sleep_ms=x; echo $((sleep_ms))
+%%
+x='a[$(rm F)]'; set -- x; echo $(($1))
+%%
+x='a[$(rm F)]'; echo ${@:x}
+%%
+x='a[$(rm F)]'; echo ${*:x:1}
+%%
+x='a[$(rm F)]'; echo ${x:0:x}
+%%
+x='a[$(rm F)]'; echo ${#a[x]}
+%%
+x='a[$(rm F)]'; a[x]=1
+%%
+x='a[$(rm F)]'; unset 'a[x]'
+%%
+x='a[$(rm F)]'; [[ -v a[x] ]]
+%%
+x='a[$(rm F)]'; wait -n x 2>/dev/null
+%%
+x='a[$(rm F)]'; kill -s 0 x 2>/dev/null
+%%
+x='a[$(rm F)]'; type x
+%%
+x='a[$(rm F)]'; while (( x )); do break; done
+%%
+for (( i=0; i<$(rm F); i++ )); do :; done
+%%
+for ((;;)); do rm F; break; done
+%% ---- declaration builtins with subscripts
+declare 'a[$(rm F)]=1'
+%%
+typeset 'a[$(rm F)]=1'
+%%
+local 'a[$(rm F)]=1'
+%%
+export 'a[$(rm F)]=1'
+%%
+readonly 'a[$(rm F)]=1'
+%%
+declare -a 'a=([$(rm F)]=1)'
+%%
+declare -A a; a['$(rm F)']=1
+%%
+a=([$(rm F)]=1)
+%%
+a=(['$(rm F)']=1); declare -p a
+%%
+declare -n r='a[$(rm F)]'; echo $r
+%%
+declare -n r=x; x='a[$(rm F)]'; r=1
+%%
+unset -v 'a[$(rm F)]'
+%%
+printf -v 'a[$(rm F)]' x
+%%
+read 'a[$(rm F)]' <<< x
+%%
+mapfile -t 'a[$(rm F)]' </dev/null
+%%
+getopts a 'a[$(rm F)]'
+%% ---- eval and shell strings
+eval rm F
+%%
+eval 'rm F'
+%%
+eval "rm F"
+%%
+eval "$(echo rm F)"
+%%
+x='rm F'; eval "$x"
+%%
+x='rm F'; $x
+%%
+x=rm; $x F
+%%
+x=rm; ${x} F
+%%
+set -- rm F; "$@"
+%%
+bash -c 'rm F'
+%%
+sh -c 'rm F'
+%%
+zsh -c 'rm F'
+%%
+dash -c 'rm F'
+%%
+bash -c 'eval "rm F"'
+%%
+bash -ec 'rm F'
+%%
+bash -x -c 'rm F'
+%%
+bash --norc -c 'rm F'
+%%
+bash -c 'rm "$1"' _ F
+%%
+bash -c "$(echo rm F)"
+%%
+bash <<< 'rm F'
+%%
+bash <<EOF
+rm F
+EOF
+%%
+echo 'rm F' | bash
+%%
+echo 'rm F' | sh
+%%
+bash < <(echo rm F)
+%%
+source <(echo rm F)
+%%
+. <(echo rm F)
+%%
+source /dev/stdin <<< 'rm F'
+%%
+eval $'rm\x20F'
+%%
+builtin eval 'rm F'
+%%
+command eval 'rm F'
+%%
+env bash -c 'rm F'
+%%
+env sh -c 'rm F'
+%%
+xargs sh -c 'rm F'
+%%
+nice bash -c 'rm F'
+%% ---- traps and hooks
+trap 'rm F' EXIT
+%%
+trap "rm F" EXIT
+%%
+trap -- 'rm F' EXIT
+%%
+trap 'rm F' DEBUG; :
+%%
+trap 'rm F' ERR; false
+%%
+trap 'rm F' RETURN; f() { :; }; f
+%%
+trap 'rm F' 0
+%%
+trap 'rm F' INT; kill -INT $$
+%%
+x='rm F'; trap "$x" EXIT
+%%
+PROMPT_COMMAND='rm F' bash -ic :
+%%
+PS4='$(rm F)' bash -xc :
+%%
+PS4='$(rm F)'; set -x; :
+%%
+env PS4='$(rm F)' bash -xc :
+%%
+export PS4='$(rm F)'; bash -xc :
+%%
+BASH_ENV='$(rm F)' bash -c :
+%%
+env BASH_ENV='$(rm F)' bash -c :
+%%
+export BASH_ENV='$(rm F)'; bash -c :
+%%
+ENV='$(rm F)' sh -ic :
+%%
+env 'BASH_FUNC_ls%%=() { rm F; }' bash -c ls
+%%
+f() { rm F; }; export -f f; bash -c f
+%%
+SHELLOPTS=xtrace PS4='$(rm F)' bash -c :
+%%
+BASHOPTS=expand_aliases bash -c 'alias q="rm F"
+q'
+%%
+PS1='$(rm F)' bash -i -c : </dev/null
+%%
+PS0='$(rm F)' bash -i -c :
+%%
+x='$(rm F)'; echo ${x@P}
+%%
+x='\$(rm F)'; echo ${x@P}
+%%
+x='$(rm F)'; echo ${x@Q}
+%%
+x='$(rm F)'; echo ${x@E}
+%%
+x='$(rm F)'; echo ${x@A}
+%%
+x='$(rm F)'; y=${x@P}
+%% ---- indirection
+x='a[$(rm F)]'; echo ${!x}
+%%
+x='a[$(rm F)]'; y=x; echo ${!y}
+%%
+echo ${!PATH*}
+%%
+echo ${!a[@]}
+%%
+x=y; declare -n z=$x; echo $z
+%% ---- functions and aliases
+f() { rm F; }; f
+%%
+function f { rm F; }; f
+%%
+function f() { rm F; }; f
+%%
+f() ( rm F ); f
+%%
+f() if true; then rm F; fi; f
+%%
+alias q='rm F'
+q
+%%
+shopt -s expand_aliases; alias q='rm F'
+q
+%%
+bash -c 'shopt -s expand_aliases; alias q="rm F"
+q'
+%%
+alias q='rm F'; eval q
+%%
+zsh -c 'alias q="rm F"
+q'
+%%
+zsh -c 'alias -g Q="; rm F"
+echo Q'
+%%
+hash -p ../bin/rm ls; ls F
+%%
+enable -n echo; echo F
+%%
+enable -f x y
+%% ---- control structures
+if rm F; then :; fi
+%%
+if true; then rm F; fi
+%%
+if false; then :; else rm F; fi
+%%
+if false; then :; elif rm F; then :; fi
+%%
+while rm F; do break; done
+%%
+until rm F; do break; done
+%%
+until false; do rm F; break; done
+%%
+for i in 1; do rm F; done
+%%
+for i in $(rm F); do :; done
+%%
+for i in `rm F`; do :; done
+%%
+for i do rm F; done
+%%
+for i in 1; { rm F; }
+%%
+select i in a; do rm F; break; done </dev/null
+%%
+select i in $(rm F); do break; done </dev/null
+%%
+case x in x) rm F;; esac
+%%
+case $(rm F) in *) ;; esac
+%%
+case x in $(rm F)) ;; esac
+%%
+case x in y|$(rm F)) ;; esac
+%%
+case x in (x) rm F;; esac
+%%
+case x in x) rm F;& y) touch G;; esac
+%%
+case x in x) :;;& *) rm F;; esac
+%%
+[[ $(rm F) ]]
+%%
+[[ -n $(rm F) ]]
+%%
+[[ x =~ $(rm F) ]]
+%%
+[[ x == $(rm F) ]]
+%%
+[[ x && $(rm F) ]]
+%%
+[[ ( -n $(rm F) ) ]]
+%%
+[ "$(rm F)" ]
+%%
+test "$(rm F)"
+%%
+coproc rm F
+%%
+coproc { rm F; }
+%%
+coproc c { rm F; }
+%%
+time { rm F; }
+%%
+{ rm F; } > out
+%%
+( rm F ) 2>&1
+%%
+rm F # comment; touch G
+%%
+# comment
+rm F
+%%
+: <<'X'
+X
+rm F
+%%
+echo x \
+; rm F
+%% ---- redirects and fds
+exec 3>out; rm F
+%%
+exec 3>out
+%%
+exec >out
+%%
+>out
+%%
+>>out
+%%
+: >out
+%%
+echo >out
+%%
+echo x >| out
+%%
+echo x &> out
+%%
+echo x &>> out
+%%
+echo x >& out
+%%
+echo x 2> out
+%%
+echo x 1<>out
+%%
+echo x > "$(echo out)"
+%%
+echo x > ${x:-out}
+%%
+echo x > o*
+%%
+echo x > f*
+%%
+echo x > {o,p}ut
+%%
+echo x > ~+/out
+%%
+echo x >sub/out
+%%
+cd sub; echo x > out
+%%
+cd sub && echo x > ../out
+%%
+{fd}>out
+%%
+exec {fd}>out
+%%
+echo x > out$(:)
+%%
+x=out; echo x > $x
+%%
+echo x | tee out
+%%
+cat > out <<EOF
+x
+EOF
+%% ---- printf / read / mapfile / getopts
+printf -v x %s y
+%%
+printf -v x '%s' '$(rm F)'; eval "$x"
+%%
+read -r x <<< 'rm F'; $x
+%%
+read -e x </dev/null
+%%
+mapfile -C 'rm F' -c 1 a <<< x
+%%
+mapfile -C f -c 1 a <<< x
+%%
+readarray -C 'rm F' -c 1 a <<< x
+%%
+f() { rm F; }; mapfile -C f -c 1 a <<< x
+%%
+getopts a x
+%%
+getopts a x -a
+%%
+complete -C 'rm F' ls
+%%
+fc -s
+%%
+history -s 'rm F'; fc -s
+%%
+history -s 'rm F'; !!
+%%
+set -o history; history -s 'rm F'; fc -e - 
+%%
+IFS=x; y=rmxF; $y
+%%
+IFS=:; x=rm:F; $x
+%%
+IFS=; x='rm F'; $x
+%%
+x=(rm F); "${x[@]}"
+%%
+x=(rm F); ${x[*]}
+%%
+set -f; x='r* F'; $x
+%% ---- zsh-only
+=rm F
+%%
+=ls
+%%
+echo =rm
+%%
+x='$(rm F)'; echo ${(e)x}
+%%
+x='rm F'; ${(z)x}
+%%
+x='rm F'; ${=x}
+%%
+x='r*'; $~x F
+%%
+echo *(e:'rm F':)
+%%
+echo *(+f)
+%%
+echo f1(e:'rm F':)
+%%
+ls *(e:'rm F':)
+%%
+echo ${(%):-%F}
+%%
+x='$(rm F)'; print -P $x
+%%
+noglob rm F
+%%
+nocorrect rm F
+%%
+- rm F
+%%
+builtin rm F
+%%
+command -- rm F
+%%
+exec -- rm F
+%%
+repeat 1 rm F
+%%
+repeat 1 { rm F }
+%%
+if true { rm F }
+%%
+for i (1) rm F
+%%
+foreach i (1)
+rm F
+end
+%%
+while true { rm F; break }
+%%
+() { rm F }
+%%
+function { rm F }
+%%
+x='rm F'; eval ${(q)x}
+%%
+zmodload zsh/system
+%%
+autoload -U f
+%%
+emulate sh -c 'rm F'
+%%
+setopt RC_EXPAND_PARAM
+%%
+TRAPEXIT() { rm F }
+%%
+TRAPDEBUG() { rm F }; :
+%%
+precmd() { rm F }
+%%
+preexec() { rm F }
+%%
+zle -N f
+%%
+(( $(rm F) ))
+%%
+echo $((rm))
+%%
+x='a[$(rm F)]'; echo $((x))
+%%
+x='rm F'; ${(s: :)x}
+%%
+x='rm F'; ${x}
+%%
+echo ${(P)x}
+%%
+x='$(rm F)'; y=x; echo ${(P)y}
+%%
+print -z 'rm F'
+%%
+sched +0 rm F
+%%
+vared x
+%%
+echo ${~x}
+%%
+cmd=(rm F); $cmd
+%%
+cmd=(rm F); $cmd[@]
+%% ---- unicode lookalikes and odd whitespace
+ｒｍ F
+%%
+rm F
+%%
+rm	F
+%%
+rm F
+%%
+rm F
+%% ---- misc builtins that run code
+command_not_found_handle() { rm F; }; nosuch
+%%
+command_not_found_handler() { rm F; }; nosuch
+%%
+exec 2>out; nosuch
+%%
+type rm
+%%
+command -v rm
+%%
+command -V rm
+%%
+which rm
+%%
+kill -0 $$
+%%
+wait
+%%
+ulimit -a
+%%
+umask 077; touch G
+%%
+caller
+%%
+times
+%%
+suspend -f 2>/dev/null
+%%
+compgen -C 'rm F' x
+%%
+compgen -F f x
+%%
+bind -x '"x": rm F' 2>/dev/null
+%%
+set -o vi
+%%
+shopt -s extdebug
+%%
+declare -f f
+%%
+x=$'rm F'; $x
+%%
+$'\162\155' F
+%%
+"$(printf rm)" F
+%%
+$(printf rm) F
+%%
+`printf rm` F
+%%
+${x:-rm} F
+%%
+${x-rm} F
+%%
+"${x:-rm}" F
+%% known: Zsh keeps the escaped newline and looks up `r<newline>m`; Bash runs `rm`, which the scan reports
+$'r\
+m' F
+%%
+r$'m' F
+%%
+$@rm F
+%%
+${@}rm F
+%%
+"$@"rm F
+%%
+$*rm F
+%%
+''rm F
+%%
+""rm F
+%%
+rm'' F
+%%
+r\m F
+%%
+\r\m F
+%%
+x= rm F
+%%
+x+=1 rm F
+%%
+a[0]=1 rm F
+%%
+a[$(touch G)]=1 rm F
+%%
+>out rm F
+%%
+2>/dev/null rm F
+%%
+<f1 rm F
+%%
+rm >out F
