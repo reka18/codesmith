@@ -1390,16 +1390,19 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                     "attached {}",
                     codesmith_core::media::label(m)
                 ))),
-                (Role::Assistant, Part::Text(t)) => out.push(Entry::Assistant(t.clone())),
+                (Role::Assistant, Part::Text(t)) => out.push(Entry::Assistant(t.to_string())),
                 (Role::Assistant, Part::Reasoning(t)) => out.push(Entry::Reasoning(t.to_string())),
-                (Role::Assistant, Part::ToolCall { id, name, input }) => {
-                    out.push(Entry::Tool(Tool {
-                        id: id.clone(),
-                        name: name.clone(),
-                        detail: crate::render::describe(name, input),
-                        ..Default::default()
-                    }))
-                }
+                (
+                    Role::Assistant,
+                    Part::ToolCall {
+                        id, name, input, ..
+                    },
+                ) => out.push(Entry::Tool(Tool {
+                    id: id.clone(),
+                    name: name.clone(),
+                    detail: crate::render::describe(name, input),
+                    ..Default::default()
+                })),
                 // A tool the provider ran: already settled.
                 (Role::Assistant, Part::Hosted(h)) => {
                     let (output, failed) = match h.summary() {
@@ -1464,6 +1467,7 @@ mod replay_tests {
                         id: "c".into(),
                         name: "read".into(),
                         input: json!({"path": "a.rs"}),
+                        meta: None,
                     },
                 ],
             },

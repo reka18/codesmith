@@ -318,6 +318,7 @@ mod tests {
             id: id.into(),
             name: "echo".into(),
             input: json!({}),
+            meta: None,
         }
     }
     fn result(id: &str) -> Part {
@@ -336,7 +337,7 @@ mod tests {
         let history = vec![
             Message::user("hi"),
             assistant(vec![]),
-            assistant(vec![Part::Text(String::new())]),
+            assistant(vec![Part::text("")]),
             assistant(vec![Part::Reasoning(String::new().into())]),
             assistant(vec![Part::Text("Partial".into())]),
         ];

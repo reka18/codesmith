@@ -738,7 +738,7 @@ async fn a_busy_session_defers_runs_and_a_live_session_catches_up() {
         .messages
         .iter()
         .filter_map(|m| match m.parts.first() {
-            Some(Part::Text(t)) => Some(t.clone()),
+            Some(Part::Text(t)) => Some(t.to_string()),
             _ => None,
         })
         .collect();

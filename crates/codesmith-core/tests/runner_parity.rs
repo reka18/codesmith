@@ -328,7 +328,7 @@ fn texts(s: &Session) -> Vec<String> {
         .filter(|m| m.role == Role::Assistant)
         .flat_map(|m| m.parts.iter())
         .filter_map(|p| match p {
-            Part::Text(t) => Some(t.clone()),
+            Part::Text(t) => Some(t.to_string()),
             _ => None,
         })
         .collect()
@@ -1019,6 +1019,7 @@ async fn oc_session_durably_fails_local_tools_left_running_by_a_prior_process_be
                 id: "call-interrupted".into(),
                 name: "glob".into(),
                 input: json!({"pattern": "stale"}),
+                meta: None,
             }],
         },
     ] {

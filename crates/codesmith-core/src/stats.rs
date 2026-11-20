@@ -220,7 +220,10 @@ fn lite(body: &str) -> Result<Lite> {
             for p in m.parts {
                 let data = p.data.map(|d| d.get()).unwrap_or("null");
                 parts.push(match p.kind.as_ref() {
-                    "text" => LitePart::Text(serde_json::from_str(data)?),
+                    // Plain, or `{text, meta}` with provider state.
+                    "text" => {
+                        LitePart::Text(serde_json::from_str::<codesmith_ai::Text>(data)?.text)
+                    }
                     "tool_result" => {
                         let r: ToolResultData = serde_json::from_str(data)?;
                         LitePart::ToolResult {
@@ -945,6 +948,7 @@ mod tests {
                         id: "c".into(),
                         name: "glob".into(),
                         input: json!({}),
+                        meta: None,
                     }],
                 },
             },
@@ -1111,6 +1115,7 @@ mod tests {
                             mime: "image/png".into(),
                             source: codesmith_ai::Source::Base64(big.clone()),
                             filename: None,
+                            meta: Default::default(),
                         }),
                     ],
                 },
@@ -1124,6 +1129,7 @@ mod tests {
                             id: "1".into(),
                             name: "read".into(),
                             input: json!({"path": big}),
+                            meta: None,
                         },
                     ],
                 },

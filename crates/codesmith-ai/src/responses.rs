@@ -4,9 +4,10 @@
 use crate::cache;
 use crate::gemini::split_id;
 use crate::{
-    drive, merge_body, normalize_tool_history, schema, sse, stream_error, system_text, Decoder,
-    Error, Event, EventStream, FinishReason, Hosted, Media, MediaKind, Message, Part, Protocol,
-    Provider, Reason, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    drive, effort_update, merge_body, meta_for, normalize_tool_history, resolve_effort_updates,
+    schema, sse, stream_error, system_text, Decoder, Error, Event, EventStream, FinishReason,
+    Hosted, Media, MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta, Request,
+    Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -104,12 +105,34 @@ fn lower_options(req: &Request) -> Map<String, Value> {
     out
 }
 
-/// One assistant message's input items. Reasoning replays as a `reasoning`
-/// item when it carries encrypted state from this API (nothing is stored
-/// server-side, so an item without it cannot be resolved) and some output
-/// follows it in the message (the API rejects a reasoning item without its
-/// following item). Reasoning parts of one item merge.
-fn assistant_items(m: &Message, input: &mut Vec<Value>) {
+/// A provider-issued item id worth replaying: a nonempty prefix, `_`, and a
+/// nonempty suffix (after OpenCode's `itemID`; the prefix is the
+/// provider's own and need not name the item's type).
+fn item_id(meta: Option<&ReasoningMeta>) -> Option<&str> {
+    let id = meta?.item_id.as_deref()?;
+    let sep = id.find('_')?;
+    (sep > 0 && sep < id.len() - 1).then_some(id)
+}
+
+/// A `function_call` item, with its item id when it has a valid one.
+fn function_call(id: &str, name: &str, args: &Value, meta: &Option<ReasoningMeta>) -> Value {
+    let mut item = json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()});
+    if let Some(i) = item_id(meta_for(meta, Protocol::OpenaiResponses)) {
+        item["id"] = json!(i);
+    }
+    item
+}
+
+/// One assistant message's input items (after OpenCode's `lowerMessages`).
+/// Consecutive text of one message item (same item id and phase) is one
+/// completed `message` item, with its id and phase when it has them.
+/// Reasoning replays as a `reasoning` item when it carries encrypted state
+/// from this API (nothing is stored server-side, so an item without it
+/// cannot be resolved) and some output follows it in the message (the API
+/// rejects a reasoning item without its following item). Reasoning parts of
+/// one item merge. Media the model generated (Responses has no assistant
+/// image item) replays as user input.
+fn assistant_items(m: &Message, input: &mut Vec<Value>, video: VideoAs) {
     let has_output = |from: usize| {
         m.parts[from..].iter().any(|p| match p {
             Part::Text(t) => !t.trim().is_empty(),
@@ -117,18 +140,57 @@ fn assistant_items(m: &Message, input: &mut Vec<Value>) {
             _ => false,
         })
     };
+    // The message item text is going into: (id, phase, at).
+    type Group<'a> = (Option<&'a str>, Option<&'a Option<String>>, usize);
+    let mut group: Option<Group> = None;
     let mut items: Vec<(String, usize)> = Vec::new();
     let mut hosted = Vec::new();
     for (i, p) in m.parts.iter().enumerate() {
+        if let Part::Text(t) = p {
+            if t.trim().is_empty() {
+                continue;
+            }
+            let meta = t.meta_for(Protocol::OpenaiResponses);
+            let id = item_id(meta);
+            let phase = meta.and_then(|m| m.phase.as_ref());
+            let block = json!({"type": "output_text", "text": t.as_str()});
+            match group {
+                Some((gid, gphase, at)) if gid == id && gphase == phase => {
+                    input[at]["content"].as_array_mut().unwrap().push(block);
+                }
+                _ => {
+                    let mut item = json!({"type": "message", "role": "assistant", "status": "completed", "content": [block]});
+                    if let Some(id) = id {
+                        item["id"] = json!(id);
+                    }
+                    if let Some(phase) = phase {
+                        item["phase"] = json!(phase);
+                    }
+                    group = Some((id, phase, input.len()));
+                    input.push(item);
+                }
+            }
+            continue;
+        }
+        group = None;
         match p {
-            Part::Text(t) if !t.trim().is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
-            Part::ToolCall { id, name, input: args } => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
-            Part::Hosted(h) => input.extend(crate::hosted::responses_replay(h, &mut hosted, lower_media)),
+            Part::ToolCall {
+                id,
+                name,
+                input: args,
+                meta,
+            } => input.push(function_call(id, name, args, meta)),
+            Part::Media(media) => input.push(
+                json!({"type": "message", "role": "user", "content": [lower_media(media, video)]}),
+            ),
+            Part::Hosted(h) => input.extend(crate::hosted::responses_replay(h, &mut hosted, |m| {
+                lower_media(m, video)
+            })),
             Part::Reasoning(r) => {
                 let Some(meta) = r.meta_for(Protocol::OpenaiResponses) else {
                     continue;
                 };
-                let id = meta.item_id.clone().unwrap_or_default();
+                let id = item_id(Some(meta)).unwrap_or_default().to_string();
                 if let Some(&(_, at)) = items.iter().find(|(i, _)| !id.is_empty() && *i == id) {
                     let item = &mut input[at];
                     if !r.text.is_empty() {
@@ -169,11 +231,27 @@ fn assistant_items(m: &Message, input: &mut Vec<Value>) {
     }
 }
 
+/// How a server takes video.
+#[derive(Clone, Copy, PartialEq)]
+enum VideoAs {
+    /// `input_video` (the shared protocol).
+    Video,
+    /// A named `input_file` (xAI).
+    File,
+}
+
 /// An `input_image` / `input_file` / `input_video` item (after OpenCode's
-/// open-responses `lowerMedia`); every media type lowers.
-fn lower_media(m: &Media) -> Value {
-    match (m.kind(), m.remote()) {
+/// open-responses `lowerMedia`); every media type lowers. An image's
+/// `openai.detail` option is passed on.
+fn lower_media(m: &Media, video: VideoAs) -> Value {
+    let mut v = match (m.kind(), m.remote()) {
         (MediaKind::Image, _) => json!({"type": "input_image", "image_url": m.location()}),
+        (MediaKind::Video, Some(url)) if video == VideoAs::File => {
+            json!({"type": "input_file", "filename": m.filename.as_deref().unwrap_or("file"), "file_url": url})
+        }
+        (MediaKind::Video, None) if video == VideoAs::File => {
+            json!({"type": "input_file", "filename": m.filename.as_deref().unwrap_or("file"), "file_data": m.location()})
+        }
         (MediaKind::Video, _) => json!({"type": "input_video", "video_url": m.location()}),
         (_, Some(url)) => json!({"type": "input_file", "file_url": url}),
         (kind, None) => json!({
@@ -181,33 +259,103 @@ fn lower_media(m: &Media) -> Value {
             "filename": m.filename.as_deref().unwrap_or(if kind == MediaKind::Pdf { "document.pdf" } else { "file" }),
             "file_data": m.location(),
         }),
+    };
+    let detail = m.meta_of("openai").and_then(|o| o.get("detail"));
+    if let Some(d) = detail.filter(|_| v["type"] != "input_video") {
+        v["detail"] = d.clone();
     }
+    v
 }
 
+/// Whether the model takes a per-message effort change as a
+/// `configuration_update` item (after OpenCode's `supportsEffortUpdates`):
+/// GPT-6 and later, except in `reasoningMode: pro` or with automatic
+/// context management. An `effortUpdates` option overrides the detection.
+fn effort_updates(req: &Request) -> bool {
+    let o = &req.options;
+    if o.get("contextManagement").is_some()
+        || o.str("reasoningMode") == Some("pro")
+        || req
+            .body
+            .get("reasoning")
+            .is_some_and(|r| r["mode"] == "pro")
+    {
+        return false;
+    }
+    if let Some(b) = o.bool("effortUpdates") {
+        return b;
+    }
+    let m = req.model.to_ascii_lowercase();
+    let name = m.rsplit('/').next().unwrap_or(&m);
+    let Some(rest) = name.strip_prefix("gpt-") else {
+        return false;
+    };
+    let major: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let after = &rest[major.len()..];
+    let after = after
+        .strip_prefix('.')
+        .map(|a| a.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .unwrap_or(after);
+    (after.is_empty() || after.starts_with('-')) && major.parse::<u32>().is_ok_and(|n| n >= 6)
+}
+
+/// The effort a per-message change back to the default sends.
+const DEFAULT_EFFORT: &str = "medium";
+
+#[cfg(test)]
 pub fn body(req: &Request) -> Value {
+    body_for(req, "")
+}
+
+/// The request body for a server at `base_url`.
+pub fn body_for(req: &Request, base_url: &str) -> Value {
+    let url = base_url.to_ascii_lowercase();
+    let video = if url.contains("api.x.ai") {
+        VideoAs::File
+    } else {
+        VideoAs::Video
+    };
+    let (efforts, effort) = if effort_updates(req) {
+        resolve_effort_updates(&req.messages, req.options.reasoning_effort())
+    } else {
+        (false, req.options.reasoning_effort().map(str::to_string))
+    };
     let mut input = Vec::new();
     for m in &normalize_tool_history(&req.messages) {
+        if let Some((e, _)) = effort_update(m) {
+            if efforts {
+                // Consecutive updates are rejected; the newer one wins.
+                if input
+                    .last()
+                    .is_some_and(|l: &Value| l["type"] == "configuration_update")
+                {
+                    input.pop();
+                }
+                input.push(json!({"type": "configuration_update", "reasoning": {"effort": e.unwrap_or(DEFAULT_EFFORT)}}));
+            }
+            continue;
+        }
         // A user message with attachments is one message item, in order.
         if m.role == Role::User && m.parts.iter().any(|p| matches!(p, Part::Media(_))) {
             let content: Vec<Value> = m
                 .parts
                 .iter()
                 .filter_map(|p| match p {
-                    Part::Text(t) => Some(json!({"type": "input_text", "text": t})),
-                    Part::Media(media) => Some(lower_media(media)),
+                    Part::Text(t) => Some(json!({"type": "input_text", "text": t.as_str()})),
+                    Part::Media(media) => Some(lower_media(media, video)),
                     _ => None,
                 })
                 .collect();
             for p in &m.parts {
                 if let Part::ToolResult { .. } = p {
-                    input.push(tool_output(p));
+                    input.push(tool_output(p, video));
                 }
             }
             input.push(json!({"type": "message", "role": "user", "content": content}));
             continue;
         }
         if m.role == Role::Assistant {
-            assistant_items(m, &mut input);
+            assistant_items(m, &mut input, video);
             continue;
         }
         // A system update is a developer message in place (after OpenCode).
@@ -217,12 +365,15 @@ pub fn body(req: &Request) -> Value {
         }
         for p in &m.parts {
             match p {
-                Part::Text(t) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]})),
-                Part::ToolCall { id, name, input: args } => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
-                Part::ToolResult { .. } => input.push(tool_output(p)),
+                Part::Text(t) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t.as_str()}]})),
+                Part::ToolCall { id, name, input: args, meta } => input.push(function_call(id, name, args, meta)),
+                Part::ToolResult { .. } => input.push(tool_output(p, video)),
                 _ => {}
             }
         }
+    }
+    if url.contains("api.meta.ai") {
+        hoist_videos(&mut input);
     }
     // The system prompt leads `input` as a developer message, as in
     // OpenCode: newer GPT models never cache top-level `instructions`.
@@ -266,7 +417,20 @@ pub fn body(req: &Request) -> Value {
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
-    merge_body(&mut body, &lower_options(req));
+    let mut options = lower_options(req);
+    if efforts {
+        let reasoning = options.entry("reasoning").or_insert_with(|| json!({}));
+        match &effort {
+            Some(e) => reasoning["effort"] = json!(e),
+            None => {
+                reasoning.as_object_mut().map(|r| r.remove("effort"));
+            }
+        }
+        if reasoning.as_object().is_some_and(|r| r.is_empty()) {
+            options.remove("reasoning");
+        }
+    }
+    merge_body(&mut body, &options);
     merge_body(&mut body, &req.body);
     body
 }
@@ -277,7 +441,7 @@ pub fn check(req: &Request) -> Result<(), Error> {
 }
 
 /// A `function_call_output`; with media its output is a content array.
-fn tool_output(p: &Part) -> Value {
+fn tool_output(p: &Part, video: VideoAs) -> Value {
     let Part::ToolResult {
         id, content, media, ..
     } = p
@@ -290,10 +454,45 @@ fn tool_output(p: &Part) -> Value {
         let text = (!content.is_empty()).then(|| json!({"type": "input_text", "text": content}));
         json!(text
             .into_iter()
-            .chain(media.iter().map(lower_media))
+            .chain(media.iter().map(|m| lower_media(m, video)))
             .collect::<Vec<_>>())
     };
     json!({"type": "function_call_output", "call_id": split_id(id).0, "output": output})
+}
+
+/// Meta cannot see video in tool results: each batch of consecutive
+/// results sends its videos in a user message after it, and a result left
+/// with nothing else says where its video went (after OpenCode's
+/// `MetaResponses`).
+fn hoist_videos(input: &mut Vec<Value>) {
+    let mut out = Vec::with_capacity(input.len());
+    let mut videos: Vec<Value> = Vec::new();
+    let flush = |out: &mut Vec<Value>, videos: &mut Vec<Value>| {
+        if !videos.is_empty() {
+            out.push(json!({"type": "message", "role": "user", "content": std::mem::take(videos)}));
+        }
+    };
+    for mut item in input.drain(..) {
+        if item["type"] != "function_call_output" {
+            flush(&mut out, &mut videos);
+            out.push(item);
+            continue;
+        }
+        if let Some(parts) = item["output"].as_array_mut() {
+            let before = parts.len();
+            let (moved, kept): (Vec<Value>, Vec<Value>) =
+                parts.drain(..).partition(|p| p["type"] == "input_video");
+            videos.extend(moved);
+            item["output"] = if kept.is_empty() && before > 0 {
+                json!("Video attached in the following user message.")
+            } else {
+                json!(kept)
+            };
+        }
+        out.push(item);
+    }
+    flush(&mut out, &mut videos);
+    *input = out;
 }
 
 /// A function call between `output_item.added` and its completion.
@@ -328,8 +527,16 @@ pub struct State {
     calls: usize,
     pending: Vec<Pending>,
     thinking: Option<Thinking>,
-    /// The message item whose text block is open.
+    /// The message item whose text block is open, and whether that is the
+    /// item's own id (not one made up for an item without one).
     text: Option<String>,
+    text_item: bool,
+    /// Message items whose text streamed, and the phase each said it was
+    /// in (`Some(None)` for `phase: null`).
+    texted: Vec<String>,
+    phases: Vec<(String, Option<String>)>,
+    /// Message items by output index, which wins over an event's item id.
+    indexed: Vec<(u64, String)>,
     /// Message items added so far, and those a later item concluded: late
     /// text for a concluded item is dropped.
     messages: Vec<String>,
@@ -376,21 +583,60 @@ impl State {
         };
         if !same {
             self.end_text(out);
-            let id = match item.filter(|i| !i.is_empty()) {
+            let real = item.filter(|i| !i.is_empty());
+            let id = match real {
                 Some(i) => i.to_string(),
                 None => format!("text-{}", self.blocks),
             };
             self.blocks += 1;
             out.push(Event::TextStart(id.clone()));
             self.text = Some(id);
+            self.text_item = real.is_some();
+        }
+        if let Some(open) = self.text.as_ref().filter(|_| self.text_item) {
+            if !self.texted.contains(open) {
+                self.texted.push(open.clone());
+            }
         }
         out.push(Event::TextDelta(text.to_string()));
     }
 
+    /// End the open text block, with its message item's id and phase.
     fn end_text(&mut self, out: &mut Vec<Event>) {
         if let Some(id) = self.text.take() {
-            out.push(Event::TextEnd(id));
+            out.push(Event::TextEnd(id.clone()));
+            if std::mem::take(&mut self.text_item) {
+                let mut meta = ReasoningMeta::of(Protocol::OpenaiResponses);
+                meta.phase = self
+                    .phases
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .map(|(_, p)| p.clone());
+                meta.item_id = Some(id);
+                out.push(Event::PartMeta(meta));
+            }
         }
+    }
+
+    /// The message item a text event belongs to: by output index, then
+    /// item id.
+    fn message_item(&self, v: &Value) -> Option<String> {
+        let by_index = v["output_index"]
+            .as_u64()
+            .and_then(|i| self.indexed.iter().find(|(x, _)| *x == i));
+        by_index
+            .map(|(_, id)| id.clone())
+            .or_else(|| v["item_id"].as_str().map(str::to_string))
+    }
+
+    /// Note a message item's phase, when the item states one.
+    fn phase(&mut self, item: &Value) {
+        let (Some(id), Some(phase)) = (item["id"].as_str(), item.get("phase")) else {
+            return;
+        };
+        let phase = phase.as_str().map(str::to_string);
+        self.phases.retain(|(i, _)| i != id);
+        self.phases.push((id.to_string(), phase));
     }
 
     /// End the open reasoning item, with its replay state.
@@ -421,7 +667,8 @@ impl State {
         Some(&mut self.pending[at])
     }
 
-    fn call(&mut self, call: &str, item_id: &str, name: &str, args: &str) -> Event {
+    /// A complete call, then its item id.
+    fn call(&mut self, call: &str, item_id: &str, name: &str, args: &str, out: &mut Vec<Event>) {
         let input = if args.trim().is_empty() {
             json!({})
         } else {
@@ -429,10 +676,15 @@ impl State {
         };
         let id = call_id(call, item_id);
         self.calls += 1;
-        Event::ToolCall {
+        out.push(Event::ToolCall {
             id,
             name: name.to_string(),
             input,
+        });
+        if !item_id.is_empty() {
+            let mut meta = ReasoningMeta::of(Protocol::OpenaiResponses);
+            meta.item_id = Some(item_id.to_string());
+            out.push(Event::PartMeta(meta));
         }
     }
 }
@@ -490,11 +742,29 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
         // Refusals are ordinary assistant text.
         "response.output_text.delta" | "response.refusal.delta" => {
             let d = v["delta"].as_str().unwrap_or("");
-            state.text(v["item_id"].as_str(), d, &mut out);
+            let item = state.message_item(v);
+            state.text(item.as_deref(), d, &mut out);
+        }
+        // The final text of an item that streamed none is its only copy.
+        "response.output_text.done" => {
+            let item = state.message_item(v);
+            let item = item.as_deref();
+            let streamed = match item {
+                Some(i) => state.texted.iter().any(|t| t == i),
+                None => state.text.is_some(),
+            };
+            if !streamed {
+                let t = v["text"].as_str().unwrap_or("");
+                state.text(item, t, &mut out);
+            }
         }
         // A new message concludes the earlier ones, even without their done.
         "response.output_item.added" if v["item"]["type"] == "message" => {
+            state.phase(&v["item"]);
             let id = item_str(&v["item"], "id");
+            if let (Some(i), false) = (v["output_index"].as_u64(), id.is_empty()) {
+                state.indexed.push((i, id.to_string()));
+            }
             if !state.messages.iter().any(|m| m == id) {
                 state.end_text(&mut out);
                 let earlier = std::mem::take(&mut state.messages);
@@ -503,6 +773,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
             }
         }
         "response.output_item.done" if v["item"]["type"] == "message" => {
+            state.phase(&v["item"]);
             let id = item_str(&v["item"], "id");
             if state.text.as_deref() == Some(id) {
                 state.end_text(&mut out);
@@ -636,12 +907,13 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 }
             };
             out.push(Event::ToolInputEnd { id: stream_id });
-            out.push(state.call(
+            state.call(
                 item_str(it, "call_id"),
                 item_id,
                 item_str(it, "name"),
                 item_str(it, "arguments"),
-            ));
+                &mut out,
+            );
         }
         // A hosted tool item is a call the provider ran, with its result.
         "response.output_item.done" => {
@@ -680,8 +952,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                     .and_then(|o| o["arguments"].as_str())
                     .unwrap_or(&p.args);
                 let name = done.and_then(|o| o["name"].as_str()).unwrap_or(&p.name);
-                let ev = state.call(&p.stream_id, &p.item_id, name, args);
-                out.push(ev);
+                state.call(&p.stream_id, &p.item_id, name, args, &mut out);
             }
             let u = &r["usage"];
             let details = &u["input_tokens_details"];
@@ -809,7 +1080,7 @@ pub(crate) fn request(
         client,
         "responses",
         crate::openai::headers(p, req),
-        &body(req),
+        &body_for(req, &p.base_url),
     )
 }
 
@@ -834,6 +1105,7 @@ mod tests {
                             id: "c1".into(),
                             name: "read".into(),
                             input: json!({"path": "a"}),
+                            meta: None,
                         },
                     ],
                 },
@@ -868,7 +1140,7 @@ mod tests {
             json!([
                 {"type": "message", "role": "developer", "content": "sys"},
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
-                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+                {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "ok"}]},
                 {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{\"path\":\"a\"}"},
                 {"type": "function_call_output", "call_id": "c1", "output": "data"}
             ])

@@ -373,7 +373,7 @@ fn replace_media(
                 .parts
                 .iter()
                 .map(|p| match p {
-                    Part::Media(media) => replace(media).map_or_else(|| p.clone(), Part::Text),
+                    Part::Media(media) => replace(media).map_or_else(|| p.clone(), Part::text),
                     Part::ToolResult {
                         id,
                         name,

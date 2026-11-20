@@ -317,7 +317,7 @@ pub fn prepare(
     let http = crate::responses::request(provider, client, req).build()?;
     let enabled = route.enabled(http.url());
     let channel = if enabled {
-        let body = crate::responses::body(req);
+        let body = crate::responses::body_for(req, &provider.base_url);
         let Value::Object(mut message) = body else {
             return Err(Error::Invalid(format!(
                 "{} WebSocket body must be a JSON object",

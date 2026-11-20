@@ -5,10 +5,10 @@
 //! (`<id>~<signature>`), so stored conversations need no extra fields.
 
 use crate::{
-    all_media, drive_resuming, inline_required, merge_body, normalize_tool_history, schema, sse,
-    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, FinishReason, Hosted,
-    HostedResult, Media, MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta,
-    Reopen, Request, Role, ToolChoice, Usage,
+    all_media, drive_resuming, effort_update, inline_required, merge_body, normalize_tool_history,
+    schema, sse, stream_error, wrap_system_update, Decoder, Error, Event, EventStream,
+    FinishReason, Hosted, HostedResult, Media, MediaKind, Message, Part, Protocol, Provider,
+    Reason, ReasoningMeta, Reopen, Request, Role, ToolChoice, Usage,
 };
 use futures_util::FutureExt;
 use serde_json::{json, Map, Value};
@@ -84,7 +84,7 @@ fn parts(m: &Message, omit_ids: bool, legacy: bool, pending: &mut Vec<Value>) ->
     let mut signed = false;
     for p in &m.parts {
         match p {
-            Part::Text(t) if !t.is_empty() => out.push(json!({"text": t})),
+            Part::Text(t) if !t.is_empty() => out.push(json!({"text": t.as_str()})),
             // Thoughts go back only with the signature Gemini gave them.
             Part::Reasoning(r) if m.role == Role::Assistant => {
                 if let Some(sig) = r
@@ -94,11 +94,22 @@ fn parts(m: &Message, omit_ids: bool, legacy: bool, pending: &mut Vec<Value>) ->
                     out.push(json!({"text": r.text, "thought": true, "thoughtSignature": sig}));
                 }
             }
-            Part::Media(media) => out.extend(media_part(media)),
+            // Generated media goes back with the signature it came with.
+            Part::Media(media) => out.extend(media_part(media).map(|mut v| {
+                let sig = media
+                    .meta_of("google")
+                    .and_then(|g| g.get("thoughtSignature"));
+                if let Some(sig) = sig.filter(|_| m.role == Role::Assistant) {
+                    v["thoughtSignature"] = sig.clone();
+                }
+                v
+            })),
             Part::Hosted(h) if m.role == Role::Assistant => {
                 out.extend(crate::hosted::gemini_replay(h))
             }
-            Part::ToolCall { id, name, input } => {
+            Part::ToolCall {
+                id, name, input, ..
+            } => {
                 let (base, sig) = split_id(id);
                 let mut call = json!({"name": name, "args": if input.is_object() { input.clone() } else { json!({}) }});
                 if !omit_ids {
@@ -165,6 +176,10 @@ pub fn body(req: &Request) -> Value {
         }
     };
     for m in &normalize_tool_history(&req.messages) {
+        // Gemini has no per-message effort change.
+        if effort_update(m).is_some() {
+            continue;
+        }
         if !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. })) {
             flush(&mut contents, &mut pending);
         }
@@ -784,6 +799,7 @@ mod tests {
                         id: "call_0~SIGX".into(),
                         name: "read".into(),
                         input: json!({"path": "a"}),
+                        meta: None,
                     },
                 ],
             },

@@ -977,6 +977,7 @@ fn prepares_the_composed_native_continuation_request() {
                     id: "call_weather_1".into(),
                     name: "get_weather".into(),
                     input: json!({"city": "Paris"}),
+                    meta: None,
                 }],
             },
             Message {
@@ -1008,7 +1009,7 @@ fn prepares_the_composed_native_continuation_request() {
     assert!(body.get("instructions").is_none());
     assert_eq!(body["store"], false);
     assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
-    let assistant = |t: &str| json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]});
+    let assistant = |t: &str| json!({"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": t}]});
     assert_eq!(
         body["input"],
         json!([

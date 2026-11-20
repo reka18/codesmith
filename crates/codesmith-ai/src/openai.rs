@@ -3,8 +3,8 @@
 use crate::cache;
 use crate::gemini::split_id;
 use crate::{
-    all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
-    stream_error, unsupported_media, wrap_system_update, Decoder, Error, Event, EventStream,
+    all_media, drive, effort_update, inline_required, merge_body, normalize_tool_history, schema,
+    sse, stream_error, unsupported_media, wrap_system_update, Decoder, Error, Event, EventStream,
     FinishReason, Media, MediaKind, Message, Part, Protocol, Provider, Reason, ReasoningMeta,
     Request, Role, ToolChoice, Usage,
 };
@@ -220,6 +220,10 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
     // collected and sent as one user message after the tool messages.
     let mut attachments: Vec<Value> = Vec::new();
     for m in &normalize_tool_history(&req.messages) {
+        // Chat has no per-message effort change.
+        if effort_update(m).is_some() {
+            continue;
+        }
         if m.role == Role::System {
             system_update(&mut messages, &mut attachments, m, compat);
             continue;
@@ -501,7 +505,7 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
                     .parts
                     .iter()
                     .filter_map(|p| match p {
-                        Part::Text(t) => Some(json!({"type": "text", "text": t})),
+                        Part::Text(t) => Some(json!({"type": "text", "text": t.as_str()})),
                         Part::Media(media) => lower_media(media),
                         _ => None,
                     })
@@ -552,7 +556,9 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
                             field = meta.and_then(|m| m.field.as_deref());
                         }
                     }
-                    Part::ToolCall { id, name, input } => {
+                    Part::ToolCall {
+                        id, name, input, ..
+                    } => {
                         let mut call = json!({
                             "id": compat.call_id(id), "type": "function",
                             "function": {"name": name, "arguments": input.to_string()},
@@ -1134,6 +1140,7 @@ mod tests {
                             id: "c1".into(),
                             name: "read".into(),
                             input: json!({"path": "a"}),
+                            meta: None,
                         },
                     ],
                 },
@@ -1184,6 +1191,7 @@ mod tests {
                 id: "c".into(),
                 name: "x".into(),
                 input: json!({}),
+                meta: None,
             }],
         };
         assert_eq!(convert(&m, &Compat::default())[0]["content"], Value::Null);

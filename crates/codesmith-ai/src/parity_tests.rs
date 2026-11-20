@@ -59,6 +59,17 @@ fn sys(t: &str) -> Message {
     Message::system(t)
 }
 
+/// An effort update (OpenCode's `Message.effort`).
+fn effort(effort: Option<&str>, previous: Option<&str>) -> Message {
+    Message {
+        role: Role::System,
+        parts: vec![Part::Effort {
+            effort: effort.map(str::to_string),
+            previous: previous.map(str::to_string),
+        }],
+    }
+}
+
 fn asst(parts: Vec<Part>) -> Message {
     Message {
         role: Role::Assistant,
@@ -86,6 +97,29 @@ fn call(id: &str, name: &str, input: Value) -> Part {
         id: id.into(),
         name: name.into(),
         input,
+        meta: None,
+    }
+}
+
+/// Responses provider state naming an output item.
+fn item_meta(item: &str) -> crate::ReasoningMeta {
+    let mut m = crate::ReasoningMeta::of(Protocol::OpenaiResponses);
+    m.item_id = Some(item.into());
+    m
+}
+
+/// Text from a Responses message item.
+fn item_text(t: &str, item: &str) -> Part {
+    Part::Text(crate::Text::new(t, item_meta(item)))
+}
+
+/// A tool call from a Responses function call item.
+fn item_call(id: &str, name: &str, input: Value, item: &str) -> Part {
+    Part::ToolCall {
+        id: id.into(),
+        name: name.into(),
+        input,
+        meta: Some(item_meta(item)),
     }
 }
 
@@ -1019,25 +1053,34 @@ fn openai_responses_streams() {
             assert_eq!((o.reasoning.as_str(), o.text.as_str(), o.finish.as_str()), ("thinking", "Hello", "stop"));
         }),
         ("openai-responses :: preserves standard refusal content as ordinary assistant text", || {
-            let o = out(resp(&sse(&[
+            let evs = resp(&sse(&[
                 json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "msg_refusal", "content": []}}),
                 json!({"type": "response.content_part.added", "item_id": "msg_refusal", "output_index": 0, "content_index": 0, "part": {"type": "refusal", "refusal": ""}}),
                 json!({"type": "response.refusal.delta", "item_id": "msg_refusal", "output_index": 0, "content_index": 0, "delta": "I can't"}),
                 json!({"type": "response.refusal.delta", "item_id": "msg_refusal", "output_index": 0, "content_index": 0, "delta": " help with that."}),
                 json!({"type": "response.refusal.done", "item_id": "msg_refusal", "output_index": 0, "content_index": 0, "refusal": "I can't help with that."}),
-                json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "msg_refusal", "content": [{"type": "refusal", "refusal": "I can't help with that."}]}}),
+                json!({"type": "response.content_part.done", "item_id": "msg_refusal", "output_index": 0, "content_index": 0, "part": {"type": "refusal", "refusal": "I can't help with that."}}),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "msg_refusal", "phase": "final_answer", "content": [{"type": "refusal", "refusal": "I can't help with that."}]}}),
                 completed(),
-            ])));
+            ])).unwrap();
+            let o = out(Ok(evs.clone()));
             assert_eq!((o.text.as_str(), o.finish.as_str()), ("I can't help with that.", "stop"));
+            let parts = crate::collect(&evs);
+            assert_eq!(parts, vec![phased_text("I can't help with that.", "msg_refusal", Some("final_answer"))]);
+            assert_eq!(responses::body(&req("gpt-4.1-mini", vec![asst(parts)]))["input"], json!([
+                {"type": "message", "id": "msg_refusal", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "I can't help with that."}], "phase": "final_answer"},
+            ]));
         }),
         ("openai-responses :: routes assistant text by output index when its item id disagrees", || {
-            let o = out(resp(&sse(&[
+            let evs = resp(&sse(&[
                 json!({"type": "response.output_item.added", "output_index": 2, "item": {"type": "message", "id": "msg_1"}}),
                 json!({"type": "response.output_text.delta", "output_index": 2, "item_id": "wrong_message", "delta": "Indexed"}),
                 json!({"type": "response.output_item.done", "output_index": 2, "item": {"type": "message", "id": "msg_1"}}),
                 completed(),
-            ])));
+            ])).unwrap();
+            let o = out(Ok(evs.clone()));
             assert_eq!(o.text, "Indexed");
+            assert_eq!(crate::collect(&evs), vec![item_text("Indexed", "msg_1")]);
         }),
         ("openai-responses :: falls back to item ids when an output index was not registered", || {
             let o = out(resp(&sse(&[
@@ -1228,6 +1271,98 @@ fn openai_responses_streams() {
         ("openai-responses :: retains function call item metadata when output_item.added is absent", || {
             let o = out(resp(&sse(&[done_call("fc_item_1", "call_1", "lookup", "{\"query\":\"weather\"}"), completed()])));
             assert_eq!(o.ids(), ["call_1"]);
+        }),
+    ]);
+}
+
+/// Text from a Responses message item in a phase (`None` for `phase: null`).
+fn phased_text(t: &str, item: &str, phase: Option<&str>) -> Part {
+    let mut m = item_meta(item);
+    m.phase = Some(phase.map(str::to_string));
+    Part::Text(crate::Text::new(t, m))
+}
+
+#[test]
+fn openai_responses_item_metadata() {
+    run(&[
+        ("openai-responses :: preserves and replays assistant message phases", || {
+            let evs = resp(&sse(&[
+                json!({"type": "response.output_item.added", "item": {"type": "message", "id": "msg_commentary"}}),
+                json!({"type": "response.output_text.delta", "item_id": "msg_commentary", "delta": "Checking."}),
+                json!({"type": "response.output_text.done", "item_id": "msg_commentary"}),
+                json!({"type": "response.output_item.done", "item": {"type": "message", "id": "msg_commentary", "phase": "commentary"}}),
+                json!({"type": "response.output_item.added", "item": {"type": "message", "id": "msg_final", "phase": "final_answer"}}),
+                json!({"type": "response.output_text.done", "item_id": "msg_final", "text": "Finished."}),
+                json!({"type": "response.output_item.done", "item": {"type": "message", "id": "msg_final", "phase": "final_answer"}}),
+                json!({"type": "response.output_item.added", "item": {"type": "message", "id": "msg_null", "phase": null}}),
+                json!({"type": "response.output_text.delta", "item_id": "msg_null", "delta": "Unclassified."}),
+                json!({"type": "response.output_item.done", "item": {"type": "message", "id": "msg_null", "phase": null}}),
+                json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+            ]))
+            .unwrap();
+            let parts = crate::collect(&evs);
+            assert_eq!(parts, vec![
+                phased_text("Checking.", "msg_commentary", Some("commentary")),
+                phased_text("Finished.", "msg_final", Some("final_answer")),
+                phased_text("Unclassified.", "msg_null", None),
+            ]);
+            // The stored parts round-trip, `phase: null` included.
+            let stored: Vec<Part> = serde_json::from_value(serde_json::to_value(&parts).unwrap()).unwrap();
+            assert_eq!(stored, parts);
+            let r = req("gpt-4.1-mini", vec![asst(stored)]);
+            assert_eq!(responses::body(&r)["input"], json!([
+                {"type": "message", "id": "msg_commentary", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Checking."}], "phase": "commentary"},
+                {"type": "message", "id": "msg_final", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Finished."}], "phase": "final_answer"},
+                {"type": "message", "id": "msg_null", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Unclassified."}], "phase": null},
+            ]));
+        }),
+        ("openai-responses :: preserves final reasoning metadata when storage is enabled (adapted: one reasoning block per item)", || {
+            let evs = resp(&sse(&[
+                json!({"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs_1", "encrypted_content": null}}),
+                json!({"type": "response.reasoning_summary_part.added", "item_id": "rs_1", "summary_index": 0}),
+                json!({"type": "response.reasoning_summary_text.delta", "item_id": "rs_1", "summary_index": 0, "delta": "First"}),
+                json!({"type": "response.reasoning_summary_part.done", "item_id": "rs_1", "summary_index": 0}),
+                json!({"type": "response.reasoning_summary_part.added", "item_id": "rs_1", "summary_index": 1}),
+                json!({"type": "response.reasoning_summary_text.delta", "item_id": "rs_1", "summary_index": 1, "delta": "Second"}),
+                json!({"type": "response.reasoning_summary_part.done", "item_id": "rs_1", "summary_index": 1}),
+                json!({"type": "response.output_item.done", "item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "encrypted-state"}}),
+                json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+            ]))
+            .unwrap();
+            let mut meta = item_meta("rs_1");
+            meta.encrypted = Some("encrypted-state".into());
+            let ends: Vec<&Event> = evs.iter().filter(|e| matches!(e, Event::ReasoningEnd(_))).collect();
+            assert_eq!(ends, [&Event::ReasoningEnd(meta.clone())]);
+            assert_eq!(crate::collect(&evs), vec![Part::Reasoning(crate::Reasoning::new("First\n\nSecond", meta))]);
+        }),
+        ("openai-responses :: preserves provider-issued item ids and removes malformed ids without dropping items (adapted: stateless reasoning)", || {
+            let reasoning = |t: &str, id: &str, encrypted: Option<&str>| {
+                let mut m = item_meta(id);
+                m.encrypted = encrypted.map(str::to_string);
+                Part::Reasoning(crate::Reasoning::new(t, m))
+            };
+            let long = format!("message_{}", "a".repeat(64));
+            let r = req("gpt-4.1-mini", vec![asst(vec![
+                item_text("Hello", "history_1"),
+                item_text("World", &long),
+                reasoning("Checked the diff.", "thinking_1", Some("encrypted-state")),
+                reasoning("Missing suffix.", "rs_", Some("another-state")),
+                // Without encrypted state CodeSmith drops the item (see the
+                // deliberate differences); OpenCode keeps it without its id.
+                reasoning("No prefix separator.", "550e8400-e29b-41d4-a716-446655440000", None),
+                item_call("call_1", "lookup", json!({"query": "weather"}), "toolu_01A"),
+                item_call("call_2", "lookup", json!({"query": "news"}), "fc_"),
+            ])]);
+            assert_eq!(responses::body(&r)["input"], json!([
+                {"type": "message", "id": "history_1", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Hello"}]},
+                {"type": "message", "id": long, "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "World"}]},
+                {"type": "reasoning", "id": "thinking_1", "summary": [{"type": "summary_text", "text": "Checked the diff."}], "encrypted_content": "encrypted-state"},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Missing suffix."}], "encrypted_content": "another-state"},
+                {"type": "function_call", "id": "toolu_01A", "call_id": "call_1", "name": "lookup", "arguments": "{\"query\":\"weather\"}"},
+                {"type": "function_call", "call_id": "call_2", "name": "lookup", "arguments": "{\"query\":\"news\"}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "Tool result missing"},
+                {"type": "function_call_output", "call_id": "call_2", "output": "Tool result missing"},
+            ]));
         }),
     ]);
 }
@@ -2484,6 +2619,15 @@ fn tool_history() {
                 vec![one, results(vec![missing("first")]), sys("Update.")]
             );
         }),
+        ("tool-history :: moves effort updates after the results of pending calls", || {
+            let call = asst(vec![call("first", "first", json!({}))]);
+            let result = results(vec![result("first", "first", "one")]);
+            let effort = effort(Some("low"), Some("high"));
+            assert_eq!(
+                normalize_tool_history(&[call.clone(), effort.clone(), result.clone()]),
+                vec![call, result, effort]
+            );
+        }),
         ("tool-history :: keeps system updates in place when no call is pending", || {
             let history = vec![
                 user("Start."),
@@ -2962,6 +3106,70 @@ fn openai_responses_media() {
                 {"type": "input_file", "file_url": "https://example.com/report.pdf"},
             ]}]));
         }),
+        ("openai-responses :: lowers Responses video by provider and preserves ordered tool results", || {
+            let video_result = results(vec![media_result("call_video", "record", "", vec![Media::url("video/mp4", "https://example.com/clip.mp4").named("clip.mp4")])]);
+            let messages = vec![
+                attach(vec![media(Media::base64("video/mp4", "AAECAw==").named("inline.mp4"))]),
+                asst(vec![call("call_video", "record", json!({}))]),
+                video_result.clone(),
+            ];
+            let expected = |user: Value, tool: Value| json!([
+                {"type": "message", "role": "user", "content": [user]},
+                {"type": "function_call", "call_id": "call_video", "name": "record", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_video", "output": [tool]},
+            ]);
+            let custom = |messages| responses::body_for(&req("video-model", messages), "https://provider.example/v1")["input"].clone();
+            // An unknown provider uses input_video for user and tool video.
+            assert_eq!(custom(messages.clone()), expected(
+                json!({"type": "input_video", "video_url": "data:video/mp4;base64,AAECAw=="}),
+                json!({"type": "input_video", "video_url": "https://example.com/clip.mp4"}),
+            ));
+            // xAI uses input_file for user and tool video.
+            assert_eq!(responses::body_for(&req("grok-4.5", messages), "https://api.x.ai/v1")["input"], expected(
+                json!({"type": "input_file", "filename": "inline.mp4", "file_data": "data:video/mp4;base64,AAECAw=="}),
+                json!({"type": "input_file", "filename": "clip.mp4", "file_url": "https://example.com/clip.mp4"}),
+            ));
+            let meta_messages = vec![
+                asst(vec![call("call_video", "record", json!({})), call("call_text", "read", json!({}))]),
+                results(vec![video_result.parts[0].clone(), result("call_text", "read", "plain result")]),
+            ];
+            let meta = |messages| responses::body_for(&req("muse-spark-1.3", messages), "https://api.meta.ai/v1")["input"].clone();
+            let meta_input = json!([
+                {"type": "function_call", "call_id": "call_video", "name": "record", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call_text", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_video", "output": "Video attached in the following user message."},
+                {"type": "function_call_output", "call_id": "call_text", "output": "plain result"},
+                {"type": "message", "role": "user", "content": [{"type": "input_video", "video_url": "https://example.com/clip.mp4"}]},
+            ]);
+            // Meta flushes videos at the end of history.
+            assert_eq!(meta(meta_messages.clone()), meta_input);
+            // Meta flushes videos before the next user message.
+            let mut continued = meta_messages.clone();
+            continued.push(user("continue"));
+            let mut want = meta_input.as_array().unwrap().clone();
+            want.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}));
+            assert_eq!(meta(continued), json!(want));
+            // The shared protocol keeps tool video nested.
+            assert_eq!(custom(meta_messages), json!([
+                {"type": "function_call", "call_id": "call_video", "name": "record", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call_text", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_video", "output": [{"type": "input_video", "video_url": "https://example.com/clip.mp4"}]},
+                {"type": "function_call_output", "call_id": "call_text", "output": "plain result"},
+            ]));
+        }),
+        ("openai-responses :: replays assistant media parts as portable user image input", || {
+            let r = req("gpt-4.1-mini", vec![
+                user("Draw a cat"),
+                asst(vec![text("Here it is."), media(png("AQID"))]),
+                user("Make it orange"),
+            ]);
+            assert_eq!(responses::body(&r)["input"], json!([
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Draw a cat"}]},
+                {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Here it is."}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AQID"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Make it orange"}]},
+            ]));
+        }),
     ]);
 }
 
@@ -3013,12 +3221,84 @@ fn anthropic_messages_media() {
                 {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQ="}, "title": "report.pdf"},
             ]}]));
         }),
+        ("anthropic-messages :: lowers per-part Anthropic media options from provider metadata", || {
+            let r = off(req("claude-sonnet-4-5", vec![attach(vec![
+                media(png("AQID").with_meta("anthropic", json!({"file_id": "file_img", "transformations": {"oversized_image": "downsize"}}))),
+                media(Media::url("application/pdf", "https://example.com/report.pdf").named("report.pdf").with_meta("anthropic", json!({"context": "Q3", "citations": {"enabled": true}}))),
+                media(Media::base64("text/plain", "aGk=").named("notes.txt").with_meta("anthropic", json!({"title": "Notes"}))),
+            ])]));
+            assert!(check(Protocol::AnthropicMessages, &r).is_ok());
+            assert_eq!(anthropic::body(&r)["messages"][0]["content"], json!([
+                {"type": "image", "source": {"type": "file", "file_id": "file_img"}, "transformations": {"oversized_image": "downsize"}},
+                {"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}, "title": "report.pdf", "context": "Q3", "citations": {"enabled": true}},
+                {"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hi"}, "title": "Notes"},
+            ]));
+        }),
+        ("anthropic-messages :: rejects invalid per-part Anthropic media options", || {
+            let r = req("claude-sonnet-4-5", vec![attach(vec![
+                media(png("AQID").with_meta("anthropic", json!({"transformations": {"oversized_image": "shrink"}}))),
+            ])]);
+            assert!(invalid(Protocol::AnthropicMessages, &r).contains("oversized_image"));
+        }),
+        ("anthropic-messages :: serializes Messages video inputs (adapted: no per-part cache hint or media reference)", || {
+            let video = json!({"type": "video", "source": {"type": "base64", "media_type": "video/mp4", "data": "AAECAw=="}});
+            let user_video = off(req("video-model", vec![attach(vec![media(Media::base64("video/mp4", "AAECAw=="))])]));
+            assert!(check(Protocol::AnthropicMessages, &user_video).is_ok());
+            assert_eq!(anthropic::body(&user_video)["messages"], json!([{"role": "user", "content": [video]}]));
+            let nested = off(req("video-model", vec![
+                asst(vec![call("clip", "read", json!({}))]),
+                results(vec![media_result("clip", "read", "", vec![data_url("data:video/mp4;base64,AAECAw=="), Media::url("video/mp4", "storage://clip")])]),
+            ]));
+            assert!(check(Protocol::AnthropicMessages, &nested).is_ok());
+            assert_eq!(anthropic_tool_result(&anthropic::body(&nested))["content"], json!([
+                video,
+                {"type": "video", "source": {"type": "url", "url": "storage://clip"}},
+            ]));
+        }),
+        ("anthropic-messages :: moves Meta tool result videos after consecutive results", || {
+            let video = json!({"type": "video", "source": {"type": "base64", "media_type": "video/mp4", "data": "AAECAw=="}});
+            let clip = || vec![data_url("data:video/mp4;base64,AAECAw==")];
+            let r = off(req("video-model", vec![
+                asst(vec![call("first", "read", json!({})), call("second", "read", json!({}))]),
+                results(vec![media_result("first", "read", "", clip())]),
+                results(vec![media_result("second", "read", "", clip())]),
+                asst(vec![text("Observed.")]),
+            ]));
+            assert_eq!(anthropic::body_for(&r, "https://api.meta.ai/v1")["messages"], json!([
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "first", "name": "read", "input": {}},
+                    {"type": "tool_use", "id": "second", "name": "read", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "first", "content": []},
+                    {"type": "tool_result", "tool_use_id": "second", "content": []},
+                    video,
+                    video,
+                ]},
+                {"role": "assistant", "content": [{"type": "text", "text": "Observed."}]},
+            ]));
+            assert_eq!(anthropic::body(&r)["messages"][1]["content"], json!([
+                {"type": "tool_result", "tool_use_id": "first", "content": [video]},
+                {"type": "tool_result", "tool_use_id": "second", "content": [video]},
+            ]));
+        }),
     ]);
 }
 
 #[test]
 fn gemini_media() {
     run(&[
+        ("gemini :: replays generated assistant media as model inline data", || {
+            let got = gemini_turns("gemini-2.5-flash", vec![
+                user("Draw a cat"),
+                asst(vec![text("Here you go."), media(png("AAECAw==").with_meta("google", json!({"thoughtSignature": "sig_1"})))]),
+                user("Now make it orange"),
+            ]);
+            assert_eq!(got[1], json!({"role": "model", "parts": [
+                {"text": "Here you go."},
+                {"inlineData": {"mimeType": "image/png", "data": "AAECAw=="}, "thoughtSignature": "sig_1"},
+            ]}));
+        }),
         ("gemini :: prepares multimodal user input and tool history (adapted: output key, no tool choice)", || {
             let got = gemini_turns("gemini-2.5-flash", vec![
                 attach(vec![text("What is in this image?"), media(png("AAECAw==")), media(pdf("JVBERi0xLjQ="))]),

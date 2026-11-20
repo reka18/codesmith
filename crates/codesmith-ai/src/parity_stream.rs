@@ -4,7 +4,7 @@
 //! continuation"). The partial JSON parser's own ports are in
 //! `partial_json.rs`.
 
-use super::{anth, chat, gem, resp, run, sse};
+use super::{anth, chat, gem, item_call, item_text, resp, run, sse};
 use crate::{
     assemble, collect, drive, drive_resuming, gemini, openai, Collector, Error, Event, Part,
     Protocol, Reasoning, ReasoningMeta, Reopen, Response, Usage,
@@ -126,7 +126,7 @@ fn block_lifecycle() {
                 );
                 assert_eq!(
                     collect(&evs),
-                    [Part::Text("First".into()), Part::Text("Second".into())]
+                    [item_text("First", "msg_1"), item_text("Second", "msg_2")]
                 );
             },
         ),
@@ -207,11 +207,12 @@ fn block_lifecycle() {
                 assert!(matches!(&parts[0], Part::Reasoning(r) if r.text == "Think"));
                 assert_eq!(
                     parts[1..],
-                    [Part::ToolCall {
-                        id: "call_1".into(),
-                        name: "lookup".into(),
-                        input: json!({"query": "weather"})
-                    }]
+                    [item_call(
+                        "call_1",
+                        "lookup",
+                        json!({"query": "weather"}),
+                        "fc_1"
+                    )]
                 );
             },
         ),
@@ -262,7 +263,7 @@ fn block_lifecycle() {
                 json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
                 json!({"type": "message_stop"}),
             ])));
-            assert_eq!(collect(&evs), [Part::Text(String::new())]);
+            assert_eq!(collect(&evs), [Part::text("")]);
         }),
         (
             "gemini :: assigns unique ids to separated reasoning blocks",
@@ -344,7 +345,8 @@ fn block_lifecycle() {
                         Part::ToolCall {
                             id: "call_1".into(),
                             name: "lookup".into(),
-                            input: json!({"query": "weather"})
+                            input: json!({"query": "weather"}),
+                            meta: None,
                         },
                         Part::Text("after".into()),
                     ]

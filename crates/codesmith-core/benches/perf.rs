@@ -273,11 +273,12 @@ fn tool_message(i: usize) -> Vec<Message> {
         Message {
             role: Role::Assistant,
             parts: vec![
-                Part::Text(format!("Looking at file {i}.")),
+                Part::text(format!("Looking at file {i}.")),
                 Part::ToolCall {
                     id: format!("c{i}"),
                     name: "read".into(),
                     input: json!({"filePath": format!("src/f{i}.rs")}),
+                    meta: None,
                 },
             ],
         },

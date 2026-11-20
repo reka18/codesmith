@@ -484,7 +484,7 @@ impl Session {
         self.push(Message::user(user))?;
         self.push(Message {
             role: Role::Assistant,
-            parts: vec![Part::Text(assistant.to_string())],
+            parts: vec![Part::text(assistant)],
         })?;
         add(&mut self.usage, usage);
         if self.title.is_none() {
@@ -825,9 +825,9 @@ impl Session {
             let calls: Vec<(String, String, serde_json::Value)> = parts
                 .iter()
                 .filter_map(|p| match p {
-                    Part::ToolCall { id, name, input } => {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    }
+                    Part::ToolCall {
+                        id, name, input, ..
+                    } => Some((id.clone(), name.clone(), input.clone())),
                     _ => None,
                 })
                 .collect();
@@ -1203,7 +1203,7 @@ impl Session {
         }
         let parts = done
             .iter()
-            .map(|j| Part::Text(tool::shell::notification(j, self.limits)))
+            .map(|j| Part::text(tool::shell::notification(j, self.limits)))
             .collect();
         self.push(Message {
             role: Role::User,
@@ -1936,7 +1936,7 @@ impl Session {
         if !compaction::is_summary(&summary) {
             convo.push(Message {
                 role: Role::Assistant,
-                parts: vec![Part::Text(summary.clone())],
+                parts: vec![Part::text(summary.clone())],
             });
             convo.push(Message::user(compaction::NUDGE));
             let usage;

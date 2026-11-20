@@ -885,7 +885,7 @@ mod tests {
         let texts: Vec<String> = h
             .iter()
             .map(|m| match &m.parts[0] {
-                Part::Text(t) => t.clone(),
+                Part::Text(t) => t.to_string(),
                 _ => String::new(),
             })
             .collect();

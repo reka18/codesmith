@@ -1518,6 +1518,7 @@ impl Agent {
                             id: cid,
                             name,
                             input,
+                            ..
                         },
                     ) => {
                         let mut call = tool_call(&s.cwd, cid, name, input, "pending");

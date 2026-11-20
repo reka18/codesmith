@@ -820,19 +820,19 @@ fn openai_responses_reasoning_replay() {
                 json!([
                     {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What changed?"}]},
                     {"type": "reasoning", "id": "rs_1", "encrypted_content": "encrypted-state", "summary": [{"type": "summary_text", "text": "Checked the previous diff."}]},
-                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "The parser changed."}]},
+                    {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "The parser changed."}]},
                     {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Summarize it."}]}
                 ])
             );
         }),
-        ("openai-responses :: preserves assistant content order around reasoning items (adapted: no message status)", || {
+        ("openai-responses :: preserves assistant content order around reasoning items", || {
             let r = req("gpt-4.1-mini", vec![asst(vec![text("Before."), rs("Checked order.", Some("rs_1"), Some("encrypted-state")), text("After.")])]);
             assert_eq!(
                 responses::body(&r)["input"],
                 json!([
-                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Before."}]},
+                    {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "Before."}]},
                     {"type": "reasoning", "id": "rs_1", "encrypted_content": "encrypted-state", "summary": [{"type": "summary_text", "text": "Checked order."}]},
-                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "After."}]}
+                    {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "After."}]}
                 ])
             );
         }),
@@ -847,7 +847,7 @@ fn openai_responses_reasoning_replay() {
                     "summary": [{"type": "summary_text", "text": "First"}, {"type": "summary_text", "text": "Second"}]})
             );
         }),
-        ("openai-responses :: drops empty reasoning items without summary or encrypted content (adapted: no message status)", || {
+        ("openai-responses :: drops empty reasoning items without summary or encrypted content", || {
             let r = req(
                 "gpt-4.1-mini",
                 vec![
@@ -860,7 +860,7 @@ fn openai_responses_reasoning_replay() {
                 responses::body(&r)["input"],
                 json!([
                     {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What changed?"}]},
-                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "The parser changed."}]},
+                    {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "The parser changed."}]},
                     {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Summarize it."}]}
                 ])
             );
@@ -1110,6 +1110,203 @@ fn openai_chat_structured_reasoning() {
                     "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}],
                     "reasoning_opaque": "opaque-only"})
             );
+        }),
+    ]);
+}
+
+/// Not counted in `PARITY.md`: OpenCode's `effort-updates.test.ts`, which
+/// pins how effort updates lower on the routes that take them.
+#[test]
+fn effort_updates() {
+    fn conversation() -> Vec<Message> {
+        vec![
+            user("Before."),
+            effort(Some("low"), Some("high")),
+            user("After."),
+        ]
+    }
+    fn system_messages(b: &Value) -> Vec<Value> {
+        b["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "system")
+            .cloned()
+            .collect()
+    }
+    fn updates(b: &Value) -> Vec<Value> {
+        b["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["type"] == "configuration_update")
+            .cloned()
+            .collect()
+    }
+    run(&[
+        ("effort-updates :: walks the tail breakpoint back past a trailing effort marker", || {
+            let r = with(
+                req("claude-opus-5", vec![user("first"), asst(vec![text("reply")]), user("latest"), effort(Some("low"), Some("high"))]),
+                json!({"effort": "low"}),
+            );
+            assert_eq!(anthropic::body(&r)["messages"], json!([
+                {"role": "user", "content": [{"type": "text", "text": "first"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "reply"}]},
+                {"role": "user", "content": [{"type": "text", "text": "latest", "cache_control": {"type": "ephemeral"}}]},
+                {"role": "system", "content": [], "output_config": {"effort": "low"}},
+            ]));
+        }),
+        ("effort-updates :: lowers markers to per-turn system messages and freezes the top-level effort", || {
+            let b = anthropic::body(&off(with(req("claude-opus-5", conversation()), json!({"effort": "low"}))));
+            assert_eq!(b["output_config"], json!({"effort": "high"}));
+            assert_eq!(b["messages"], json!([
+                {"role": "user", "content": [{"type": "text", "text": "Before."}]},
+                {"role": "system", "content": [], "output_config": {"effort": "low"}},
+                {"role": "user", "content": [{"type": "text", "text": "After."}]},
+            ]));
+        }),
+        ("effort-updates :: omits the frozen effort for the model default and sends `high` for a switch back to it", || {
+            let format = json!({"type": "json_schema", "schema": {"type": "object"}});
+            let r = off(with(
+                req("claude-opus-5", vec![user("One."), effort(Some("low"), None), user("Two."), effort(None, Some("low")), user("Three.")]),
+                json!({"outputConfig": {"format": format}}),
+            ));
+            let b = anthropic::body(&r);
+            assert_eq!(b["output_config"], json!({"format": format}));
+            assert_eq!(system_messages(&b), vec![
+                json!({"role": "system", "content": [], "output_config": {"effort": "low"}}),
+                json!({"role": "system", "content": [], "output_config": {"effort": "high"}}),
+            ]);
+        }),
+        ("effort-updates :: requests the mid-conversation output config beta only when markers are sent", || {
+            for (model, expected) in [("claude-opus-5", true), ("claude-sonnet-5", false)] {
+                let b = anthropic::body(&with(req(model, conversation()), json!({"effort": "low"})));
+                assert_eq!(anthropic::betas(&b).iter().any(|b| b == "mid-conversation-output-config-2026-07-01"), expected, "{model}");
+            }
+        }),
+        ("effort-updates :: moves a marker between a tool call and its result after the result", || {
+            let r = off(with(
+                req("claude-opus-5", vec![
+                    user("Weather?"),
+                    asst(vec![call("call_1", "lookup", json!({}))]),
+                    effort(Some("low"), Some("high")),
+                    results(vec![result("call_1", "lookup", "{\"temp\":72}")]),
+                ]),
+                json!({"effort": "low"}),
+            ));
+            assert_eq!(anthropic::body(&r)["messages"], json!([
+                {"role": "user", "content": [{"type": "text", "text": "Weather?"}]},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "{\"temp\":72}"}]},
+                {"role": "system", "content": [], "output_config": {"effort": "low"}},
+            ]));
+        }),
+        ("effort-updates :: releases a held system update next to an effort marker as one valid section", || {
+            let r = off(with(
+                req("claude-opus-5", vec![user("Fix it."), asst(vec![text("Done.")]), effort(Some("low"), Some("high")), sys("Update."), user("Next.")]),
+                json!({"effort": "low"}),
+            ));
+            assert_eq!(anthropic::body(&r)["messages"], json!([
+                {"role": "user", "content": [{"type": "text", "text": "Fix it."}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+                {"role": "system", "content": [], "output_config": {"effort": "low"}},
+                {"role": "user", "content": [{"type": "text", "text": "Next."}]},
+                {"role": "system", "content": [{"type": "text", "text": "Update."}]},
+            ]));
+        }),
+        ("effort-updates :: falls back to a plain top-level effort when history drifted from the current effort", || {
+            let drifted = anthropic::body(&off(with(req("claude-opus-5", conversation()), json!({"effort": "medium"}))));
+            let plain = anthropic::body(&off(with(req("claude-opus-5", vec![user("Before."), user("After.")]), json!({"effort": "medium"}))));
+            assert_eq!(drifted, plain);
+            assert_eq!(drifted["output_config"], json!({"effort": "medium"}));
+        }),
+        ("effort-updates :: lowers or strips markers by model", || {
+            for (id, supported) in [
+                ("claude-opus-5", true),
+                ("claude-opus-5-20260901", true),
+                ("anthropic/claude-opus-5", true),
+                ("claude-fable-5-1", true),
+                ("claude-mythos-5-1", true),
+                ("claude-opus-5-5", true),
+                ("claude-sonnet-5-5", true),
+                ("anthropic/claude-sonnet-5-5", true),
+                ("claude-sonnet-6", true),
+                ("claude-haiku-6", true),
+                ("anthropic.claude-opus-5-5", true),
+                ("claude-fable-5", false),
+                ("claude-opus-4-8", false),
+                ("claude-sonnet-5", false),
+                ("claude-sonnet-5-20260801", false),
+                ("kimi-k2.5", false),
+            ] {
+                let b = anthropic::body(&with(req(id, conversation()), json!({"effort": "low"})));
+                assert_eq!(system_messages(&b).len(), usize::from(supported), "{id}");
+                assert_eq!(b["output_config"], json!({"effort": if supported { "high" } else { "low" }}), "{id}");
+            }
+        }),
+        ("effort-updates :: honors the compatibility override in both directions (adapted: an effortUpdates option)", || {
+            let enabled = anthropic::body(&with(req("claude-sonnet-5", conversation()), json!({"effort": "low", "effortUpdates": true})));
+            let disabled = anthropic::body(&with(req("claude-opus-5", conversation()), json!({"effort": "low", "effortUpdates": false})));
+            assert_eq!(system_messages(&enabled).len(), 1);
+            assert_eq!(system_messages(&disabled).len(), 0);
+        }),
+        ("effort-updates :: strips markers when thinking is disabled or between_tools", || {
+            let b = anthropic::body(&with(
+                req("claude-sonnet-5-5", conversation()),
+                json!({"thinking": {"type": "between_tools"}, "effort": "low"}),
+            ));
+            assert!(system_messages(&b).is_empty());
+            assert_eq!(b["output_config"], json!({"effort": "low"}));
+        }),
+        ("effort-updates :: compiles markers away for protocols without per-message effort", || {
+            let plain = vec![user("Before."), user("After.")];
+            assert_eq!(gemini::body(&req("gemini-3.5-flash", conversation())), gemini::body(&req("gemini-3.5-flash", plain.clone())));
+            assert_eq!(openai::body(&req("gpt-6-astra", conversation())), openai::body(&req("gpt-6-astra", plain)));
+        }),
+        ("effort-updates :: lowers markers to configuration_update items and freezes reasoning.effort", || {
+            let b = responses::body(&with(req("gpt-6-astra", conversation()), json!({"reasoningEffort": "low"})));
+            assert_eq!(b["reasoning"], json!({"effort": "high"}));
+            assert_eq!(b["input"], json!([
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Before."}]},
+                {"type": "configuration_update", "reasoning": {"effort": "low"}},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "After."}]},
+            ]));
+        }),
+        ("effort-updates :: coalesces consecutive updates so the newest wins", || {
+            let r = with(
+                req("gpt-6-astra", vec![user("Before."), effort(Some("low"), Some("medium")), effort(Some("xhigh"), Some("low")), user("After.")]),
+                json!({"reasoningEffort": "xhigh"}),
+            );
+            let b = responses::body(&r);
+            assert_eq!(b["reasoning"], json!({"effort": "medium"}));
+            assert_eq!(updates(&b), vec![json!({"type": "configuration_update", "reasoning": {"effort": "xhigh"}})]);
+        }),
+        ("effort-updates :: omits reasoning.effort for the model default and sends `medium` for a switch back to it", || {
+            let r = req("gpt-6-astra", vec![user("One."), effort(Some("low"), None), user("Two."), effort(None, Some("low")), user("Three.")]);
+            let b = responses::body(&r);
+            assert!(b.get("reasoning").is_none());
+            assert_eq!(updates(&b), vec![
+                json!({"type": "configuration_update", "reasoning": {"effort": "low"}}),
+                json!({"type": "configuration_update", "reasoning": {"effort": "medium"}}),
+            ]);
+        }),
+        ("effort-updates :: falls back to a plain top-level effort when Responses history drifted", || {
+            let drifted = responses::body(&with(req("gpt-6-astra", conversation()), json!({"reasoningEffort": "xhigh"})));
+            let plain = responses::body(&with(req("gpt-6-astra", vec![user("Before."), user("After.")]), json!({"reasoningEffort": "xhigh"})));
+            assert_eq!(drifted, plain);
+            assert_eq!(drifted["reasoning"], json!({"effort": "xhigh"}));
+        }),
+        ("effort-updates :: strips Responses markers with context management, pro mode or an older model", || {
+            for (model, o) in [
+                ("gpt-6-astra", json!({"reasoningEffort": "low", "contextManagement": [{"type": "compaction"}]})),
+                ("gpt-6-astra", json!({"reasoningEffort": "low", "reasoningMode": "pro"})),
+                ("gpt-5.5", json!({"reasoningEffort": "low"})),
+            ] {
+                let b = responses::body(&with(req(model, conversation()), o));
+                assert!(updates(&b).is_empty(), "{model}");
+                assert_eq!(b["reasoning"]["effort"], "low", "{model}");
+            }
+            assert!(!updates(&responses::body(&with(req("openai/gpt-6.1-sol", conversation()), json!({"reasoningEffort": "low"})))).is_empty());
         }),
     ]);
 }

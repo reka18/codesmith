@@ -262,7 +262,17 @@ fn mark_message(m: &mut Value, hint: &Value, budget: &mut usize) {
 fn targets(messages: &[Value], which: Messages) -> Vec<usize> {
     let last = |role: &str| messages.iter().rposition(|m| m["role"] == role);
     match which {
-        Messages::Tail(n) => (messages.len().saturating_sub(n)..messages.len()).collect(),
+        // Messages without content (an effort update) take no marker; the
+        // tail walks back past them.
+        Messages::Tail(n) => {
+            let mut at: Vec<usize> = (0..messages.len())
+                .rev()
+                .filter(|&i| !messages[i]["content"].as_array().is_some_and(Vec::is_empty))
+                .take(n)
+                .collect();
+            at.reverse();
+            at
+        }
         Messages::LatestUser => last("user").into_iter().collect(),
         Messages::LatestAssistant => last("assistant").into_iter().collect(),
     }

@@ -204,6 +204,7 @@ fn estimate_one(m: &Message) -> u64 {
                         })
                         .sum::<usize>()
             }
+            Part::Effort { .. } => 0,
         })
         .sum();
     (chars as u64).div_ceil(4)
@@ -303,8 +304,8 @@ pub fn for_summary(messages: &[Message]) -> Vec<Message> {
                         is_error: *is_error,
                         media: vec![],
                     },
-                    Part::Media(m) => Part::Text(crate::media::label(m)),
-                    Part::Text(t) => Part::Text(clip(t, CLIP * 4)),
+                    Part::Media(m) => Part::text(crate::media::label(m)),
+                    Part::Text(t) => Part::text(clip(t, CLIP * 4)),
                     other => other.clone(),
                 })
                 .collect(),
@@ -353,6 +354,7 @@ mod tests {
                 id: "c".into(),
                 name: "read".into(),
                 input: json!({"path": "a"}),
+                meta: None,
             }],
         }
     }

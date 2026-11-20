@@ -51,13 +51,17 @@ pub enum Role {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Part {
-    Text(String),
+    Text(Text),
     /// Model reasoning, kept so it can be replayed to providers that want it.
     Reasoning(Reasoning),
     ToolCall {
         id: String,
         name: String,
         input: Value,
+        /// Provider state to replay with the call (a Responses item id).
+        /// Absent in sessions stored before it existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<ReasoningMeta>,
     },
     ToolResult {
         id: String,
@@ -69,11 +73,152 @@ pub enum Part {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         media: Vec<Media>,
     },
-    /// An image, PDF or other file attached to a user message.
+    /// An image, PDF or other file attached to a user message, or (from a
+    /// model that generates them) to an assistant message.
     Media(Media),
     /// A tool the provider ran itself (web search, code execution, …),
     /// with its result: shown, stored and replayed, never run locally.
     Hosted(Hosted),
+    /// A reasoning effort change from this point of the conversation on
+    /// (OpenCode's `Message.effort`): the only part of a [`Role::System`]
+    /// message. Routes with a native per-message update (Claude Opus 5 and
+    /// Claude 5.1 or later, GPT-6 and later on Responses) lower it in
+    /// place, so the request's top-level effort, and with it the prompt
+    /// cache, stays as it was; other routes drop it. `None` is the
+    /// provider's default effort.
+    Effort {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        /// The effort before this change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous: Option<String>,
+    },
+}
+
+impl Part {
+    /// A text part without provider state.
+    pub fn text(text: impl Into<String>) -> Self {
+        Part::Text(Text::from(text.into()))
+    }
+
+    /// A tool call without provider state.
+    pub fn tool_call(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
+        Part::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input,
+            meta: None,
+        }
+    }
+}
+
+/// Assistant (or user) text, with the provider state that came with it.
+///
+/// Stored as a plain string when there is no provider state, as sessions
+/// written before provider state existed are; otherwise as
+/// `{"text": ..., "meta": {...}}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TextRepr", into = "TextRepr")]
+pub struct Text {
+    pub text: String,
+    /// Provider state: a Responses message item id and phase.
+    pub meta: Option<ReasoningMeta>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum TextRepr {
+    Plain(String),
+    Full {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        meta: Option<ReasoningMeta>,
+    },
+}
+
+impl From<TextRepr> for Text {
+    fn from(r: TextRepr) -> Self {
+        match r {
+            TextRepr::Plain(text) => Text { text, meta: None },
+            TextRepr::Full { text, meta } => Text { text, meta },
+        }
+    }
+}
+
+impl From<Text> for TextRepr {
+    fn from(t: Text) -> Self {
+        match t.meta {
+            None => TextRepr::Plain(t.text),
+            meta => TextRepr::Full { text: t.text, meta },
+        }
+    }
+}
+
+impl From<String> for Text {
+    fn from(text: String) -> Self {
+        Text { text, meta: None }
+    }
+}
+
+impl From<&str> for Text {
+    fn from(text: &str) -> Self {
+        Text::from(text.to_string())
+    }
+}
+
+impl From<&String> for Text {
+    fn from(text: &String) -> Self {
+        Text::from(text.clone())
+    }
+}
+
+impl std::ops::Deref for Text {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::fmt::Display for Text {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl PartialEq<str> for Text {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+
+impl PartialEq<&str> for Text {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl Text {
+    pub fn new(text: impl Into<String>, meta: ReasoningMeta) -> Self {
+        Text {
+            text: text.into(),
+            meta: Some(meta),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// The provider state, when it came from `protocol`.
+    pub fn meta_for(&self, protocol: Protocol) -> Option<&ReasoningMeta> {
+        self.meta.as_ref().filter(|m| m.protocol == Some(protocol))
+    }
+}
+
+/// A part's provider state, when it came from `protocol`.
+pub(crate) fn meta_for(meta: &Option<ReasoningMeta>, protocol: Protocol) -> Option<&ReasoningMeta> {
+    meta.as_ref().filter(|m| m.protocol == Some(protocol))
 }
 
 /// Model reasoning: the text shown to the user, and what the provider needs
@@ -152,8 +297,8 @@ impl Reasoning {
     }
 }
 
-/// Opaque provider state that lets reasoning be replayed. Only the protocol
-/// that produced it reads it back.
+/// Opaque provider state that lets a reasoning, text or tool-call part be
+/// replayed. Only the protocol that produced it reads it back.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReasoningMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +325,24 @@ pub struct ReasoningMeta {
     /// (`reasoning_content`, `reasoning`), where it is sent back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    /// OpenAI Responses message `phase` (`commentary`, `final_answer`);
+    /// `Some(None)` when the item said `phase: null`, which replays as is.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub phase: Option<Option<String>>,
+}
+
+/// A field that is present, even as `null` (`Some(None)`); an absent field
+/// takes its default (`None`).
+fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
 }
 
 impl ReasoningMeta {
@@ -200,6 +363,13 @@ pub struct Media {
     /// The file's name, shown to providers that take one (PDF titles).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// Per-part provider options and state, keyed by provider (OpenCode's
+    /// `providerMetadata`): `anthropic` (`file_id`, `title`, `context`,
+    /// `citations`, `transformations`), `google` (`thoughtSignature` on
+    /// generated media), `openai` (`detail`). Absent in sessions stored
+    /// before it existed.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub meta: serde_json::Map<String, Value>,
 }
 
 /// Where a media payload lives.
@@ -228,6 +398,7 @@ impl Media {
             mime: mime.into(),
             source: Source::Base64(data.into()),
             filename: None,
+            meta: Default::default(),
         }
     }
 
@@ -236,6 +407,7 @@ impl Media {
             mime: mime.into(),
             source: Source::Url(url.into()),
             filename: None,
+            meta: Default::default(),
         }
     }
 
@@ -255,6 +427,17 @@ impl Media {
     pub fn named(mut self, filename: impl Into<String>) -> Self {
         self.filename = Some(filename.into());
         self
+    }
+
+    /// With `options` for `provider` (see [`Media::meta`]).
+    pub fn with_meta(mut self, provider: &str, options: Value) -> Self {
+        self.meta.insert(provider.into(), options);
+        self
+    }
+
+    /// The options for `provider`, if any.
+    pub fn meta_of(&self, provider: &str) -> Option<&serde_json::Map<String, Value>> {
+        self.meta.get(provider).and_then(Value::as_object)
     }
 
     /// The base64 payload of inline media.
@@ -339,7 +522,7 @@ impl Message {
     pub fn user(text: impl Into<String>) -> Self {
         Message {
             role: Role::User,
-            parts: vec![Part::Text(text.into())],
+            parts: vec![Part::text(text)],
         }
     }
 
@@ -347,7 +530,7 @@ impl Message {
     pub fn system(text: impl Into<String>) -> Self {
         Message {
             role: Role::System,
-            parts: vec![Part::Text(text.into())],
+            parts: vec![Part::text(text)],
         }
     }
 }
@@ -363,6 +546,36 @@ pub(crate) fn system_text(m: &Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The effort change a message makes, when it is an effort update: a
+/// [`Role::System`] message whose only part is [`Part::Effort`]. Gives
+/// `(effort, previous)`.
+pub(crate) fn effort_update(m: &Message) -> Option<(Option<&str>, Option<&str>)> {
+    match (&m.role, m.parts.as_slice()) {
+        (Role::System, [Part::Effort { effort, previous }]) => {
+            Some((effort.as_deref(), previous.as_deref()))
+        }
+        _ => None,
+    }
+}
+
+/// For a route that lowers effort updates and whose requested effort is
+/// `current` (after OpenCode's `resolveEffortUpdates`): whether to lower the
+/// updates in place, and the top-level effort to send. The top-level effort
+/// is the one before the first update, so it (and the cached prefix) stays
+/// the same as the conversation goes on. History whose last update
+/// disagrees with `current` (reverted or forked) drops its updates and
+/// sends `current`.
+pub(crate) fn resolve_effort_updates(
+    messages: &[Message],
+    current: Option<&str>,
+) -> (bool, Option<String>) {
+    let updates: Vec<_> = messages.iter().filter_map(effort_update).collect();
+    match (updates.first(), updates.last()) {
+        (Some(first), Some(last)) if last.0 == current => (true, first.1.map(str::to_string)),
+        _ => (false, current.map(str::to_string)),
+    }
 }
 
 /// A system update as user text, for routes without a native role for it
@@ -629,6 +842,10 @@ pub enum Event {
     HostedCall(Hosted),
     /// A hosted tool's result (`result` is set), for the call with its id.
     HostedResult(Hosted),
+    /// Provider state for the text block or tool call that just ended (a
+    /// Responses item id and phase): it joins the latest text or tool-call
+    /// part.
+    PartMeta(ReasoningMeta),
     Finish {
         reason: FinishReason,
         usage: Usage,
@@ -884,11 +1101,17 @@ impl Collector {
             }
             Event::ToolCall { id, name, input } => {
                 self.close();
-                self.parts.push(Part::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                });
+                self.parts.push(Part::tool_call(id, name, input.clone()));
+            }
+            Event::PartMeta(meta) => {
+                if matches!(self.open, Some(Open::Text(_))) {
+                    self.close();
+                }
+                match self.parts.last_mut() {
+                    Some(Part::Text(t)) => t.meta = Some(meta.clone()),
+                    Some(Part::ToolCall { meta: m, .. }) => *m = Some(meta.clone()),
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -896,7 +1119,7 @@ impl Collector {
 
     fn close(&mut self) {
         match self.open.take() {
-            Some(Open::Text(t)) => self.parts.push(Part::Text(t)),
+            Some(Open::Text(t)) => self.parts.push(Part::text(t)),
             // A block that opened but streamed nothing and has no state.
             Some(Open::Reasoning(t)) if t.is_empty() => {}
             Some(Open::Reasoning(t)) => {
@@ -972,7 +1195,9 @@ impl Response {
         self.parts
             .iter()
             .filter_map(|p| match p {
-                Part::ToolCall { id, name, input } => Some((id.as_str(), name.as_str(), input)),
+                Part::ToolCall {
+                    id, name, input, ..
+                } => Some((id.as_str(), name.as_str(), input)),
                 _ => None,
             })
             .collect()
@@ -1393,6 +1618,7 @@ pub(crate) fn content(events: impl IntoIterator<Item = Event>) -> Vec<Event> {
                     | Event::ToolInputStart { .. }
                     | Event::ToolInputDelta { .. }
                     | Event::ToolInputEnd { .. }
+                    | Event::PartMeta(_)
             )
         })
         .collect()
@@ -1578,6 +1804,7 @@ mod serde_tests {
                     id: "c".into(),
                     name: "read".into(),
                     input: json!({"path": "a"}),
+                    meta: None,
                 },
                 Part::ToolResult {
                     id: "c".into(),
@@ -1698,6 +1925,99 @@ mod serde_tests {
             json!({"type": "media", "data": {"mime": "image/png", "source": {"base64": "AAEC"}, "filename": "a.png"}})
         );
         assert_eq!(serde_json::from_value::<Message>(v).unwrap(), m);
+    }
+
+    #[test]
+    fn parts_stored_before_provider_state_still_load() {
+        let old = json!({"role": "assistant", "parts": [
+            {"type": "text", "data": "hi"},
+            {"type": "tool_call", "data": {"id": "c", "name": "read", "input": {}}},
+            {"type": "media", "data": {"mime": "image/png", "source": {"base64": "AAEC"}}},
+        ]});
+        let m: Message = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(
+            m.parts,
+            [
+                Part::text("hi"),
+                Part::tool_call("c", "read", json!({})),
+                Part::Media(Media::base64("image/png", "AAEC")),
+            ]
+        );
+        // Parts without provider state are written as they were.
+        assert_eq!(serde_json::to_value(&m).unwrap(), old);
+    }
+
+    #[test]
+    fn provider_state_round_trips() {
+        let mut meta = ReasoningMeta::of(Protocol::OpenaiResponses);
+        meta.item_id = Some("msg_1".into());
+        meta.phase = Some(None);
+        let m = Message {
+            role: Role::Assistant,
+            parts: vec![
+                Part::Text(Text::new("hi", meta.clone())),
+                Part::ToolCall {
+                    id: "c".into(),
+                    name: "read".into(),
+                    input: json!({}),
+                    meta: Some(meta.clone()),
+                },
+                Part::Media(
+                    Media::base64("image/png", "AAEC")
+                        .with_meta("google", json!({"thoughtSignature": "sig"})),
+                ),
+            ],
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v["parts"][0],
+            json!({"type": "text", "data": {"text": "hi", "meta": {"protocol": "openai-responses", "item_id": "msg_1", "phase": null}}})
+        );
+        assert_eq!(serde_json::from_value::<Message>(v).unwrap(), m);
+        let effort = Message {
+            role: Role::System,
+            parts: vec![Part::Effort {
+                effort: Some("low".into()),
+                previous: None,
+            }],
+        };
+        let v = serde_json::to_value(&effort).unwrap();
+        assert_eq!(
+            v,
+            json!({"role": "system", "parts": [{"type": "effort", "data": {"effort": "low"}}]})
+        );
+        assert_eq!(serde_json::from_value::<Message>(v).unwrap(), effort);
+    }
+
+    #[test]
+    fn part_meta_joins_the_part_that_ended() {
+        let mut meta = ReasoningMeta::of(Protocol::OpenaiResponses);
+        meta.item_id = Some("msg_1".into());
+        let parts = collect(&[
+            Event::TextStart("msg_1".into()),
+            Event::TextDelta("hi".into()),
+            Event::PartMeta(meta.clone()),
+            Event::ToolCall {
+                id: "c".into(),
+                name: "read".into(),
+                input: json!({}),
+            },
+            Event::PartMeta(meta.clone()),
+            Event::TextDelta("after".into()),
+        ]);
+        assert_eq!(
+            parts,
+            [
+                Part::Text(Text::new("hi", meta.clone())),
+                Part::ToolCall {
+                    id: "c".into(),
+                    name: "read".into(),
+                    input: json!({}),
+                    meta: Some(meta),
+                },
+                Part::text("after"),
+            ]
+        );
     }
 
     #[test]

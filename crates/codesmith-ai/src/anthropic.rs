@@ -5,10 +5,10 @@ use crate::gemini::split_id;
 use crate::openai::scrub_id;
 use crate::options::{claude_version, field, fit_budget, number};
 use crate::{
-    all_media, drive, inline_required, merge_body, normalize_tool_history, schema, sse,
-    stream_error, system_text, unsupported_media, wrap_system_update, Decoder, Error, Event,
-    EventStream, FinishReason, Hosted, Media, MediaKind, Message, Part, Protocol, Provider, Reason,
-    ReasoningMeta, Request, Role, ToolChoice, Usage,
+    all_media, drive, effort_update, inline_required, merge_body, normalize_tool_history,
+    resolve_effort_updates, schema, sse, stream_error, system_text, unsupported_media,
+    wrap_system_update, Decoder, Error, Event, EventStream, FinishReason, Hosted, Media, MediaKind,
+    Message, Part, Protocol, Provider, Reason, ReasoningMeta, Request, Role, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -19,6 +19,9 @@ const INTERLEAVED_BETA: &str = "interleaved-thinking-2025-05-14";
 const COMPACT_BETA: &str = "compact-2026-01-12";
 const FAST_BETA: &str = "fast-mode-2026-02-01";
 const BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+const OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
+/// The effort a per-message change back to the default sends.
+const DEFAULT_EFFORT: &str = "high";
 
 /// Whether unsigned reasoning must be dropped rather than replayed with an
 /// empty signature (after OpenCode's `requireThinkingSignature`): Anthropic
@@ -285,6 +288,13 @@ pub fn betas(body: &Value) -> Vec<String> {
             }
         }
     }
+    let messages = body["messages"].as_array().into_iter().flatten();
+    if messages
+        .filter(|m| m["role"] == "system")
+        .any(|m| m.get("output_config").is_some())
+    {
+        out.push(OUTPUT_CONFIG_BETA.into());
+    }
     out
 }
 
@@ -320,23 +330,94 @@ fn tool_id(id: &str) -> String {
 
 const ROUTE: &str = "Anthropic Messages";
 
-/// An image or document block (after OpenCode's `lowerMedia`): http(s)
-/// images and PDFs by URL, inline PDFs and plain text as documents, inline
-/// images as images. `None` for media [`check`] rejects.
+/// A media part's `anthropic` options (after OpenCode's `MediaOptions`):
+/// `file_id`, `title`, `context`, `citations: {enabled}` and
+/// `transformations: {oversized_image}`, with Anthropic's wire names.
+fn media_options(m: &Media) -> Result<Map<String, Value>, Error> {
+    let Some(o) = m.meta.get("anthropic") else {
+        return Ok(Map::new());
+    };
+    let bad = |why: &str| Error::Invalid(format!("{ROUTE} media options are invalid: {why}"));
+    let o = o.as_object().ok_or_else(|| bad("expected an object"))?;
+    for key in ["file_id", "title", "context"] {
+        if o.get(key).is_some_and(|v| !v.is_string()) {
+            return Err(bad(&format!("{key} must be a string")));
+        }
+    }
+    if let Some(c) = o.get("citations") {
+        if !c
+            .as_object()
+            .is_some_and(|c| c.get("enabled").is_some_and(Value::is_boolean))
+        {
+            return Err(bad("citations must be {enabled: boolean}"));
+        }
+    }
+    if let Some(t) = o.get("transformations") {
+        let ok = t.as_object().is_some_and(|t| {
+            t.get("oversized_image")
+                .is_none_or(|v| matches!(v.as_str(), Some("downsize" | "error")))
+        });
+        if !ok {
+            return Err(bad(
+                "transformations.oversized_image must be \"downsize\" or \"error\"",
+            ));
+        }
+    }
+    Ok(o.clone())
+}
+
+/// An image, document or video block (after OpenCode's `lowerMedia`):
+/// video inline or by any URL; else a file id from the part's `anthropic`
+/// options, http(s) images and PDFs by URL, inline PDFs and plain text as
+/// documents, and inline images as images, with the part's other
+/// `anthropic` options. `None` for media [`check`] rejects.
 fn lower_media(m: &Media) -> Option<Value> {
     let mime = m.mime.to_ascii_lowercase();
-    let document = |source: Value| {
-        let mut b = json!({"type": "document", "source": source});
-        if let Some(f) = m.filename.as_deref().filter(|f| !f.is_empty()) {
-            b["title"] = json!(f);
+    let options = media_options(m).ok()?;
+    let opt = |k: &str| options.get(k).filter(|v| !v.is_null());
+    if m.kind() == MediaKind::Video {
+        let source = match (m.inline(), m.remote()) {
+            (Some(data), _) => json!({"type": "base64", "media_type": mime, "data": data}),
+            (None, Some(url)) => json!({"type": "url", "url": url}),
+            (None, None) => return None,
+        };
+        return Some(json!({"type": "video", "source": source}));
+    }
+    let file = opt("file_id").map(|id| json!({"type": "file", "file_id": id}));
+    let image = |source: Value| {
+        let mut b = json!({"type": "image", "source": source});
+        if let Some(t) = opt("transformations") {
+            b["transformations"] = t.clone();
         }
         b
     };
+    let document = |source: Value| {
+        let mut b = json!({"type": "document", "source": source});
+        let title = opt("title").cloned().or_else(|| {
+            m.filename
+                .as_deref()
+                .filter(|f| !f.is_empty())
+                .map(|f| json!(f))
+        });
+        if let Some(t) = title {
+            b["title"] = t;
+        }
+        for key in ["context", "citations"] {
+            if let Some(v) = opt(key) {
+                b[key] = v.clone();
+            }
+        }
+        b
+    };
+    if let Some(f) = file {
+        return Some(match m.kind() {
+            MediaKind::Image => image(f),
+            _ => document(f),
+        });
+    }
     if let Some(url) = m.remote().map(str::trim).filter(|u| is_http(u)) {
         return match m.kind() {
-            MediaKind::Image => {
-                Some(json!({"type": "image", "source": {"type": "url", "url": url}}))
-            }
+            MediaKind::Image => Some(image(json!({"type": "url", "url": url}))),
             MediaKind::Pdf => Some(document(json!({"type": "url", "url": url}))),
             _ => None,
         };
@@ -355,9 +436,9 @@ fn lower_media(m: &Media) -> Option<Value> {
         MediaKind::Pdf => Some(document(
             json!({"type": "base64", "media_type": "application/pdf", "data": data}),
         )),
-        MediaKind::Image => Some(
-            json!({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}),
-        ),
+        MediaKind::Image => Some(image(
+            json!({"type": "base64", "media_type": mime, "data": data}),
+        )),
         _ => None,
     }
 }
@@ -367,16 +448,20 @@ fn is_http(u: &str) -> bool {
     l.starts_with("http://") || l.starts_with("https://")
 }
 
-/// Media Messages cannot carry: anything but images, PDFs and plain text,
-/// and remote media other than http(s) images and PDFs.
+/// Media Messages cannot carry: anything but images, PDFs, plain text and
+/// video, remote media other than http(s) images and PDFs and video, and
+/// malformed `anthropic` media options.
 pub fn check(req: &Request) -> Result<(), Error> {
     lower_options(req)?;
     crate::hosted::declared(req, Protocol::AnthropicMessages)?;
     crate::hosted::anthropic_check(req)?;
     for m in all_media(req) {
-        let remote_ok = m.remote().is_some_and(|u| {
-            is_http(u.trim()) && matches!(m.kind(), MediaKind::Image | MediaKind::Pdf)
-        });
+        let options = media_options(m)?;
+        let remote_ok = options.get("file_id").is_some_and(Value::is_string)
+            || m.kind() == MediaKind::Video
+            || m.remote().is_some_and(|u| {
+                is_http(u.trim()) && matches!(m.kind(), MediaKind::Image | MediaKind::Pdf)
+            });
         if m.remote().is_some() && !remote_ok {
             return Err(inline_required(ROUTE));
         }
@@ -385,6 +470,24 @@ pub fn check(req: &Request) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Meta cannot see video in tool results: a user turn's result videos move
+/// after its blocks (after OpenCode's `MetaMessages`).
+fn hoist_videos(messages: &mut [Value]) {
+    for m in messages.iter_mut().filter(|m| m["role"] == "user") {
+        let blocks = m["content"].as_array_mut().unwrap();
+        let mut videos = Vec::new();
+        for b in blocks.iter_mut().filter(|b| b["type"] == "tool_result") {
+            if let Some(content) = b["content"].as_array_mut() {
+                let (moved, kept): (Vec<Value>, Vec<Value>) =
+                    content.drain(..).partition(|c| c["type"] == "video");
+                videos.extend(moved);
+                *content = kept;
+            }
+        }
+        blocks.extend(videos);
+    }
 }
 
 /// The request body for the Anthropic API itself.
@@ -424,6 +527,35 @@ fn system_updates(req: &Request) -> bool {
         Some((_, major, _)) => major >= 5,
         None => false,
     }
+}
+
+/// Whether the model takes a per-message effort change (after OpenCode's
+/// `supportsEffortUpdates`): Claude Opus 5 and every Claude 5.1 model, and
+/// later versions, unless thinking is off. An `effortUpdates` option
+/// overrides the detection (OpenCode's `capabilities.reasoning.updates`).
+fn effort_updates(req: &Request) -> bool {
+    if req.options.get("thinking").is_some_and(thinking_off) {
+        return false;
+    }
+    if let Some(b) = req.options.bool("effortUpdates") {
+        return b;
+    }
+    match claude_version(&req.model) {
+        Some((family, major, minor)) => {
+            (family == "opus" && major >= 5) || major > 5 || (major == 5 && minor >= 1)
+        }
+        None => false,
+    }
+}
+
+/// The requested top-level effort: `effort`, else `outputConfig.effort`.
+fn requested_effort(req: &Request) -> Option<&str> {
+    req.options.str("effort").or_else(|| {
+        req.options
+            .object("outputConfig")
+            .and_then(|o| o.get("effort"))
+            .and_then(Value::as_str)
+    })
 }
 
 /// Add a text block to the latest user turn, or start one.
@@ -485,9 +617,23 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
     // where Anthropic accepts a `system` message; elsewhere they stay in
     // place as wrapped user text.
     let native = system_updates(req);
+    // Effort updates are native system messages in place (Anthropic takes
+    // them anywhere), with the top-level effort frozen at the one before
+    // the first; elsewhere they are dropped.
+    let (efforts, effort) = if effort_updates(req) {
+        resolve_effort_updates(&req.messages, requested_effort(req))
+    } else {
+        (false, requested_effort(req).map(str::to_string))
+    };
     let mut held: Vec<&Message> = Vec::new();
     let messages_in = normalize_tool_history(&req.messages);
     for m in &messages_in {
+        if let Some((e, _)) = effort_update(m) {
+            if efforts {
+                messages.push(json!({"role": "system", "content": [], "output_config": {"effort": e.unwrap_or(DEFAULT_EFFORT)}}));
+            }
+            continue;
+        }
         let role = match m.role {
             Role::User => "user",
             Role::Assistant => "assistant",
@@ -507,8 +653,8 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
                 // Several blocks, flattened below.
                 Part::Hosted(h) if m.role == Role::Assistant => Some(Value::Array(hosted_blocks(h))),
                 // Whitespace-only text blocks are rejected.
-                Part::Text(t) if !t.trim().is_empty() => Some(json!({"type": "text", "text": t})),
-                Part::ToolCall { id, name, input } => Some(json!({"type": "tool_use", "id": tool_id(id), "name": name, "input": input})),
+                Part::Text(t) if !t.trim().is_empty() => Some(json!({"type": "text", "text": t.as_str()})),
+                Part::ToolCall { id, name, input, .. } => Some(json!({"type": "tool_use", "id": tool_id(id), "name": name, "input": input})),
                 Part::Reasoning(r) if m.role == Role::Assistant => lower_reasoning(r, require_signature),
                 Part::Media(media) => lower_media(media),
                 Part::ToolResult { id, content, is_error, media, .. } => {
@@ -546,6 +692,9 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
         }
     }
     release(&mut messages, &mut held);
+    if base_url.to_ascii_lowercase().contains("api.meta.ai") {
+        hoist_videos(&mut messages);
+    }
     // Tool results must lead their user turn.
     for m in messages.iter_mut().filter(|m| m["role"] == "user") {
         let blocks = m["content"].as_array_mut().unwrap();
@@ -582,7 +731,20 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
         body["temperature"] = json!(t);
     }
     // Malformed options are rejected by `check` before a request is sent.
-    if let Ok(fields) = lower_options(req) {
+    if let Ok(mut fields) = lower_options(req) {
+        if efforts {
+            if let Some(Value::Object(oc)) = fields.get_mut("output_config") {
+                match &effort {
+                    Some(e) => oc.insert("effort".into(), json!(e)),
+                    None => oc.remove("effort"),
+                };
+                if oc.is_empty() {
+                    fields.remove("output_config");
+                }
+            } else if let Some(e) = &effort {
+                fields.insert("output_config".into(), json!({"effort": e}));
+            }
+        }
         merge_body(&mut body, &fields);
     }
     merge_body(&mut body, &req.body);
@@ -988,6 +1150,7 @@ mod tests {
                             id: "t1".into(),
                             name: "read".into(),
                             input: json!({"path": "a"}),
+                            meta: None,
                         },
                     ],
                 },
