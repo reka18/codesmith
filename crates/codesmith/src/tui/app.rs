@@ -295,8 +295,13 @@ pub struct App {
     pub context: u64,
     pub modal: Option<Modal>,
     pub show_reasoning: bool,
-    /// Show tool output and diffs in full rather than collapsed.
+    /// Show tool output and diffs in full rather than collapsed, and
+    /// every group open.
     pub expand_tools: bool,
+    /// How much tool activity the transcript shows.
+    pub verbosity: super::group::Verbosity,
+    /// Whether adjacent reads and searches are one row.
+    pub grouping: super::group::Grouping,
     pub quit: bool,
     /// Slash commands offered by autocomplete.
     pub commands: Vec<complete::Item>,
@@ -346,6 +351,7 @@ const HELP_COMMANDS: &str = "/new            start a new session
 /compact        summarize older history now
 /clear          clear the screen (the session is kept)
 /thinking       show or hide reasoning
+/verbosity [l]  cycle the transcript's verbosity, or set low, medium or high
 /help           this help
 /exit           quit
 /calibrate      survey the codebase and choose review dimensions
@@ -402,7 +408,15 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ),
     (
         "session.toggle.tool_output",
-        "expand or collapse tool output",
+        "expand or collapse tool output and groups",
+    ),
+    (
+        "session.toggle.exploration_grouping",
+        "group reads and searches, or show each",
+    ),
+    (
+        "session.verbosity.cycle",
+        "cycle the transcript's verbosity",
     ),
     ("session.toggle.thinking", "show or hide reasoning"),
     ("theme.switch", "pick a theme"),
@@ -460,6 +474,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("compact", "summarize older history now"),
     ("clear", "clear the screen"),
     ("thinking", "show or hide reasoning"),
+    (
+        "verbosity",
+        "cycle the transcript's verbosity, or set low, medium or high",
+    ),
     ("help", "keys and commands"),
     ("themes", "pick a theme, or set the light or dark mode"),
     ("exit", "quit"),
@@ -1019,6 +1037,14 @@ impl App {
             }
             "session.toggle.tool_output" => {
                 self.expand_tools = !self.expand_tools;
+                return Some(None);
+            }
+            "session.toggle.exploration_grouping" => {
+                self.grouping = self.grouping.toggled();
+                return Some(None);
+            }
+            "session.verbosity.cycle" => {
+                self.verbosity = self.verbosity.next();
                 return Some(None);
             }
             "session.page.up" => return self.scroll_by(10),

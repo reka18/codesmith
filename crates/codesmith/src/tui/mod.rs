@@ -19,10 +19,13 @@ mod bridge;
 mod complete;
 mod diff;
 mod editor;
+mod group;
 pub(crate) mod keymap;
 mod markdown;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod parity_groups;
 #[cfg(test)]
 mod parity_keys;
 pub(crate) mod settings;
@@ -443,6 +446,19 @@ impl Runner {
                         "hidden"
                     }
                 ));
+            }
+            "verbosity" => {
+                let arg = args.trim();
+                if arg.is_empty() {
+                    self.app.verbosity = self.app.verbosity.next();
+                } else {
+                    match group::Verbosity::parse(&arg.to_ascii_lowercase()) {
+                        Some(v) => self.app.verbosity = v,
+                        None => anyhow::bail!("verbosity is low, medium or high, not {arg}"),
+                    }
+                }
+                self.app
+                    .notice(format!("verbosity: {}", self.app.verbosity.key()));
             }
             "new" if self.idle_or_say() => {
                 self.forget_approvals();
@@ -1070,6 +1086,8 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     r.app.keymap = Arc::new(keymap);
     r.app.show_reasoning = tui.thinking.unwrap_or(false);
     r.app.reasoning_source = tui.markdown == settings::Markdown::Source;
+    r.app.verbosity = tui.verbosity;
+    r.app.grouping = tui.grouping;
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
         .into_iter()
         .map(|(n, c)| (n, c.description.unwrap_or_default()))
@@ -1165,6 +1183,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("help", false),
     ("clear", false),
     ("thinking", false),
+    ("verbosity", true),
     ("themes", true),
     ("theme", true),
     ("new", false),

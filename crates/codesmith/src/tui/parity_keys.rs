@@ -731,12 +731,14 @@ fn oc_dialog_prompt_renders_block_cursor_and_survives_cursor_hot_reloads() {
 
 // (adapted) Rendered, reasoning draws as Markdown (CodeSmith's table rule
 // rather than OpenTUI's grid, no heading or fence markers); as source, it is the highlighted Markdown text; the
-// setting is read per frame, so a change shows at once.
+// setting is read per frame, so a change shows at once. At medium
+// verbosity, where shown reasoning is not summed up in an activity row.
 #[test]
 fn oc_reasoning_follows_the_markdown_setting_also_when_it_changes() {
     let thought =
         "## Plan\n\n| step | risk |\n| --- | --- |\n| check | low |\n\n```ts\nconst probe = 1\n```";
     let mut a = App::new();
+    a.verbosity = super::group::Verbosity::Medium;
     a.show_reasoning = true;
     a.entries.push(Entry::Reasoning(thought.into()));
     let frame = |a: &App| {

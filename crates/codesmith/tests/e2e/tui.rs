@@ -409,7 +409,9 @@ async fn background_commands_survive_an_interrupt_switches_and_undo() {
             ),
     )
     .await;
-    e.config(&m.url, json!({}));
+    // At medium verbosity the running command has its own row (at low it
+    // is summed up as "Running command…").
+    e.config(&m.url, json!({"tui": {"session": {"verbosity": "medium"}}}));
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
@@ -462,7 +464,9 @@ async fn an_interrupt_does_not_resume_for_commands_already_finished() {
             ),
     )
     .await;
-    e.config(&m.url, json!({}));
+    // At medium verbosity the running command has its own row (at low it
+    // is summed up as "Running command…").
+    e.config(&m.url, json!({"tui": {"session": {"verbosity": "medium"}}}));
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
@@ -520,6 +524,43 @@ async fn a_new_session_stops_the_old_ones_background_commands() {
     ui.quit().await;
     assert!(!e.project.join("ended").exists(), "the command ran on");
     assert!(m.unmatched().is_empty(), "{:#?}", m.unmatched());
+    m.assert_done();
+}
+
+// At the default (low) verbosity a run of tool calls is one summary row,
+// as OpenCode draws it; ctrl+o opens it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_of_tool_calls_is_summed_up_and_opens_with_ctrl_o() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Grouped")
+            .then(
+                "run",
+                M::tools().and(M::prompt("check it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo grouped-output", "description": "check"}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("check it")).and(M::step(1)),
+                Reply::text("Checked it."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'check it'") else {
+        return;
+    };
+    // Only changed cells are redrawn: the row was "+ Running command…".
+    ui.wait_for("1 command").await;
+    ui.wait_for("Checked it.").await;
+    // (Its output may have been drawn as it ran, below the summary.)
+    ui.send(b"\x0f").await;
+    ui.wait_for("grouped-output").await;
+    ui.quit().await;
     m.assert_done();
 }
 

@@ -66,6 +66,12 @@ fn bench_transcript() {
         term.draw(|f| view::draw(f, &a)).unwrap();
     });
     report("tui frame (2k entries)", t, "");
+    a.verbosity = super::group::Verbosity::Medium;
+    let t = time(50, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame at medium verbosity", t, "");
+    a.verbosity = super::group::Verbosity::Low;
     a.scroll = 500;
     let t = time(50, || {
         term.draw(|f| view::draw(f, &a)).unwrap();
@@ -149,6 +155,54 @@ fn bench_transcript() {
         term.draw(|f| view::draw(f, &a)).unwrap();
     });
     report("tui frame after resize", t, "");
+}
+
+/// Turns of a prompt, thoughts and a long run of reads, searches and
+/// commands, then an answer: low verbosity sums each run up on one row.
+#[test]
+#[ignore]
+fn bench_grouped_transcript() {
+    let mut a = App::new();
+    for turn in 0..100 {
+        a.entries
+            .push(Entry::User(format!("Turn {turn}: fix the build")));
+        a.entries.push(Entry::Reasoning(format!(
+            "**Looking at turn {turn}**\n\nThe build fails in a module."
+        )));
+        for i in 0..20 {
+            let name = ["read", "grep", "shell", "read", "edit"][i % 5];
+            a.entries.push(Entry::Tool(Tool {
+                id: format!("t{turn}-{i}"),
+                name: name.into(),
+                detail: format!("src/mod{i}.rs"),
+                result: Some(("ok".into(), false)),
+                output: (0..10).map(|l| format!("line {l}\n")).collect(),
+                ..Default::default()
+            }));
+        }
+        a.entries.push(Entry::Assistant(format!(
+            "Fixed turn {turn}; the build passes."
+        )));
+    }
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|f| view::draw(f, &a)).unwrap();
+    for v in super::group::Verbosity::ALL {
+        a.verbosity = v;
+        let t = time(50, || {
+            term.draw(|f| view::draw(f, &a)).unwrap();
+        });
+        report(
+            &format!("tui grouped frame ({})", v.key()),
+            t,
+            "2.3k entries",
+        );
+    }
+    a.verbosity = super::group::Verbosity::Low;
+    a.expand_tools = true;
+    let t = time(50, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui grouped frame (low, expanded)", t, "");
 }
 
 #[test]

@@ -5,6 +5,7 @@ use super::app::{help_text, App, Entry, Modal, Picker, Sub, SubStatus, Tool};
 use super::complete::Kind;
 use super::diff::{self, Diff};
 use super::editor;
+use super::group::{self, GroupKind, Grouping, Item, Node, Part, State, Verbosity};
 use super::markdown;
 use super::theme;
 use codesmith_core::tool::todo::Status;
@@ -738,35 +739,308 @@ fn tool_body(t: &Tool, expand: bool, w: usize, hint: &str) -> Vec<Line<'static>>
 /// The transcript as display lines for a given width.
 #[cfg(test)]
 pub fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
-    let w = width.saturating_sub(4) as usize;
-    let mut out: Vec<Line<'static>> = Vec::new();
-    for e in &app.entries {
-        entry_lines(app, e, w, &mut out);
+    transcript_tail(app, width, usize::MAX)
+}
+
+/// The whole transcript grouped, as [`transcript_tail`] draws it, by
+/// entry index.
+#[cfg(test)]
+pub fn rows(app: &App) -> Vec<Node<usize, GroupKind>> {
+    group::group_entries(
+        (0..app.entries.len()).filter(|&i| entry_path(app, &app.entries[i]).is_some()),
+        |&i| entry_path(app, &app.entries[i]).unwrap_or_default(),
+    )
+}
+
+/// How an entry groups (see [`group::part_path`]): its path, or `None`
+/// when it draws nothing and does not break a group (an empty answer or
+/// thought).
+fn entry_path(app: &App, e: &Entry) -> Option<&'static [GroupKind]> {
+    match e {
+        Entry::Assistant(t) if t.trim().is_empty() => None,
+        Entry::Assistant(_) => Some(group::part_path(Part::Text, app.verbosity)),
+        Entry::Reasoning(t) if !thought_visible(t) => None,
+        Entry::Reasoning(_) => Some(group::part_path(Part::Reasoning, app.verbosity)),
+        Entry::Tool(t) => Some(group::part_path(Part::Tool(t.base()), app.verbosity)),
+        _ => Some(&[]),
     }
-    out
+}
+
+/// A thought with something to show: not empty, nor only the placeholder
+/// of an encrypted one.
+fn thought_visible(t: &str) -> bool {
+    t.split("[REDACTED]").any(|s| !s.trim().is_empty())
 }
 
 /// The last `n` lines of [`transcript`] (all of it when shorter). Only the
-/// entries that reach into those lines are laid out, so drawing a long
-/// session costs what is on screen, not the whole history.
+/// rows that reach into those lines are laid out, so drawing a long
+/// session costs what is on screen, not the whole history. A row is an
+/// entry, or a run of entries grouped as [`group`] says.
 pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
     let w = width.saturating_sub(4) as usize;
+    let cx = Rows::new(app, w);
+    let entries = &app.entries;
     let mut chunks: Vec<Vec<Line<'static>>> = Vec::new();
     let mut have = 0;
-    for e in app.entries.iter().rev() {
-        if have >= n {
-            break;
-        }
+    let mut end = entries.len();
+    // A row below this one is drawn: it closes this one's group.
+    let mut later = false;
+    while end > 0 && have < n {
+        let i = end - 1;
+        let Some(path) = entry_path(app, &entries[i]) else {
+            end = i;
+            continue;
+        };
         let mut lines = Vec::new();
-        entry_lines(app, e, w, &mut lines);
+        match path.first() {
+            None => {
+                entry_lines(app, &entries[i], w, &mut lines);
+                end = i;
+            }
+            Some(&kind) => {
+                let mut start = i;
+                while start > 0 {
+                    match entry_path(app, &entries[start - 1]) {
+                        Some(p) if p.first() != Some(&kind) => break,
+                        _ => start -= 1,
+                    }
+                }
+                let tree = group::group_entries(
+                    (start..end).filter(|&j| entry_path(app, &entries[j]).is_some()),
+                    |&j| entry_path(app, &entries[j]).unwrap_or_default(),
+                );
+                cx.nodes(&tree, later || !app.busy, &mut lines);
+                end = start;
+            }
+        }
         have += lines.len();
         chunks.push(lines);
+        later = true;
     }
     let mut out: Vec<Line<'static>> = chunks.into_iter().rev().flatten().collect();
     if out.len() > n {
         out.drain(..out.len() - n);
     }
     out
+}
+
+/// Drawing grouped rows.
+struct Rows<'a> {
+    app: &'a App,
+    w: usize,
+    /// The last entry drawn: a thought there may still be streaming.
+    last: Option<usize>,
+}
+
+impl<'a> Rows<'a> {
+    fn new(app: &'a App, w: usize) -> Self {
+        let last = app
+            .entries
+            .iter()
+            .rposition(|e| entry_path(app, e).is_some());
+        Rows { app, w, last }
+    }
+
+    fn streaming(&self, i: usize) -> bool {
+        self.app.busy && self.last == Some(i)
+    }
+
+    /// Nodes in order; each is closed once a later one follows.
+    fn nodes(
+        &self,
+        nodes: &[Node<usize, GroupKind>],
+        completed: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        for (k, n) in nodes.iter().enumerate() {
+            self.node(n, completed || k + 1 < nodes.len(), out);
+        }
+    }
+
+    fn node(&self, n: &Node<usize, GroupKind>, completed: bool, out: &mut Vec<Line<'static>>) {
+        match n {
+            Node::Entry(i) => entry_lines(self.app, &self.app.entries[*i], self.w, out),
+            Node::Group { kind, children, .. } => {
+                let mut leaves = Vec::with_capacity(n.size());
+                n.leaves(&mut leaves);
+                let leaves: Vec<usize> = leaves.into_iter().copied().collect();
+                match kind {
+                    GroupKind::Activity => self.activity(children, &leaves, completed, out),
+                    GroupKind::Exploration => self.exploration(children, &leaves, completed, out),
+                    GroupKind::Reasoning => self.reasoning(children, &leaves, completed, out),
+                }
+            }
+        }
+    }
+
+    fn tool(&self, i: usize) -> Option<&'a Tool> {
+        match &self.app.entries[i] {
+            Entry::Tool(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// A running call with something live to show (a command's output, a
+    /// subagent's activity) stays in view below its collapsed group.
+    fn live(&self, leaves: &[usize], out: &mut Vec<Line<'static>>) {
+        let hint = self.app.keymap.hint("session.toggle.tool_output");
+        for t in leaves.iter().filter_map(|&i| self.tool(i)) {
+            if t.result.is_none() && !t.forming && (t.sub.is_some() || !t.live.is_empty()) {
+                out.extend(tool_lines(t, false, self.w, &hint));
+            }
+        }
+    }
+
+    /// Low verbosity's activity group: one summary row, its rows below
+    /// when expanded.
+    fn activity(
+        &self,
+        children: &[Node<usize, GroupKind>],
+        leaves: &[usize],
+        completed: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let items: Vec<Item> = leaves
+            .iter()
+            .filter_map(|&i| match &self.app.entries[i] {
+                Entry::Reasoning(t) => Some(Item::Thought {
+                    streaming: self.streaming(i),
+                    visible: thought_visible(t),
+                }),
+                Entry::Tool(t) => Some(Item::Tool {
+                    name: t.base(),
+                    state: if t.forming {
+                        State::Streaming
+                    } else if t.result.is_none() {
+                        State::Running
+                    } else {
+                        State::Done
+                    },
+                }),
+                _ => None,
+            })
+            .collect();
+        let s = group::summarize(&items, completed);
+        if s.label.is_empty() {
+            return;
+        }
+        let open = self.app.expand_tools;
+        let busy = s.active && !open && !s.label.ends_with('…');
+        let label = format!("{}{}", s.label, if busy { " …" } else { "" });
+        let icon = if open { "−" } else { "+" };
+        out.push(Line::from(Span::styled(
+            cut(&format!("{icon} {label}"), self.w),
+            dim(),
+        )));
+        if open {
+            self.nodes(children, completed, out);
+        } else {
+            self.live(leaves, out);
+        }
+    }
+
+    /// Adjacent reads and searches: "Explored: 2 reads, 1 search", open at
+    /// high verbosity; drawn one by one when `session.grouping` is `none`.
+    fn exploration(
+        &self,
+        children: &[Node<usize, GroupKind>],
+        leaves: &[usize],
+        completed: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        if self.app.grouping == Grouping::None {
+            return self.nodes(children, completed, out);
+        }
+        let tools: Vec<&Tool> = leaves.iter().filter_map(|&i| self.tool(i)).collect();
+        if tools.is_empty() {
+            return;
+        }
+        let done = completed || tools.iter().all(|t| t.result.is_some());
+        let label = group::exploration_label(tools.iter().map(|t| t.base()), done);
+        let icon = if done { "→" } else { "✱" };
+        out.push(Line::from(Span::styled(
+            cut(&format!("{icon} {label}"), self.w),
+            dim(),
+        )));
+        if self.app.expand_tools || self.app.verbosity == Verbosity::High {
+            self.nodes(children, completed, out);
+        } else {
+            self.live(leaves, out);
+        }
+    }
+
+    /// Adjacent thoughts while reasoning is hidden: "Thought: title · 2
+    /// steps" (or "Thinking: title" while it streams), the thoughts below
+    /// when expanded. Shown reasoning is drawn as it is.
+    fn reasoning(
+        &self,
+        children: &[Node<usize, GroupKind>],
+        leaves: &[usize],
+        completed: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let app = self.app;
+        if app.show_reasoning {
+            return self.nodes(children, completed, out);
+        }
+        let thoughts: Vec<(usize, &str)> = leaves
+            .iter()
+            .filter_map(|&i| match &app.entries[i] {
+                Entry::Reasoning(t) if thought_visible(t) => Some((i, t.as_str())),
+                _ => None,
+            })
+            .collect();
+        let Some(&(last, text)) = thoughts.last() else {
+            return;
+        };
+        let streaming = !completed && self.streaming(last);
+        let title = match group::thought_title(text) {
+            Some(t) => Some(t),
+            None if streaming => thoughts
+                .iter()
+                .rev()
+                .find_map(|(_, t)| group::thought_title(t)),
+            None => None,
+        };
+        let open = app.expand_tools;
+        let p = theme::current();
+        let mut head = if streaming {
+            match title {
+                Some(t) => format!("Thinking: {t}"),
+                None => "Thinking".into(),
+            }
+        } else {
+            let mut h = "Thought".to_string();
+            if let (false, Some(t)) = (open, title) {
+                h.push_str(&format!(": {t}"));
+            }
+            if thoughts.len() > 1 {
+                h.push_str(&format!(" · {} steps", thoughts.len()));
+            }
+            h
+        };
+        head = format!("{} {head}", if open { "-" } else { "+" });
+        let style = if streaming {
+            fg(p.text)
+        } else if open {
+            fg(p.warning)
+        } else {
+            fg(p.warning).add_modifier(Modifier::DIM)
+        };
+        out.push(Line::from(Span::styled(
+            cut(&escape_controls(&head), self.w),
+            style,
+        )));
+        if open {
+            for (_, t) in thoughts {
+                out.extend(reasoning_lines(
+                    &group::thought_text(t),
+                    app.reasoning_source,
+                    self.w,
+                ));
+            }
+        }
+    }
 }
 
 /// Reasoning as `session.markdown` says: rendered Markdown, or its source
@@ -1359,6 +1633,15 @@ mod tests {
             .collect()
     }
 
+    /// An app drawing each call on its own row (medium verbosity, no
+    /// exploration groups), for the tests of the rows themselves.
+    fn flat() -> App {
+        let mut a = App::new();
+        a.verbosity = Verbosity::Medium;
+        a.grouping = Grouping::None;
+        a
+    }
+
     fn tool(name: &str, detail: &str, result: Option<(&str, bool)>, output: &str) -> Entry {
         Entry::Tool(Tool {
             id: String::new(),
@@ -1382,7 +1665,7 @@ mod tests {
 
     #[test]
     fn transcript_shapes() {
-        let mut a = App::new();
+        let mut a = flat();
         a.entries = vec![
             Entry::User("hi".into()),
             Entry::Assistant("# Title\nbody with **bold**".into()),
@@ -1462,7 +1745,7 @@ mod tests {
     #[test]
     fn long_tool_output_collapses_and_expands() {
         let out: String = (1..=20).map(|i| format!("line {i}\n")).collect();
-        let mut a = App::new();
+        let mut a = flat();
         a.entries = vec![tool("shell", "seq 20", Some(("line 1", false)), &out)];
         let t = text(&transcript(&a, 60));
         assert_eq!(t.len(), 1 + OUTPUT_COLLAPSED + 1, "{t:?}");
@@ -1483,7 +1766,7 @@ mod tests {
     #[test]
     fn running_commands_show_their_latest_output() {
         use crate::tui::bridge::Ev;
-        let mut a = App::new();
+        let mut a = flat();
         a.on_event(Ev::ToolStart {
             id: "c1".into(),
             name: "shell".into(),
@@ -1582,7 +1865,7 @@ mod tests {
     #[test]
     fn returned_and_generated_media_are_listed() {
         use crate::tui::bridge::Ev;
-        let mut a = App::new();
+        let mut a = flat();
         a.on_event(Ev::ToolStart {
             id: "c1".into(),
             name: "read".into(),
@@ -1660,7 +1943,7 @@ mod tests {
     #[test]
     fn a_subagent_row_shows_its_activity() {
         use crate::tui::bridge::Ev;
-        let mut a = App::new();
+        let mut a = flat();
         subagent_running(&mut a);
         assert_eq!(a.entries.len(), 1, "child calls are not rows of their own");
         assert_eq!(
@@ -1732,7 +2015,7 @@ mod tests {
     #[test]
     fn a_subagent_row_is_bounded_and_ends_failed_or_interrupted() {
         use crate::tui::bridge::Ev;
-        let mut a = App::new();
+        let mut a = flat();
         subagent_running(&mut a);
         for i in 0..500 {
             a.on_event(Ev::ToolStart {
@@ -1784,7 +2067,7 @@ mod tests {
             ]
         );
         // A turn stopped while its subagent runs leaves it interrupted.
-        let mut a = App::new();
+        let mut a = flat();
         subagent_running(&mut a);
         a.drop_forming();
         let t = text(&transcript(&a, 70));
@@ -1870,7 +2153,7 @@ mod tests {
 
     #[test]
     fn failed_tools_show_their_error() {
-        let mut a = App::new();
+        let mut a = flat();
         a.entries = vec![tool(
             "edit",
             "a.rs",
@@ -1884,7 +2167,7 @@ mod tests {
 
     #[test]
     fn edits_show_a_colored_diff() {
-        let mut a = App::new();
+        let mut a = flat();
         a.entries = vec![Entry::Tool(Tool {
             name: "edit".into(),
             detail: "a.rs".into(),

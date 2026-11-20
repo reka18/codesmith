@@ -5,6 +5,7 @@
 //! keybind names) is read too and migrated as it loads, as OpenCode
 //! migrates it. Settings for features CodeSmith does not have are ignored.
 
+use super::group::{Grouping, Verbosity};
 use super::keymap::{self, LEADER_TIMEOUT_MS};
 use super::theme::ModeSetting;
 use serde_json::{Map, Value};
@@ -47,6 +48,10 @@ pub struct Settings {
     pub thinking: Option<bool>,
     /// `session.markdown`.
     pub markdown: Markdown,
+    /// `session.verbosity`: `low`, `medium` or `high`.
+    pub verbosity: Verbosity,
+    /// `session.grouping`: `auto` or `none`.
+    pub grouping: Grouping,
 }
 
 impl Default for Settings {
@@ -62,6 +67,8 @@ impl Default for Settings {
             },
             thinking: None,
             markdown: Markdown::Rendered,
+            verbosity: Verbosity::Low,
+            grouping: Grouping::Auto,
         }
     }
 }
@@ -176,6 +183,23 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
             Some("rendered") => s.markdown = Markdown::Rendered,
             Some("source") => s.markdown = Markdown::Source,
             _ => bad("session.markdown", "must be \"rendered\" or \"source\""),
+        },
+    }
+    match get(&v, &["session", "verbosity"]) {
+        None => {}
+        Some(m) => match m.as_str().and_then(Verbosity::parse) {
+            Some(m) => s.verbosity = m,
+            None => bad(
+                "session.verbosity",
+                "must be \"low\", \"medium\" or \"high\"",
+            ),
+        },
+    }
+    match get(&v, &["session", "grouping"]) {
+        None => {}
+        Some(m) => match m.as_str().and_then(Grouping::parse) {
+            Some(m) => s.grouping = m,
+            None => bad("session.grouping", "must be \"auto\" or \"none\""),
         },
     }
     (s, errors)

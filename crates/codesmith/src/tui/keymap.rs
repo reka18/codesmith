@@ -1523,6 +1523,8 @@ pub mod scope {
         "theme.mode.lock",
         "session.toggle.thinking",
         "session.toggle.tool_output",
+        "session.toggle.exploration_grouping",
+        "session.verbosity.cycle",
         "session.page.up",
         "session.page.down",
         "session.half.page.up",
