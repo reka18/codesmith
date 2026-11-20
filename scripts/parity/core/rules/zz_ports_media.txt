@@ -63,3 +63,12 @@
 408 :: design :: differs :: one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook
 445 :: ported :: tests/oc_generate.rs::oc_session_regenerates_a_failed_partial_answer_without_mutating_history
 481 :: ported :: tests/oc_generate.rs::oc_session_generate_blocks_unavailable_initial_instructions_before_generation
+@session-runner-tool-events.test.ts
+116,140,533,574 :: design :: storage-model :: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
+@session-runner.test.ts
+4508 :: ported :: tests/oc_hosted_session.rs::oc_hosted_replays_durable_provider_executed_tool_results_inline_in_the_next_request :: adapted: over Anthropic, whose calls and results come as separate blocks
+7226 :: design :: differs :: a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record
+7348,7505 :: ported :: tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_by_a_provider_failure
+7424 :: ported :: tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_at_provider_eof :: adapted: an unfinished stream is retried as cut off first
+7451 :: ported :: tests/oc_hosted_session.rs::oc_hosted_fails_an_unresolved_hosted_tool_before_one_clean_step_end
+7469 :: design :: deliberate :: runner.rs: tool calls from a failed stream are never run; the hosted call alone is settled failed (tests/oc_hosted_session.rs)

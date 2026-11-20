@@ -913,7 +913,11 @@ sent back the way the provider that ran it expects: Responses items,
 Anthropic `server_tool_use` and result blocks, Gemini `executableCode` and
 `codeExecutionResult` parts. After switching models, a Responses model sees
 results from other providers as user content (generated images as images),
-and other protocols leave them out. Anthropic's beta headers for
+and other protocols leave them out. A call whose result never came (the
+response ended, or failed, before it) is settled as failed for good,
+"Provider did not return a tool result", and sent back in the provider's
+own failure shape; only a paused Anthropic turn keeps its call open for the
+next request. Anthropic's beta headers for
 `web_fetch` and `code_execution` are added for you, and naming a
 Responses hosted tool in a tool choice (`image_generation`) forces it. OpenAI
 Chat has no hosted tools; the option is ignored there. Invalid declarations

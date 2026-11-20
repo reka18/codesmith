@@ -67,6 +67,28 @@ impl Hosted {
         self
     }
 
+    /// The failed result a call is settled with when its provider never
+    /// returned one (OpenCode's "Provider did not return a tool result"),
+    /// shaped so the protocol that ran it accepts it on replay.
+    pub fn missing_result(&self) -> HostedResult {
+        let value = match self.protocol {
+            Protocol::AnthropicMessages => json!({
+                "type": format!("{}_tool_result_error", self.name),
+                "error_code": "unavailable",
+            }),
+            Protocol::GoogleGemini => json!({
+                "outcome": "OUTCOME_FAILED",
+                "output": MISSING_RESULT,
+            }),
+            _ => json!({"message": MISSING_RESULT}),
+        };
+        HostedResult {
+            is_error: true,
+            value,
+            media: vec![],
+        }
+    }
+
     /// One line about the result, for display: `None` while there is none.
     pub fn summary(&self) -> Option<String> {
         let r = self.result.as_ref()?;
@@ -99,6 +121,9 @@ impl Hosted {
         Some(line)
     }
 }
+
+/// What a hosted call whose result never came failed with.
+pub const MISSING_RESULT: &str = "Provider did not return a tool result";
 
 /// The option that declares hosted tools.
 const OPTION: &str = "hostedTools";

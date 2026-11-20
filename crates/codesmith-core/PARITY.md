@@ -17,13 +17,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 111 | 7 | 17 | 191 | 67 | 0 |
+| Session runner | 393 | 116 | 7 | 10 | 193 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 14 | 0 | 8 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 60 | 0 | 19 | 175 | 54 | 0 |
+| Sessions and their store | 308 | 60 | 0 | 15 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1544** | **16** | **262** | **2371** | **1395** | **0** |
+| **Total** | **5588** | **1549** | **16** | **251** | **2377** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -77,10 +77,11 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.
 
 - **Difference to decide**, `session-generate.test.ts` "runs generate hooks instead of context hooks" (1): one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook.
+- **Difference to decide**, `session-runner.test.ts` "records malformed provider-executed input as executed" (1): a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (262 cases in 24 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (251 cases in 23 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -92,7 +93,6 @@ Missing features, by how many OpenCode test cases each would unlock (262 cases i
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
-| [Hosted (Provider-executed) Tools in Sessions](#hosted-provider-executed-tools-in-sessions) | 11 | provider-executed tool results in the session; provider-executed results replayed inline; … |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
 | [Responses Checkpoint Continuation](#responses-checkpoint-continuation) | 6 | WebSocket continuation checkpoints for compaction triggers; compaction across WebSocket recovery without stale response IDs |
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
@@ -346,22 +346,6 @@ Missing features, by how many OpenCode test cases each would unlock (262 cases i
 - `plugin/plan.test.ts`: allows external directories without asking
 - `plugin/plan.test.ts`: rewrites blocked mutation failures with the Plan directory
 - `plugin/plan.test.ts`: preserves mutation failures unrelated to permissions
-
-### Hosted (Provider-executed) Tools in Sessions
-
-11 cases.
-
-- `session-runner-tool-events.test.ts`: provider-executed success derives content and retains provider result state
-- `session-runner-tool-events.test.ts`: commits a hosted tool result when cancellation races with the aggregate lock
-- `session-runner-tool-events.test.ts`: provider-executed tool metadata is flattened using the route key
-- `session-runner-tool-events.test.ts`: success event data can carry provider-executed native data
-- `session-runner.test.ts`: replays durable provider-executed tool results inline in the next request
-- `session-runner.test.ts`: records malformed provider-executed input as executed
-- `session-runner.test.ts`: durably fails a hosted tool when its provider errors before returning a result
-- `session-runner.test.ts`: durably fails a hosted tool left unresolved at normal provider EOF
-- `session-runner.test.ts`: fails an unresolved hosted tool before one clean step end
-- `session-runner.test.ts`: settles unresolved local and hosted tools before one raw provider failure
-- `session-runner.test.ts`: durably fails a hosted tool left unresolved by a raw provider stream failure
 
 ### Decision Models
 
@@ -1332,19 +1316,19 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 685 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 551 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 335 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 552 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 339 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 232 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
-| Behaviour that differs and is for the maintainer to decide (see above) | 1 |
+| Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (309 of 393)</summary>
+<details><summary>Session runner (316 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1443,6 +1427,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - F publishes the original overflow when recovery summarization fails — `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails` (the failed summary's error was reported instead of the overflow)
 - P uses epoch values after compaction while a source is unavailable — `tests/oc_instruction_state.rs::oc_session_uses_the_epoch_values_after_compaction_while_unreadable`
 - D projects reasoning and tool events without executing or continuing tools — storage-model: projection-only replay of events
+- P replays durable provider-executed tool results inline in the next request — `tests/oc_hosted_session.rs::oc_hosted_replays_durable_provider_executed_tool_results_inline_in_the_next_request` (adapted: over Anthropic, whose calls and results come as separate blocks)
 - D joins concurrent resume calls into one active provider run — effect-internal: concurrent resume joining / run fan-out
 - D steers an active step with newly recorded prompts · promotes queued input after continuation ends · keeps queued input parked when a steer is cancelled during preparation · dispatches a queued move when a steer is cancelled during preparation · preserves durable queued input for a later wake after interruption · preserves durable steering input for a later resume after interruption · promotes queued inputs one at a time in FIFO order · stops a steer-scoped drain before queued input · a steer-scoped drain runs a queued manual compaction next in line · a steer-scoped drain leaves a compaction parked behind a queued prompt · promotes queued input after steering continuation ends · promotes steers before the next queued input · coalesces multiple active steering prompts into one continuation step · runs steering input accepted while the active step fails — deliberate: session.rs: no steers, queues or inbox
 - D settles abandoned compactions before continuing after a process crash · settles an abandoned compaction before delivering another manual compaction — deliberate: session.rs: no restart recovery of compactions
@@ -1492,9 +1477,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P records OpenCode Console's Go usage limit 429 as a typed step failure without retrying — `tests/runner_parity.rs::oc_session_records_a_usage_limit_429_without_retrying` (adapted: a provider usage limit, not OpenCode Console's)
 - P settles unfinished tool input after an output limit — `tests/runner_parity.rs::oc_session_settles_unfinished_tool_input_after_an_output_limit`
 - P continues malformed local tool input with a bounded excerpt (${finish}) ×2 — `src/runner.rs::oc_session_invalid_tool_input_explains_and_quotes_the_input` (the excerpt text; tests/runner_parity.rs covers the continuation)
+- D records malformed provider-executed input as executed — differs: a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record
 - P continues after repeated malformed tool input — `tests/runner_parity.rs::oc_session_continues_after_repeated_malformed_tool_input`
 - P does not continue malformed tool input past the agent step limit — `tests/runner_parity.rs::oc_session_does_not_continue_malformed_tool_input_past_the_agent_step_limit`
 - P does not continue automatically after a provider error follows a local tool call — `tests/oc_runner.rs::oc_session_does_not_continue_after_a_provider_error_follows_a_tool_call`
+- P durably fails a hosted tool when its provider errors before returning a result — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_by_a_provider_failure`
+- P durably fails a hosted tool left unresolved at normal provider EOF — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_at_provider_eof` (adapted: an unfinished stream is retried as cut off first)
+- P fails an unresolved hosted tool before one clean step end — `tests/oc_hosted_session.rs::oc_hosted_fails_an_unresolved_hosted_tool_before_one_clean_step_end`
+- D settles unresolved local and hosted tools before one raw provider failure — deliberate: runner.rs: tool calls from a failed stream are never run; the hosted call alone is settled failed (tests/oc_hosted_session.rs)
+- P durably fails a hosted tool left unresolved by a raw provider stream failure — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_by_a_provider_failure`
 - D rejects a second text start before the open fragment ends · projects sequential text fragments as separate content parts · broadcasts pending text while the provider stream is paused — storage-model: streamed part ordering in OpenCode's event model
 - P durably closes partial ${kind} when the provider stream fails ×3 — `tests/runner_parity.rs::oc_session_durably_closes_partial_text_when_the_provider_stream_fails` (text, reasoning and tool input cases)
 - D rejects duplicate streamed text starts · transitions streamed raw tool input to parsed called input · rejects malformed streamed tool input ordering — storage-model: streamed part ordering in OpenCode's event model
@@ -1703,7 +1694,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (235 of 308)</summary>
+<details><summary>Sessions and their store (239 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1865,12 +1856,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-runner-tool-events.test.ts`**
 
+- D provider-executed success derives content and retains provider result state · commits a hosted tool result when cancellation races with the aggregate lock — storage-model: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
 - D interrupted progress metadata remains in the terminal failure snapshot · local failure metadata completes the progress snapshot · failure snapshot retains canonical progress above the default byte limit · failure before progress omits partial output fields — storage-model: progress/failure snapshots of OpenCode's tool parts
 - D provider metadata is flattened using the route key · reasoning state from start, empty delta, and end is merged — storage-model: provider metadata flattening and reasoning-state merging in event rows
 - D publishes the trailing ${kind} chunk while the provider is paused ×2 · batches text deltas and flushes pending text before the terminal event · publishes batched deltas before the next block starts · retains new chunks and orders text-end behind an in-flight timer publication · batches reasoning deltas and flushes pending reasoning before the terminal event — storage-model: event batching/publishing order of the projector
 - D authoritative end values replace accumulated deltas in the durable ended events — storage-model: provider metadata flattening and reasoning-state merging in event rows
 - D tool input deltas are accumulated without being published — storage-model: event batching/publishing order of the projector
+- D provider-executed tool metadata is flattened using the route key — storage-model: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
 - D binary failure emits no success event — storage-model: binary failure events
+- D success event data can carry provider-executed native data — storage-model: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
 - D step start waits for the pending start snapshot · step finish records settlement without publishing step ended — storage-model: event batching/publishing order of the projector
 - P content-filter failure explains the refusal when the provider gives a reason — `src/runner.rs::oc_content_filter_failure_explains_the_refusal`
 

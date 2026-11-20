@@ -3649,8 +3649,35 @@ impl Session {
         .await;
         inputs.settle(sink);
         hosted.settle(sink);
-        let r = r?;
-        Ok((r.parts, r.reason, r.usage))
+        match r {
+            Ok(mut r) => {
+                // A paused Anthropic turn resumes the call in the next
+                // request; any other end leaves it failed for good.
+                if r.reason.raw.as_deref() != Some("pause_turn") {
+                    fail_unresolved_hosted(&mut r.parts);
+                }
+                Ok((r.parts, r.reason, r.usage))
+            }
+            Err(mut f) => {
+                if let Some(p) = f.partial.as_mut() {
+                    fail_unresolved_hosted(&mut p.parts);
+                }
+                Err(f)
+            }
+        }
+    }
+}
+
+/// Settle hosted calls whose result never came as failed (OpenCode's
+/// durable "Provider did not return a tool result"), so the stored step
+/// never keeps a call that is still open.
+fn fail_unresolved_hosted(parts: &mut [Part]) {
+    for p in parts {
+        if let Part::Hosted(h) = p {
+            if h.result.is_none() {
+                h.result = Some(h.missing_result());
+            }
+        }
     }
 }
 
