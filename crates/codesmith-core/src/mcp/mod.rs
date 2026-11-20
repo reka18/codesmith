@@ -1532,9 +1532,15 @@ async fn connect(
                 let mut buf = Vec::new();
                 loop {
                     buf.clear();
-                    match out.read_until(b'\n', &mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                    match read_line_capped(&mut out, &mut buf, MAX_MESSAGE).await {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(e) => {
+                            // Pending requests fail with this reason; the
+                            // process is stopped when the client is dropped.
+                            shared.close(&format!("{e:#}"));
+                            break;
+                        }
                     }
                     // Stray output (a banner, broken UTF-8) is skipped, not fatal.
                     let line = String::from_utf8_lossy(&buf);
@@ -1568,6 +1574,37 @@ async fn connect(
     let _ = client.init.set(init);
     client.notify("notifications/initialized", None).await?;
     Ok(client)
+}
+
+/// Read one line (through its `\n`) into `buf`: `false` at the end of the
+/// stream. A line longer than `max` bytes is an error, so a stdio server
+/// can't make CodeSmith buffer without bound.
+async fn read_line_capped<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> Result<bool> {
+    loop {
+        let avail = r.fill_buf().await?;
+        if avail.is_empty() {
+            return Ok(!buf.is_empty());
+        }
+        let (n, done) = match avail.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (avail.len(), false),
+        };
+        if buf.len() + n - usize::from(done) > max {
+            return Err(anyhow!(
+                "the MCP server sent a message larger than {} MiB",
+                max >> 20
+            ));
+        }
+        buf.extend_from_slice(&avail[..n]);
+        r.consume(n);
+        if done {
+            return Ok(true);
+        }
+    }
 }
 
 /// Splits a Server-Sent Events byte stream into event blocks, refusing to
@@ -1649,6 +1686,42 @@ mod tests {
         assert_eq!(
             tool_name("my server", "do.thing/now"),
             "my_server_do_thing_now"
+        );
+    }
+
+    #[tokio::test]
+    async fn stdio_lines_are_capped() {
+        let mut r = BufReader::with_capacity(4, &b"ab\ncdef\n0123456789\ntail"[..]);
+        let mut buf = Vec::new();
+        assert!(read_line_capped(&mut r, &mut buf, 4).await.unwrap());
+        assert_eq!(buf, b"ab\n");
+        buf.clear();
+        let ok = read_line_capped(&mut r, &mut buf, 4).await.unwrap();
+        assert!(ok, "exactly the cap, plus its newline");
+        assert_eq!(buf, b"cdef\n");
+        buf.clear();
+        let e = read_line_capped(&mut r, &mut buf, 4).await.unwrap_err();
+        assert!(e.to_string().contains("larger than"), "{e}");
+        assert!(buf.len() <= 4, "stopped before buffering it all");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stdio_server_sending_a_huge_line_fails_cleanly() {
+        let script = "head -c 17000000 /dev/zero | tr '\\000' a; echo; sleep 10";
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {
+            "huge": {"type": "local", "command": ["/bin/sh", "-c", script]},
+        }}))
+        .unwrap();
+        let started = std::time::Instant::now();
+        let mcp = Mcp::connect(&cfg, Path::new("/")).await;
+        match &mcp.statuses["huge"] {
+            Status::Failed(e) => assert!(e.contains("larger than 16 MiB"), "{e}"),
+            s => panic!("{s:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "it did not wait for a timeout"
         );
     }
 

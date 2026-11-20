@@ -48,6 +48,10 @@ available to the agent. The config shape follows OpenCode's.
   (listing tools, resources and prompts, default 30 s) and `execution` (one
   tool call, default 5 minutes).
 
+A single message from a server is limited to 16 MiB, over stdio (one line)
+as over HTTP. A local server that sends a longer line is treated as exited:
+its pending requests fail with that reason.
+
 A tool call that times out is cancelled on the server
 (`notifications/cancelled`). If a local server's process exits, its tools
 stop being offered and calls to them say the server exited. CodeSmith
