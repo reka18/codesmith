@@ -1017,7 +1017,9 @@ fn oc_catalog_get_still_populates_the_catalog_when_the_kv_cache_write_fails() {
 #[test]
 fn oc_catalog_uses_the_default_models_url_when_the_configured_url_is_empty() {
     // Adapted: the request itself would leave the machine, so the test
-    // checks the source the catalog is fetched (and cached) from.
+    // checks the source the catalog is fetched (and cached) from. CodeSmith's
+    // default is the public models.dev catalog (its v1 `/api.json`), not
+    // OpenCode's server.
     let s = service(
         Arc::new(MemoryKv::default()),
         Options {
@@ -1026,10 +1028,77 @@ fn oc_catalog_uses_the_default_models_url_when_the_configured_url_is_empty() {
         },
     );
     assert_eq!(
-        format!("{}{CATALOG_PATH}", s.source()),
-        "https://models.opencode.ai/experimental/v2.0/api.json?type=chat,decision,image,video"
+        format!("{}{}", s.source(), catalog::V1_PATH),
+        "https://models.dev/api.json"
     );
     assert_eq!(s.key(), CACHE_KEY);
+}
+
+#[test]
+fn fetching_is_off_unless_asked_for() {
+    // Not an OpenCode test: CodeSmith makes no network request for the
+    // catalog by default. The variables are only read here.
+    for v in [
+        "CODESMITH_MODELS_FETCH",
+        "CODESMITH_MODELS_URL",
+        "CODESMITH_DISABLE_MODELS_FETCH",
+    ] {
+        std::env::remove_var(v);
+    }
+    assert!(!Options::default().fetch);
+    assert!(!Options::resolve(None, None).fetch);
+    assert!(Options::resolve(Some(true), None).fetch);
+    // A named server turns it on, unless `fetch` says otherwise.
+    let o = Options::resolve(None, Some("http://mirror"));
+    assert!(o.fetch);
+    assert_eq!(o.url.as_deref(), Some("http://mirror"));
+    assert!(!Options::resolve(Some(false), Some("http://mirror")).fetch);
+    std::env::set_var("CODESMITH_MODELS_FETCH", "1");
+    assert!(Options::resolve(Some(false), None).fetch);
+    std::env::set_var("CODESMITH_MODELS_FETCH", "0");
+    assert!(!Options::resolve(Some(true), None).fetch);
+    std::env::remove_var("CODESMITH_MODELS_FETCH");
+    std::env::set_var("CODESMITH_MODELS_URL", "http://env");
+    let o = Options::resolve(None, Some("http://config"));
+    assert_eq!((o.fetch, o.url.as_deref()), (true, Some("http://env")));
+    std::env::set_var("CODESMITH_DISABLE_MODELS_FETCH", "1");
+    assert!(!Options::resolve(Some(true), None).fetch);
+    assert!(catalog::fetch_disabled());
+    for v in ["CODESMITH_MODELS_URL", "CODESMITH_DISABLE_MODELS_FETCH"] {
+        std::env::remove_var(v);
+    }
+    // Without fetching, nothing is ever requested, even with no snapshot.
+    let server = Server::start(text(&fixture()));
+    let s = Arc::new(service(
+        Arc::new(MemoryKv::default()),
+        Options {
+            fetch: false,
+            ..server.options()
+        },
+    ));
+    assert!(s.get().is_empty());
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        s.spawn_refresh();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    });
+    assert!(server.calls().is_empty());
+}
+
+#[tokio::test]
+async fn an_on_demand_refresh_says_whether_the_catalog_changed() {
+    let server = Server::start(text(&fixture()));
+    let kv = Arc::new(MemoryKv::default());
+    let s = service(kv, server.options());
+    assert_eq!(
+        s.try_refresh(true).await.unwrap(),
+        catalog::Refreshed::Updated
+    );
+    assert_eq!(
+        s.try_refresh(true).await.unwrap(),
+        catalog::Refreshed::Unchanged
+    );
+    server.set(|st| st.status = 404);
+    assert!(s.try_refresh(true).await.is_err());
 }
 
 #[test]
@@ -1287,7 +1356,7 @@ fn file_service(file: &str) -> ModelsDev {
 
 fn with_catalog(config: Value, data: Vec<Snapshot>) -> Config {
     let mut c: Config = serde_json::from_value(config).unwrap();
-    c.catalog = Some(Arc::new(ModelsDev::fixed(data)));
+    c.models_dev = Some(Arc::new(ModelsDev::fixed(data)));
     c
 }
 
@@ -1330,7 +1399,7 @@ fn rich() -> Json {
 fn oc_catalog_projects_normalized_definitions_for_available_providers() {
     let data = snapshot(rich());
     let c = with_catalog(json!({}), data.clone());
-    let catalog = c.catalog.as_ref().unwrap().catalog();
+    let catalog = c.models_dev.as_ref().unwrap().catalog();
     let base = catalog.model("acme", "gpt-5.4").unwrap();
     assert!(base.variants.is_empty());
     assert_eq!(base.body, None);
@@ -1377,7 +1446,7 @@ fn oc_catalog_keeps_the_shared_snapshot_pristine_while_provider_and_model_transf
         }}
     }}}))
     .unwrap();
-    c.catalog = Some(service.clone());
+    c.models_dev = Some(service.clone());
     let m = c.resolve_model("acme/gpt-5.4").unwrap();
     assert_eq!(m.provider.base_url, "https://override.acme.test/v1");
     assert_eq!(m.input, Some(vec!["text".into(), "image".into()]));
@@ -1415,7 +1484,7 @@ fn oc_catalog_omits_deprecated_and_non_text_model_definitions() {
         model("transcribe", "active", r#"["audio"]"#, r#"["text"]"#),
     ));
     let c = with_catalog(json!({}), snapshot(catalog));
-    let catalog = c.catalog.as_ref().unwrap().catalog();
+    let catalog = c.models_dev.as_ref().unwrap().catalog();
     assert!(catalog.model("acme", "current").is_some());
     assert!(catalog.model("acme", "legacy").is_none());
     assert!(catalog.model("acme", "video-gen").is_none());
@@ -1443,7 +1512,7 @@ fn oc_catalog_lists_non_chat_models_only_by_type_so_sessions_never_see_them() {
     ));
     let c = with_catalog(json!({}), snapshot(catalog));
     assert_eq!(c.list_models("acme", &[]), ["gpt-5.5", "gpt-audio"]);
-    let catalog = c.catalog.as_ref().unwrap().catalog();
+    let catalog = c.models_dev.as_ref().unwrap().catalog();
     assert!(catalog.model("acme", "jev-1.13").is_none());
     assert_eq!(c.list_models("acme", &["decision"]), ["jev-1.13"]);
     assert_eq!(c.list_models("acme", &["image"]), ["gpt-image-2"]);
@@ -1475,7 +1544,7 @@ fn oc_catalog_registers_key_methods_for_providers_with_environment_variables() {
     );
     // The key comes from that variable when a model of the provider is used.
     let c = Config {
-        catalog: Some(Arc::new(s)),
+        models_dev: Some(Arc::new(s)),
         ..Default::default()
     };
     let p = c.provider("acme").unwrap();
@@ -1589,7 +1658,7 @@ fn oc_catalog_omits_legacy_provider_aliases() {
         ),
     ));
     let c = with_catalog(json!({}), snapshot(catalog));
-    let catalog = c.catalog.as_ref().unwrap().catalog();
+    let catalog = c.models_dev.as_ref().unwrap().catalog();
     assert!(catalog.provider("azure").is_some());
     assert!(catalog.provider("google-vertex").is_some());
     assert!(catalog.provider("azure-cognitive-services").is_none());
@@ -1843,7 +1912,7 @@ fn oc_catalog_adopts_a_refresh_that_completes_between_its_initial_read_and_its_s
         },
     ));
     let c = Config {
-        catalog: Some(s.clone()),
+        models_dev: Some(s.clone()),
         ..Default::default()
     };
     assert!(c.provider("acme").is_some());
@@ -1997,7 +2066,7 @@ fn oc_catalog_respells_inherited_variants_when_config_moves_a_catalog_model_to_a
         json!([{"id": "high", "settings": {"thinking": {"type": "adaptive", "display": "summarized"}, "effort": "high"}}])
     );
     let c = with_catalog(
-        json!({"providers": {"bedrock": {"protocol": "openai-chat"}}}),
+        json!({"providers": {"bedrock": {"protocol": "openai-chat", "settings": {"baseURL": "http://chat/v1"}}}}),
         data.clone(),
     );
     let m = c.resolve_model("bedrock/claude-opus-5-5#high").unwrap();
@@ -2023,7 +2092,7 @@ fn oc_catalog_keeps_a_moved_catalog_model_without_reasoning_variants_free_of_var
     }}}"#,
     ));
     let c = with_catalog(
-        json!({"providers": {"bedrock": {"protocol": "openai-chat"}}}),
+        json!({"providers": {"bedrock": {"protocol": "openai-chat", "settings": {"baseURL": "http://chat/v1"}}}}),
         data,
     );
     assert!(c
@@ -2179,7 +2248,7 @@ fn oc_catalog_configured_provider_transport_overrides_builtin_defaults() {
 fn oc_catalog_fills_unconfigured_limits_costs_and_modalities_from_the_catalog() {
     let data = catalog::bundled();
     let c = with_catalog(json!({}), data.to_vec());
-    let catalog = c.catalog.as_ref().unwrap().catalog();
+    let catalog = c.models_dev.as_ref().unwrap().catalog();
     let id = c.list_models("anthropic", &[]).into_iter().next().unwrap();
     let cm = catalog.model("anthropic", &id).unwrap();
     let m = c.resolve_model(&format!("anthropic/{id}")).unwrap();
@@ -2201,4 +2270,62 @@ fn oc_catalog_fills_unconfigured_limits_costs_and_modalities_from_the_catalog() 
     assert_eq!(c.cost(&format!("anthropic/{id}")).unwrap().input, 9.0);
     // A catalog provider CodeSmith speaks becomes a provider.
     assert!(c.provider("moonshotai").is_some() || c.provider("deepinfra").is_some());
+}
+
+#[test]
+fn a_configured_provider_keeps_its_own_protocol_over_the_catalogs() {
+    // A catalog provider speaking Anthropic Messages.
+    let data = snapshot(j(
+        r#"{"msgs": {"id": "msgs", "name": "Msgs", "env": ["MSGS_KEY"], "models": {
+        "m": {"id": "m", "type": "chat", "name": "M", "release_date": "2026-01-01",
+            "modalities": {"input": ["text"], "output": ["text"]},
+            "capabilities": {"tools": {"supported": true}, "reasoning": {"supported": false}},
+            "limit": {"context": 50000, "output": 5000},
+            "api": {"messages": {"base_url": "https://msgs.example/v1",
+                "sdk": {"opencodeai": "@opencode/ai/providers/anthropic"}}}}
+    }}}"#,
+    ));
+    // Not configured: the catalog's protocol and URL.
+    let c = with_catalog(json!({}), data.clone());
+    let m = c.resolve_model("msgs/m").unwrap();
+    assert_eq!(
+        m.provider.protocol,
+        codesmith_ai::Protocol::AnthropicMessages
+    );
+    assert_eq!(m.provider.base_url, "https://msgs.example/v1");
+    // Configured without a protocol: OpenAI Chat as before, its own URL,
+    // and the catalog's name, key variables and limits still fill in.
+    let c = with_catalog(
+        json!({"providers": {"msgs": {"settings": {"baseURL": "http://proxy/v1"}}}}),
+        data.clone(),
+    );
+    let m = c.resolve_model("msgs/m").unwrap();
+    assert_eq!(m.provider.protocol, codesmith_ai::Protocol::OpenaiChat);
+    assert_eq!(m.provider.base_url, "http://proxy/v1");
+    assert_eq!(m.context, Some(50_000));
+    let p = c.provider("msgs").unwrap();
+    assert_eq!(
+        (p.name.as_deref(), p.env.clone()),
+        (Some("Msgs"), vec!["MSGS_KEY".to_string()])
+    );
+    // Configured without a URL either: the catalog's Messages URL is not
+    // borrowed for a Chat provider.
+    let c = with_catalog(
+        json!({"providers": {"msgs": {"name": "Mine"}}}),
+        data.clone(),
+    );
+    assert!(c
+        .resolve_model("msgs/m")
+        .unwrap_err()
+        .to_string()
+        .contains("baseURL"));
+    // Configured with the catalog's protocol: its URL fills in.
+    let c = with_catalog(
+        json!({"providers": {"msgs": {"protocol": "anthropic-messages"}}}),
+        data,
+    );
+    assert_eq!(
+        c.resolve_model("msgs/m").unwrap().provider.base_url,
+        "https://msgs.example/v1"
+    );
 }

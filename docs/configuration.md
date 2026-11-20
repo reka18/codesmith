@@ -93,6 +93,7 @@ is parsed:
 | `worktree` | | `{"directory", "start"}`. See [worktrees](sessions.md#worktrees). |
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
+| `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
 
 Unknown keys are ignored, so a config written for a newer CodeSmith still
@@ -138,11 +139,11 @@ everything after the first `/`, so ids that contain slashes work
 
 ### The model catalog (models.dev)
 
-As in OpenCode, CodeSmith reads the [models.dev](https://models.dev) catalog
-(its v2 API, served at `https://models.opencode.ai`): every provider it lists,
-with each model's input and output modalities, tool support, reasoning
-controls, context and output limits, and prices. A model resolves from it like
-this:
+As in OpenCode, CodeSmith knows the [models.dev](https://models.dev) catalog:
+every provider it lists, with each model's input and output modalities, tool
+support, reasoning controls, context and output limits, and prices. A copy is
+bundled with the binary, so this works offline and with no network request at
+all. A model resolves from it like this:
 
 - **Limits**: `limit.context` and `limit.output` come from the catalog unless
   configured, so compaction knows the context window of any listed model. The
@@ -158,42 +159,65 @@ this:
   budget), spelled for the model's API. A model moved to another `protocol`
   by config gets them respelled; configured `variants` merge into generated
   ones of the same name.
-- **Request extras**: the catalog's per-model base URL, reasoning field and
-  token-limit field apply unless configured. Its *modes* are models of their
-  own (`openai/gpt-5-fast`, for example), sent as the base model with the
-  mode's body and headers.
+- **Request extras**: the catalog's per-model base URL (when the catalog
+  speaks the model's protocol there), reasoning field and token-limit field
+  apply unless configured. Its *modes* are models of their own
+  (`openai/gpt-5-fast`, for example), sent as the base model with the mode's
+  body and headers.
 - **Providers**: a catalog provider whose API CodeSmith speaks (OpenAI Chat
   or Responses, Anthropic Messages, Gemini) works without a `providers` entry,
-  with the key variables the catalog lists (`-m moonshotai/kimi-k3` with
-  `MOONSHOT_API_KEY` set, for example). A configured entry overlays it, as it
-  does a built-in one. `${VAR}` in a catalog URL is filled from the
-  environment.
+  on that API and with the key variables the catalog lists (`-m
+  moonshotai/kimi-k3` with `MOONSHOT_API_KEY` set, for example). `${VAR}` in a
+  catalog URL is filled from the environment.
+- **Configured providers keep their protocol.** An entry under `providers`
+  with the same id as a catalog provider never takes the catalog's protocol:
+  it uses its own `protocol`, `openai-chat` when unset, as any custom
+  provider does. The catalog still supplies its name, key variables and
+  model metadata, and its base URL only when the catalog speaks that same
+  protocol there.
 
 Configured values always win, field by field. Deprecated models, chat models
 that don't take or make text, and models of other types (image, video,
 decision) are not offered for sessions.
 
-**Where it comes from.** Reading the catalog never waits for the network. The
-first source that has one wins: the file named by `$CODESMITH_MODELS_PATH`
-(a v2 or v1 models.dev catalog), the cached copy in
-`$XDG_CACHE_HOME/codesmith/models/` (else `~/.cache/codesmith/models/`), then
-the snapshot bundled with the binary. Only with none of these (which a normal
-build never lacks) is it fetched on the spot, waiting at most ten seconds.
+**Where it comes from.** Without fetching (the default), the catalog is the
+file named by `$CODESMITH_MODELS_PATH` (a models.dev v1 or v2 catalog) if
+set, else the copy cached by an earlier fetch in
+`$XDG_CACHE_HOME/codesmith/models/` (else `~/.cache/codesmith/models/`),
+else the bundled snapshot. Reading it never waits for the network.
 
-**Refreshing.** The interactive UI, `codesmith run`, `serve` and `acp`
-refresh the catalog in the background when the cached copy is more than five
-minutes old, and again every five minutes while they run, as OpenCode's
-server does. The request revalidates with the cached ETag; an unchanged
-catalog only records the check, and a failed one keeps the cached copy. A
-fetch (retries included) gives up after ten seconds. The request sends a
-generic `User-Agent` (`codesmith/<version>`) and nothing about you, your
-project or your config.
+**Fetching (opt-in).** CodeSmith fetches the catalog only when asked to:
 
-| Variable | Effect |
+- `codesmith models --refresh` fetches it once into the cache, then lists
+  the models;
+- the `catalog` config key, `{"fetch": true}` (optionally with `"url"`), or
+  `CODESMITH_MODELS_FETCH=1`, turns on the background refresh: the
+  interactive UI, `codesmith run`, `serve` and `acp` then refresh the cache
+  when it is more than five minutes old, and every five minutes while they
+  run, as OpenCode's server does. Naming a server (`catalog.url` or
+  `CODESMITH_MODELS_URL`) turns it on too, unless `fetch` is `false`.
+
+```jsonc
+{ "catalog": { "fetch": true } }   // from https://models.dev/api.json
+```
+
+The default server is the public models.dev catalog, read as its v1
+`/api.json`. A mirror is asked for the v2 API
+(`/experimental/v2.0/api.json`) first and its `/api.json` if it has none.
+A refresh revalidates with the cached ETag; an unchanged catalog only records
+the check, and a failed one keeps the cached copy. A fetch (retries included)
+gives up after ten seconds. The request sends a generic `User-Agent`
+(`codesmith/<version>`) and nothing about you, your project or your config.
+`CODESMITH_DISABLE_MODELS_FETCH=1` forbids every fetch, `--refresh` included.
+
+| Setting | Effect |
 |---|---|
-| `CODESMITH_MODELS_URL` | Fetch from this mirror instead of `https://models.opencode.ai`. A mirror without the v2 API is read from its `/api.json` (v1). |
-| `CODESMITH_MODELS_PATH` | Read the catalog from this file instead of the cache (it is not refreshed into it). |
-| `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch; the cache or the bundled snapshot serves. |
+| `catalog.fetch` | `true` turns the background refresh on; `false` keeps it off even with a URL. Default off. |
+| `catalog.url` | The catalog server (default `https://models.dev`); setting it turns fetching on unless `fetch` is `false`. |
+| `CODESMITH_MODELS_FETCH` | `1`/`true` or `0`/`false`, over `catalog.fetch`. |
+| `CODESMITH_MODELS_URL` | The catalog server, over `catalog.url`; turns fetching on like it. |
+| `CODESMITH_MODELS_PATH` | Read the catalog from this file instead of the cache (fetches still go to the cache). |
+| `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch, whatever else says. |
 
 `scripts/models-snapshot.py` rebuilds the bundled snapshot.
 
@@ -280,8 +304,8 @@ to: the URL, protocol, limits, extra body, the provider options sent with each
 request, the selected variant, and every variant the model has with its
 options. `codesmith models` lists the providers (built-in, configured, and
 catalog providers you have a key for) with their configured and catalog chat
-models, and `codesmith models <provider>` asks that provider's API which
-models it has.
+models, `codesmith models --refresh` fetches the model catalog first, and
+`codesmith models <provider>` asks that provider's API which models it has.
 
 ### Azure OpenAI
 
@@ -611,9 +635,10 @@ set. Turn on SearXNG's JSON format in its `settings.yml`
 | `CODESMITH_DB` | The session database (default `<data>/codesmith.db`). |
 | `XDG_DATA_HOME` | The data folder is `$XDG_DATA_HOME/codesmith`, else `~/.local/share/codesmith`. |
 | `XDG_CACHE_HOME` | The cache folder (the models.dev catalog) is `$XDG_CACHE_HOME/codesmith`, else `~/.cache/codesmith`. |
-| `CODESMITH_MODELS_URL` | Where the [model catalog](#the-model-catalog-modelsdev) is fetched from (default `https://models.opencode.ai`). |
+| `CODESMITH_MODELS_FETCH` | `1`: fetch the [model catalog](#the-model-catalog-modelsdev) in the background (off by default). |
+| `CODESMITH_MODELS_URL` | Where the model catalog is fetched from (default `https://models.dev`); turns fetching on. |
 | `CODESMITH_MODELS_PATH` | A catalog file read instead of the cached one. |
-| `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog. |
+| `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog, not even with `models --refresh`. |
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
 
 CodeSmith sets `CODESMITH_SESSION_ID` for commands the `shell` tool runs, and

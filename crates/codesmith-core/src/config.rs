@@ -102,11 +102,27 @@ pub struct Config {
     /// (`media.image`: `auto_resize`, `max_width`, `max_height`,
     /// `max_base64_bytes`).
     pub media: crate::media::MediaConfig,
+    /// Where the models.dev catalog comes from: `{"fetch": true, "url":
+    /// "..."}` opts in to fetching it (off by default; the bundled snapshot
+    /// and the cache serve without the network).
+    pub catalog: CatalogConfig,
     /// The models.dev catalog that fills in what model config leaves out
     /// (limits, costs, modalities, variants) and adds its providers. Set by
     /// [`load`]; a config built any other way has none.
     #[serde(skip)]
-    pub catalog: Option<std::sync::Arc<crate::catalog::ModelsDev>>,
+    pub models_dev: Option<std::sync::Arc<crate::catalog::ModelsDev>>,
+}
+
+/// The `catalog` key.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CatalogConfig {
+    /// Fetch the catalog (in the background, every five minutes). Off
+    /// unless set, or a URL is given.
+    pub fetch: Option<bool>,
+    /// The catalog server; setting it turns fetching on unless `fetch` is
+    /// `false`. Default `https://models.dev`.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -356,7 +372,7 @@ impl Config {
             return Some(c);
         }
         let id = configured.and_then(|c| c.id);
-        let catalog = self.catalog.as_ref()?.catalog();
+        let catalog = self.models_dev.as_ref()?.catalog();
         let cm = id
             .and_then(|id| catalog.model(p, &id))
             .or_else(|| catalog.model(p, m))?;
@@ -378,7 +394,7 @@ impl Config {
             .provider(provider)
             .map(|p| p.models)
             .unwrap_or_default();
-        let catalog = self.catalog.as_ref().map(|c| c.catalog());
+        let catalog = self.models_dev.as_ref().map(|c| c.catalog());
         let catalog_kind = |id: &str| {
             let p = catalog.as_ref()?.provider(provider)?;
             p.models.iter().find(|m| m.id == id).map(|m| m.kind.clone())
@@ -418,7 +434,7 @@ impl Config {
             .provider(p)
             .and_then(|c| c.models.get(m).cloned())
             .unwrap_or_default();
-        let catalog = self.catalog.as_ref().map(|c| c.catalog());
+        let catalog = self.models_dev.as_ref().map(|c| c.catalog());
         let cm = catalog.as_ref().and_then(|c| {
             configured
                 .id
@@ -456,15 +472,37 @@ impl Config {
         Some(caps)
     }
 
+    /// Catalog providers CodeSmith can run that have a key (in one of their
+    /// variables, or saved), by id: what OpenCode calls available. Only
+    /// providers with a key are read.
+    pub fn keyed_catalog_providers(&self) -> Vec<String> {
+        let Some(c) = &self.models_dev else {
+            return vec![];
+        };
+        let catalog = c.catalog();
+        let saved = crate::auth::providers_in(&crate::paths::auth_file());
+        catalog
+            .ids()
+            .filter(|id| {
+                saved.iter().any(|s| s == id)
+                    || catalog
+                        .environment(id)
+                        .iter()
+                        .any(|v| std::env::var(v).is_ok_and(|k| !k.is_empty()))
+            })
+            .filter(|id| catalog.provider(id).and_then(catalog_provider).is_some())
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Catalog providers CodeSmith can run (a known protocol and a base
     /// URL), by id.
     pub fn catalog_providers(&self) -> Vec<String> {
-        let Some(c) = &self.catalog else {
+        let Some(c) = &self.models_dev else {
             return vec![];
         };
         c.catalog()
-            .providers
-            .iter()
+            .providers()
             .filter(|p| catalog_provider(p).is_some())
             .map(|p| p.info.id.clone())
             .collect()
@@ -617,10 +655,13 @@ pub fn candidates_from(cwd: &Path, root: &Path, sources: &Sources) -> Vec<PathBu
     out
 }
 
-/// Load the config for `cwd`, with the process-wide models.dev catalog.
+/// Load the config for `cwd`, with the process-wide models.dev catalog
+/// (its options from the environment and the first config loaded).
 pub fn load(cwd: &Path) -> Result<Loaded> {
     let mut loaded = load_from(cwd, &Sources::from_env())?;
-    loaded.config.catalog = Some(crate::catalog::ModelsDev::global());
+    let c = &loaded.config.catalog;
+    let options = crate::catalog::Options::resolve(c.fetch, c.url.as_deref());
+    loaded.config.models_dev = Some(crate::catalog::ModelsDev::global(options));
     Ok(loaded)
 }
 
@@ -978,19 +1019,32 @@ fn builtin(id: &str) -> Option<ProviderConfig> {
 impl Config {
     /// The provider config for `id`: the built-in one, else the catalog's
     /// (if any), overlaid by config.
+    ///
+    /// A configured provider never takes its protocol from the catalog: it
+    /// keeps its own (`openai-chat` unless set), and the catalog's name and
+    /// key variables fill in, with its URL only when the catalog speaks that
+    /// same protocol there. Only a provider that is not configured at all
+    /// runs on the catalog's protocol.
     pub fn provider(&self, id: &str) -> Option<ProviderConfig> {
         let base = builtin(id).or_else(|| {
-            let c = self.catalog.as_ref()?.catalog();
+            let c = self.models_dev.as_ref()?.catalog();
             let p = c.provider(id)?;
-            catalog_provider(p).or_else(|| {
-                // Named and keyed by the catalog, but CodeSmith needs the
-                // protocol and URL from config.
-                self.providers.contains_key(id).then(|| ProviderConfig {
-                    name: Some(p.info.name.clone()),
-                    protocol: crate::catalog::protocol(&p.info.package),
-                    env: p.environment.clone(),
+            let Some(user) = self.providers.get(id) else {
+                return catalog_provider(p);
+            };
+            let mine = user.protocol.unwrap_or(Protocol::OpenaiChat);
+            let same = crate::catalog::protocol(&p.info.package) == Some(mine);
+            let url = catalog_provider(p)
+                .filter(|_| same)
+                .and_then(|c| c.settings.base_url);
+            Some(ProviderConfig {
+                name: Some(p.info.name.clone()),
+                env: p.environment.clone(),
+                settings: ProviderSettings {
+                    base_url: url,
                     ..Default::default()
-                })
+                },
+                ..Default::default()
             })
         });
         match (base, self.providers.get(id).cloned()) {
@@ -1030,7 +1084,7 @@ impl Config {
         let user = self.providers.get(pid);
         let m = p.models.get(mid).cloned().unwrap_or_default();
         // The catalog's model, found by the configured model id, then the key.
-        let catalog = self.catalog.as_ref().map(|c| c.catalog());
+        let catalog = self.models_dev.as_ref().map(|c| c.catalog());
         let cp = catalog.as_ref().and_then(|c| c.provider(pid));
         let cm = catalog.as_ref().and_then(|c| {
             m.id.as_deref()
@@ -1040,10 +1094,14 @@ impl Config {
         let catalog_package = cm
             .and_then(|cm| cm.package.as_deref())
             .or(cp.map(|p| p.info.package.as_str()));
-        // A catalog provider's model may speak another protocol than the
-        // provider's; a built-in or configured protocol stays.
-        let protocol = match (user.and_then(|u| u.protocol), builtin(pid)) {
-            (Some(p), _) => p,
+        // A model of an unconfigured catalog provider may speak another
+        // protocol than the provider's; a built-in or configured provider
+        // keeps its own (a configured one `openai-chat` unless set).
+        let protocol = match (user, builtin(pid)) {
+            (Some(u), _) => u
+                .protocol
+                .or_else(|| builtin(pid).and_then(|b| b.protocol))
+                .unwrap_or(Protocol::OpenaiChat),
             (None, Some(b)) => b.protocol.unwrap_or(Protocol::OpenaiChat),
             (None, None) => cm
                 .and_then(|cm| cm.package.as_deref())
@@ -1052,9 +1110,11 @@ impl Config {
                 .unwrap_or(Protocol::OpenaiChat),
         };
         let azure = pid == "azure";
-        // A configured provider URL beats the catalog model's own, which
-        // beats the provider's default.
+        // A configured provider URL beats the catalog model's own (when the
+        // catalog speaks this protocol there), which beats the provider's
+        // default.
         let catalog_url = cm
+            .filter(|_| catalog_package.and_then(crate::catalog::protocol) == Some(protocol))
             .and_then(|cm| cm.settings.as_ref()?.base_url.as_deref())
             .and_then(expand_url);
         let base_url = user

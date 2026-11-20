@@ -3,15 +3,17 @@
 //! and generated reasoning variants. Config resolution fills what a model's
 //! config leaves unset from here (see [`crate::config`]).
 //!
-//! The catalog is fetched from `https://models.opencode.ai` (the models.dev
-//! v2 API OpenCode reads; `$CODESMITH_MODELS_URL` names a mirror) and cached
-//! under the cache folder. Reading it never waits for the network: the
-//! order is `$CODESMITH_MODELS_PATH` (a catalog file), then the cache, then
-//! the snapshot bundled with the binary; only with no snapshot is it
-//! fetched on the spot. Long-running commands refresh it in the background
-//! when the cache is over five minutes old, revalidating with the stored
-//! ETag, and `$CODESMITH_DISABLE_MODELS_FETCH=1` turns fetching off. The
-//! request carries a generic `User-Agent` and nothing about the user.
+//! By default it never touches the network: the catalog is
+//! `$CODESMITH_MODELS_PATH` (a catalog file) if set, else the cached copy
+//! under the cache folder, else the snapshot bundled with the binary.
+//! Fetching is opt-in (config's `catalog.fetch` or `catalog.url`,
+//! `$CODESMITH_MODELS_FETCH=1` or `$CODESMITH_MODELS_URL`, or a one-shot
+//! `codesmith models --refresh`), from `https://models.dev`'s v1
+//! `/api.json` unless a mirror is named; `$CODESMITH_DISABLE_MODELS_FETCH=1`
+//! forbids it outright. When on, long-running commands refresh in the
+//! background when the cache is over five minutes old, revalidating with
+//! the stored ETag. The request carries a generic `User-Agent` and nothing
+//! about the user.
 //!
 //! Pinned to OpenCode's `models-dev.ts` and `plugin/models-dev.ts` by the
 //! `oc_catalog_*` tests (`tests/oc_catalog.rs`).
@@ -182,7 +184,11 @@ pub const TYPES: [&str; 4] = ["chat", "decision", "image", "video"];
 /// The experimental v2 API, limited to the kept model types.
 pub const CATALOG_PATH: &str = "/experimental/v2.0/api.json?type=chat,decision,image,video";
 
-pub const DEFAULT_SOURCE: &str = "https://models.opencode.ai";
+/// The public models.dev catalog, fetched as its v1 `/api.json`.
+pub const DEFAULT_SOURCE: &str = "https://models.dev";
+
+/// The v1 catalog path, what models.dev serves.
+pub const V1_PATH: &str = "/api.json";
 
 /// Packages that build their URL from provider settings (region, resource,
 /// account, project…): the catalog's URL for them is a template or an SDK
@@ -1307,21 +1313,143 @@ pub fn offered(data: &[Snapshot]) -> Vec<Snapshot> {
         .collect()
 }
 
-/// A loaded catalog, as offered, with lookups.
-#[derive(Debug, Clone, Default)]
+/// A loaded catalog, as offered, with lookups. A catalog read from text
+/// is indexed by provider and each provider normalized on first use, so a
+/// model lookup reads only its provider's part of a multi-megabyte catalog.
+#[derive(Debug, Default)]
 pub struct Catalog {
-    pub providers: Vec<Snapshot>,
+    text: Option<Arc<str>>,
+    slots: Vec<Slot>,
+}
+
+#[derive(Debug)]
+struct Slot {
+    key: String,
+    range: std::ops::Range<usize>,
+    value: OnceLock<Option<Snapshot>>,
+}
+
+/// A catalog's top-level entries as byte ranges of `text`, in order;
+/// `None` when it is not a JSON object.
+fn index(text: &str) -> Option<Vec<(String, std::ops::Range<usize>)>> {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+    use serde_json::value::RawValue;
+    struct Top<'a>(Vec<(String, &'a RawValue)>);
+    impl<'de> serde::Deserialize<'de> for Top<'de> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Top<'de>;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a catalog object")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Top<'de>, A::Error> {
+                    let mut out: Vec<(String, &'de RawValue)> = Vec::new();
+                    while let Some((k, v)) = m.next_entry::<String, &'de RawValue>()? {
+                        match out.iter_mut().find(|(key, _)| *key == k) {
+                            Some(slot) => slot.1 = v,
+                            None => out.push((k, v)),
+                        }
+                    }
+                    Ok(Top(out))
+                }
+            }
+            d.deserialize_map(V)
+        }
+    }
+    let top: Top = serde_json::from_str(text).ok()?;
+    let base = text.as_ptr() as usize;
+    Some(
+        top.0
+            .into_iter()
+            .map(|(k, v)| {
+                let start = v.get().as_ptr() as usize - base;
+                (k, start..start + v.get().len())
+            })
+            .collect(),
+    )
 }
 
 impl Catalog {
     pub fn new(data: &[Snapshot]) -> Catalog {
         Catalog {
-            providers: offered(data),
+            text: None,
+            slots: offered(data)
+                .into_iter()
+                .map(|p| Slot {
+                    key: p.info.id.clone(),
+                    range: 0..0,
+                    value: OnceLock::from(Some(p)),
+                })
+                .collect(),
         }
     }
 
+    /// A catalog read lazily from its text (keyed by provider id, as
+    /// models.dev's are); `None` when the text is not a JSON object.
+    pub fn from_text(text: Arc<str>) -> Option<Catalog> {
+        let slots = index(&text)?
+            .into_iter()
+            .map(|(key, range)| Slot {
+                key,
+                range,
+                value: OnceLock::new(),
+            })
+            .collect();
+        Some(Catalog {
+            text: Some(text),
+            slots,
+        })
+    }
+
+    fn load<'a>(&'a self, slot: &'a Slot) -> Option<&'a Snapshot> {
+        slot.value
+            .get_or_init(|| {
+                let text = self.text.as_deref()?;
+                let v = Json::parse(&text[slot.range.clone()]).ok()?;
+                let one = normalize(&Json::Object(vec![(slot.key.clone(), v)]));
+                offered(&one).into_iter().next()
+            })
+            .as_ref()
+    }
+
     pub fn provider(&self, id: &str) -> Option<&Snapshot> {
-        self.providers.iter().find(|p| p.info.id == id)
+        let slot = self.slots.iter().find(|s| s.key == id)?;
+        self.load(slot).filter(|p| p.info.id == id)
+    }
+
+    /// Every provider (each normalized now if it wasn't yet).
+    pub fn providers(&self) -> impl Iterator<Item = &Snapshot> {
+        self.slots.iter().filter_map(|s| self.load(s))
+    }
+
+    /// A provider's key variables, reading only that field when the
+    /// provider hasn't been loaded.
+    pub fn environment(&self, id: &str) -> Vec<String> {
+        #[derive(serde::Deserialize)]
+        struct Env {
+            #[serde(default)]
+            env: Vec<String>,
+        }
+        let Some(slot) = self.slots.iter().find(|s| s.key == id) else {
+            return vec![];
+        };
+        if let Some(p) = slot.value.get() {
+            return p
+                .as_ref()
+                .map(|p| p.environment.clone())
+                .unwrap_or_default();
+        }
+        self.text
+            .as_deref()
+            .and_then(|t| serde_json::from_str::<Env>(&t[slot.range.clone()]).ok())
+            .map(|e| e.env)
+            .unwrap_or_default()
+    }
+
+    /// Provider ids, without reading the providers.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.slots.iter().map(|s| s.key.as_str())
     }
 
     /// A chat model, by its catalog id. Other types are only listed by type.
@@ -1355,12 +1483,13 @@ impl Catalog {
 /// Where the catalog comes from.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The catalog server (`$CODESMITH_MODELS_URL`); empty or unset means
-    /// [`DEFAULT_SOURCE`].
+    /// The catalog server (`$CODESMITH_MODELS_URL`, else config's
+    /// `catalog.url`); empty or unset means [`DEFAULT_SOURCE`].
     pub url: Option<String>,
     /// A catalog file read instead of the cache (`$CODESMITH_MODELS_PATH`).
     pub file: Option<PathBuf>,
-    /// Whether to fetch at all (`$CODESMITH_DISABLE_MODELS_FETCH` turns it off).
+    /// Whether the background refresh fetches. Off by default; see
+    /// [`Options::resolve`].
     pub fetch: bool,
     /// Whether the bundled snapshot is the floor when nothing is cached.
     pub snapshot: bool,
@@ -1371,7 +1500,7 @@ impl Default for Options {
         Options {
             url: None,
             file: None,
-            fetch: true,
+            fetch: false,
             snapshot: true,
         }
     }
@@ -1381,17 +1510,53 @@ fn truthy(v: Option<String>) -> bool {
     v.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
+/// Whether `$CODESMITH_DISABLE_MODELS_FETCH` forbids every fetch, even an
+/// explicit `codesmith models --refresh`.
+pub fn fetch_disabled() -> bool {
+    truthy(std::env::var("CODESMITH_DISABLE_MODELS_FETCH").ok())
+}
+
 impl Options {
+    /// Options from the environment alone.
     pub fn from_env() -> Options {
+        Options::resolve(None, None)
+    }
+
+    /// Options from the environment over config's `catalog.fetch` and
+    /// `catalog.url`. Fetching is off unless asked for:
+    /// `$CODESMITH_DISABLE_MODELS_FETCH` turns it off whatever else says;
+    /// otherwise `$CODESMITH_MODELS_FETCH`, then `catalog.fetch`, decide,
+    /// and without either a configured URL (`$CODESMITH_MODELS_URL` or
+    /// `catalog.url`) turns it on.
+    pub fn resolve(fetch: Option<bool>, url: Option<&str>) -> Options {
+        let url = std::env::var("CODESMITH_MODELS_URL")
+            .ok()
+            .filter(|u| !u.is_empty())
+            .or_else(|| url.map(str::to_string).filter(|u| !u.is_empty()));
+        let env_fetch = std::env::var("CODESMITH_MODELS_FETCH")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(|v| truthy(Some(v)));
         Options {
-            url: std::env::var("CODESMITH_MODELS_URL").ok(),
+            fetch: !fetch_disabled() && env_fetch.or(fetch).unwrap_or(url.is_some()),
+            url,
             file: std::env::var_os("CODESMITH_MODELS_PATH")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
-            fetch: !truthy(std::env::var("CODESMITH_DISABLE_MODELS_FETCH").ok()),
             snapshot: true,
         }
     }
+}
+
+/// What a refresh did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refreshed {
+    /// The cache was fresh enough; nothing was fetched.
+    Fresh,
+    /// Fetched (or revalidated) and the same as the cached catalog.
+    Unchanged,
+    /// A new catalog replaced the cached one.
+    Updated,
 }
 
 /// A small key-value store for the cached catalog.
@@ -1486,22 +1651,25 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// (`scripts/models-snapshot.py` rebuilds it).
 static BUNDLED: &[u8] = include_bytes!("snapshot.json.gz");
 
-/// The bundled snapshot, decoded once per process.
-pub fn bundled() -> Arc<Vec<Snapshot>> {
-    static CELL: OnceLock<Arc<Vec<Snapshot>>> = OnceLock::new();
+/// The bundled snapshot's text, decompressed once per process.
+pub fn bundled_text() -> Arc<str> {
+    static CELL: OnceLock<Arc<str>> = OnceLock::new();
     CELL.get_or_init(|| {
         use std::io::Read;
         let mut text = String::new();
-        let ok = flate2::read::GzDecoder::new(BUNDLED)
-            .read_to_string(&mut text)
-            .is_ok();
-        Arc::new(if ok {
-            decode_snapshot(&text).unwrap_or_default()
-        } else {
-            vec![]
-        })
+        match flate2::read::GzDecoder::new(BUNDLED).read_to_string(&mut text) {
+            Ok(_) => text.into(),
+            Err(_) => "{}".into(),
+        }
     })
     .clone()
+}
+
+/// The bundled snapshot, every provider normalized.
+pub fn bundled() -> Arc<Vec<Snapshot>> {
+    static CELL: OnceLock<Arc<Vec<Snapshot>>> = OnceLock::new();
+    CELL.get_or_init(|| Arc::new(decode_snapshot(&bundled_text()).unwrap_or_default()))
+        .clone()
 }
 
 /// A generic `User-Agent`: the program and its version, nothing else.
@@ -1525,8 +1693,28 @@ impl std::fmt::Display for Status {
 
 impl std::error::Error for Status {}
 
-/// The raw catalog and the catalog as offered.
-type Loaded = (Arc<Vec<Snapshot>>, Arc<Catalog>);
+/// A loaded catalog: its text (read lazily) or normalized snapshots, with
+/// the full list and the offered catalog made from them on first use.
+struct Loaded {
+    raw: Raw,
+    all: OnceLock<Arc<Vec<Snapshot>>>,
+    catalog: OnceLock<Arc<Catalog>>,
+}
+
+enum Raw {
+    Text(Arc<str>),
+    Data(Arc<Vec<Snapshot>>),
+}
+
+impl Loaded {
+    fn new(raw: Raw) -> Arc<Loaded> {
+        Arc::new(Loaded {
+            raw,
+            all: OnceLock::new(),
+            catalog: OnceLock::new(),
+        })
+    }
+}
 
 /// The catalog service: reads, caches and refreshes the catalog.
 pub struct ModelsDev {
@@ -1536,7 +1724,7 @@ pub struct ModelsDev {
     key: String,
     meta_key: String,
     client: reqwest::Client,
-    state: Mutex<Option<Loaded>>,
+    state: Mutex<Option<Arc<Loaded>>>,
     refresh_lock: tokio::sync::Mutex<()>,
     refreshed: tokio::sync::watch::Sender<u64>,
     fixed: bool,
@@ -1588,18 +1776,17 @@ impl ModelsDev {
             },
             Arc::new(MemoryKv::default()),
         );
-        let catalog = Arc::new(Catalog::new(&data));
-        *s.state.lock().unwrap() = Some((Arc::new(data), catalog));
+        *s.state.lock().unwrap() = Some(Loaded::new(Raw::Data(Arc::new(data))));
         ModelsDev { fixed: true, ..s }
     }
 
-    /// The process-wide catalog: options from the environment, cached under
-    /// the cache folder.
-    pub fn global() -> Arc<ModelsDev> {
+    /// The process-wide catalog, cached under the cache folder. The first
+    /// caller's options win.
+    pub fn global(options: Options) -> Arc<ModelsDev> {
         static CELL: OnceLock<Arc<ModelsDev>> = OnceLock::new();
         CELL.get_or_init(|| {
             Arc::new(ModelsDev::new(
-                Options::from_env(),
+                options,
                 Arc::new(FileKv {
                     dir: crate::paths::cache_dir().join("models"),
                 }),
@@ -1625,21 +1812,34 @@ impl ModelsDev {
     /// The catalog, loaded once and kept until a refresh replaces it.
     /// Concurrent callers share one load.
     pub fn get(&self) -> Arc<Vec<Snapshot>> {
-        self.loaded().0
+        let l = self.loaded();
+        l.all
+            .get_or_init(|| match &l.raw {
+                Raw::Text(t) => Arc::new(decode_snapshot(t).unwrap_or_default()),
+                Raw::Data(d) => d.clone(),
+            })
+            .clone()
     }
 
     /// The catalog as offered, with lookups.
     pub fn catalog(&self) -> Arc<Catalog> {
-        self.loaded().1
+        let l = self.loaded();
+        l.catalog
+            .get_or_init(|| {
+                Arc::new(match &l.raw {
+                    Raw::Text(t) => Catalog::from_text(t.clone()).unwrap_or_default(),
+                    Raw::Data(d) => Catalog::new(d),
+                })
+            })
+            .clone()
     }
 
-    fn loaded(&self) -> Loaded {
+    fn loaded(&self) -> Arc<Loaded> {
         let mut state = self.state.lock().unwrap();
         if let Some(s) = &*state {
             return s.clone();
         }
-        let data = self.populate();
-        let loaded = (data.clone(), Arc::new(Catalog::new(&data)));
+        let loaded = Loaded::new(self.populate());
         *state = Some(loaded.clone());
         loaded
     }
@@ -1655,7 +1855,13 @@ impl ModelsDev {
         }
     }
 
-    fn read_cache(&self) -> Option<Json> {
+    /// A catalog text that is a JSON object.
+    fn object(text: String) -> Option<Arc<str>> {
+        let t: Arc<str> = text.into();
+        index(&t).map(|_| t)
+    }
+
+    fn read_cache(&self) -> Option<Arc<str>> {
         let value = self.kv.get(&self.key)?;
         let body = value
             .get("updatedAt")
@@ -1663,8 +1869,7 @@ impl ModelsDev {
             .and(value.get("body"))
             .and_then(Value::as_str)
             .filter(|_| value.get("digest").is_none_or(Value::is_string))
-            .and_then(|b| Json::parse(b).ok())
-            .filter(Json::is_object);
+            .and_then(|b| Self::object(b.to_string()));
         if body.is_none() {
             self.kv.remove(&self.key);
             self.kv.remove(&self.meta_key);
@@ -1672,25 +1877,24 @@ impl ModelsDev {
         body
     }
 
-    fn read_file(&self) -> Option<Json> {
-        let text = std::fs::read_to_string(self.options.file.as_ref()?).ok()?;
-        Json::parse(&text).ok().filter(Json::is_object)
+    fn read_file(&self) -> Option<Arc<str>> {
+        Self::object(std::fs::read_to_string(self.options.file.as_ref()?).ok()?)
     }
 
-    fn populate(&self) -> Arc<Vec<Snapshot>> {
-        if let Some(c) = self.read_file() {
-            return Arc::new(normalize(&c));
+    fn populate(&self) -> Raw {
+        if let Some(t) = self.read_file() {
+            return Raw::Text(t);
         }
         if self.options.file.is_none() {
-            if let Some(c) = self.read_cache() {
-                return Arc::new(normalize(&c));
+            if let Some(t) = self.read_cache() {
+                return Raw::Text(t);
             }
         }
         if self.options.snapshot {
-            return bundled();
+            return Raw::Text(bundled_text());
         }
         if !self.options.fetch {
-            return Arc::new(vec![]);
+            return Raw::Data(Arc::new(vec![]));
         }
         // Nothing to serve without the network: fetch now, on a thread of
         // its own so this works inside or outside an async runtime.
@@ -1702,19 +1906,19 @@ impl ModelsDev {
                     .ok()?;
                 rt.block_on(async {
                     let r = self.fetch_api(None).await.ok()??;
-                    Json::parse(&r.text).ok().filter(Json::is_object)?;
+                    let t = Self::object(r.text.clone())?;
                     self.write_cache(&r.text, r.etag.as_deref(), None);
-                    Some(r.text)
+                    Some(t)
                 })
             })
             .join()
             .ok()
             .flatten()
         });
-        Arc::new(
-            text.and_then(|t| decode_snapshot(&t).ok())
-                .unwrap_or_default(),
-        )
+        match text {
+            Some(t) => Raw::Text(t),
+            None => Raw::Data(Arc::new(vec![])),
+        }
     }
 
     fn write_meta(&self, updated_at: i64, digest: Option<&str>, etag: Option<&str>) {
@@ -1799,13 +2003,14 @@ impl ModelsDev {
     }
 
     async fn fetch_api(&self, etag: Option<&str>) -> anyhow::Result<Option<Response>> {
+        // models.dev serves the v1 catalog; a mirror may have the v2 one.
+        if self.source == DEFAULT_SOURCE {
+            return self.fetch_path(V1_PATH, etag).await;
+        }
         match self.fetch_path(CATALOG_PATH, etag).await {
             // A custom mirror may only serve the v1 catalog.
-            Err(e)
-                if self.source != DEFAULT_SOURCE
-                    && e.downcast_ref::<Status>().is_some_and(|s| s.0 == 404) =>
-            {
-                self.fetch_path("/api.json", etag).await
+            Err(e) if e.downcast_ref::<Status>().is_some_and(|s| s.0 == 404) => {
+                self.fetch_path(V1_PATH, etag).await
             }
             r => r,
         }
@@ -1816,6 +2021,11 @@ impl ModelsDev {
     /// one and is announced through [`ModelsDev::subscribe`]; an unchanged
     /// one only records the check. Errors are swallowed.
     pub async fn refresh(&self, force: bool) {
+        let _ = self.try_refresh(force).await;
+    }
+
+    /// [`ModelsDev::refresh`], saying what happened or why it failed.
+    pub async fn try_refresh(&self, force: bool) -> anyhow::Result<Refreshed> {
         let _guard = self.refresh_lock.lock().await;
         let stored = self
             .kv
@@ -1830,7 +2040,7 @@ impl ModelsDev {
         let now = chrono::Utc::now().timestamp_millis();
         if let Some((updated, ..)) = &stored {
             if !force && now - updated < TTL.as_millis() as i64 {
-                return;
+                return Ok(Refreshed::Fresh);
             }
         }
         let etag = if force {
@@ -1838,9 +2048,7 @@ impl ModelsDev {
         } else {
             stored.as_ref().and_then(|s| s.2.clone())
         };
-        let Ok(response) = self.fetch_api(etag.as_deref()).await else {
-            return;
-        };
+        let response = self.fetch_api(etag.as_deref()).await?;
         let digest = response.as_ref().map(|r| body_digest(&r.text));
         if let (false, Some((_, sd, se))) = (force, &stored) {
             if response.is_none() || sd.is_some() && *sd == digest {
@@ -1849,16 +2057,24 @@ impl ModelsDev {
                     .and_then(|r| r.etag.clone())
                     .or(se.clone());
                 self.write_meta(now, sd.as_deref(), etag.as_deref());
-                return;
+                return Ok(Refreshed::Unchanged);
             }
         }
-        let Some(response) = response else { return };
+        let response = response.ok_or_else(|| anyhow::anyhow!("unexpected 304 response"))?;
         if !Json::parse(&response.text).is_ok_and(|j| j.is_object()) {
-            return;
+            anyhow::bail!("the catalog is not a JSON object");
         }
+        let same = stored
+            .as_ref()
+            .is_some_and(|s| s.1.is_some() && s.1 == digest);
         self.write_cache(&response.text, response.etag.as_deref(), digest);
         self.invalidate();
         self.refreshed.send_modify(|n| *n += 1);
+        Ok(if same {
+            Refreshed::Unchanged
+        } else {
+            Refreshed::Updated
+        })
     }
 
     /// Refresh now and every [`TTL`] in the background, when fetching is on

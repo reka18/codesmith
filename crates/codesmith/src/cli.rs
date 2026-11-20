@@ -48,10 +48,14 @@ struct Cli {
 enum Command {
     /// Run one prompt non-interactively and print the result.
     Run(RunArgs),
-    /// List providers and configured models, or ask one provider for its models.
+    /// List providers and their models, or ask one provider for its models.
     Models {
         /// A provider id: list the models its API reports.
         provider: Option<String>,
+        /// Fetch the models.dev catalog into the cache first (the one
+        /// network request CodeSmith makes for it unless fetching is on).
+        #[arg(long)]
+        refresh: bool,
     },
     /// Review changes with parallel per-dimension reviewers and independent verification.
     Review {
@@ -764,12 +768,14 @@ pub async fn entry() -> i32 {
 async fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     // Sessions refresh the models.dev catalog in the background (never
-    // waiting for it), as OpenCode's server does.
+    // waiting for it) when fetching is turned on; it is off by default.
     if matches!(
         cli.command,
         None | Some(Command::Run(_)) | Some(Command::Acp) | Some(Command::Serve { .. })
     ) {
-        codesmith_core::catalog::ModelsDev::global().spawn_refresh();
+        if let Some(c) = config::load(&cwd).ok().and_then(|l| l.config.models_dev) {
+            c.spawn_refresh();
+        }
     }
     match cli.command {
         None => {
@@ -893,7 +899,41 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Models {
+            provider,
+            refresh: true,
+        }) => {
+            if codesmith_core::catalog::fetch_disabled() {
+                return Err(anyhow!(
+                    "fetching the model catalog is turned off by CODESMITH_DISABLE_MODELS_FETCH"
+                ));
+            }
+            let loaded = config::load(&cwd)?;
+            let c = loaded
+                .config
+                .models_dev
+                .clone()
+                .ok_or_else(|| anyhow!("no model catalog"))?;
+            use codesmith_core::catalog::Refreshed;
+            match c
+                .try_refresh(true)
+                .await
+                .map_err(|e| anyhow!("refreshing the model catalog from {}: {e:#}", c.source()))?
+            {
+                Refreshed::Updated => eprintln!("Updated the model catalog from {}.", c.source()),
+                _ => eprintln!("The model catalog from {} is unchanged.", c.source()),
+            }
+            Box::pin(run(Cli {
+                command: Some(Command::Models {
+                    provider,
+                    refresh: false,
+                }),
+                ..cli
+            }))
+            .await
+        }
+        Some(Command::Models {
             provider: Some(pid),
+            ..
         }) => {
             let loaded = config::load(&cwd)?;
             let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
@@ -907,7 +947,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Some(Command::Models { provider: None }) => {
+        Some(Command::Models { provider: None, .. }) => {
             let loaded = config::load(&cwd)?;
             let c = &loaded.config;
             let mut ids: Vec<String> = config::BUILTIN.iter().map(|b| b.0.to_string()).collect();
@@ -920,16 +960,8 @@ async fn run(cli: Cli) -> Result<()> {
             );
             // Other catalog providers are listed once they have a key, as
             // OpenCode lists the providers that are available.
-            for id in c.catalog_providers() {
-                if ids.contains(&id) {
-                    continue;
-                }
-                let keyed = c.provider(&id).is_some_and(|p| {
-                    p.env
-                        .iter()
-                        .any(|v| std::env::var(v).is_ok_and(|k| !k.is_empty()))
-                }) || codesmith_core::auth::key(&id).is_some();
-                if keyed {
+            for id in c.keyed_catalog_providers() {
+                if !ids.contains(&id) {
                     ids.push(id);
                 }
             }

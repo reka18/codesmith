@@ -107,45 +107,142 @@ async fn a_catalog_file_supplies_providers_limits_and_variants() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn sessions_refresh_the_catalog_in_the_background_with_a_generic_user_agent() {
-    let e = Env::new();
-    let (url, seen) = catalog_server(ACME);
+/// Run `codesmith acp` (a long-running session front end) with `env` until
+/// `done` says so or `wait` passes; the catalog server's requests.
+async fn acp_requests(
+    e: &Env,
+    env: &[(&str, &str)],
+    wait: Duration,
+    done: impl Fn(&Env) -> bool,
+    seen: &Seen,
+) -> Vec<(String, String)> {
     let mut c = e.command(&["acp"]);
     c.env_remove("CODESMITH_DISABLE_MODELS_FETCH")
-        .env("CODESMITH_MODELS_URL", &url)
+        .envs(env.iter().copied())
         .stdin(std::process::Stdio::piped());
     let mut child = c.spawn().unwrap();
-    let cache = e.home.join(".cache/codesmith/models");
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let written = loop {
-        let files: Vec<_> = std::fs::read_dir(&cache)
-            .map(|d| d.flatten().map(|f| f.path()).collect())
-            .unwrap_or_default();
-        let entry = files.iter().find(|f| {
-            let n = f.file_name().unwrap().to_string_lossy().into_owned();
-            n.starts_with("models-dev-v2-catalog-") && !n.ends_with("-meta.json")
-        });
-        if let Some(entry) = entry {
-            break std::fs::read_to_string(entry).unwrap();
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no cached catalog in {}",
-            cache.display()
-        );
+    let deadline = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < deadline && !done(e) {
         tokio::time::sleep(Duration::from_millis(100)).await;
-    };
+    }
     let _ = child.kill().await;
-    let cached: serde_json::Value = serde_json::from_str(&written).unwrap();
-    assert_eq!(cached["body"], ACME);
-    let seen = seen.lock().unwrap().clone();
+    let out = seen.lock().unwrap().clone();
+    out
+}
+
+/// The cached catalog body, once written.
+fn cached(e: &Env) -> Option<String> {
+    let dir = e.home.join(".cache/codesmith/models");
+    let entry = std::fs::read_dir(dir).ok()?.flatten().find(|f| {
+        let n = f.file_name().to_string_lossy().into_owned();
+        n.starts_with("models-dev-v2-catalog") && !n.ends_with("-meta.json")
+    })?;
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(entry.path()).ok()?).ok()?;
+    v["body"].as_str().map(str::to_string)
+}
+
+fn write_config(e: &Env, cfg: serde_json::Value) {
+    std::fs::write(
+        e.config_dir.join("codesmith.json"),
+        serde_json::to_string(&cfg).unwrap(),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_make_no_catalog_request_unless_fetching_is_turned_on() {
+    let e = Env::new();
+    let (url, seen) = catalog_server(ACME);
+    write_config(
+        &e,
+        serde_json::json!({"catalog": {"url": url, "fetch": false}}),
+    );
+    let got = acp_requests(&e, &[], Duration::from_secs(3), |_| false, &seen).await;
+    assert!(got.is_empty(), "{got:?}");
+    assert!(cached(&e).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_refresh_the_catalog_in_the_background_when_config_turns_it_on() {
+    let e = Env::new();
+    let (url, seen) = catalog_server(ACME);
+    write_config(
+        &e,
+        serde_json::json!({"catalog": {"fetch": true, "url": url}}),
+    );
+    let got = acp_requests(
+        &e,
+        &[],
+        Duration::from_secs(30),
+        |e| cached(e).is_some(),
+        &seen,
+    )
+    .await;
+    assert_eq!(cached(&e).as_deref(), Some(ACME));
+    // A mirror is asked for the v2 catalog first; a generic User-Agent.
     assert_eq!(
-        seen[0].0,
+        got[0].0,
         "GET /experimental/v2.0/api.json?type=chat,decision,image,video HTTP/1.1"
     );
-    assert!(seen[0].1.starts_with("codesmith/"), "{:?}", seen[0]);
-    assert!(!seen[0].1.contains("tester"), "{:?}", seen[0]);
+    assert!(got[0].1.starts_with("codesmith/"), "{:?}", got[0]);
+    assert!(!got[0].1.contains("tester"), "{:?}", got[0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_refresh_the_catalog_with_codesmith_models_fetch() {
+    let e = Env::new();
+    let (url, seen) = catalog_server(ACME);
+    let got = acp_requests(
+        &e,
+        &[
+            ("CODESMITH_MODELS_FETCH", "1"),
+            ("CODESMITH_MODELS_URL", &url),
+        ],
+        Duration::from_secs(30),
+        |e| cached(e).is_some(),
+        &seen,
+    )
+    .await;
+    assert!(!got.is_empty());
+    assert_eq!(cached(&e).as_deref(), Some(ACME));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_refresh_updates_the_cache_on_demand() {
+    let e = Env::new();
+    let (url, seen) = catalog_server(ACME);
+    // Forbidden outright by CODESMITH_DISABLE_MODELS_FETCH (the harness sets it).
+    let out = run_env(
+        &e,
+        &["models", "--refresh"],
+        &[("CODESMITH_MODELS_URL", &url)],
+    )
+    .await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    assert!(
+        out.stderr.contains("CODESMITH_DISABLE_MODELS_FETCH"),
+        "{}",
+        out.both()
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    // Allowed otherwise, even with background fetching off.
+    let mut c = e.command(&["models", "--refresh"]);
+    c.env_remove("CODESMITH_DISABLE_MODELS_FETCH")
+        .env("CODESMITH_MODELS_URL", &url)
+        .env("CODESMITH_MODELS_FETCH", "0")
+        .env("ACME_API_KEY", "k");
+    let o = tokio::time::timeout(TIMEOUT, c.output())
+        .await
+        .unwrap()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{stdout}\n{stderr}");
+    assert!(stderr.contains("Updated the model catalog"), "{stderr}");
+    assert!(stdout.lines().any(|l| l == "acme/acme-1"), "{stdout}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(cached(&e).as_deref(), Some(ACME));
 }
 
 async fn run_env(e: &Env, args: &[&str], env: &[(&str, &str)]) -> Out {
