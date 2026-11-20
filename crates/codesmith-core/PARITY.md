@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 26 | 0 | 1 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 30 | 0 | 3 | 127 | 4 | 0 |
-| MCP | 212 | 1 | 0 | 29 | 61 | 121 | 0 |
+| MCP | 212 | 17 | 0 | 13 | 61 | 121 | 0 |
 | Code Mode | 67 | 26 | 0 | 3 | 19 | 19 | 0 |
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1380** | **15** | **443** | **2355** | **1395** | **0** |
+| **Total** | **5588** | **1396** | **15** | **427** | **2355** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (443 cases in 49 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (427 cases in 48 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -91,7 +91,6 @@ Missing features, by how many OpenCode test cases each would unlock (443 cases i
 | [Local Model Discovery](#local-model-discovery) | 19 | discovering LM Studio models and context; discovering local Ollama models and metadata; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
-| [MCP Elicitation](#mcp-elicitation) | 16 | forms behind elicitation and questions (conditional fields); elicitation forms and URL elicitations |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
@@ -421,27 +420,6 @@ Missing features, by how many OpenCode test cases each would unlock (443 cases i
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-
-### MCP Elicitation
-
-16 cases.
-
-- `form.test.ts`: validates absolute URI formats without restricting schemes
-- `form.test.ts`: returns a terminal cancelled state from ask
-- `form.test.ts`: supports the temporary global mcp elicitation owner
-- `form.test.ts`: gates required fields and rejects inactive answers via when
-- `form.test.ts`: evaluates when against multiselect answers as inclusion
-- `form.test.ts`: requires every when condition to match and treats empty when as active
-- `form.test.ts`: evaluates neq against multiselect answers as non-inclusion
-- `form.test.ts`: treats unanswered when references as false and cascades inactivity
-- `form.test.ts`: rejects invalid when definitions at creation
-- `form.test.ts`: requires external field acknowledgements
-- `form.test.ts`: cleans up created forms when event publication fails
-- `form.test.ts`: keeps forms pending when reply event publication fails
-- `mcp.test.ts`: accepts empty MCP elicitations without creating forms
-- `mcp.test.ts`: acknowledges completed MCP URL elicitations without returning internal content
-- `mcp.test.ts`: cancels MCP elicitation forms when the server gives up on them
-- `mcp.test.ts`: settles modern MCP URL elicitations when the user confirms
 
 ### Stateless Generate API
 
@@ -3185,8 +3163,23 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (62 of 212)</summary>
+<details><summary>MCP (78 of 212)</summary>
 
+
+**`form.test.ts`**
+
+- P validates absolute URI formats without restricting schemes — `tests/oc_mcp_elicitation.rs::oc_form_validates_absolute_uris_without_restricting_schemes`
+- P returns a terminal cancelled state from ask — `tests/oc_mcp_elicitation.rs::oc_form_returns_a_terminal_cancelled_state_from_ask`
+- P supports the temporary global mcp elicitation owner — `tests/oc_mcp_elicitation.rs::oc_form_supports_the_global_mcp_elicitation_owner`
+- P gates required fields and rejects inactive answers via when — `tests/oc_mcp_elicitation.rs::oc_form_gates_required_fields_and_rejects_inactive_answers`
+- P evaluates when against multiselect answers as inclusion — `tests/oc_mcp_elicitation.rs::oc_form_evaluates_when_against_multiselect_answers_as_inclusion`
+- P requires every when condition to match and treats empty when as active — `tests/oc_mcp_elicitation.rs::oc_form_requires_every_condition_and_treats_empty_when_as_active`
+- P evaluates neq against multiselect answers as non-inclusion — `tests/oc_mcp_elicitation.rs::oc_form_evaluates_neq_against_multiselect_answers_as_non_inclusion`
+- P treats unanswered when references as false and cascades inactivity — `tests/oc_mcp_elicitation.rs::oc_form_treats_unanswered_references_as_false_and_cascades`
+- P rejects invalid when definitions at creation — `tests/oc_mcp_elicitation.rs::oc_form_rejects_invalid_when_definitions_at_creation`
+- P requires external field acknowledgements — `tests/oc_mcp_elicitation.rs::oc_form_requires_external_field_acknowledgements`
+- P cleans up created forms when event publication fails — `tests/oc_mcp_elicitation.rs::oc_form_cleans_up_created_forms_when_a_listener_fails` (adapted: a failing listener stands for a failing event publication)
+- P keeps forms pending when reply event publication fails — `tests/oc_mcp_elicitation.rs::oc_form_keeps_forms_pending_when_a_reply_listener_fails` (adapted: a failing listener stands for a failing event publication)
 
 **`mcp-import-boundary.test.ts`**
 
@@ -3203,6 +3196,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`mcp.test.ts`**
 
 - D spawns local MCP servers through the location environment · reports a local MCP server as failed when the location has no execution plane — client-server: MCP connections pooled across Locations
+- P accepts empty MCP elicitations without creating forms — `tests/oc_mcp_elicitation.rs::oc_mcp_accepts_empty_elicitations_without_creating_forms`
+- P acknowledges completed MCP URL elicitations without returning internal content — `tests/oc_mcp_elicitation.rs::oc_mcp_acknowledges_completed_url_elicitations`
+- P cancels MCP elicitation forms when the server gives up on them — `tests/oc_mcp_elicitation.rs::oc_mcp_cancels_elicitation_forms_when_the_server_gives_up`
+- P settles modern MCP URL elicitations when the user confirms — `tests/oc_mcp_elicitation.rs::oc_mcp_settles_url_elicitations_when_the_user_confirms` (adapted: a URL elicitation without an elicitationId; no 2026-07-28 input_required retries)
 - D manages live MCP servers entirely through scoped transforms · restores runtime MCP config when a transform is disposed · isolates nested configured MCP mutations and reconciles them · publishes MCP changes while live but not while the location shuts down · batches MCP transforms without connecting intermediate configurations · reconciles only changed MCP server config · keeps MCP config snapshots stable during an in-flight replacement · discards in-flight and queued MCP notifications after its layer closes · is not undone by the queued startup · serializes concurrent MCP lifecycle operations · finishes an MCP connect whose caller is interrupted during the handshake · finishes an MCP disconnect whose caller is interrupted while the session ends · preserves plugin transforms through MCP catalog updates · coalesces queued MCP tool notifications after initial registration — effect-internal: scoped MCP config transforms and lifecycle serialization
 - D integration policy denies MCP startup (${modern ? "modern" : "legacy"}) ×2 · revokes and restores a connected MCP through ${source} policy ×2 — cloud: integration/organization policy
 - D shares one connection and one tool list between Locations · keeps connections apart when the configs differ · keys connections on everything that changes them, and on no secret or name · keeps a server that negotiates legacy private to each Location · connects on its own when a server refuses the pooled handshake · keeps pooling a server that ${what} when first tried ×3 · decides a legacy server is private right after the handshake, before listing its tools · fails a pooled server that can't be spawned after one attempt · connects each Location on its own without pool · closes the shared connection when its last Location lets go · connects with the credential its key was made from, even when a sign-in lands mid-start · registers a server's prompt commands again after reconnecting${shared ? " to a connection another Location holds" : ""} ×2 · routes an elicitation to the Location whose call caused it · asks every holder about an elicitation no request claims, and takes the first answer · fans tool list changes out to every Location · answers no roots on a shared connection · shares a local server across directories only when its cwd is fixed · shares one local process, fails every holder when it dies, and closes it after the last · keeps nothing of a Location that let go of a shared connection — client-server: MCP connections pooled across Locations

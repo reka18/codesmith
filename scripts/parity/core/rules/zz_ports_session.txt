@@ -54,3 +54,21 @@
 86 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_runs_bash_as_shell_and_says_so :: the note follows the result text
 127 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_inner_tool_input_called_from_code_mode
 157 :: ported :: tests/oc_tool_input_repair.rs::oc_repair_repairs_code_mode_calls_against_the_tool_schema :: adapted: Code Mode calls use the tool's one schema
+@form.test.ts
+22 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_validates_absolute_uris_without_restricting_schemes
+33 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_returns_a_terminal_cancelled_state_from_ask
+54 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_supports_the_global_mcp_elicitation_owner
+82 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_gates_required_fields_and_rejects_inactive_answers
+114 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_evaluates_when_against_multiselect_answers_as_inclusion
+140 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_requires_every_condition_and_treats_empty_when_as_active
+182 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_evaluates_neq_against_multiselect_answers_as_non_inclusion
+219 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_treats_unanswered_references_as_false_and_cascades
+242 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_rejects_invalid_when_definitions_at_creation
+288 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_requires_external_field_acknowledgements
+322 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_cleans_up_created_forms_when_a_listener_fails :: adapted: a failing listener stands for a failing event publication
+339 :: ported :: tests/oc_mcp_elicitation.rs::oc_form_keeps_forms_pending_when_a_reply_listener_fails :: adapted: a failing listener stands for a failing event publication
+@mcp.test.ts
+1541 :: ported :: tests/oc_mcp_elicitation.rs::oc_mcp_accepts_empty_elicitations_without_creating_forms
+1560 :: ported :: tests/oc_mcp_elicitation.rs::oc_mcp_acknowledges_completed_url_elicitations
+1587 :: ported :: tests/oc_mcp_elicitation.rs::oc_mcp_cancels_elicitation_forms_when_the_server_gives_up
+1613 :: ported :: tests/oc_mcp_elicitation.rs::oc_mcp_settles_url_elicitations_when_the_user_confirms :: adapted: a URL elicitation without an elicitationId; no 2026-07-28 input_required retries

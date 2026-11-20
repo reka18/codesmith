@@ -10,6 +10,7 @@
 //! draft `io.modelcontextprotocol/events` extension) drive event-triggered
 //! automations.
 
+pub mod elicit;
 pub mod events;
 pub mod oauth;
 
@@ -544,6 +545,31 @@ pub fn resource_tools() -> Vec<(&'static str, String, Value)> {
     ]
 }
 
+/// An asker for a server's elicitations while a call runs.
+struct Asking {
+    shared: Arc<Shared>,
+    asker: Arc<dyn crate::question::Questioner>,
+}
+
+impl Asking {
+    fn new(shared: &Arc<Shared>, asker: Arc<dyn crate::question::Questioner>) -> Asking {
+        shared.askers.lock().unwrap().push(asker.clone());
+        Asking {
+            shared: shared.clone(),
+            asker,
+        }
+    }
+}
+
+impl Drop for Asking {
+    fn drop(&mut self) {
+        let mut askers = self.shared.askers.lock().unwrap();
+        if let Some(i) = askers.iter().rposition(|a| Arc::ptr_eq(a, &self.asker)) {
+            askers.remove(i);
+        }
+    }
+}
+
 /// How to reply to a request the server sends us.
 pub fn answer_server_request(method: &str, roots: &[String]) -> Result<Value, (i64, String)> {
     match method {
@@ -597,14 +623,46 @@ struct Shared {
     exited: Mutex<Option<String>>,
     /// A reconnect was tried after it ended (only one is).
     reconnect_tried: AtomicBool,
+    /// The server's name, for its elicitation forms.
+    server: String,
+    /// Who answers the server's elicitations: the question UIs of the
+    /// calls in progress, the latest first.
+    askers: Mutex<Vec<Arc<dyn crate::question::Questioner>>>,
+    /// Pending URL elicitations' forms, by `elicitationId`.
+    elicitations: Mutex<HashMap<String, String>>,
+    /// Pending elicitations' forms, by the server's request id.
+    elicit_requests: Mutex<HashMap<String, String>>,
+}
+
+/// What [`Shared::dispatch`] answers a server request with.
+enum Answer {
+    Now(Value),
+    /// Once the user has answered (an elicitation).
+    Later(std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send>>),
+}
+
+impl Answer {
+    async fn value(self) -> Value {
+        match self {
+            Answer::Now(v) => v,
+            Answer::Later(f) => f.await,
+        }
+    }
 }
 
 impl Shared {
     /// Route one message from the server. Returns the reply to send when it
     /// is a request.
-    fn dispatch(&self, m: &Value) -> Option<Value> {
+    fn dispatch(self: &Arc<Self>, m: &Value) -> Option<Answer> {
         let id = m.get("id").filter(|v| !v.is_null());
         match (m.get("method").and_then(Value::as_str), id) {
+            (Some("elicitation/create"), Some(id)) => {
+                let (me, id, params) = (self.clone(), id.clone(), m["params"].clone());
+                Some(Answer::Later(Box::pin(async move {
+                    let result = me.elicit(&id, &params).await;
+                    json!({"jsonrpc": "2.0", "id": id, "result": result})
+                })))
+            }
             (None, Some(id)) => {
                 let tx = id
                     .as_u64()
@@ -614,12 +672,14 @@ impl Shared {
                 }
                 None
             }
-            (Some(method), Some(id)) => Some(match answer_server_request(method, &self.roots) {
-                Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
-                Err((code, msg)) => {
-                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": msg}})
-                }
-            }),
+            (Some(method), Some(id)) => Some(Answer::Now(
+                match answer_server_request(method, &self.roots) {
+                    Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
+                    Err((code, msg)) => {
+                        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": msg}})
+                    }
+                },
+            )),
             (Some(method), None) => {
                 self.notification(method, &m["params"]);
                 None
@@ -635,6 +695,29 @@ impl Shared {
                 self.prompts_stale.store(true, Ordering::SeqCst)
             }
             "notifications/message" => self.log_line(params),
+            // A URL elicitation finished out of band.
+            "notifications/elicitation/complete" => {
+                let form = params["elicitationId"]
+                    .as_str()
+                    .and_then(|e| self.elicitations.lock().unwrap().get(e).cloned());
+                if let Some(id) = form {
+                    let answer = [(elicit::URL_FIELD.to_string(), json!(true))].into();
+                    let _ = crate::form::global().reply(&id, answer);
+                }
+            }
+            // The server gave up on a request: an elicitation's form goes.
+            "notifications/cancelled" => {
+                let form = self
+                    .elicit_requests
+                    .lock()
+                    .unwrap()
+                    .get(&params["requestId"].to_string())
+                    .cloned();
+                if let Some(id) = form {
+                    let why = params["reason"].as_str().map(str::to_string);
+                    let _ = crate::form::global().cancel(&id, why);
+                }
+            }
             m => {
                 let Some(kind) = m.strip_prefix("notifications/events/") else {
                     return;
@@ -658,6 +741,46 @@ impl Shared {
                     }
                 }
             }
+        }
+    }
+
+    /// Answer an elicitation request `id` (see [`elicit`]): through a form
+    /// the question UI of the latest call in progress answers.
+    async fn elicit(&self, id: &Value, params: &Value) -> Value {
+        let Some(create) = elicit::form_for(&self.server, params) else {
+            return json!({"action": "accept", "content": {}});
+        };
+        let url = params["mode"] == "url";
+        let forms = crate::form::global().clone();
+        let Ok(form) = forms.create(create) else {
+            return json!({"action": "cancel"});
+        };
+        let elicitation = params["elicitationId"].as_str().filter(|_| url);
+        if let Some(e) = elicitation {
+            self.elicitations
+                .lock()
+                .unwrap()
+                .insert(e.to_string(), form.id.clone());
+        }
+        self.elicit_requests
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), form.id.clone());
+        let asker = self.askers.lock().unwrap().last().cloned();
+        match asker {
+            Some(a) => crate::form::present_in_background(forms.clone(), form.id.clone(), a),
+            None => {
+                let _ = forms.cancel(&form.id, Some("nobody can answer it here".into()));
+            }
+        }
+        let state = forms.wait(&form.id).await;
+        if let Some(e) = elicitation {
+            self.elicitations.lock().unwrap().remove(e);
+        }
+        self.elicit_requests.lock().unwrap().remove(&id.to_string());
+        match state {
+            Ok(s) => elicit::result(&s, url),
+            Err(_) => json!({"action": "cancel"}),
         }
     }
 
@@ -950,6 +1073,7 @@ impl Client {
     /// An HTTP-delivered message; a server request is answered with a POST.
     async fn incoming(&self, m: &Value) {
         if let Some(reply) = self.shared.dispatch(m) {
+            let reply = reply.value().await;
             if let Ok(r) = self.http_request(&reply).send().await {
                 let _ = r.bytes().await;
             }
@@ -1400,10 +1524,34 @@ impl Mcp {
     }
 
     async fn call_raw(&self, name: &str, args: Value) -> Result<Value> {
+        self.call_raw_asking(name, args, None).await
+    }
+
+    /// [`Mcp::call_media`], with `asker` answering the elicitations the
+    /// server sends while the call runs.
+    pub async fn call_media_asking(
+        &self,
+        name: &str,
+        args: Value,
+        asker: Option<Arc<dyn crate::question::Questioner>>,
+    ) -> Result<(String, bool, Vec<codesmith_ai::Media>)> {
+        Ok(result_content(
+            &self.call_raw_asking(name, args, asker).await?,
+        ))
+    }
+
+    /// The raw `tools/call` result of [`Mcp::call_media_asking`].
+    pub async fn call_raw_asking(
+        &self,
+        name: &str,
+        args: Value,
+        asker: Option<Arc<dyn crate::question::Questioner>>,
+    ) -> Result<Value> {
         let t = self
             .tool(name)
             .ok_or_else(|| anyhow!("no MCP tool {name}"))?;
         let c = self.connected_or_restart(&t.server).await?;
+        let _asking = asker.map(|a| Asking::new(&c.shared, a));
         c.call_raw(&t.remote, args).await
     }
 
@@ -1572,6 +1720,7 @@ async fn connect(
     let shared = Arc::new(Shared {
         roots: vec![root.display().to_string()],
         log: Some(log.clone()),
+        server: name.to_string(),
         ..Default::default()
     });
     let make = |transport| Client {
@@ -1678,8 +1827,22 @@ async fn connect(
                         let Some(reply) = shared.dispatch(&m) else {
                             continue;
                         };
-                        if let Some(c) = weak.upgrade() {
-                            let _ = c.send(&reply).await;
+                        match reply {
+                            Answer::Now(reply) => {
+                                if let Some(c) = weak.upgrade() {
+                                    let _ = c.send(&reply).await;
+                                }
+                            }
+                            // Answered once the user has: reading goes on meanwhile.
+                            later => {
+                                let weak = weak.clone();
+                                tokio::spawn(async move {
+                                    let reply = later.value().await;
+                                    if let Some(c) = weak.upgrade() {
+                                        let _ = c.send(&reply).await;
+                                    }
+                                });
+                            }
                         }
                     }
                 }
@@ -1690,7 +1853,7 @@ async fn connect(
     };
     let params = json!({
         "protocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"roots": {"listChanged": false}, "extensions": {events::EXTENSION: {}}},
+        "capabilities": {"roots": {"listChanged": false}, "elicitation": {"form": {}, "url": {}}, "extensions": {events::EXTENSION: {}}},
         "clientInfo": {"name": "codesmith", "version": env!("CARGO_PKG_VERSION")}
     });
     let init = client.request("initialize", params, startup).await?;

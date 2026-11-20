@@ -2461,7 +2461,11 @@ impl Session {
         if let Err(e) = self.allowed(name, "*", title) {
             return (e, true, vec![]);
         }
-        match self.mcp.call_media(name, args).await {
+        match self
+            .mcp
+            .call_media_asking(name, args, self.questioner.clone())
+            .await
+        {
             Ok((text, is_error, media)) => (
                 tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
                 is_error,

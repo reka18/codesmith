@@ -1605,3 +1605,55 @@ async fn sessions_run_user_shell_commands_over_http() {
     let step = m.by("answer").pop().unwrap();
     assert!(step.to_string().contains("Exit code: 3"), "{step}");
 }
+
+/// An MCP server's elicitation during a tool call reaches the turn's
+/// stream as a question; the answer goes back to the server.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_elicitations_are_asked_as_questions_over_http() {
+    let Some(py) = crate::harness::python() else {
+        return;
+    };
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../codesmith-core/tests/fixtures/mcp_elicit.py"
+    );
+    let e = Env::new();
+    let ask = M::tools().and(M::prompt("ask me"));
+    let m = Model::start(
+        Script::new()
+            .titled("Elicit")
+            .then(
+                "call",
+                ask.clone().and(M::step(0)),
+                Reply::call("elicit_form", json!({})),
+            )
+            .then("thanks", ask.and(M::step(1)), Reply::text("Thanks.")),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"codemode": false, "mcp": {"servers": {"elicit": {"type": "local", "command": [py, fixture]}}}}),
+    );
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut ev = s.turn(&sid, "ask me").await;
+    let seen = ev.until("question").await;
+    let q = &seen.last().unwrap().1;
+    assert_eq!(
+        q["prompts"][0]["question"], "Who are you?\n\nGo ahead",
+        "{q}"
+    );
+    let qid = q["id"].as_str().unwrap();
+    let (code, _) = s
+        .post(
+            &format!("/sessions/{sid}/questions/{qid}"),
+            json!({"answers": [["Yes"], ["Ava"]]}),
+        )
+        .await;
+    assert_eq!(code, 200);
+    let done = ev.until("done").await;
+    assert_eq!(done.last().unwrap().1["error"], Value::Null, "{done:?}");
+    let step = m.by("thanks").pop().unwrap().to_string();
+    assert!(step.contains("Ava") && step.contains("accept"), "{step}");
+}

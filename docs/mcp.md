@@ -195,6 +195,25 @@ that contains spaces:
 
 `codesmith commands` lists them with their argument names.
 
+## Elicitation
+
+A server can ask you for input while one of its tools runs
+(`elicitation/create`), as OpenCode lets it. The request is asked in the
+question UI of the session whose call it came from: the UI's question
+dialog, a `question` event on the [server's](local-server.md) turn stream
+(answered with `POST /sessions/{id}/questions/{qid}`), or ACP's question
+requests.
+
+- A form request asks each field: free text, a number, Yes or No, a choice
+  or several. A field that depends on another's answer is asked once it
+  applies. An empty form is accepted without asking.
+- A URL request asks you to open the URL and confirm with Done. A server
+  that announces the request complete (`notifications/elicitation/complete`)
+  settles it without you.
+- Dismissing the question declines it, and so does the server giving up
+  (`notifications/cancelled`). Where nobody can answer (`codesmith run
+  --auto`, automations), the request is declined at once.
+
 ## Instructions, notifications and events
 
 - A server's `instructions` (from its `initialize` reply) join the system

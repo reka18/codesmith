@@ -13,6 +13,7 @@ pub mod config;
 #[cfg(unix)]
 pub mod daemon;
 pub mod fork;
+pub mod form;
 pub mod format;
 pub mod instruction_state;
 pub mod instructions;
