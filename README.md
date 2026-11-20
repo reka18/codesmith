@@ -624,10 +624,25 @@ HTTP). Sessions are the same ones the terminal UI and `codesmith run` use.
 ## Local server
 
 `codesmith serve` exposes sessions to other programs on this machine (an
-editor, a script) over HTTP on `127.0.0.1:4096`. It is opt-in and local:
-anything but loopback requires `--token` (or `$CODESMITH_SERVER_TOKEN`), which
-clients send as `Authorization: Bearer <token>`. `--auto` approves permission
-requests instead of asking the client.
+editor, a script) over HTTP on `127.0.0.1:4096`. It is opt-in and local.
+Every request needs `Authorization: Bearer <token>`. The token is `--token`
+(or `$CODESMITH_SERVER_TOKEN`); without one, the server uses the token in the
+data dir's `serve-token` file (owner-only, created with a random token on
+first use and printed at startup), so local clients can read it from there:
+
+```sh
+curl -H "Authorization: Bearer $(cat ~/.local/share/codesmith/serve-token)" \
+  http://127.0.0.1:4096/health
+```
+
+Listening on anything but loopback requires an explicit `--token`. Because
+web pages can reach loopback too, the server also refuses requests whose
+`Host` isn't the address it listens on (`localhost`, `127.0.0.1` or `[::1]`
+with its port, on loopback), requests with any `Origin` but its own, request
+bodies that aren't `application/json`, and bodies over 8 MiB. Only sessions
+of the directory it was started in are visible; permission and question ids
+are random. `--auto` approves permission requests instead of asking the
+client.
 
 | Route | |
 | --- | --- |

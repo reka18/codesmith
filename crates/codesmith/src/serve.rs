@@ -1,7 +1,15 @@
 //! `codesmith serve`: a local HTTP API for driving sessions from other
-//! programs (editors, scripts). It listens on loopback by default; a bearer
-//! token is required to listen anywhere else. Nothing here talks to any
-//! hosted service.
+//! programs (editors, scripts). It listens on loopback by default. Nothing
+//! here talks to any hosted service.
+//!
+//! The API runs shell commands and edits files, so every request must carry
+//! `Authorization: Bearer <token>`. Without `--token` the server uses the
+//! token saved in the data dir's `serve-token` (owner-only), generating it
+//! on first use, so local clients can read it from there. Because a web
+//! page can reach loopback too, requests are also refused when their `Host`
+//! is not this server (DNS rebinding), when they carry a foreign `Origin`
+//! (cross-site requests), or when a body is not JSON. Sessions belong to the
+//! server's directory; ids from other projects are not found.
 //!
 //! Routes (JSON in, JSON out; a turn streams Server-Sent Events):
 //!
@@ -17,8 +25,8 @@
 //! - `POST   /sessions/{id}/undo` · `POST /sessions/{id}/redo`
 
 use anyhow::Result;
-use axum::extract::{Path as UrlPath, Request as HttpRequest, State};
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request as HttpRequest, State};
+use axum::http::{header, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -36,9 +44,9 @@ use futures_util::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
@@ -55,7 +63,6 @@ enum Pending {
 struct Prompter {
     events: Mutex<Option<Tx>>,
     pending: Mutex<HashMap<String, Pending>>,
-    next: AtomicU64,
 }
 
 impl Prompter {
@@ -73,8 +80,9 @@ impl Prompter {
     fn clear(&self) {
         self.pending.lock().unwrap().clear();
     }
+    /// An unguessable id, so a client can only answer prompts it was shown.
     fn id(&self, prefix: &str) -> String {
-        format!("{prefix}_{}", self.next.fetch_add(1, Ordering::SeqCst) + 1)
+        format!("{prefix}_{}", codesmith_core::paths::random_token(16))
     }
 }
 
@@ -161,8 +169,11 @@ pub struct Server {
     pub cwd: PathBuf,
     pub db: PathBuf,
     pub auto: bool,
-    pub token: Option<String>,
+    pub token: String,
     pub mcp: Arc<codesmith_core::mcp::Mcp>,
+    /// `Host` values this server answers to (`None`: any, when bound to a
+    /// wildcard address). Set when it starts listening.
+    hosts: OnceLock<Option<Vec<String>>>,
     live: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Live>>>>,
 }
 
@@ -199,7 +210,7 @@ impl Server {
         cwd: PathBuf,
         db: PathBuf,
         auto: bool,
-        token: Option<String>,
+        token: String,
         mcp: Arc<codesmith_core::mcp::Mcp>,
     ) -> Arc<Server> {
         Arc::new(Server {
@@ -209,8 +220,14 @@ impl Server {
             auto,
             token,
             mcp,
+            hosts: OnceLock::new(),
             live: Default::default(),
         })
+    }
+
+    /// Whether a stored session belongs to this server's directory.
+    fn ours(&self, info: &codesmith_core::store::Info) -> bool {
+        info.directory == self.cwd.display().to_string()
     }
 
     fn store(&self) -> Result<Store> {
@@ -257,7 +274,7 @@ impl Server {
         if let Some(l) = map.get(id) {
             return Ok(l.clone());
         }
-        if self.store()?.get(id)?.is_none() {
+        if !self.store()?.get(id)?.is_some_and(|i| self.ours(&i)) {
             return Err(not_found(id));
         }
         let l = Arc::new(tokio::sync::Mutex::new(self.make(
@@ -274,18 +291,87 @@ fn summary(s: &Session) -> Value {
     json!({"id": s.id, "title": s.title, "agent": s.agent.name, "model": s.model_spec, "usage": s.usage, "directory": s.cwd})
 }
 
-async fn auth(State(st): State<St>, req: HttpRequest, next: Next) -> Response {
-    if let Some(tok) = &st.token {
-        let ok = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .is_some_and(|v| constant_eq(v.as_bytes(), tok.as_bytes()));
-        if !ok {
+/// Requests larger than this are refused (413).
+const MAX_BODY: usize = 8 << 20;
+
+fn forbidden(why: &str) -> Response {
+    ApiError(StatusCode::FORBIDDEN, why.into()).into_response()
+}
+
+/// The `Host` values a server bound to `addr` (as `--host host`) answers to,
+/// or `None` for any when it listens on every interface.
+fn allowed_hosts(host: &str, addr: SocketAddr) -> Option<Vec<String>> {
+    let ip = addr.ip();
+    if ip.is_unspecified() {
+        return None;
+    }
+    let mut names: Vec<String> = if ip.is_loopback() {
+        vec!["localhost".into(), "127.0.0.1".into(), "[::1]".into()]
+    } else {
+        let mut v = vec![host.to_ascii_lowercase()];
+        v.push(match ip {
+            std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+            v4 => v4.to_string(),
+        });
+        v
+    };
+    names.dedup();
+    let port = addr.port();
+    let mut out: Vec<String> = names.iter().map(|n| format!("{n}:{port}")).collect();
+    if port == 80 {
+        out.extend(names);
+    }
+    Some(out)
+}
+
+/// Refuse anything that might come from a web page rather than a local
+/// client: a `Host` that isn't this server (DNS rebinding), an `Origin` that
+/// isn't this server (cross-site requests), a missing or wrong bearer token,
+/// or a body that isn't JSON (which browsers cannot send cross-site without
+/// a preflight that this server never answers).
+async fn guard(State(st): State<St>, req: HttpRequest, next: Next) -> Response {
+    let h = req.headers();
+    let text = |name: header::HeaderName| h.get(name).and_then(|v| v.to_str().ok());
+    let Some(host) = text(header::HOST).map(str::to_ascii_lowercase) else {
+        return forbidden("a Host header is required");
+    };
+    match st.hosts.get() {
+        Some(Some(allowed)) if !allowed.contains(&host) => {
+            return forbidden("this server does not answer to that Host")
+        }
+        Some(_) => {}
+        None => return forbidden("the server is not listening yet"),
+    }
+    if let Some(origin) = h.get(header::ORIGIN) {
+        let same = origin
+            .to_str()
+            .is_ok_and(|o| o.eq_ignore_ascii_case(&format!("http://{host}")));
+        if !same {
+            return forbidden("cross-origin requests are not allowed");
+        }
+    }
+    let ok = text(header::AUTHORIZATION)
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|v| constant_eq(v.as_bytes(), st.token.as_bytes()));
+    if !ok {
+        return ApiError(
+            StatusCode::UNAUTHORIZED,
+            "missing or wrong bearer token".into(),
+        )
+        .into_response();
+    }
+    let has_body = h.contains_key(header::TRANSFER_ENCODING)
+        || text(header::CONTENT_LENGTH).is_some_and(|l| l.trim() != "0");
+    if has_body && !matches!(*req.method(), Method::GET | Method::HEAD) {
+        let json = text(header::CONTENT_TYPE).is_some_and(|t| {
+            t.split(';')
+                .next()
+                .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"))
+        });
+        if !json {
             return ApiError(
-                StatusCode::UNAUTHORIZED,
-                "missing or wrong bearer token".into(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "request bodies must be application/json".into(),
             )
             .into_response();
         }
@@ -308,7 +394,8 @@ pub fn router(st: St) -> Router {
         .route("/sessions/{id}/questions/{qid}", post(answer_question))
         .route("/sessions/{id}/undo", post(undo))
         .route("/sessions/{id}/redo", post(redo))
-        .layer(middleware::from_fn_with_state(st.clone(), auth))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::from_fn_with_state(st.clone(), guard))
         .with_state(st)
 }
 
@@ -363,6 +450,9 @@ async fn remove(
     State(st): State<St>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Json<Value>, ApiError> {
+    if !st.store()?.get(&id)?.is_some_and(|i| st.ours(&i)) {
+        return Err(not_found(&id));
+    }
     if let Some(l) = st.live.lock().await.remove(&id) {
         let mut g = l.lock().await;
         if let Some(t) = g.task.take() {
@@ -533,19 +623,41 @@ async fn undo_redo(
     ))
 }
 
+/// Where the generated token is kept for local clients to read.
+pub fn token_path() -> PathBuf {
+    codesmith_core::paths::data_dir().join("serve-token")
+}
+
+/// The token saved at `path`, or a new random one saved there (0600). The
+/// boolean is true when it was just created.
+pub fn load_or_create_token(path: &Path) -> Result<(String, bool)> {
+    if let Ok(t) = std::fs::read_to_string(path) {
+        let t = t.trim();
+        if t.len() >= 32 {
+            codesmith_core::paths::tighten(path)?;
+            return Ok((t.to_string(), false));
+        }
+    }
+    let t = codesmith_core::paths::random_token(32);
+    codesmith_core::paths::write_private(path, format!("{t}\n").as_bytes())
+        .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+    Ok((t, true))
+}
+
 pub async fn run(st: St, host: &str, port: u16) -> Result<()> {
     codesmith_core::automation::spawn_scheduler(&st.loaded);
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
     eprintln!(
-        "codesmith serving {} on http://{}{}",
+        "codesmith serving {} on http://{} (bearer token required)",
         st.cwd.display(),
         listener.local_addr()?,
-        if st.token.is_some() {
-            " (bearer token required)"
-        } else {
-            ""
-        }
     );
+    serve_on(st, listener, host).await
+}
+
+/// Serve on an already bound listener; `host` is what it was bound as.
+pub async fn serve_on(st: St, listener: tokio::net::TcpListener, host: &str) -> Result<()> {
+    let _ = st.hosts.set(allowed_hosts(host, listener.local_addr()?));
     axum::serve(listener, router(st)).await?;
     Ok(())
 }
@@ -589,7 +701,19 @@ mod tests {
         format!("http://{addr}/v1")
     }
 
-    async fn start(dir: &std::path::Path, token: Option<&str>) -> String {
+    const TOKEN: &str = "test-token";
+
+    /// A client that sends the test token on every request.
+    fn client() -> reqwest::Client {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+        reqwest::Client::builder()
+            .default_headers(h)
+            .build()
+            .unwrap()
+    }
+
+    async fn start(dir: &std::path::Path, token: &str) -> String {
         let base = fake_model().await;
         let config = serde_json::from_value(json!({
             "model": "fake/m",
@@ -608,12 +732,12 @@ mod tests {
             dir.to_path_buf(),
             dir.join("sessions.db"),
             false,
-            token.map(str::to_string),
+            token.to_string(),
             codesmith_core::mcp::Mcp::empty(),
         );
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(l, router(st)).await.unwrap() });
+        tokio::spawn(async move { serve_on(st, l, "127.0.0.1").await.unwrap() });
         format!("http://{addr}")
     }
 
@@ -643,6 +767,11 @@ mod tests {
                 };
                 let v: Value = serde_json::from_str(data).unwrap();
                 if v["type"] == "permission" {
+                    let rid = v["id"].as_str().unwrap();
+                    assert!(
+                        rid.starts_with("perm_") && rid.len() == 5 + 32,
+                        "ids are random: {rid}"
+                    );
                     let r = c
                         .post(format!(
                             "{base}/sessions/{id}/permissions/{}",
@@ -663,8 +792,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_turn_with_an_approved_and_a_rejected_command() {
         let dir = tempfile::tempdir().unwrap();
-        let base = start(dir.path(), None).await;
-        let c = reqwest::Client::new();
+        let base = start(dir.path(), TOKEN).await;
+        let c = client();
         assert_eq!(
             c.get(format!("{base}/health"))
                 .send()
@@ -743,7 +872,7 @@ mod tests {
             .any(|i| i["id"] == id.as_str()));
 
         let bad = c
-            .post(format!("{base}/sessions/{id}/permissions/perm_99"))
+            .post(format!("{base}/sessions/{id}/permissions/perm_1"))
             .json(&json!({"reply": "once"}))
             .send()
             .await
@@ -778,8 +907,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn busy_sessions_and_aborts() {
         let dir = tempfile::tempdir().unwrap();
-        let base = start(dir.path(), None).await;
-        let c = reqwest::Client::new();
+        let base = start(dir.path(), TOKEN).await;
+        let c = client();
         let id = c
             .post(format!("{base}/sessions"))
             .send()
@@ -844,15 +973,27 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn bearer_token() {
         let dir = tempfile::tempdir().unwrap();
-        let base = start(dir.path(), Some("s3cret")).await;
+        let base = start(dir.path(), "s3cret").await;
         let c = reqwest::Client::new();
+        for path in ["/health", "/sessions"] {
+            assert_eq!(
+                c.get(format!("{base}{path}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                401,
+                "no token on {path}"
+            );
+        }
         assert_eq!(
-            c.get(format!("{base}/health"))
+            c.post(format!("{base}/sessions"))
                 .send()
                 .await
                 .unwrap()
                 .status(),
-            401
+            401,
+            "a bodyless POST needs the token too"
         );
         assert_eq!(
             c.get(format!("{base}/health"))
@@ -872,5 +1013,200 @@ mod tests {
                 .status(),
             200
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_from_the_saved_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data/serve-token");
+        let (t, new) = load_or_create_token(&path).unwrap();
+        assert!(new && t.len() == 64, "{t}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let (again, new) = load_or_create_token(&path).unwrap();
+        assert!(!new);
+        assert_eq!(again, t, "later servers reuse the saved token");
+
+        let base = start(dir.path(), &t).await;
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let r = reqwest::Client::new()
+            .get(format!("{base}/health"))
+            .bearer_auth(saved.trim())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn web_pages_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), TOKEN).await;
+        let port = base.rsplit(':').next().unwrap().to_string();
+        let c = client();
+
+        // DNS rebinding: the page's own name in Host, even with the token.
+        let r = c
+            .post(format!("{base}/sessions"))
+            .header("host", format!("attacker.example:{port}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403);
+        let r = c
+            .get(format!("{base}/sessions"))
+            .header("host", "127.0.0.1")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "the port must match");
+        for ok in [
+            format!("localhost:{port}"),
+            format!("127.0.0.1:{port}"),
+            format!("[::1]:{port}"),
+        ] {
+            let r = c
+                .get(format!("{base}/health"))
+                .header("host", &ok)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200, "{ok}");
+        }
+
+        // Cross-site requests carry a foreign Origin.
+        for origin in [
+            format!("http://attacker.example:{port}"),
+            "null".to_string(),
+            format!("http://localhost:{port}"),
+        ] {
+            let r = c
+                .post(format!("{base}/sessions"))
+                .header("origin", &origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 403, "{origin}");
+        }
+        let r = c
+            .get(format!("{base}/health"))
+            .header("origin", format!("http://127.0.0.1:{port}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "the server's own origin is fine");
+
+        // Simple (preflight-free) bodies are not JSON.
+        let r = c
+            .post(format!("{base}/sessions"))
+            .header("content-type", "text/plain")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 415);
+        let r = c
+            .post(format!("{base}/sessions"))
+            .header("content-type", "application/json; charset=utf-8")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+
+    #[test]
+    fn hosts_follow_the_bound_address() {
+        let lo: SocketAddr = "127.0.0.1:4096".parse().unwrap();
+        let h = allowed_hosts("127.0.0.1", lo).unwrap();
+        assert!(h.contains(&"localhost:4096".to_string()));
+        assert!(!h.iter().any(|x| x.contains("example")));
+        let lan: SocketAddr = "192.168.1.5:4096".parse().unwrap();
+        let h = allowed_hosts("box.lan", lan).unwrap();
+        assert_eq!(h, ["box.lan:4096", "192.168.1.5:4096"]);
+        assert!(allowed_hosts("0.0.0.0", "0.0.0.0:4096".parse().unwrap()).is_none());
+        assert!(allowed_hosts("::", "[::]:80".parse().unwrap()).is_none());
+        let h = allowed_hosts("localhost", "[::1]:80".parse().unwrap()).unwrap();
+        assert!(h.contains(&"localhost".to_string()) && h.contains(&"[::1]:80".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn large_bodies_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), TOKEN).await;
+        let c = client();
+        let id = c
+            .post(format!("{base}/sessions"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = c
+            .post(format!("{base}/sessions/{id}/messages"))
+            .json(&json!({"text": "x".repeat(MAX_BODY + 1)}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 413);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sessions_of_other_projects_are_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = start(dir.path(), TOKEN).await;
+        let db = Store::open(&dir.path().join("sessions.db")).unwrap();
+        db.create(&codesmith_core::store::Info {
+            id: "ses_elsewhere".into(),
+            directory: "/some/other/project".into(),
+            title: None,
+            agent: "build".into(),
+            model: "fake/m".into(),
+            parent_id: None,
+            created: 1,
+            updated: 1,
+            usage: Usage::default(),
+        })
+        .unwrap();
+        let c = client();
+        let id = "ses_elsewhere";
+        assert_eq!(
+            c.get(format!("{base}/sessions/{id}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+        for route in ["abort", "undo", "redo"] {
+            let r = c
+                .post(format!("{base}/sessions/{id}/{route}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 404, "{route}");
+        }
+        let r = c
+            .post(format!("{base}/sessions/{id}/messages"))
+            .json(&json!({"text": "hi"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        let r = c
+            .delete(format!("{base}/sessions/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        assert!(db.get(id).unwrap().is_some(), "not deleted");
     }
 }

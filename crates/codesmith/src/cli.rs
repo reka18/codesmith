@@ -121,7 +121,9 @@ enum Command {
         host: String,
         #[arg(long, default_value_t = 4096)]
         port: u16,
-        /// Require `Authorization: Bearer <token>` (also $CODESMITH_SERVER_TOKEN).
+        /// The bearer token clients must send as `Authorization: Bearer <token>`
+        /// (also $CODESMITH_SERVER_TOKEN). Without it the token saved in the
+        /// data dir's `serve-token` is used, generated on first use.
         #[arg(long, env = "CODESMITH_SERVER_TOKEN", hide_env_values = true)]
         token: Option<String>,
         /// Approve every permission request that isn't denied instead of asking the client.
@@ -926,6 +928,19 @@ async fn run(cli: Cli) -> Result<()> {
             if !loopback && token.is_none() {
                 return Err(anyhow!("listening on {host} exposes this machine's files and shell; set --token (or $CODESMITH_SERVER_TOKEN) to do that"));
             }
+            let token = match token {
+                Some(t) => t,
+                None => {
+                    let path = serve::token_path();
+                    let (t, new) = serve::load_or_create_token(&path)?;
+                    eprintln!(
+                        "bearer token {} {}: {t}",
+                        if new { "saved to" } else { "read from" },
+                        path.display()
+                    );
+                    t
+                }
+            };
             let loaded = config::load(&cwd)?;
             let mcp = connect_mcp(&loaded, true).await;
             let st = serve::Server::new(loaded, cwd, store::default_path(), auto, token, mcp);
