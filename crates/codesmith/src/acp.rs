@@ -1946,7 +1946,13 @@ impl Agent {
                 .run_turn(&mut s, &slot2, &text, attached, &mut sink)
                 .await;
             sink.settle();
-            // A cancel took the request: it answers, and reloads the session.
+            #[cfg(test)]
+            tests::settle_pause(&sid).await;
+            // The request is taken under the session lock, and the session
+            // put back before it is released: a cancel that finds the
+            // request taken knows the turn is settled. A cancel that took
+            // it first answers, and reloads the session.
+            let mut g = slot2.session.lock().await;
             let rpc = match slot2.running.lock().unwrap().take() {
                 Some(Running::Prompt(rpc)) => rpc,
                 _ => return,
@@ -1962,12 +1968,13 @@ impl Agent {
             if slot2.stale.swap(false, Ordering::SeqCst) {
                 drop(s);
                 match me.build(&slot2) {
-                    Ok(fresh) => *slot2.session.lock().await = Some(fresh),
+                    Ok(fresh) => *g = Some(fresh),
                     Err(e) => eprintln!("acp: could not apply the new selection: {e:#}"),
                 }
             } else {
-                *slot2.session.lock().await = Some(s);
+                *g = Some(s);
             }
+            drop(g);
             slot2.task.lock().unwrap().take();
             // Answered before a resumed turn can start streaming.
             let response = |reason: &str| {
@@ -2461,6 +2468,16 @@ mod tests {
     }
 
     static FLAKY: AtomicUsize = AtomicUsize::new(0);
+
+    /// Sessions whose prompt turns stop between ending and settling, so a
+    /// test can cancel in that gap.
+    static PAUSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(super) async fn settle_pause(sid: &str) {
+        if PAUSED.lock().unwrap().iter().any(|s| s == sid) {
+            std::future::pending::<()>().await;
+        }
+    }
     /// The background command notices the model answered, by marker.
     static WOKE: Mutex<Vec<String>> = Mutex::new(Vec::new());
     const MARKERS: [&str; 8] = [
@@ -4372,6 +4389,38 @@ mod tests {
                 assert!(marker[0]["_meta"][COMPACTION_META]["messageId"].is_string());
             }
         }
+    }
+
+    // A turn that ends as a cancel arrives is answered once, and the
+    // session takes the next prompt (the cancel lands between the turn's
+    // end and its settling).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancel_as_the_turn_ends_answers_the_prompt() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        PAUSED.lock().unwrap().push(sid.clone());
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        c.wait(|m| chunk_text(m) == Some("described")).await;
+        // The turn has ended and parks before settling.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        let (done, _) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "cancelled", "{done}");
+        PAUSED.lock().unwrap().retain(|s| *s != sid);
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        let (done, _) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
     }
 
     // compaction.ts `update`: failed and cancelled compactions, for clients
