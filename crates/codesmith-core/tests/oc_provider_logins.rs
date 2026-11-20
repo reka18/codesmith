@@ -788,3 +788,259 @@ async fn oc_snowflake_refreshes_expired_oauth_during_native_model_resolution_and
     assert_eq!(authorized(&a).await, "Bearer renewed");
     assert_eq!(srv.seen().len(), 1);
 }
+
+// plugin/provider-digitalocean.test.ts
+
+use codesmith_core::providers::{digitalocean, live};
+
+fn do_endpoints(srv: &Server) -> digitalocean::Endpoints {
+    digitalocean::Endpoints {
+        client_id: "my-do-app".into(),
+        authorize: "https://cloud.digitalocean.com/v1/oauth/authorize".into(),
+        routers: format!("{}/v2/gen-ai/models/routers", srv.url),
+        port: 0,
+    }
+}
+
+fn do_login(access: &str, expires: u64) -> Value {
+    json!({"type": "oauth", "method": "browser", "access": access, "refresh": "", "expires": expires})
+}
+
+#[test]
+fn oc_digitalocean_is_registered_alongside_the_other_provider_plugins() {
+    let p = providers::builtin("digitalocean").unwrap();
+    assert_eq!(p.env, ["DIGITALOCEAN_ACCESS_TOKEN"]);
+}
+
+#[test]
+fn oc_digitalocean_registers_browser_oauth_alongside_generic_key_and_environment_methods() {
+    assert_eq!(digitalocean::LABEL, "Login with DigitalOcean");
+    let e = digitalocean::client_id(None, &Default::default(), &env(&[]))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("CODESMITH_DIGITALOCEAN_CLIENT_ID"), "{e}");
+    assert!(e.contains("http://localhost:1456/auth/callback"), "{e}");
+    // A key works without a login.
+    let s = Default::default();
+    let r = providers::route(&input("digitalocean", &s, None, Some("do-key"), env(&[])))
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.base_url, "https://inference.do-ai.run/v1");
+    assert_eq!(r.api_key.as_deref(), Some("do-key"));
+}
+
+#[tokio::test]
+async fn oc_digitalocean_loads_routers_for_the_signed_in_account() {
+    let srv = server().await;
+    srv.push(reply(
+        200,
+        json!({"model_routers": [{"name": "beta"}, {"name": "alpha"}]}).to_string(),
+    ));
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("live.json");
+    let login = do_login("do-token", oauth::now_ms() + 3_600_000);
+    let names =
+        digitalocean::refresh_routers(&reqwest::Client::new(), &do_endpoints(&srv), &login, &file)
+            .await
+            .unwrap();
+    assert_eq!(names, ["alpha", "beta"]);
+    assert_eq!(srv.seen()[0].headers["authorization"], "Bearer do-token");
+    let models = live::derive(
+        "digitalocean",
+        &live::load_in(&file, "digitalocean").unwrap(),
+        &[],
+    );
+    let m = &models[0];
+    assert_eq!(m.id, "router:alpha");
+    assert_eq!(m.name, "alpha");
+    assert_eq!(m.family.as_deref(), Some("digitalocean-inference-routers"));
+    assert!(m.capabilities.tools);
+    assert_eq!((m.limit.context, m.limit.output), (128_000, 8_192));
+    // The saved login is the provider's credential.
+    let s = Default::default();
+    let r = providers::route(&input("digitalocean", &s, Some(login), None, env(&[])))
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.api_key.as_deref(), Some("do-token"));
+}
+
+#[tokio::test]
+async fn oc_digitalocean_loads_nothing_and_logs_nothing_at_startup_when_the_access_token_has_expired(
+) {
+    let srv = server().await;
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("live.json");
+    let expired = do_login("old", 1);
+    assert!(digitalocean::refresh_routers(
+        &reqwest::Client::new(),
+        &do_endpoints(&srv),
+        &expired,
+        &file
+    )
+    .await
+    .is_err());
+    assert!(srv.seen().is_empty());
+    assert!(live::load_in(&file, "digitalocean").is_none());
+    let s = Default::default();
+    let e = providers::route(&input("digitalocean", &s, Some(expired), None, env(&[])))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("expired"), "{e}");
+}
+
+#[tokio::test]
+async fn oc_digitalocean_loads_on_credential_changes_and_clears_the_previous_accounts_routers() {
+    let srv = server().await;
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("live.json");
+    let later = oauth::now_ms() + 3_600_000;
+    srv.push(reply(
+        200,
+        json!({"model_routers": [{"name": "alpha"}]}).to_string(),
+    ));
+    srv.push(reply(
+        200,
+        json!({"model_routers": [{"name": "gamma"}]}).to_string(),
+    ));
+    let c = reqwest::Client::new();
+    digitalocean::refresh_routers(&c, &do_endpoints(&srv), &do_login("first", later), &file)
+        .await
+        .unwrap();
+    digitalocean::refresh_routers(&c, &do_endpoints(&srv), &do_login("second", later), &file)
+        .await
+        .unwrap();
+    let ids: Vec<String> = live::derive(
+        "digitalocean",
+        &live::load_in(&file, "digitalocean").unwrap(),
+        &[],
+    )
+    .into_iter()
+    .map(|m| m.id)
+    .collect();
+    assert_eq!(ids, ["router:gamma"]);
+}
+
+#[tokio::test]
+async fn oc_digitalocean_shows_a_returning_accounts_cached_routers_at_once() {
+    // A kept list serves at once, without asking DigitalOcean.
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("live.json");
+    live::save_in(
+        &file,
+        "digitalocean",
+        "acct",
+        "",
+        vec![json!({"name": "alpha"})],
+    )
+    .unwrap();
+    let kept = live::load_in(&file, "digitalocean").unwrap();
+    assert_eq!(
+        live::derive("digitalocean", &kept, &[])[0].id,
+        "router:alpha"
+    );
+    // A catalog model of the same id wins.
+    let mut catalog = live::blank("digitalocean", "router:alpha");
+    catalog.name = "catalog".into();
+    assert!(live::derive("digitalocean", &kept, &[catalog]).is_empty());
+}
+
+async fn do_post(redirect: &str, body: &str) -> (u16, String) {
+    let u = url::Url::parse(redirect).unwrap();
+    let token = format!(
+        "http://127.0.0.1:{}{}",
+        u.port().unwrap(),
+        digitalocean::TOKEN_PATH
+    );
+    let r = reqwest::Client::new()
+        .post(token)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    (r.status().as_u16(), r.text().await.unwrap())
+}
+
+#[tokio::test]
+async fn oc_digitalocean_completes_browser_oauth_independently_of_router_discovery_and_releases_the_listener(
+) {
+    let srv = server().await;
+    srv.push(reply(503, "unavailable"));
+    let e = do_endpoints(&srv);
+    let login = digitalocean::start(&e).await.unwrap();
+    let p = params(&login.url);
+    assert!(login
+        .url
+        .starts_with("https://cloud.digitalocean.com/v1/oauth/authorize?"));
+    assert_eq!(p["response_type"], "token");
+    assert_eq!(p["client_id"], "my-do-app");
+    assert_eq!(p["scope"], "genai:read inference:query");
+    assert!(p["redirect_uri"].ends_with("/auth/callback"));
+    assert!(p["redirect_uri"].starts_with("http://localhost:"));
+    let state = p["state"].clone();
+    let redirect = login.redirect.clone();
+    let port = url::Url::parse(&redirect).unwrap().port().unwrap();
+    let now = oauth::now_ms();
+    let finish = tokio::spawn(digitalocean::finish(login, WAIT));
+    let page = browse(&format!("http://127.0.0.1:{port}/auth/callback"))
+        .await
+        .unwrap();
+    assert!(page.1.contains("/auth/token"));
+    let body =
+        json!({"access_token": "do-token", "expires_in": "3600", "state": state}).to_string();
+    assert_eq!(do_post(&redirect, &body).await.0, 200);
+    let saved = finish.await.unwrap().unwrap();
+    assert_eq!(saved["access"], "do-token");
+    assert_eq!(saved["refresh"], "");
+    assert!(saved.get("metadata").is_none());
+    let exp = saved["expires"].as_u64().unwrap();
+    assert!(exp >= now + 3_600_000 && exp <= oauth::now_ms() + 3_600_000);
+    // Router discovery failing does not undo the login.
+    let d = tempfile::tempdir().unwrap();
+    assert!(digitalocean::refresh_routers(
+        &reqwest::Client::new(),
+        &e,
+        &saved,
+        &d.path().join("l.json")
+    )
+    .await
+    .is_err());
+    // The listener was released: the port can be listened on again.
+    let again = digitalocean::start(&digitalocean::Endpoints { port, ..e.clone() })
+        .await
+        .unwrap();
+    assert_ne!(params(&again.url)["state"], state);
+}
+
+#[tokio::test]
+async fn oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener() {
+    let cases = [
+        (
+            json!({"access_token": "token", "state": "wrong"}).to_string(),
+            "Invalid OAuth state",
+        ),
+        ("{}".to_string(), "Missing access token"),
+        ("not-json".to_string(), "Missing access token"),
+        (
+            json!({"error": "access_denied", "error_description": "Denied"}).to_string(),
+            "Denied",
+        ),
+        (
+            json!({"error": "access_denied", "error_description": ""}).to_string(),
+            "access_denied",
+        ),
+    ];
+    for (body, message) in cases {
+        let srv = server().await;
+        let e = do_endpoints(&srv);
+        let login = digitalocean::start(&e).await.unwrap();
+        let redirect = login.redirect.clone();
+        let port = url::Url::parse(&redirect).unwrap().port().unwrap();
+        let finish = tokio::spawn(digitalocean::finish(login, WAIT));
+        assert_eq!(do_post(&redirect, &body).await.0, 400, "{body}");
+        assert_eq!(finish.await.unwrap().unwrap_err().to_string(), message);
+        digitalocean::start(&digitalocean::Endpoints { port, ..e })
+            .await
+            .unwrap();
+    }
+}

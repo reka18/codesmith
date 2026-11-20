@@ -429,3 +429,13 @@
 693 :: ported :: tests/oc_azure.rs::oc_azure_leaves_models_unchanged_and_uncloned_without_a_resource_name
 716 :: ported :: tests/oc_azure.rs::oc_azure_expands_provider_and_model_resource_urls :: adapted: CodeSmith models have no resource of their own
 756 :: ported :: tests/oc_azure.rs::oc_azure_prefers_websockets_on_the_provider_for_the_azure_responses_api_only :: adapted: per provider settings
+@plugin/provider-digitalocean.test.ts
+82 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_is_registered_alongside_the_other_provider_plugins
+86 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_registers_browser_oauth_alongside_generic_key_and_environment_methods :: adapted: `codesmith auth login digitalocean --oauth`; the OAuth application is the user's own
+102 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_loads_routers_for_the_signed_in_account
+130 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_loads_nothing_and_logs_nothing_at_startup_when_the_access_token_has_expired
+152 :: design :: deliberate :: CodeSmith fetches nothing in the background; the login and `codesmith models digitalocean` list the routers
+171 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_loads_on_credential_changes_and_clears_the_previous_accounts_routers
+207 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_shows_a_returning_accounts_cached_routers_at_once :: adapted: the kept list serves at once; nothing refreshes in the background
+236 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_completes_browser_oauth_independently_of_router_discovery_and_releases_the_listener
+301 :: ported :: tests/oc_provider_logins.rs::oc_digitalocean_rejects_invalid_callbacks_and_releases_the_listener

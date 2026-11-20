@@ -251,36 +251,7 @@ fn variants(r: &Remote, messages: bool) -> Vec<catalog::Variant> {
 }
 
 fn blank(id: &str) -> Model {
-    Model {
-        id: id.to_string(),
-        model_id: id.to_string(),
-        provider_id: super::copilot::ID.to_string(),
-        kind: "chat".into(),
-        name: id.to_string(),
-        compatibility: None,
-        family: None,
-        package: None,
-        settings: None,
-        capabilities: catalog::Capabilities {
-            tools: true,
-            input: vec!["text".into()],
-            output: vec!["text".into()],
-            ..Default::default()
-        },
-        variants: vec![],
-        time: Default::default(),
-        cost: vec![],
-        status: "active".into(),
-        enabled: true,
-        limit: catalog::Limit {
-            context: 200_000,
-            input: None,
-            output: 32_000,
-        },
-        headers: None,
-        body: None,
-        reasoning: Default::default(),
-    }
+    super::live::blank(super::copilot::ID, id)
 }
 
 fn build(id: &str, r: &Remote, root: &str, previous: Option<&Model>) -> Model {

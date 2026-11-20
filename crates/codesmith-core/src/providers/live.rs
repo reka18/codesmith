@@ -91,6 +91,7 @@ pub fn derive(
             super::copilot_models::derive(base, &super::copilot_models::parse(&raw), templates)
         }
         super::azure::ID => super::azure::derive(&raw, templates),
+        super::digitalocean::ID => super::digitalocean::derive(&raw, templates),
         _ => vec![],
     }
 }
@@ -105,6 +106,17 @@ pub async fn refresh(
     settings: &crate::config::ProviderSettings,
 ) -> Option<Result<Vec<String>>> {
     match provider_id {
+        super::digitalocean::ID => Some(
+            async {
+                let login = crate::auth::entry(super::digitalocean::ID).ok_or_else(|| {
+                    anyhow::anyhow!("DigitalOcean's routers need a browser login: `codesmith auth login digitalocean --oauth`")
+                })?;
+                let e = super::digitalocean::Endpoints::digitalocean("");
+                let names = super::digitalocean::refresh_routers(client, &e, &login, &file()).await?;
+                Ok(names.into_iter().map(|n| format!("router:{n}")).collect())
+            }
+            .await,
+        ),
         super::azure::ID => Some(
             refresh_azure(
                 client,
@@ -236,4 +248,39 @@ pub async fn refresh_azure(
     let ids = list.iter().map(|(n, _)| n.to_ascii_lowercase()).collect();
     save_in(path, azure::ID, &account, "", azure::raw(&list))?;
     Ok(ids)
+}
+
+/// A model with OpenCode's defaults for one the catalog does not describe.
+pub fn blank(provider_id: &str, id: &str) -> crate::catalog::Model {
+    use crate::catalog;
+    catalog::Model {
+        id: id.to_string(),
+        model_id: id.to_string(),
+        provider_id: provider_id.to_string(),
+        kind: "chat".into(),
+        name: id.to_string(),
+        compatibility: None,
+        family: None,
+        package: None,
+        settings: None,
+        capabilities: catalog::Capabilities {
+            tools: true,
+            input: vec!["text".into()],
+            output: vec!["text".into()],
+            ..Default::default()
+        },
+        variants: vec![],
+        time: Default::default(),
+        cost: vec![],
+        status: "active".into(),
+        enabled: true,
+        limit: catalog::Limit {
+            context: 200_000,
+            input: None,
+            output: 32_000,
+        },
+        headers: None,
+        body: None,
+        reasoning: Default::default(),
+    }
 }

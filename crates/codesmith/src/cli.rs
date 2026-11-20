@@ -505,7 +505,7 @@ enum AuthCmd {
         #[arg(long)]
         client_id: Option<String>,
         /// Log in through the provider's browser OAuth instead of pasting a
-        /// key (poe, snowflake-cortex).
+        /// key (poe, digitalocean, snowflake-cortex).
         #[arg(long)]
         oauth: bool,
         /// azure: sign requests with Microsoft Entra ID tokens from the
@@ -1690,6 +1690,13 @@ async fn browser_login(
             )
             .await?;
         }
+        providers::digitalocean::ID => {
+            let id = providers::digitalocean::client_id(client_id, &settings.plugin, &env)?;
+            let e = providers::digitalocean::Endpoints::digitalocean(&id);
+            if let Some(found) = providers::digitalocean::login(&client, file, &e, open).await? {
+                eprintln!("Found {found} for the account.");
+            }
+        }
         providers::snowflake::ID => {
             let account = answer("account", "Snowflake account (myorg-myaccount)")?
                 .or_else(|| env("SNOWFLAKE_ACCOUNT"))
@@ -1704,7 +1711,7 @@ async fn browser_login(
         }
         p => {
             return Err(anyhow!(
-                "{p} has no browser login; --oauth is for poe and snowflake-cortex"
+                "{p} has no browser login; --oauth is for poe, digitalocean and snowflake-cortex"
             ))
         }
     }

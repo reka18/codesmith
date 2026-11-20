@@ -10,6 +10,7 @@ pub mod bedrock;
 pub mod cloudflare;
 pub mod copilot;
 pub mod copilot_models;
+pub mod digitalocean;
 pub mod gateways;
 pub mod live;
 pub mod modal;
@@ -249,6 +250,11 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         &["CLOUDFLARE_API_TOKEN", "CF_AIG_TOKEN"],
     ),
     (poe::ID, "Poe", &["POE_API_KEY"]),
+    (
+        digitalocean::ID,
+        "DigitalOcean",
+        &["DIGITALOCEAN_ACCESS_TOKEN"],
+    ),
     // SNOWFLAKE_ACCOUNT, which models.dev lists too, names the endpoint;
     // the token variables are read by the plugin, ahead of a saved login.
     (snowflake::ID, "Snowflake Cortex", &[]),
@@ -291,6 +297,7 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
         cloudflare::GATEWAY => return cloudflare::gateway(input).map(Some),
         cloudflare::WORKERS => return cloudflare::workers(input).map(Some),
         poe::ID => return poe::route(input).map(Some),
+        digitalocean::ID => return digitalocean::route(input).map(Some),
         snowflake::ID => return snowflake::route(input).map(Some),
         sap::ID => return sap::route(input).map(Some),
         _ => {}
@@ -310,7 +317,7 @@ pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
         vertex::ID | vertex::ANTHROPIC_ID => {
             vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
         }
-        poe::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
+        poe::ID | digitalocean::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
         sap::ID => env(sap::KEY_VAR).is_some() || set(&settings.service_key).is_some(),
         snowflake::ID => {
             snowflake::env_token(env).is_some()
@@ -376,6 +383,15 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
                 }
             };
             Some(format!("project {project} in {location}, {creds}"))
+        }
+        digitalocean::ID => {
+            let s = stored?;
+            (s["type"] == "oauth").then(|| {
+                match digitalocean::stored_token(Some(s), oauth::now_ms()) {
+                    Ok(_) => "saved DigitalOcean login".to_string(),
+                    Err(_) => "saved DigitalOcean login (expired: log in again)".to_string(),
+                }
+            })
         }
         snowflake::ID => {
             let env = process_env();

@@ -137,6 +137,7 @@ from `settings.apiKey` in config.
 | `cloudflare-ai-gateway` | per model: OpenAI Responses, Anthropic Messages or OpenAI Chat | `CLOUDFLARE_API_TOKEN`, `CF_AIG_TOKEN` (and the account and gateway ids); see [Cloudflare](#cloudflare-ai-gateway-and-workers-ai) |
 | `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) |
 | `poe` | OpenAI Chat | `POE_API_KEY`, or `codesmith auth login poe --oauth`; see [Poe](#poe) |
+| `digitalocean` | per model: OpenAI Chat, Responses or Anthropic Messages | `DIGITALOCEAN_ACCESS_TOKEN`, or `codesmith auth login digitalocean --oauth`; see [DigitalOcean](#digitalocean) |
 | `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) |
 | `sap-ai-core` | OpenAI Chat | `AICORE_SERVICE_KEY` (the service key JSON) and the deployment; see [SAP AI Core](#sap-ai-core) |
 
@@ -527,6 +528,26 @@ public client (PKCE, scope `apikey:create`, redirect URI
 `--client-id`, `settings.clientId` on the `poe` provider, or
 `CODESMITH_POE_CLIENT_ID`, in that order.
 
+### DigitalOcean
+
+`digitalocean` uses the Gradient serverless inference API
+(`https://inference.do-ai.run/v1`) with a model access key
+(`DIGITALOCEAN_ACCESS_TOKEN`, or `codesmith auth login digitalocean`), or
+signs in in the browser with `codesmith auth login digitalocean --oauth`
+(DigitalOcean OAuth, scopes `genai:read inference:query`). The browser
+login also lists the account's inference routers, which then resolve as
+`digitalocean/router:<name>`; `codesmith models digitalocean` lists them
+again. A login lasts as long as DigitalOcean's token (30 days unless it
+says otherwise); then log in again.
+
+The login runs as an OAuth application you register with DigitalOcean
+([cloud.digitalocean.com/account/api/applications](https://cloud.digitalocean.com/account/api/applications))
+with the callback URL `http://localhost:1456/auth/callback`; CodeSmith
+ships none of its own (nor borrows another project's). Give its client id
+with `--client-id`, `settings.clientId` on the `digitalocean` provider, or
+`CODESMITH_DIGITALOCEAN_CLIENT_ID`. The login listens on port 1456 and says
+so if another program holds it.
+
 ### Snowflake Cortex
 
 `snowflake-cortex` uses the account's Cortex REST API
@@ -579,7 +600,7 @@ settings are not used and `settings.baseURL` takes a plain key.
 ### Live model lists (Modal, GitHub Copilot, Azure)
 
 Some providers serve a model list of their own for your account (Azure:
-the resource's deployments).
+the resource's deployments; DigitalOcean: its inference routers).
 `codesmith models <provider>` fetches it and keeps it in the data folder's
 `live-models.json`, and from then on those models resolve with what the
 list says (limits, prices, modalities, reasoning variants) over the
@@ -809,7 +830,7 @@ they are asked in the terminal after the key, or given with
 `--field KEY=VALUE`, and saved with it. `codesmith auth login azure --cli`
 saves an [Azure CLI](#azure-openai) login. `--oauth` logs in through a
 provider's browser OAuth instead of a key ([Poe](#poe),
-[Snowflake Cortex](#snowflake-cortex)).
+[DigitalOcean](#digitalocean), [Snowflake Cortex](#snowflake-cortex)).
 
 ## Instructions
 
