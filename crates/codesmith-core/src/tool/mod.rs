@@ -417,8 +417,30 @@ fn relative_to(p: &Path, root: &Path) -> Option<String> {
     })
 }
 
+/// The project root and the scratch directory with symlinks resolved.
+/// Resolving many paths at once (a search) shares one of these instead of
+/// resolving both again for every path.
+#[derive(Debug, Clone)]
+pub struct Roots {
+    root: PathBuf,
+    tmp: PathBuf,
+}
+
 impl Ctx<'_> {
+    /// [`Roots`] as they are on disk now.
+    pub fn roots(&self) -> Roots {
+        Roots {
+            root: real_path(&self.root),
+            tmp: real_path(&paths::tmp_dir()),
+        }
+    }
+
     pub fn resolve(&self, path: &str) -> Target {
+        self.resolve_in(&self.roots(), path)
+    }
+
+    /// [`Ctx::resolve`] against roots resolved earlier.
+    pub fn resolve_in(&self, roots: &Roots, path: &str) -> Target {
         let expanded = match path.strip_prefix("~/") {
             Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
             None => PathBuf::from(path),
@@ -429,12 +451,41 @@ impl Ctx<'_> {
             self.cwd.join(expanded)
         });
         let real = real_path(&absolute);
-        let root = real_path(&self.root);
-        let tmp = paths::tmp_dir();
-        let inside = |p: &Path, root: &Path, tmp: &Path| p.starts_with(root) || p.starts_with(tmp);
+        self.target(roots, absolute, real)
+    }
+
+    /// Resolve `path`, which a directory walk that does not follow symlinks
+    /// found under `base` (a resolved, existing directory). Every directory
+    /// between `base` and `path` is then a real directory, so unless the
+    /// entry is itself a symlink its real path is `base.real` plus the same
+    /// relative path, in the case the walk read from disk; nothing needs to
+    /// be resolved again. Anything else is resolved in full.
+    pub fn resolve_walked(
+        &self,
+        roots: &Roots,
+        base: &Target,
+        path: &Path,
+        is_symlink: bool,
+    ) -> Target {
+        match path.strip_prefix(&base.absolute) {
+            Ok(rel)
+                if !is_symlink
+                    && !rel.as_os_str().is_empty()
+                    && rel.components().all(|c| matches!(c, Component::Normal(_))) =>
+            {
+                let absolute = base.absolute.join(rel);
+                let real = base.real.join(rel);
+                self.target(roots, absolute, real)
+            }
+            _ => self.resolve_in(roots, &path.display().to_string()),
+        }
+    }
+
+    fn target(&self, roots: &Roots, absolute: PathBuf, real: PathBuf) -> Target {
+        let root = &roots.root;
         let lexical = relative_to(&absolute, &self.root);
-        let real_rel = relative_to(&real, &root);
-        let external = !inside(&real, &root, &real_path(&tmp));
+        let real_rel = relative_to(&real, root);
+        let external = !(real.starts_with(root) || real.starts_with(&roots.tmp));
         let lexical_name = lexical
             .clone()
             .unwrap_or_else(|| absolute.display().to_string());
@@ -1129,6 +1180,102 @@ mod tests {
             .unwrap()
             .content;
         assert!(out.contains("app.rs") && !out.contains("secrets"), "{out}");
+    }
+
+    /// Every entry a non-following walk of `dir` finds, with whether it is
+    /// a symlink.
+    fn walk(dir: &Path) -> Vec<(PathBuf, bool)> {
+        ignore::WalkBuilder::new(dir)
+            .standard_filters(false)
+            .follow_links(false)
+            .build()
+            .flatten()
+            .map(|e| {
+                let link = e.path_is_symlink();
+                (e.into_path(), link)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn walked_paths_resolve_as_resolving_them_in_full_does() {
+        let env = Env::new();
+        let (_o, out) = outside();
+        std::fs::write(out.join("o.txt"), "").unwrap();
+        env.write(".env", "S=1");
+        env.write("Src/Deep/Mixed.RS", "");
+        env.write("secrets/key", "");
+        env.write("a/b/c/d.txt", "");
+        symlink(&env.root().join(".env"), &env.root().join("a/notes.txt"));
+        symlink(&out, &env.root().join("a/ext"));
+        symlink(&env.root().join("secrets"), &env.root().join("hidden"));
+        symlink(&env.root(), &out.join("proj"));
+        let ctx = env.ctx();
+        let roots = ctx.roots();
+        let mut bases = vec![".".to_string(), "a".into(), "hidden".into()];
+        bases.push(out.join("proj/a").display().to_string());
+        if ignores_case(&env.root()) {
+            bases.push(env.root().join("SRC").display().to_string().to_uppercase());
+        }
+        let mut checked = 0;
+        for b in &bases {
+            let base = ctx.resolve(b);
+            for (p, link) in walk(&base.absolute) {
+                let full = ctx.resolve(&p.display().to_string());
+                assert_eq!(ctx.resolve_walked(&roots, &base, &p, link), full, "{p:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 10);
+        // A symlinked directory searched by its link: entries are judged by
+        // where they really are.
+        let base = ctx.resolve("hidden");
+        let key = base.absolute.join("key");
+        let t = ctx.resolve_walked(&roots, &base, &key, false);
+        assert_eq!(t.resources, vec!["hidden/key", "secrets/key"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grep_and_glob_judge_files_by_their_real_names() {
+        let (env, rec) = Env::recording(rules(&[("read", "secrets/*", Effect::Deny)]));
+        env.write("secrets/key", "TOKEN=hunter4");
+        env.write("app.rs", "let TOKEN = 1;");
+        symlink(&env.root().join("secrets"), &env.root().join("hidden"));
+        let ctx = env.ctx();
+        // Through a symlinked directory.
+        let out = Tool::Grep
+            .run(&ctx, &json!({"pattern": "TOKEN", "path": "hidden"}))
+            .await
+            .unwrap()
+            .content;
+        assert!(!out.contains("hunter"), "{out}");
+        let out = Tool::Glob
+            .run(&ctx, &json!({"pattern": "*", "path": "hidden"}))
+            .await
+            .unwrap()
+            .content;
+        assert_eq!(out, "No files found");
+        // Through another spelling of the project.
+        if ignores_case(&env.root()) {
+            let upper = env.root().display().to_string().to_uppercase();
+            let out = Tool::Grep
+                .run(&ctx, &json!({"pattern": "TOKEN", "path": upper}))
+                .await
+                .unwrap()
+                .content;
+            assert!(
+                out.starts_with("Found 1 matches") && !out.contains("hunter"),
+                "{out}"
+            );
+            let out = Tool::Glob
+                .run(&ctx, &json!({"pattern": "**/*", "path": upper}))
+                .await
+                .unwrap()
+                .content;
+            assert!(out.contains("APP.RS") || out.contains("app.rs"), "{out}");
+            assert!(!out.to_lowercase().contains("secrets"), "{out}");
+        }
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
     }
 
     #[tokio::test(flavor = "multi_thread")]

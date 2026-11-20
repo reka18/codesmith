@@ -57,20 +57,51 @@ impl Matcher {
     }
 }
 
-pub fn walker(root: &Path, hidden: bool) -> ignore::Walk {
-    ignore::WalkBuilder::new(root)
-        .hidden(!hidden)
+fn walk_builder(root: &Path, hidden: bool) -> ignore::WalkBuilder {
+    let mut b = ignore::WalkBuilder::new(root);
+    b.hidden(!hidden)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .parents(true)
         .require_git(false)
-        .filter_entry(|e| e.file_name() != ".git")
-        .build()
+        // Permission checks rely on this: see `Ctx::resolve_walked`.
+        .follow_links(false)
+        .filter_entry(|e| e.file_name() != ".git");
+    b
+}
+
+/// The regular files the walk finds under `root` for which `keep` returns
+/// a value, with that value, in no particular order. The tree is walked on
+/// several threads; on a large project that is most of a search's time.
+pub fn walk_files<T: Send>(
+    root: &Path,
+    hidden: bool,
+    keep: &(dyn Fn(&ignore::DirEntry) -> Option<T> + Sync),
+) -> Vec<(PathBuf, T)> {
+    let found = std::sync::Mutex::new(Vec::new());
+    walk_builder(root, hidden).build_parallel().run(|| {
+        let found = &found;
+        Box::new(move |entry| {
+            if let Ok(e) = entry {
+                if e.file_type().is_some_and(|t| t.is_file()) {
+                    if let Some(v) = keep(&e) {
+                        found
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push((e.into_path(), v));
+                    }
+                }
+            }
+            ignore::WalkState::Continue
+        })
+    });
+    found.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Matching files under `root` that `listable` accepts, newest first, at
-/// most `limit`; plus whether more existed.
+/// most `limit`; plus whether more existed. `listable` is offered only
+/// regular files the walk found below `root` (it does not follow symlinks).
 pub fn search(
     root: &Path,
     pattern: &str,
@@ -79,21 +110,20 @@ pub fn search(
     listable: &dyn Fn(&Path) -> bool,
 ) -> Result<(Vec<PathBuf>, bool), String> {
     let m = Matcher::new(pattern)?;
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    for entry in walker(root, hidden).flatten() {
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        if m.is_match(rel) && listable(entry.path()) {
-            let mtime = entry
-                .metadata()
+    let matched = walk_files(root, hidden, &|e| {
+        let rel = e.path().strip_prefix(root).unwrap_or(e.path());
+        m.is_match(rel).then(|| {
+            e.metadata()
                 .ok()
                 .and_then(|md| md.modified().ok())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            found.push((mtime, entry.path().to_path_buf()));
-        }
-    }
+                .unwrap_or(std::time::UNIX_EPOCH)
+        })
+    });
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = matched
+        .into_iter()
+        .filter(|(p, _)| listable(p))
+        .map(|(p, t)| (t, p))
+        .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     let truncated = found.len() > limit;
     Ok((
@@ -141,8 +171,10 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
             path.unwrap_or(".")
         ));
     }
+    let roots = ctx.roots();
+    // `search` offers only regular files its walk found, never symlinks.
     let listable = |p: &Path| {
-        let t = ctx.resolve(&p.display().to_string());
+        let t = ctx.resolve_walked(&roots, &target, p, false);
         ctx.check_not_denied("read", &t.resources).is_ok()
     };
     let (found, truncated) = search(&target.absolute, pattern, hidden, limit, &listable)?;

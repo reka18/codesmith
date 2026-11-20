@@ -1,6 +1,6 @@
 //! `grep`: search file contents with ripgrep's engine. Ported from OpenCode's grep tool.
 
-use super::glob::{walker, Matcher, DEFAULT_LIMIT};
+use super::glob::{walk_files, Matcher, DEFAULT_LIMIT};
 use super::{opt_bool, opt_str, opt_u64, str_arg, Ctx, Outcome, Output};
 use crate::permission::{Effect, Request};
 use grep_regex::RegexMatcherBuilder;
@@ -44,7 +44,9 @@ pub struct Query<'a> {
 }
 
 /// Matches under `root` (a file or directory); plus whether more existed.
-/// When `root` is a directory, only files `searchable` accepts are searched.
+/// When `root` is a directory, only files `searchable` accepts are searched;
+/// it is offered only regular files the walk found below `root` (the walk
+/// does not follow symlinks, and symlinks are not searched).
 pub fn search(
     root: &Path,
     q: &Query,
@@ -60,35 +62,76 @@ pub fn search(
         .map(Matcher::new)
         .transpose()
         .map_err(|e| e.replace("in pattern", "in include"))?;
-    let mut searcher = SearcherBuilder::new()
-        .binary_detection(BinaryDetection::quit(0))
-        .line_number(true)
-        .build();
     let files: Vec<PathBuf> = if root.is_file() {
         vec![root.to_path_buf()]
     } else {
-        let mut v: Vec<PathBuf> = walker(root, false)
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .map(|e| e.into_path())
-            .filter(|p| {
-                include
-                    .as_ref()
-                    .map(|m| m.is_match(p.strip_prefix(root).unwrap_or(p)))
-                    .unwrap_or(true)
-            })
-            .filter(|p| searchable(p))
-            .collect();
+        let mut v: Vec<PathBuf> = walk_files(root, false, &|e| {
+            let p = e.path();
+            include
+                .as_ref()
+                .is_none_or(|m| m.is_match(p.strip_prefix(root).unwrap_or(p)))
+                .then_some(())
+        })
+        .into_iter()
+        .map(|(p, ())| p)
+        .collect();
         v.sort();
+        v.retain(|p| searchable(p));
         v
     };
     let mut hits = Vec::new();
     let mut truncated = false;
-    'files: for f in files {
-        let mut local: Vec<Hit> = Vec::new();
+    // Files are searched on several threads a batch at a time, in order, so
+    // the result is what searching them one by one would give; batches grow
+    // so that a search that fills its limit early stops early.
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 16);
+    let mut start = 0;
+    let mut batch = threads * 4;
+    'files: while start < files.len() {
+        let end = (start + batch).min(files.len());
+        for h in search_batch(&files[start..end], &matcher, threads) {
+            if hits.len() >= q.limit {
+                truncated = true;
+                break 'files;
+            }
+            hits.push(h);
+        }
+        start = end;
+        batch = (batch * 2).min(threads * 256);
+    }
+    Ok((hits, truncated))
+}
+
+/// Matches in `files`, in file order, searched on up to `threads` threads.
+fn search_batch(files: &[PathBuf], matcher: &grep_regex::RegexMatcher, threads: usize) -> Vec<Hit> {
+    let per = files.len().div_ceil(threads.max(1)).max(1);
+    if files.len() <= per {
+        return search_files(files, matcher);
+    }
+    std::thread::scope(|s| {
+        let parts: Vec<_> = files
+            .chunks(per)
+            .map(|chunk| s.spawn(move || search_files(chunk, matcher)))
+            .collect();
+        parts
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+fn search_files(files: &[PathBuf], matcher: &grep_regex::RegexMatcher) -> Vec<Hit> {
+    let mut searcher = SearcherBuilder::new()
+        .binary_detection(BinaryDetection::quit(0))
+        .line_number(true)
+        .build();
+    let mut hits = Vec::new();
+    for f in files {
         let _ = searcher.search_path(
-            &matcher,
-            &f,
+            matcher,
+            f,
             UTF8(|line, text| {
                 let t = text.trim_end_matches(['\n', '\r']);
                 let t = if t.chars().count() > MAX_LINE_CHARS {
@@ -96,7 +139,7 @@ pub fn search(
                 } else {
                     t.to_string()
                 };
-                local.push(Hit {
+                hits.push(Hit {
                     path: f.clone(),
                     line,
                     text: t,
@@ -104,15 +147,8 @@ pub fn search(
                 Ok(true)
             }),
         );
-        for h in local {
-            if hits.len() >= q.limit {
-                truncated = true;
-                break 'files;
-            }
-            hits.push(h);
-        }
     }
-    Ok((hits, truncated))
+    hits
 }
 
 pub fn format(hits: &[Hit], truncated: bool) -> String {
@@ -186,8 +222,10 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     // Searching a directory skips files the read rules deny, and those they
     // would ask about, which are named so the model can grep them by path.
     let skipped = std::cell::RefCell::new(Vec::new());
+    let roots = ctx.roots();
+    // `search` offers only regular files its walk found, never symlinks.
     let searchable = |p: &Path| {
-        let t = ctx.resolve(&p.display().to_string());
+        let t = ctx.resolve_walked(&roots, &target, p, false);
         match ctx.read_effect(&t.resources) {
             Effect::Allow => true,
             Effect::Ask => {
