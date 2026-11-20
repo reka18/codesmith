@@ -103,7 +103,7 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 40 | 18 | 46 | 165 | 0 |
+| cli | 269 | 40 | 19 | 45 | 165 | 0 |
 | cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 |
 | tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
@@ -112,7 +112,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **763** | **747** | **492** | **2376** | **259** |
+| **Total** | **4637** | **763** | **748** | **491** | **2376** | **259** |
 
 ## Fixes made while porting
 
@@ -323,6 +323,10 @@ Where the tests live:
   was required. It is now optional: in a terminal CodeSmith lists the
   remote servers that take an OAuth sign-in and asks for one; without a
   terminal it fails before connecting, asking for the name.
+- **`run --archived` archived only at the end** (`cli/test/run/archived`):
+  a run that was stopped part way left its session in the lists. The
+  session is now marked archived before its prompt runs (the mark is
+  dropped if the run never stores the session).
 
 ## Differences found but not fixed
 
@@ -761,6 +765,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/mini` | merges non-interactive argument and stdin input | already passing | run_cli.rs piped_stdin_attached_files_and_titles |
 | `cli/test/mini` | parses model variants from the model reference | already passing | oc_model_references_carry_nested_ids_and_variants |
 | `cli/test/mini` | keeps option-like prompt text after the argument separator | already passing | oc_option_like_prompt_text_after_the_separator_is_the_message |
+| `cli/test/run/archived` | run --archived archives the new session before subscribing to its prompt | after a fix | oc_run_archived_archives_the_new_session_before_its_prompt (e2e; adapted: the model call fails rather than the event stream) |
 | `cli/test/mcp-auth-choices` | offers only OAuth-capable MCP servers by their server identity | after a fix | oc_mcp_auth_offers_only_oauth_capable_servers_by_their_server_identity (adapted: the hint comes from saved tokens, not a live status) |
 | `cli/test/mcp-auth-choices` | mcp auth accepts an optional server name and rejects no-name noninteractive calls before connecting | after a fix | oc_mcp_auth_accepts_an_optional_server_name, oc_mcp_auth_without_a_name_needs_a_terminal (e2e; adapted: the error is on stderr) |
 | `cli/test/session-target` | creates a worktree from the caller's checkout | already passing | oc_creates_a_worktree_from_the_callers_checkout (codesmith-core worktree.rs) |
@@ -992,10 +997,6 @@ transport and its tool presentation.
 
 - `cli/src/ssh-askpass`: the executable askpass branch returns only the response, without CLI output
 - `cli/src/ssh-askpass`: a response split inside a multi-byte character is written intact
-
-### sessions: archiving (1)
-
-- `cli/test/run/archived`: run --archived archives the new session before subscribing to its prompt
 
 ### sessions: fork (1)
 

@@ -80,7 +80,7 @@ codesmith run --format json "list the TODOs" | jq .
 | `-c, --continue` | Continue the most recent session in this folder. |
 | `-s, --session ID` | Continue this session. |
 | `--title TEXT` | Title for a new session (otherwise one is generated). |
-| `--archived` | Archive the session when the run ends, so it stays out of session lists (scripted or CI runs). |
+| `--archived` | Archive the session before its prompt runs, so it stays out of session lists even if the run fails or is stopped (scripted or CI runs). |
 | `-w, --worktree[=NAME]` | Run in a new git worktree (a name needs the `=`). |
 
 Without `--auto`, requests that a rule marks `ask` are asked on the

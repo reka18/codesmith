@@ -335,8 +335,8 @@ struct RunArgs {
     /// separate word is part of the message).
     #[arg(short = 'w', long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_name = "NAME")]
     worktree: Option<String>,
-    /// Archive the session when the run ends, so it stays out of session
-    /// lists (for scripted or CI runs).
+    /// Archive the session before its prompt runs, so it stays out of
+    /// session lists (for scripted or CI runs).
     #[arg(long)]
     archived: bool,
 }
@@ -2875,6 +2875,20 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             session.agent.name, session.model.provider_id, session.model.model_id, session.id
         );
     }
+    // `--archived` archives the session before its prompt runs (as OpenCode
+    // does), so a run that fails or is stopped part way stays out of the
+    // lists too. The mark is kept with the session's meta, which needs no
+    // stored session yet.
+    let archive = args.archived.then(open_store).transpose()?;
+    if let Some(db) = &archive {
+        if db.archived(&session.id)?.is_none() {
+            db.set_meta(
+                &session.id,
+                store::ARCHIVED_META,
+                Some(&store::now().to_string()),
+            )?;
+        }
+    }
     let result = match native {
         Some((name, rest)) => {
             let env = codesmith_core::review::Env::new(
@@ -2896,12 +2910,10 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         }
         None => run_turn(&mut session, &message, custom.as_ref(), media, &mut sink).await,
     };
-    if args.archived {
-        if let Some(db) = open_store()
-            .ok()
-            .filter(|db| db.get(&session.id).ok().flatten().is_some())
-        {
-            db.archive(&session.id)?;
+    // A run that never stored its session leaves no mark behind.
+    if let Some(db) = &archive {
+        if db.get(&session.id)?.is_none() {
+            db.set_meta(&session.id, store::ARCHIVED_META, None)?;
         }
     }
     sink.done(

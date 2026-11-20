@@ -376,3 +376,28 @@ async fn session_archive_hides_sessions_from_lists() {
     assert_ne!(newest, id);
     assert!(st.archived(&newest).unwrap().is_some());
 }
+
+// run/archived.test.ts: "run --archived archives the new session before
+// subscribing to its prompt". Adapted: the run's model call fails rather
+// than its event stream, and the session it stored is archived all the
+// same.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_run_archived_archives_the_new_session_before_its_prompt() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Down").always(
+        "answer",
+        M::tools(),
+        Reply::status(400, r#"{"error": {"message": "bad request"}}"#),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let out = e.run(&["run", "--archived", "review this diff"]).await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    let st = e.store();
+    let all = st.list_archived(None, false, Some(true)).unwrap();
+    assert_eq!(all.len(), 1, "{}", out.both());
+    assert!(st
+        .list_archived(None, false, Some(false))
+        .unwrap()
+        .is_empty());
+}
