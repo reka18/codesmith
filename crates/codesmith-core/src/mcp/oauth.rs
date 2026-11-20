@@ -104,14 +104,22 @@ pub fn load(path: &Path, server: &str, url: &str) -> Option<Entry> {
         .filter(|e| e.server_url == url)
 }
 
+/// Save under the file lock (see [`crate::auth::FileLock`]); a file that
+/// does not parse is kept (and copied to `.bak`) rather than replaced.
 pub fn save(path: &Path, server: &str, e: &Entry) -> Result<()> {
-    let mut all = read_all(path);
+    let _lock = crate::auth::FileLock::acquire(path)?;
+    save_locked(path, server, e)
+}
+
+fn save_locked(path: &Path, server: &str, e: &Entry) -> Result<()> {
+    let mut all: BTreeMap<String, Entry> = crate::auth::read_for_update(path)?;
     all.insert(server.to_string(), e.clone());
     write_all(path, &all)
 }
 
 pub fn remove(path: &Path, server: &str) -> Result<bool> {
-    let mut all = read_all(path);
+    let _lock = crate::auth::FileLock::acquire(path)?;
+    let mut all: BTreeMap<String, Entry> = crate::auth::read_for_update(path)?;
     let had = all.remove(server).is_some();
     if had {
         write_all(path, &all)?;
@@ -348,6 +356,18 @@ pub async fn token(
     server: &str,
     url: &str,
 ) -> Option<String> {
+    let e = load(path, server, url)?;
+    if !e.expires_at.is_some_and(|t| t <= now() + 60) {
+        return Some(e.access_token);
+    }
+    // Refresh under the file lock, and look again once it is ours: another
+    // process may have refreshed meanwhile, and with rotating refresh tokens
+    // the old one no longer works.
+    let lock_path = path.to_path_buf();
+    let _lock = tokio::task::spawn_blocking(move || crate::auth::FileLock::acquire(&lock_path))
+        .await
+        .ok()?
+        .ok()?;
     let mut e = load(path, server, url)?;
     if e.expires_at.is_some_and(|t| t <= now() + 60) {
         let rt = e.refresh_token.clone()?;
@@ -362,7 +382,7 @@ pub async fn token(
         }
         let v = token_request(client, &e.token_endpoint, &form).await.ok()?;
         apply_tokens(&mut e, &v);
-        let _ = save(path, server, &e);
+        let _ = save_locked(path, server, &e);
     }
     Some(e.access_token)
 }
@@ -641,6 +661,33 @@ mod tests {
         );
         assert!(remove(&p, "a").unwrap());
         assert_eq!(load(&p, "a", "https://a/mcp"), None);
+    }
+
+    #[test]
+    fn a_corrupt_store_is_kept_and_concurrent_saves_are_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("mcp-auth.json");
+        let entry = |i: usize| Entry {
+            server_url: format!("https://s{i}/mcp"),
+            access_token: "t".into(),
+            ..Default::default()
+        };
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let p = p.clone();
+                std::thread::spawn(move || save(&p, &format!("s{i}"), &entry(i)).unwrap())
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        #[cfg(unix)]
+        assert_eq!(read_all(&p).len(), 8);
+        std::fs::write(&p, "{not json").unwrap();
+        let e = save(&p, "x", &entry(9)).unwrap_err().to_string();
+        assert!(e.contains("mcp-auth.json.bak"), "{e}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
+        assert!(remove(&p, "s1").is_err());
     }
 
     #[test]

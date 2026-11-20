@@ -91,3 +91,8 @@ Everything CodeSmith stores lives in the data folder
 (`auth.json`), MCP tokens (`mcp-auth.json`), the server token, worktrees,
 tool output and logs. Deleting a file there removes just that piece.
 Deleting `codesmith.db` removes all sessions and automations.
+
+If `auth.json` or `mcp-auth.json` is damaged so that it no longer parses,
+saving a key or a token stops with an error that names the file instead of
+replacing it, and leaves a copy beside it as `auth.json.bak` (or
+`mcp-auth.json.bak`). Fix the file or delete it, then log in again.
