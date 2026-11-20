@@ -21,6 +21,8 @@ pub mod permission;
 pub mod plugin;
 pub mod prompt;
 pub mod providers;
+#[cfg(unix)]
+pub mod pty;
 pub mod question;
 pub mod reference;
 pub mod repository;
