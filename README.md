@@ -6,17 +6,18 @@ terminal agent. It is fully local: no hosted services, no accounts, no
 telemetry. Point it at any model provider you like, including one running on
 your own machines.
 
-> **Status: early.** The interactive terminal UI and `codesmith run` work end
-> to end with the core tools, permissions, project instructions, persistent
-> sessions, subagents, skills, commands and undo. MCP, the local server API and
-> the long tail of providers are still to come; see [Roadmap](#roadmap).
+> **Status: early.** Feature-complete against OpenCode's terminal agent for
+> the roadmap below, and pinned to OpenCode's behaviour by ported tests and
+> replays of its recorded provider traffic, but young: expect rough edges.
 
 ## Install
 
 Prebuilt binaries for macOS (Apple Silicon and Intel) and Linux (x86_64 and
-arm64) are attached to each [GitHub Release](https://github.com/reka18/codesmith/releases).
-The macOS binaries are signed with a Developer ID and notarized by Apple; the
-Linux binaries are statically linked and run on any distribution.
+arm64) are attached to each [GitHub Release](https://github.com/reka18/codesmith/releases)
+(none are published yet; until then, build from source below). Releases are
+published only after the macOS binaries are signed with a Developer ID and
+notarized by Apple; the Linux binaries are statically linked (musl) and run on
+any distribution.
 
 **Install script** (macOS and Linux). Downloads the release tarball for your
 platform, checks it against the release's `SHA256SUMS`, and puts `codesmith`
