@@ -27,6 +27,10 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 
 [Plugins](plugins.md) can add tools of their own.
 
+There is no terminal tool: as in OpenCode, the model runs commands with
+`shell`, and the server's [terminals](local-server.md#terminals) are for the
+people using a client, not the model.
+
 Providers can also run tools of their own, such as web search or code
 execution, when a model's `hostedTools` option turns them on
 ([config](configuration.md#hosted-tools)). Their calls show as tool rows but

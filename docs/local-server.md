@@ -70,6 +70,11 @@ permission and question ids are random.
 | `GET /sessions/{id}/environment`, `PUT /sessions/{id}/environment {variables}` | The environment the session's shell commands run in ([details](#session-environment)). |
 | `GET /events` | `filesystem.changed` events for the server's directory, as Server-Sent Events ([details](#file-watching)). |
 | `POST /fs/watch {path}`, `POST /fs/unwatch {path}` | Watch, or stop watching, one file of the directory ([details](#file-watching)). |
+| `GET /pty`, `POST /pty {command?, args?, cwd?, title?, env?, size?}` | List or create [terminals](#terminals). |
+| `GET /pty/{pty}`, `PUT /pty/{pty} {title?, size?}`, `DELETE /pty/{pty}` | Inspect, rename or resize, remove a terminal. |
+| `POST /pty/{pty}/connect-token`, `GET /pty/{pty}/connect` | A ticket for, and the WebSocket of, a terminal ([details](#attaching)). |
+| `GET /sessions/{id}/terminals`, `POST /sessions/{id}/terminals {...}` | A session's terminals, removed with the session. |
+| `GET /sessions/{id}/terminals/read?lines=N` | What the session's current terminal shows, as text. |
 
 ## Turn events
 
@@ -230,6 +235,80 @@ data: {"type":"filesystem.changed","location":"/path/to/project","file":"/path/t
 With file watching turned off (`CODESMITH_DISABLE_FILEWATCHER=1`), `/fs/watch`
 answers 503 and `/events` stays quiet. `watcher.ignore` naming `.git` stops the
 branch watch. See [file watching](configuration.md#file-watching).
+
+## Terminals
+
+As OpenCode's server does, the server runs terminals for its clients: a
+program (your shell by default) on a pseudo-terminal that keeps running
+between requests, for a client to type into and show. The model has no
+terminal tool; terminals are for the people using the client.
+
+`POST /pty` starts one and answers with its info:
+
+```json
+{"id": "pty_…", "title": "Terminal 3f2a", "command": "/bin/zsh", "args": ["-l"],
+ "cwd": "/path/to/project", "status": "running", "pid": 4242,
+ "userTitle": null, "size": {"cols": 80, "rows": 24}}
+```
+
+- `command` defaults to `shell` from config, else `$SHELL`, else `/bin/sh`.
+  A login-capable shell (`bash`, `zsh`, `sh`, `dash`, `ksh`, `fish`) gets
+  `-l` after `args`, as in OpenCode.
+- `cwd` defaults to the server's directory; a relative one is taken from it.
+  It must be an existing directory (400 otherwise).
+- `env` is added to the server's environment, with `TERM=xterm-256color`
+  and `CODESMITH_TERMINAL=1`. The server token is never passed on.
+- `size` is `{cols, rows}`, 80 × 24 by default.
+
+`PUT /pty/{pty}` with `{"title": "build"}` sets the title (`null` goes back
+to the one it was created with) and `{"size": {"cols": 120, "rows": 40}}`
+resizes it. When the program exits, the terminal stays, with `status:
+"exited"` and its `exitCode` (128 + the signal when a signal ended it), until
+it is removed. `DELETE /pty/{pty}` stops it and forgets it (204).
+
+A terminal made with `POST /sessions/{id}/terminals` belongs to that session
+(`sessionId`) and is removed when the session is deleted. The session's
+current terminal is the one last written to, resized or attached to; `GET
+/sessions/{id}/terminals/read?lines=N` returns its last `N` lines (its height
+by default, at most 65535) with control sequences taken out, or `null`.
+OpenCode reads a terminal emulator's screen there; CodeSmith reads the kept
+output, so full-screen programs come out roughly.
+
+### Attaching
+
+`GET /pty/{pty}/connect` is a WebSocket. The server sends what the terminal
+kept, as text frames of at most 64 KiB, then one binary frame, a `0x00` byte
+followed by `{"cursor": N}` (the output position after the replay), then the
+terminal's output as it comes. Pass `?cursor=N` to replay only from `N` (a
+cursor from an earlier connection) or `?cursor=-1` for no replay. Text
+frames, and binary frames that are UTF-8, are typed into the terminal. The
+socket closes with 1000 when the program exits or the terminal is removed,
+and with 4404 when the terminal is gone or has already exited.
+
+The WebSocket takes the bearer token like any route. A browser cannot send
+that header on a WebSocket, so a client can mint a ticket instead: `POST
+/pty/{pty}/connect-token` with the token and the header
+`x-codesmith-ticket: 1` (which makes a browser ask first, so other sites
+cannot) answers `{"ticket": "…", "expires_in": 60}`. Then
+`/pty/{pty}/connect?ticket=…` opens without the token: once, for that
+terminal, within 60 seconds. A bad ticket is refused (403). The `Host` and
+`Origin` checks apply as everywhere.
+
+### Limits
+
+- At most 16 terminals run at once; one more is refused (429).
+- Each keeps the last 2 MiB of its output; older output is dropped.
+- The 25 most recently exited terminals are kept; older ones are removed.
+- A WebSocket more than 4 MiB behind on output is closed rather than
+  buffered without end.
+- Writes wait at most two seconds for a program that isn't reading.
+
+Stopping a terminal (removing it or its session, or stopping the server)
+sends `SIGHUP` to its program's process group and to the terminal's
+foreground group, then `SIGKILL` after half a second. When the program exits
+on its own, whatever it left running in its group is killed too. Unlike
+OpenCode, whose terminals live in a separate daemon that can outlast the
+server, CodeSmith's end with the server.
 
 ## Example
 
