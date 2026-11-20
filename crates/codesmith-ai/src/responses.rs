@@ -216,10 +216,15 @@ pub fn body(req: &Request) -> Value {
             }
         }
     }
-    let mut body = json!({"model": req.model, "input": input, "stream": true, "store": false});
+    // The system prompt leads `input` as a developer message, as in
+    // OpenCode: newer GPT models never cache top-level `instructions`.
     if !req.system.is_empty() {
-        body["instructions"] = json!(req.system);
+        input.insert(
+            0,
+            json!({"type": "message", "role": "developer", "content": req.system}),
+        );
     }
+    let mut body = json!({"model": req.model, "input": input, "stream": true, "store": false});
     if !req.tools.is_empty() {
         let sanitizer = schema::for_model(&req.model);
         body["tools"] = req.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false})).collect();
@@ -633,12 +638,13 @@ mod tests {
             body: Default::default(),
         };
         let b = body(&req);
-        assert_eq!(b["instructions"], "sys");
+        assert!(b.get("instructions").is_none());
         assert_eq!(b["store"], false);
         assert_eq!(b["max_output_tokens"], 64);
         assert_eq!(
             b["input"],
             json!([
+                {"type": "message", "role": "developer", "content": "sys"},
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
                 {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
                 {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{\"path\":\"a\"}"},

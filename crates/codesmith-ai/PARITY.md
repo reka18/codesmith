@@ -29,13 +29,13 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
 | OpenAI Chat | 115 | 15 | 62 | 38 |
-| OpenAI Responses | 159 | 20 | 59 | 80 |
+| OpenAI Responses | 159 | 20 | 60 | 79 |
 | Anthropic Messages | 95 | 9 | 49 | 37 |
 | Gemini | 61 | 12 | 26 | 23 |
 | Shared | 56 | 10 | 10 | 36 |
-| **Total** | **486** | **66** | **206** | **214** |
+| **Total** | **486** | **66** | **207** | **213** |
 
-Of the gaps, 185 are missing provider features (the roadmap) and
+Of the gaps, 184 are missing provider features (the roadmap) and
 29 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -207,6 +207,11 @@ Reasoning replay (`lib.rs` and every protocol)
   streamed under (replayed under that field; fully structured reasoning gets
   no scalar field; Kimi details keep `reasoning_content`).
 
+OpenAI Responses (`responses.rs`)
+- The system prompt leads `input` as a `developer` message, as in OpenCode
+  (newer GPT models never cache top-level `instructions`), where it was sent
+  as `instructions`.
+
 Shared (`lib.rs`, `schema.rs`)
 - `normalize_tool_history` runs before every request: a call without a result
   gets an error result (`Tool result missing`) before the next assistant turn,
@@ -262,8 +267,6 @@ Shared (`lib.rs`, `schema.rs`)
 
 ## Deliberate differences
 
-- Responses: the system prompt goes in `instructions`, not a leading
-  `developer` message (`prepares OpenAI Responses target`).
 - Responses: a reasoning item is replayed only with encrypted content and
   only when output follows it in the message (CodeSmith never stores
   responses server-side).
@@ -607,22 +610,6 @@ _Anthropic Messages 3, Gemini 2._
 </details>
 
 
-### Responses message item ids and phases (4 tests)
-
-Reasoning items replay with their ids and encrypted content, but assistant text keeps no item id or `phase`, a reasoning item is one stored part (OpenCode keeps one per summary part), and the system prompt goes in `instructions` (see deliberate differences).
-
-_OpenAI Responses 4._
-
-<details><summary>Tests</summary>
-
-- `openai-responses` — prepares OpenAI Responses target
-- `openai-responses` — preserves and replays assistant message phases
-- `openai-responses` — preserves final reasoning metadata when storage is enabled
-- `openai-responses` — preserves provider-issued item ids and removes malformed ids without dropping items
-
-</details>
-
-
 ### Tool namespaces (4 tests)
 
 Responses tool namespaces (grouped tools) are not used.
@@ -635,6 +622,21 @@ _OpenAI Responses 4._
 - `openai-responses` — flattens nested levels within a native tool namespace
 - `openai-responses` — defaults tool namespace descriptions
 - `openai-responses` — preserves tool namespaces through streaming and history replay
+
+</details>
+
+
+### Responses message item ids and phases (3 tests)
+
+Reasoning items replay with their ids and encrypted content, but assistant text keeps no item id or `phase`, and a reasoning item is one stored part (OpenCode keeps one per summary part).
+
+_OpenAI Responses 3._
+
+<details><summary>Tests</summary>
+
+- `openai-responses` — preserves and replays assistant message phases
+- `openai-responses` — preserves final reasoning metadata when storage is enabled
+- `openai-responses` — preserves provider-issued item ids and removes malformed ids without dropping items
 
 </details>
 

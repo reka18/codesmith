@@ -771,6 +771,18 @@ fn openai_chat_streams() {
 #[test]
 fn openai_responses_requests() {
     run(&[
+        ("openai-responses :: prepares OpenAI Responses target (adapted: OpenAI's own endpoint defaults)", || {
+            let mut r = hello("gpt-4.1-mini");
+            r.options = crate::defaults(Protocol::OpenaiResponses, OPENAI, &r.model);
+            assert_eq!(
+                responses::body(&r),
+                json!({"model": "gpt-4.1-mini", "input": [
+                    {"type": "message", "role": "developer", "content": "You are concise."},
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Say hello."}]}
+                ], "store": false, "include": ["reasoning.encrypted_content"], "stream": true,
+                "max_output_tokens": 20, "temperature": 0.0})
+            );
+        }),
         ("openai-responses :: preserves function schemas", || {
             let schema = json!({"type": "object", "anyOf": [
                 {"type": "object", "properties": {"path": {"type": "string"},
