@@ -3,21 +3,52 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg_attr(test, allow(dead_code))]
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn xdg(var: &str, fallback: &str) -> PathBuf {
+    // Unit tests ignore the variables too: a user's own `XDG_DATA_HOME`
+    // must not lead them to the real data.
+    #[cfg(test)]
+    {
+        let _ = var;
+        default_root().join(fallback)
+    }
+    #[cfg(not(test))]
     std::env::var_os(var)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(fallback))
+        .unwrap_or_else(|| default_root().join(fallback))
+}
+
+/// Where the XDG folders default to: the home folder, or in this crate's
+/// own unit tests a scratch folder of the test process, so a plain
+/// `cargo test` never reads or writes the user's config, data, state or
+/// cache (saved keys, MCP OAuth tokens, sessions).
+fn default_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("codesmith-unit-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            dir
+        })
+        .clone()
+    }
+    #[cfg(not(test))]
+    home()
 }
 
 /// `$CODESMITH_CONFIG_DIR`, else `$XDG_CONFIG_HOME/codesmith`, else `~/.config/codesmith`.
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("CODESMITH_CONFIG_DIR")
-        .map(PathBuf::from)
+    #[cfg(test)]
+    let var: Option<std::ffi::OsString> = None;
+    #[cfg(not(test))]
+    let var = std::env::var_os("CODESMITH_CONFIG_DIR");
+    var.map(PathBuf::from)
         .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("codesmith"))
 }
 
@@ -258,5 +289,17 @@ mod tests {
         let (a, b) = (random_token(16), random_token(16));
         assert_eq!(a.len(), 32);
         assert_ne!(a, b);
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    #[test]
+    fn unit_tests_never_default_to_the_users_folders() {
+        let home = dirs::home_dir().unwrap_or_default();
+        let data = super::data_dir();
+        assert!(data.starts_with(std::env::temp_dir()), "{}", data.display());
+        assert!(!super::auth_file().starts_with(home.join(".local")));
+        assert!(super::config_dir().starts_with(std::env::temp_dir()));
     }
 }
