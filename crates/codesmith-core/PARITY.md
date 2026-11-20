@@ -42,7 +42,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
 | Skills and commands | 59 | 26 | 0 | 1 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
-| Config | 164 | 13 | 0 | 18 | 127 | 6 | 0 |
+| Config | 164 | 30 | 0 | 3 | 127 | 4 | 0 |
 | MCP | 212 | 1 | 0 | 29 | 61 | 121 | 0 |
 | Code Mode | 67 | 26 | 0 | 3 | 19 | 19 | 0 |
 | Automations | 107 | 0 | 0 | 15 | 45 | 47 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1017** | **15** | **823** | **2334** | **1399** | **0** |
+| **Total** | **5588** | **1034** | **15** | **808** | **2334** | **1397** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,11 +78,11 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (823 cases in 61 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (808 cases in 61 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Provider Plugins](#provider-plugins) | 154 | GitHub Copilot; Modal; … |
+| [Provider Plugins](#provider-plugins) | 139 | GitHub Copilot; Modal; … |
 | [Patch Tool (apply_patch)](#patch-tool-applypatch) | 93 | the apply_patch format parser; patch instead of edit/write per model; … |
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [Shell Daemon](#shell-daemon) | 39 | the process daemon itself (discovery, registrations, protocol versions, adoption); handing the daemon's processes over to the next server; … |
@@ -146,7 +146,7 @@ Missing features, by how many OpenCode test cases each would unlock (823 cases i
 
 ### Provider Plugins
 
-154 cases.
+139 cases.
 
 - `github-copilot/models.test.ts`: defensively syncs advertised Copilot models
 - `github-copilot/models.test.ts`: prices cache reads from either token price spelling
@@ -260,21 +260,6 @@ Missing features, by how many OpenCode test cases each would unlock (823 cases i
 - `plugin/provider-snowflake-cortex.test.ts`: uses environment tokens rather than the account identifier and bypasses expired stored OAuth
 - `plugin/provider-snowflake-cortex.test.ts`: requires a token separately from the account and supports environment PATs
 - `plugin/provider-snowflake-cortex.test.ts`: refreshes expired OAuth during native model resolution and persists rotated credentials
-- `variant.test.ts`: recognizes Claude version spellings and future models
-- `variant.test.ts`: spells Cloudflare AI Gateway variants for their upstream routes
-- `variant.test.ts`: spells Vercel AI Gateway variants for their selected routes
-- `variant.test.ts`: spells xAI Responses variants with catalog effort levels
-- `variant.test.ts`: spells Bedrock Converse Claude budgets as a thinking setting
-- `variant.test.ts`: spells Bedrock Converse effort for Grok and Nova
-- `variant.test.ts`: caps Alibaba thinking budget variants at 64k
-- `variant.test.ts`: spells Workers AI thinking controls through the chat template
-- `variant.test.ts`: spells Cohere native thinking and compatibility effort variants
-- `variant.test.ts`: spells Chat Completions variants for hosting providers
-- `variant.test.ts`: spells GitLab Duo variants for gitlab-ai-provider routes
-- `variant.test.ts`: spells reasoning variants for every bundled native package
-- `variant.test.ts`: spells Mantle variants for the API each model is routed through
-- `variant.test.ts`: spells Google Interactions variants as thinking levels
-- `variant.test.ts`: reads models.dev v2 reasoning as variant support
 
 ### Patch Tool (apply_patch)
 
@@ -1219,7 +1204,7 @@ Missing features, by how many OpenCode test cases each would unlock (823 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1399 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1397 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -1750,7 +1735,7 @@ Tests for behaviour CodeSmith already has but no test pins (1399 cases), by area
 - canonical boundaries and project opt-out (S) — `instructions::load`
   - `instruction-discovery.test.ts`: canonicalizes boundaries and honors project opt-out
 
-### Config (6)
+### Config (4)
 
 - .claude directories skipped when Claude Code compatibility is off (S) — `config::load`
   - `config/config.test.ts`: excludes claude directories when claude is disabled
@@ -1760,9 +1745,6 @@ Tests for behaviour CodeSmith already has but no test pins (1399 cases), by area
   - `config/config.test.ts`: deduplicates global ecosystem directories found during upward discovery
 - malformed selections and reserved fragments rejected (S) — `config::split_variant`
   - `config/model.test.ts`: rejects malformed selections and reserved fragments
-- Messages and Chat Completions variants for direct providers (S) — `codesmith_ai::options::builtin_variants`
-  - `variant.test.ts`: spells Messages variants for each provider
-  - `variant.test.ts`: spells Chat Completions variants for direct providers
 
 ### MCP (121)
 
@@ -3252,7 +3234,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Config (140 of 164)</summary>
+<details><summary>Config (157 of 164)</summary>
 
 
 **`config/config.test.ts`**
@@ -3328,6 +3310,26 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`flag.test.ts`**
 
 - D applies %s build defaults ×6 · todo is opt-in only: on only when named in OPENCODE_FLAGS or experimental.todo · full_codemode defaults to on in local and dev builds, off in releases, and follows overrides and wildcards · config overrides the default and OPENCODE_FLAGS overrides config · a flag given settings is on · reads the old schedules key for automations, below the new key · reads experimental from the highest-priority document that sets it, as before · OPENCODE_FLAGS=all turns every flag on, and a -key in the same list still wins · experimental.all_flags turns every flag on below OPENCODE_FLAGS and below a per-flag setting · experimental.all_flags: false is not a kill switch, and all_flags in OPENCODE_FLAGS does nothing · a global all_flags survives a project experimental block, and a project all_flags: false stops it · reads the Config, channel and OPENCODE_FLAGS in scope and follows config updates — deliberate: CodeSmith has no OPENCODE_FLAGS experimental-flag system; features are config settings
+
+**`variant.test.ts`**
+
+- P spells Messages variants for each provider — `tests/oc_variant.rs::oc_variant_spells_messages_variants_for_each_provider`
+- P recognizes Claude version spellings and future models — `tests/oc_variant.rs::oc_variant_recognizes_claude_version_spellings_and_future_models`
+- P spells Cloudflare AI Gateway variants for their upstream routes — `tests/oc_variant.rs::oc_variant_spells_cloudflare_ai_gateway_variants_for_their_upstream_routes`
+- P spells Vercel AI Gateway variants for their selected routes — `tests/oc_variant.rs::oc_variant_spells_vercel_ai_gateway_variants_for_their_selected_routes`
+- P spells xAI Responses variants with catalog effort levels — `tests/oc_variant.rs::oc_variant_spells_xai_responses_variants_with_catalog_effort_levels`
+- P spells Chat Completions variants for direct providers — `tests/oc_variant.rs::oc_variant_spells_chat_completions_variants_for_direct_providers`
+- P spells Bedrock Converse Claude budgets as a thinking setting — `tests/oc_variant.rs::oc_variant_spells_bedrock_converse_claude_budgets_as_a_thinking_setting`
+- P spells Bedrock Converse effort for Grok and Nova — `tests/oc_variant.rs::oc_variant_spells_bedrock_converse_effort_for_grok_and_nova`
+- P caps Alibaba thinking budget variants at 64k — `tests/oc_variant.rs::oc_variant_caps_alibaba_thinking_budget_variants_at_64k`
+- P spells Workers AI thinking controls through the chat template — `tests/oc_variant.rs::oc_variant_spells_workers_ai_thinking_controls_through_the_chat_template`
+- P spells Cohere native thinking and compatibility effort variants — `tests/oc_variant.rs::oc_variant_spells_cohere_native_thinking_and_compatibility_effort_variants`
+- P spells Chat Completions variants for hosting providers — `tests/oc_variant.rs::oc_variant_spells_chat_completions_variants_for_hosting_providers`
+- P spells GitLab Duo variants for gitlab-ai-provider routes — `tests/oc_variant.rs::oc_variant_spells_gitlab_duo_variants_for_gitlab_ai_provider_routes` (GitLab Duo's catalog package keeps its `aisdk:` name)
+- P spells reasoning variants for every bundled native package — `tests/oc_variant.rs::oc_variant_spells_reasoning_variants_for_every_bundled_native_package`
+- P spells Mantle variants for the API each model is routed through — `tests/oc_variant.rs::oc_variant_spells_mantle_variants_for_the_api_each_model_is_routed_through`
+- P spells Google Interactions variants as thinking levels — `tests/oc_variant.rs::oc_variant_spells_google_interactions_variants_as_thinking_levels`
+- P reads models.dev v2 reasoning as variant support — `tests/oc_variant.rs::oc_variant_reads_models_dev_v2_reasoning_as_variant_support`
 
 </details>
 

@@ -338,3 +338,21 @@
 @config/skill.test.ts
 216 :: ported :: tests/oc_skill_remote.rs::oc_skill_loads_directory_and_downloaded_skill_roots_with_later_source_precedence :: adapted: against a local catalog
 288 :: ported :: tests/oc_skill_remote.rs::oc_skill_keeps_directory_skills_when_a_url_source_fails :: adapted: an unreachable catalog
+@variant.test.ts
+17 :: ported :: tests/oc_variant.rs::oc_variant_spells_messages_variants_for_each_provider
+83 :: ported :: tests/oc_variant.rs::oc_variant_recognizes_claude_version_spellings_and_future_models
+107 :: ported :: tests/oc_variant.rs::oc_variant_spells_cloudflare_ai_gateway_variants_for_their_upstream_routes
+129 :: ported :: tests/oc_variant.rs::oc_variant_spells_vercel_ai_gateway_variants_for_their_selected_routes
+180 :: ported :: tests/oc_variant.rs::oc_variant_spells_xai_responses_variants_with_catalog_effort_levels
+205 :: ported :: tests/oc_variant.rs::oc_variant_spells_chat_completions_variants_for_direct_providers
+275 :: ported :: tests/oc_variant.rs::oc_variant_spells_bedrock_converse_claude_budgets_as_a_thinking_setting
+286 :: ported :: tests/oc_variant.rs::oc_variant_spells_bedrock_converse_effort_for_grok_and_nova
+304 :: ported :: tests/oc_variant.rs::oc_variant_caps_alibaba_thinking_budget_variants_at_64k
+323 :: ported :: tests/oc_variant.rs::oc_variant_spells_workers_ai_thinking_controls_through_the_chat_template
+354 :: ported :: tests/oc_variant.rs::oc_variant_spells_cohere_native_thinking_and_compatibility_effort_variants
+375 :: ported :: tests/oc_variant.rs::oc_variant_spells_chat_completions_variants_for_hosting_providers
+467 :: ported :: tests/oc_variant.rs::oc_variant_spells_gitlab_duo_variants_for_gitlab_ai_provider_routes :: GitLab Duo's catalog package keeps its `aisdk:` name
+511 :: ported :: tests/oc_variant.rs::oc_variant_spells_reasoning_variants_for_every_bundled_native_package
+522 :: ported :: tests/oc_variant.rs::oc_variant_spells_mantle_variants_for_the_api_each_model_is_routed_through
+540 :: ported :: tests/oc_variant.rs::oc_variant_spells_google_interactions_variants_as_thinking_levels
+551 :: ported :: tests/oc_variant.rs::oc_variant_reads_models_dev_v2_reasoning_as_variant_support
