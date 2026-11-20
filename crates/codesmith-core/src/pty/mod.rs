@@ -36,7 +36,7 @@ pub mod ticket;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -800,12 +800,7 @@ impl Drop for Attachment {
 
 /// The shells OpenCode starts as login shells (`ShellSelect.login`).
 fn login(command: &str) -> bool {
-    let name = Path::new(command)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(command);
-    let name = name.strip_suffix(".exe").unwrap_or(name);
-    matches!(name, "bash" | "dash" | "fish" | "ksh" | "sh" | "zsh")
+    crate::shell_select::login(command)
 }
 
 /// `command` as a path: a bare name is looked up on the terminal's `PATH`.

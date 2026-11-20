@@ -504,12 +504,10 @@ impl Server {
     ) -> Arc<Server> {
         #[cfg(unix)]
         let ptys = {
-            let shell = loaded
-                .config
-                .shell
-                .clone()
-                .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
-                .unwrap_or_else(|| "/bin/sh".into());
+            let shell = codesmith_core::shell_select::resolve(
+                codesmith_core::shell_select::Priority::Config,
+                loaded.config.shell.as_deref(),
+            );
             match &daemon {
                 Some(d) => codesmith_core::pty::Ptys::remote(d.clone(), cwd.clone(), shell),
                 None => codesmith_core::pty::Ptys::new(cwd.clone(), shell),

@@ -36,6 +36,7 @@ pub mod retry;
 pub mod review;
 pub mod runner;
 pub mod session;
+pub mod shell_select;
 pub mod skill;
 pub mod skill_mention;
 pub mod skill_remote;

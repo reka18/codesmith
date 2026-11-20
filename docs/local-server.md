@@ -256,7 +256,7 @@ terminal tool; terminals are for the people using the client.
  "userTitle": null, "size": {"cols": 80, "rows": 24}}
 ```
 
-- `command` defaults to `shell` from config, else `$SHELL`, else `/bin/sh`.
+- `command` defaults to `shell` from config, else `$SHELL`, else the platform default (see [`shell`](configuration.md#key-reference)).
   A login-capable shell (`bash`, `zsh`, `sh`, `dash`, `ksh`, `fish`) gets
   `-l` after `args`, as in OpenCode.
 - `cwd` defaults to the server's directory; a relative one is taken from it.

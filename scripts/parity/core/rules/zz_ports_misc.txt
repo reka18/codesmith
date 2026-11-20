@@ -30,3 +30,10 @@
 @vcs-hg.test.ts
 74 :: ported :: tests/oc_vcs.rs::oc_mercurial_rejects_unsupported_review_modes_and_bases_without_requiring_hg :: adapted: `/review <target>` in a Mercurial project is refused the same way
 90 :: ported :: tests/oc_vcs.rs::oc_vcs_mercurial :: adapted: status, working-copy and named-branch diffs; skipped without hg, as OpenCode's are
+@shell.test.ts
+27 :: ported :: tests/oc_shell_select.rs::oc_shell_normalizes_shell_names
+35 :: ported :: tests/oc_shell_select.rs::oc_shell_detects_login_shells
+40 :: ported :: tests/oc_shell_select.rs::oc_shell_falls_back_when_configured_shell_cannot_be_resolved
+49 :: ported :: tests/oc_shell_select.rs::oc_shell_falls_back_for_terminal_only_shells_when_compatibility_is_required
+77 :: ported :: tests/oc_shell_select.rs::oc_shell_resolves_the_environment_shell_without_retaining_a_removed_executable
+93 :: ported :: tests/oc_shell_select.rs::oc_shell_rejects_blacklisted_shells_case_insensitively :: adapted: names compare case-insensitively on every platform

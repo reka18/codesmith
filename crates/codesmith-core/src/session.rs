@@ -560,11 +560,10 @@ impl Session {
         };
         // Until the first observation, the base alone.
         let system = assemble_system(&base_system, "", agent.id == "plan");
-        let shell = config
-            .shell
-            .clone()
-            .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
-            .unwrap_or_else(|| "/bin/sh".into());
+        let shell = crate::shell_select::resolve(
+            crate::shell_select::Priority::Compat,
+            config.shell.as_deref(),
+        );
         let declined = Arc::new(AtomicBool::new(false));
         let (id, messages, seqs, usage, title, stored) = match resumed {
             Some((info, hist)) => {

@@ -51,7 +51,9 @@ last step, the model has to answer in text.
 ## Shell
 
 - Commands run with `<shell> -c`, where the shell is `shell` from config,
-  else `$SHELL`, else `/bin/sh`. `$CODESMITH_SESSION_ID` is set.
+  else `$SHELL`, else the platform default (`/bin/zsh` on macOS, Bash
+  elsewhere). Fish and Nushell, and a shell that cannot be found, fall back
+  to that default. `$CODESMITH_SESSION_ID` is set.
 - Each command in a shell line is checked separately, including wrapped
   commands and redirect targets. See [shell commands](permissions.md#shell-commands).
 - The default timeout is two minutes. A command that outlives its timeout,
