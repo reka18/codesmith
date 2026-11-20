@@ -1020,7 +1020,7 @@ impl Session {
         let config = &self.loaded.config;
         let mut req = self.base_request(&plugins);
         let mut renamed = std::collections::HashMap::new();
-        if plugins.any(config) {
+        if plugins.wants(config, crate::plugin::Hook::Context, &self.id) {
             use crate::plugin::{Context, ContextMessage};
             let mut ctx = Context {
                 session_id: self.id.clone(),
@@ -1333,8 +1333,28 @@ impl Session {
         media: Vec<codesmith_ai::Media>,
         sink: &mut dyn Sink,
     ) -> Result<()> {
-        // A denied skill mention refuses the prompt before anything is written.
-        let skills = self.mentioned_skills(text)?;
+        // A turn dropped before it finishes was stopped: plugins hear of it.
+        let plugins = crate::plugin::active();
+        let mut stop = Stopped {
+            plugins: if plugins.is_empty() {
+                Vec::new()
+            } else {
+                plugins.enabled_list(&self.loaded.config)
+            },
+            id: self.id.clone(),
+            finished: false,
+        };
+        let r = self.turn_inner(text, media, sink).await;
+        stop.finished = true;
+        r
+    }
+
+    async fn turn_inner(
+        &mut self,
+        text: &str,
+        media: Vec<codesmith_ai::Media>,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
         let _lease = self.take_turn(sink).await?;
         let plugins = crate::plugin::active();
         // Plugins check permissions for this session through the host
@@ -1344,7 +1364,7 @@ impl Session {
         // Plugins' prompt hooks may change the text and keep metadata with it.
         let mut prompt_metadata = None;
         let hooked;
-        let text = if plugins.any(&self.loaded.config) {
+        let text = if plugins.wants(&self.loaded.config, crate::plugin::Hook::Prompt, &self.id) {
             let mut p = crate::plugin::Prompt {
                 session_id: self.id.clone(),
                 text: text.to_string(),
@@ -1357,6 +1377,9 @@ impl Session {
         } else {
             text
         };
+        // A denied skill mention refuses the prompt before anything is
+        // written (mentions in the text as the prompt hooks left it).
+        let skills = self.mentioned_skills(text)?;
         // What changed since the last turn comes before the new prompt; a
         // baseline that cannot be made yet leaves the prompt unsent.
         self.mcp.refresh().await;
@@ -1378,6 +1401,16 @@ impl Session {
                         "snapshot skipped (undo unavailable for this turn): {e:#}"
                     )),
                 }
+            }
+        }
+        // A title a plugin gave the stored session meanwhile wins.
+        if self.title.is_none() && self.stored {
+            if let Some(t) = self
+                .store
+                .as_ref()
+                .and_then(|s| s.get(&self.id).ok().flatten())
+            {
+                self.title = t.title;
             }
         }
         if self.title.is_none() && self.title_task.is_none() {
@@ -1465,6 +1498,7 @@ impl Session {
         let mut compacted_this_step = false;
         let mut repeats = RepeatGuard::default();
         let mut continued = 0u32;
+        let mut idle_continued = 0u32;
         // Responses in a row cut off by the output token limit.
         let mut truncated = 0u32;
         loop {
@@ -1614,13 +1648,18 @@ impl Session {
                         self.push(Message::user(next))?;
                         continue;
                     }
-                    return Ok(());
                 }
-                // The model answered while background commands still run:
-                // the turn ends here, as in OpenCode, and each command is
-                // reported when it finishes (`resume_background`, or the
-                // next prompt). One-shot callers (`codesmith run`,
-                // subagents, automations) wait with `settle_background`.
+                // The async idle hooks run with background commands still
+                // running too: they see them, and may wait for them.
+                if let Some(next) = self.session_idle(sink, &mut idle_continued).await? {
+                    self.push(Message::user(next))?;
+                    continue;
+                }
+                // With background commands still running, the turn ends
+                // here, as in OpenCode, and each command is reported when
+                // it finishes (`resume_background`, or the next prompt).
+                // One-shot callers (`codesmith run`, subagents, automations)
+                // wait with `settle_background`.
                 return Ok(());
             }
             let mut results = Vec::new();
@@ -2860,6 +2899,72 @@ impl Session {
         }
     }
 
+    /// Run the plugins' async idle hooks (see
+    /// [`crate::plugin::Plugin::session_idle`]): the message to continue
+    /// the turn with, if one asks to. A hook asking to compact first gets
+    /// its compaction (at most twice) and is asked again.
+    async fn session_idle(
+        &mut self,
+        sink: &mut dyn Sink,
+        continued: &mut u32,
+    ) -> Result<Option<String>> {
+        use crate::plugin::{Background, Hook, IdleAction, SessionIdle};
+        let wanting =
+            crate::plugin::active().wanting(&self.loaded.config, Hook::SessionIdle, &self.id);
+        if wanting.is_empty() || *continued >= crate::plugin::MAX_IDLE_CONTINUATIONS {
+            return Ok(None);
+        }
+        let mut compactions = 0;
+        loop {
+            let (action, usage) = {
+                let generator = SideGenerator {
+                    session: &*self,
+                    usage: std::sync::Mutex::new(Usage::default()),
+                };
+                let idle = SessionIdle {
+                    session_id: &self.id,
+                    parent_id: self.parent.as_deref(),
+                    messages: &self.messages,
+                    background: self
+                        .jobs
+                        .running_jobs()
+                        .into_iter()
+                        .map(|j| Background::Shell {
+                            id: j.id,
+                            command: j.command,
+                        })
+                        .collect(),
+                    generator: &generator,
+                };
+                let mut action = IdleAction::Idle;
+                for p in &wanting {
+                    action = p.session_idle(&idle).await;
+                    if action != IdleAction::Idle {
+                        break;
+                    }
+                }
+                (action, generator.usage.into_inner().unwrap())
+            };
+            self.count_side_call(usage)?;
+            match action {
+                IdleAction::Idle => return Ok(None),
+                IdleAction::Continue(text) => {
+                    *continued += 1;
+                    return Ok(Some(text));
+                }
+                IdleAction::Compact if compactions < 2 => {
+                    compactions += 1;
+                    if let Err(e) = self.compact(sink).await {
+                        sink.notice(&format!(
+                            "the compaction a plugin asked for did not run: {e:#}"
+                        ));
+                    }
+                }
+                IdleAction::Compact => return Ok(None),
+            }
+        }
+    }
+
     /// A side request with this session's context (OpenCode's
     /// `session.generate`): the system prompt, history and tools the next
     /// step would send, then `prompt` as a user message, with tool calls
@@ -3277,6 +3382,53 @@ pub async fn complete(
         retry::Policy::default(),
     )
     .await
+}
+
+/// Tells plugins about a turn dropped before it finished.
+struct Stopped {
+    plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
+    id: String,
+    finished: bool,
+}
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        if !self.finished {
+            for p in &self.plugins {
+                p.interrupted(&self.id);
+            }
+        }
+    }
+}
+
+/// Side requests for an idle hook, with the session's context.
+struct SideGenerator<'a> {
+    session: &'a Session,
+    usage: std::sync::Mutex<Usage>,
+}
+
+impl crate::plugin::Generate for SideGenerator<'_> {
+    fn generate<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> crate::plugin::BoxFuture<'a, Result<String, crate::plugin::GenerateError>> {
+        Box::pin(async move {
+            match self.session.generate_text(prompt).await {
+                Ok((text, usage)) => {
+                    self.usage.lock().unwrap().add(&usage);
+                    Ok(text)
+                }
+                Err(e) => {
+                    let e = format!("{e:#}");
+                    Err(if compaction::is_overflow(&e) {
+                        crate::plugin::GenerateError::Overflow(e)
+                    } else {
+                        crate::plugin::GenerateError::Failed(e)
+                    })
+                }
+            }
+        })
+    }
 }
 
 /// The headers and prompt cache key that tie a session's model requests

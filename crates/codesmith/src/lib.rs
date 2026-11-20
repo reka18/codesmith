@@ -29,7 +29,8 @@ use std::sync::Arc;
 
 pub(crate) use cli::{all_commands_with, connect_mcp};
 
-/// Run the CodeSmith command line with these plugins installed, then exit.
+/// Run the CodeSmith command line with these plugins installed (after the
+/// built-in ones, such as `/goal`), then exit.
 pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
     // Code Mode programs run in a child copy of this binary.
     codesmith_core::codemode::child_main_if_requested();
@@ -40,7 +41,9 @@ pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
     // child process inherits it.
     cli::take_server_token();
     cli::take_shell_handoff();
-    plugin::install(plugins);
+    let mut all = plugin::builtin();
+    all.extend(plugins);
+    plugin::install(all);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

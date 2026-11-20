@@ -485,3 +485,25 @@
 @plugin/permission-assert.test.ts
 42 :: ported :: tests/oc_plugin_permission.rs::oc_plugins_assert_permissions_and_receive_outcomes_as_tool_errors :: adapted: `Host::assert_permission` against the running session's rules and asker; outcomes as `PermissionError`
 71 :: ported :: tests/oc_plugin_permission.rs::oc_plugins_assert_permissions_with_plain_input :: adapted: one Rust API
+@plugin/goal.test.ts
+60 :: ported :: tests/oc_goal.rs::oc_keeps_working_in_one_execution_until_the_reviewer_finds_the_goal_met :: adapted: the kickoff and continuations are user messages (no synthetic notices)
+117:1 :: ported :: tests/oc_goal.rs::oc_pauses_when_the_reviewer_keeps_giving_the_same_reason_even_with_tool_calls
+117:1 :: ported :: tests/oc_goal.rs::oc_pauses_when_rounds_keep_passing_without_tool_calls
+140 :: ported :: tests/oc_goal.rs::oc_keeps_going_while_each_round_calls_tools_and_finds_a_new_reason
+160 :: ported :: tests/oc_goal.rs::oc_pauses_when_the_reviewer_gives_no_usable_verdict_twice
+178 :: design :: deliberate :: session.rs: subagents run to completion inside the tool call, so a goal never waits on a background subagent
+216 :: design :: deliberate :: session.rs: a subagent settles its background commands before it reports, so no descendant owns work its parent could wait on
+264 :: ported :: tests/oc_goal.rs::oc_drops_the_reviewers_verdict_when_the_goal_is_paused_while_it_runs
+295 :: ported :: tests/oc_goal.rs::oc_reminds_the_model_of_the_goal_after_a_compaction_until_a_continuation_restates_it :: adapted: the reminder comes from the goal plugin's context hook
+334 :: ported :: tests/oc_goal.rs::oc_compacts_and_asks_again_when_the_reviewers_request_is_too_large :: adapted: earlier work gives the compaction something to summarize
+360 :: ported :: tests/oc_goal.rs::oc_pauses_when_the_reviewers_request_is_too_large_even_after_compacting
+380 :: ported :: tests/oc_goal.rs::oc_pauses_an_active_goal_when_the_user_stops_the_session :: adapted: the turn's future is dropped (`Plugin::interrupted`)
+398 :: ported :: tests/oc_goal.rs::oc_pauses_a_goal_set_by_an_earlier_server_process_instead_of_continuing_it
+425 :: ported :: tests/oc_goal.rs::oc_does_not_give_a_child_session_its_parents_goal
+449 :: ported :: tests/oc_goal.rs::oc_pauses_resumes_and_clears_a_goal_through_its_subcommands
+@plugin/goal-watchdog.test.ts
+115 :: ported :: tests/oc_goal.rs::oc_pauses_a_goal_an_earlier_server_process_left_active_when_the_plugin_starts :: adapted: the sweep runs when config is first loaded
+134 :: ported :: tests/oc_goal.rs::oc_pauses_a_goal_that_sits_idle_past_the_limit_and_not_while_the_session_keeps_running
+157 :: ported :: tests/oc_goal.rs::oc_keeps_waiting_while_a_descendant_session_keeps_running_steps
+181 :: ported :: tests/oc_goal.rs::oc_never_overwrites_what_the_user_did_after_the_loop_decided
+194 :: ported :: tests/oc_goal.rs::oc_serves_the_goal_and_publishes_every_change :: adapted: no RPC; `GoalPlugin::get` and `subscribe`

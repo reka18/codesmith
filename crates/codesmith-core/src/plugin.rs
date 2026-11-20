@@ -12,11 +12,15 @@
 //! permission prompts, session events and going idle.
 
 mod context;
+pub mod goal;
 pub mod host;
+pub(crate) mod idle;
 mod request;
 
 pub use context::{Context, ContextMessage, ContextTool, Prompt};
 pub use host::{AssertPermission, Host, HostError, PermissionError};
+pub(crate) use idle::Generate;
+pub use idle::{Background, GenerateError, Hook, IdleAction, SessionIdle};
 pub use request::{RequestKind, RequestScope};
 /// The HTTP types the request hooks take.
 pub use reqwest;
@@ -265,10 +269,38 @@ pub trait Plugin: Send + Sync {
 
     /// Change an inbound WebSocket frame before it is decoded.
     fn ws_receive(&self, _scope: &RequestScope, _frame: &mut String) {}
+
+    // --- Session lifecycle hooks (OpenCode's session `experimental.idle`
+    // and execution interrupts). ---
+
+    /// Whether this plugin's `hook` has anything to do for `session_id`, so
+    /// CodeSmith builds that hook's input (a copy of the history for
+    /// `context`, the HTTP bridge for `http_*`) only when some plugin
+    /// wants it. The default is yes.
+    fn wants(&self, _hook: Hook, _session_id: &str) -> bool {
+        true
+    }
+
+    /// The session finished its work and would go idle, background shells
+    /// perhaps still running: continue it with a message, compact it and
+    /// ask again, or let it go idle. Runs after [`Plugin::idle`] declined,
+    /// and not after an error or a stop. CodeSmith bounds how often one
+    /// turn continues ([`MAX_IDLE_CONTINUATIONS`]).
+    fn session_idle<'a>(&'a self, _idle: &'a SessionIdle<'a>) -> BoxFuture<'a, IdleAction> {
+        Box::pin(async { IdleAction::Idle })
+    }
+
+    /// The session's turn was stopped before it finished (the user
+    /// interrupted it, or its caller dropped it).
+    fn interrupted(&self, _session_id: &str) {}
 }
 
 /// How many times `idle` may continue one turn.
 pub const MAX_CONTINUATIONS: u32 = 5;
+
+/// How many times `session_idle` may continue one turn (a goal loop runs
+/// up to 50 rounds).
+pub const MAX_IDLE_CONTINUATIONS: u32 = 100;
 
 #[derive(Default)]
 pub struct Registry {
@@ -313,6 +345,12 @@ pub(crate) fn host_in_use() -> bool {
 /// their own store).
 pub fn set_host(host: Arc<Host>) {
     *HOST.write().unwrap() = Some(host);
+}
+
+/// The plugins every CodeSmith build has: the goal plugin (`/goal`).
+/// `codesmith::main` installs them before a build's own.
+pub fn builtin() -> Vec<Arc<dyn Plugin>> {
+    vec![Arc::new(goal::GoalPlugin::new())]
 }
 
 /// Install the plugins for this process (called once at startup).
@@ -441,15 +479,37 @@ impl Registry {
         self.enabled(config).next().is_some()
     }
 
+    /// Whether any enabled plugin wants `hook` for `session_id`.
+    pub fn wants(&self, config: &Config, hook: Hook, session_id: &str) -> bool {
+        self.enabled(config).any(|p| p.wants(hook, session_id))
+    }
+
+    /// The enabled plugins that want `hook` for `session_id`.
+    pub fn wanting(&self, config: &Config, hook: Hook, session_id: &str) -> Vec<Arc<dyn Plugin>> {
+        self.enabled(config)
+            .filter(|p| p.wants(hook, session_id))
+            .cloned()
+            .collect()
+    }
+
+    /// The enabled plugins, for a hook that runs after `config` is gone.
+    pub fn enabled_list(&self, config: &Config) -> Vec<Arc<dyn Plugin>> {
+        self.enabled(config).cloned().collect()
+    }
+
     pub fn prompt(&self, config: &Config, prompt: &mut Prompt) {
         for p in self.enabled(config) {
-            p.prompt(prompt);
+            if p.wants(Hook::Prompt, &prompt.session_id) {
+                p.prompt(prompt);
+            }
         }
     }
 
     pub fn context(&self, config: &Config, context: &mut Context) {
         for p in self.enabled(config) {
-            p.context(context);
+            if p.wants(Hook::Context, &context.session_id) {
+                p.context(context);
+            }
         }
     }
 
@@ -457,7 +517,7 @@ impl Registry {
     /// hooks for one request; `None` without plugins, so a build without
     /// any pays nothing.
     pub fn http_hooks(&self, config: &Config, scope: RequestScope) -> Option<codesmith_ai::Hooks> {
-        let plugins: Vec<Arc<dyn Plugin>> = self.enabled(config).cloned().collect();
+        let plugins = self.wanting(config, Hook::Http, &scope.session_id);
         (!plugins.is_empty())
             .then(|| codesmith_ai::Hooks(Arc::new(request::Bridge { plugins, scope })))
     }

@@ -507,3 +507,37 @@ impl Host {
         })
     }
 }
+
+// --- Plugin storage (OpenCode's `ctx.storage`) ---
+
+/// A plugin's own key-value storage, kept in the session store.
+pub struct Storage<'a> {
+    host: &'a Host,
+    plugin: String,
+}
+
+impl Storage<'_> {
+    pub fn get(&self, key: &str) -> HostResult<Option<Value>> {
+        Ok(self.host.store.plugin_get(&self.plugin, key)?)
+    }
+    pub fn set(&self, key: &str, value: &Value) -> HostResult<()> {
+        Ok(self.host.store.plugin_set(&self.plugin, key, value)?)
+    }
+    pub fn remove(&self, key: &str) -> HostResult<()> {
+        Ok(self.host.store.plugin_remove(&self.plugin, key)?)
+    }
+    /// The entries whose keys start with `prefix`, by key.
+    pub fn scan(&self, prefix: &str) -> HostResult<Vec<(String, Value)>> {
+        Ok(self.host.store.plugin_scan(&self.plugin, prefix)?)
+    }
+}
+
+impl Host {
+    /// Plugin `plugin`'s storage.
+    pub fn storage(&self, plugin: &str) -> Storage<'_> {
+        Storage {
+            host: self,
+            plugin: plugin.to_string(),
+        }
+    }
+}

@@ -1120,6 +1120,73 @@ pub fn redo_target(entries: &[Entry]) -> Option<(i64, String)> {
     None
 }
 
+/// Plugins' own key-value storage (OpenCode's plugin storage), one
+/// namespace per plugin id.
+const PLUGIN_TABLE: &str = "CREATE TABLE IF NOT EXISTS plugin_storage (
+    plugin TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+    PRIMARY KEY (plugin, key));";
+
+impl Store {
+    /// What plugin `plugin` stored under `key`.
+    pub fn plugin_get(&self, plugin: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(PLUGIN_TABLE)?;
+        let v: Option<String> = conn
+            .query_row(
+                "SELECT value FROM plugin_storage WHERE plugin = ?1 AND key = ?2",
+                params![plugin, key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(v.and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
+    /// Store `value` for plugin `plugin` under `key`.
+    pub fn plugin_set(&self, plugin: &str, key: &str, value: &serde_json::Value) -> Result<()> {
+        let json = serde_json::to_string(value)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(PLUGIN_TABLE)?;
+        conn.execute(
+            "INSERT INTO plugin_storage (plugin, key, value) VALUES (?1, ?2, ?3)
+             ON CONFLICT(plugin, key) DO UPDATE SET value = ?3",
+            params![plugin, key, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn plugin_remove(&self, plugin: &str, key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(PLUGIN_TABLE)?;
+        conn.execute(
+            "DELETE FROM plugin_storage WHERE plugin = ?1 AND key = ?2",
+            params![plugin, key],
+        )?;
+        Ok(())
+    }
+
+    /// Plugin `plugin`'s entries whose keys start with `prefix`, by key.
+    pub fn plugin_scan(
+        &self,
+        plugin: &str,
+        prefix: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(PLUGIN_TABLE)?;
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM plugin_storage WHERE plugin = ?1 AND substr(key, 1, length(?2)) = ?2 ORDER BY key",
+        )?;
+        let rows = stmt
+            .query_map(params![plugin, prefix], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?)))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

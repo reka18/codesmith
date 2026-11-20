@@ -1468,8 +1468,12 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
         Debug::Plugins => {
             let loaded = config::load(&cwd)?;
             let reg = codesmith_core::plugin::active();
-            if reg.is_empty() {
-                println!("No plugins are compiled into this binary. See the README's Plugins section to build one with yours.");
+            let builtin: Vec<String> = codesmith_core::plugin::builtin()
+                .iter()
+                .map(|p| p.id().to_string())
+                .collect();
+            if reg.ids().iter().all(|id| builtin.contains(id)) {
+                println!("No plugins besides the built-in ones are compiled into this binary. See the README's Plugins section to build one with yours.");
             }
             let on: Vec<String> = reg
                 .enabled(&loaded.config)
@@ -1483,7 +1487,12 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                     .map(|t| t.name().to_string())
                     .collect();
                 println!(
-                    "{id}: {}{}",
+                    "{id}{}: {}{}",
+                    if builtin.contains(&id) {
+                        " (built in)"
+                    } else {
+                        ""
+                    },
                     if on.contains(&id) {
                         "enabled"
                     } else {
