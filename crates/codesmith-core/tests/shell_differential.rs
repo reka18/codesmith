@@ -177,6 +177,8 @@ const SHELLS: &[(&str, &str)] = &[
 ];
 
 const RS: char = '\u{1e}';
+/// Leads a record the not-found handler wrote: a name looked up, not run.
+const NOT_FOUND: char = '\u{1}';
 const US: char = '\u{1f}';
 
 fn installed_shells() -> Vec<(&'static str, &'static str)> {
@@ -249,7 +251,7 @@ impl Slot {
         }
         let handler = |fname: &str| {
             format!(
-                "{fname}() {{ s=$1; shift; for a in \"$@\"; do s=\"$s{US}$a\"; done; printf '%s{RS}' \"$s\" >> {logq}; return 127; }}\n"
+                "{fname}() {{ s={NOT_FOUND}$1; shift; for a in \"$@\"; do s=\"$s{US}$a\"; done; printf '%s{RS}' \"$s\" >> {logq}; return 127; }}\n"
             )
         };
         std::fs::write(root.join("bashenv"), handler("command_not_found_handle")).unwrap();
@@ -431,11 +433,11 @@ fn verdict(input: &str, cwd: &Path) -> Verdict {
         Err(_) => Verdict::Refused,
         Ok(a) if a.dynamic.is_some() => Verdict::Dynamic,
         Ok(a) => {
-            let redirect_only = a
-                .commands
-                .iter()
-                .chain(&a.delegated)
-                .any(|(r, _)| r.trim_start().starts_with(['<', '>']));
+            let redirect_only = a.commands.iter().chain(&a.delegated).any(|(r, _)| {
+                r.trim_start()
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .starts_with(['<', '>'])
+            });
             Verdict::Checked {
                 resources: a
                     .commands
@@ -478,8 +480,16 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
     for &(label, shell) in shells {
         let run = slot.run(label, shell, input);
         for argv in &run.argvs {
-            let name = argv[0].rsplit('/').next().unwrap_or(&argv[0]).to_string();
-            if implausible(&name) {
+            let (lookup, argv0) = match argv[0].strip_prefix(NOT_FOUND) {
+                Some(n) => (true, n),
+                None => (false, argv[0].as_str()),
+            };
+            let name = argv0.rsplit('/').next().unwrap_or(argv0).to_string();
+            // A name looked up and not found ran nothing; it matters only if
+            // a PATH could hold it and the input spells it (not `exec -a`'s
+            // argv[0], or a word a shell reads differently).
+            let argv0_set = input.contains("exec -") || input.contains("ARGV0");
+            if lookup && (implausible(&name) || argv0_set || !input.contains(name.as_str())) {
                 continue;
             }
             let pattern = format!("{name} *");
@@ -511,9 +521,14 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
             }
             let abs = work.join(f);
             let named = writes.iter().flatten().any(|w| {
-                bases
-                    .iter()
-                    .any(|b| normalize(&b.join(w)) == normalize(&abs))
+                bases.iter().any(|b| {
+                    let target = normalize(&b.join(w));
+                    // Dash does not expand `~+`: `> ~+` writes `./~+`.
+                    target == normalize(&abs)
+                        || (target.is_dir()
+                            && normalize(&abs).parent() == Some(target.as_path())
+                            && f.rsplit('/').next().is_some_and(|n| n.starts_with('~')))
+                })
             });
             if !named && !unknown_write {
                 out.push(Bypass {
@@ -535,6 +550,7 @@ fn implausible(name: &str) -> bool {
         && !PASS_THROUGH.iter().any(|(n, _)| *n == name)
         && (name.is_empty()
             || name.starts_with('-')
+            || name.chars().all(|c| c.is_ascii_digit())
             || !name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c)))
@@ -975,7 +991,7 @@ fn shell_differential_harness_observes() {
         assert!(names.contains(&"rm"), "{label}: {names:?}");
         assert!(run.created.contains(&"out".to_string()), "{label}");
         if label == "bash" || label == "zsh" {
-            assert!(names.contains(&"nosuchcmd"), "{label}: {names:?}");
+            assert!(names.contains(&"\u{1}nosuchcmd"), "{label}: {names:?}");
         }
     }
     // The scan reports `$(echo rm) b` as dynamic; a static one is checked.

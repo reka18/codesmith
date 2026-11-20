@@ -789,10 +789,15 @@ impl<'a> Scanner<'a> {
                 '=' if name_ok && !assignment && !raw.is_empty() && !quoted => {
                     let name = raw.trim_end_matches('+');
                     let base = name.split('[').next().unwrap_or("");
-                    if base.chars().next().is_some_and(is_name_start)
+                    let positional = !base.is_empty()
+                        && base.len() == name.len()
+                        && base.chars().all(|c| c.is_ascii_digit());
+                    if (base.chars().next().is_some_and(is_name_start)
                         && base.chars().all(is_name_char)
-                        && (base.len() == name.len() || name.ends_with(']'))
+                        && (base.len() == name.len() || name.ends_with(']')))
+                        || positional
                     {
+                        // Zsh also assigns positional parameters: `4=x cmd`.
                         assignment = true;
                     }
                     raw.push('=');
@@ -1748,7 +1753,22 @@ impl<'a> Scanner<'a> {
         if self.depth + 1 >= MAX_DEPTH {
             return;
         }
-        let chars: Vec<char> = self.s[a..b].to_vec();
+        // Dash removes line continuations before reading.
+        let mut chars: Vec<char> = Vec::with_capacity(b - a);
+        let mut i = a;
+        while i < b {
+            match (self.s[i], self.s[..b].get(i + 1)) {
+                ('\\', Some('\n')) => i += 2,
+                ('\\', Some(&n)) => {
+                    chars.extend(['\\', n]);
+                    i += 2;
+                }
+                (c, _) => {
+                    chars.push(c);
+                    i += 1;
+                }
+            }
+        }
         let mut sub = Scanner::new(&chars, self.depth + 1);
         if !matches!(sub.list(), Ok((_, Stop::Eof))) || !sub.heredocs.is_empty() {
             return; // A syntax error in Dash too.
@@ -1934,7 +1954,7 @@ impl<'a> Scanner<'a> {
                     .iter()
                     .take_while(|w| !w.value.starts_with('-') || w.value.contains('='))
                 {
-                    if w.value.contains('=') && !w.value.starts_with('-') {
+                    if env_assignment(&w.value) {
                         self.assignment_flags(&w.value);
                     }
                 }
@@ -2566,7 +2586,7 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
         "source" | "." => {
             let i = 1 + usize::from(cooked.get(1).is_some_and(|w| w == "--"));
             raw.get(i)
-                .is_some_and(|r| computed_source(r))
+                .is_some_and(|r| computed_source(r, &cooked[i]))
                 .then_some(None)
         }
         "watch" => {
@@ -2626,7 +2646,7 @@ fn shell_string(base: &str, raw: &[String], cooked: &[String]) -> Option<Option<
                 // A shell given no script file runs its standard input
                 // (`echo 'rm x' | sh`), as does `-s`; a script from a pipe or
                 // a process substitution is code the words do not show.
-                let stdin = raw.get(i).is_none_or(|r| computed_source(r))
+                let stdin = raw.get(i).is_none_or(|r| computed_source(r, &cooked[i]))
                     || cooked[1..i].iter().any(|w| {
                         w.starts_with('-') && !w.starts_with("--") && w.contains(['s', 'i'])
                     });
@@ -2687,12 +2707,13 @@ fn runs_input(raw: &[String], cooked: &[String], repl: Option<&str>, appends: bo
 
 /// A script operand whose contents come from a pipe, a process substitution
 /// or a computed name rather than a file in the repository.
-fn computed_source(raw: &str) -> bool {
-    raw == "-"
+/// `cooked` is the operand with quotes removed: `''/dev/stdin` is `/dev/stdin`.
+fn computed_source(raw: &str, cooked: &str) -> bool {
+    let path = format!("/{cooked}");
+    cooked == "-"
         || raw.starts_with("<(")
         || raw.starts_with(">(")
-        || raw.starts_with("/dev/")
-        || raw.starts_with("/proc/")
+        || ["/dev/", "/proc/", "/fd/"].iter().any(|d| path.contains(d))
         || !is_static_word(raw)
 }
 
@@ -2704,7 +2725,7 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         // `-P altpath` is BSD's.
         "env" => &["-u", "--unset", "-C", "--chdir", "-P"],
         "command" | "builtin" | "nohup" | "setsid" | "unbuffer" | "caffeinate" | "noglob"
-        | "nocorrect" | "repeat" | "coproc" => &[],
+        | "nocorrect" | "repeat" | "coproc" | "-" => &[],
         "exec" => &["-a"],
         "stdbuf" => &["-i", "-o", "-e"],
         "time" => &["-f", "-o", "--format", "--output"],
@@ -2764,13 +2785,16 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         if base == "command" && w.starts_with('-') && w[1..].contains(['v', 'V']) {
             return None; // `command -v x` looks a name up.
         }
-        if base == "env" && !w.starts_with('-') && w.contains('=') {
+        if base == "env" && env_assignment(w) {
             i += 1;
             continue;
         }
         if w.starts_with('-') && w.len() > 1 {
-            let takes_next = if w.starts_with("--") {
+            let takes_next = if w.starts_with("--") && w.len() != 3 {
                 with_arg.contains(&w)
+            } else if let Some(c) = w.strip_prefix("--") {
+                // BSD getopt reads `--P` as `-P`.
+                with_arg.contains(&w) || with_arg.contains(&format!("-{c}").as_str())
             } else {
                 // In a cluster (`-iP dir`), the first option taking an
                 // argument takes the rest of the word, or the next word.
@@ -2787,7 +2811,7 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
     }
     if base == "env" {
         // `env -- X=1 rm x`: assignments may follow `--`.
-        while cooked.get(i).is_some_and(|w| w.contains('=')) {
+        while cooked.get(i).is_some_and(|w| env_assignment(w)) {
             i += 1;
         }
     }
@@ -2805,6 +2829,12 @@ fn wrapped_command(base: &str, cooked: &[String]) -> Option<Option<usize>> {
         }
     }
     Some(Some(i))
+}
+
+/// An `env` operand that sets a variable: `NAME=value` with a name (`=rm`
+/// is Zsh's path of `rm`, a command).
+fn env_assignment(w: &str) -> bool {
+    !w.starts_with('-') && w.find('=').is_some_and(|i| i > 0)
 }
 
 /// `name=value` or `name+=value`.
@@ -4302,6 +4332,20 @@ mod tests {
             "xargs -J % rm % <<< F",
             "xargs -R 1 -I {} rm {} <<< F",
             "eval -- 'rm F'",
+            "$'r\\m' F",
+            "(( (rm F) ))",
+            "(( (\\\nrm F) ; (touch G) ))",
+            "env -vS'rm F'",
+            "env -iP ../bin rm F",
+            "env --P ../bin rm F",
+            "builtin - eval 'rm F'",
+            "true &- rm F",
+            "bash ''/dev/stdin <<< 'rm F'",
+            "source /\\dev/fd/3 3<<< 'rm F'",
+            "bash ../../../dev/stdin <<< 'rm F'",
+            "env =sh -c 'rm F'",
+            "env -iP ../binn =rm F",
+            "4='$(rm F)' rm F",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
@@ -4356,5 +4400,9 @@ mod tests {
             a.delegated
         );
         assert_eq!(full("echo $'\\x72m'").delegated[0].0, "echo rm");
+        assert_eq!(
+            full("echo x > ~+//out").writes[0].path.as_deref(),
+            Some("/workspace/out")
+        );
     }
 }

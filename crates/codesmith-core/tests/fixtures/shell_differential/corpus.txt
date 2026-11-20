@@ -1466,3 +1466,42 @@ echo x > ~+/./out
 trap --'rm F' 0 1
 %%
 command -p] -- rm F
+%%
+(( (\
+rm F) ; (touch G) ))
+%%
+bash ''/dev/stdin <<< 'rm F'
+%%
+bash /''''dev/stdin <<< 'rm F'
+%%
+source /\dev/fd/3 3<<< 'rm F'
+%%
+bash ../../../../../../../../dev/stdin <<< 'rm F'
+%%
+bash //dev/stdin <<< 'rm F'
+%%
+co""mmand &- rm F
+%%
+true &- rm F
+%%
+env -iP ../binn =rm F
+%%
+env =sh -c 'rm F'
+%%
+env =rm F
+%%
+PS;4='$(rm F)' bash xc :
+%%
+4='$(rm F)' rm F
+%%
+1=x rm F
+%%
+env --P ../bin rm F
+%%
+(rm FF ) &2>&1
+%%
+2>/dev/null ;rm F
+%%
+exec -a fo  rm] F
+%%
+eco x ''> ~+;/./out
