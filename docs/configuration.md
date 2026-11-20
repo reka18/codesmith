@@ -808,7 +808,12 @@ cached-input price for the prefix it has already sent:
   when the model's options declare `"cacheFormat": "anthropic"` (or
   `"alibaba"`, which leaves tools out).
 - **OpenAI Responses**: a `prompt_cache_key` that stays the same for the
-  session (its id), so requests go to the same cache.
+  session (its id; a subagent uses its parent's), so requests go to the
+  same cache. An OpenCode-style id (`ses_` and 64 hex digits) loses its
+  prefix to fit OpenAI's 64 characters. Every model request also carries
+  the session's correlation headers: `x-session-affinity` and
+  `X-Session-Id` (the same id), `x-parent-session-id` for a subagent, and
+  `x-codesmith-session-id`, `x-codesmith-session` and `x-codesmith-client`.
 - **OpenAI Chat**: the same `prompt_cache_key` where the server takes it
   (OpenAI, Azure, OpenRouter, Cerebras, DeepInfra, DigitalOcean, Fireworks,
   Moonshot, Venice). xAI gets it as the `x-grok-conv-id` header instead.

@@ -17,6 +17,8 @@ pub mod host;
 pub(crate) mod idle;
 mod request;
 
+/// The message types the context hooks take.
+pub use codesmith_ai::{Message, Part, Role};
 pub use context::{Context, ContextMessage, ContextTool, Prompt};
 pub use host::{AssertPermission, Host, HostError, PermissionError};
 pub(crate) use idle::Generate;

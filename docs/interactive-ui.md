@@ -308,6 +308,7 @@ and `opencode` is used.
 | `/help` | Keys and commands. |
 | `/exit` (`/quit`, `/q`) | Quit. |
 | `/init` | Write or improve `AGENTS.md` for the project. |
+| `/goal <objective>` | Keep working until a reviewer finds the objective met; `/goal pause`, `resume`, `clear`, or `/goal` alone to see it. See [the goal plugin](plugins.md#the-goal-plugin). |
 | `/calibrate`, `/review [target]` | [Code review](code-review.md). |
 | `/<name> [args]` | Run a [custom command](skills-and-commands.md#commands) or an [MCP prompt](mcp.md#prompts) (`/server:prompt`). |
 

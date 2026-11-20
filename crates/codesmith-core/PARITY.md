@@ -17,13 +17,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 89 | 7 | 40 | 190 | 67 | 0 |
+| Session runner | 393 | 95 | 7 | 34 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
-| Model requests and transport | 68 | 10 | 0 | 12 | 40 | 6 | 0 |
+| Model requests and transport | 68 | 14 | 0 | 8 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 32 | 0 | 53 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 40 | 0 | 45 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
@@ -38,7 +38,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
 | Shell tool and runtime | 207 | 118 | 2 | 6 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
-| Permission | 177 | 90 | 0 | 11 | 50 | 26 | 0 |
+| Permission | 177 | 92 | 0 | 9 | 50 | 26 | 0 |
 | Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
 | Skills and commands | 59 | 26 | 0 | 1 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
@@ -49,10 +49,10 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 0 | 0 | 27 | 88 | 43 | 0 |
 | Providers, models and credentials | 796 | 257 | 0 | 166 | 337 | 36 | 0 |
-| Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
+| Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1403** | **15** | **420** | **2355** | **1395** | **0** |
+| **Total** | **5588** | **1442** | **15** | **379** | **2357** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (420 cases in 46 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (379 cases in 40 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -87,7 +87,6 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 | [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
 | [Media Blob Store](#media-blob-store) | 21 | media stored once as blobs and referenced; media refs |
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
-| [Goal Plugin](#goal-plugin) | 20 | goal watchdog; /goal loop with a reviewer |
 | [Local Model Discovery](#local-model-discovery) | 19 | discovering LM Studio models and context; discovering local Ollama models and metadata; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
@@ -96,14 +95,12 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [Hosted (Provider-executed) Tools in Sessions](#hosted-provider-executed-tools-in-sessions) | 11 | provider-executed tool results in the session; provider-executed results replayed inline; … |
-| [Plugin Session API](#plugin-session-api) | 9 | plugins creating child sessions; plugins admitting compaction; … |
 | [Decision Models](#decision-models) | 7 | keyless decision/classifier model calls |
 | [Tool-use Policies](#tool-use-policies) | 6 | a deny-only policy layer over permissions (an allow never grants) |
 | [Mercurial VCS](#mercurial-vcs) | 6 | Mercurial project markers; Mercurial support |
 | [Responses Checkpoint Continuation](#responses-checkpoint-continuation) | 6 | WebSocket continuation checkpoints for compaction triggers; compaction across WebSocket recovery without stale response IDs |
 | [Shell Resolution Rules](#shell-resolution-rules) | 6 | shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh) |
 | [Code Mode Tool Placement Policy](#code-mode-tool-placement-policy) | 5 | per-model direct vs Code Mode tool placement under full_codemode |
-| [HTTP Request Hooks](#http-request-hooks) | 4 | plugin hooks on raw HTTP requests/responses |
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
@@ -111,14 +108,11 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Config Source Toggles](#config-source-toggles) | 3 | disabling the global config / home-level .claude and agents directories |
 | [Attachment Source Paths](#attachment-source-paths) | 3 | local source paths announced next to provider media |
-| [Session Context Hooks](#session-context-hooks) | 3 | plugin hook that rewrites the model context |
-| [Session Request Headers and Cache Keys](#session-request-headers-and-cache-keys) | 3 | session correlation headers, parent cache affinity, bounded prompt cache keys |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 3 | the `opencode` tool (models, worktrees, session moves) |
 | [Video Generation](#video-generation) | 3 | video_generate tool; video jobs |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Repository-scoped External Approvals](#repository-scoped-external-approvals) | 2 | an "always" external approval saved at the enclosing repository; external approval saved at the nearest project directory |
 | [Saved Approvals Management](#saved-approvals-management) | 2 | listing, editing and removing saved approvals per project |
-| [Plugin Permission API](#plugin-permission-api) | 2 | plugins asserting permissions |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 | [Attachment Deduplication](#attachment-deduplication) | 2 | durable attachment references deduplicate provider media |
 | [Code Mode Progress](#code-mode-progress) | 2 | execute progress rows |
@@ -326,30 +320,6 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 - `workspace.test.ts`: tracks active operations and lastActivity across file overrides
 - `workspace.test.ts`: surfaces wake failures during file overrides as Environment.Failed
 
-### Goal Plugin
-
-20 cases.
-
-- `plugin/goal-watchdog.test.ts`: pauses a goal an earlier server process left active when the plugin starts
-- `plugin/goal-watchdog.test.ts`: pauses a goal that sits idle past the limit, and not while the Session keeps running
-- `plugin/goal-watchdog.test.ts`: keeps waiting while a descendant Session keeps running steps
-- `plugin/goal-watchdog.test.ts`: never overwrites what the user did after the loop decided
-- `plugin/goal-watchdog.test.ts`: serves the goal over RPC and publishes every change
-- `plugin/goal.test.ts`: keeps working in one execution until the reviewer finds the goal met
-- `plugin/goal.test.ts`: pauses when ${scenario.name} (2 cases)
-- `plugin/goal.test.ts`: keeps going while each round calls tools and finds a new reason
-- `plugin/goal.test.ts`: pauses when the reviewer gives no usable verdict twice
-- `plugin/goal.test.ts`: waits for a background subagent instead of judging
-- `plugin/goal.test.ts`: does not wait on work a descendant owns, since only the descendant is woken
-- `plugin/goal.test.ts`: drops the reviewer's verdict when the goal is paused while it runs
-- `plugin/goal.test.ts`: reminds the model of the goal after a compaction until a continuation restates it
-- `plugin/goal.test.ts`: compacts and asks again when the reviewer's request is too large
-- `plugin/goal.test.ts`: pauses when the reviewer's request is too large even after compacting
-- `plugin/goal.test.ts`: pauses an active goal when the user stops the session
-- `plugin/goal.test.ts`: pauses a goal set by an earlier server process instead of continuing it
-- `plugin/goal.test.ts`: does not give a child session its parent's goal
-- `plugin/goal.test.ts`: pauses, resumes and clears a goal through its subcommands
-
 ### Local Model Discovery
 
 19 cases.
@@ -498,20 +468,6 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 - `session-runner.test.ts`: settles unresolved local and hosted tools before one raw provider failure
 - `session-runner.test.ts`: durably fails a hosted tool left unresolved by a raw provider stream failure
 
-### Plugin Session API
-
-9 cases.
-
-- `plugin.test.ts`: creates child sessions from a plugin at the parent's location
-- `plugin/session-compact.test.ts`: Effect plugins can admit session compaction
-- `plugin/session-compact.test.ts`: Promise plugins can admit session compaction
-- `plugin/session-instructions.test.ts`: Effect plugins can put, list, and remove session instruction entries seen by the next model request
-- `plugin/session-instructions.test.ts`: Promise plugins can put, list, and remove session instruction entries seen by the next model request
-- `plugin/session-list.test.ts`: Effect plugins list sessions with the same pages as Core
-- `plugin/session-list.test.ts`: Promise plugins list sessions and follow cursors
-- `plugin/session-remove.test.ts`: Effect plugins can remove sessions and their children
-- `plugin/session-remove.test.ts`: Promise plugins can remove sessions and their children
-
 ### Decision Models
 
 7 cases.
@@ -576,15 +532,6 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 - `tool-model-policy.test.ts`: keeps strong-model tools direct when full_codemode is off
 - `tool-model-policy.test.ts`: places tools per model, propagates Code Mode to MCP instructions, and uses configured ref fallback
 
-### HTTP Request Hooks
-
-4 cases.
-
-- `session-model-request-hooks.test.ts`: tags every Session request kind on http.request and http.response
-- `session-model-request-hooks.test.ts`: sends a kept request's original body and a replaced request's new body
-- `session-model-request-hooks.test.ts`: keeps hook edits to a tool schema out of later requests
-- `session-model-request-hooks.test.ts`: offers the WebSocket executor alongside HTTP hooks and routes the WebSocket hooks
-
 ### Mid-session Effort Switch
 
 4 cases.
@@ -644,22 +591,6 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 - `session-runner-message.test.ts`: falls back to attachment names for invalid local source paths
 - `session-runner-message.test.ts`: does not add attachment location text for non-local provider media
 
-### Session Context Hooks
-
-3 cases.
-
-- `session-runner.test.ts`: executes a tool renamed by a session context hook
-- `session-runner.test.ts`: passes stored message metadata to the context hook but not to the model request
-- `session-runner.test.ts`: keeps context hook edits to messages without stored metadata
-
-### Session Request Headers and Cache Keys
-
-3 cases.
-
-- `session-runner.test.ts`: adds session correlation headers to model requests
-- `session-runner.test.ts`: uses parent cache affinity for child model requests
-- `session-runner.test.ts`: bounds 64-character session prompt cache keys
-
 ### OpenCode Self-management Tool
 
 3 cases.
@@ -697,13 +628,6 @@ Missing features, by how many OpenCode test cases each would unlock (420 cases i
 
 - `permission.test.ts`: stores and removes saved resources for a project
 - `permission.test.ts`: edits saved approvals and enforces the edited rule
-
-### Plugin Permission API
-
-2 cases.
-
-- `plugin/permission-assert.test.ts`: Effect plugins assert permissions and receive outcomes as tool errors
-- `plugin/permission-assert.test.ts`: Promise plugins assert permissions with plain input
 
 ### Freeform Tool Formats
 
@@ -1615,7 +1539,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 546 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 548 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 332 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 226 |
@@ -1626,7 +1550,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (286 of 393)</summary>
+<details><summary>Session runner (292 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1656,6 +1580,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D retries title generation from the first prompt after title and execution failures — deliberate: title.rs: a failed title falls back to the first line instead of retrying
 - D advertises and executes a location registered tool — client-server: Location tool registry / registry reload
+- P executes a tool renamed by a session context hook — `tests/oc_context_hooks.rs::oc_executes_a_tool_renamed_by_a_session_context_hook` (adapted: `Plugin::context` renames a `ContextTool` by its `name`)
+- P passes stored message metadata to the context hook but not to the model request — `tests/oc_context_hooks.rs::oc_passes_stored_message_metadata_to_the_context_hook_but_not_to_the_model_request` (adapted: `Plugin::prompt` keeps the metadata as a session record)
+- P keeps context hook edits to messages without stored metadata — `tests/oc_context_hooks.rs::oc_keeps_context_hook_edits_to_messages_without_stored_metadata`
 - D runs the idle hook after a move delivered at the idle boundary · keeps idle hook input pending across a compaction admitted with it · does not run the session idle hook after manual compaction of an idle session — deliberate: session.rs: no moves or queued input
 - D executes the tool advertised before a registry reload — client-server: Location tool registry / registry reload
 - D starts a real runner step after default prompt recording · runs a follow-up when synthetic input arrives during an active continuation — storage-model: default prompt recording / synthetic input
@@ -1712,7 +1639,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D preserves a stale subagent child session in its model-visible failure — deliberate: session.rs: subagents run inside the tool call
 - D settles only unfinished tools after the latest compaction after a process crash — deliberate: session.rs: no restart recovery of compactions
 - D promotes the first queued input when woken while idle · retries inbox input after prompt projection rolls back · does not strand a committed promotion when a post-commit listener defects — deliberate: session.rs: no steers, queues or inbox
-- D runs different sessions concurrently · fans out one failed run and allows a later retry — effect-internal: concurrent resume joining / run fan-out
+- P adds session correlation headers to model requests — `tests/oc_request_headers.rs::oc_adds_session_correlation_headers_to_model_requests` (adapted: `x-codesmith-*` names for OpenCode's `x-opencode-*`, and no project header (CodeSmith has no project ids))
+- P uses parent cache affinity for child model requests — `tests/oc_request_headers.rs::oc_uses_parent_cache_affinity_for_child_model_requests` (adapted: `x-codesmith-*` names)
+- D runs different sessions concurrently — effect-internal: concurrent resume joining / run fan-out
+- P bounds 64-character session prompt cache keys — `tests/oc_request_headers.rs::oc_bounds_64_character_session_prompt_cache_keys`
+- D fans out one failed run and allows a later retry — effect-internal: concurrent resume joining / run fan-out
 - P durably settles local tool failures before continuing — `tests/runner_parity.rs::oc_session_durably_settles_local_tool_failures_before_continuing`
 - P returns unexpected local tool defects to the model and continues — `tests/oc_runner.rs::oc_session_returns_tool_failures_to_the_model_and_continues` (adapted: a failing tool call stands in for a tool defect)
 - D preserves each parallel Promise hook failure — effect-internal: Promise hook failures
@@ -1908,8 +1839,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (50 of 68)</summary>
+<details><summary>Model requests and transport (54 of 68)</summary>
 
+
+**`session-model-request-hooks.test.ts`**
+
+- P tags every Session request kind on http.request and http.response — `tests/oc_http_hooks.rs::oc_tags_every_session_request_kind_on_http_request_and_http_response` (adapted: `Plugin::http_request`/`http_response` with a `RequestScope`)
+- P sends a kept request's original body and a replaced request's new body — `tests/oc_http_hooks.rs::oc_sends_a_kept_requests_original_body_and_a_replaced_requests_new_body` (adapted: the hook gets the `reqwest::Request`)
+- P keeps hook edits to a tool schema out of later requests — `tests/oc_context_hooks.rs::oc_keeps_hook_edits_to_a_tool_schema_out_of_later_requests`
+- P offers the WebSocket executor alongside HTTP hooks and routes the WebSocket hooks — `tests/oc_http_hooks.rs::oc_offers_the_websocket_executor_alongside_http_hooks_and_routes_the_websocket_hooks` (adapted: a scripted `Connector`; the hooks ride on the provider)
 
 **`session-model-request.test.ts`**
 
@@ -1954,12 +1892,32 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (201 of 308)</summary>
+<details><summary>Sessions and their store (209 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
 
 - D delivers workspace-only moves to both owners without duplicating same-location moves · routes forks through their parent before the child exists · routes existing Sessions without changing public events or global delivery · applies the same routing to typed and multi-type subscriptions · snapshots routing across creation and moves for slow subscribers · routes a cold Session deletion before its projector removes ownership · preserves routing through a batch that moves and deletes a Session · does not change ownership when single or batched moves roll back · updates cached ownership on silent replay and filters published replay — storage-model: OpenCode's event bus routing of sessions between Locations
+
+**`plugin/session-compact.test.ts`**
+
+- P Effect plugins can admit session compaction — `tests/oc_plugin_session.rs::oc_plugins_can_admit_session_compaction` (adapted: `Host::compact`; it waits in the store for the session's next step (CodeSmith has no inbox))
+- P Promise plugins can admit session compaction — `tests/oc_plugin_session.rs::oc_an_admitted_compaction_runs_at_the_sessions_next_step` (adapted: one Rust API; checks the default delivery and that the session runs it)
+
+**`plugin/session-instructions.test.ts`**
+
+- P Effect plugins can put, list, and remove session instruction entries seen by the next model request — `tests/oc_plugin_session.rs::oc_plugins_put_list_and_remove_session_instruction_entries_seen_by_the_next_model_request` (adapted: `Host::put_instruction`, `list_instructions`, `remove_instruction`)
+- P Promise plugins can put, list, and remove session instruction entries seen by the next model request — `tests/oc_plugin_session.rs::oc_plugins_remove_an_instruction_entry_before_the_session_runs_again` (adapted: one Rust API)
+
+**`plugin/session-list.test.ts`**
+
+- P Effect plugins list sessions with the same pages as Core — `tests/oc_plugin_session.rs::oc_plugins_list_sessions_in_pages` (adapted: `Host::list`; the cursor carries its query)
+- P Promise plugins list sessions and follow cursors — `tests/oc_plugin_session.rs::oc_plugins_list_sessions_and_follow_cursors`
+
+**`plugin/session-remove.test.ts`**
+
+- P Effect plugins can remove sessions and their children — `tests/oc_plugin_session.rs::oc_plugins_can_remove_sessions_and_their_children`
+- P Promise plugins can remove sessions and their children — `tests/oc_plugin_session.rs::oc_removing_a_session_leaves_only_the_unrelated_ones_listed` (adapted: one Rust API)
 
 **`session-activation.test.ts`**
 
@@ -2825,7 +2783,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Permission (140 of 177)</summary>
+<details><summary>Permission (142 of 177)</summary>
 
 
 **`config/policy.test.ts`**
@@ -2864,6 +2822,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D ${fixture.name}: ${scenario.name} ×24 — platform: PowerShell fixtures
 - P ${fixture.name}: always allow covers repeat execution and narrows prefix scope ×5 — `src/permission.rs::oc_permission_always_covers_repeats_and_narrows_prefix_scope` (Bash fixtures)
 - D ${fixture.name}: always allow covers repeat execution and narrows prefix scope ×2 — platform: PowerShell fixtures
+
+**`plugin/permission-assert.test.ts`**
+
+- P Effect plugins assert permissions and receive outcomes as tool errors — `tests/oc_plugin_permission.rs::oc_plugins_assert_permissions_and_receive_outcomes_as_tool_errors` (adapted: `Host::assert_permission` against the running session's rules and asker; outcomes as `PermissionError`)
+- P Promise plugins assert permissions with plain input — `tests/oc_plugin_permission.rs::oc_plugins_assert_permissions_with_plain_input` (adapted: one Rust API)
 
 </details>
 
@@ -3726,7 +3689,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Plugins (67 of 90)</summary>
+<details><summary>Plugins (88 of 90)</summary>
 
 
 **`plugin-failure.test.ts`**
@@ -3735,7 +3698,35 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`plugin.test.ts`**
 
-- D {scenario.name} ×4 · updates inventory metadata without restarting an unchanged generation · loads a local plugin with its configured options · serves a local plugin's GUI bundle, and reloads it alone when only the bundle changes · unloading a plugin removes its commands and runs cleanup · reports a failed plugin without blocking a healthy plugin · disables a plugin whose transform fails after setup without publishing its partial edits · keeps the suffix after a failed plugin alive across identical activations · attributes replay failure to the broken plugin rather than a later plugin reading the registry · disables plugins after runtime reload failures without retrying an unchanged generation · disables plugins after replay failures discovered during setup without restoring the old generation · does not let asynchronous plugin cleanup block recovered registry readiness · retains Promise plugin groups for later registrations and ignores a disabled group's attempts · normalizes Promise plugin API inputs through JSON · reloading a plugin replaces its command implementation · host event subscriptions deliver requested rpc types and ignore unknown types · unknown event type warnings name the subscribing plugin — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
+- D {scenario.name} ×4 · updates inventory metadata without restarting an unchanged generation · loads a local plugin with its configured options · serves a local plugin's GUI bundle, and reloads it alone when only the bundle changes · unloading a plugin removes its commands and runs cleanup · reports a failed plugin without blocking a healthy plugin · disables a plugin whose transform fails after setup without publishing its partial edits · keeps the suffix after a failed plugin alive across identical activations · attributes replay failure to the broken plugin rather than a later plugin reading the registry · disables plugins after runtime reload failures without retrying an unchanged generation · disables plugins after replay failures discovered during setup without restoring the old generation · does not let asynchronous plugin cleanup block recovered registry readiness · retains Promise plugin groups for later registrations and ignores a disabled group's attempts · normalizes Promise plugin API inputs through JSON — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
+- P creates child sessions from a plugin at the parent's location — `tests/oc_plugin_session.rs::oc_creates_child_sessions_from_a_plugin_at_the_parents_location` (adapted: `plugin::Host::create`; the child takes the parent's folder, agent and model (sessions have no metadata))
+- D reloading a plugin replaces its command implementation · host event subscriptions deliver requested rpc types and ignore unknown types · unknown event type warnings name the subscribing plugin — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
+
+**`plugin/goal-watchdog.test.ts`**
+
+- P pauses a goal an earlier server process left active when the plugin starts — `tests/oc_goal.rs::oc_pauses_a_goal_an_earlier_server_process_left_active_when_the_plugin_starts` (adapted: the sweep runs when config is first loaded)
+- P pauses a goal that sits idle past the limit, and not while the Session keeps running — `tests/oc_goal.rs::oc_pauses_a_goal_that_sits_idle_past_the_limit_and_not_while_the_session_keeps_running`
+- P keeps waiting while a descendant Session keeps running steps — `tests/oc_goal.rs::oc_keeps_waiting_while_a_descendant_session_keeps_running_steps`
+- P never overwrites what the user did after the loop decided — `tests/oc_goal.rs::oc_never_overwrites_what_the_user_did_after_the_loop_decided`
+- P serves the goal over RPC and publishes every change — `tests/oc_goal.rs::oc_serves_the_goal_and_publishes_every_change` (adapted: no RPC; `GoalPlugin::get` and `subscribe`)
+
+**`plugin/goal.test.ts`**
+
+- P keeps working in one execution until the reviewer finds the goal met — `tests/oc_goal.rs::oc_keeps_working_in_one_execution_until_the_reviewer_finds_the_goal_met` (adapted: the kickoff and continuations are user messages (no synthetic notices))
+- P pauses when ${scenario.name} — `tests/oc_goal.rs::oc_pauses_when_the_reviewer_keeps_giving_the_same_reason_even_with_tool_calls`
+- P pauses when ${scenario.name} — `tests/oc_goal.rs::oc_pauses_when_rounds_keep_passing_without_tool_calls`
+- P keeps going while each round calls tools and finds a new reason — `tests/oc_goal.rs::oc_keeps_going_while_each_round_calls_tools_and_finds_a_new_reason`
+- P pauses when the reviewer gives no usable verdict twice — `tests/oc_goal.rs::oc_pauses_when_the_reviewer_gives_no_usable_verdict_twice`
+- D waits for a background subagent instead of judging — deliberate: session.rs: subagents run to completion inside the tool call, so a goal never waits on a background subagent
+- D does not wait on work a descendant owns, since only the descendant is woken — deliberate: session.rs: a subagent settles its background commands before it reports, so no descendant owns work its parent could wait on
+- P drops the reviewer's verdict when the goal is paused while it runs — `tests/oc_goal.rs::oc_drops_the_reviewers_verdict_when_the_goal_is_paused_while_it_runs`
+- P reminds the model of the goal after a compaction until a continuation restates it — `tests/oc_goal.rs::oc_reminds_the_model_of_the_goal_after_a_compaction_until_a_continuation_restates_it` (adapted: the reminder comes from the goal plugin's context hook)
+- P compacts and asks again when the reviewer's request is too large — `tests/oc_goal.rs::oc_compacts_and_asks_again_when_the_reviewers_request_is_too_large` (adapted: earlier work gives the compaction something to summarize)
+- P pauses when the reviewer's request is too large even after compacting — `tests/oc_goal.rs::oc_pauses_when_the_reviewers_request_is_too_large_even_after_compacting`
+- P pauses an active goal when the user stops the session — `tests/oc_goal.rs::oc_pauses_an_active_goal_when_the_user_stops_the_session` (adapted: the turn's future is dropped (`Plugin::interrupted`))
+- P pauses a goal set by an earlier server process instead of continuing it — `tests/oc_goal.rs::oc_pauses_a_goal_set_by_an_earlier_server_process_instead_of_continuing_it`
+- P does not give a child session its parent's goal — `tests/oc_goal.rs::oc_does_not_give_a_child_session_its_parents_goal`
+- P pauses, resumes and clears a goal through its subcommands — `tests/oc_goal.rs::oc_pauses_resumes_and_clears_a_goal_through_its_subcommands`
 
 **`plugin/host-model.test.ts`**
 

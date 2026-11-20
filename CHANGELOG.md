@@ -117,7 +117,15 @@ replays of its recorded provider traffic.
 - **File watching:** FSEvents, inotify or ReadDirectoryChangesW, started
   only when something uses it, honouring `.gitignore` and `watcher.ignore`;
   `CODESMITH_DISABLE_FILEWATCHER` turns it off.
-- **Plugins:** native Rust plugins compiled into your own build.
+- **Plugins:** native Rust plugins compiled into your own build, with
+  OpenCode's hooks on prompts, the model context, raw HTTP requests and
+  WebSocket frames, and going idle, and a host API for sessions, their
+  instruction entries, compactions, permission checks and plugin storage.
+  The goal plugin is built in: `/goal <objective>` keeps a session working
+  until a reviewer finds the objective met.
+- **Session correlation:** model requests carry the session's correlation
+  headers, and a subagent's share its parent's cache affinity and prompt
+  cache key.
 - **Provider library:** `codesmith-ai` also carries per-part media options,
   per-message effort changes and tool namespaces, which sessions do not use
   yet.

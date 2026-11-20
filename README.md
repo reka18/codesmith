@@ -103,7 +103,8 @@ git diff | codesmith run "review this change"
 - **[Editors (ACP)](docs/editors-acp.md)** and a
   **[local HTTP server](docs/local-server.md)** that requires a token.
 - **[Plugins](docs/plugins.md)**: native Rust plugins compiled into your own
-  build.
+  build, and a built-in `/goal` that keeps a session working until a
+  reviewer finds the objective met.
 
 The full guide is in [docs/](docs/README.md), with
 [configuration](docs/configuration.md), [CLI](docs/cli.md) and

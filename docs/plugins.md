@@ -31,6 +31,62 @@ The hooks follow OpenCode's plugin API:
 | `permission` | Answer a permission request instead of the user. It is consulted only for requests the rules would ask about, never for ones they deny. |
 | `event` | Observe turns, steps and tool calls. |
 | `idle` | Continue a finished turn with another message (at most 5 times per turn). |
+| `prompt` | Change a user prompt as it joins the session, or keep metadata with it (stored with the message, never sent to the model). |
+| `context` | Rewrite the model context just before a step's request is built: the system prompt, the messages (with the metadata `prompt` kept), and which tools are offered under which names. A tool renamed here runs when the model calls the new name. Edits reach that request only. Runs before `request`. |
+| `http_request`, `http_response` | Change a model request's headers, URL or body just before it is sent, after the credentials are applied, or look at (or replace) the response. They run for every request a session makes; `scope.kind` says which: `Primary` (a step), `Compaction`, `Title` or `Generate`. A request left alone is sent as built. |
+| `ws_handshake`, `ws_send`, `ws_receive` | The same for a Responses WebSocket: its URL and headers (a change opens a new socket), and each frame out and in. |
+| `session_idle` | Async: the session finished its work and would go idle, perhaps with background shells running (`idle.background`). Continue it with a message, ask for a compaction and run again, or let it go idle. `idle.generate(prompt)` is a side request with the session's context (its history, then the prompt, tools off), for a reviewer. Runs after `idle` declined; at most 100 continuations per turn. |
+| `interrupted` | The turn was stopped before it finished (the user interrupted it). |
+| `wants` | Whether a hook has anything to do for a session. CodeSmith builds a hook's input (a copy of the history for `context`, the HTTP bridge, the idle hook's state) only when some plugin wants it, so a build whose plugins use none of these pays nothing for them. The default is yes. |
+
+The hooks follow OpenCode's names where it has them: `context` is its session
+`context` hook, `http_*` its `http.request`/`http.response`, `ws_*` its
+`experimental.ws.*`, `session_idle` its `experimental.idle`.
+
+### Trust
+
+Plugins are trusted: they are Rust compiled into your build, with the same
+access as CodeSmith itself. What a hook is handed is not always trusted,
+though. Message text in `context` and `idle.messages`, tool input and
+output, `idle.generate` replies, HTTP responses and inbound WebSocket frames
+come from the model, the tools or the network. Treat them as untrusted
+input: parse strictly, and never let them decide what a plugin runs or where
+it sends credentials. The goal plugin is an example: the objective is
+escaped and wrapped as data in every prompt, and the reviewer's verdict
+must parse as one of five JSON shapes or it counts as no verdict.
+
+## The plugin host
+
+`codesmith::plugin::host()` is the process's host (OpenCode's plugin context:
+`ctx.session`, `ctx.permission`, `ctx.storage`), over the session store. Its
+calls fail with a `HostError` (`NotFound` for an unknown session):
+
+| Call | What it does |
+|---|---|
+| `create(NewSession)` | Create a session. A child (`parent_id`) starts in its parent's folder with its agent and model. |
+| `get(id)`, `set_title(id, title)`, `remove(id)` | Look up, rename, or remove a session and its children. |
+| `list(&ListQuery)` | A page of sessions, most recently updated first, filtered by folder, parent (`Parent::Roots`, `Parent::Of(id)`) and title search. `page.next` is a cursor that carries the query: the next page needs only it. |
+| `put_instruction(id, key, value)`, `list_instructions(id)`, `remove_instruction(id, key)` | Session instruction entries: context the model sees, in the system prompt or as an update at the session's next step ("The context under ... changed"). Keys are `^[a-z0-9][a-z0-9._-]*$`, values at most 256 KiB of JSON. |
+| `compact(id, delivery, message_id)` | Admit a compaction: the session compacts at its next step (`Delivery::Steer`, the default) or before its next prompt (`Delivery::Queue`). |
+| `assert_permission(AssertPermission)` | Async. Check a permission for a running session as a built-in tool would: its rules, its "always" approvals, then the `permission` hooks or the user. An `Err(PermissionError)` is the outcome to hand on (a tool returns its text as its error): `Blocked` by a rule, `Corrected` with the user's feedback, or `Declined`, after which the turn stops as it does for a declined tool. |
+| `storage(plugin_id)` | The plugin's own key-value store (`get`, `set`, `remove`, `scan` by prefix), kept in the session store. |
+
+Tests and embedders with their own store install a host with
+`plugin::set_host`.
+
+## The goal plugin
+
+Every build has one built-in plugin, `goal` (OpenCode's goal plugin). `/goal
+<objective>` keeps the session working until the objective is met: when the
+session would go idle, a reviewer (a side request with the session's
+context) answers with a verdict, and the session continues with the
+reviewer's reason and next step until it says done. The goal pauses when
+the reviewer says the user is needed, after 50 rounds, after three rounds in
+a row without progress, when the reviewer gives no usable answer twice, when
+the session fails or is stopped, when nothing ran for 30 minutes while it
+waited on a background shell, and when CodeSmith restarted while it was
+active. `/goal pause`, `/goal resume` and `/goal clear` control it, and
+`/goal` alone shows it. Turn it off with `"plugins": {"goal": false}`.
 
 ## Turning plugins on and off
 
@@ -43,17 +99,25 @@ options:
 { "plugins": { "example": false } }                        // off
 ```
 
-`codesmith debug plugins` lists the plugins compiled in, and whether config
-turns them off.
+`codesmith debug plugins` lists the plugins compiled in (the built-in `goal`
+among them), and whether config turns them off.
 
 ## Example
 
 [`examples/plugin-example`](../examples/plugin-example/src/main.rs) is a
 complete plugin. It adds:
 
-- a `todo_scan` tool that lists TODO and FIXME comments in the project,
+- a `todo_scan` tool that lists TODO and FIXME comments in the project (a
+  long list asks permission first, through the host),
 - a `/standup` command whose greeting is set by the plugin's options,
-- a guard that refuses `git push --force` to `main`.
+- a `/remember <note>` command that pins a note to the session as an
+  instruction entry,
+- a guard that refuses `git push --force` to `main`,
+- prompt and context hooks that remind the model to check the changelog
+  when a prompt mentions a release,
+- an HTTP hook that tags the agent's own model requests with a header.
+
+The heart of it:
 
 ```rust
 use codesmith::core::config::Config;
