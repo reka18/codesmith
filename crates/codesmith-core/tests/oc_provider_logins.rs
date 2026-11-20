@@ -379,12 +379,9 @@ async fn oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listene
     assert_ne!(p1["state"], p2["state"]);
     let crossed = redirect(&first.url, &[("state", p2["state"].as_str())]);
     let client = reqwest::Client::new();
-    let (done, page) = tokio::join!(
-        poe::finish(&client, first, None, |_| {}, WAIT),
-        browse(&crossed)
-    );
-    assert_eq!(page.unwrap().0, 400);
-    assert_eq!(done.unwrap_err().to_string(), "Invalid OAuth state");
+    // Adapted: the crossed callback is refused, and the login keeps
+    // waiting rather than end on it.
+    assert_still_waiting(poe::finish(&client, first, None, |_| {}, WAIT), &crossed).await;
     // Cancelling the other login closes its listener.
     let next_cb = redirect(&next.url, &[]);
     drop(next);
@@ -392,10 +389,35 @@ async fn oc_poe_isolates_overlapping_login_attempts_and_closes_cancelled_listene
     assert!(srv.seen().is_empty());
 }
 
+/// Not in OpenCode: a callback with another state is answered 400 and the
+/// login keeps waiting (whatever sent it cannot end the login), so `login`
+/// is still running after `to` is refused.
+async fn assert_still_waiting<T: std::fmt::Debug>(
+    login: impl std::future::Future<Output = T>,
+    to: &str,
+) {
+    let probe = async {
+        let (status, page) = browse(to).await.unwrap();
+        assert_eq!(status, 400);
+        assert!(page.contains("Invalid OAuth state"), "{page}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    tokio::select! {
+        done = login => panic!("the login ended on a wrong state: {done:?}"),
+        () = probe => {}
+    }
+}
+
+/// Adapted: OpenCode ends the login on a wrong state; here it keeps waiting
+/// (see [`assert_still_waiting`]).
 #[tokio::test]
 async fn oc_poe_rejects_invalid_or_denied_callbacks() {
+    let srv = server().await;
+    let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+    let to = redirect(&login.url, &[("state", "")]);
+    let client = reqwest::Client::new();
+    assert_still_waiting(poe::finish(&client, login, None, |_| {}, WAIT), &to).await;
     let cases: &[(&[(&str, &str)], &str)] = &[
-        (&[("state", "")], "Invalid OAuth state"),
         (
             &[("iss", "https://other.example"), ("error", "access_denied")],
             "Invalid OAuth issuer",
@@ -696,9 +718,7 @@ async fn oc_snowflake_rejects_a_mismatched_callback_state_before_token_exchange(
     assert_eq!(params(&login.url)["scope"], "refresh_token");
     let to = redirect(&login.url, &[("state", "wrong"), ("code", "forged")]);
     let client = reqwest::Client::new();
-    let (done, page) = tokio::join!(snowflake::finish(&client, login, None, WAIT), browse(&to));
-    assert_eq!(page.unwrap().0, 400);
-    assert_eq!(done.unwrap_err().to_string(), "Invalid OAuth state");
+    assert_still_waiting(snowflake::finish(&client, login, None, WAIT), &to).await;
     assert!(srv.seen().is_empty());
 }
 
@@ -1097,6 +1117,36 @@ async fn digitalocean_holds_both_loopbacks_and_outlasts_a_silent_connection() {
     }
 }
 
+/// Not in OpenCode: a connection that never sends its request holds up
+/// no other, and a wrong-state callback leaves the login to finish.
+#[tokio::test]
+async fn an_oauth_login_outlasts_silent_and_wrong_state_connections() {
+    let srv = server().await;
+    srv.push(reply(200, json!({"api_key": "poe-key"}).to_string()));
+    let login = poe::start(&poe_endpoints(&srv)).await.unwrap();
+    let port = url::Url::parse(&params(&login.url)["redirect_uri"])
+        .unwrap()
+        .port()
+        .unwrap();
+    let good = redirect(&login.url, &[]);
+    let wrong = redirect(&login.url, &[("state", "other")]);
+    let client = reqwest::Client::new();
+    let finish = poe::finish(&client, login, None, |_| {}, WAIT);
+    let browser = async {
+        let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        assert_eq!(browse(&wrong).await.unwrap().0, 400);
+        tokio::time::timeout(Duration::from_secs(3), browse(&good))
+            .await
+            .expect("a silent connection held up the login")
+            .unwrap()
+    };
+    let (saved, page) = tokio::join!(finish, browser);
+    assert_eq!(page.0, 200);
+    assert_eq!(saved.unwrap()["access"], "poe-key");
+}
+
 // plugin/provider-gitlab-oauth.test.ts
 
 use codesmith_core::providers::gitlab;
@@ -1357,10 +1407,16 @@ async fn oc_gitlab_oauth_reports_a_revoked_refresh_token_with_a_sign_in_again_hi
     assert!(!e.contains("authorization code"), "{e}");
 }
 
+/// Adapted: a wrong state leaves the login waiting (see
+/// [`assert_still_waiting`]).
 #[tokio::test]
 async fn oc_gitlab_oauth_rejects_invalid_or_denied_callbacks() {
+    let srv = server().await;
+    let login = gitlab::start(&gitlab_endpoints(&srv, "app")).await.unwrap();
+    let to = redirect(&login.url, &[("state", "")]);
+    let client = reqwest::Client::new();
+    assert_still_waiting(gitlab::finish(&client, login, None, WAIT), &to).await;
     let cases: &[(&[(&str, &str)], &str)] = &[
-        (&[("state", "")], "Invalid OAuth state"),
         (&[("code", "")], "Missing authorization code"),
         (
             &[

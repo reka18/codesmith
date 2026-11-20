@@ -7,8 +7,10 @@
 //! (so the page says whether the login worked), answers any later callback
 //! with 409, and closes when the login is dropped. A redirect pasted into
 //! the terminal (the browser on another machine) completes the login the
-//! same way; a paste that belongs to another login is refused and the login
-//! keeps waiting.
+//! same way. A callback or paste that belongs to another login (a wrong
+//! state) is refused and the login keeps waiting, so another local program
+//! cannot end it; each connection is read in its own task with a short
+//! timeout, so a silent one stalls nothing.
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::BTreeMap;
@@ -45,12 +47,18 @@ impl Default for Pkce {
     }
 }
 
+/// The error of a callback whose state is not the login's.
+pub const INVALID_STATE: &str = "Invalid OAuth state";
+
+/// How long a callback connection may take to send its request.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The checks of a callback: the state, then an error, then the code.
 /// `detail` keeps a provider's error description unless it repeats the
 /// state.
 pub fn check(params: &Params, state: &str, provider: &str) -> Result<String, String> {
     if params.get("state").map(String::as_str) != Some(state) {
-        return Err("Invalid OAuth state".into());
+        return Err(INVALID_STATE.into());
     }
     if params.contains_key("error") {
         let detail = params
@@ -231,8 +239,11 @@ impl Callback {
 
     /// Wait for the redirect (or a pasted one), checked with `check`, for
     /// at most `timeout`. A failed check is answered at once and ends the
-    /// login; a paste that belongs to another login is reported through
-    /// `wrong_paste` and the login keeps waiting.
+    /// login, except a wrong state: that request (from another login, or
+    /// another program) is answered 400 and the login keeps waiting, and a
+    /// paste that belongs to another login is reported through
+    /// `wrong_paste`. Each connection is read on its own, with
+    /// [`READ_TIMEOUT`] to send its request, so a silent one holds up none.
     pub async fn wait(
         &mut self,
         check: impl Fn(&Params) -> Result<String, String>,
@@ -245,6 +256,8 @@ impl Callback {
             .take()
             .ok_or_else(|| anyhow!("the login already ended"))?;
         let deadline = tokio::time::Instant::now() + timeout;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(TcpStream, Params)>(4);
+        let mut readers = tokio::task::JoinSet::new();
         let out = loop {
             let paste = async {
                 match pasted.as_mut() {
@@ -263,7 +276,7 @@ impl Callback {
                         continue;
                     };
                     match check(&params) {
-                        Err(e) if e == "Invalid OAuth state" => {
+                        Err(e) if e == INVALID_STATE => {
                             wrong_paste("This URL belongs to a different sign-in");
                             continue;
                         }
@@ -271,18 +284,13 @@ impl Callback {
                         Ok(code) => break Ok(Received { code, params, browser: None, provider: self.provider.clone() }),
                     }
                 }
-                acc = listener.accept() => {
-                    let Ok((mut sock, _)) = acc else { continue };
-                    let Some((method, target)) = request_line(&mut sock).await else { continue };
-                    let Some((path, params)) = query(&target) else {
-                        reply(sock, 404, "").await;
-                        continue;
-                    };
-                    if method != "GET" || path != self.path {
-                        reply(sock, 404, "").await;
-                        continue;
-                    }
+                Some((sock, params)) = rx.recv() => {
                     match check(&params) {
+                        Err(e) if e == INVALID_STATE => {
+                            let page = page(&self.provider, Some(&e));
+                            readers.spawn(async move { reply(sock, 400, &page).await });
+                            continue;
+                        }
                         Err(e) => {
                             reply(sock, 400, &page(&self.provider, Some(&e))).await;
                             break Err(anyhow!(e));
@@ -290,13 +298,33 @@ impl Callback {
                         Ok(code) => break Ok(Received { code, params, browser: Some(sock), provider: self.provider.clone() }),
                     }
                 }
+                acc = listener.accept() => {
+                    let Ok((mut sock, _)) = acc else { continue };
+                    let (tx, path) = (tx.clone(), self.path.clone());
+                    readers.spawn(async move {
+                        let Ok(Some((method, target))) =
+                            tokio::time::timeout(READ_TIMEOUT, request_line(&mut sock)).await
+                        else {
+                            return;
+                        };
+                        match query(&target) {
+                            Some((p, params)) if method == "GET" && p == path => {
+                                let _ = tx.send((sock, params)).await;
+                            }
+                            _ => reply(sock, 404, "").await,
+                        }
+                    });
+                }
             }
         };
+        readers.abort_all();
         // Later callbacks are refused until the login is dropped.
         self.drain = Some(tokio::spawn(async move {
             while let Ok((mut sock, _)) = listener.accept().await {
-                let _ = request_line(&mut sock).await;
-                reply(sock, 409, "OAuth callback already received").await;
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(READ_TIMEOUT, request_line(&mut sock)).await;
+                    reply(sock, 409, "OAuth callback already received").await;
+                });
             }
         }));
         out
