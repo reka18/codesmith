@@ -178,6 +178,12 @@ pub fn tool_name(server: &str, tool: &str) -> String {
     sanitize(&format!("{server}_{tool}"))
 }
 
+/// A permission pattern matching every tool name a server's tools get
+/// (`<server>_*`, including names disambiguated after a collision).
+pub fn tools_pattern(server: &str) -> String {
+    format!("{}_*", sanitize(server))
+}
+
 /// The slash command that runs a server's prompt: `server:prompt`, as in OpenCode.
 pub fn command_name(server: &str, prompt: &str) -> String {
     format!("{}:{}", sanitize(server), sanitize(prompt))

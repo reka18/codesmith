@@ -535,14 +535,20 @@ async fn unattended_runs_deny_shell_unless_config_opts_in() {
     }
 }
 
-/// Answers every request with `reply`, recording the actions asked.
+/// Answers every request with `reply`, recording the actions asked (and
+/// each request's title and resources).
 struct Record(
     std::sync::Mutex<Vec<String>>,
     codesmith_core::permission::Reply,
+    std::sync::Mutex<Vec<(String, Vec<String>)>>,
 );
 impl codesmith_core::permission::Asker for Record {
     fn ask(&self, req: &codesmith_core::permission::Request) -> codesmith_core::permission::Reply {
         self.0.lock().unwrap().push(req.action.clone());
+        self.2
+            .lock()
+            .unwrap()
+            .push((req.title.clone(), req.resources.clone()));
         self.1.clone()
     }
 }
@@ -563,7 +569,7 @@ async fn the_automation_tool_asks_and_keeps_agents_in_bounds() {
     let base = model().await;
     let session = |extra: Value, agent: &str, reply: Reply| {
         let loaded = (open_loader(base.clone(), extra))(dir.path()).unwrap();
-        let asker = Arc::new(Record(Default::default(), reply));
+        let asker = Arc::new(Record(Default::default(), reply, Default::default()));
         let s = Session::new(
             &loaded,
             dir.path().to_path_buf(),
@@ -598,6 +604,19 @@ async fn the_automation_tool_asks_and_keeps_agents_in_bounds() {
     // (A declined request ends the turn.)
     assert_eq!(*asker.0.lock().unwrap(), ["automation"], "{}", out.0);
     assert_eq!(count(), 0);
+    // The request shows what will run: the trigger, the target and the
+    // prompt itself, not just the name the model chose.
+    let (title, resources) = asker.2.lock().unwrap()[0].clone();
+    assert_eq!(resources, ["create"]);
+    assert!(
+        title.contains("Schedule automation \"job\" (every 1 hour)"),
+        "{title}"
+    );
+    assert!(
+        title.contains(&format!("to this session ({})", s.id)),
+        "{title}"
+    );
+    assert!(title.ends_with(":\ndo it"), "{title}");
 
     // A rule naming the action decides without asking.
     let rule =
@@ -750,4 +769,251 @@ async fn a_busy_session_defers_runs_and_a_live_session_catches_up() {
     assert!(started.elapsed() >= std::time::Duration::from_millis(500));
     assert!(out.0.contains("answer to: third"));
     release.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn managing_automations_asks_and_unattended_runs_cannot() {
+    use codesmith_core::permission::Reply;
+    use codesmith_core::session::{Options, Session};
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let db = Store::open(&dbp).unwrap();
+    let base = model().await;
+    let d = dir.path().display().to_string();
+    let job = |name: &str, prompt: &str| au::New {
+        name: name.into(),
+        directory: d.clone(),
+        session_id: None,
+        trigger: Trigger::Every {
+            every: "1 hour".into(),
+            tz: None,
+        },
+        action: Action::Prompt {
+            prompt: prompt.into(),
+            to: Target::Subagent {
+                subagent: "build".into(),
+            },
+        },
+    };
+    let target = au::create(&db, job("target", "summarize the log")).unwrap();
+    // A rule allowing only creation leaves pause, resume and remove asking.
+    let only_create =
+        json!({"permissions": [{"action": "automation", "resource": "create", "effect": "allow"}]});
+    let session = |reply: Reply| {
+        let loaded = (open_loader(base.clone(), only_create.clone()))(dir.path()).unwrap();
+        let asker = Arc::new(Record(Default::default(), reply, Default::default()));
+        let s = Session::new(
+            &loaded,
+            dir.path().to_path_buf(),
+            Options {
+                agent: None,
+                model: None,
+                resume: None,
+                title: Some("t".into()),
+                parent: None,
+                questioner: None,
+                mcp: None,
+            },
+            asker.clone(),
+            Some(Store::open(&dbp).unwrap()),
+        )
+        .unwrap();
+        (s, asker)
+    };
+    let call = |action: &str| {
+        let args = json!({"action": action, "id": target.id});
+        format!("call automation {args}")
+    };
+    let status = || au::get(&db, &target.id).unwrap().unwrap().status;
+
+    let (mut s, asker) = session(Reply::Reject(None));
+    for action in ["pause", "remove"] {
+        let mut out = Collect(String::new());
+        s.prompt(&call(action), &mut out).await.unwrap();
+        assert_eq!(status(), "active", "{action}: {}", out.0);
+    }
+    assert_eq!(*asker.0.lock().unwrap(), ["automation", "automation"]);
+    let titles = asker.2.lock().unwrap().clone();
+    assert_eq!(titles[0].1, ["pause"]);
+    assert!(
+        titles[0].0.starts_with(&format!(
+            "Pause automation \"target\" ({}, every 1 hour)",
+            target.id
+        )),
+        "{:?}",
+        titles[0]
+    );
+    assert!(titles[0].0.contains("summarize the log"), "{:?}", titles[0]);
+    assert_eq!(titles[1].1, ["remove"]);
+
+    // Approved, each goes ahead; a paused automation's resume asks too.
+    let (mut s, asker) = session(Reply::Once);
+    let mut out = Collect(String::new());
+    s.prompt(&call("pause"), &mut out).await.unwrap();
+    assert_eq!(status(), "paused", "{}", out.0);
+    let mut out = Collect(String::new());
+    s.prompt(&call("resume"), &mut out).await.unwrap();
+    assert_eq!(status(), "active", "{}", out.0);
+    assert_eq!(asker.0.lock().unwrap().len(), 2);
+
+    // An unattended run can't manage automations, even when the rules and
+    // `automation.permissions` allow the tool.
+    let allow = json!({
+        "permissions": [{"action": "automation", "resource": "*", "effect": "allow"}],
+        "automation": {"permissions": [{"action": "automation", "resource": "*", "effect": "allow"}]}
+    });
+    let runner = Runner::new(dbp.clone(), open_loader(base.clone(), allow));
+    let rogue = au::create(&db, job("rogue", &call("remove"))).unwrap();
+    due_now(&db, &rogue.id);
+    runner.tick().await.unwrap();
+    let r = &au::runs(&db, &rogue.id).unwrap()[0];
+    assert!(
+        r.detail.contains("No tool named \"automation\""),
+        "{}",
+        r.detail
+    );
+    assert_eq!(status(), "active");
+}
+
+/// A loader whose config has the `fake` stdio MCP server (tool `echo`).
+fn mcp_loader(base: String, py: &'static str, extra: Value) -> au::Loader {
+    let fixture = format!("{}/tests/fixtures/mcp_stdio.py", env!("CARGO_MANIFEST_DIR"));
+    let mut extra = extra;
+    codesmith_core::config::merge(
+        &mut extra,
+        json!({"mcp": {"servers": {"fake": {"type": "local", "command": [py, fixture]}}}}),
+    );
+    open_loader(base, extra)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unattended_runs_deny_mcp_tools_unless_config_opts_in() {
+    use codesmith_core::permission::{evaluate, Effect};
+    let Some(py) = python() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let base = model().await;
+    let d = dir.path().display().to_string();
+    // A program that calls the server's tool with data from the run.
+    let code = "return { state: await tools.fake.echo({ text: 'leaked ' + input.runs }) }";
+    // Each case gets its own database: a runner holds the scheduler lease.
+    let mut n = 0;
+    let mut run = |extra: Value| {
+        n += 1;
+        let dbp = dir.path().join(format!("s{n}.db"));
+        let (base, d) = (base.clone(), d.clone());
+        async move {
+            let db = Store::open(&dbp).unwrap();
+            let runner = Runner::new(dbp.clone(), mcp_loader(base, py, extra));
+            let a = au::create(
+                &db,
+                au::New {
+                    name: "mcp".into(),
+                    directory: d,
+                    session_id: None,
+                    trigger: Trigger::Every {
+                        every: "1 hour".into(),
+                        tz: None,
+                    },
+                    action: Action::Code {
+                        code: code.into(),
+                        args: None,
+                    },
+                },
+            )
+            .unwrap();
+            due_now(&db, &a.id);
+            runner.tick().await.unwrap();
+            au::get(&db, &a.id).unwrap().unwrap()
+        }
+    };
+    // Denied by default: the program doesn't even see the tool.
+    let a = run(json!({})).await;
+    assert_eq!(a.last_outcome.as_deref(), Some("failed"));
+    assert_eq!(a.state, Value::Null, "{:?}", a.last_error);
+
+    // `automation.permissions` opts one tool back in.
+    let opt_in = json!({"automation": {"permissions": [{"action": "fake_echo", "resource": "*", "effect": "allow"}]}});
+    let a = run(opt_in).await;
+    assert_eq!(
+        a.last_outcome.as_deref(),
+        Some("fired"),
+        "{:?}",
+        a.last_error
+    );
+    assert_eq!(a.state, json!("echo: leaked 1"));
+
+    // The same rules apply to prompts: every tool of every configured
+    // server and the resource tools are denied, so no `execute` either.
+    let config: Config = serde_json::from_value(json!({
+        "mcp": {"servers": {"fake": {"type": "local", "command": ["x"]}, "my server": {"type": "local", "command": ["x"]}}},
+        "automation": {"permissions": [{"action": "fake_echo", "resource": "*", "effect": "allow"}]}
+    }))
+    .unwrap();
+    let rules = au::unattended_rules(&config);
+    for (tool, effect) in [
+        ("fake_echo", Effect::Allow),
+        ("fake_other", Effect::Deny),
+        ("my_server_send_mail", Effect::Deny),
+        ("list_mcp_resources", Effect::Deny),
+        ("read_mcp_resource", Effect::Deny),
+        ("automation", Effect::Deny),
+        ("watch_mcp_event", Effect::Deny),
+        ("read", Effect::Ask),
+    ] {
+        assert_eq!(evaluate(tool, "*", &rules), effect, "{tool}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_watch_request_shows_the_server_event_args_and_prompt() {
+    use codesmith_core::permission::Reply;
+    use codesmith_core::session::{Options, Session};
+    let Some(py) = python() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let base = model().await;
+    let loaded = (event_loader(base, py))(dir.path()).unwrap();
+    let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, dir.path()).await;
+    let asker = Arc::new(Record(Default::default(), Reply::Once, Default::default()));
+    let mut s = Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("t".into()),
+            parent: None,
+            questioner: None,
+            mcp: Some(mcp),
+        },
+        asker.clone(),
+        Some(Store::open(&dbp).unwrap()),
+    )
+    .unwrap();
+    let args = json!({"action": "create", "name": "tickets", "prompt": "triage it\nthen close it", "trigger": {"type": "event", "server": "rich", "event": "ticket.created", "args": {"queue": "ops"}}});
+    let mut out = Collect(String::new());
+    s.prompt(&format!("call automation {args}"), &mut out)
+        .await
+        .unwrap();
+    assert!(out.0.contains("Created"), "{}", out.0);
+    let asked = asker.2.lock().unwrap().clone();
+    assert_eq!(*asker.0.lock().unwrap(), ["automation", "watch_mcp_event"]);
+    assert!(
+        asked[0]
+            .0
+            .contains("(on rich:ticket.created events {\"queue\":\"ops\"})"),
+        "{:?}",
+        asked[0]
+    );
+    assert!(
+        asked[0].0.ends_with(":\ntriage it\nthen close it"),
+        "{:?}",
+        asked[0]
+    );
+    assert_eq!(asked[1].1, ["rich"]);
+    assert_eq!(
+        asked[1].0,
+        "Watch ticket.created events from MCP server rich with arguments {\"queue\":\"ops\"}, for automation \"tickets\": each event runs it unattended with the event as untrusted data"
+    );
 }

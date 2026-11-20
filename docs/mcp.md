@@ -79,6 +79,11 @@ permissions under that name with resource `*`:
 A tool denied for `*` is hidden from the model. In Code Mode, every call a
 program makes is checked the same way as a direct call.
 
+[Automations](automations.md#permissions-for-unattended-runs) run with every
+MCP tool denied, including the resource tools and tools reached through
+Code Mode. Allow the ones a run needs under `automation.permissions`, for
+example `{"action": "github_create_issue", "resource": "*", "effect": "allow"}`.
+
 ## Code Mode
 
 As in OpenCode, MCP tools are offered through Code Mode by default. Instead

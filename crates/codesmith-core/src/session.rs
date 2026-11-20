@@ -1435,6 +1435,29 @@ impl Session {
                 return (format!("{e:#}"), true);
             }
         }
+        // Managing automations outlives this session, so it asks unless a
+        // rule names the action: the blanket allow agents start with does
+        // not cover it. (Unattended runs deny the tool outright.)
+        let explicit = |action: &str, resource: &str, title: String| {
+            use crate::permission::{evaluate, Denied, Effect, Gate, Request};
+            let rules = self.gate.rules();
+            let named = au::explicit_effect(action, resource, &rules);
+            if named == Effect::Deny || evaluate(action, resource, &rules) == Effect::Deny {
+                let (action, resource) = (action.into(), resource.into());
+                return Err(Denied::Blocked { action, resource }.to_string());
+            }
+            if named == Effect::Allow {
+                return self.allowed(action, resource, title);
+            }
+            let req = Request {
+                action: action.into(),
+                resources: vec![resource.into()],
+                save: vec![],
+                title,
+            };
+            let gate = Gate::new(vec![], self.gate.asker());
+            tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
+        };
         let result: anyhow::Result<String> = (|| match action.as_str() {
             "list" => Ok(au::table(&au::list(db, Some(&dir))?)),
             "create" => {
@@ -1453,33 +1476,25 @@ impl Session {
                     },
                 };
                 let name = s("name").unwrap_or_else(|| prompt.chars().take(40).collect());
-                let title = format!("Schedule \"{name}\" ({})", au::describe(&trigger));
-                // Scheduling outlives this session, so it asks unless a rule
-                // names the action: the blanket allow agents start with
-                // does not cover it.
-                let explicit = |action: &str, resource: &str, title: String| {
-                    use crate::permission::{evaluate, Denied, Effect, Gate, Request};
-                    let rules = self.gate.rules();
-                    let named = au::explicit_effect(action, resource, &rules);
-                    if named == Effect::Deny || evaluate(action, resource, &rules) == Effect::Deny {
-                        let (action, resource) = (action.into(), resource.into());
-                        return Err(Denied::Blocked { action, resource }.to_string());
-                    }
-                    if named == Effect::Allow {
-                        return self.allowed(action, resource, title);
-                    }
-                    let req = Request {
-                        action: action.into(),
-                        resources: vec![resource.into()],
-                        save: vec![],
-                        title,
-                    };
-                    let gate = Gate::new(vec![], self.gate.asker());
-                    tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
-                };
+                let action = au::Action::Prompt { prompt, to };
+                let title = au::create_title(&name, &trigger, &action);
                 explicit(au::TOOL, "create", title).map_err(|e| anyhow!(e))?;
-                if let au::Trigger::Event { server, event, .. } = &trigger {
-                    let title = format!("Watch {event} events from MCP server {server}");
+                if let au::Trigger::Event {
+                    server,
+                    event,
+                    args,
+                } = &trigger
+                {
+                    let args = match args.as_ref().filter(|a| !a.is_null()) {
+                        Some(a) => format!(" with arguments {}", au::quote(&a.to_string(), 600)),
+                        None => String::new(),
+                    };
+                    let title = format!(
+                        "Watch {} events from MCP server {}{args}, for automation \"{}\": each event runs it unattended with the event as untrusted data",
+                        au::quote(event, 200),
+                        au::quote(server, 200),
+                        au::quote(&name, 80),
+                    );
                     explicit(au::WATCH_EVENT, server, title).map_err(|e| anyhow!(e))?;
                 }
                 let a = au::create(
@@ -1489,7 +1504,7 @@ impl Session {
                         directory: dir.clone(),
                         session_id: Some(self.id.clone()),
                         trigger,
-                        action: au::Action::Prompt { prompt, to },
+                        action,
                     },
                 )?;
                 let first = match a.next_due {
@@ -1503,12 +1518,20 @@ impl Session {
                 let a = au::get(db, &id)?
                     .filter(|a| a.directory == dir)
                     .ok_or_else(|| anyhow!("no automation {id} in this project"))?;
-                self.allowed(
-                    au::TOOL,
-                    &action,
-                    format!("{action} automation \"{}\"", a.name),
-                )
-                .map_err(|e| anyhow!(e))?;
+                // Resuming restarts unattended work, and pausing or removing
+                // stops work the user set up, so each asks like create.
+                let title = format!(
+                    "{} automation \"{}\" ({id}, {}), which {}",
+                    match action.as_str() {
+                        "pause" => "Pause",
+                        "resume" => "Resume",
+                        _ => "Remove",
+                    },
+                    au::quote(&a.name, 80),
+                    au::quote(&au::describe(&a.trigger), 600),
+                    au::describe_action(&a.action, au::APPROVAL_PROMPT)
+                );
+                explicit(au::TOOL, &action, title).map_err(|e| anyhow!(e))?;
                 if action == "remove" {
                     au::remove(db, &id)?;
                     Ok(format!("Removed {id}."))

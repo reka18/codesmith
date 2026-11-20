@@ -231,8 +231,9 @@ never for ones they deny.
 
 [Automations](automations.md) run with nobody at the keyboard. Anything that
 would ask is refused, and after all of your rules, the agents' included,
-`shell`, `edit` (which covers `write`), `webfetch` and `external_directory`
-are denied, so even an agent configured to allow them can't use them
+`shell`, `edit` (which covers `write`), `webfetch`, `external_directory`
+and every MCP tool (each configured server's `<server>_*`, and the resource
+tools) are denied, so even an agent configured to allow them can't use them
 unattended. Rules under `automation.permissions` apply only to unattended
 runs and come after those denies, so they opt back in:
 
@@ -241,11 +242,13 @@ runs and come after those denies, so they opt back in:
   "automation": {
     "permissions": [
       { "action": "shell", "resource": "cargo test*", "effect": "allow" },
-      { "action": "edit", "resource": "CHANGELOG.md", "effect": "allow" }
+      { "action": "edit", "resource": "CHANGELOG.md", "effect": "allow" },
+      { "action": "github_create_issue", "resource": "*", "effect": "allow" }
     ]
   }
 }
 ```
 
-Creating an automation also has its own rule: the blanket `allow` doesn't
-cover it. See [what the agent may schedule](automations.md#what-the-agent-may-schedule).
+Unattended runs can't manage automations at all, whatever the rules say.
+Creating, pausing, resuming or removing an automation also has its own rule:
+the blanket `allow` doesn't cover it. See [what the agent may schedule](automations.md#what-the-agent-may-schedule).

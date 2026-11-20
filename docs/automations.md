@@ -78,11 +78,20 @@ automations are kept on a short leash.
 
 - **Creating an automation asks you first**, and so does watching an MCP
   server's events, even though agents allow everything else by default. The
-  blanket `allow` doesn't count. Only a rule that names the action itself
-  skips the question:
-  `{"action": "automation", "resource": "*", "effect": "allow"}`, or
-  `{"action": "watch_mcp_event", "resource": "tracker", "effect": "allow"}`
-  for one server.
+  request shows what you are approving: the name, the trigger, where the
+  prompt goes (this session, or a new session with which agent), and the
+  prompt itself, with control and invisible characters spelled out and
+  anything past 4000 characters cut with a "(N more chars)" note. An event
+  watch's request names the server, the event and its arguments.
+- **Pausing, resuming and removing ask too**, showing the automation's
+  trigger and prompt, so an injected model can't quietly restart a job you
+  paused or delete one you rely on.
+- The blanket `allow` doesn't count for any of these. Only a rule that names
+  the action itself skips the question:
+  `{"action": "automation", "resource": "*", "effect": "allow"}` for every
+  operation, a resource of `create`, `pause`, `resume` or `remove` for one,
+  or `{"action": "watch_mcp_event", "resource": "tracker", "effect": "allow"}`
+  for one server's events.
 - **A job the agent creates runs only as that session's own agent, or as a
   read-only subagent** (`explore`, `review`). The `plan` agent can't
   schedule work for `build`. Use `codesmith automation add --agent ...` to
@@ -92,8 +101,13 @@ automations are kept on a short leash.
 
 Runs are unattended. They follow your permission rules, and anything that
 would ask is refused. On top of that, **`shell`, `edit` (and `write`),
-`webfetch` and `external_directory` are denied**, because a run may act on
-untrusted input such as an MCP event.
+`webfetch`, `external_directory` and MCP tools are denied**, because a run
+may act on untrusted input such as an MCP event, and MCP tools (chat,
+issues, mail) are the easiest way to send data out. The MCP denies cover
+every tool of every configured server (`<server>_*`), the
+`list_mcp_resources` and `read_mcp_resource` tools, and Code Mode: denied
+tools aren't offered to a Code Mode program, so a run's model gets no
+`execute` tool and a Code Mode automation sees only the tools you opted in.
 
 Rules under `automation.permissions` apply only to unattended runs, and come
 after those denies, so they opt back in:
@@ -103,14 +117,21 @@ after those denies, so they opt back in:
   "automation": {
     "permissions": [
       { "action": "shell", "resource": "cargo test*", "effect": "allow" },
-      { "action": "edit", "resource": "CHANGELOG.md", "effect": "allow" }
+      { "action": "edit", "resource": "CHANGELOG.md", "effect": "allow" },
+      // One MCP tool, directly or from Code Mode; "github_*" for the server.
+      { "action": "github_create_issue", "resource": "*", "effect": "allow" }
     ]
   }
 }
 ```
 
 `{"action": "shell", "resource": "*", "effect": "allow"}` gives runs the
-whole shell back. See [permissions](permissions.md#unattended-runs).
+whole shell back.
+
+Unattended runs can't manage automations: the `automation` tool and event
+watches are denied in them whatever the rules, `automation.permissions`
+included, so a run can't schedule more work, resume a paused job or remove
+one. See [permissions](permissions.md#unattended-runs).
 
 ## MCP events
 
