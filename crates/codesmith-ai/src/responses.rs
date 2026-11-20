@@ -293,6 +293,8 @@ struct Pending {
     call_id: String,
     name: String,
     args: String,
+    /// The id its input streams under.
+    stream_id: String,
 }
 
 /// A reasoning output item between `output_item.added` and its completion.
@@ -306,6 +308,8 @@ struct Thinking {
     texted: Vec<u64>,
     /// A finished summary part; the next one starts after a blank line.
     separate: bool,
+    /// Its reasoning block has started.
+    started: bool,
 }
 
 #[derive(Default)]
@@ -313,6 +317,14 @@ pub struct State {
     calls: usize,
     pending: Vec<Pending>,
     thinking: Option<Thinking>,
+    /// The message item whose text block is open.
+    text: Option<String>,
+    /// Message items added so far, and those a later item concluded: late
+    /// text for a concluded item is dropped.
+    messages: Vec<String>,
+    concluded: Vec<String>,
+    /// Blocks started, for ids of blocks without an item id.
+    blocks: usize,
     pub done: bool,
 }
 
@@ -323,6 +335,14 @@ impl State {
             return;
         }
         if let Some(t) = &mut self.thinking {
+            if !std::mem::replace(&mut t.started, true) {
+                let id = match t.id.as_str() {
+                    "" => format!("reasoning-{}", self.blocks),
+                    id => id.to_string(),
+                };
+                self.blocks += 1;
+                out.push(Event::ReasoningStart(id));
+            }
             if std::mem::take(&mut t.separate) && t.streamed {
                 out.push(Event::ReasoningDelta("\n\n".into()));
             }
@@ -330,6 +350,36 @@ impl State {
             t.texted.extend(index);
         }
         out.push(Event::ReasoningDelta(text.to_string()));
+    }
+
+    /// Text for a message item: dropped when a later item concluded it,
+    /// else in that item's text block.
+    fn text(&mut self, item: Option<&str>, text: &str, out: &mut Vec<Event>) {
+        if text.is_empty() || item.is_some_and(|i| self.concluded.iter().any(|c| c == i)) {
+            return;
+        }
+        let same = match (&self.text, item) {
+            (Some(open), Some(i)) => open == i,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !same {
+            self.end_text(out);
+            let id = match item.filter(|i| !i.is_empty()) {
+                Some(i) => i.to_string(),
+                None => format!("text-{}", self.blocks),
+            };
+            self.blocks += 1;
+            out.push(Event::TextStart(id.clone()));
+            self.text = Some(id);
+        }
+        out.push(Event::TextDelta(text.to_string()));
+    }
+
+    fn end_text(&mut self, out: &mut Vec<Event>) {
+        if let Some(id) = self.text.take() {
+            out.push(Event::TextEnd(id));
+        }
     }
 
     /// End the open reasoning item, with its replay state.
@@ -360,17 +410,13 @@ impl State {
         Some(&mut self.pending[at])
     }
 
-    fn call(&mut self, call_id: &str, item_id: &str, name: &str, args: &str) -> Event {
+    fn call(&mut self, call: &str, item_id: &str, name: &str, args: &str) -> Event {
         let input = if args.trim().is_empty() {
             json!({})
         } else {
             serde_json::from_str(args).unwrap_or_else(|_| json!({"__invalid_json": args}))
         };
-        let id = [call_id, item_id]
-            .into_iter()
-            .find(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(crate::fresh_id);
+        let id = call_id(call, item_id);
         self.calls += 1;
         Event::ToolCall {
             id,
@@ -378,6 +424,15 @@ impl State {
             input,
         }
     }
+}
+
+/// A call's id: its call id, else its item id, else a fresh one.
+fn call_id(call_id: &str, item_id: &str) -> String {
+    [call_id, item_id]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(crate::fresh_id)
 }
 
 fn item_str<'a>(it: &'a Value, key: &str) -> &'a str {
@@ -398,9 +453,29 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
     let mut out = Vec::new();
     match kind {
         // Refusals are ordinary assistant text.
-        "response.output_text.delta" | "response.refusal.delta" => out.push(Event::TextDelta(
-            v["delta"].as_str().unwrap_or("").to_string(),
-        )),
+        "response.output_text.delta" | "response.refusal.delta" => {
+            let d = v["delta"].as_str().unwrap_or("");
+            state.text(v["item_id"].as_str(), d, &mut out);
+        }
+        // A new message concludes the earlier ones, even without their done.
+        "response.output_item.added" if v["item"]["type"] == "message" => {
+            let id = item_str(&v["item"], "id");
+            if !state.messages.iter().any(|m| m == id) {
+                state.end_text(&mut out);
+                let earlier = std::mem::take(&mut state.messages);
+                state.concluded.extend(earlier);
+                state.messages.push(id.to_string());
+            }
+        }
+        "response.output_item.done" if v["item"]["type"] == "message" => {
+            let id = item_str(&v["item"], "id");
+            if state.text.as_deref() == Some(id) {
+                state.end_text(&mut out);
+            }
+            if !id.is_empty() {
+                state.concluded.push(id.to_string());
+            }
+        }
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             let d = v["delta"].as_str().unwrap_or("");
             state.reasoning(d, v["summary_index"].as_u64(), &mut out);
@@ -423,8 +498,16 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
             }
         }
         "response.output_item.added" if v["item"]["type"] == "reasoning" => {
-            state.end_thinking(&mut out);
             let it = &v["item"];
+            // A repeated start of the open item is not a new item.
+            if state
+                .thinking
+                .as_ref()
+                .is_some_and(|t| t.id == item_str(it, "id"))
+            {
+                return Ok(out);
+            }
+            state.end_thinking(&mut out);
             state.thinking = Some(Thinking {
                 id: item_str(it, "id").into(),
                 encrypted: it["encrypted_content"].as_str().map(str::to_string),
@@ -456,17 +539,40 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
         }
         "response.output_item.added" if v["item"]["type"] == "function_call" => {
             let it = &v["item"];
-            state.pending.push(Pending {
+            let item_id = item_str(it, "id");
+            if !item_id.is_empty() && state.pending.iter().any(|p| p.item_id == item_id) {
+                return Ok(out);
+            }
+            let p = Pending {
                 output_index: v["output_index"].as_u64(),
-                item_id: item_str(it, "id").into(),
+                item_id: item_id.into(),
                 call_id: item_str(it, "call_id").into(),
                 name: item_str(it, "name").into(),
                 args: item_str(it, "arguments").into(),
+                stream_id: call_id(item_str(it, "call_id"), item_id),
+            };
+            out.push(Event::ToolInputStart {
+                id: p.stream_id.clone(),
+                name: p.name.clone(),
             });
+            if !p.args.is_empty() {
+                out.push(Event::ToolInputDelta {
+                    id: p.stream_id.clone(),
+                    text: p.args.clone(),
+                });
+            }
+            state.pending.push(p);
         }
         "response.function_call_arguments.delta" => {
             if let Some(p) = state.find(v) {
-                p.args.push_str(v["delta"].as_str().unwrap_or(""));
+                let d = v["delta"].as_str().unwrap_or("");
+                p.args.push_str(d);
+                if !d.is_empty() {
+                    out.push(Event::ToolInputDelta {
+                        id: p.stream_id.clone(),
+                        text: d.to_string(),
+                    });
+                }
             }
         }
         "response.function_call_arguments.done" => {
@@ -478,9 +584,23 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
         "response.output_item.done" if v["item"]["type"] == "function_call" => {
             let it = &v["item"];
             let item_id = item_str(it, "id");
-            state
+            let at = state
                 .pending
-                .retain(|p| !(p.item_id == item_id && !item_id.is_empty()));
+                .iter()
+                .position(|p| p.item_id == item_id && !item_id.is_empty());
+            let stream_id = match at {
+                Some(i) => state.pending.remove(i).stream_id,
+                // A call that arrives only completed still opens its input.
+                None => {
+                    let id = call_id(item_str(it, "call_id"), item_id);
+                    out.push(Event::ToolInputStart {
+                        id: id.clone(),
+                        name: item_str(it, "name").into(),
+                    });
+                    id
+                }
+            };
+            out.push(Event::ToolInputEnd { id: stream_id });
             out.push(state.call(
                 item_str(it, "call_id"),
                 item_id,
@@ -492,12 +612,16 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
             // Reasoning never completed by an output item ends with what
             // its start said; the terminal output is not reconciled.
             state.end_thinking(&mut out);
+            state.end_text(&mut out);
             let r = &v["response"];
             let complete = kind == "response.completed";
             // Calls never completed by an output item: the final response
             // output wins, then what streamed. An incomplete response's
             // calls are cut off, so they are dropped.
             for p in std::mem::take(&mut state.pending) {
+                out.push(Event::ToolInputEnd {
+                    id: p.stream_id.clone(),
+                });
                 if !complete {
                     continue;
                 }
@@ -510,7 +634,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                     .and_then(|o| o["arguments"].as_str())
                     .unwrap_or(&p.args);
                 let name = done.and_then(|o| o["name"].as_str()).unwrap_or(&p.name);
-                let ev = state.call(&p.call_id, &p.item_id, name, args);
+                let ev = state.call(&p.stream_id, &p.item_id, name, args);
                 out.push(ev);
             }
             let u = &r["usage"];
@@ -714,7 +838,7 @@ mod tests {
             all.extend(handle(&mut s, k, &v).unwrap());
         }
         assert_eq!(
-            all,
+            crate::content(all),
             vec![
                 Event::ReasoningDelta("plan".into()),
                 Event::TextDelta("Hi".into()),

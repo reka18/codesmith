@@ -574,21 +574,30 @@ fn reasoning_end(b: &Block) -> Event {
     Event::ReasoningEnd(meta)
 }
 
-/// Events for a block's end: its tool call or reasoning state.
-fn close_block(b: &mut Block) -> Option<Event> {
+/// The block's id in lifecycle events.
+fn block_id(kind: &str, i: usize) -> String {
+    format!("{kind}-{i}")
+}
+
+/// Events for a block's end: its text end, tool call or reasoning state.
+fn close_block(b: &mut Block, i: usize) -> Vec<Event> {
     if b.stopped {
-        return None;
+        return vec![];
     }
     match b.kind.as_str() {
+        "text" => {
+            b.stopped = true;
+            vec![Event::TextEnd(block_id("text", i))]
+        }
         "tool_use" => {
             b.stopped = true;
-            Some(tool_call(b))
+            vec![Event::ToolInputEnd { id: b.id.clone() }, tool_call(b)]
         }
         "thinking" | "redacted_thinking" => {
             b.stopped = true;
-            Some(reasoning_end(b))
+            vec![reasoning_end(b)]
         }
-        _ => None,
+        _ => vec![],
     }
 }
 
@@ -652,15 +661,24 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
             }
             let b = &v["content_block"];
             let kind = b["type"].as_str().unwrap_or("").to_string();
-            if kind == "text" {
-                if let Some(t) = b["text"].as_str().filter(|s| !s.is_empty()) {
-                    out.push(Event::TextDelta(t.to_string()));
+            match kind.as_str() {
+                "text" => {
+                    out.push(Event::TextStart(block_id("text", i)));
+                    if let Some(t) = b["text"].as_str().filter(|s| !s.is_empty()) {
+                        out.push(Event::TextDelta(t.to_string()));
+                    }
                 }
-            }
-            if kind == "thinking" {
-                if let Some(t) = b["thinking"].as_str().filter(|s| !s.is_empty()) {
-                    out.push(Event::ReasoningDelta(t.to_string()));
+                "thinking" | "redacted_thinking" => {
+                    out.push(Event::ReasoningStart(block_id("reasoning", i)));
+                    if let Some(t) = b["thinking"].as_str().filter(|s| !s.is_empty()) {
+                        out.push(Event::ReasoningDelta(t.to_string()));
+                    }
                 }
+                "tool_use" => out.push(Event::ToolInputStart {
+                    id: b["id"].as_str().unwrap_or("").to_string(),
+                    name: b["name"].as_str().unwrap_or("").to_string(),
+                }),
+                _ => {}
             }
             state.blocks[i] = Some(Block {
                 id: b["id"].as_str().unwrap_or("").to_string(),
@@ -687,7 +705,14 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
                 ),
                 Some("input_json_delta") => {
                     if let Some(Some(b)) = state.blocks.get_mut(i) {
-                        b.json.push_str(d["partial_json"].as_str().unwrap_or(""));
+                        let text = d["partial_json"].as_str().unwrap_or("");
+                        b.json.push_str(text);
+                        if b.kind == "tool_use" && !b.stopped && !text.is_empty() {
+                            out.push(Event::ToolInputDelta {
+                                id: b.id.clone(),
+                                text: text.to_string(),
+                            });
+                        }
                     }
                 }
                 Some("signature_delta") => {
@@ -701,7 +726,7 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
         "content_block_stop" => {
             let i = v["index"].as_u64().unwrap_or(0) as usize;
             if let Some(Some(b)) = state.blocks.get_mut(i) {
-                out.extend(close_block(b));
+                out.extend(close_block(b, i));
             }
         }
         "message_delta" => {
@@ -724,8 +749,10 @@ pub fn handle(state: &mut State, event: &str, v: &Value) -> Result<Vec<Event>, E
         }
         "message_stop" => {
             // Blocks whose stop never came settle here.
-            for b in state.blocks.iter_mut().flatten() {
-                out.extend(close_block(b));
+            for (i, b) in state.blocks.iter_mut().enumerate() {
+                if let Some(b) = b {
+                    out.extend(close_block(b, i));
+                }
             }
             state.done = true;
             out.push(Event::Finish {
@@ -879,7 +906,7 @@ mod tests {
                 &json!({"index": 0, "content_block": {"type": "text", "text": ""}})
             )
             .unwrap(),
-            vec![]
+            vec![Event::TextStart("text-0".into())]
         );
         assert_eq!(
             handle(
@@ -900,11 +927,14 @@ mod tests {
         handle(&mut s, "content_block_delta", &json!({"index": 1, "delta": {"type": "input_json_delta", "partial_json": "\"*.rs\"}"}})).unwrap();
         assert_eq!(
             handle(&mut s, "content_block_stop", &json!({"index": 1})).unwrap(),
-            vec![Event::ToolCall {
-                id: "t".into(),
-                name: "glob".into(),
-                input: json!({"pattern": "*.rs"})
-            }]
+            vec![
+                Event::ToolInputEnd { id: "t".into() },
+                Event::ToolCall {
+                    id: "t".into(),
+                    name: "glob".into(),
+                    input: json!({"pattern": "*.rs"})
+                }
+            ]
         );
         handle(
             &mut s,
@@ -914,15 +944,18 @@ mod tests {
         .unwrap();
         assert_eq!(
             handle(&mut s, "message_stop", &json!({})).unwrap(),
-            vec![Event::Finish {
-                reason: "tool_use".into(),
-                usage: Usage {
-                    input: 12,
-                    output: 40,
-                    cache_read: 5,
-                    cache_write: 0
+            vec![
+                Event::TextEnd("text-0".into()),
+                Event::Finish {
+                    reason: "tool_use".into(),
+                    usage: Usage {
+                        input: 12,
+                        output: 40,
+                        cache_read: 5,
+                        cache_write: 0
+                    }
                 }
-            }]
+            ]
         );
     }
 
@@ -980,7 +1013,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            handle(&mut s, "content_block_stop", &json!({"index": 0})).unwrap(),
+            crate::content(handle(&mut s, "content_block_stop", &json!({"index": 0})).unwrap()),
             vec![Event::ToolCall {
                 id: "t".into(),
                 name: "x".into(),

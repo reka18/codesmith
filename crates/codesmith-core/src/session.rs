@@ -46,6 +46,9 @@ use std::time::Duration;
 pub trait Sink: Send {
     fn text(&mut self, delta: &str);
     fn reasoning(&mut self, _delta: &str) {}
+    /// A tool call started streaming its arguments; its `tool_start` comes
+    /// once the response is complete and the call runs.
+    fn tool_input(&mut self, _id: &str, _name: &str) {}
     fn tool_start(&mut self, _id: &str, _name: &str, _input: &serde_json::Value) {}
     fn tool_end(&mut self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
     /// Images and PDFs a call returned, sent just before its `tool_end`.
@@ -2011,8 +2014,11 @@ impl Session {
 
     /// One model call with retries (OpenCode's schedule, see `retry`). A
     /// response that fails part way is retried from the prompt: its partial
-    /// output is dropped, and no tool from it has run yet. On the final step
-    /// the model is told to answer in text and tool calls are switched off.
+    /// output is dropped, and no tool from it has run yet. A failure that
+    /// ends the turn keeps the text and reasoning that streamed before it in
+    /// the history, as OpenCode does; its tool calls never ran and are left
+    /// out. On the final step the model is told to answer in text and tool
+    /// calls are switched off.
     async fn step(
         &mut self,
         sink: &mut dyn Sink,
@@ -2032,8 +2038,20 @@ impl Session {
         loop {
             match self.attempt(&req, sink).await {
                 Ok(r) => return Ok(r),
-                Err((e, _streamed)) => {
+                Err(codesmith_ai::Failure { error: e, partial }) => {
                     let Some(wait) = policy.next(&e, std::time::Instant::now()) else {
+                        let kept: Vec<Part> = partial
+                            .map(|p| p.parts)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|p| !matches!(p, Part::ToolCall { .. }))
+                            .collect();
+                        if !kept.is_empty() {
+                            self.push(Message {
+                                role: Role::Assistant,
+                                parts: kept,
+                            })?;
+                        }
                         return Err(anyhow!("{e}"));
                     };
                     attempt += 1;
@@ -2049,43 +2067,26 @@ impl Session {
         &self,
         req: &Request,
         sink: &mut dyn Sink,
-    ) -> Result<(Vec<Part>, String, Usage), (codesmith_ai::Error, bool)> {
-        let mut stream = self
+    ) -> Result<(Vec<Part>, String, Usage), codesmith_ai::Failure> {
+        let stream = self
             .model
             .provider
             .stream(&self.client, req)
             .await
-            .map_err(|e| (e, false))?;
-        // Parts in stream order, reasoning with its provider signature.
-        let mut parts = codesmith_ai::Collector::default();
-        let mut streamed = false;
-        let mut finish = None;
-        while let Some(ev) = stream.next().await {
-            let ev = ev.map_err(|e| (e, streamed))?;
-            match &ev {
-                Event::TextDelta(d) => {
-                    streamed = true;
-                    sink.text(d);
-                }
-                Event::ReasoningDelta(d) => {
-                    streamed = true;
-                    sink.reasoning(d);
-                }
-                Event::Finish { reason, usage } => finish = Some((reason.clone(), *usage)),
-                _ => {}
-            }
-            parts.push(&ev);
-        }
-        // A stream that ends without finishing was cut off: retry it.
-        let Some((reason, usage)) = finish else {
-            return Err((
-                codesmith_ai::Error::Transport(
-                    "the response stream ended before the model finished".into(),
-                ),
-                streamed,
-            ));
-        };
-        Ok((parts.finish(), reason, usage))
+            .map_err(|error| codesmith_ai::Failure {
+                error,
+                partial: None,
+            })?;
+        // Parts in stream order, reasoning with its provider signature. A
+        // stream that ends without finishing was cut off, and is retried.
+        let r = codesmith_ai::assemble(stream, |ev| match ev {
+            Event::TextDelta(d) => sink.text(d),
+            Event::ReasoningDelta(d) => sink.reasoning(d),
+            Event::ToolInputStart { id, name } => sink.tool_input(id, name),
+            _ => {}
+        })
+        .await?;
+        Ok((r.parts, r.reason, r.usage))
     }
 }
 

@@ -8,6 +8,7 @@ mod openai;
 mod options;
 #[cfg(test)]
 mod parity_tests;
+pub mod partial_json;
 #[cfg(test)]
 mod replay_tests;
 mod responses;
@@ -420,14 +421,40 @@ pub struct Usage {
     pub cache_write: u64,
 }
 
+/// One piece of a streamed response.
+///
+/// Text, reasoning and tool input arrive in blocks, as in OpenCode: a block
+/// opens with its start event (an id unique within the response), and its
+/// deltas belong to the latest open block of their kind. Protocols that
+/// stream reasoning without block boundaries (Chat) open one reasoning block
+/// for the whole response.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    TextStart(String),
     TextDelta(String),
+    TextEnd(String),
+    ReasoningStart(String),
     ReasoningDelta(String),
     /// The current reasoning block is complete, with the provider state
     /// needed to replay it. A block that streamed no text (redacted or
     /// omitted thinking) is still a block.
     ReasoningEnd(ReasoningMeta),
+    /// A tool call started streaming its arguments; its [`Event::ToolCall`]
+    /// follows its [`Event::ToolInputEnd`]. `id` is the call's id as
+    /// streamed (the final call's id may carry provider state after it).
+    ToolInputStart {
+        id: String,
+        name: String,
+    },
+    /// Raw argument text for a started tool call (see
+    /// [`partial_json::partial_input`] for the value so far).
+    ToolInputDelta {
+        id: String,
+        text: String,
+    },
+    ToolInputEnd {
+        id: String,
+    },
     ToolCall {
         id: String,
         name: String,
@@ -541,9 +568,10 @@ impl Provider {
 }
 
 /// Builds an assistant message's parts from its stream events, in stream
-/// order: consecutive text or reasoning deltas join into one part, and a
-/// reasoning block ends at its [`Event::ReasoningEnd`]. Reasoning from a
-/// protocol without block ends (Chat) is one part, however it interleaves
+/// order: a text or reasoning block is one part, and a reasoning block ends
+/// at its [`Event::ReasoningEnd`]. Deltas outside any block join the latest
+/// part of their kind or start one. Reasoning from a protocol with one
+/// reasoning block per response (Chat) is one part, however it interleaves
 /// with text.
 #[derive(Debug, Default)]
 pub struct Collector {
@@ -551,6 +579,8 @@ pub struct Collector {
     open: Option<Open>,
     /// A reasoning part closed by other content rather than by its end.
     loose: Option<usize>,
+    /// Tool calls whose arguments are streaming: id, name, raw arguments.
+    forming: Vec<(String, String, String)>,
 }
 
 #[derive(Debug)]
@@ -562,6 +592,15 @@ enum Open {
 impl Collector {
     pub fn push(&mut self, ev: &Event) {
         match ev {
+            Event::TextStart(_) => {
+                self.close();
+                self.open = Some(Open::Text(String::new()));
+            }
+            Event::TextEnd(_) => {
+                if matches!(self.open, Some(Open::Text(_))) {
+                    self.close();
+                }
+            }
             Event::TextDelta(d) if !d.is_empty() => match &mut self.open {
                 Some(Open::Text(t)) => t.push_str(d),
                 _ => {
@@ -569,6 +608,13 @@ impl Collector {
                     self.open = Some(Open::Text(d.clone()));
                 }
             },
+            Event::ReasoningStart(_) => {
+                if !matches!(self.open, Some(Open::Reasoning(_))) {
+                    self.close();
+                    self.loose = None;
+                    self.open = Some(Open::Reasoning(String::new()));
+                }
+            }
             Event::ReasoningDelta(d) if !d.is_empty() => match (&mut self.open, self.loose) {
                 (Some(Open::Reasoning(t)), _) => t.push_str(d),
                 (_, Some(i)) => {
@@ -605,6 +651,17 @@ impl Collector {
                     }
                 }
             }
+            Event::ToolInputStart { id, name } => {
+                if !self.forming.iter().any(|f| f.0 == *id) {
+                    self.forming.push((id.clone(), name.clone(), String::new()));
+                }
+            }
+            Event::ToolInputDelta { id, text } => {
+                if let Some(f) = self.forming.iter_mut().find(|f| f.0 == *id) {
+                    f.2.push_str(text);
+                }
+            }
+            Event::ToolInputEnd { id } => self.forming.retain(|f| f.0 != *id),
             Event::ToolCall { id, name, input } => {
                 self.close();
                 self.parts.push(Part::ToolCall {
@@ -620,12 +677,23 @@ impl Collector {
     fn close(&mut self) {
         match self.open.take() {
             Some(Open::Text(t)) => self.parts.push(Part::Text(t)),
+            // A block that opened but streamed nothing and has no state.
+            Some(Open::Reasoning(t)) if t.is_empty() => {}
             Some(Open::Reasoning(t)) => {
                 self.loose = Some(self.parts.len());
                 self.parts.push(Part::Reasoning(t.into()));
             }
             None => {}
         }
+    }
+
+    /// Tool calls whose arguments are still streaming, with the input
+    /// parsed so far: `(id, name, input)`.
+    pub fn forming(&self) -> Vec<(&str, &str, Value)> {
+        self.forming
+            .iter()
+            .map(|(id, name, raw)| (id.as_str(), name.as_str(), partial_json::partial_input(raw)))
+            .collect()
     }
 
     /// The parts so far, in order.
@@ -642,6 +710,126 @@ pub fn collect<'a>(events: impl IntoIterator<Item = &'a Event>) -> Vec<Part> {
         c.push(e);
     }
     c.finish()
+}
+
+/// A model response assembled from its stream.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Response {
+    pub parts: Vec<Part>,
+    /// The finish reason as the provider gave it; `"error"` for the partial
+    /// output of a failed stream.
+    pub reason: String,
+    pub usage: Usage,
+}
+
+impl Response {
+    /// The visible text, joined.
+    pub fn text(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The reasoning text, joined.
+    pub fn reasoning(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Reasoning(r) => Some(r.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The complete tool calls: `(id, name, input)`.
+    pub fn tool_calls(&self) -> Vec<(&str, &str, &Value)> {
+        self.parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::ToolCall { id, name, input } => Some((id.as_str(), name.as_str(), input)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// A response stream that failed, with the output that arrived before the
+/// failure (OpenCode's `AIError.partial`).
+#[derive(Debug)]
+pub struct Failure {
+    pub error: Error,
+    /// What streamed before the failure, if anything did: its text,
+    /// reasoning and complete tool calls, with the reason `"error"`. Tool
+    /// calls whose arguments were still streaming are left out.
+    pub partial: Option<Response>,
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl From<Failure> for Error {
+    fn from(f: Failure) -> Self {
+        f.error
+    }
+}
+
+/// Consume a response stream into its [`Response`], showing `each` every
+/// event as it arrives. A stream that fails, or ends without finishing,
+/// fails with what it streamed so far.
+pub async fn assemble(
+    mut stream: EventStream,
+    mut each: impl FnMut(&Event),
+) -> Result<Response, Failure> {
+    use futures_util::StreamExt;
+    let mut parts = Collector::default();
+    let mut finish: Option<(String, Usage)> = None;
+    let fail = |error: Error, parts: Collector, finish: Option<(String, Usage)>| {
+        let parts = parts.finish();
+        Failure {
+            error,
+            partial: (!parts.is_empty()).then(|| Response {
+                parts,
+                reason: "error".into(),
+                usage: finish.map(|f| f.1).unwrap_or_default(),
+            }),
+        }
+    };
+    while let Some(ev) = stream.next().await {
+        let ev = match ev {
+            Ok(ev) => ev,
+            Err(e) => return Err(fail(e, parts, finish)),
+        };
+        each(&ev);
+        if let Event::Finish { reason, usage } = &ev {
+            finish = Some((reason.clone(), *usage));
+        }
+        parts.push(&ev);
+    }
+    match finish {
+        Some((reason, usage)) => Ok(Response {
+            parts: parts.finish(),
+            reason,
+            usage,
+        }),
+        None => Err(fail(
+            Error::Transport("the response stream ended before the model finished".into()),
+            parts,
+            None,
+        )),
+    }
 }
 
 /// Reject a request with media `protocol` cannot carry, or (Anthropic)
@@ -960,6 +1148,13 @@ pub(crate) trait Decoder: Send + 'static {
     fn done(&self) -> bool;
     /// Events once input ends (or `done`), or an error for a truncated stream.
     fn end(&mut self) -> Result<Vec<Event>, Error>;
+    /// Once one response body ends (`dropped`: its connection failed part
+    /// way), the token to continue the same response with in another
+    /// request (Gemini), if any. The decoder carries on with that request's
+    /// frames.
+    fn resume(&mut self, _dropped: bool) -> Result<Option<String>, Error> {
+        Ok(None)
+    }
 }
 
 /// Decode a complete SSE body; used by tests to run the real decoders.
@@ -979,29 +1174,94 @@ pub(crate) fn decode_all<D: Decoder>(mut d: D, body: &str) -> Result<Vec<Event>,
     Ok(out)
 }
 
-pub(crate) fn drive<D: Decoder>(resp: reqwest::Response, mut d: D) -> EventStream {
+/// The content events of a stream, without block lifecycle events; for
+/// tests that check content only.
+#[cfg(test)]
+pub(crate) fn content(events: impl IntoIterator<Item = Event>) -> Vec<Event> {
+    events
+        .into_iter()
+        .filter(|e| {
+            !matches!(
+                e,
+                Event::TextStart(_)
+                    | Event::TextEnd(_)
+                    | Event::ReasoningStart(_)
+                    | Event::ToolInputStart { .. }
+                    | Event::ToolInputDelta { .. }
+                    | Event::ToolInputEnd { .. }
+            )
+        })
+        .collect()
+}
+
+/// Sends the request again with a continuation token.
+pub(crate) type Reopen = Box<
+    dyn FnMut(String) -> futures_util::future::BoxFuture<'static, Result<reqwest::Response, Error>>
+        + Send,
+>;
+
+pub(crate) fn drive<D: Decoder>(resp: reqwest::Response, d: D) -> EventStream {
+    drive_resuming(resp, d, None)
+}
+
+/// Like [`drive`], continuing the response in new requests (`reopen`) while
+/// the decoder has a continuation token for it.
+pub(crate) fn drive_resuming<D: Decoder>(
+    resp: reqwest::Response,
+    mut d: D,
+    mut reopen: Option<Reopen>,
+) -> EventStream {
     use futures_util::StreamExt;
-    let mut bytes = resp.bytes_stream();
     async_stream::stream! {
-        let mut parser = sse::Parser::default();
-        let mut utf8 = openai::Utf8::default();
-        'read: while let Some(chunk) = bytes.next().await {
-            let chunk = match chunk { Ok(c) => c, Err(e) => { yield Err(Error::from(e)); return; } };
-            for frame in parser.push(&utf8.push(&chunk)) {
-                match d.frame(&frame) {
-                    Ok(evs) => for ev in evs { yield Ok(ev); },
-                    Err(e) => { yield Err(e); return; }
+        let mut resp = resp;
+        loop {
+            let mut bytes = resp.bytes_stream();
+            let mut parser = sse::Parser::default();
+            let mut utf8 = openai::Utf8::default();
+            let mut dropped = None;
+            'read: while let Some(chunk) = bytes.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // A connection failure may resume; a timeout ends
+                        // the response.
+                        let timeout = e.is_timeout();
+                        let e = Error::from(e);
+                        if timeout || reopen.is_none() { yield Err(e); return; }
+                        dropped = Some(e);
+                        break 'read;
+                    }
+                };
+                for frame in parser.push(&utf8.push(&chunk)) {
+                    match d.frame(&frame) {
+                        Ok(evs) => for ev in evs { yield Ok(ev); },
+                        Err(e) => { yield Err(e); return; }
+                    }
+                    if d.done() { break 'read; }
                 }
-                if d.done() { break 'read; }
             }
-        }
-        if !d.done() {
-            // A last frame without its blank line; a torn one is dropped.
-            if let Some(frame) = parser.finish() {
-                match d.frame(&frame) {
-                    Ok(evs) => for ev in evs { yield Ok(ev); },
-                    Err(Error::Decode(_)) => {}
+            if dropped.is_none() && !d.done() {
+                // A last frame without its blank line; a torn one is dropped.
+                if let Some(frame) = parser.finish() {
+                    match d.frame(&frame) {
+                        Ok(evs) => for ev in evs { yield Ok(ev); },
+                        Err(Error::Decode(_)) => {}
+                        Err(e) => { yield Err(e); return; }
+                    }
+                }
+            }
+            let token = match d.resume(dropped.is_some()) {
+                Ok(t) => t,
+                Err(e) => { yield Err(e); return; }
+            };
+            match (token, reopen.as_mut()) {
+                (Some(token), Some(reopen)) => match reopen(token).await {
+                    Ok(r) => resp = r,
                     Err(e) => { yield Err(e); return; }
+                },
+                _ => {
+                    if let Some(e) = dropped { yield Err(e); return; }
+                    break;
                 }
             }
         }

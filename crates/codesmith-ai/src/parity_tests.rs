@@ -227,11 +227,11 @@ fn out(events: Result<Vec<Event>, Error>) -> Out {
             Event::TextDelta(t) => o.text.push_str(&t),
             Event::ReasoningDelta(t) => o.reasoning.push_str(&t),
             Event::ToolCall { id, name, input } => o.calls.push((id, name, input)),
-            Event::ReasoningEnd(_) => {}
             Event::Finish { reason, usage } => {
                 o.finish = reason;
                 o.usage = usage;
             }
+            _ => {}
         }
     }
     o
@@ -2452,7 +2452,7 @@ async fn streaming_driver() {
     )
     .collect()
     .await;
-    assert!(matches!(&events[0], Ok(Event::TextDelta(t)) if t == "Hello"));
+    assert!(matches!(&events[1], Ok(Event::TextDelta(t)) if t == "Hello"));
     assert!(
         matches!(events.last(), Some(Err(Error::Transport(_)))),
         "{events:?}"
@@ -2473,10 +2473,13 @@ async fn streaming_driver() {
         response(vec![hello], false, true),
         openai::Decode::default(),
     )
-    .take(1)
+    .take(2)
     .collect()
     .await;
-    assert!(matches!(first.as_slice(), [Ok(Event::TextDelta(_))]));
+    assert!(matches!(
+        first.as_slice(),
+        [Ok(Event::TextStart(_)), Ok(Event::TextDelta(_))]
+    ));
 
     // A response cut off before its terminal event is a transport error
     // (anthropic-messages :: requires message_stop ...), and a final frame

@@ -5,10 +5,11 @@
 //! (`<id>~<signature>`), so stored conversations need no extra fields.
 
 use crate::{
-    all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
-    stream_error, wrap_system_update, Decoder, Error, Event, EventStream, Media, MediaKind,
-    Message, Part, Protocol, Provider, ReasoningMeta, Request, Role, ToolChoice, Usage,
+    all_media, drive_resuming, inline_required, merge_body, normalize_tool_history, post, schema,
+    sse, stream_error, wrap_system_update, Decoder, Error, Event, EventStream, Media, MediaKind,
+    Message, Part, Protocol, Provider, ReasoningMeta, Reopen, Request, Role, ToolChoice, Usage,
 };
+use futures_util::FutureExt;
 use serde_json::{json, Map, Value};
 
 const SIG: char = '~';
@@ -286,23 +287,68 @@ fn thinking_config(t: &Map<String, Value>, max_tokens: Option<u32>) -> Value {
 
 #[derive(Default)]
 pub struct State {
-    usage: Usage,
+    /// This request's usage (prompt with tool-use prompt, cached, output),
+    /// and that of the earlier requests of a continued response.
+    usage: Option<(u64, u64, u64)>,
+    continued: Vec<(u64, u64, u64)>,
     ids: Vec<String>,
     finish: Option<String>,
-    /// A thought block is open, and the signature it has so far.
-    thinking: bool,
+    /// The open thought block's id, and the signature it has so far.
+    reasoning: Option<String>,
     signature: Option<String>,
+    /// The open text block's id.
+    text: Option<String>,
+    /// Blocks of each kind so far, for ids.
+    texts: usize,
+    thoughts: usize,
+    /// This request's latest continuation checkpoint and raw finish reason.
+    token: Option<String>,
+    raw_finish: Option<String>,
+    /// Why the prompt was blocked, when it was.
+    blocked: Option<String>,
 }
+
+/// Gemini's finish reason for a response it continues in another request.
+const CONTINUATION: &str = "CONTINUATION";
 
 impl State {
     /// Close an open thought block; a signed one ends with its signature.
     fn end_thinking(&mut self, out: &mut Vec<Event>) {
-        if std::mem::take(&mut self.thinking) {
+        if self.reasoning.take().is_some() {
             if let Some(sig) = self.signature.take() {
                 let mut meta = ReasoningMeta::of(Protocol::GoogleGemini);
                 meta.signature = Some(sig);
                 out.push(Event::ReasoningEnd(meta));
             }
+        }
+    }
+
+    fn end_text(&mut self, out: &mut Vec<Event>) {
+        if let Some(id) = self.text.take() {
+            out.push(Event::TextEnd(id));
+        }
+    }
+
+    fn next_id(&mut self, text: bool) -> String {
+        let (kind, n) = match text {
+            true => ("text", &mut self.texts),
+            false => ("reasoning", &mut self.thoughts),
+        };
+        *n += 1;
+        format!("{kind}-{}", *n - 1)
+    }
+
+    /// The response's usage: the first request's input (later requests are
+    /// billed for the same prompt again) with every request's output.
+    fn usage(&self) -> Usage {
+        let cur = self.usage.unwrap_or_default();
+        let first = self.continued.first().copied().unwrap_or(cur);
+        let output = self.continued.iter().map(|u| u.2).sum::<u64>() + cur.2;
+        Usage {
+            input: first.0.saturating_sub(first.1),
+            output,
+            cache_read: first.1,
+            cache_write: 0,
         }
     }
 }
@@ -341,30 +387,50 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
         let prompt = u["promptTokenCount"].as_u64().unwrap_or(0)
             + u["toolUsePromptTokenCount"].as_u64().unwrap_or(0);
         let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
-        state.usage.input = prompt.saturating_sub(cached);
-        state.usage.cache_read = cached;
-        state.usage.output = u["candidatesTokenCount"].as_u64().unwrap_or(0)
+        let output = u["candidatesTokenCount"].as_u64().unwrap_or(0)
             + u["thoughtsTokenCount"].as_u64().unwrap_or(0);
+        state.usage = Some((prompt, cached, output));
     }
     let Some(c) = v["candidates"].get(0) else {
         if let Some(r) = v["promptFeedback"]["blockReason"].as_str() {
-            return Err(Error::Decode(format!("prompt blocked: {r}")));
+            state.blocked = Some(r.to_string());
         }
         return Ok(out);
     };
+    // The latest checkpoint, which a finished candidate without one clears.
+    let finish = c["finishReason"]
+        .as_str()
+        .filter(|f| *f != "FINISH_REASON_UNSPECIFIED");
+    match c["continuationToken"].as_str() {
+        Some(t) => state.token = Some(t.to_string()),
+        None if finish.is_some() => state.token = None,
+        None => {}
+    }
+    if let Some(f) = finish {
+        state.raw_finish = Some(f.to_string());
+    }
     for p in c["content"]["parts"].as_array().into_iter().flatten() {
         if p["thought"].as_bool() == Some(true) && p.get("functionCall").is_none() {
-            state.thinking = true;
+            let text = p["text"].as_str().filter(|t| !t.is_empty());
+            if text.is_some() {
+                state.end_text(&mut out);
+            }
+            if state.reasoning.is_none() {
+                let id = state.next_id(false);
+                out.push(Event::ReasoningStart(id.clone()));
+                state.reasoning = Some(id);
+            }
             if let Some(s) = p["thoughtSignature"].as_str().filter(|s| !s.is_empty()) {
                 state.signature = Some(s.to_string());
             }
-            if let Some(t) = p["text"].as_str().filter(|t| !t.is_empty()) {
+            if let Some(t) = text {
                 out.push(Event::ReasoningDelta(t.to_string()));
             }
             continue;
         }
-        state.end_thinking(&mut out);
         if let Some(f) = p.get("functionCall") {
+            state.end_thinking(&mut out);
+            state.end_text(&mut out);
             // A repeated or missing id gets a fresh one.
             let base = f["id"]
                 .as_str()
@@ -386,10 +452,16 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
                     .unwrap_or_else(|| json!({})),
             });
         } else if let Some(t) = p["text"].as_str().filter(|t| !t.is_empty()) {
+            state.end_thinking(&mut out);
+            if state.text.is_none() {
+                let id = state.next_id(true);
+                out.push(Event::TextStart(id.clone()));
+                state.text = Some(id);
+            }
             out.push(Event::TextDelta(t.to_string()));
         }
     }
-    if let Some(f) = c["finishReason"].as_str() {
+    if let Some(f) = finish.filter(|f| *f != CONTINUATION) {
         if FAILED.contains(&f) {
             return Err(Error::Provider {
                 message: format!("Gemini stopped with {f}"),
@@ -405,10 +477,37 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     Ok(out)
 }
 
-/// The events that end the stream: an open thought block's end, then `Finish`.
-pub fn finish(state: &mut State) -> Vec<Event> {
+/// Once a request's body ends: the token to continue the response with, when
+/// the request stopped at a checkpoint (`CONTINUATION`, no finish, or a
+/// dropped connection) rather than finishing.
+pub fn resume(state: &mut State, dropped: bool) -> Result<Option<String>, Error> {
+    let token = state.token.take();
+    let finish = state.raw_finish.take();
+    let unfinished = finish.as_deref().is_none_or(|f| f == CONTINUATION);
+    match token {
+        Some(token) if unfinished => {
+            // Usage is cumulative within one request; the next counts anew.
+            state.continued.push(state.usage.take().unwrap_or_default());
+            state.blocked = None;
+            Ok(Some(token))
+        }
+        _ if !dropped && finish.as_deref() == Some(CONTINUATION) => Err(Error::Decode(
+            "Gemini continued the response without a token".into(),
+        )),
+        _ => Ok(None),
+    }
+}
+
+/// The events that end the stream: open blocks' ends, then `Finish`.
+pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
+    if state.finish.is_none() {
+        if let Some(r) = state.blocked.take() {
+            return Err(Error::Decode(format!("prompt blocked: {r}")));
+        }
+    }
     let mut out = Vec::new();
     state.end_thinking(&mut out);
+    state.end_text(&mut out);
     let reason = if !state.ids.is_empty() {
         "tool_calls".to_string()
     } else {
@@ -416,9 +515,9 @@ pub fn finish(state: &mut State) -> Vec<Event> {
     };
     out.push(Event::Finish {
         reason,
-        usage: state.usage,
+        usage: state.usage(),
     });
-    out
+    Ok(out)
 }
 
 #[derive(Default)]
@@ -436,8 +535,18 @@ impl Decoder for Decode {
         false
     }
     fn end(&mut self) -> Result<Vec<Event>, Error> {
-        Ok(finish(&mut self.state))
+        finish(&mut self.state)
     }
+    fn resume(&mut self, dropped: bool) -> Result<Option<String>, Error> {
+        resume(&mut self.state, dropped)
+    }
+}
+
+/// The request body that continues a response from `token`.
+pub fn continued(body: &Value, token: &str) -> Value {
+    let mut b = body.clone();
+    b["continuationToken"] = json!(token);
+    b
 }
 
 pub async fn stream(
@@ -457,8 +566,25 @@ pub async fn stream(
     for (k, v) in &p.headers {
         rb = rb.header(k, v);
     }
-    let resp = post(rb, &body(req)).await?;
-    Ok(drive(resp, Decode::default()))
+    let body = body(req);
+    let again = rb.try_clone();
+    let resp = post(rb, &body).await?;
+    // A response Gemini splits across requests continues with the same
+    // body and the latest checkpoint's token.
+    let reopen: Option<Reopen> = again.map(|rb| {
+        Box::new(move |token: String| {
+            let rb = rb.try_clone();
+            let body = continued(&body, &token);
+            async move {
+                match rb {
+                    Some(rb) => post(rb, &body).await,
+                    None => Err(Error::Transport("cannot resend the request".into())),
+                }
+            }
+            .boxed()
+        }) as Reopen
+    });
+    Ok(drive_resuming(resp, Decode::default(), reopen))
 }
 
 #[cfg(test)]
@@ -544,7 +670,7 @@ mod tests {
     #[test]
     fn stream_events() {
         let mut s = State::default();
-        let a = handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"text": "think", "thought": true}, {"text": "Hel"}]}}]})).unwrap();
+        let a = crate::content(handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"text": "think", "thought": true}, {"text": "Hel"}]}}]})).unwrap());
         assert_eq!(
             a,
             vec![
@@ -555,11 +681,11 @@ mod tests {
         let b = handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"functionCall": {"name": "read", "args": {"path": "a"}}, "thoughtSignature": "S1"}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 50, "cachedContentTokenCount": 20, "candidatesTokenCount": 7, "thoughtsTokenCount": 3}})).unwrap();
         assert!(matches!(
             &b[..],
-            [Event::ToolCall { id, name, input }]
+            [Event::TextEnd(_), Event::ToolCall { id, name, input }]
                 if id.starts_with("tool_") && id.ends_with("~S1") && name == "read" && *input == json!({"path": "a"})
         ));
         assert_eq!(
-            finish(&mut s).pop().unwrap(),
+            finish(&mut s).unwrap().pop().unwrap(),
             Event::Finish {
                 reason: "tool_calls".into(),
                 usage: Usage {
@@ -581,16 +707,17 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("quota"));
-        assert!(handle(
+        // A blocked prompt fails once the stream ends without a finish.
+        handle(
             &mut s,
-            &json!({"promptFeedback": {"blockReason": "SAFETY"}})
+            &json!({"promptFeedback": {"blockReason": "SAFETY"}}),
         )
-        .unwrap_err()
-        .to_string()
-        .contains("SAFETY"));
+        .unwrap();
+        assert!(finish(&mut s).unwrap_err().to_string().contains("SAFETY"));
+        let mut s = State::default();
         handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"text": "x"}]}, "finishReason": "MAX_TOKENS"}]})).unwrap();
         assert!(
-            matches!(finish(&mut s).pop().unwrap(), Event::Finish { reason, .. } if reason == "length")
+            matches!(finish(&mut s).unwrap().pop().unwrap(), Event::Finish { reason, .. } if reason == "length")
         );
     }
 }

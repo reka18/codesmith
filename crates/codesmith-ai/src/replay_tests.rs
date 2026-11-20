@@ -217,7 +217,6 @@ fn summarize(events: &[Event]) -> Result<Summary, String> {
         match e {
             Event::TextDelta(t) => s.text.push_str(t),
             Event::ReasoningDelta(t) => s.reasoning.push_str(t),
-            Event::ReasoningEnd(_) => {}
             Event::ToolCall { id, name, input } => {
                 if id.is_empty() || !ids.insert(id.clone()) {
                     return Err(format!("tool call id {id:?} empty or repeated"));
@@ -232,6 +231,7 @@ fn summarize(events: &[Event]) -> Result<Summary, String> {
                 s.finish = normalize(reason);
                 s.usage = *usage;
             }
+            _ => {}
         }
     }
     if finishes != 1 {

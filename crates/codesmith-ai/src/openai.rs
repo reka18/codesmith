@@ -591,6 +591,8 @@ struct Call {
     name: String,
     args: String,
     signature: Option<String>,
+    /// The id its input streams under, once its name is known.
+    streaming: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -605,6 +607,9 @@ pub struct State {
     opaque: Option<String>,
     /// The field scalar reasoning text streamed under.
     field: Option<String>,
+    /// The response's one text block and one reasoning block have started.
+    text: bool,
+    reasoning: bool,
 }
 
 /// A `reasoning_details` entry in a dialect CodeSmith knows: OpenRouter's
@@ -680,6 +685,20 @@ fn replay_detail(d: &Value) -> Value {
 }
 
 impl State {
+    fn text(&mut self, t: &str, out: &mut Vec<Event>) {
+        if !std::mem::replace(&mut self.text, true) {
+            out.push(Event::TextStart("text-0".into()));
+        }
+        out.push(Event::TextDelta(t.to_string()));
+    }
+
+    fn reasoning(&mut self, t: &str, out: &mut Vec<Event>) {
+        if !std::mem::replace(&mut self.reasoning, true) {
+            out.push(Event::ReasoningStart("reasoning-0".into()));
+        }
+        out.push(Event::ReasoningDelta(t.to_string()));
+    }
+
     /// The slot a tool-call delta belongs to: its index when sent, else the
     /// call with its id, else a new call for a new id, else the latest call.
     fn slot(&mut self, c: &Value) -> &mut Call {
@@ -715,7 +734,7 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
         .find_map(|k| Some((*k, delta[k].as_str().filter(|s| !s.is_empty())?)));
     if let Some((k, r)) = scalar {
         state.field.get_or_insert_with(|| k.to_string());
-        out.push(Event::ReasoningDelta(r.to_string()));
+        state.reasoning(r, &mut out);
     }
     if let Some(ds) = delta["reasoning_details"].as_array() {
         state.details_seen = true;
@@ -723,7 +742,7 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
             // Details show as reasoning when no scalar reasoning streams.
             if state.field.is_none() {
                 if let Some(t) = detail_text(d).filter(|t| !t.is_empty()) {
-                    out.push(Event::ReasoningDelta(t.to_string()));
+                    state.reasoning(t, &mut out);
                 }
             }
             let merged = state
@@ -739,24 +758,24 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
         state.opaque = Some(o.to_string());
     }
     if let Some(t) = delta["content"].as_str().filter(|s| !s.is_empty()) {
-        out.push(Event::TextDelta(t.to_string()));
+        state.text(t, &mut out);
     }
     // A refusal is ordinary assistant text.
     if let Some(t) = delta["refusal"].as_str().filter(|s| !s.is_empty()) {
-        out.push(Event::TextDelta(t.to_string()));
+        state.text(t, &mut out);
     }
     // Mistral streams content as typed chunks, reasoning among them.
     for part in delta["content"].as_array().into_iter().flatten() {
         match part["type"].as_str() {
             Some("text") => {
                 if let Some(t) = part["text"].as_str().filter(|s| !s.is_empty()) {
-                    out.push(Event::TextDelta(t.to_string()));
+                    state.text(t, &mut out);
                 }
             }
             Some("thinking") => {
                 for t in part["thinking"].as_array().into_iter().flatten() {
                     if let Some(t) = t["text"].as_str().filter(|s| !s.is_empty()) {
-                        out.push(Event::ReasoningDelta(t.to_string()));
+                        state.reasoning(t, &mut out);
                     }
                 }
             }
@@ -776,11 +795,38 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
                 slot.name = n.to_string();
             }
         }
+        let before = slot.args.len();
         if let Some(a) = c["function"]["arguments"].as_str() {
             slot.args.push_str(a);
         }
         if let Some(sig) = c["extra_content"]["google"]["thought_signature"].as_str() {
             slot.signature = Some(sig.to_string());
+        }
+        // Input streams once the call has a name; arguments sent before it
+        // go out with its start.
+        let from = match &slot.streaming {
+            Some(_) => before,
+            None if !slot.name.is_empty() => {
+                let id = match slot.id.as_str() {
+                    "" => crate::fresh_id(),
+                    id => id.to_string(),
+                };
+                slot.streaming = Some(id.clone());
+                out.push(Event::ToolInputStart {
+                    id,
+                    name: slot.name.clone(),
+                });
+                0
+            }
+            None => slot.args.len(),
+        };
+        if let (Some(id), Some(text)) = (&slot.streaming, slot.args.get(from..)) {
+            if !text.is_empty() {
+                out.push(Event::ToolInputDelta {
+                    id: id.clone(),
+                    text: text.to_string(),
+                });
+            }
         }
     }
     // The first finish reason stands; some servers send late chunks after it.
@@ -839,6 +885,9 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
         _ => {}
     }
     let mut out = Vec::new();
+    if state.text {
+        out.push(Event::TextEnd("text-0".into()));
+    }
     let named = state
         .field
         .as_deref()
@@ -854,20 +903,21 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
         out.push(Event::ReasoningEnd(meta));
     }
     let calls = std::mem::take(&mut state.calls);
-    if !matches!(reason.as_str(), "length" | "content_filter") {
-        for c in calls {
-            if c.name.is_empty() {
-                continue;
-            }
+    let keep = !matches!(reason.as_str(), "length" | "content_filter");
+    for c in calls {
+        if let Some(id) = &c.streaming {
+            out.push(Event::ToolInputEnd { id: id.clone() });
+        }
+        if keep && !c.name.is_empty() {
             let input = if c.args.trim().is_empty() {
                 json!({})
             } else {
                 serde_json::from_str(&c.args).unwrap_or_else(|_| json!({"__invalid_json": c.args}))
             };
-            let id = if c.id.is_empty() {
-                crate::fresh_id()
-            } else {
-                c.id
+            let id = match (c.id.is_empty(), c.streaming) {
+                (false, _) => c.id,
+                (true, Some(id)) => id,
+                (true, None) => crate::fresh_id(),
             };
             let id = match c.signature {
                 Some(sig) => format!("{id}~{sig}"),
@@ -1060,14 +1110,17 @@ mod tests {
     fn streams_text_reasoning_and_usage() {
         let mut s = State::default();
         assert_eq!(
-            handle(
+            crate::content(handle(
                 &mut s,
                 &json!({"choices": [{"delta": {"reasoning_content": "hmm"}}]})
-            ),
+            )),
             vec![Event::ReasoningDelta("hmm".into())]
         );
         assert_eq!(
-            handle(&mut s, &json!({"choices": [{"delta": {"content": "Hel"}}]})),
+            crate::content(handle(
+                &mut s,
+                &json!({"choices": [{"delta": {"content": "Hel"}}]})
+            )),
             vec![Event::TextDelta("Hel".into())]
         );
         handle(
@@ -1079,7 +1132,7 @@ mod tests {
             &json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 4}}}),
         );
         assert_eq!(
-            finish(&mut s).unwrap(),
+            crate::content(finish(&mut s).unwrap()),
             vec![Event::Finish {
                 reason: "stop".into(),
                 usage: Usage {
@@ -1132,13 +1185,13 @@ mod tests {
     fn typed_content_chunks() {
         let mut s = State::default();
         assert_eq!(
-            handle(
+            crate::content(handle(
                 &mut s,
                 &json!({"choices": [{"delta": {"content": [
                     {"type": "thinking", "thinking": [{"type": "text", "text": "17 times"}]},
                     {"type": "text", "text": "391"}
                 ]}}]})
-            ),
+            )),
             vec![
                 Event::ReasoningDelta("17 times".into()),
                 Event::TextDelta("391".into())
@@ -1161,7 +1214,7 @@ mod tests {
             &mut s,
             &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "th\":\"x\"}"}}]}, "finish_reason": "tool_calls"}]}),
         );
-        let ev = finish(&mut s).unwrap();
+        let ev = crate::content(finish(&mut s).unwrap());
         assert_eq!(
             ev[0],
             Event::ToolCall {
@@ -1189,7 +1242,7 @@ mod tests {
             &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "a", "function": {"name": "read", "arguments": "{oops"}}]}}]}),
         );
         assert_eq!(
-            finish(&mut s).unwrap()[0],
+            crate::content(finish(&mut s).unwrap())[0],
             Event::ToolCall {
                 id: "a".into(),
                 name: "read".into(),
@@ -1206,7 +1259,7 @@ mod tests {
             &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "glob", "arguments": ""}}]}}]}),
         );
         assert!(matches!(
-            &finish(&mut s).unwrap()[0],
+            &crate::content(finish(&mut s).unwrap())[0],
             Event::ToolCall { id, name, input } if id.starts_with("tool_") && name == "glob" && *input == json!({})
         ));
     }

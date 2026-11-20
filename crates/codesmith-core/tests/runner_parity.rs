@@ -761,6 +761,68 @@ async fn oc_session_retries_after_a_mid_stream_failure_without_partial_text() {
     assert_eq!(t.seen.lock().unwrap().retries.len(), 1);
 }
 
+/// A Chat stream that sends `chunks`, then fails with a request error the
+/// session does not retry.
+fn fails_after(chunks: &[Value]) -> String {
+    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
+    body.push_str(&format!(
+        "data: {}\n\n",
+        json!({"error": {"type": "invalid_request_error", "message": "Invalid request"}})
+    ));
+    http(200, "text/event-stream", &body)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_durably_closes_partial_text_when_the_provider_stream_fails() {
+    let mut t = plain().await;
+    t.push([fails_after(&[
+        json!({"choices": [{"delta": {"content": "Partial"}}]}),
+    ])]);
+    let err = t.prompt("Fail after text").await.unwrap_err();
+    assert!(err.to_string().contains("Invalid request"), "{err}");
+    assert_eq!(t.requests().len(), 1);
+    assert_eq!(texts(&t.s), ["Partial"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_durably_closes_partial_reasoning_when_the_provider_stream_fails() {
+    let mut t = plain().await;
+    t.push([fails_after(&[
+        json!({"choices": [{"delta": {"reasoning_content": "Partial"}}]}),
+    ])]);
+    assert!(t.prompt("Fail after reasoning").await.is_err());
+    let last = t.s.messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert!(matches!(&last.parts[..], [Part::Reasoning(r)] if r.text == "Partial"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_durably_closes_partial_tool_input_when_the_provider_stream_fails() {
+    // The call never completed, so it is not kept (OpenCode keeps it as a
+    // failed tool); nothing else streamed, so no message is added.
+    let mut t = plain().await;
+    t.push([fails_after(&[
+        json!({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call-partial", "function": {"name": "echo", "arguments": "{\"va"}}
+        ]}}]}),
+    ])]);
+    assert!(t.prompt("Fail after tool input").await.is_err());
+    assert_eq!(t.s.messages.last().unwrap().role, Role::User);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_error_partial_loop_reports_only_the_failed_step_as_partial() {
+    let mut t = plain().await;
+    t.push([
+        call("call-1", "glob", json!({"pattern": "*.none"})),
+        fails_after(&[json!({"choices": [{"delta": {"content": "Partial answer"}}]})]),
+    ]);
+    assert!(t.prompt("Glob, then answer.").await.is_err());
+    let last = t.s.messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert_eq!(last.parts, [Part::Text("Partial answer".into())]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_session_retries_an_incomplete_stream_before_output() {
     let mut t = start(Setup {
