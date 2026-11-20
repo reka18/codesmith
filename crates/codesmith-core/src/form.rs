@@ -863,6 +863,9 @@ fn value_of(field: &Field, answer: &[String]) -> Option<Value> {
 /// Ask `form` through `asker`, one round per set of newly active fields:
 /// the answers, or `None` when the user dismissed it.
 pub fn present(form: &Info, asker: &dyn crate::question::Questioner) -> Option<Answer> {
+    if let Some(answer) = asker.ask_form(form) {
+        return answer;
+    }
     let mut answer = Answer::new();
     let mut asked: Vec<&str> = Vec::new();
     loop {

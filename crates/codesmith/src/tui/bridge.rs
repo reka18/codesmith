@@ -89,6 +89,11 @@ pub enum Ev {
     StepEnd(Usage),
     Permission(Request, oneshot::Sender<Reply>),
     Question(Vec<Prompt>, oneshot::Sender<Answers>),
+    /// A whole form to answer (an MCP server's elicitation).
+    Form(
+        codesmith_core::form::Info,
+        oneshot::Sender<Option<codesmith_core::form::Answer>>,
+    ),
     /// The turn ended; the session comes back to the UI.
     Done {
         result: Result<(), String>,
@@ -273,6 +278,18 @@ impl Questioner for ChanPrompter {
             return None;
         }
         self.wait(rx).flatten()
+    }
+
+    fn ask_form(
+        &self,
+        form: &codesmith_core::form::Info,
+    ) -> Option<Option<codesmith_core::form::Answer>> {
+        let (tx, rx) = oneshot::channel();
+        if self.stopping.load(Ordering::SeqCst) || self.tx.send(Ev::Form(form.clone(), tx)).is_err()
+        {
+            return Some(None);
+        }
+        Some(self.wait(rx).flatten())
     }
 }
 

@@ -1822,47 +1822,15 @@ pub(super) fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             );
             ("Permission required".into(), lines, p.warning)
         }
-        Modal::Question {
-            prompts,
-            idx,
-            input,
-            ..
-        } => {
-            let q = &prompts[*idx];
-            let mut lines = vec![
-                Line::from(Span::styled(
-                    q.question.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-                Line::default(),
-            ];
-            for (i, o) in q.options.iter().enumerate() {
-                lines.push(Line::from(vec![
-                    Span::raw(format!("{}. {}", i + 1, o.label)),
-                    Span::styled(
-                        if o.description.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" — {}", o.description)
-                        },
-                        fg(p.dialog_muted),
-                    ),
-                ]));
-            }
-            lines.push(Line::default());
-            let submit = match app.keymap.hint("dialog.prompt.submit") {
-                h if h.is_empty() => String::new(),
-                h => format!("; {h} to confirm"),
-            };
-            lines.push(Line::from(if q.multiple {
-                format!("numbers separated by commas, or type an answer{submit}")
-            } else {
-                format!("a number, or type an answer{submit}, esc to dismiss")
-            }));
-            lines.push(Line::from(Span::styled(format!("> {input}"), fg(p.accent))));
+        Modal::Question { form, .. } => {
+            let width = MODAL_WIDTH
+                .min(area.width.saturating_sub(2))
+                .saturating_sub(2);
+            let term = (area.width, area.height);
+            let title = display_safe(&form.title);
             (
-                format!("Question {}/{} {}", idx + 1, prompts.len(), q.header),
-                lines,
+                title,
+                form.lines(width as usize, term, &app.keymap),
                 p.accent,
             )
         }
@@ -1921,7 +1889,17 @@ pub(super) fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             (more.trim().to_string(), lines, p.primary)
         }
     };
-    let height = (body.len() as u16 + 2).max(5);
+    // A form's lines wrap: it is as tall as their rows.
+    let rows = match m {
+        Modal::Question { .. } => {
+            let width = MODAL_WIDTH
+                .min(area.width.saturating_sub(2))
+                .saturating_sub(2);
+            super::form::wrapped(&body, width as usize)
+        }
+        _ => body.len(),
+    };
+    let height = (rows as u16 + 2).max(5);
     let r = centered(area, MODAL_WIDTH, height);
     f.render_widget(Clear, r);
     f.render_widget(

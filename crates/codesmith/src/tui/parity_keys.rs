@@ -663,6 +663,8 @@ fn oc_dialog_prompt_submit_wins_when_return_is_also_input_newline() {
         "input.newline": "return,shift+return,alt+return,ctrl+j",
     } }));
     let mut rx = question(&mut a);
+    // The text field's Enter moves to the Submit tab; the next submits.
+    a.on_key(plain(KeyCode::Enter));
     a.on_key(plain(KeyCode::Enter));
     assert!(a.modal.is_none());
     assert_eq!(
@@ -693,7 +695,10 @@ fn oc_dialog_prompt_submit_can_be_rebound_separately_from_input_submit() {
     let mut rx = question(&mut a);
     a.on_key(plain(KeyCode::Enter));
     assert!(a.modal.is_some());
-    assert!(matches!(&a.modal, Some(Modal::Question { input, .. }) if input == "draft"));
+    assert!(
+        matches!(&a.modal, Some(Modal::Question { form, .. }) if form.editor.text() == "draft")
+    );
+    a.on_key(key(KeyCode::Char('y'), KeyModifiers::CONTROL));
     a.on_key(key(KeyCode::Char('y'), KeyModifiers::CONTROL));
     assert!(a.modal.is_none());
     assert_eq!(
@@ -711,7 +716,9 @@ fn oc_dialog_prompt_submit_can_be_disabled() {
     } }));
     let _rx = question(&mut a);
     a.on_key(plain(KeyCode::Enter));
-    assert!(matches!(&a.modal, Some(Modal::Question { input, .. }) if input == "draft"));
+    assert!(
+        matches!(&a.modal, Some(Modal::Question { form, .. }) if form.editor.text() == "draft" && !form.confirm())
+    );
 }
 
 // (adapted) The cursor shape is set when the UI starts (CodeSmith does not

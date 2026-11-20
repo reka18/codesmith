@@ -2743,10 +2743,11 @@ fn question_cannot_capture(pending: bool) {
     focus(&mut t, true);
     assert!(!t.app.diff_focused());
     t.press('x');
-    let Some(Modal::Question { input, .. }) = &t.app.modal else {
+    let Some(Modal::Question { form, .. }) = &t.app.modal else {
         panic!("the question is still asked")
     };
-    assert_eq!(input, "x");
+    assert_eq!(form.editor.text(), "x");
+    t.code(KeyCode::Enter);
     t.code(KeyCode::Enter);
     assert_eq!(rx.try_recv().unwrap(), Some(vec![vec!["x".to_string()]]));
 }

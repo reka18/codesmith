@@ -35,6 +35,13 @@ pub struct Prompt {
 /// Asks the user; `None` means the user dismissed the questions.
 pub trait Questioner: Send + Sync {
     fn ask(&self, prompts: &[Prompt]) -> Option<Vec<Vec<String>>>;
+
+    /// Ask a whole form, for a front end that shows forms itself: `None`
+    /// when it does not (the form is asked as questions instead),
+    /// `Some(None)` when the user dismissed it.
+    fn ask_form(&self, _form: &crate::form::Info) -> Option<Option<crate::form::Answer>> {
+        None
+    }
 }
 
 pub fn spec() -> (String, Value) {

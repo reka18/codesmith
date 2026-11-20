@@ -231,6 +231,7 @@ pub(super) fn attention(app: &App) -> Option<Attention> {
     match app.modal {
         Some(Modal::Permission { .. }) => Some(Attention::Permission),
         Some(Modal::Question { .. }) => Some(Attention::Question),
+        _ if app.asking() => Some(Attention::Question),
         _ => None,
     }
 }

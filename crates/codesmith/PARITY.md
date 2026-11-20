@@ -90,6 +90,8 @@ Where the tests live:
   globals beyond the extracted programs.
 - `src/acp.rs`: the `oc_acp_*` tests, with the ACP tests not ported listed
   above its test module.
+- `src/tui/parity_form.rs`: the question form (`tui/test/util/form`,
+  `cli/tui/form`); `src/tui/form.rs` is the form itself.
 
 ## Summary
 
@@ -97,14 +99,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 383 | 182 | 657 | 13 |
+| tui: main UI | 1250 | 15 | 417 | 148 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **659** | **618** | **2357** | **259** |
+| **Total** | **4637** | **744** | **693** | **584** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -236,6 +238,18 @@ Where the tests live:
   Enter rejects in CodeSmith, as before); TypeScript is highlighted as
   JavaScript (syntect has no TypeScript), and files over 5000 lines are
   shown without colors.
+- **Question forms** (`cli/tui/form`, `util/form`): questions were asked
+  one at a time with typed option numbers. They are now OpenCode's form: a
+  tab per field and a Submit tab with a compact review, choices with a
+  cursor and number keys, multi-select checkboxes, a custom answer row with
+  its editor (typing or pasting on it opens it), text and number fields
+  with OpenCode's validation messages, and external links to open or copy
+  and acknowledge. The question tool's prompts become OpenCode's `q0`, `q1`,
+  … fields; MCP elicitations reach the UI as whole forms (a `Questioner`
+  may now take a form, and front ends that do not still get questions). A
+  question that arrives while a picker or the help is open waits behind it.
+  Differences: the form is the centred question dialog rather than the
+  composer's place, and ctrl+v is the terminal's own paste.
 
 ## Differences found but not fixed
 
@@ -675,6 +689,38 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/mini` | parses model variants from the model reference | already passing | oc_model_references_carry_nested_ids_and_variants |
 | `cli/test/mini` | keeps option-like prompt text after the argument separator | already passing | oc_option_like_prompt_text_after_the_separator_is_the_message |
 | `cli/test/stats` | renders shared intensity levels and partial month labels | after a fix | oc_stats_labels_only_the_months_a_partial_range_shows (codesmith-core/tests/oc_stats.rs) |
+| `tui/test/util/form` | initializes configured and custom defaults | after a fix | oc_initializes_configured_and_custom_defaults |
+| `tui/test/util/form` | validates every supported field constraint | after a fix | oc_validates_every_supported_field_constraint (adapted: a string for NaN, which JSON lacks) |
+| `tui/test/util/form` | shares field classification, rows, selection, and display | after a fix | oc_shares_field_classification_rows_selection_and_display |
+| `tui/test/util/form` | updates multiselects without mutating their source | after a fix | oc_updates_multiselects_without_mutating_their_source |
+| `tui/test/cli/tui/form` | restores the composer when terminal-form revalidation fails | after a fix | oc_restores_the_composer_when_terminal_form_revalidation_fails (adapted: the asking turn went away) |
+| `tui/test/cli/tui/form` | restores the composer after a terminal ${status} reply (2 cases) | after a fix | oc_restores_the_composer_after_a_terminal_reply (adapted) |
+| `tui/test/cli/tui/form` | restores the composer after a terminal ${status} cancellation (2 cases) | after a fix | oc_restores_the_composer_after_a_terminal_cancellation (adapted) |
+| `tui/test/cli/tui/form` | requires explicit acknowledgement before submitting an external field | after a fix | oc_requires_explicit_acknowledgement_before_submitting_an_external_field (the URL is copied with `OSC 52`) |
+| `tui/test/cli/tui/form` | includes external acknowledgements in progress | after a fix | oc_includes_external_acknowledgements_in_progress |
+| `tui/test/cli/tui/form` | shows a compact confirmation summary | after a fix | oc_shows_a_compact_confirmation_summary |
+| `tui/test/cli/tui/form` | confirmation fits wrapped answers before offering scroll | after a fix | oc_confirmation_fits_wrapped_answers_before_offering_scroll (adapted: the dialog is centred) |
+| `tui/test/cli/tui/form` | pasting on a custom choice opens its editor without submitting | after a fix | oc_pasting_on_a_custom_choice_opens_its_editor_without_submitting |
+| `tui/test/cli/tui/form` | pasting in an active custom editor inserts at the cursor | after a fix | oc_pasting_in_an_active_custom_editor_inserts_at_the_cursor |
+| `tui/test/cli/tui/form` | clipboard shortcut opens a custom choice editor without submitting | after a fix | oc_clipboard_shortcut_opens_a_custom_choice_editor_without_submitting (adapted: the terminal pastes on ctrl+v) |
+| `tui/test/cli/tui/form` | typing a custom multiselect answer selects it before commit | after a fix | oc_typing_a_custom_multiselect_answer_selects_it_before_commit |
+| `tui/test/cli/tui/form` | up leaves a custom editor only from its first visual line | after a fix | oc_up_leaves_a_custom_editor_only_from_its_first_visual_line (adapted: the first line) |
+| `tui/test/cli/tui/form` | typing on the highlighted custom option opens it without losing burst input | after a fix | oc_typing_on_the_highlighted_custom_option_opens_it_without_losing_burst_input |
+| `tui/test/cli/tui/form` | enter on an empty custom multiselect option clearly enters editing | after a fix | oc_enter_on_an_empty_custom_multiselect_option_clearly_enters_editing |
+| `tui/test/cli/tui/form` | defers multiselect validation until submission | after a fix | oc_defers_multiselect_validation_until_submission |
+| `tui/test/cli/tui/form` | submits an optional empty multiselect as an omitted answer | after a fix | oc_submits_an_optional_empty_multiselect_as_an_omitted_answer |
+| `tui/test/cli/tui/form` | typing a custom single-select answer selects it without submitting | after a fix | oc_typing_a_custom_single_select_answer_selects_it_without_submitting |
+| `tui/test/cli/tui/form` | committing a custom multiselect answer keeps one editable custom row | after a fix | oc_committing_a_custom_multiselect_answer_keeps_one_editable_custom_row |
+| `tui/test/cli/tui/form` | text fields retain default paste behavior | after a fix | oc_text_fields_retain_default_paste_behavior |
+| `tui/test/cli/tui/form` | ctrl+c clears a text field before cancelling its form | after a fix | oc_ctrl_c_clears_a_text_field_before_cancelling_its_form |
+| `tui/test/cli/tui/form` | pasting on a choice without custom answers does not open an editor | after a fix | oc_pasting_on_a_choice_without_custom_answers_does_not_open_an_editor |
+| `tui/test/cli/tui/form` | space toggles the selected multiselect option | after a fix | oc_space_toggles_the_selected_multiselect_option |
+| `tui/test/cli/tui/form` | keeps a visible space between a multiselect marker and wrapped label | after a fix | oc_keeps_a_visible_space_between_a_multiselect_marker_and_wrapped_label |
+| `tui/test/cli/tui/form` | space activates the custom multiselect option | after a fix | oc_space_activates_the_custom_multiselect_option |
+| `tui/test/cli/tui/form` | space does not select a single-choice option | after a fix | oc_space_does_not_select_a_single_choice_option |
+| `tui/test/cli/tui/form` | arriving choice question keeps focus with an open rename dialog until it closes | after a fix | oc_arriving_choice_question_keeps_focus_with_an_open_dialog_until_it_closes (adapted: a filtered picker for the rename dialog, which CodeSmith lacks) |
+| `tui/test/cli/tui/form` | arriving text question does not steal editor focus from an open rename dialog | after a fix | oc_arriving_text_question_does_not_steal_editor_focus_from_an_open_dialog (adapted) |
+| `tui/test/cli/tui/form` | escape closes an open command palette instead of cancelling an arriving question | after a fix | oc_escape_closes_an_open_command_palette_instead_of_cancelling_an_arriving_question |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -787,11 +833,6 @@ transport and its tool presentation.
 ### codemode: OpenAPI tools (39)
 
 - `codemode/test/openapi` (39): e.g. "(all 39)"
-
-### tui: rich question forms (multi-select, custom answers) (34)
-
-- `tui/test/cli/tui/form` (30): e.g. "restores the composer when terminal-form revalidation fails"; "restores the composer after a terminal ${status} reply"
-- `tui/test/util/form` (4): e.g. "initializes configured and custom defaults"; "validates every supported field constraint"
 
 ### tui: mouse selection and copy (32)
 

@@ -519,10 +519,21 @@ Permission requests and the agent's questions open as dialogs:
   and **n**, **Esc** or **Enter** reject. Type first, and Enter rejects with
   your text as feedback to the model. Edits and writes show a diff preview.
   See [answering a request](permissions.md#answering-a-request).
-- **Question:** the `question` tool asks multiple-choice or free-form
-  questions, one at a time. Type an option's number (several, separated by
-  commas or spaces, when more than one may be picked) or your own answer, and
-  press **Enter**. **Esc** dismisses the questions.
+- **Question:** the `question` tool's questions (and an MCP server's
+  requests for input) open as a form, as OpenCode's: a tab for each
+  question and a **Submit** tab with a summary of the answers. **←**/**→**
+  (or **h**/**l**, **Tab**/**Shift+Tab**) move between tabs, **↑**/**↓** (or
+  **j**/**k**) between choices, a number picks one, and **Enter**
+  (`dialog.prompt.submit`) picks the highlighted one. Where several may be
+  picked, **Space** or Enter ticks them (`[✓]`). The last row, **Type your
+  own answer**, takes your own text: start typing on it, or press Enter,
+  and Enter again to keep it (pasting on a choice question opens it too).
+  Free-form questions are a text field. **Esc** closes an answer you are
+  typing, or dismisses the form; **ctrl+c** clears the typed answer first.
+  A link to open (an MCP server's) says when it is opened (Enter) or copied
+  (**c**), and must be confirmed with Enter before the form submits. A
+  question that comes while a picker or the help is open waits until it
+  closes.
 
 ## Mini mode
 

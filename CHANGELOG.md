@@ -83,6 +83,10 @@ replays of its recorded provider traffic.
   each model's variant is remembered, in OpenCode's `model.json`.
 - **Shell mode completion:** a `!command`'s arguments complete to
   directories, as OpenCode completes locations.
+- **Question forms:** questions and MCP input requests open as OpenCode's
+  form: tabs per question, choices with a cursor, multi-select checkboxes,
+  a "Type your own answer" row, text and number fields, links to
+  acknowledge, and a review before submitting.
 - **Command palette:** ctrl+p lists the UI's commands and slash
   commands to filter and run, `Copy session ID` among them.
 - **Message navigation:** OpenCode's `session.message.*` commands jump

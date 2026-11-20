@@ -59,9 +59,10 @@ fn modal_rows(app: &App, m: &Modal, cols: u16, room: u16) -> u16 {
             );
             (lines.len() as u16 + 4).min(room)
         }
-        Modal::Question { prompts, idx, .. } => {
-            let options = prompts.get(*idx).map_or(0, |q| q.options.len()) as u16;
-            (options + 9).min(room)
+        Modal::Question { form, .. } => {
+            let width = MODAL_WIDTH.min(cols.saturating_sub(2)).saturating_sub(2) as usize;
+            let lines = form.height(width, (cols, room), &app.keymap) as u16;
+            (lines + 2).min(room)
         }
         Modal::Picker(pk) => (pk.shown.len().clamp(1, 20) as u16 + 9).min(room),
         Modal::Help(_) | Modal::DiffHelp(_) => room,

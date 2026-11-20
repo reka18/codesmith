@@ -26,6 +26,7 @@ mod diff_view;
 mod dirs;
 mod editor;
 mod external;
+mod form;
 mod group;
 mod history;
 pub(crate) mod keymap;
@@ -39,6 +40,8 @@ mod outside;
 mod parity;
 #[cfg(test)]
 mod parity_diff;
+#[cfg(test)]
+mod parity_form;
 #[cfg(test)]
 mod parity_groups;
 #[cfg(test)]
@@ -1323,6 +1326,11 @@ impl Runner {
                         Ok(())
                     }
                     Some(Action::Preview(..) | Action::Cancelled(_)) => Ok(()),
+                    Some(Action::OpenUrl(url)) => {
+                        // Only http(s) links open (see `open_browser`).
+                        codesmith_core::mcp::oauth::open_browser(&url);
+                        Ok(())
+                    }
                     Some(Action::Run(id)) => {
                         self.run_command(id);
                         Ok(())

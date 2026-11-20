@@ -9,7 +9,6 @@ use super::keymap::{self, scope, Keymap, Stroke};
 use codesmith_ai::Usage;
 use codesmith_core::config::Cost;
 use codesmith_core::permission::{Reply, Request};
-use codesmith_core::question::{interpret, Prompt};
 use codesmith_core::tool::todo::Todo;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
@@ -285,18 +284,37 @@ pub enum Modal {
         /// (the view clamps it).
         scroll: std::cell::Cell<usize>,
     },
+    /// A question form (the question tool's, or an MCP server's).
     Question {
-        prompts: Vec<Prompt>,
-        idx: usize,
-        answers: Vec<Vec<String>>,
-        input: String,
-        reply: Option<oneshot::Sender<Answers>>,
+        form: Box<super::form::Form>,
+        reply: Option<FormReply>,
     },
     Picker(Picker),
     /// The help, scrolled this many rows.
     Help(usize),
     /// The diff viewer's shortcuts, scrolled this many rows.
     DiffHelp(usize),
+}
+
+/// Where a question form's answer goes.
+pub enum FormReply {
+    /// The question tool's prompts (this many), answered by label.
+    Questions(usize, oneshot::Sender<Answers>),
+    /// A whole form; `None` when dismissed.
+    Form(oneshot::Sender<Option<codesmith_core::form::Answer>>),
+}
+
+impl FormReply {
+    /// Send the answer (`None`: dismissed). False when nobody waits for
+    /// it any more (the turn ended).
+    pub fn send(self, answer: Option<codesmith_core::form::Answer>) -> bool {
+        match self {
+            FormReply::Questions(n, tx) => tx
+                .send(answer.map(|a| super::form::question_answers(n, &a)))
+                .is_ok(),
+            FormReply::Form(tx) => tx.send(answer).is_ok(),
+        }
+    }
 }
 
 /// What the runner should do after a key.
@@ -321,6 +339,8 @@ pub enum Action {
     /// Add the model to the favourites, or take it off (ctrl+f in the
     /// model picker).
     Favorite(String),
+    /// Open the URL in the browser (a form's external link).
+    OpenUrl(String),
     /// A command the runner carries out: `theme.switch_mode`,
     /// `theme.mode.lock`, `terminal.suspend`.
     Run(&'static str),
@@ -448,6 +468,8 @@ pub struct App {
     pub turn_tokens: bool,
     /// The session's steps so far, for the turn usage rows.
     pub usage_log: super::usage::Log,
+    /// Question forms that came while a picker or the help was open.
+    pub held: Vec<Modal>,
 }
 
 /// How a turn ended.
@@ -1141,14 +1163,12 @@ impl App {
                 });
             }
             Ev::Question(prompts, reply) => {
-                self.asks += 1;
-                self.modal = Some(Modal::Question {
-                    prompts,
-                    idx: 0,
-                    answers: vec![],
-                    input: String::new(),
-                    reply: Some(reply),
-                });
+                let form = super::form::Form::questions(&prompts);
+                self.ask_form(form, FormReply::Questions(prompts.len(), reply));
+            }
+            Ev::Form(info, reply) => {
+                let form = super::form::Form::new(&info);
+                self.ask_form(form, FormReply::Form(reply));
             }
             Ev::Key(_)
             | Ev::Paste(_)
@@ -1177,14 +1197,61 @@ impl App {
         self.sub_call = None;
     }
 
-    /// Cancel an open prompt (the session sees a rejection or dismissal).
+    /// Show a question form, or hold it while a picker or the help is
+    /// open (it shows when that closes, as OpenCode keeps a form behind an
+    /// open dialog).
+    fn ask_form(&mut self, form: super::form::Form, reply: FormReply) {
+        self.asks += 1;
+        let m = Modal::Question {
+            form: Box::new(form),
+            reply: Some(reply),
+        };
+        match self.modal {
+            Some(Modal::Picker(_) | Modal::Help(_) | Modal::DiffHelp(_)) => self.held.push(m),
+            _ => self.modal = Some(m),
+        }
+    }
+
+    /// The form went (answered or dismissed): the next held one shows.
+    fn close_form(&mut self) {
+        self.modal = None;
+        self.unhold();
+    }
+
+    /// Show a held form once nothing else is open.
+    pub fn unhold(&mut self) {
+        if self.modal.is_none() && !self.held.is_empty() {
+            self.modal = Some(self.held.remove(0));
+        }
+    }
+
+    /// Whether a question form is open or held behind a dialog.
+    pub fn asking(&self) -> bool {
+        matches!(self.modal, Some(Modal::Question { .. })) || !self.held.is_empty()
+    }
+
+    /// Dismiss the open form (its asker sees a dismissal).
+    fn dismiss_form(&mut self) {
+        if let Some(Modal::Question { reply: Some(r), .. }) = self.modal.take() {
+            r.send(None);
+        }
+        self.close_form();
+    }
+
+    /// Cancel an open prompt and any held forms (the session sees a
+    /// rejection or dismissal).
     pub fn cancel_modal(&mut self) {
+        for m in std::mem::take(&mut self.held) {
+            if let Modal::Question { reply: Some(r), .. } = m {
+                r.send(None);
+            }
+        }
         match self.modal.take() {
             Some(Modal::Permission { reply: Some(r), .. }) => {
                 let _ = r.send(Reply::Reject(None));
             }
             Some(Modal::Question { reply: Some(r), .. }) => {
-                let _ = r.send(None);
+                r.send(None);
             }
             _ => {}
         }
@@ -1198,7 +1265,14 @@ impl App {
             Some(Modal::Permission { feedback, .. }) => {
                 feedback.push_str(s.lines().next().unwrap_or(""))
             }
-            Some(Modal::Question { input, .. }) => input.push_str(s.lines().next().unwrap_or("")),
+            Some(Modal::Question { form, reply }) => {
+                if let super::form::Outcome::Reply(a) = form.paste(s) {
+                    if let Some(r) = reply.take() {
+                        r.send(Some(a));
+                    }
+                    self.close_form();
+                }
+            }
             Some(Modal::Picker(p)) => {
                 p.filter.push_str(s.lines().next().unwrap_or(""));
                 p.refilter();
@@ -1566,6 +1640,12 @@ impl App {
     }
 
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Action> {
+        let a = self.key(k);
+        self.unhold();
+        a
+    }
+
+    fn key(&mut self, k: KeyEvent) -> Option<Action> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // A focused diff viewer keeps its keys even with a permission or
         // question waiting beside it (Enter must not answer it).
@@ -1629,7 +1709,7 @@ impl App {
             if self.keymap.after_leader(&seq) {
                 return None;
             }
-            return self.on_key(k);
+            return self.key(k);
         }
         // Unbound keys type their character.
         match k.code {
@@ -1756,6 +1836,15 @@ impl App {
                 self.modal = None;
                 return Some(Action::Cancelled(kind));
             }
+            // A form clears its answer editor first.
+            if let Some(Modal::Question { form, .. }) = self.modal.as_mut() {
+                let km = self.keymap.clone();
+                if form.key(&k, &km) != super::form::Outcome::Cancel {
+                    return None;
+                }
+                self.dismiss_form();
+                return self.busy.then_some(Action::Interrupt);
+            }
             let was_prompt = matches!(
                 self.modal,
                 Some(Modal::Permission { .. } | Modal::Question { .. })
@@ -1836,35 +1925,22 @@ impl App {
                     self.modal = None;
                 }
             }
-            Modal::Question {
-                prompts,
-                idx,
-                answers,
-                input,
-                reply,
-            } => {
-                if !hits(scope::QUESTION).is_empty() {
-                    answers.push(interpret(input, &prompts[*idx]));
-                    input.clear();
-                    *idx += 1;
-                    if *idx >= prompts.len() {
+            Modal::Question { form, reply } => {
+                use super::form::Outcome;
+                match form.key(&k, &km) {
+                    Outcome::Nothing => {}
+                    Outcome::Reply(a) => {
                         if let Some(r) = reply.take() {
-                            let _ = r.send(Some(std::mem::take(answers)));
+                            r.send(Some(a));
                         }
-                        self.modal = None;
+                        self.close_form();
                     }
-                    return None;
-                }
-                match k.code {
-                    KeyCode::Esc => self.cancel_modal(),
-                    KeyCode::Backspace => {
-                        input.pop();
+                    Outcome::Cancel => self.dismiss_form(),
+                    Outcome::Copy(url) => {
+                        self.clipboard = Some(url);
+                        self.notice("Copied URL to clipboard");
                     }
-                    _ => {
-                        if let Some(c) = typed {
-                            input.push(c);
-                        }
-                    }
+                    Outcome::Open(url) => return Some(Action::OpenUrl(url)),
                 }
             }
             Modal::Picker(p) => {
@@ -2533,7 +2609,7 @@ mod tests {
 
     #[test]
     fn questions_are_answered_in_order() {
-        let p = |q: &str| Prompt {
+        let p = |q: &str| codesmith_core::question::Prompt {
             question: q.into(),
             header: String::new(),
             options: vec![codesmith_core::question::Choice {
@@ -2545,10 +2621,14 @@ mod tests {
         let mut a = App::new();
         let (tx, mut rx) = oneshot::channel();
         a.on_event(Ev::Question(vec![p("A?"), p("B?")], tx));
+        // A number picks a choice and moves to the next question.
         typ(&mut a, "1");
+        assert!(a.modal.is_some());
+        // Its custom row takes a typed answer.
+        a.on_key(key(KeyCode::Down));
+        typ(&mut a, "maybe");
         a.on_key(key(KeyCode::Enter));
         assert!(a.modal.is_some());
-        typ(&mut a, "maybe");
         a.on_key(key(KeyCode::Enter));
         assert!(a.modal.is_none());
         assert_eq!(
