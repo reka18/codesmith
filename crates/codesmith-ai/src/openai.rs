@@ -45,6 +45,9 @@ pub struct Compat {
     pub max_completion_tokens: bool,
     /// No `stream_options.include_usage` (only by explicit override).
     pub no_stream_usage: bool,
+    /// A stream may end without a finish reason, which is then inferred
+    /// (only by explicit override; otherwise such a stream is cut short).
+    pub optional_finish: bool,
 }
 
 /// Cache breakpoints a Chat server accepts (`cache_control` in Anthropic's
@@ -111,6 +114,7 @@ impl Compat {
             xai: url.contains("api.x.ai"),
             max_completion_tokens: openai,
             no_stream_usage: false,
+            optional_finish: false,
         }
     }
 
@@ -132,6 +136,9 @@ impl Compat {
         }
         if let Some(b) = o.require_assistant_after_tool {
             c.bridge = b;
+        }
+        if let Some(r) = o.require_finish_reason {
+            c.optional_finish = !r;
         }
         c
     }
@@ -654,6 +661,8 @@ pub struct State {
     /// The response's one text block and one reasoning block have started.
     text: bool,
     reasoning: bool,
+    /// The stream may end without a finish reason ([`Compat::optional_finish`]).
+    pub optional_finish: bool,
 }
 
 /// A `reasoning_details` entry in a dialect CodeSmith knows: OpenRouter's
@@ -762,8 +771,84 @@ impl State {
     }
 }
 
-/// Events produced by one `data:` chunk.
-pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
+const STREAM_ROUTE: &str = "openai/openai-chat";
+
+/// Whether a chunk's fields have the types OpenCode's Chat event schema
+/// requires. `content` may also be a list of typed chunks (Mistral).
+fn valid_chunk(v: &Value) -> bool {
+    use crate::shape::{all, array_of, field, null_num, null_str};
+    let usage = |u: &Value| {
+        u.is_object()
+            && all(
+                u,
+                &[
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "total_tokens",
+                    "cached_tokens",
+                    "prompt_cache_hit_tokens",
+                    "cache_read_input_tokens",
+                    "cache_created_input_tokens",
+                    "reasoning_tokens",
+                ],
+                null_num,
+            )
+            && field(u, "prompt_tokens_details", true, |d| {
+                d.is_object() && all(d, &["cached_tokens", "cache_write_tokens"], null_num)
+            })
+            && field(u, "completion_tokens_details", true, |d| {
+                d.is_object()
+                    && all(
+                        d,
+                        &[
+                            "reasoning_tokens",
+                            "accepted_prediction_tokens",
+                            "rejected_prediction_tokens",
+                        ],
+                        null_num,
+                    )
+            })
+    };
+    let call = |c: &Value| {
+        c.is_object()
+            && null_num(c, "index")
+            && null_str(c, "id")
+            && field(c, "function", true, |f| {
+                f.is_object() && all(f, &["name", "arguments"], null_str)
+            })
+    };
+    let delta = |d: &Value| {
+        d.is_object()
+            && field(d, "content", true, |c| c.is_string() || c.is_array())
+            && all(
+                d,
+                &[
+                    "refusal",
+                    "reasoning_content",
+                    "reasoning",
+                    "reasoning_text",
+                    "reasoning_opaque",
+                ],
+                null_str,
+            )
+            && array_of(d, "tool_calls", true, call)
+    };
+    let choice = |c: &Value| {
+        c.is_object()
+            && field(c, "delta", true, delta)
+            && all(c, &["finish_reason", "native_finish_reason"], null_str)
+            && field(c, "usage", true, usage)
+    };
+    array_of(v, "choices", true, choice) && field(v, "usage", true, usage)
+}
+
+/// Events produced by one `data:` chunk. A chunk of the wrong shape, tool
+/// call changes after the finish reason, and a call still without a name
+/// when the response finishes are invalid output (as in OpenCode).
+pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
+    if !v.is_null() && !(v.is_object() && valid_chunk(v)) {
+        return Err(crate::shape::invalid(STREAM_ROUTE, v));
+    }
     let mut out = Vec::new();
     if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
         state.usage = usage(u);
@@ -771,9 +856,22 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
         state.raw_usage = Some(u.clone());
     }
     let Some(choice) = v["choices"].get(0) else {
-        return out;
+        return Ok(out);
     };
     let delta = &choice["delta"];
+    let changes_call = |c: &Value| {
+        let set = |x: &Value| x.as_str().is_some_and(|s| !s.is_empty());
+        set(&c["id"]) || set(&c["function"]["name"]) || set(&c["function"]["arguments"])
+    };
+    let calls = delta["tool_calls"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if state.finish.is_some() && calls.iter().any(changes_call) {
+        return Err(Error::Decode(format!(
+            "OpenAI Chat received content after the finish reason: {v}"
+        )));
+    }
     // Servers name the field differently; some send the same text under two.
     let scalar = ["reasoning_content", "reasoning", "reasoning_text"]
         .iter()
@@ -878,10 +976,19 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     // The first finish reason stands; some servers send late chunks after it.
     if let Some(f) = choice["finish_reason"].as_str().filter(|f| !f.is_empty()) {
         if state.finish.is_none() {
-            state.finish = Some(finish_reason(choice, f));
+            let reason = finish_reason(choice, f);
+            // A finish that confirms the calls needs each one named; one
+            // cut off by the limit or a filter is dropped anyway.
+            let confirms = !reason.is_length() && !reason.is_content_filter();
+            if confirms && state.calls.iter().any(|c| c.name.is_empty()) {
+                return Err(Error::Decode(format!(
+                    "OpenAI Chat tool call delta is missing id or name: {v}"
+                )));
+            }
+            state.finish = Some(reason);
         }
     }
-    out
+    Ok(out)
 }
 
 /// `prompt_tokens` includes cache reads and writes; `Usage.input` does not.
@@ -954,6 +1061,11 @@ fn finish_reason(choice: &Value, raw: &str) -> FinishReason {
 /// Calls cut off by the token limit or a content filter are dropped, and a
 /// finish reason that reports a provider failure is an error.
 pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
+    if state.finish.is_none() && !state.optional_finish {
+        return Err(Error::Transport(
+            "OpenAI Chat stream ended without finish_reason".into(),
+        ));
+    }
     let reason = state.finish.take().unwrap_or_else(|| Reason::Stop.into());
     let failed = reason.normalized == Reason::Error;
     match reason.raw.as_deref().filter(|_| failed).unwrap_or("") {
@@ -1050,6 +1162,15 @@ pub struct Decode {
     done: bool,
 }
 
+impl Decode {
+    /// A decoder for a server with `compat`'s stream rules.
+    pub fn new(compat: &Compat) -> Self {
+        let mut d = Decode::default();
+        d.state.optional_finish = compat.optional_finish;
+        d
+    }
+}
+
 impl Decoder for Decode {
     fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error> {
         if f.data.trim() == "[DONE]" {
@@ -1061,7 +1182,7 @@ impl Decoder for Decode {
         if v.get("error").is_some_and(|e| !e.is_null()) {
             return Err(chunk_error(&v));
         }
-        Ok(handle(&mut self.state, &v))
+        handle(&mut self.state, &v)
     }
     fn done(&self) -> bool {
         self.done
@@ -1077,7 +1198,10 @@ pub async fn stream(
     req: &Request,
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(request(p, client, req)).await?;
-    Ok(drive(resp, Decode::default()))
+    Ok(drive(
+        resp,
+        Decode::new(&Compat::for_provider(p, &req.model)),
+    ))
 }
 
 /// The Chat Completions request for `req`.
@@ -1123,6 +1247,10 @@ impl Utf8 {
 mod tests {
     use super::*;
     use crate::ToolSpec;
+
+    fn handle(s: &mut State, v: &Value) -> Vec<Event> {
+        super::handle(s, v).expect("valid chunk")
+    }
 
     #[test]
     fn body_shape() {
@@ -1350,7 +1478,7 @@ mod tests {
         let mut s = State::default();
         handle(
             &mut s,
-            &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "a", "function": {"name": "read", "arguments": "{oops"}}]}}]}),
+            &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "a", "function": {"name": "read", "arguments": "{oops"}}]}, "finish_reason": "tool_calls"}]}),
         );
         assert_eq!(
             crate::content(finish(&mut s).unwrap())[0],
@@ -1367,7 +1495,7 @@ mod tests {
         let mut s = State::default();
         handle(
             &mut s,
-            &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "glob", "arguments": ""}}]}}]}),
+            &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "glob", "arguments": ""}}]}, "finish_reason": "tool_calls"}]}),
         );
         assert!(matches!(
             &crate::content(finish(&mut s).unwrap())[0],

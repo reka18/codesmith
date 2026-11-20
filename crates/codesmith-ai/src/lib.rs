@@ -18,6 +18,7 @@ pub mod partial_json;
 mod replay_tests;
 mod responses;
 mod schema;
+mod shape;
 mod sse;
 pub mod ws;
 

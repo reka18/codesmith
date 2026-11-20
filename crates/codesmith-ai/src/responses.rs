@@ -543,6 +543,10 @@ pub struct State {
     concluded: Vec<String>,
     /// Blocks started, for ids of blocks without an item id.
     blocks: usize,
+    /// The item id first added at each output index: an event's output
+    /// index names its item (GitHub Copilot sends a different id on every
+    /// event of an item).
+    outputs: std::collections::HashMap<u64, String>,
     pub done: bool,
 }
 
@@ -651,6 +655,31 @@ impl State {
 }
 
 impl State {
+    /// The event with its item ids resolved through its output index.
+    fn normalize(&self, v: &Value) -> Value {
+        let mut v = v.clone();
+        if let Some(id) = v["output_index"]
+            .as_u64()
+            .and_then(|i| self.outputs.get(&i))
+        {
+            if v["item_id"].is_string() {
+                v["item_id"] = json!(id);
+            }
+            if v["item"].is_object() {
+                v["item"]["id"] = json!(id);
+            }
+        }
+        v
+    }
+
+    /// Whether the open reasoning item is `item` (an item without an id
+    /// takes any).
+    fn thinking_is(&self, item: &str) -> bool {
+        self.thinking
+            .as_ref()
+            .is_some_and(|t| t.id.is_empty() || t.id == item)
+    }
+
     /// The pending call an event refers to: by output index, then item id.
     fn find(&mut self, v: &Value) -> Option<&mut Pending> {
         let idx = v["output_index"].as_u64();
@@ -736,24 +765,87 @@ fn filter_category(filters: &Value) -> Option<String> {
         .or_else(|| crate::filter_category(&[&f["content_filter_results"]]))
 }
 
+/// Events whose `item_id` the spec requires (OpenCode rejects them
+/// without one).
+const NEED_ITEM: [&str; 12] = [
+    "response.output_text.delta",
+    "response.output_text.done",
+    "response.reasoning.delta",
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_text.delta",
+    "response.reasoning.done",
+    "response.reasoning_summary_text.done",
+    "response.reasoning_text.done",
+    "response.reasoning_summary_part.added",
+    "response.reasoning_summary_part.done",
+    "response.function_call_arguments.delta",
+    "response.function_call_arguments.done",
+];
+
+/// The checks OpenCode makes before an event's handling: required item ids,
+/// well-formed refusals, and one reasoning item at a time.
+fn validate(state: &State, kind: &str, v: &Value) -> Result<(), Error> {
+    let missing = || Error::Decode(format!("{kind} is missing item_id: {v}"));
+    match kind {
+        _ if NEED_ITEM.contains(&kind) && !v["item_id"].is_string() => Err(missing()),
+        "response.refusal.delta" | "response.refusal.done" => {
+            let value = if kind == "response.refusal.delta" {
+                "delta"
+            } else {
+                "refusal"
+            };
+            match v["item_id"].is_string() && v[value].is_string() {
+                true => Ok(()),
+                false => Err(Error::Decode(format!("{kind} is malformed: {v}"))),
+            }
+        }
+        "response.output_item.added"
+            if v["item"]["type"] == "reasoning"
+                && state
+                    .thinking
+                    .as_ref()
+                    .is_some_and(|t| t.id != item_str(&v["item"], "id")) =>
+        {
+            Err(Error::Decode(format!(
+                "{kind} started reasoning before the previous item ended: {v}"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Error> {
+    let v = &state.normalize(v);
+    validate(state, kind, v)?;
+    if kind == "response.output_item.added" {
+        if let (Some(i), Some(id)) = (
+            v["output_index"].as_u64(),
+            v["item"]["id"].as_str().filter(|s| !s.is_empty()),
+        ) {
+            state.outputs.entry(i).or_insert_with(|| id.to_string());
+        }
+    }
     let mut out = Vec::new();
     match kind {
-        // Refusals are ordinary assistant text.
+        // Refusals are ordinary assistant text, and text goes only to the
+        // message item being streamed (an orphan delta is dropped).
         "response.output_text.delta" | "response.refusal.delta" => {
-            let d = v["delta"].as_str().unwrap_or("");
             let item = state.message_item(v);
-            state.text(item.as_deref(), d, &mut out);
+            if item.is_some() && state.messages.last() == item.as_ref() {
+                let d = v["delta"].as_str().unwrap_or("");
+                state.text(item.as_deref(), d, &mut out);
+            }
         }
         // The final text of an item that streamed none is its only copy.
         "response.output_text.done" => {
             let item = state.message_item(v);
+            let open = item.is_some() && state.messages.last() == item.as_ref();
             let item = item.as_deref();
             let streamed = match item {
                 Some(i) => state.texted.iter().any(|t| t == i),
                 None => state.text.is_some(),
             };
-            if !streamed {
+            if open && !streamed {
                 let t = v["text"].as_str().unwrap_or("");
                 state.text(item, t, &mut out);
             }
@@ -782,12 +874,21 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 state.concluded.push(id.to_string());
             }
         }
-        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+        // Reasoning goes only to the open reasoning item.
+        "response.reasoning.delta"
+        | "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta"
+            if state.thinking_is(item_str(v, "item_id")) =>
+        {
             let d = v["delta"].as_str().unwrap_or("");
             state.reasoning(d, v["summary_index"].as_u64(), &mut out);
         }
         // A final whose part streamed nothing carries the only copy.
-        "response.reasoning_summary_text.done" => {
+        "response.reasoning.done"
+        | "response.reasoning_summary_text.done"
+        | "response.reasoning_text.done"
+            if state.thinking_is(item_str(v, "item_id")) =>
+        {
             let i = v["summary_index"].as_u64();
             let streamed = state.thinking.as_ref().is_some_and(|t| {
                 t.texted.iter().any(|x| Some(*x) == i) || (i.is_none() && t.streamed)
@@ -796,11 +897,9 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 state.reasoning(v["text"].as_str().unwrap_or(""), i, &mut out);
             }
         }
-        "response.reasoning_summary_part.done" => {
+        "response.reasoning_summary_part.done" if state.thinking_is(item_str(v, "item_id")) => {
             if let Some(t) = &mut state.thinking {
                 t.separate = true;
-            } else {
-                out.push(Event::ReasoningDelta("\n\n".into()));
             }
         }
         "response.output_item.added" if v["item"]["type"] == "reasoning" => {
@@ -1158,13 +1257,28 @@ mod tests {
         for (k, v) in [
             ("response.created", json!({})),
             (
-                "response.reasoning_summary_text.delta",
-                json!({"delta": "plan"}),
+                "response.output_item.added",
+                json!({"item": {"type": "reasoning", "id": "rs_1"}}),
             ),
-            ("response.output_text.delta", json!({"delta": "Hi"})),
+            (
+                "response.reasoning_summary_text.delta",
+                json!({"item_id": "rs_1", "delta": "plan"}),
+            ),
+            (
+                "response.output_item.done",
+                json!({"item": {"type": "reasoning", "id": "rs_1"}}),
+            ),
+            (
+                "response.output_item.added",
+                json!({"item": {"type": "message", "id": "msg_1"}}),
+            ),
+            (
+                "response.output_text.delta",
+                json!({"item_id": "msg_1", "delta": "Hi"}),
+            ),
             (
                 "response.function_call_arguments.delta",
-                json!({"delta": "{\"pa"}),
+                json!({"item_id": "fc_1", "delta": "{\"pa"}),
             ),
             (
                 "response.output_item.done",
@@ -1172,7 +1286,7 @@ mod tests {
             ),
             (
                 "response.output_item.done",
-                json!({"item": {"type": "message"}}),
+                json!({"item": {"type": "message", "id": "msg_1"}}),
             ),
             (
                 "response.completed",
@@ -1185,6 +1299,10 @@ mod tests {
             crate::content(all),
             vec![
                 Event::ReasoningDelta("plan".into()),
+                Event::ReasoningEnd(ReasoningMeta {
+                    item_id: Some("rs_1".into()),
+                    ..ReasoningMeta::of(Protocol::OpenaiResponses)
+                }),
                 Event::TextDelta("Hi".into()),
                 Event::ToolCall {
                     id: "c9".into(),

@@ -83,6 +83,10 @@ pub struct Compatibility {
     /// content (detected: Mistral-family models).
     #[serde(alias = "require_assistant_after_tool")]
     pub require_assistant_after_tool: Option<bool>,
+    /// `false` lets a stream end without a finish reason, inferring one
+    /// (detected: a finish reason is required).
+    #[serde(alias = "require_finish_reason")]
+    pub require_finish_reason: Option<bool>,
 }
 
 /// Azure OpenAI's base URL and query parameters for `model` (after OpenCode's

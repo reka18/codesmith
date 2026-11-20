@@ -225,6 +225,27 @@ fn chat(body: &str) -> Result<Vec<Event>, Error> {
     decode_all(openai::Decode::default(), body)
 }
 
+/// Chat for a server whose streams may end without a finish reason
+/// (`requireFinishReason: false`).
+fn chat_optional_finish(body: &str) -> Result<Vec<Event>, Error> {
+    let compat = openai::Compat {
+        optional_finish: true,
+        ..Default::default()
+    };
+    decode_all(openai::Decode::new(&compat), body)
+}
+
+/// The message of a non-retryable invalid-output error.
+fn invalid_output(r: Result<Vec<Event>, Error>) -> String {
+    match r {
+        Err(e @ Error::Decode(_)) => {
+            assert!(!e.retryable());
+            e.to_string()
+        }
+        other => panic!("expected invalid provider output, got {other:?}"),
+    }
+}
+
 fn anth(body: &str) -> Result<Vec<Event>, Error> {
     decode_all(anthropic::Decode::default(), body)
 }
@@ -815,7 +836,7 @@ fn openai_chat_streams() {
             assert_eq!(o.calls, vec![("call_1".into(), "lookup".into(), json!({"query": "weather"}))]);
         }),
         ("openai-chat :: finalizes a streamed tool call when the provider ends without a finish reason", || {
-            let o = out(chat(&sse_done(&[
+            let o = out(chat_optional_finish(&sse_done(&[
                 delta(json!({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "lookup", "arguments": "{\"query\""}}]})),
                 delta(json!({"tool_calls": [{"index": 0, "function": {"arguments": ":\"weather\"}"}}]})),
             ])));
@@ -866,8 +887,40 @@ fn openai_chat_streams() {
             );
         }),
         ("openai-compatible-chat :: infers stop when finish reasons are optional", || {
-            let o = out(chat(&sse_done(&[delta(json!({"content": "Hello"})), delta_finish(json!({}), "")])));
+            let o = out(chat_optional_finish(&sse_done(&[delta(json!({"content": "Hello"})), delta_finish(json!({}), "")])));
             assert_eq!(o.finish, "stop");
+        }),
+        ("openai-compatible-chat :: rejects a stream without a required finish reason", || {
+            let r = chat(&sse_done(&[delta(json!({"content": "Hello"})), delta_finish(json!({}), "")]));
+            match r {
+                // OpenCode's incomplete stream: retryable.
+                Err(e @ Error::Transport(_)) => {
+                    assert!(e.retryable());
+                    assert!(e.to_string().contains("OpenAI Chat stream ended without finish_reason"), "{e}");
+                }
+                other => panic!("expected an incomplete stream, got {other:?}"),
+            }
+        }),
+        ("openai-compatible-chat :: rejects tool changes after a terminal chunk", || {
+            let m = invalid_output(chat(&sse_done(&[
+                delta(json!({"content": "Hello"})),
+                delta_finish(json!({}), "stop"),
+                delta(json!({"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "lookup", "arguments": "{}"}}]})),
+            ])));
+            assert!(m.contains("OpenAI Chat received content after the finish reason"), "{m}");
+            assert!(m.contains("call_1"), "{m}");
+        }),
+        ("openai-chat :: fails when a buffered tool call never receives a function name", || {
+            let m = invalid_output(chat(&sse_done(&[
+                delta(json!({"tool_calls": [{"index": 0, "id": "call_1", "function": {"arguments": "{}"}}]})),
+                delta_finish(json!({}), "tool_calls"),
+            ])));
+            assert!(m.contains("OpenAI Chat tool call delta is missing id or name"), "{m}");
+            assert!(m.contains("\"finish_reason\":\"tool_calls\""), "{m}");
+        }),
+        ("openai-chat :: fails on malformed stream events", || {
+            let m = invalid_output(chat(&sse_done(&[delta(json!({"content": 123}))])));
+            assert!(m.contains("Invalid openai/openai-chat stream event"), "{m}");
         }),
         ("openai-compatible-chat :: classifies provider error finish reasons", || {
             let (m, retry) = provider_err(chat(&sse_done(&[delta_finish(json!({}), "network_error")])));
@@ -1429,6 +1482,79 @@ fn openai_responses_errors() {
             let (m, retry) = provider_err(resp(&sse(&[json!({"type": "error", "sequence_number": 2})])));
             assert!(m.contains("\"type\":\"error\""), "{m}");
             assert!(retry);
+        }),
+        ("openai-responses :: rejects malformed refusal events", || {
+            for e in [
+                json!({"type": "response.refusal.delta", "output_index": 0, "content_index": 0, "delta": "missing item"}),
+                json!({"type": "response.refusal.delta", "item_id": "msg_1", "output_index": 0, "content_index": 0}),
+                json!({"type": "response.refusal.done", "item_id": "msg_1", "output_index": 0, "content_index": 0}),
+            ] {
+                let m = invalid_output(resp(&sse(&[e])));
+                assert!(m.contains("is malformed"), "{m}");
+            }
+        }),
+        ("openai-responses :: rejects output text events without the spec-required item id", || {
+            let m = invalid_output(resp(&sse(&[
+                json!({"type": "response.output_text.delta", "delta": "orphaned"}),
+                json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+            ])));
+            assert!(m.contains("response.output_text.delta is missing item_id"), "{m}");
+        }),
+        ("openai-responses :: requires item ids even when their output index is known", || {
+            let m = invalid_output(resp(&sse(&[
+                json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "msg_1"}}),
+                json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Missing item ID"}),
+            ])));
+            assert!(m.contains("response.output_text.delta is missing item_id"), "{m}");
+        }),
+        ("openai-responses :: ignores deltas without a matching output item", || {
+            let evs = resp(&sse(&[
+                json!({"type": "response.output_text.delta", "item_id": "msg_missing", "delta": "orphaned text"}),
+                json!({"type": "response.refusal.delta", "item_id": "refusal_missing", "delta": "orphaned refusal"}),
+                json!({"type": "response.reasoning_summary_text.delta", "item_id": "rs_missing", "summary_index": 0, "delta": "orphaned reasoning"}),
+                json!({"type": "response.reasoning_summary_part.added", "item_id": "rs_still_missing", "summary_index": 0}),
+                json!({"type": "response.reasoning_summary_text.delta", "item_id": "rs_still_missing", "summary_index": 0, "delta": "still orphaned reasoning"}),
+                json!({"type": "response.function_call_arguments.delta", "item_id": "fc_missing", "delta": "{\"orphaned\":true}"}),
+                json!({"type": "response.function_call_arguments.done", "item_id": "fc_missing", "arguments": "{\"orphaned\":true}"}),
+                json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+            ]))
+            .unwrap();
+            assert!(crate::collect(&evs).is_empty(), "{evs:?}");
+            assert!(!evs.iter().any(|e| matches!(e, Event::ToolCall { .. })));
+        }),
+        ("openai-responses :: rejects function argument events without the spec-required item id", || {
+            for e in [
+                json!({"type": "response.function_call_arguments.delta", "output_index": 0, "delta": "{}"}),
+                json!({"type": "response.function_call_arguments.done", "output_index": 0, "arguments": "{}"}),
+            ] {
+                let kind = e["type"].as_str().unwrap().to_string();
+                let m = invalid_output(resp(&sse(&[
+                    json!({"type": "response.output_item.added", "output_index": 0,
+                        "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup", "arguments": ""}}),
+                    e,
+                    json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+                ])));
+                assert!(m.contains(&format!("{kind} is missing item_id")), "{m}");
+            }
+        }),
+        ("openai-responses :: rejects reasoning events without the spec-required item id", || {
+            for e in [
+                json!({"type": "response.reasoning_summary_part.added", "summary_index": 0}),
+                json!({"type": "response.reasoning_summary_part.done", "summary_index": 0}),
+                json!({"type": "response.reasoning_text.done"}),
+            ] {
+                let kind = e["type"].as_str().unwrap().to_string();
+                let m = invalid_output(resp(&sse(&[e, json!({"type": "response.completed", "response": {"id": "resp_1"}})])));
+                assert!(m.contains(&format!("{kind} is missing item_id")), "{m}");
+            }
+        }),
+        ("openai-responses :: rejects a reasoning item that starts before the previous item ends", || {
+            let m = invalid_output(resp(&sse(&[
+                json!({"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs_1"}}),
+                json!({"type": "response.reasoning_summary_text.delta", "item_id": "rs_1", "summary_index": 0, "delta": "First"}),
+                json!({"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs_2"}}),
+            ])));
+            assert!(m.contains("started reasoning before the previous item ended"), "{m}");
         }),
         ("openai-responses :: keeps the raw response payload when response.failed has no error payload", || {
             let (m, retry) = provider_err(resp(&sse(&[json!({"type": "response.failed", "response": {"id": "resp_failed_3"}})])));
