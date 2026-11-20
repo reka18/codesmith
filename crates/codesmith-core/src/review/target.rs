@@ -182,6 +182,9 @@ fn is_branch(root: &Path, name: &str) -> bool {
 }
 
 pub fn resolve(root: &Path, target: Option<&str>) -> Result<Target> {
+    if let Some((dir, crate::vcs::Kind::Hg)) = crate::vcs::marker(root) {
+        return resolve_hg(&dir, target);
+    }
     git(root, &["rev-parse", "--git-dir"])
         .map_err(|_| anyhow!("{} is not a git repository", root.display()))?;
     let t = match target.map(str::trim).filter(|t| !t.is_empty()) {
@@ -305,6 +308,45 @@ pub fn resolve(root: &Path, target: Option<&str>) -> Result<Target> {
             }
         }
         Some(t) => commit(root, t)?,
+    };
+    if t.diff.trim().is_empty() {
+        return Err(anyhow!("nothing to review in {}", t.label));
+    }
+    Ok(t)
+}
+
+/// A Mercurial project's review: the working copy, else the named branch
+/// against `default`. Commits, ranges and bases are Git's.
+fn resolve_hg(root: &Path, target: Option<&str>) -> Result<Target> {
+    use crate::vcs::{hg_branch, hg_diff, Mode};
+    let base = target.map(str::trim).filter(|t| !t.is_empty());
+    if base.is_some() {
+        hg_diff(root, Mode::Branch, base)?;
+    }
+    let join =
+        |files: &[crate::vcs::FileDiff]| files.iter().map(|f| f.patch.as_str()).collect::<String>();
+    let working = hg_diff(root, Mode::Working, None)?;
+    let t = if !working.is_empty() {
+        let diff = join(&working);
+        Target {
+            label: "uncommitted changes".into(),
+            files: working.iter().map(|f| f.file.clone()).collect(),
+            diff,
+            context: String::new(),
+            command: "hg diff --git (and `hg status` for new and missing files)".into(),
+            pr: None,
+        }
+    } else {
+        let branch = hg_diff(root, Mode::Branch, None)?;
+        let name = hg_branch(root).unwrap_or_else(|| "default".into());
+        Target {
+            label: format!("branch {name} against default"),
+            files: branch.iter().map(|f| f.file.clone()).collect(),
+            diff: join(&branch),
+            context: String::new(),
+            command: "hg diff --git -r \"ancestor(., default)\"".into(),
+            pr: None,
+        }
     };
     if t.diff.trim().is_empty() {
         return Err(anyhow!("nothing to review in {}", t.label));

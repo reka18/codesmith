@@ -739,18 +739,19 @@ impl Default for ToolOutputConfig {
 pub struct Loaded {
     pub config: Config,
     pub files: Vec<PathBuf>,
-    /// Project root (nearest folder with `.git`, else the working directory).
+    /// Project root (nearest folder with `.git` or `.hg`, else the working
+    /// directory).
     pub root: PathBuf,
 }
 
 pub const NAMES: [&str; 2] = ["codesmith.json", "codesmith.jsonc"];
 
-/// The nearest ancestor of `dir` (inclusive) containing `.git`, else `dir`.
+/// The nearest ancestor of `dir` (inclusive) containing `.git` or a
+/// Mercurial `.hg`, else `dir` (see [`crate::vcs::marker`]).
 pub fn project_root(dir: &Path) -> PathBuf {
-    dir.ancestors()
-        .find(|d| d.join(".git").exists())
-        .unwrap_or(dir)
-        .to_path_buf()
+    crate::vcs::marker(dir)
+        .map(|(d, _)| d)
+        .unwrap_or_else(|| dir.to_path_buf())
 }
 
 /// Where [`load_from`] looks. [`Sources::from_env`] is what [`load`] uses.

@@ -27,7 +27,8 @@ and trailing commas. Files load in this order, and later files win:
    (`$CODESMITH_CONFIG_DIR`, else `$XDG_CONFIG_HOME/codesmith`)
 2. the file named by `$CODESMITH_CONFIG`
 3. each folder's `codesmith.json[c]`, from the project root (the nearest
-   folder with `.git`) down to the working directory
+   folder with `.git` or a Mercurial `.hg`, Git winning in a folder with
+   both) down to the working directory
 4. then each folder's `.codesmith/codesmith.json[c]`, in the same order
 5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 

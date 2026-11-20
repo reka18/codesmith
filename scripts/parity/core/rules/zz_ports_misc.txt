@@ -22,3 +22,11 @@
 204 :: ported :: tests/oc_local_models.rs::oc_vllm_refreshes_inventory_while_retaining_the_last_success_through_transient_failures
 241 :: ported :: tests/oc_local_models.rs::oc_lmstudio_replaces_the_models_dev_catalog_when_discovery_succeeds :: adapted: the same kept-list rule for every local provider
 306 :: ported :: tests/oc_local_models.rs::oc_vllm_reloads_layered_custom_endpoint_and_bearer_authentication_settings
+@project.test.ts
+580 :: ported :: tests/oc_vcs.rs::oc_project_prefers_git_when_both_git_and_mercurial_metadata_exist
+593 :: ported :: tests/oc_vcs.rs::oc_project_prefers_the_nearest_mercurial_marker_over_an_outer_git_repository
+611 :: ported :: tests/oc_vcs.rs::oc_project_prefers_the_nearest_git_marker_over_an_outer_mercurial_repository
+629 :: ported :: tests/oc_vcs.rs::oc_project_returns_global_id_for_unreadable_mercurial_metadata
+@vcs-hg.test.ts
+74 :: ported :: tests/oc_vcs.rs::oc_mercurial_rejects_unsupported_review_modes_and_bases_without_requiring_hg :: adapted: `/review <target>` in a Mercurial project is refused the same way
+90 :: ported :: tests/oc_vcs.rs::oc_vcs_mercurial :: adapted: status, working-copy and named-branch diffs; skipped without hg, as OpenCode's are

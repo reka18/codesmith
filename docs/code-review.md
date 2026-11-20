@@ -44,6 +44,12 @@ codesmith review #12 --comment
 5. Only findings confirmed at 80% confidence or more are reported, most
    severe first.
 
+In a Mercurial project (the nearest marker above the working directory is
+`.hg`, not `.git`), `/review` takes no target: it reviews the working copy
+(`hg diff --git`, with new and missing files written out as patches), else
+the named branch against where it left `default`. Commits, ranges and bases
+are refused, as OpenCode's Mercurial support refuses them.
+
 The report joins the session, so "fix 1" works as the next message.
 `--comment` posts the report to the pull request. Without a
 `.codesmith/review.json`, only the standing reviewers run, so run
