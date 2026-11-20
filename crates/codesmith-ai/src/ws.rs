@@ -319,6 +319,8 @@ pub fn prepare(
     req: &Request,
     route: Route,
 ) -> Result<Prepared, Error> {
+    let provider = provider.for_request(req);
+    let provider = provider.as_ref();
     let http = crate::responses::request(provider, client, req).build()?;
     let enabled = route.enabled(http.url());
     let channel = if enabled {

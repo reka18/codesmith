@@ -714,6 +714,10 @@ pub struct Request {
     /// What kind of step this is, for providers that bill or route by it
     /// (GitHub Copilot's `X-Interaction-Type`).
     pub interaction: Interaction,
+    /// Headers this request adds under the provider's own (a configured
+    /// header of the same name wins), such as a session's correlation
+    /// headers.
+    pub headers: Vec<(String, String)>,
 }
 
 /// What kind of step a request is.
@@ -1240,14 +1244,20 @@ impl Provider {
         Ok(rb.build()?)
     }
 
-    /// The provider with the headers this step adds (GitHub Copilot's
-    /// interaction type), under the configured ones.
-    fn for_request(&self, req: &Request) -> std::borrow::Cow<'_, Provider> {
-        if self.name != copilot::ID {
+    /// The provider with the headers this request adds (its own, and
+    /// GitHub Copilot's interaction type), under the configured ones.
+    pub(crate) fn for_request(&self, req: &Request) -> std::borrow::Cow<'_, Provider> {
+        let copilot = self.name == copilot::ID;
+        if !copilot && req.headers.is_empty() {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut p = self.clone();
-        for (k, v) in copilot::step_headers(req) {
+        let step = if copilot {
+            copilot::step_headers(req)
+        } else {
+            Vec::new()
+        };
+        for (k, v) in step.into_iter().chain(req.headers.iter().cloned()) {
             if !p.headers.iter().any(|(h, _)| h.eq_ignore_ascii_case(&k)) {
                 p.headers.push((k, v));
             }

@@ -1007,15 +1007,23 @@ impl Session {
             options: self.model.options.clone(),
             body: self.model.body.clone(),
             cache: self.model.cache.clone(),
-            // Stable for the session, so its requests reach the same cache.
-            prompt_cache_key: Some(self.id.clone()),
+            // Stable for the session (a subagent shares its parent's), so
+            // its requests reach the same cache.
+            prompt_cache_key: Some(self.tag().cache_key),
             tool_choice: None,
             parallel_tool_calls: None,
             interaction: match self.parent {
                 Some(_) => codesmith_ai::Interaction::Subagent,
                 None => codesmith_ai::Interaction::Agent,
             },
+            headers: self.tag().headers,
         }
+    }
+
+    /// What every model request of this session carries: its correlation
+    /// headers and prompt cache key (see [`Tag`]).
+    fn tag(&self) -> Tag {
+        Tag::new(&self.id, self.parent.as_deref())
     }
 
     /// The system prompt: the base and the instruction baseline, Code Mode
@@ -2754,6 +2762,7 @@ impl Session {
         let msg = vec![Message::user(prompt.clone())];
         let fallback = title::fallback(first);
         let session_id = self.id.to_string();
+        let tag = self.tag();
         tokio::spawn(async move {
             // GitHub Copilot names sessions with its free utility model;
             // when that fails the usual title request runs.
@@ -2779,6 +2788,7 @@ impl Session {
             let reply = complete_with(
                 &client,
                 &model,
+                &tag,
                 title::SYSTEM,
                 &msg,
                 Some(TITLE_MAX_TOKENS),
@@ -3052,6 +3062,7 @@ pub async fn complete(
     complete_with(
         client,
         model,
+        &Tag::default(),
         system,
         messages,
         max_tokens,
@@ -3060,9 +3071,58 @@ pub async fn complete(
     .await
 }
 
+/// The headers and prompt cache key that tie a session's model requests
+/// together (OpenCode's session correlation headers, with CodeSmith's
+/// names for its own): a subagent's requests use its parent's id as their
+/// affinity, so they reach the same provider cache.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Tag {
+    pub headers: Vec<(String, String)>,
+    pub cache_key: String,
+}
+
+impl Tag {
+    pub(crate) fn new(id: &str, parent: Option<&str>) -> Tag {
+        let affinity = parent.unwrap_or(id);
+        let mut headers = vec![("x-codesmith-session-id".to_string(), id.to_string())];
+        if let Some(p) = parent {
+            headers.push(("x-codesmith-parent-session-id".into(), p.into()));
+        }
+        headers.push(("x-session-affinity".into(), affinity.into()));
+        headers.push(("X-Session-Id".into(), affinity.into()));
+        if let Some(p) = parent {
+            headers.push(("x-parent-session-id".into(), p.into()));
+        }
+        headers.push((
+            "User-Agent".into(),
+            format!("codesmith/{}", env!("CARGO_PKG_VERSION")),
+        ));
+        headers.push(("x-codesmith-session".into(), affinity.into()));
+        headers.push(("x-codesmith-client".into(), "codesmith".into()));
+        Tag {
+            headers,
+            cache_key: prompt_cache_key(affinity),
+        }
+    }
+}
+
+/// The prompt cache key for a session id: OpenAI takes at most 64
+/// characters, so a `ses_` id with a 64-digit hex body (OpenCode's, as
+/// imported) loses its prefix instead of being cut at the end, which keeps
+/// two such sessions apart.
+pub fn prompt_cache_key(id: &str) -> String {
+    match id.strip_prefix("ses_") {
+        Some(hex) if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            hex.to_string()
+        }
+        _ => id.to_string(),
+    }
+}
+
 async fn complete_with(
     client: &reqwest::Client,
     model: &ModelRef,
+    tag: &Tag,
     system: &str,
     messages: &[Message],
     max_tokens: Option<u32>,
@@ -3071,6 +3131,7 @@ async fn complete_with(
     complete_streaming(
         client,
         model,
+        tag,
         system,
         messages,
         max_tokens,
@@ -3083,9 +3144,11 @@ async fn complete_with(
 
 /// [`complete_with`], handing each text delta to `delta` as it arrives (a
 /// retried attempt streams again from the start).
+#[allow(clippy::too_many_arguments)]
 async fn complete_streaming(
     client: &reqwest::Client,
     model: &ModelRef,
+    tag: &Tag,
     system: &str,
     messages: &[Message],
     max_tokens: Option<u32>,
@@ -3114,6 +3177,8 @@ async fn complete_streaming(
         } else {
             codesmith_ai::Interaction::Compaction
         },
+        prompt_cache_key: (!tag.cache_key.is_empty()).then(|| tag.cache_key.clone()),
+        headers: tag.headers.clone(),
         ..Default::default()
     };
     loop {

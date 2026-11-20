@@ -454,3 +454,7 @@
 375 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_preserves_the_active_connection_after_a_failed_token_exchange
 393 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_reports_eaddrinuse_with_a_clear_message_when_the_callback_port_is_occupied
 407 :: ported :: tests/oc_provider_logins.rs::oc_gitlab_oauth_honors_gitlab_oauth_client_id_for_self_managed_applications
+@session-runner.test.ts
+5381 :: ported :: tests/oc_request_headers.rs::oc_adds_session_correlation_headers_to_model_requests :: adapted: `x-codesmith-*` names for OpenCode's `x-opencode-*`, and no project header (CodeSmith has no project ids)
+5395 :: ported :: tests/oc_request_headers.rs::oc_uses_parent_cache_affinity_for_child_model_requests :: adapted: `x-codesmith-*` names
+5440 :: ported :: tests/oc_request_headers.rs::oc_bounds_64_character_session_prompt_cache_keys
