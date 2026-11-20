@@ -104,7 +104,7 @@ Where the tests live:
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
-| cli: ACP | 105 | 54 | 3 | 2 | 25 | 21 |
+| cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 |
 | tui: main UI | 1250 | 15 | 465 | 84 | 673 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
@@ -112,7 +112,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **758** | **744** | **500** | **2376** | **259** |
+| **Total** | **4637** | **760** | **744** | **498** | **2376** | **259** |
 
 ## Fixes made while porting
 
@@ -836,6 +836,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/run/noninteractive` | cancelling while waiting on background work stops the Session and this prompt's jobs | already passing | run_cli.rs interrupting_a_run_stops_its_background_server (adapted) |
 | `cli/test/acp/additional-directories.subprocess` | tools read files in an additional directory without an external directory ask | already passing | oc_acp_additional_directories |
 | `cli/test/acp/additional-directories` | rejects %p before creating a session (4 cases) | already passing | oc_acp_additional_directories |
+| `cli/test/acp/additional-directories` | load and resume replace ACP grants and keep other session rules and metadata | already passing | oc_acp_load_and_resume_replace_acp_grants_and_keep_other_session_rules_and_metadata (adapted: grants are kept beside the session's own rules) |
+| `cli/test/acp/additional-directories` | forks replace inherited grants with the requested list | already passing | oc_acp_forks_replace_inherited_grants_with_the_requested_list |
 | `cli/test/acp/background-turn.subprocess` | streams turns woken by background shells and keeps the session usable | already passing | oc_acp_background_shell_wakes_the_session |
 | `cli/test/acp/catalog` | switches model, effort, and mode against the warm catalog | already passing | oc_acp_config_options_switch_model_and_mode |
 | `cli/test/acp/compaction` | streams a /compact turn's summary and completes it with the full summary | already passing | oc_acp_compaction_updates (adapted: reported once done) |
@@ -977,11 +979,6 @@ transport and its tool presentation.
 - `cli/test/session-target`: creates a worktree from the caller's checkout
 - `cli/test/session-target`: keeps the caller's subfolder in the new worktree
 - `cli/test/session-target`: uses the worktree root when the subfolder is not in the worktree
-
-### acp: additional directories on load, resume and fork (2)
-
-- `cli/test/acp/additional-directories`: load and resume replace ACP grants and keep other session rules and metadata
-- `cli/test/acp/additional-directories`: forks replace inherited grants with the requested list
 
 ### cli: SSH askpass for git prompts (2)
 

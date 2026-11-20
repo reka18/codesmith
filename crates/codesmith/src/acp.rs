@@ -5002,6 +5002,128 @@ mod tests {
         assert!(listed(&r, &plain).get("additionalDirectories").is_none());
     }
 
+    /// A stored session `id` in `cwd`, as another client left it: its own
+    /// permission rules, other meta and an old ACP grant.
+    fn saved_session(cwd: &Path, id: &str, old: &str) -> Store {
+        let db = Store::open(&cwd.join("acp.db")).unwrap();
+        db.create(&codesmith_core::store::Info {
+            id: id.into(),
+            directory: cwd.display().to_string(),
+            title: Some("saved".into()),
+            agent: "build".into(),
+            model: "fake/m".into(),
+            parent_id: None,
+            created: 1,
+            updated: 1,
+            usage: Default::default(),
+        })
+        .unwrap();
+        db.append(
+            id,
+            &codesmith_core::store::Record::Message {
+                message: codesmith_ai::Message::user("hi"),
+            },
+        )
+        .unwrap();
+        db.set_meta(id, "host", Some("tui")).unwrap();
+        db.set_meta(id, DIRS_META, Some(&json!([old]).to_string()))
+            .unwrap();
+        db.set_permissions(
+            id,
+            &[Rule::new(
+                "edit",
+                "/private/**",
+                codesmith_core::permission::Effect::Deny,
+            )],
+        )
+        .unwrap();
+        db
+    }
+
+    // additional-directories.test.ts: "load and resume replace ACP grants
+    // and keep other session rules and metadata". Adapted: the grants are
+    // kept beside the session's own rules (as session meta), not in them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_load_and_resume_replace_acp_grants_and_keep_other_session_rules_and_metadata() {
+        let (_d, cwd, base) = tmp().await;
+        let db = saved_session(&cwd, "ses_saved", "/old");
+        let mut c = start(&cwd, &base);
+        c.request("initialize", json!({"protocolVersion": 1})).await;
+        let own = db.permissions("ses_saved").unwrap();
+        let r = c
+            .request(
+                "session/load",
+                json!({"cwd": cwd, "sessionId": "ses_saved",
+                    "additionalDirectories": ["/shared/lib", "/product-docs"], "mcpServers": []}),
+            )
+            .await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(
+            stored_directories(&db, "ses_saved"),
+            ["/shared/lib", "/product-docs"]
+        );
+        assert_eq!(
+            db.meta("ses_saved", "host").unwrap().as_deref(),
+            Some("tui")
+        );
+        assert_eq!(db.permissions("ses_saved").unwrap(), own);
+
+        c.request(
+            "session/resume",
+            json!({"cwd": cwd, "sessionId": "ses_saved", "additionalDirectories": ["/shared/lib", "/product-docs"]}),
+        )
+        .await;
+        assert_eq!(stored_directories(&db, "ses_saved").len(), 2);
+        c.request(
+            "session/resume",
+            json!({"cwd": cwd, "sessionId": "ses_saved"}),
+        )
+        .await;
+        assert!(stored_directories(&db, "ses_saved").is_empty());
+        assert_eq!(
+            db.meta("ses_saved", "host").unwrap().as_deref(),
+            Some("tui")
+        );
+        assert_eq!(db.permissions("ses_saved").unwrap(), own);
+        let r = c.request("session/list", json!({"cwd": cwd})).await;
+        assert!(r["result"]["sessions"][0]
+            .get("additionalDirectories")
+            .is_none());
+    }
+
+    // additional-directories.test.ts: "forks replace inherited grants with
+    // the requested list"
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_forks_replace_inherited_grants_with_the_requested_list() {
+        let (_d, cwd, base) = tmp().await;
+        let db = saved_session(&cwd, "ses_source", "/old");
+        let mut c = start(&cwd, &base);
+        c.request("initialize", json!({"protocolVersion": 1})).await;
+        let fork = |r: Value| r["result"]["sessionId"].as_str().unwrap().to_string();
+        let plain = fork(
+            c.request(
+                "session/fork",
+                json!({"cwd": cwd, "sessionId": "ses_source", "mcpServers": []}),
+            )
+            .await,
+        );
+        let granted = fork(
+            c.request(
+                "session/fork",
+                json!({"cwd": cwd, "sessionId": "ses_source", "additionalDirectories": ["/shared/lib"], "mcpServers": []}),
+            )
+            .await,
+        );
+        assert!(stored_directories(&db, &plain).is_empty());
+        assert_eq!(stored_directories(&db, &granted), ["/shared/lib"]);
+        assert_eq!(stored_directories(&db, "ses_source"), ["/old"]);
+        // The session's own rules are the fork's too.
+        assert_eq!(
+            db.permissions(&plain).unwrap(),
+            db.permissions("ses_source").unwrap()
+        );
+    }
+
     // session.test.ts: session/list pages, newest first, 100 at a time.
     #[tokio::test(flavor = "multi_thread")]
     async fn oc_acp_session_list_pages() {
