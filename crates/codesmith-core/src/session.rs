@@ -975,6 +975,7 @@ impl Session {
                     break;
                 }
                 self.turn.declined.store(false, Ordering::SeqCst);
+                let before = self.file_before(&name, &input);
                 let mut media = Vec::new();
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
@@ -1060,6 +1061,11 @@ impl Session {
                     error: is_error,
                 }) {
                     failure = Some(e);
+                }
+                if let (false, Some((path, old))) = (is_error, before) {
+                    if let Err(e) = self.record_change(&id, path, old) {
+                        failure = Some(e);
+                    }
                 }
                 if !media.is_empty() {
                     sink.tool_media(&id, &media);
@@ -2080,6 +2086,45 @@ impl Session {
             self.push(Message::system(compaction::CONTINUE))?;
         }
         self.last_prompt_tokens = 0;
+        Ok(())
+    }
+
+    /// The file a built-in edit or write call is about to change, and its
+    /// text (`None`: it does not exist yet), so the change can be recorded.
+    fn file_before(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<(PathBuf, Option<String>)> {
+        if !matches!(Tool::from_name(name), Some(Tool::Edit | Tool::Write)) || self.store.is_none()
+        {
+            return None;
+        }
+        let p = input["path"].as_str().or(input["filePath"].as_str())?;
+        let path = tool::normalize(&self.cwd.join(p));
+        let old = std::fs::read_to_string(&path).ok();
+        if old.as_ref().is_some_and(|o| o.len() > store::CHANGE_MAX) {
+            return None;
+        }
+        Some((path, old))
+    }
+
+    /// Record what call `id` changed in `path`, when the change is small
+    /// enough to keep.
+    fn record_change(&mut self, id: &str, path: PathBuf, old: Option<String>) -> Result<()> {
+        let Ok(new) = std::fs::read_to_string(&path) else {
+            return Ok(());
+        };
+        let size = new.len() + old.as_ref().map_or(0, String::len);
+        if old.as_deref() == Some(new.as_str()) || size > store::CHANGE_MAX {
+            return Ok(());
+        }
+        self.record(&Record::Change {
+            call: id.to_string(),
+            path,
+            old,
+            new,
+        })?;
         Ok(())
     }
 

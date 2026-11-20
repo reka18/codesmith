@@ -65,10 +65,22 @@ pub enum Record {
         ms: u64,
         error: bool,
     },
+    /// The text of the file an edit or write call `call` changed, before
+    /// (`None`: it was new) and after, so a replay can show the diff.
+    /// Recorded only while both fit in [`CHANGE_MAX`].
+    Change {
+        call: String,
+        path: PathBuf,
+        old: Option<String>,
+        new: String,
+    },
     /// A record kind from a newer CodeSmith; ignored.
     #[serde(other)]
     Unknown,
 }
+
+/// The most text (before and after together) a [`Record::Change`] keeps.
+pub const CHANGE_MAX: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {

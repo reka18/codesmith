@@ -1391,7 +1391,8 @@ fn is_prompt(t: &str) -> bool {
 
 /// A replayed history item: a message or the checkpoint of a compaction.
 enum Item {
-    Message(String, Message),
+    /// Its id, sequence number (`None`: unstored) and the message.
+    Message(String, Option<i64>, Message),
     Checkpoint(String, String),
 }
 
@@ -1535,20 +1536,36 @@ impl Agent {
             .and_then(|db| db.entries(id).ok())
             .unwrap_or_default();
         let hidden = store::hidden_ranges(&entries);
+        // What edit and write calls changed, by call id and sequence number.
+        let changes: Vec<(i64, &str, Value)> = entries
+            .iter()
+            .filter(|e| !hidden.iter().any(|(f, t)| e.seq >= *f && e.seq < *t))
+            .filter_map(|e| match &e.record {
+                Record::Change {
+                    call,
+                    path,
+                    old,
+                    new,
+                } => Some((e.seq, call.as_str(), diff(path, old.clone(), new.clone()))),
+                _ => None,
+            })
+            .collect();
         let items: Vec<Item> = if entries.is_empty() {
             s.messages
                 .iter()
                 .enumerate()
-                .map(|(i, m)| Item::Message(format!("{id}:{i}"), m.clone()))
+                .map(|(i, m)| Item::Message(format!("{id}:{i}"), None, m.clone()))
                 .collect()
         } else {
             entries
                 .iter()
                 .filter(|e| !hidden.iter().any(|(f, t)| e.seq >= *f && e.seq < *t))
                 .filter_map(|e| match &e.record {
-                    Record::Message { message } => {
-                        Some(Item::Message(format!("{id}:{}", e.seq), message.clone()))
-                    }
+                    Record::Message { message } => Some(Item::Message(
+                        format!("{id}:{}", e.seq),
+                        Some(e.seq),
+                        message.clone(),
+                    )),
                     Record::Checkpoint { summary, .. } => {
                         Some(Item::Checkpoint(format!("{id}:{}", e.seq), summary.clone()))
                     }
@@ -1562,7 +1579,7 @@ impl Agent {
             .iter()
             .enumerate()
             .filter_map(|(i, item)| match item {
-                Item::Message(_, m) => Some((i, m)),
+                Item::Message(_, _, m) => Some((i, m)),
                 _ => None,
             })
             .flat_map(|(i, m)| m.parts.iter().map(move |p| (i, p)))
@@ -1585,7 +1602,7 @@ impl Agent {
             .collect();
         let compaction = self.client_has("/session/compaction");
         for (index, item) in items.iter().enumerate() {
-            let (mid, m) = match item {
+            let (mid, seq, m) = match item {
                 Item::Checkpoint(cid, summary) => {
                     let update = if compaction {
                         json!({"sessionUpdate": "compaction_update", "compactionId": cid, "status": "completed", "summary": [{"type": "text", "text": summary}]})
@@ -1595,7 +1612,7 @@ impl Agent {
                     self.conn.update(id, update);
                     continue;
                 }
-                Item::Message(mid, m) => (mid, m),
+                Item::Message(mid, seq, m) => (mid, *seq, m),
             };
             let mut reasoning = 0;
             for p in &m.parts {
@@ -1635,10 +1652,16 @@ impl Agent {
                         self.conn.update(id, call);
                         let result = results.iter().find(|(i, rid, ..)| *i > index && rid == cid);
                         if let Some((_, _, output, failed, media)) = result {
-                            self.conn.update(
-                                id,
-                                result_update(&s.cwd, cid, name, input, output, *failed, media),
-                            );
+                            let mut update =
+                                result_update(&s.cwd, cid, name, input, output, *failed, media);
+                            // The file the call changed, as it streamed live.
+                            let change = changes
+                                .iter()
+                                .find(|(at, call, _)| Some(*at) > seq && call == cid);
+                            if let (false, Some((_, _, d))) = (*failed, change) {
+                                update["content"].as_array_mut().unwrap().push(d.clone());
+                            }
+                            self.conn.update(id, update);
                         }
                     }
                     // A tool the provider ran: already settled.
@@ -2433,8 +2456,9 @@ pub async fn run() -> Result<()> {
 ///   it instead of steering into it);
 /// - terminal auth (`--login`) and the auth-required mapping from a server
 ///   event (provider HTTP 401/403 errors map to -32000 instead);
-/// - full-file diffs on replay: CodeSmith does not record a call's
-///   before/after text, so replayed edits show their output only;
+/// - full-file diffs on replay for files over 256 KiB (before and after
+///   together), and for edits made before CodeSmith recorded them: those
+///   replay their output only;
 /// - live and replayed `messageId`s differ (replay ids come from the log),
 ///   and a step's reasoning replays as one part (`:reasoning:0`), since
 ///   CodeSmith stores it that way;
@@ -3501,6 +3525,24 @@ mod tests {
         assert_eq!(completed[0]["content"][1], previews[0]["content"][0]);
         assert_eq!(completed[1]["content"][1], previews[1]["content"][0]);
         assert_eq!(completed[0]["content"][0]["type"], "content");
+        // replay.test.ts: a loaded session replays the same diffs, from what
+        // each call recorded, though the files changed since.
+        std::fs::write(&new, "changed later\n").unwrap();
+        let mut c2 = start(&cwd, &base);
+        let id = c2
+            .call(
+                "session/load",
+                json!({"cwd": cwd, "sessionId": sid, "mcpServers": []}),
+            )
+            .await;
+        let (_, seen) = c2.until(id, |_| None).await;
+        let replayed: Vec<&Value> = updates(&seen, "tool_call_update")
+            .into_iter()
+            .filter(|u| u["status"] == "completed")
+            .collect();
+        assert_eq!(replayed.len(), 2, "{seen:?}");
+        assert_eq!(replayed[0]["content"][1], previews[0]["content"][0]);
+        assert_eq!(replayed[1]["content"][1], previews[1]["content"][0]);
     }
 
     // prompt.test.ts: "session/cancel forwards the server's wind-down before
