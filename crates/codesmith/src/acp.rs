@@ -1138,6 +1138,20 @@ struct Slot {
 
 pub type Loader = Arc<dyn Fn(&Path) -> Result<Loaded> + Send + Sync>;
 
+/// Sessions per `session/list` page, as OpenCode lists them.
+const LIST_PAGE: usize = 100;
+/// The session meta key keeping the directories granted through ACP.
+const DIRS_META: &str = "acp.additionalDirectories";
+
+/// The directories granted to session `id` when it was last opened.
+fn stored_directories(db: &Store, id: &str) -> Vec<String> {
+    db.meta(id, DIRS_META)
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
 pub struct Agent {
     conn: Conn,
     db: PathBuf,
@@ -2112,20 +2126,52 @@ impl Agent {
         }
     }
 
+    /// `session/list`: the newest sessions first, a page at a time (as
+    /// OpenCode pages them), each with the directories granted to it.
     fn list(&self, p: &Value) -> Result<Value, RpcError> {
         let cwd = match &p["cwd"] {
             Value::Null => None,
             v => Some(parse_cwd(v)?.display().to_string()),
         };
-        let list = self
-            .store()
+        // The cursor is the last session of the previous page.
+        let after = match &p["cursor"] {
+            Value::Null => None,
+            v => Some(
+                v.as_str()
+                    .and_then(|c| c.split_once(':'))
+                    .and_then(|(t, id)| Some((t.parse::<i64>().ok()?, id.to_string())))
+                    .ok_or_else(|| invalid("invalid cursor", json!({"field": "cursor"})))?,
+            ),
+        };
+        let db = self.store();
+        let mut list = db
+            .as_ref()
             .map(|db| db.list(cwd.as_deref(), false).unwrap_or_default())
             .unwrap_or_default();
-        let sessions: Vec<Value> = list
+        list.sort_by(|a, b| (b.updated, &b.id).cmp(&(a.updated, &a.id)));
+        let start = after.map_or(0, |(t, id)| {
+            list.iter()
+                .position(|i| (i.updated, &i.id) < (t, &id))
+                .unwrap_or(list.len())
+        });
+        let page = &list[start..(start + LIST_PAGE).min(list.len())];
+        let sessions: Vec<Value> = page
             .iter()
-            .map(|i| json!({"sessionId": i.id, "cwd": i.directory, "title": i.title, "updatedAt": chrono::DateTime::from_timestamp_millis(i.updated).map(|t| t.to_rfc3339())}))
+            .map(|i| {
+                let mut v = json!({"sessionId": i.id, "cwd": i.directory, "title": i.title, "updatedAt": chrono::DateTime::from_timestamp_millis(i.updated).map(|t| t.to_rfc3339())});
+                let dirs = db.as_ref().map(|db| stored_directories(db, &i.id)).unwrap_or_default();
+                if !dirs.is_empty() {
+                    v["additionalDirectories"] = json!(dirs);
+                }
+                v
+            })
             .collect();
-        Ok(json!({"sessions": sessions}))
+        let mut out = json!({"sessions": sessions});
+        if start + LIST_PAGE < list.len() {
+            let last = page.last().unwrap();
+            out["nextCursor"] = json!(format!("{}:{}", last.updated, last.id));
+        }
+        Ok(out)
     }
 
     async fn open_session(self: &Arc<Self>, method: &str, p: &Value) -> Result<Value, RpcError> {
@@ -2167,6 +2213,14 @@ impl Agent {
             db.import(&e)
                 .map_err(|e| internal(format!("{e:#}"), Value::Null))?;
             sid = fork;
+        }
+        // The directories asked for replace those granted before (none:
+        // there are none now), as OpenCode keeps them with the session.
+        if let Some(db) = self.store() {
+            let value = (!dirs.is_empty()).then(|| json!(dirs).to_string());
+            if let Err(e) = db.set_meta(&sid, DIRS_META, value.as_deref()) {
+                eprintln!("acp: could not keep the directories of {sid}: {e:#}");
+            }
         }
         // Reopening a session that is open keeps its approvals and its
         // background commands; a new or forked one starts without any.
@@ -2819,8 +2873,7 @@ pub async fn run() -> Result<()> {
 ///   and a step's reasoning replays as one part (`:reasoning:0`), since
 ///   CodeSmith stores it that way;
 /// - permissions settled elsewhere (no other client shares a session's
-///   asks), the `patch` tool (CodeSmith has none), stored
-///   `additionalDirectories` in `session/list`, and session/list paging;
+///   asks), and the `patch` tool (CodeSmith has none);
 /// - the server-unavailable and catalog error boundaries (no separate server).
 #[cfg(test)]
 mod tests {
@@ -4543,6 +4596,90 @@ mod tests {
         })
         .await;
         assert_eq!(asked, 1);
+        // additional-directories.test.ts: "load and resume replace ACP
+        // grants": the grant is kept with the session and listed, and a
+        // resume without directories drops it.
+        let listed = |r: &Value, sid: &str| {
+            r["result"]["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["sessionId"] == sid)
+                .cloned()
+                .unwrap()
+        };
+        let r = c.request("session/list", json!({"cwd": cwd})).await;
+        assert_eq!(
+            listed(&r, &granted)["additionalDirectories"],
+            json!([shared])
+        );
+        assert!(listed(&r, &plain).get("additionalDirectories").is_none());
+        c.request("session/resume", json!({"cwd": cwd, "sessionId": granted}))
+            .await;
+        let r = c.request("session/list", json!({"cwd": cwd})).await;
+        assert!(listed(&r, &granted).get("additionalDirectories").is_none());
+        // "forks replace inherited grants with the requested list"
+        let r = c
+            .request(
+                "session/fork",
+                json!({"cwd": cwd, "sessionId": plain, "additionalDirectories": [shared]}),
+            )
+            .await;
+        let fork = r["result"]["sessionId"].as_str().unwrap().to_string();
+        let r = c.request("session/list", json!({"cwd": cwd})).await;
+        assert_eq!(listed(&r, &fork)["additionalDirectories"], json!([shared]));
+        assert!(listed(&r, &plain).get("additionalDirectories").is_none());
+    }
+
+    // session.test.ts: session/list pages, newest first, 100 at a time.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_session_list_pages() {
+        let (_d, cwd, base) = tmp().await;
+        let db = Store::open(&cwd.join("acp.db")).unwrap();
+        for i in 0..205 {
+            db.create(&store::Info {
+                id: format!("ses_{i:03}"),
+                directory: cwd.display().to_string(),
+                title: Some(format!("session {i}")),
+                agent: "build".into(),
+                model: "fake/m".into(),
+                parent_id: None,
+                created: i,
+                updated: 1_000 + i / 2,
+                usage: Usage::default(),
+            })
+            .unwrap();
+        }
+        let mut c = start(&cwd, &base);
+        let mut seen = Vec::new();
+        let mut cursor = Value::Null;
+        let mut pages = 0;
+        loop {
+            let r = c
+                .request("session/list", json!({"cwd": cwd, "cursor": cursor}))
+                .await;
+            let page = r["result"]["sessions"].as_array().unwrap().clone();
+            pages += 1;
+            seen.extend(
+                page.iter()
+                    .map(|s| s["sessionId"].as_str().unwrap().to_string()),
+            );
+            match r["result"].get("nextCursor") {
+                Some(next) => {
+                    assert_eq!(page.len(), 100);
+                    cursor = next.clone();
+                }
+                None => break,
+            }
+        }
+        assert_eq!(pages, 3);
+        let mut want: Vec<String> = (0..205).map(|i| format!("ses_{i:03}")).collect();
+        want.reverse();
+        assert_eq!(seen, want, "newest first, each once");
+        let bad = c
+            .request("session/list", json!({"cwd": cwd, "cursor": "nope"}))
+            .await;
+        assert_eq!(bad["error"]["code"], -32602);
     }
 
     // elicitation.test.ts: "answers a question form through elicitation and

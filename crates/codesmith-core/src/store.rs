@@ -152,6 +152,12 @@ fn wal(conn: &Connection) -> rusqlite::Result<()> {
 const LEASE_TABLE: &str = "CREATE TABLE IF NOT EXISTS session_lease (
     session_id TEXT PRIMARY KEY, holder TEXT NOT NULL, expires INTEGER NOT NULL);";
 
+/// Values a front end keeps with a session (such as the directories an
+/// editor granted it), by key.
+const META_TABLE: &str = "CREATE TABLE IF NOT EXISTS session_meta (
+    session_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+    PRIMARY KEY (session_id, key));";
+
 /// Run a write transaction, retrying for a while when another connection
 /// holds the write lock past the busy timeout.
 fn retry_busy<T>(mut f: impl FnMut() -> rusqlite::Result<T>) -> Result<T> {
@@ -580,7 +586,41 @@ impl Store {
             self.delete(&c)?;
         }
         let conn = self.conn.lock().unwrap();
+        conn.execute_batch(META_TABLE)?;
+        conn.execute("DELETE FROM session_meta WHERE session_id = ?1", [id])?;
         Ok(conn.execute("DELETE FROM session WHERE id = ?1", [id])? > 0)
+    }
+
+    /// Keep `value` with session `id` under `key` (`None` removes it). The
+    /// session need not be stored yet.
+    pub fn set_meta(&self, id: &str, key: &str, value: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(META_TABLE)?;
+        match value {
+            Some(v) => conn.execute(
+                "INSERT INTO session_meta (session_id, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id, key) DO UPDATE SET value = ?3",
+                params![id, key, v],
+            )?,
+            None => conn.execute(
+                "DELETE FROM session_meta WHERE session_id = ?1 AND key = ?2",
+                params![id, key],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// What [`Store::set_meta`] kept with session `id` under `key`.
+    pub fn meta(&self, id: &str, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(META_TABLE)?;
+        Ok(conn
+            .query_row(
+                "SELECT value FROM session_meta WHERE session_id = ?1 AND key = ?2",
+                params![id, key],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     pub fn export(&self, id: &str) -> Result<Export> {
@@ -1131,5 +1171,20 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA user_version = 99;").unwrap();
         assert!(Store::init(conn).unwrap_err().to_string().contains("newer"));
+    }
+
+    #[test]
+    fn session_meta_is_kept_and_deleted_with_the_session() {
+        let d = tempfile::tempdir().unwrap();
+        let st = Store::open(&d.path().join("s.db")).unwrap();
+        assert_eq!(st.meta("s", "k").unwrap(), None);
+        st.set_meta("s", "k", Some("a")).unwrap();
+        st.set_meta("s", "k", Some("b")).unwrap();
+        assert_eq!(st.meta("s", "k").unwrap().as_deref(), Some("b"));
+        st.set_meta("s", "k", None).unwrap();
+        assert_eq!(st.meta("s", "k").unwrap(), None);
+        st.set_meta("s", "k", Some("c")).unwrap();
+        st.delete("s").unwrap();
+        assert_eq!(st.meta("s", "k").unwrap(), None);
     }
 }
