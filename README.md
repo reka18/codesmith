@@ -198,6 +198,15 @@ comment lines). A variable goes in as is, so `"snapshots": {env:FLAG}` works,
 unless that breaks the JSON, in which case it is escaped as string content;
 file contents are trimmed and always escaped.
 
+> **Project config is trusted, as in OpenCode.** A `codesmith.json` or
+> `.codesmith/` folder inside a repository is applied like your own config:
+> it can start MCP servers (which run programs), choose the shell, turn on
+> the repository's own formatters and language servers, point a provider at
+> any URL (and send it values from `{env:}` or `{file:}`), and add permission
+> rules that come after — and so override — your global ones. Before running
+> CodeSmith in a repository you don't trust, read its `codesmith.json[c]`
+> and `.codesmith/` first.
+
 **Compaction** starts when the prompt nears the model's `limit.context`,
 leaving 15% (at least 16k tokens) free, and keeps about 15k tokens of the
 newest turns verbatim beside the summary:
