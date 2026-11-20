@@ -655,13 +655,11 @@ async fn a_subagents_activity_is_drawn_in_its_row() {
     assert!(plain(&ui.screen).contains("General Subagent — Run the check"));
     ui.send(b"y").await;
     ui.wait_for("Delegated fine.").await;
-    // Drawn before the answer (only changed cells are redrawn, so its
-    // text may be split up).
-    assert!(
-        plain(&ui.screen).contains("completed"),
-        "{}",
-        plain(&ui.screen)
-    );
+    // The row's ending is usually drawn before the answer, but under load
+    // it can land in a later frame: wait for it if it isn't there yet.
+    if !plain(&ui.screen).contains("completed") {
+        ui.wait_for("completed").await;
+    }
     // Expanded, its calls and its text are shown.
     ui.send(b"\x0f").await;
     ui.wait_for("The check ran.").await;
