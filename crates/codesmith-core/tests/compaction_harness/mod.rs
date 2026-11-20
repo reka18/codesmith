@@ -50,6 +50,8 @@ pub struct Script {
     pub hold: Option<Arc<tokio::sync::Semaphore>>,
     /// Summary requests this fails with a server error.
     pub fail_summaries: usize,
+    /// Main requests this rejects as too long first.
+    pub overflow: usize,
     pub log: Vec<(Kind, Value)>,
 }
 
@@ -198,7 +200,7 @@ pub async fn model(script: Shared) -> String {
                         }
                         Kind::Summary if sc.fail_summaries > 0 => {
                             sc.fail_summaries -= 1;
-                            error(400, "summary unavailable")
+                            error(401, "summary unavailable")
                         }
                         Kind::Summary => {
                             let text = sc
@@ -206,6 +208,10 @@ pub async fn model(script: Shared) -> String {
                                 .pop_front()
                                 .unwrap_or_else(|| "## Objective\n- manual summary".into());
                             stream(wire, "", &text, 15, 3)
+                        }
+                        Kind::Main if sc.overflow > 0 => {
+                            sc.overflow -= 1;
+                            error(400, "This model's maximum context length is 32768 tokens")
                         }
                         Kind::Main => {
                             let r = sc.main.pop_front().unwrap_or_else(|| reply("ok", 0));
@@ -252,9 +258,7 @@ pub async fn session_on(
             "settings": {"baseURL": base, "apiKey": "x"},
             "models": {id: {"limit": {"context": context, "output": output}}}}},
     });
-    for (k, val) in extra.as_object().unwrap() {
-        v[k] = val.clone();
-    }
+    merge(&mut v, &extra);
     let l = Loaded {
         config: serde_json::from_value::<Config>(v).unwrap(),
         files: vec![],
@@ -299,4 +303,31 @@ pub fn push(script: &Shared, replies: impl IntoIterator<Item = MainReply>) {
 /// Text of `tokens` estimated tokens (four characters each).
 pub fn token_text(tokens: u64) -> String {
     "text".repeat(tokens as usize)
+}
+
+/// Wait (at most five seconds) until `done` holds.
+pub async fn until(mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "timed out");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Wait until `n` summary requests were made and answered.
+pub async fn summaries(script: &Shared, n: usize) {
+    until(|| requests(script, Kind::Summary).len() >= n).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
+
+/// Merge `extra` into `v`, object by object.
+fn merge(v: &mut Value, extra: &Value) {
+    match (v, extra) {
+        (Value::Object(a), Value::Object(b)) => {
+            for (k, x) in b {
+                merge(a.entry(k.clone()).or_insert(Value::Null), x);
+            }
+        }
+        (v, x) => *v = x.clone(),
+    }
 }

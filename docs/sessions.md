@@ -108,6 +108,18 @@ not fit, a shortened transcript of it (oldest tool output first) without the
 tool definitions; if the provider still rejects it as too long, the
 transcript is shortened further and sent again, up to four times.
 
+Once a conversation is within 60,000 tokens of that point (or half the
+room left, on a small window), CodeSmith writes the summary in the
+background, from everything before the latest response: the prefix the
+provider just cached. When compaction is due it swaps that summary in and
+keeps what came after it verbatim, so the session doesn't wait for a
+summary. A background summary starts only while the latest response's
+prompt is still in the cache (five minutes, or the model's `cache.ttl`), and
+for the model that wrote it; one that falls too far behind (a tail of more
+than 40% of the budget) or fails is replaced from a newer response, at
+most twice between compactions. Turn it off with `"compaction":
+{"background": false}`.
+
 When the turn in progress is summarized too, CodeSmith tells the model to
 carry on with a system update (see
 [provider options](configuration.md#provider-options-and-variants)); it is

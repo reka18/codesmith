@@ -1122,6 +1122,10 @@ impl Session {
             },
         );
         let result = self.run_steps(sink).await;
+        // Going idle leaves a background summary time to finish.
+        if result.is_ok() {
+            self.precompute();
+        }
         // The end tree tells undo which files this turn changed.
         if let Some(snaps) = snapshots {
             if let Ok(tree) = tokio::task::block_in_place(|| snaps.capture()) {
@@ -1170,6 +1174,8 @@ impl Session {
                         self.last_prompt_tokens.max(self.estimate_prompt())
                     ));
                 }
+            } else if !compacted_this_step {
+                self.precompute();
             }
             // Each step sees the instructions as they are now.
             if !std::mem::take(&mut self.turn.observed) {
@@ -1669,6 +1675,10 @@ impl Session {
         self.note_effort_switch()?;
         self.turn.stopped = None;
         let result = self.run_steps(sink).await;
+        // Going idle leaves a background summary time to finish.
+        if result.is_ok() {
+            self.precompute();
+        }
         // Another end tree for the same turn: undo then covers these changes too.
         if self.parent.is_none() && self.stored && self.loaded.config.snapshots.unwrap_or(true) {
             if let Some(snaps) = Snapshots::for_project(&self.root) {

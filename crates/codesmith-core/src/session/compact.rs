@@ -11,6 +11,13 @@
 //! instead, and as text (see [`compaction::flatten`]) when that does not
 //! fit either; a "too long" rejection shrinks it further, as in OpenCode's
 //! `SessionCompaction.deliver`.
+//!
+//! Background summaries: once the prompt is within
+//! [`compaction::PRECOMPUTE_LEAD`] of the ceiling, everything before the
+//! latest response is summarized in the background (the prefix the provider
+//! just cached), and held. Compaction swaps it in, keeping what came after
+//! it verbatim, instead of waiting for a summary, as long as that tail is
+//! short. OpenCode's `SessionCompaction.precompute`.
 
 use super::{Session, Sink};
 use crate::compaction::{self, Estimate};
@@ -20,6 +27,8 @@ use crate::store::{self, Record};
 use anyhow::{anyhow, Result};
 use codesmith_ai::{Event, FinishReason, Message, Part, Request, Role, Usage};
 use futures_util::StreamExt;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// What started a compaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +46,51 @@ pub enum Reason {
 pub(super) struct State {
     /// The latest response the provider measured.
     anchor: Option<Anchor>,
+    /// The first prompt the provider measured since the last compaction:
+    /// where the cycle started.
+    cycle_start: Option<u64>,
+    /// The background summary held for the next compaction.
+    held: Option<Held>,
+}
+
+/// What a summary request came to: the summary, and the usage of each call.
+type Outcome = (Result<String>, Vec<Usage>);
+
+/// A background summary of `messages[..keep]`.
+struct Held {
+    keep: usize,
+    /// A hash of the messages it summarizes, to tell that it still
+    /// describes this conversation (no compaction, undo or edit since).
+    fingerprint: u64,
+    /// The longest tail since `keep` compaction accepts beside it.
+    tail_limit: u64,
+    /// Background summaries that failed since the last compaction, before
+    /// this one.
+    failures: u32,
+    task: tokio::task::JoinHandle<()>,
+    outcome: Arc<Mutex<Option<Outcome>>>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Held {
+    /// Whether it finished and failed.
+    fn failed(&self) -> bool {
+        matches!(&*self.outcome.lock().unwrap(), Some((Err(_), _)))
+    }
+}
+
+fn fingerprint(messages: &[Message]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(messages)
+        .unwrap_or_default()
+        .hash(&mut h);
+    h.finish()
 }
 
 /// A response whose prompt the provider counted.
@@ -46,8 +100,14 @@ struct Anchor {
     index: usize,
     /// Its prompt and output tokens.
     tokens: u64,
+    /// Its prompt alone.
+    prompt: u64,
+    /// When it arrived, for the prompt cache's lifetime.
+    at: Instant,
     /// The model spec and agent that made it; they shape the request.
     model: String,
+    /// The provider that counted it.
+    provider: String,
     agent: String,
 }
 
@@ -98,14 +158,21 @@ impl Session {
     /// Remember the provider's count for the response about to be added
     /// to the history.
     pub(super) fn measured(&mut self, usage: &Usage) {
-        let tokens = usage.input + usage.cache_read + usage.cache_write + usage.output;
+        let prompt = usage.input + usage.cache_read + usage.cache_write;
+        let tokens = prompt + usage.output;
         self.last_prompt_tokens = tokens;
         self.compact.anchor = (tokens > 0).then(|| Anchor {
             index: self.messages.len(),
             tokens,
+            prompt,
+            at: Instant::now(),
             model: self.model_spec.clone(),
+            provider: self.model.provider_id.clone(),
             agent: self.agent.name.clone(),
         });
+        if tokens > 0 && self.compact.cycle_start.is_none() {
+            self.compact.cycle_start = Some(prompt);
+        }
     }
 
     /// The provider's count for the latest response plus an estimate of
@@ -125,6 +192,18 @@ impl Session {
         })
     }
 
+    /// The size of the next prompt: the provider's count for the latest
+    /// response plus an estimate of what came after it, or else an estimate
+    /// of everything. Only the current provider's counts are trusted.
+    pub(super) fn prompt_size(&self) -> u64 {
+        match &self.compact.anchor {
+            Some(a) if a.index < self.messages.len() && a.provider == self.model.provider_id => {
+                a.tokens + compaction::estimate(&self.messages[a.index + 1..])
+            }
+            _ => self.estimate_prompt(),
+        }
+    }
+
     pub(super) fn due_for_compaction(&self) -> bool {
         // Only a checkpoint (or nothing) left: compacting again cannot help.
         let settings = &self.loaded.config.compaction;
@@ -132,11 +211,122 @@ impl Session {
             return false;
         }
         match self.model.context {
-            Some(window) if window > 0 => {
-                self.last_prompt_tokens.max(self.estimate_prompt()) > settings.ceiling(window)
-            }
+            Some(window) if window > 0 => self.prompt_size() > settings.ceiling(window),
             _ => false,
         }
+    }
+
+    /// Start a background summary when the prompt nears the ceiling (see the
+    /// module notes). Never waits for it. One is held at a time; it is
+    /// replaced from a newer response when it failed or fell too far behind.
+    pub(super) fn precompute(&mut self) {
+        let settings = self.loaded.config.compaction.clone();
+        if !settings.background() || !settings.auto() {
+            return;
+        }
+        let Some(window) = self.model.context.filter(|w| *w > 0) else {
+            return;
+        };
+        let ceiling = settings.ceiling(window);
+        let start = self.compact.cycle_start.unwrap_or(0);
+        let lead = compaction::PRECOMPUTE_LEAD.min(ceiling.saturating_sub(start) / 2);
+        if self.prompt_size() < ceiling.saturating_sub(lead) {
+            return;
+        }
+        let Some(anchor) = self.compact.anchor.clone() else {
+            return;
+        };
+        if anchor.index == 0 || anchor.index >= self.messages.len() {
+            return;
+        }
+        let mut failures = 0;
+        if let Some(held) = &self.compact.held {
+            let failed = held.failed();
+            failures = held.failures + u32::from(failed);
+            let valid = self.held_valid(held);
+            let tail = compaction::estimate(&self.messages[held.keep.min(self.messages.len())..]);
+            if valid && !failed && tail <= held.tail_limit {
+                return;
+            }
+            // Summarizing up to the same response again would repeat the
+            // same request.
+            if valid
+                && (held.keep == anchor.index || failures >= compaction::PRECOMPUTE_MAX_FAILURES)
+            {
+                return;
+            }
+            self.discard_held();
+        }
+        // After a model switch nothing is cached for the new model yet.
+        if anchor.model != self.model_spec {
+            return;
+        }
+        // Nor once the latest response is older than the cache lifetime.
+        let lifetime = compaction::cache_lifetime(self.model.cache.ttl.as_deref());
+        if anchor.at.elapsed() + compaction::CACHE_MARGIN > lifetime {
+            return;
+        }
+        let cap = settings.ceiling(window);
+        let measured = Estimate {
+            measured: anchor.prompt,
+            estimated: 0,
+        };
+        let plan = self.plan_on(anchor.index, Reason::Auto, anchor.index, Some(measured));
+        let (client, model) = (self.client.clone(), self.model.clone());
+        let outcome: Arc<Mutex<Option<Outcome>>> = Arc::default();
+        let slot = outcome.clone();
+        let task = tokio::spawn(async move {
+            let r = deliver(&client, &model, plan, &mut |_: &str| {}).await;
+            *slot.lock().unwrap() = Some(r);
+        });
+        self.compact.held = Some(Held {
+            keep: anchor.index,
+            fingerprint: fingerprint(&self.messages[..anchor.index]),
+            tail_limit: (cap as f64 * compaction::PRECOMPUTED_TAIL_SHARE) as u64,
+            failures,
+            task,
+            outcome,
+        });
+    }
+
+    /// Whether a held summary still describes the start of this conversation.
+    fn held_valid(&self, held: &Held) -> bool {
+        held.keep < self.messages.len()
+            && fingerprint(&self.messages[..held.keep]) == held.fingerprint
+    }
+
+    /// Stop the held summary, counting what its finished calls cost.
+    fn discard_held(&mut self) {
+        let Some(held) = self.compact.held.take() else {
+            return;
+        };
+        let done = held.outcome.lock().unwrap().take();
+        if let Some((_, usages)) = done {
+            for u in usages {
+                let _ = self.count_side_call(u);
+            }
+        }
+    }
+
+    /// The held summary and where the messages kept beside it start, when
+    /// it still describes this conversation and that tail is short. Waits
+    /// for one still being written.
+    async fn use_held(&mut self, budget: u64) -> Option<(String, usize)> {
+        let held = self.compact.held.take()?;
+        let tail = compaction::estimate(&self.messages[held.keep.min(self.messages.len())..]);
+        let limit = (budget as f64 * compaction::PRECOMPUTED_TAIL_SHARE) as u64;
+        if !self.held_valid(&held) || tail > limit {
+            self.compact.held = Some(held);
+            self.discard_held();
+            return None;
+        }
+        let mut held = held;
+        let _ = (&mut held.task).await;
+        let (result, usages) = held.outcome.lock().unwrap().take()?;
+        for u in usages {
+            let _ = self.count_side_call(u);
+        }
+        result.ok().map(|s| (s, held.keep))
     }
 
     /// Whether summarizing again could shrink the prompt: not when the
@@ -167,7 +357,14 @@ impl Session {
             return Err(anyhow!("nothing to compact yet"));
         }
         sink.compaction_start();
-        match self.summarize(sink, reason, k).await {
+        // A background summary still being written shows as a running
+        // compaction while it is awaited.
+        let budget = self.budget(reason);
+        let (result, k) = match self.use_held(budget).await {
+            Some((summary, keep)) => (Ok(summary), keep),
+            None => (self.summarize(sink, reason, k).await, k),
+        };
+        match result {
             Ok(summary) => {
                 sink.compaction_end(Ok(&summary));
                 self.keep_summary(summary, k)?;
@@ -184,7 +381,8 @@ impl Session {
     /// The summary of the conversation, streamed to `sink`; `k` is where
     /// the tail kept beside it starts.
     async fn summarize(&mut self, sink: &mut dyn Sink, reason: Reason, k: usize) -> Result<String> {
-        let plan = self.plan(reason, k);
+        let end = self.messages.len();
+        let plan = self.plan_on(end, reason, k, self.measured_prompt());
         let mut delta = |d: &str| sink.compaction_delta(d);
         let (result, usages) = deliver(&self.client, &self.model, plan, &mut delta).await;
         for u in usages {
@@ -193,10 +391,25 @@ impl Session {
         result
     }
 
-    /// The summary request for this conversation, with `k` where the kept
-    /// tail starts.
-    pub(super) fn plan(&self, reason: Reason, k: usize) -> Plan {
+    /// The size a summary request aims for.
+    fn budget(&self, reason: Reason) -> u64 {
         let settings = &self.loaded.config.compaction;
+        let window = self.model.context.filter(|w| *w > 0);
+        let cap = settings.ceiling(window.unwrap_or(compaction::UNKNOWN_WINDOW));
+        // The provider just rejected this context, so the estimate ran
+        // low; the first attempt already aims below it.
+        match reason {
+            Reason::Overflow => {
+                let size = self.prompt_size().max(self.estimate_prompt());
+                cap.min((size as f64 * compaction::SHRINK_STEPS[0]) as u64)
+            }
+            _ => cap,
+        }
+    }
+
+    /// The summary request for `self.messages[..end]`, with `k` where the
+    /// kept tail starts and `measured` the provider's count for it.
+    fn plan_on(&self, end: usize, reason: Reason, k: usize, measured: Option<Estimate>) -> Plan {
         // Unstored sessions have no sequence numbers at all, so look at the text.
         let update = self.seqs.first() == Some(&None)
             && self.messages.first().is_some_and(compaction::is_checkpoint);
@@ -204,6 +417,12 @@ impl Session {
         let plugins = crate::plugin::active();
         let mut request = self.base_request(&plugins);
         request.interaction = codesmith_ai::Interaction::Compaction;
+        if end < self.messages.len() {
+            request.messages = crate::media::sendable(
+                &crate::runner::model_messages(&self.messages[..end]),
+                self.model.input.as_deref(),
+            );
+        }
         // Hooks see the request without the summary prompt, as they see the
         // session's own requests, so a hook that shapes every request alike
         // keeps the cached prefix. A compaction hook may supply the summary
@@ -232,19 +451,7 @@ impl Session {
             history.messages.truncate(head);
         }
         let window = self.model.context.filter(|w| *w > 0);
-        let cap = settings.ceiling(window.unwrap_or(compaction::UNKNOWN_WINDOW));
-        let measured = self.measured_prompt();
-        // The provider just rejected this context, so the estimate ran
-        // low; the first attempt already aims below it.
-        let budget = match reason {
-            Reason::Overflow => {
-                let size = measured
-                    .map_or(0, |m| m.total())
-                    .max(self.estimate_prompt());
-                cap.min((size as f64 * compaction::SHRINK_STEPS[0]) as u64)
-            }
-            _ => cap,
-        };
+        let budget = self.budget(reason);
         // The output limit leaves room for the most `deliver` sends.
         let hooked_output = request.max_tokens;
         if window.is_some() || hooked_output.is_some() {
@@ -326,6 +533,8 @@ impl Session {
         }
         self.last_prompt_tokens = 0;
         self.compact.anchor = None;
+        self.compact.cycle_start = None;
+        self.discard_held();
         Ok(())
     }
 }

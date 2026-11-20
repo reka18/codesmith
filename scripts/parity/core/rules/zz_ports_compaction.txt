@@ -6,7 +6,7 @@
 879 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_keeps_the_output_limit_for_a_request_that_fits_its_target
 980 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_request_reuses_the_session_prompt_cache_key :: adapted: no forks; the session's own key
 1057:1 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning :: background=false
-1057:1 :: feature :: Background Compaction Summaries :: background=true: the held summary's request keeps the prefix
+1057:1 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning_in_the_background :: background=true
 1090 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_still_flattens_genuinely_oversized_measured_input
 1104 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_shrinks_from_the_rejected_measured_size
 1180 :: ported :: tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_reuses_usage_only_for_the_matching_agent :: adapted: the agent switched in place
@@ -18,3 +18,19 @@
 899 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_hooks_can_supply_the_summary_instead_of_the_model
 1130 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_summary_cache_prefix_survives_hooks_that_shape_every_request_alike :: adapted: one request hook shapes both
 1152 :: ported :: tests/oc_compaction_hooks.rs::oc_compaction_summary_resends_as_text_when_a_hook_makes_the_request_larger_than_measured
+# Background summaries (tests/oc_compaction_background.rs).
+@session-compaction.test.ts
+1208 :: ported :: tests/oc_compaction_background.rs::oc_compaction_background_summaries_stay_off_when_disabled
+1225 :: ported :: tests/oc_compaction_background.rs::oc_compaction_automatic_compaction_swaps_in_the_background_summary
+1276 :: ported :: tests/oc_compaction_background.rs::oc_compaction_automatic_compaction_waits_for_a_background_summary_still_being_written
+1304 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_model_switch_waits_for_the_new_models_first_response :: adapted: the model spec switched in place
+1325 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_that_fell_behind_is_replaced_from_a_newer_response :: adapted: a 100k window, where such a tail is not yet due
+1349 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_failed_background_summary_is_retried_then_left_until_compaction
+1382 :: ported :: tests/oc_compaction_background.rs::oc_compaction_summarizes_as_usual_when_the_background_summary_no_longer_fits :: adapted: the burst is the prompt that finds compaction due
+1402 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_is_swapped_in_for_a_different_model :: adapted: the model spec switched in place
+1422 :: ported :: tests/oc_compaction_background.rs::oc_compaction_an_overflow_compaction_swaps_in_the_background_summary
+1440 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_when_the_latest_response_passed_the_threshold :: adapted: the second answer under the start
+1461 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_keeps_a_tail_longer_than_twice_keep_under_40_percent :: adapted: a 100k window
+1485 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_a_fixed_lead_before_the_threshold
+1512 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_on_a_window_whose_threshold_is_under_64k
+1538 :: ported :: tests/oc_compaction_background.rs::oc_compaction_a_background_summary_waits_for_a_response_whose_prompt_is_still_cached :: adapted: a 32s cache cold after two seconds

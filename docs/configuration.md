@@ -981,7 +981,7 @@ than 15% of the window (and at least 16,000 tokens) is left, and about 15,000
 tokens of the newest turns are kept beside the summary.
 
 ```jsonc
-{ "compaction": { "auto": true, "buffer": "20%", "keep": { "tokens": 15000 } } }
+{ "compaction": { "auto": true, "background": true, "buffer": "20%", "keep": { "tokens": 15000 } } }
 ```
 
 | Field | Default | Meaning |
@@ -989,6 +989,11 @@ tokens of the newest turns are kept beside the summary.
 | `auto` | `true` | `false` leaves compaction to `/compact`, even when the provider rejects a prompt as too long. |
 | `buffer` | 15% (min 16,000) | Room kept free below the window: a number of tokens, or a share such as `"20%"`. |
 | `keep.tokens` | `15000` | Tokens of recent history kept verbatim. |
+| `background` | `true` | Write the summary in the background as the session nears automatic compaction, so compaction swaps it in instead of waiting for one. A summary that is never used still costs tokens. Needs `auto`. |
+
+The prompt size is the provider's token count for the latest response, plus
+an estimate (four characters per token) of what came after it; before the
+first response, everything is estimated.
 
 The summary request reuses the session's prompt cache; see [long
 sessions](sessions.md#long-sessions-compaction). Its output limit is the

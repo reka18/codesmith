@@ -10,11 +10,9 @@
 //! - The kept tail stays as real messages, not a text transcript, so it must
 //!   fit `keep` tokens: the cut moves forward to the next turn start, where
 //!   OpenCode moves it back to the start of the turn it falls in.
-//! - Whether compaction is due uses the provider's count from the last step
-//!   or a four-characters-per-token estimate, whichever is larger; there are
-//!   no per-media estimates, input-only limits or a separate compaction
-//!   model. The summary request itself is sized as in OpenCode: the
-//!   provider's count plus an estimate since, while it applies (see
+//! - There are no per-media estimates, input-only limits or a separate
+//!   compaction model. The prompt is sized as in OpenCode: the provider's
+//!   count for the latest response plus an estimate since (see
 //!   `session/compact.rs`), and [`flatten`] is OpenCode's
 //!   `flattenAndDropOldest`, without a previous summary's recent text
 //!   (CodeSmith's kept tail is real messages).

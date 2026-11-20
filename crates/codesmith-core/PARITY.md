@@ -19,7 +19,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Session runner | 393 | 76 | 7 | 53 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
-| Compaction | 51 | 21 | 0 | 21 | 8 | 1 | 0 |
+| Compaction | 51 | 36 | 0 | 6 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 4 | 0 | 23 | 36 | 5 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1287** | **15** | **540** | **2350** | **1396** | **0** |
+| **Total** | **5588** | **1302** | **15** | **525** | **2350** | **1396** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (540 cases in 57 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (525 cases in 56 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -95,7 +95,6 @@ Missing features, by how many OpenCode test cases each would unlock (540 cases i
 | [Tool Input Repair](#tool-input-repair) | 17 | repair before validation, other harnesses' tool names, Code Mode calls; schema-guided repair of nested containers, nulls, unions, tuples and dictionaries |
 | [MCP Elicitation](#mcp-elicitation) | 16 | forms behind elicitation and questions (conditional fields); elicitation forms and URL elicitations |
 | [Native Provider Compaction](#native-provider-compaction) | 16 | routes that cannot compact natively; provider-native compaction endpoints; … |
-| [Background Compaction Summaries](#background-compaction-summaries) | 15 | background=true: the held summary's request keeps the prefix; precomputed summaries swapped in at compaction |
 | [Stateless Generate API](#stateless-generate-api) | 14 | one-shot model calls outside a session with their own retry rules; generate from settled session context without changing history |
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
@@ -517,26 +516,6 @@ Missing features, by how many OpenCode test cases each would unlock (540 cases i
 - `session-runner.test.ts`: restores installed native context with auto disabled and preserves it across fork and revert
 - `session-runner.test.ts`: automatically persists native windows, retains earlier users, and waits for fresh usage
 - `session-runner.test.ts`: recovers an overflowing native window with another native compaction
-
-### Background Compaction Summaries
-
-15 cases.
-
-- `session-compaction.test.ts`: summary cache prefix uses measured input with old reasoning (background=${background})
-- `session-compaction.test.ts`: background summaries stay off when disabled
-- `session-compaction.test.ts`: automatic compaction swaps in the background summary without another model call
-- `session-compaction.test.ts`: automatic compaction waits for a background summary still being written
-- `session-compaction.test.ts`: a model switch waits for the new model's first response before summarizing in the background
-- `session-compaction.test.ts`: a background summary that fell too far behind is replaced from a newer response
-- `session-compaction.test.ts`: a failed background summary is retried from a newer response, then left until compaction
-- `session-compaction.test.ts`: compaction summarizes as usual when the background summary no longer fits the conversation
-- `session-compaction.test.ts`: a background summary is swapped in for a different model
-- `session-compaction.test.ts`: an overflow compaction swaps in the background summary
-- `session-compaction.test.ts`: a background summary starts when the latest response already passed the threshold
-- `session-compaction.test.ts`: a background summary keeps a tail longer than twice keep while it stays under 40% of the budget
-- `session-compaction.test.ts`: a background summary starts a fixed lead before the threshold, not at a share of it
-- `session-compaction.test.ts`: a background summary starts on a window whose threshold is under 64k
-- `session-compaction.test.ts`: a background summary waits for a response whose prompt is still cached
 
 ### Stateless Generate API
 
@@ -2000,7 +1979,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Compaction (29 of 51)</summary>
+<details><summary>Compaction (44 of 51)</summary>
 
 
 **`config/compaction.test.ts`**
@@ -2029,11 +2008,26 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P compaction hooks can supply the summary instead of the model — `tests/oc_compaction_hooks.rs::oc_compaction_hooks_can_supply_the_summary_instead_of_the_model`
 - P forked session compaction reuses the fork root prompt cache key — `tests/oc_compaction_cache.rs::oc_compaction_summary_request_reuses_the_session_prompt_cache_key` (adapted: no forks; the session's own key)
 - P summary cache prefix uses measured input with old reasoning (background=${background}) — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning` (background=false)
+- P summary cache prefix uses measured input with old reasoning (background=${background}) — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning_in_the_background` (background=true)
 - P summary cache prefix still flattens genuinely oversized measured input — `tests/oc_compaction_cache.rs::oc_compaction_summary_cache_prefix_still_flattens_genuinely_oversized_measured_input`
 - P summary measured recovery shrinks from the rejected measured size — `tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_shrinks_from_the_rejected_measured_size`
 - P summary cache prefix survives hooks that shape every request alike — `tests/oc_compaction_hooks.rs::oc_compaction_summary_cache_prefix_survives_hooks_that_shape_every_request_alike` (adapted: one request hook shapes both)
 - P summary resends as text when a hook makes the request larger than the measured count — `tests/oc_compaction_hooks.rs::oc_compaction_summary_resends_as_text_when_a_hook_makes_the_request_larger_than_measured`
 - P summary measured recovery reuses usage only for the matching agent — `tests/oc_compaction_cache.rs::oc_compaction_summary_measured_recovery_reuses_usage_only_for_the_matching_agent` (adapted: the agent switched in place)
+- P background summaries stay off when disabled — `tests/oc_compaction_background.rs::oc_compaction_background_summaries_stay_off_when_disabled`
+- P automatic compaction swaps in the background summary without another model call — `tests/oc_compaction_background.rs::oc_compaction_automatic_compaction_swaps_in_the_background_summary`
+- P automatic compaction waits for a background summary still being written — `tests/oc_compaction_background.rs::oc_compaction_automatic_compaction_waits_for_a_background_summary_still_being_written`
+- P a model switch waits for the new model's first response before summarizing in the background — `tests/oc_compaction_background.rs::oc_compaction_a_model_switch_waits_for_the_new_models_first_response` (adapted: the model spec switched in place)
+- P a background summary that fell too far behind is replaced from a newer response — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_that_fell_behind_is_replaced_from_a_newer_response` (adapted: a 100k window, where such a tail is not yet due)
+- P a failed background summary is retried from a newer response, then left until compaction — `tests/oc_compaction_background.rs::oc_compaction_a_failed_background_summary_is_retried_then_left_until_compaction`
+- P compaction summarizes as usual when the background summary no longer fits the conversation — `tests/oc_compaction_background.rs::oc_compaction_summarizes_as_usual_when_the_background_summary_no_longer_fits` (adapted: the burst is the prompt that finds compaction due)
+- P a background summary is swapped in for a different model — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_is_swapped_in_for_a_different_model` (adapted: the model spec switched in place)
+- P an overflow compaction swaps in the background summary — `tests/oc_compaction_background.rs::oc_compaction_an_overflow_compaction_swaps_in_the_background_summary`
+- P a background summary starts when the latest response already passed the threshold — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_when_the_latest_response_passed_the_threshold` (adapted: the second answer under the start)
+- P a background summary keeps a tail longer than twice keep while it stays under 40% of the budget — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_keeps_a_tail_longer_than_twice_keep_under_40_percent` (adapted: a 100k window)
+- P a background summary starts a fixed lead before the threshold, not at a share of it — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_a_fixed_lead_before_the_threshold`
+- P a background summary starts on a window whose threshold is under 64k — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_starts_on_a_window_whose_threshold_is_under_64k`
+- P a background summary waits for a response whose prompt is still cached — `tests/oc_compaction_background.rs::oc_compaction_a_background_summary_waits_for_a_response_whose_prompt_is_still_cached` (adapted: a 32s cache cold after two seconds)
 
 </details>
 

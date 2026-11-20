@@ -106,6 +106,45 @@ async fn oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoni
     assert_eq!(max_tokens(&summary[0]), BUFFER);
 }
 
+/// "summary cache prefix uses measured input with old reasoning
+/// (background=true)": the background summary, of everything before the
+/// latest answer, is the session's request for that answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_compaction_summary_cache_prefix_uses_measured_input_with_old_reasoning_in_the_background(
+) {
+    let (mut s, script, _d) =
+        session(WINDOW, OUTPUT, json!({"compaction": {"buffer": BUFFER}})).await;
+    push(
+        &script,
+        [
+            MainReply {
+                text: "Earlier answer".into(),
+                reasoning: token_text(WINDOW * 3),
+                prompt_tokens: SUMMARY_INPUT / 4,
+                ..Default::default()
+            },
+            reply("Latest answer", SUMMARY_INPUT),
+        ],
+    );
+    s.prompt("Earlier question", &mut Quiet).await.unwrap();
+    s.prompt("Latest question", &mut Quiet).await.unwrap();
+    summaries(&script, 1).await;
+    s.compact(&mut Quiet).await.unwrap();
+    let normal = requests(&script, Kind::Main).pop().unwrap();
+    let summary = requests(&script, Kind::Summary);
+    assert_eq!(summary.len(), 1);
+    let sent = messages(&summary[0]);
+    let n = messages(&normal).len();
+    assert_eq!(
+        sent[..n],
+        messages(&normal)[..],
+        "the latest request's prefix"
+    );
+    assert_eq!(sent.len(), n + 1, "then the prompt");
+    assert_eq!(summary[0]["tools"], normal["tools"]);
+    assert_eq!(max_tokens(&summary[0]), BUFFER);
+}
+
 /// "summary cache prefix still flattens genuinely oversized measured input"
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_compaction_summary_cache_prefix_still_flattens_genuinely_oversized_measured_input() {
