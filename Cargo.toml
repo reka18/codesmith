@@ -37,6 +37,10 @@ boa_engine = "0.22.0"
 chrono-tz = "0.10.4"
 croner = "4.0.3"
 ratatui = "0.30"
+pulldown-cmark = { version = "=0.13.0", default-features = false }
+similar = "=2.7.0"
+nucleo-matcher = "=0.3.1"
+syntect = { version = "=5.2.0", default-features = false, features = ["default-fancy"] }
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }

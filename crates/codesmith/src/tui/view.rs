@@ -1,12 +1,20 @@
-//! Drawing the UI: transcript, input box, status line and dialogs.
+//! Drawing the UI: transcript, input box, autocomplete, status line and
+//! dialogs.
 
-use super::app::{App, Entry, Modal, HELP};
+use super::app::{App, Entry, Modal, Picker, Tool, HELP};
+use super::complete::Kind;
+use super::diff::{self, Diff};
+use super::editor;
+use super::markdown;
 use codesmith_core::tool::todo::Status;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Mutex;
 use unicode_width::UnicodeWidthStr;
 
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -45,11 +53,195 @@ fn styled(lines: Vec<String>, prefix: &str, style: Style) -> Vec<Line<'static>> 
         .collect()
 }
 
+fn dim() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+
+/// Rendered markdown by (text hash, width): finished messages are not
+/// re-parsed and re-highlighted on every frame.
+type Rendered = HashMap<(u64, usize), Vec<Line<'static>>>;
+static MARKDOWN: Mutex<Option<Rendered>> = Mutex::new(None);
+
+fn markdown_cached(text: &str, width: usize) -> Vec<Line<'static>> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    let key = (h.finish(), width);
+    let mut guard = MARKDOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = guard.get_or_insert_with(HashMap::new);
+    if let Some(l) = cache.get(&key) {
+        return l.clone();
+    }
+    let lines = markdown::render(text, width);
+    if cache.len() > 512 {
+        cache.clear();
+    }
+    cache.insert(key, lines.clone());
+    lines
+}
+
+/// Rows of diff shown while collapsed.
+const DIFF_COLLAPSED: usize = 12;
+/// Rows of output shown while collapsed.
+const OUTPUT_COLLAPSED: usize = 4;
+/// Most rows shown even when expanded.
+const EXPANDED_MAX: usize = 400;
+
+/// Tools whose result is summed up by its first line.
+fn quiet(tool: &str) -> bool {
+    matches!(
+        tool,
+        "read"
+            | "glob"
+            | "grep"
+            | "list"
+            | "skill"
+            | "todowrite"
+            | "webfetch"
+            | "websearch"
+            | "edit"
+            | "write"
+            | "lsp"
+            | "question"
+    )
+}
+
+/// `s` cut to `n` columns, ending in `…` when shortened.
+fn cut(s: &str, n: usize) -> String {
+    if s.width() <= n {
+        return s.to_string();
+    }
+    let mut o = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if w + cw + 1 > n {
+            break;
+        }
+        o.push(c);
+        w += cw;
+    }
+    o.push('…');
+    o
+}
+
+fn more(n: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            "    … {n} more line{} (Ctrl+O to expand)",
+            if n == 1 { "" } else { "s" }
+        ),
+        dim(),
+    ))
+}
+
+/// Diff rows: line number, sign and text, colored.
+pub fn diff_lines(d: &Diff, max: usize, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let nw = d
+        .lines
+        .iter()
+        .map(|l| l.line)
+        .max()
+        .unwrap_or(0)
+        .to_string()
+        .len();
+    for l in d.lines.iter().take(max) {
+        let (sign, style) = match l.kind {
+            diff::Kind::Add => ("+", Style::default().fg(Color::Green)),
+            diff::Kind::Del => ("-", Style::default().fg(Color::Red)),
+            diff::Kind::Context => (" ", dim()),
+            diff::Kind::Gap => {
+                out.push(Line::from(Span::styled(format!("  {:>nw$}  ⋮", ""), dim())));
+                continue;
+            }
+        };
+        let text = cut(&l.text.replace('\t', "    "), width.saturating_sub(nw + 6));
+        out.push(Line::from(vec![
+            Span::styled(format!("  {:>nw$} ", l.line), dim()),
+            Span::styled(format!("{sign} {text}"), style),
+        ]));
+    }
+    if d.lines.len() > max {
+        out.push(more(d.lines.len() - max));
+    }
+    out
+}
+
+fn tool_lines(t: &Tool, expand: bool, w: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let mut head = vec![
+        Span::styled(format!("⚙ {} ", t.name), Style::default().fg(Color::Cyan)),
+        Span::styled(t.detail.clone(), dim()),
+    ];
+    if let Some(d) = &t.diff {
+        head.push(Span::styled(
+            format!(" (+{} -{})", d.added, d.removed),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    if t.result.is_none() {
+        head.push(Span::styled(" …", dim()));
+    }
+    out.push(Line::from(head));
+    let Some((first, err)) = &t.result else {
+        return out;
+    };
+    if *err {
+        let lines: Vec<&str> = t.output.lines().filter(|l| !l.trim().is_empty()).collect();
+        let max = if expand { EXPANDED_MAX } else { 3 };
+        for (i, l) in lines.iter().take(max).enumerate() {
+            out.push(Line::from(Span::styled(
+                format!(
+                    "  {} {}",
+                    if i == 0 { "✗" } else { " " },
+                    cut(l, w.saturating_sub(4))
+                ),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        if lines.len() > max {
+            out.push(more(lines.len() - max));
+        }
+        return out;
+    }
+    if let Some(d) = &t.diff {
+        let max = if expand { EXPANDED_MAX } else { DIFF_COLLAPSED };
+        out.extend(diff_lines(d, max, w));
+        return out;
+    }
+    if quiet(t.base()) {
+        out.push(Line::from(Span::styled(
+            format!("  → {}", cut(first, w.saturating_sub(4))),
+            dim(),
+        )));
+        return out;
+    }
+    let lines: Vec<&str> = t.output.trim_matches('\n').lines().collect();
+    let max = if expand {
+        EXPANDED_MAX
+    } else {
+        OUTPUT_COLLAPSED
+    };
+    for (i, l) in lines.iter().take(max).enumerate() {
+        out.push(Line::from(Span::styled(
+            format!(
+                "  {} {}",
+                if i == 0 { "→" } else { " " },
+                cut(&l.replace('\t', "    "), w.saturating_sub(4))
+            ),
+            dim(),
+        )));
+    }
+    if lines.len() > max {
+        out.push(more(lines.len() - max));
+    }
+    out
+}
+
 /// The transcript as display lines for a given width.
 pub fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
     let w = width.saturating_sub(4) as usize;
     let mut out: Vec<Line<'static>> = Vec::new();
-    let dim = Style::default().add_modifier(Modifier::DIM);
     for e in &app.entries {
         match e {
             Entry::User(t) => {
@@ -63,47 +255,16 @@ pub fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
                 ));
                 out.push(Line::default());
             }
-            Entry::Assistant(t) => {
-                for l in wrap(t.trim_start_matches('\n'), w) {
-                    let style = if l.starts_with('#') {
-                        Style::default().add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-                    out.push(Line::from(Span::styled(l, style)));
-                }
-            }
+            Entry::Assistant(t) => out.extend(markdown_cached(t.trim_start_matches('\n'), w)),
             Entry::Reasoning(t) if app.show_reasoning => {
                 out.extend(styled(
                     wrap(t.trim(), w),
                     "  ",
-                    dim.add_modifier(Modifier::ITALIC),
+                    dim().add_modifier(Modifier::ITALIC),
                 ));
             }
             Entry::Reasoning(_) => {}
-            Entry::Tool {
-                name,
-                detail,
-                result,
-            } => {
-                let mut head = vec![
-                    Span::styled(format!("⚙ {name} "), Style::default().fg(Color::Cyan)),
-                    Span::styled(detail.clone(), dim),
-                ];
-                if result.is_none() {
-                    head.push(Span::styled(" …", dim));
-                }
-                out.push(Line::from(head));
-                if let Some((first, err)) = result {
-                    let (mark, style) = if *err {
-                        ("  ✗ ", Style::default().fg(Color::Red))
-                    } else {
-                        ("  → ", dim)
-                    };
-                    let shown: String = first.chars().take(w.saturating_sub(4)).collect();
-                    out.push(Line::from(Span::styled(format!("{mark}{shown}"), style)));
-                }
-            }
+            Entry::Tool(t) => out.extend(tool_lines(t, app.expand_tools, w)),
             Entry::Notice(t) => {
                 out.extend(styled(wrap(t, w), "", Style::default().fg(Color::Yellow)))
             }
@@ -115,10 +276,10 @@ pub fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
             Entry::Todos(todos) => {
                 for t in todos {
                     let (mark, style) = match t.status {
-                        Status::Completed => ("✓", dim),
+                        Status::Completed => ("✓", dim()),
                         Status::InProgress => ("▶", Style::default().add_modifier(Modifier::BOLD)),
                         Status::Pending => ("○", Style::default()),
-                        Status::Cancelled => ("✗", dim.add_modifier(Modifier::CROSSED_OUT)),
+                        Status::Cancelled => ("✗", dim().add_modifier(Modifier::CROSSED_OUT)),
                     };
                     out.push(Line::from(Span::styled(
                         format!("  {mark} {}", t.content),
@@ -131,15 +292,66 @@ pub fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
     out
 }
 
+/// Most text rows the input box shows.
+const INPUT_ROWS: usize = 8;
+
+/// Rows the input text occupies at an inner width (at least one).
+fn input_rows(app: &App, inner: usize) -> usize {
+    let text = app.input.text();
+    let (row, _) = editor::cursor_pos(text, app.input.cursor(), inner);
+    editor::rows(text, inner).len().max(row + 1)
+}
+
 /// Rows the input box needs (text plus borders), between 3 and 10.
-pub fn input_height(input: &str, width: u16) -> u16 {
-    let rows = wrap(input, width.saturating_sub(2) as usize).len().max(1) as u16;
-    (rows + 2).clamp(3, 10)
+pub fn input_height(app: &App, width: u16) -> u16 {
+    let rows = input_rows(app, width.saturating_sub(2) as usize) as u16;
+    (rows + 2).clamp(3, INPUT_ROWS as u16 + 2)
+}
+
+/// Compact token counts: 950, 12.3K, 1.2M.
+pub fn tokens(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.1}K", n as f64 / 1e3).replace(".0K", "K"),
+        _ => format!("{:.1}M", n as f64 / 1e6).replace(".0M", "M"),
+    }
+}
+
+/// The status line's text.
+pub fn status_text(app: &App, scrolled: usize) -> String {
+    let mut parts = Vec::new();
+    if app.context > 0 {
+        let mut s = format!("{} tokens", tokens(app.context));
+        if let (Some(p), Some(l)) = (app.context_percent(), app.header.context_limit) {
+            s.push_str(&format!(" · {p}% of {}", tokens(l)));
+        }
+        parts.push(s);
+    }
+    if let Some(c) = app.cost() {
+        parts.push(format!("${c:.2}"));
+    }
+    let mut u = format!(
+        "{} in · {} out",
+        tokens(app.usage.input),
+        tokens(app.usage.output)
+    );
+    if app.usage.cache_read > 0 {
+        u.push_str(&format!(" · {} cached", tokens(app.usage.cache_read)));
+    }
+    parts.push(u);
+    parts.push(app.header.session.clone());
+    if scrolled > 0 {
+        parts.push(format!("scrolled {scrolled} lines (Ctrl+End to follow)"));
+    }
+    if app.expand_tools {
+        parts.push("tool output expanded".into());
+    }
+    format!(" {}", parts.join(" · "))
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
-    let ih = input_height(&app.input, area.width);
+    let ih = input_height(app, area.width);
     let [head, body, input, status] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
@@ -162,7 +374,14 @@ pub fn draw(f: &mut Frame, app: &App) {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!(" {} · {} · ", app.header.agent, app.header.model)),
+            Span::raw(" "),
+            Span::styled(
+                app.header.agent.clone(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" · {} · ", app.header.model)),
             Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
         ])),
         head,
@@ -174,65 +393,136 @@ pub fn draw(f: &mut Frame, app: &App) {
     let scroll = app.scroll.min(max_scroll);
     let start = lines.len().saturating_sub(visible + scroll);
     let shown: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
-    f.render_widget(
-        Paragraph::new(shown).block(Block::default().borders(Borders::NONE)),
-        Rect {
-            x: body.x + 1,
-            width: body.width.saturating_sub(2),
-            ..body
-        },
-    );
-
-    let hint = if app.busy {
-        " working… Esc to interrupt "
-    } else {
-        " Enter send · Alt+Enter newline · /help "
+    let text_area = Rect {
+        x: body.x + 1,
+        width: body.width.saturating_sub(2),
+        ..body
     };
-    f.render_widget(
-        Paragraph::new(app.input.as_str())
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(hint)
-                    .border_style(Style::default().fg(if app.busy {
-                        Color::Yellow
-                    } else {
-                        Color::DarkGray
-                    })),
-            ),
-        input,
-    );
-    if app.modal.is_none() {
-        let rows = wrap(&app.input, input.width.saturating_sub(2) as usize);
-        let last = rows.last().cloned().unwrap_or_default();
-        let y =
-            input.y + 1 + (rows.len().saturating_sub(1) as u16).min(input.height.saturating_sub(3));
-        f.set_cursor_position((input.x + 1 + last.width() as u16, y));
-    }
+    f.render_widget(Paragraph::new(shown), text_area);
 
-    let mut st = format!(" {} in · {} out", app.usage.input, app.usage.output);
-    if app.usage.cache_read > 0 {
-        st.push_str(&format!(" · {} cached", app.usage.cache_read));
-    }
-    st.push_str(&format!(" · {}", app.header.session));
-    if app.scroll > 0 {
-        st.push_str(&format!(
-            " · scrolled {} lines (Ctrl+End to follow)",
-            app.scroll.min(max_scroll)
-        ));
-    }
+    draw_input(f, app, input);
+
     f.render_widget(
-        Paragraph::new(Span::styled(
-            st,
-            Style::default().add_modifier(Modifier::DIM),
-        )),
+        Paragraph::new(Span::styled(status_text(app, scroll), dim())),
         status,
     );
 
+    if app.modal.is_none() {
+        draw_popup(f, app, body, input);
+    }
     if let Some(m) = &app.modal {
         draw_modal(f, area, m);
     }
+}
+
+fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+    let hint = if app.busy {
+        " working… Esc to interrupt ".to_string()
+    } else {
+        format!(" {} · Tab agents · /help ", app.header.agent)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(hint)
+        .border_style(Style::default().fg(if app.busy {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let iw = inner.width.max(1) as usize;
+    let text = app.input.text();
+    if text.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "Ask anything · @ to attach files · / for commands",
+                dim(),
+            )),
+            inner,
+        );
+    }
+    let rows = editor::rows(text, iw);
+    let (crow, ccol) = editor::cursor_pos(text, app.input.cursor(), iw);
+    let height = inner.height as usize;
+    // Keep the cursor's row in view.
+    let top = (crow + 1).saturating_sub(height);
+    let shown: Vec<Line> = rows
+        .iter()
+        .skip(top)
+        .take(height)
+        .map(|(s, e)| Line::from(text[*s..*e].to_string()))
+        .collect();
+    if !text.is_empty() {
+        f.render_widget(Paragraph::new(shown), inner);
+    }
+    if app.modal.is_none() && inner.height > 0 {
+        let y = inner.y + (crow - top).min(height.saturating_sub(1)) as u16;
+        let x = inner.x + (ccol as u16).min(inner.width.saturating_sub(1));
+        f.set_cursor_position((x, y));
+    }
+}
+
+/// Most autocomplete rows shown at once.
+const POPUP_ROWS: usize = 8;
+
+fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
+    let Some(p) = &app.popup else { return };
+    let rows = p.items.len().min(POPUP_ROWS);
+    let h = (rows as u16 + 2).min(body.height);
+    if h < 3 {
+        return;
+    }
+    let r = Rect {
+        x: input.x,
+        y: input.y.saturating_sub(h),
+        width: input.width.min(80),
+        height: h,
+    };
+    let top = (p.sel + 1).saturating_sub(rows);
+    let lw = p
+        .items
+        .iter()
+        .map(|i| i.label.width())
+        .max()
+        .unwrap_or(0)
+        .min(40)
+        + 1;
+    let lines: Vec<Line> = p
+        .items
+        .iter()
+        .enumerate()
+        .skip(top)
+        .take(rows)
+        .map(|(i, it)| {
+            let sigil = if p.kind == Kind::Slash { "/" } else { "@" };
+            let sel = i == p.sel;
+            let base = if sel {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            let label = format!("{sigil}{:<lw$}", it.label);
+            Line::from(vec![
+                Span::styled(label, base.add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {}", it.detail), if sel { base } else { dim() }),
+            ])
+        })
+        .collect();
+    let title = match p.kind {
+        Kind::Slash => " commands · Enter run · Tab complete · Esc close ",
+        Kind::File => " files · Enter/Tab attach · Esc close ",
+    };
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        r,
+    );
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
@@ -246,20 +536,93 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
+fn picker_lines(p: &Picker, rows: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::Cyan)),
+            Span::raw(p.filter.clone()),
+            Span::styled(
+                if p.filter.is_empty() {
+                    "type to filter"
+                } else {
+                    ""
+                },
+                dim(),
+            ),
+        ]),
+        Line::default(),
+    ];
+    if p.shown.is_empty() {
+        lines.push(Line::from(Span::styled(
+            if p.items.is_empty() {
+                "Nothing to choose from."
+            } else {
+                "No matches."
+            },
+            dim(),
+        )));
+    }
+    let top = (p.sel + 1).saturating_sub(rows);
+    for (pos, &i) in p.shown.iter().enumerate().skip(top).take(rows) {
+        let it = &p.items[i];
+        let sel = pos == p.sel;
+        let base = if sel {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if it.current { "● " } else { "  " }, base),
+            Span::styled(it.label.clone(), base.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                if it.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", it.detail)
+                },
+                if sel { base } else { dim() },
+            ),
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "↑/↓ choose · Enter select · Esc close · {}/{}",
+            p.shown.len(),
+            p.items.len()
+        ),
+        dim(),
+    )));
+    lines
+}
+
 fn draw_modal(f: &mut Frame, area: Rect, m: &Modal) {
+    let room = area.height.saturating_sub(4) as usize;
     let (title, body, color): (String, Vec<Line>, Color) = match m {
-        Modal::Permission { req, feedback, .. } => {
+        Modal::Permission {
+            req,
+            feedback,
+            diff,
+            ..
+        } => {
             let mut lines = vec![
                 Line::from(Span::styled(
                     req.title.clone(),
                     Style::default().add_modifier(Modifier::BOLD),
                 )),
-                Line::default(),
-                Line::from(format!("action: {}", req.action)),
-                Line::default(),
-                Line::from("[y] allow once   [a] always allow   [n] reject"),
-                Line::from("or type feedback for the agent and press Enter to reject with it"),
+                Line::from(Span::styled(format!("action: {}", req.action), dim())),
             ];
+            if let Some(d) = diff {
+                lines.push(Line::default());
+                let max = room.saturating_sub(lines.len() + 6).max(3);
+                lines.extend(diff_lines(d, max, 96));
+            }
+            lines.push(Line::default());
+            lines.push(Line::from("[y] allow once   [a] always allow   [n] reject"));
+            lines.push(Line::from(Span::styled(
+                "or type feedback for the agent and press Enter to reject with it",
+                dim(),
+            )));
             if !feedback.is_empty() {
                 lines.push(Line::default());
                 lines.push(Line::from(Span::styled(
@@ -292,7 +655,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal) {
                         } else {
                             format!(" — {}", o.description)
                         },
-                        Style::default().add_modifier(Modifier::DIM),
+                        dim(),
                     ),
                 ]));
             }
@@ -312,25 +675,9 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal) {
                 Color::Magenta,
             )
         }
-        Modal::Sessions { list, sel } => {
-            let mut lines = Vec::new();
-            if list.is_empty() {
-                lines.push(Line::from("No sessions in this directory yet."));
-            }
-            for (i, s) in list.iter().enumerate().take(30) {
-                let style = if i == *sel {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    Style::default()
-                };
-                lines.push(Line::from(Span::styled(
-                    format!(" {}  {} ", s.id, s.title.as_deref().unwrap_or("(untitled)")),
-                    style,
-                )));
-            }
-            lines.push(Line::default());
-            lines.push(Line::from("↑/↓ choose · Enter continue · Esc close"));
-            ("Sessions".into(), lines, Color::Cyan)
+        Modal::Picker(p) => {
+            let rows = room.saturating_sub(5).clamp(1, 20);
+            (p.title.clone(), picker_lines(p, rows), Color::Cyan)
         }
         Modal::Help => (
             "Help".into(),
@@ -338,7 +685,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal) {
             Color::Cyan,
         ),
     };
-    let width = 76u16;
+    let width = 100u16;
     let height = (body.len() as u16 + 2).max(5);
     let r = centered(area, width, height);
     f.render_widget(Clear, r);
@@ -356,7 +703,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::app::App;
+    use crate::tui::app::{App, Pick, PickItem, Picker};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -365,6 +712,30 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    fn screen(a: &App, w: u16, h: u16) -> Vec<String> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| draw(f, a)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn tool(name: &str, detail: &str, result: Option<(&str, bool)>, output: &str) -> Entry {
+        Entry::Tool(Tool {
+            id: String::new(),
+            name: name.into(),
+            detail: detail.into(),
+            result: result.map(|(s, e)| (s.to_string(), e)),
+            output: output.into(),
+            diff: None,
+        })
     }
 
     #[test]
@@ -382,22 +753,20 @@ mod tests {
         let mut a = App::new();
         a.entries = vec![
             Entry::User("hi".into()),
-            Entry::Assistant("# Title\nbody".into()),
+            Entry::Assistant("# Title\nbody with **bold**".into()),
             Entry::Reasoning("secret".into()),
-            Entry::Tool {
-                name: "read".into(),
-                detail: "a.rs".into(),
-                result: Some(("Read file".into(), false)),
-            },
-            Entry::Tool {
-                name: "shell".into(),
-                detail: "ls".into(),
-                result: None,
-            },
+            tool(
+                "read",
+                "a.rs",
+                Some(("Read file", false)),
+                "Read file\n1: x",
+            ),
+            tool("shell", "ls", None, ""),
         ];
         let t = text(&transcript(&a, 60));
         assert_eq!(t[1], "› hi");
-        assert!(t.contains(&"# Title".to_string()) && t.contains(&"body".to_string()));
+        assert!(t.contains(&"Title".to_string()), "{t:?}");
+        assert!(t.contains(&"body with bold".to_string()), "{t:?}");
         assert!(
             !t.iter().any(|l| l.contains("secret")),
             "reasoning hidden by default"
@@ -414,10 +783,140 @@ mod tests {
     }
 
     #[test]
+    fn long_tool_output_collapses_and_expands() {
+        let out: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let mut a = App::new();
+        a.entries = vec![tool("shell", "seq 20", Some(("line 1", false)), &out)];
+        let t = text(&transcript(&a, 60));
+        assert_eq!(t.len(), 1 + OUTPUT_COLLAPSED + 1, "{t:?}");
+        assert_eq!(t[1], "  → line 1");
+        assert!(t
+            .last()
+            .unwrap()
+            .contains("16 more lines (Ctrl+O to expand)"));
+        a.expand_tools = true;
+        let t = text(&transcript(&a, 60));
+        assert_eq!(t.len(), 21);
+        assert_eq!(t[20], "    line 20");
+    }
+
+    #[test]
+    fn failed_tools_show_their_error() {
+        let mut a = App::new();
+        a.entries = vec![tool(
+            "edit",
+            "a.rs",
+            Some(("Could not find oldString", true)),
+            "Could not find oldString in a.rs.\n\nhint",
+        )];
+        let t = text(&transcript(&a, 60));
+        assert_eq!(t[1], "  ✗ Could not find oldString in a.rs.");
+        assert_eq!(t[2], "    hint");
+    }
+
+    #[test]
+    fn edits_show_a_colored_diff() {
+        let mut a = App::new();
+        a.entries = vec![Entry::Tool(Tool {
+            name: "edit".into(),
+            detail: "a.rs".into(),
+            result: Some(("Edited a.rs".into(), false)),
+            diff: Some(diff::diff("a\nb\nc\n", "a\nB\nc\n", 10)),
+            ..Default::default()
+        })];
+        let lines = transcript(&a, 60);
+        let t = text(&lines);
+        assert_eq!(
+            t,
+            vec![
+                "⚙ edit a.rs (+1 -1)",
+                "  10   a",
+                "  11 - b",
+                "  11 + B",
+                "  12   c"
+            ]
+        );
+        assert_eq!(lines[2].spans[1].style.fg, Some(Color::Red));
+        assert_eq!(lines[3].spans[1].style.fg, Some(Color::Green));
+    }
+
+    #[test]
     fn input_box_grows_and_caps() {
-        assert_eq!(input_height("", 40), 3);
-        assert_eq!(input_height("a\nb\nc", 40), 5);
-        assert_eq!(input_height(&"line\n".repeat(30), 40), 10);
+        let mut a = App::new();
+        assert_eq!(input_height(&a, 40), 3);
+        a.input.set("a\nb\nc");
+        assert_eq!(input_height(&a, 40), 5);
+        a.input.set("line\n".repeat(30));
+        assert_eq!(input_height(&a, 40), 10);
+    }
+
+    #[test]
+    fn the_cursor_follows_the_editor() {
+        let mut a = App::new();
+        a.input.set("hello\nworld");
+        a.input.up();
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| draw(f, &a)).unwrap();
+        let pos = t.get_cursor_position().unwrap();
+        // The input box starts below the transcript; its text at x=1.
+        let s = screen(&a, 40, 12);
+        let row = s.iter().position(|r| r.contains("hello")).unwrap() as u16;
+        assert_eq!((pos.x, pos.y), (6, row), "end of 'hello'");
+    }
+
+    #[test]
+    fn autocomplete_popup_is_drawn_above_the_input() {
+        let mut a = App::new();
+        a.files = vec!["src/main.rs".into()];
+        for c in "@mai".chars() {
+            a.on_key(ratatui::crossterm::event::KeyEvent::from(
+                ratatui::crossterm::event::KeyCode::Char(c),
+            ));
+        }
+        let s = screen(&a, 60, 16);
+        let i = s.iter().position(|r| r.contains("@src/main.rs")).unwrap();
+        assert!(s[i - 1].contains("files"), "{s:#?}");
+        assert!(s[i + 3].contains("@mai"), "input box below: {s:#?}");
+    }
+
+    #[test]
+    fn pickers_render_the_filter_and_items() {
+        let mut a = App::new();
+        let items = ["anthropic/claude", "openai/gpt"]
+            .iter()
+            .map(|l| PickItem {
+                id: l.to_string(),
+                label: l.to_string(),
+                detail: "detail".into(),
+                current: l.starts_with("openai"),
+            })
+            .collect();
+        a.modal = Some(Modal::Picker(Picker::new(Pick::Model, "Models", items)));
+        let s = screen(&a, 80, 20).join("\n");
+        assert!(s.contains(" Models "), "{s}");
+        assert!(s.contains("type to filter"));
+        assert!(s.contains("● openai/gpt"));
+        assert!(s.contains("2/2"));
+    }
+
+    #[test]
+    fn permission_dialog_previews_the_diff() {
+        let mut a = App::new();
+        a.modal = Some(Modal::Permission {
+            req: codesmith_core::permission::Request {
+                action: "edit".into(),
+                resources: vec!["a.rs".into()],
+                save: vec![],
+                title: "Edit a.rs (-1 +1 lines)".into(),
+            },
+            reply: None,
+            feedback: String::new(),
+            diff: Some(diff::diff("old\n", "new\n", 3)),
+        });
+        let s = screen(&a, 80, 24).join("\n");
+        assert!(s.contains("Edit a.rs"));
+        assert!(s.contains("3 - old") && s.contains("3 + new"), "{s}");
+        assert!(s.contains("[y] allow once"));
     }
 
     #[test]
@@ -426,10 +925,13 @@ mod tests {
         a.header.agent = "Build".into();
         a.header.model = "omlx/qwen".into();
         a.entries.push(Entry::Assistant("x ".repeat(500)));
-        a.modal = Some(Modal::Help);
-        for (w, h) in [(20, 6), (80, 24), (200, 60), (12, 4)] {
-            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-            t.draw(|f| draw(f, &a)).unwrap();
+        a.input.set("some text\nmore");
+        for m in [true, false] {
+            a.modal = m.then_some(Modal::Help);
+            for (w, h) in [(20, 6), (80, 24), (200, 60), (12, 4), (1, 1)] {
+                let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                t.draw(|f| draw(f, &a)).unwrap();
+            }
         }
     }
 
@@ -440,19 +942,31 @@ mod tests {
         a.header.model = "p/m".into();
         a.header.session = "ses_1".into();
         a.header.title = Some("Fix tests".into());
-        let mut t = Terminal::new(TestBackend::new(80, 10)).unwrap();
-        t.draw(|f| draw(f, &a)).unwrap();
-        let buf = t.backend().buffer().clone();
-        let row = |y: u16| {
-            (0..80)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        };
+        a.header.context_limit = Some(200_000);
+        a.context = 50_000;
+        a.usage.input = 1_500;
+        let s = screen(&a, 100, 10);
         assert!(
-            row(0).contains("CodeSmith") && row(0).contains("Build · p/m · Fix tests"),
+            s[0].contains("CodeSmith") && s[0].contains("Build · p/m · Fix tests"),
             "{}",
-            row(0)
+            s[0]
         );
-        assert!(row(9).contains("ses_1"), "{}", row(9));
+        assert!(s[9].contains("ses_1"), "{}", s[9]);
+        assert!(s[9].contains("50K tokens · 25% of 200K"), "{}", s[9]);
+        assert!(s[9].contains("1.5K in"), "{}", s[9]);
+    }
+
+    #[test]
+    fn cutting_to_width() {
+        assert_eq!(cut("hello", 5), "hello");
+        assert_eq!(cut("hello world", 6), "hello…");
+        assert_eq!(cut("日本語テキスト", 7), "日本語…");
+    }
+
+    #[test]
+    fn token_counts() {
+        assert_eq!(tokens(950), "950");
+        assert_eq!(tokens(12_345), "12.3K");
+        assert_eq!(tokens(2_000_000), "2M");
     }
 }

@@ -34,6 +34,11 @@ async-stream.workspace = true
 futures-util.workspace = true
 textwrap.workspace = true
 unicode-width.workspace = true
+ignore.workspace = true
+pulldown-cmark.workspace = true
+similar.workspace = true
+nucleo-matcher.workspace = true
+syntect.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

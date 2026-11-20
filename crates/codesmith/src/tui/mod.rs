@@ -6,11 +6,16 @@
 //! reloading the session.
 
 mod app;
+mod attach;
 mod bridge;
+mod complete;
+mod diff;
+mod editor;
+mod markdown;
 mod view;
 
 use anyhow::{anyhow, Result};
-use app::{Action, App, Entry, Modal};
+use app::{Action, App, Entry, Modal, Pick, PickItem, Picker};
 use bridge::{ChanPrompter, ChanSink, Ev};
 use codesmith_core::config::{self, Loaded};
 use codesmith_core::permission::{Asker, Fixed, Reply};
@@ -79,6 +84,11 @@ impl Runner {
         self.app.header.model = format!("{}/{}", s.model.provider_id, s.model.model_id);
         self.app.header.session = s.id.clone();
         self.app.header.title = s.title.clone();
+        self.app.header.context_limit = s.model.context;
+        self.app.header.cost = self.loaded.config.cost(&self.app.header.model);
+        if s.id != self.session_id {
+            self.app.context = 0;
+        }
         self.app.usage = s.usage;
         if replay {
             self.app.entries = app::replay(&s.messages);
@@ -111,8 +121,9 @@ impl Runner {
         self.app.entries.push(Entry::User(shown));
         self.app.busy = true;
         let tx = self.tx.clone();
+        let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
-            let mut sink = ChanSink(tx.clone());
+            let mut sink = ChanSink::new(tx.clone(), cwd);
             let result = match s.expand_command(&c, &args).await {
                 Ok(text) => s.prompt(&text, &mut sink).await,
                 Err(e) => Err(e),
@@ -138,8 +149,9 @@ impl Runner {
         self.app.entries.push(Entry::User(shown));
         self.app.busy = true;
         let tx = self.tx.clone();
+        let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
-            let mut sink = ChanSink(tx.clone());
+            let mut sink = ChanSink::new(tx.clone(), cwd);
             let result = s
                 .prompt(&text, &mut sink)
                 .await
@@ -248,11 +260,16 @@ impl Runner {
                     .map(|db| db.list(Some(&self.cwd.display().to_string()), false))
                     .transpose()?
                     .unwrap_or_default();
-                let sel = list
-                    .iter()
-                    .position(|i| i.id == self.session_id)
-                    .unwrap_or(0);
-                self.app.modal = Some(Modal::Sessions { list, sel });
+                let items = list
+                    .into_iter()
+                    .map(|i| PickItem {
+                        current: i.id == self.session_id,
+                        label: i.title.clone().unwrap_or_else(|| "(untitled)".into()),
+                        detail: format!("{} · {}", ago(i.updated), i.id),
+                        id: i.id,
+                    })
+                    .collect();
+                self.app.modal = Some(Modal::Picker(Picker::new(Pick::Session, "Sessions", items)));
             }
             "undo" | "redo" if self.idle_or_say() => {
                 let db = open_store().ok_or_else(|| anyhow!("the session store is unavailable"))?;
@@ -280,31 +297,32 @@ impl Runner {
             }
             "agent" if self.idle_or_say() => {
                 if args.is_empty() {
-                    let ids = agent::list(&self.loaded.config);
-                    self.app.notice(format!(
-                        "agents: {} (current: {})",
-                        ids.join(", "),
-                        self.app.header.agent
-                    ));
+                    let current = self.current_agent();
+                    let items = agent::list(&self.loaded.config)
+                        .into_iter()
+                        .filter_map(|id| agent::resolve(&self.loaded.config, &id))
+                        .map(|a| PickItem {
+                            current: a.id == current,
+                            label: a.id.clone(),
+                            detail: if a.mode == "subagent" {
+                                format!("(subagent) {}", a.description)
+                            } else {
+                                a.description.clone()
+                            },
+                            id: a.id,
+                        })
+                        .collect();
+                    self.app.modal = Some(Modal::Picker(Picker::new(Pick::Agent, "Agents", items)));
                 } else {
-                    let prev = self.agent.replace(args.to_string());
-                    if let Err(e) = self.reload() {
-                        self.agent = prev;
-                        return Err(e);
-                    }
-                    self.app.notice(format!("agent: {args}"));
+                    self.set_agent(args)?;
                 }
             }
             "model" if self.idle_or_say() => {
                 if args.is_empty() {
-                    self.app.notice(format!("model: {}", self.app.header.model));
+                    let items = model_items(&self.loaded.config, &self.app.header.model);
+                    self.app.modal = Some(Modal::Picker(Picker::new(Pick::Model, "Models", items)));
                 } else {
-                    let prev = self.model.replace(args.to_string());
-                    if let Err(e) = self.reload() {
-                        self.model = prev;
-                        return Err(e);
-                    }
-                    self.app.notice(format!("model: {args}"));
+                    self.set_model(args)?;
                 }
             }
             "compact" if self.idle_or_say() => {
@@ -313,8 +331,9 @@ impl Runner {
                 };
                 self.app.busy = true;
                 let tx = self.tx.clone();
+                let cwd = s.cwd.clone();
                 self.task = Some(tokio::spawn(async move {
-                    let mut sink = ChanSink(tx.clone());
+                    let mut sink = ChanSink::new(tx.clone(), cwd);
                     let result = s.compact(&mut sink).await.map_err(|e| format!("{e:#}"));
                     let _ = tx.send(Ev::Done {
                         result,
@@ -360,12 +379,80 @@ impl Runner {
         Ok(())
     }
 
+    fn set_agent(&mut self, id: &str) -> Result<()> {
+        let prev = self.agent.replace(id.to_string());
+        if let Err(e) = self.reload() {
+            self.agent = prev;
+            return Err(e);
+        }
+        self.app.notice(format!("agent: {id}"));
+        Ok(())
+    }
+
+    fn set_model(&mut self, spec: &str) -> Result<()> {
+        let prev = self.model.replace(spec.to_string());
+        if let Err(e) = self.reload() {
+            self.model = prev;
+            return Err(e);
+        }
+        self.app.notice(format!("model: {spec}"));
+        Ok(())
+    }
+
+    fn current_agent(&self) -> String {
+        self.session
+            .as_ref()
+            .map(|s| s.agent.id.clone())
+            .or_else(|| self.agent.clone())
+            .unwrap_or_default()
+    }
+
+    /// Switch to the next or previous primary agent (Tab / Shift+Tab).
+    fn cycle_agent(&mut self, dir: i32) -> Result<()> {
+        if !self.idle_or_say() {
+            return Ok(());
+        }
+        let primary: Vec<String> = agent::list(&self.loaded.config)
+            .into_iter()
+            .filter(|id| {
+                agent::resolve(&self.loaded.config, id).is_some_and(|a| a.mode != "subagent")
+            })
+            .collect();
+        if primary.len() < 2 {
+            return Ok(());
+        }
+        let cur = self.current_agent();
+        let i = primary.iter().position(|a| *a == cur).unwrap_or(0) as i32;
+        let n = primary.len() as i32;
+        let next = primary[((i + dir) % n + n) as usize % primary.len()].clone();
+        self.set_agent(&next)
+    }
+
+    fn picked(&mut self, kind: Pick, id: String) -> Result<()> {
+        match kind {
+            Pick::Session => {
+                let s = self.make(Some(id))?;
+                self.install(s, true);
+            }
+            Pick::Agent if self.idle_or_say() => self.set_agent(&id)?,
+            // A provider without listed models: let the user type the model.
+            Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
+            Pick::Model if self.idle_or_say() => self.set_model(&id)?,
+            Pick::Agent | Pick::Model => {}
+        }
+        Ok(())
+    }
+
     fn handle(&mut self, ev: Ev) {
         match ev {
             Ev::Key(k) => {
                 let result = match self.app.on_key(k) {
                     Some(Action::Submit(t)) => {
-                        self.submit(t.clone(), t);
+                        let (sent, files) = attach::expand(&t, &self.cwd);
+                        self.submit(t, sent);
+                        if !files.is_empty() {
+                            self.app.notice(format!("attached {}", files.join(", ")));
+                        }
                         Ok(())
                     }
                     Some(Action::Slash { name, args }) => self.slash(&name, &args),
@@ -373,7 +460,8 @@ impl Runner {
                         self.interrupt();
                         Ok(())
                     }
-                    Some(Action::Resume(id)) => self.make(Some(id)).map(|s| self.install(s, true)),
+                    Some(Action::Picked(kind, id)) => self.picked(kind, id),
+                    Some(Action::CycleAgent(d)) => self.cycle_agent(d),
                     Some(Action::Quit) | None => Ok(()),
                 };
                 if let Err(e) = result {
@@ -382,6 +470,9 @@ impl Runner {
             }
             Ev::Paste(s) => self.app.on_paste(&s),
             Ev::Resize => {}
+            Ev::Files(f) => {
+                self.app.set_files(f);
+            }
             Ev::Done { result, session } => {
                 self.task = None;
                 self.app.busy = false;
@@ -393,6 +484,65 @@ impl Runner {
             other => self.app.on_event(other),
         }
     }
+}
+
+/// How long ago a unix timestamp (seconds or milliseconds) was.
+fn ago(t: i64) -> String {
+    let secs = if t > 10_000_000_000 { t / 1000 } else { t };
+    let d = (chrono::Utc::now().timestamp() - secs).max(0);
+    match d {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{}m ago", d / 60),
+        3600..=86_399 => format!("{}h ago", d / 3600),
+        _ => format!("{}d ago", d / 86_400),
+    }
+}
+
+/// Models for the picker: every configured model, then the built-in
+/// providers without listed models (choosing one prefills `/model p/`).
+fn model_items(cfg: &config::Config, current: &str) -> Vec<PickItem> {
+    let mut items = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (pid, p) in &cfg.providers {
+        let pname = p.name.clone().unwrap_or_else(|| pid.clone());
+        for (mid, m) in &p.models {
+            let spec = format!("{pid}/{mid}");
+            seen.insert(pid.clone());
+            items.push(PickItem {
+                current: spec == current,
+                detail: match (&m.name, m.limit.context) {
+                    (Some(n), Some(c)) => format!("{n} · {pname} · {}K context", c / 1000),
+                    (Some(n), None) => format!("{n} · {pname}"),
+                    (None, Some(c)) => format!("{pname} · {}K context", c / 1000),
+                    (None, None) => pname.clone(),
+                },
+                label: spec.clone(),
+                id: spec,
+            });
+        }
+    }
+    if !current.is_empty() && !items.iter().any(|i| i.current) {
+        items.insert(
+            0,
+            PickItem {
+                id: current.to_string(),
+                label: current.to_string(),
+                detail: "current".into(),
+                current: true,
+            },
+        );
+    }
+    for (id, name, ..) in config::BUILTIN {
+        if !seen.contains(*id) {
+            items.push(PickItem {
+                id: format!("{id}/"),
+                label: format!("{id}/…"),
+                detail: format!("{name} · type a model id"),
+                current: false,
+            });
+        }
+    }
+    items
 }
 
 fn spawn_input(tx: UnboundedSender<Ev>) {
@@ -449,6 +599,17 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         session_id: String::new(),
         task: None,
     };
+    let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
+        .into_iter()
+        .map(|(n, c)| (n, c.description.unwrap_or_default()))
+        .collect();
+    r.app.set_commands(&cmds);
+    {
+        let (tx, root) = (tx.clone(), r.cwd.clone());
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(Ev::Files(complete::project_files(&root, 20_000)));
+        });
+    }
     let first = r.make(opts.resume.clone())?;
     r.install(first, opts.resume.is_some());
     if r.app.entries.is_empty() {
