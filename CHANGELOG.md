@@ -71,9 +71,15 @@ replays of its recorded provider traffic.
 - **Permissions:** last-match-wins rules; each command in a shell line is
   checked separately, and paths outside the project ask.
 - **Agents:** `build`, a read-only `plan`, `explore` and `general`
-  subagents, and user-defined agents.
-- **Skills and commands:** `SKILL.md` folders and prompt templates as
-  `/commands`.
+  subagents, and user-defined agents, in config or as Markdown agent files
+  (`agents/**/*.md`, `modes/*.md`, OpenCode's older format included), with
+  hidden agents, per-agent request headers and body fields (`temperature`,
+  `top_p`), and OpenCode's model-lab prompts for GPT, GPT Astra, Claude,
+  Kimi, Trinity and Muse models.
+- **Skills and commands:** `SKILL.md` folders, skills downloaded from
+  catalog URLs, and prompt templates as `/commands` (nested `commands/**`
+  files, `$ARGUMENTS`/`$1` arguments, `` !`cmd` `` output, and commands that
+  run in a child session); plugins can add commands that run as code.
 - **Instructions that change:** instruction files, skills, MCP server
   instructions, the Code Mode catalog and the date are read again before
   each request; a change reaches the model as a short update in place,

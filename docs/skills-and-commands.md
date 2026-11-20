@@ -22,8 +22,9 @@ same id:
 1. `~/.config/codesmith/skills/`, `~/.agents/skills/`, `~/.claude/skills/`
 2. in each folder from the project root down to the working directory:
    `.agents/skills/`, `.claude/skills/`, `.codesmith/skills/`
-3. every folder listed under `skills` in config (relative to the project
-   root)
+3. every entry under `skills` in config, in order: a folder (relative to
+   the project root) of skill folders or holding a `SKILL.md` itself, or a
+   [catalog URL](#downloaded-skills)
 
 Set `$CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` (or `$CODESMITH_DISABLE_CLAUDE_CODE`)
 to skip the `.claude/skills` folders. Loading a skill is checked with the
@@ -35,18 +36,37 @@ changed or removed mid-session is announced to the model in a short update
 it was, so the cached prompt prefix does too; see [instructions that
 change](configuration.md#when-instructions-change).
 
+### Downloaded skills
+
+An `http://` or `https://` entry in `skills` names a catalog. CodeSmith
+fetches `<url>/index.json`, which lists its skills:
+
+```json
+{ "skills": [{ "name": "deploy", "version": "3", "files": ["SKILL.md", "references/guide.md"] }] }
+```
+
+and downloads each skill's files from `<url>/<name>/<file>` into the cache
+folder (`~/.cache/codesmith/skills/`), once per process. A skill whose name
+is not a single path segment, or that lists a file outside its folder (an
+absolute path, `..`, or another site), is skipped before anything is
+fetched; a skill needs a `SKILL.md`. Without a `version`, only missing
+files are downloaded. A new `version` downloads every file afresh and
+replaces the cached copy only when all of them arrived, so a failed update
+keeps the old one and files the new version no longer lists are removed. A
+catalog that cannot be reached adds no skills, and the others still load.
+
 ## Commands
 
 Commands are prompt templates. Run them as `/name args` in the
 [UI](interactive-ui.md#slash-commands), or as `codesmith run /name args`.
 `codesmith commands` lists them all.
 
-Put each one in a Markdown file, `<name>.md`, in any of these folders (later
-ones win):
-
-1. `~/.config/codesmith/commands/`, `~/.claude/commands/`
-2. in each folder from the project root down to the working directory:
-   `.claude/commands/`, `.codesmith/commands/`
+Put each one in a Markdown file in a `commands/` (or `command/`) folder
+under the global config folder (`~/.config/codesmith/`) or any `.codesmith/`
+folder from the project root down to the working directory. A nested file
+is a nested name: `commands/git/sync.md` runs as `/git/sync`. Claude Code's
+`~/.claude/commands/` and `.claude/commands/` (top-level `<name>.md` files)
+are read too, below everything else.
 
 ```markdown
 ---
@@ -57,7 +77,7 @@ model: ollama/qwen3-coder
 Read $1 and explain what it does in exactly one sentence.
 ```
 
-Or define them inline in config, where they take precedence over files:
+Or define them inline in config:
 
 ```jsonc
 {
@@ -67,9 +87,39 @@ Or define them inline in config, where they take precedence over files:
 }
 ```
 
-In a template, `$ARGUMENTS` is the whole argument string, and `$1` to `$9`
-are single arguments. `agent` and `model` switch the session to that agent
-or model for the command.
+Command folders and config files are layers in the same
+[order](configuration.md#files-and-precedence): a `.codesmith/commands/`
+folder comes right after that folder's `.codesmith/codesmith.json`, the
+global folder after the global config. A later definition of a command,
+inline or file, replaces an earlier one whole.
+
+In a template, `$ARGUMENTS` is the whole argument string, and `$1`, `$2`,
+… are single arguments (quotes group words; the highest one used takes the
+rest). A template with neither gets the arguments appended. Then each
+`` !`command` `` is replaced by what the command prints (output and errors),
+run with your shell in the session's folder before the prompt is sent:
+
+```markdown
+---
+description: Review what changed
+---
+Review these changes for $ARGUMENTS:
+
+!`git diff --stat`
+```
+
+These commands are yours, so they run without asking; a template from a
+project you don't trust can run anything, as a shell script in it could.
+
+`agent` and `model` switch the session to that agent or model for the
+command. A command runs in a **child session** instead when it sets
+`subagent: true` (OpenCode's older `subtask: true` too) or names an agent
+whose mode is `subagent`: the child uses the command's agent (else the
+session's) and model (else that agent's, else the session's), titled with
+the command's `description`, and its report joins the session's history
+without switching the session's agent or model. `subagent: false` keeps a
+subagent-mode agent's command in the session. Unlike OpenCode, the command
+waits for the child to finish.
 
 Built-in commands:
 
@@ -80,4 +130,5 @@ Built-in commands:
 | `/review [target]` | Review changes. See [code review](code-review.md). |
 
 A custom command with the same name replaces a built-in one. MCP servers can
-add commands too, named `/<server>:<prompt>` ([MCP prompts](mcp.md#prompts)).
+add commands too, named `/<server>:<prompt>` ([MCP prompts](mcp.md#prompts)),
+and so can [plugins](plugins.md), whose commands run as code.

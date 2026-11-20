@@ -22,6 +22,7 @@ The hooks follow OpenCode's plugin API:
 |---|---|
 | `config` | Edit the merged config: add or change agents, commands, providers, MCP servers, formatters, permissions. Receives the plugin's options. |
 | `tools` | Add tools. They are permission-checked by name, like any other tool. |
+| `commands` | Add commands that run as code (OpenCode's callback commands): `/name args` calls the command's `execute` with the session id, folders, arguments and attachments. It returns a prompt to send (`Ok(Some(text))`), nothing (`Ok(None)`), or an error message. A config command of the same name replaces it. |
 | `tool_before` | Change a tool call's input, or refuse it with a message the model sees. |
 | `tool_after` | Change what the model sees from a tool call. |
 | `shell_before` | Change a shell command, its folder or its environment. The permission checks run on the result. |
