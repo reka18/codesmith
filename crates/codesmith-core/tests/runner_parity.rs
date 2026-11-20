@@ -1571,15 +1571,20 @@ async fn a_resume_that_fails_before_reporting_backs_off() {
         ..Default::default()
     })
     .await;
+    // The command waits for `go`, so it cannot finish (and be reported)
+    // within the turn that starts it, however the steps are scheduled.
+    let go = t.data.path().join("go");
     t.push([
         call(
             "c1",
             "shell",
-            json!({"command": "echo bg-done", "description": "quick", "background": true}),
+            json!({"command": format!("until [ -e '{}' ]; do sleep 0.02; done; echo bg-done", go.display()), "description": "quick", "background": true}),
         ),
         text("Started it."),
     ]);
     t.prompt("start it").await.unwrap();
+    assert_eq!(t.s.background_finished(), 0, "still running");
+    std::fs::write(&go, "").unwrap();
     t.s.wait_background().await;
     assert_eq!(t.s.background_finished(), 1);
     assert_eq!(t.s.resume_due(), None);
