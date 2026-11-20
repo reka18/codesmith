@@ -39,15 +39,15 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 88 | 12 |
-| OpenAI Responses | 159 | 22 | 122 | 15 |
-| Anthropic Messages | 95 | 9 | 79 | 7 |
-| Gemini | 61 | 12 | 45 | 4 |
+| OpenAI Chat | 115 | 15 | 92 | 8 |
+| OpenAI Responses | 159 | 22 | 129 | 8 |
+| Anthropic Messages | 95 | 9 | 83 | 3 |
+| Gemini | 61 | 12 | 46 | 3 |
 | Shared | 85 | 10 | 60 | 15 |
-| **Total** | **515** | **68** | **394** | **53** |
+| **Total** | **515** | **68** | **410** | **37** |
 
 Of the gaps, 18 are missing provider features (the roadmap) and
-35 are by design or not applicable.
+19 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
 or a configuration knob it has no equivalent for), the case says so in its
@@ -81,7 +81,10 @@ OpenAI Chat (`openai.rs`)
 - Tool-call deltas: index-less calls are matched by id or continue the latest
   call; empty or repeated ids/names on later deltas no longer clobber the
   first; tool calls cut off by `length` or `content_filter` are dropped.
-- The first finish reason stands; an empty one means none (inferred stop).
+- The first finish reason stands; an empty one means none. A stream that
+  ends without one is cut short (a retryable error, OpenCode's incomplete
+  stream) unless the provider sets `requireFinishReason: false`, which
+  infers stop.
 - `finish_reason: network_error` / `error` become (retryable / non-retryable)
   errors; in-stream `error` objects report their message and are retryable
   when their code says so.
@@ -460,7 +463,8 @@ Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
   OpenCode's session usage does.
 - OpenAI Chat takes explicit overrides of what it detects (OpenCode's model
   `compatibility`): `maxTokensField`, `streamUsage: false`,
-  `requireReasoning` and `requireAssistantAfterTool`.
+  `requireReasoning`, `requireAssistantAfterTool` and
+  `requireFinishReason`.
 - "loads OpenAI default auth from Effect Config" and "lets explicit auth
   override OpenAI default API key auth" already held (config resolves the
   key from `settings.apiKey`, then the provider's variables); they are
@@ -496,6 +500,22 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
   key) are results from another protocol; the malformed server tool input
   error names the route (`Anthropic Messages`) where OpenCode names the
   adapter.
+
+Strict stream validation (every protocol; `src/shape.rs`)
+- Recognized events are checked against OpenCode's event schemas: a field
+  CodeSmith reads with the wrong JSON type, or a required item missing, is
+  invalid output (a non-retryable `Error::Decode` named after OpenCode's
+  `Invalid <route> stream event`). Unknown fields, event types, Anthropic
+  block and delta types and Gemini part kinds still pass.
+- Chat: tool call changes after the finish reason, and a call still
+  without a name when a finish confirms the calls, are invalid.
+- Responses: text, refusal, reasoning and function argument events need
+  their `item_id`; refusals need their text; a reasoning item may not start
+  while another is open. Item ids resolve through the output index (as
+  OpenCode's `normalize`), and text or reasoning for an item that is not
+  open is dropped.
+- Anthropic: a `message_delta` needs a delta, a `tool_use` block an index
+  and id, and a recognized event name JSON data.
 
 ## Partially ported
 
@@ -570,7 +590,10 @@ Gemini; the 21 cases in `src/parity_hosted.rs`)
 - Responses: a reasoning item is replayed only with encrypted content and
   only when output follows it in the message (CodeSmith never stores
   responses server-side).
-- Streams are decoded leniently; see "Strict stream validation".
+- Stream validation keeps two leniencies: a Chat tool call with a name but
+  no id gets a fresh id (OpenCode rejects it), and in-stream error
+  payloads are reported whatever their field types (OpenCode reports a
+  mistyped one as an invalid event).
 - Gemini prompt blocks without candidates are an error naming the block reason
   (raised when the stream ends without a finish).
 - Responses: a reasoning item is one block and one stored part, its summary
@@ -638,34 +661,6 @@ _OpenAI Responses 4, Shared 1._
 
 
 ## By design or not applicable
-
-
-### Strict stream validation (16 tests)
-
-OpenCode rejects malformed or out-of-spec events (missing item ids, wrong types, content after finish, nameless tool calls). CodeSmith is lenient on purpose: it ignores what it does not understand and keeps going.
-
-_OpenAI Chat 4, OpenAI Responses 7, Anthropic Messages 4, Gemini 1._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — fails when a buffered tool call never receives a function name
-- `openai-chat` — fails on malformed stream events
-- `openai-compatible-chat` — rejects a stream without a required finish reason
-- `openai-compatible-chat` — rejects tool changes after a terminal chunk
-- `openai-responses` — rejects malformed refusal events
-- `openai-responses` — rejects output text events without the spec-required item id
-- `openai-responses` — requires item ids even when their output index is known
-- `openai-responses` — ignores deltas without a matching output item
-- `openai-responses` — rejects function argument events without the spec-required item id
-- `openai-responses` — rejects reasoning events without the spec-required item id
-- `openai-responses` — rejects a reasoning item that starts before the previous item ends
-- `anthropic-messages` — rejects malformed recognized content block variants
-- `anthropic-messages` — rejects malformed recognized content delta variants
-- `anthropic-messages` — rejects malformed payloads on unrelated stream events
-- `anthropic-messages` — rejects malformed recognized SSE events
-- `gemini` — rejects malformed recognized response parts
-
-</details>
 
 
 ### Not applicable: Effect Schema tool definitions (7 tests)
