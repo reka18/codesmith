@@ -36,10 +36,18 @@ impl Server {
         .expect("serve did not start");
         // Keep draining stderr so the server never blocks on it.
         tokio::spawn(async move { while let Ok(Some(_)) = err.next_line().await {} });
+        // Without --token, serve generates one and saves it owner-only in
+        // the data dir, which is how local clients find it.
         let token = extra
             .iter()
             .position(|a| *a == "--token")
-            .map(|i| extra[i + 1].to_string());
+            .map(|i| extra[i + 1].to_string())
+            .or_else(|| {
+                let file = e.data.join("codesmith").join("serve-token");
+                std::fs::read_to_string(&file)
+                    .ok()
+                    .map(|t| t.trim().to_string())
+            });
         Server {
             _child: child,
             url,
