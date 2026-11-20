@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 10 | 0 | 12 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 29 | 0 | 56 | 169 | 54 | 0 |
+| Sessions and their store | 308 | 32 | 0 | 53 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 5 | 1 | 1 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1400** | **15** | **423** | **2355** | **1395** | **0** |
+| **Total** | **5588** | **1403** | **15** | **420** | **2355** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (423 cases in 47 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (420 cases in 46 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -110,7 +110,6 @@ Missing features, by how many OpenCode test cases each would unlock (423 cases i
 | [Automation Event Stream Recovery](#automation-event-stream-recovery) | 3 | reconnect with replay from the last committed cursor, pause after repeated failures |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Config Source Toggles](#config-source-toggles) | 3 | disabling the global config / home-level .claude and agents directories |
-| [Session Archiving](#session-archiving) | 3 | archive / unarchive sessions |
 | [Attachment Source Paths](#attachment-source-paths) | 3 | local source paths announced next to provider media |
 | [Session Context Hooks](#session-context-hooks) | 3 | plugin hook that rewrites the model context |
 | [Session Request Headers and Cache Keys](#session-request-headers-and-cache-keys) | 3 | session correlation headers, parent cache affinity, bounded prompt cache keys |
@@ -636,14 +635,6 @@ Missing features, by how many OpenCode test cases each would unlock (423 cases i
 - `config/config.test.ts`: excludes home-level claude and agents directories when global is disabled
 - `config/config.test.ts`: excludes global config reached through the project walk when global is disabled
 - `config/config.test.ts`: excludes missing files under symlinked global roots when global is disabled
-
-### Session Archiving
-
-3 cases.
-
-- `session-archive.test.ts`: archives and unarchives through one durable event each
-- `session-archive.test.ts`: filters listed sessions by archive state
-- `session-archive.test.ts`: rejects an unknown session
 
 ### Attachment Source Paths
 
@@ -1963,7 +1954,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (198 of 308)</summary>
+<details><summary>Sessions and their store (201 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1973,6 +1964,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`session-activation.test.ts`**
 
 - D runs prompt hooks from a cold Location before admitting a prompt · resolves plugin commands from a cold Location — client-server: cold Location activation
+
+**`session-archive.test.ts`**
+
+- P archives and unarchives through one durable event each — `tests/oc_session_archive.rs::oc_session_archives_and_unarchives` (adapted: kept as session meta; archiving twice keeps the first time)
+- P filters listed sessions by archive state — `tests/oc_session_archive.rs::oc_session_lists_filter_by_archive_state`
+- P rejects an unknown session — `tests/oc_session_archive.rs::oc_session_archiving_rejects_an_unknown_session`
 
 **`session-create.test.ts`**
 

@@ -584,8 +584,11 @@ impl Runner {
                 self.app.notice("new session");
             }
             "sessions" if self.idle_or_say() => {
+                // Archived sessions stay out, as in OpenCode's session list.
                 let list = open_store()
-                    .map(|db| db.list(Some(&self.cwd.display().to_string()), false))
+                    .map(|db| {
+                        db.list_archived(Some(&self.cwd.display().to_string()), false, Some(false))
+                    })
                     .transpose()?
                     .unwrap_or_default();
                 let items = list

@@ -128,6 +128,23 @@ pub struct Store {
     conn: std::sync::Mutex<Connection>,
 }
 
+/// Session meta key: when the session was archived (ms).
+pub const ARCHIVED_META: &str = "archived";
+
+/// No such session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotFound {
+    pub session: String,
+}
+
+impl std::fmt::Display for NotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no session {}", self.session)
+    }
+}
+
+impl std::error::Error for NotFound {}
+
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Store")
@@ -468,9 +485,13 @@ impl Store {
         Ok(rows)
     }
 
-    /// The most recently updated top-level session in `directory`.
+    /// The most recently updated top-level session in `directory` that is
+    /// not archived.
     pub fn latest(&self, directory: &str) -> Result<Option<Info>> {
-        Ok(self.list(Some(directory), false)?.into_iter().next())
+        Ok(self
+            .list_archived(Some(directory), false, Some(false))?
+            .into_iter()
+            .next())
     }
 
     pub fn append(&self, id: &str, record: &Record) -> Result<i64> {
@@ -815,12 +836,18 @@ impl Store {
         {
             let conn = self.conn.lock().unwrap();
             conn.execute_batch(META_TABLE)?;
-            // The parent's billing split and its own origin are not the fork's.
+            // The parent's billing split, origin and archiving are not the fork's.
             conn.execute(
                 "INSERT INTO session_meta (session_id, key, value)
                  SELECT ?2, key, value FROM session_meta
-                 WHERE session_id = ?1 AND key NOT IN ('unbilled_usage', ?3, ?4)",
-                params![from, to, crate::fork::ORIGIN_META, crate::fork::NOTICE_META],
+                 WHERE session_id = ?1 AND key NOT IN ('unbilled_usage', ?3, ?4, ?5)",
+                params![
+                    from,
+                    to,
+                    crate::fork::ORIGIN_META,
+                    crate::fork::NOTICE_META,
+                    ARCHIVED_META
+                ],
             )?;
         }
         let origin = crate::fork::Origin {
@@ -834,6 +861,53 @@ impl Store {
         )?;
         self.set_meta(to, crate::fork::NOTICE_META, Some("1"))?;
         Ok(info)
+    }
+
+    /// Archive session `id` (OpenCode's `Session.archive`): it stays, with
+    /// its history, but lists leave it out unless asked for archived ones.
+    /// Archiving it again keeps the first time. Fails with [`NotFound`].
+    pub fn archive(&self, id: &str) -> Result<()> {
+        if self.get(id)?.is_none() {
+            return Err(NotFound { session: id.into() }.into());
+        }
+        if self.archived(id)?.is_none() {
+            self.set_meta(id, ARCHIVED_META, Some(&now().to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Bring archived session `id` back. Fails with [`NotFound`].
+    pub fn unarchive(&self, id: &str) -> Result<()> {
+        if self.get(id)?.is_none() {
+            return Err(NotFound { session: id.into() }.into());
+        }
+        self.set_meta(id, ARCHIVED_META, None)
+    }
+
+    /// When session `id` was archived, if it is.
+    pub fn archived(&self, id: &str) -> Result<Option<i64>> {
+        Ok(self.meta(id, ARCHIVED_META)?.and_then(|v| v.parse().ok()))
+    }
+
+    /// [`Store::list`], only the archived sessions (`Some(true)`) or only
+    /// the others (`Some(false)`).
+    pub fn list_archived(
+        &self,
+        directory: Option<&str>,
+        children: bool,
+        archived: Option<bool>,
+    ) -> Result<Vec<Info>> {
+        let list = self.list(directory, children)?;
+        let Some(want) = archived else {
+            return Ok(list);
+        };
+        let mut out = Vec::new();
+        for i in list {
+            if self.archived(&i.id)?.is_some() == want {
+                out.push(i);
+            }
+        }
+        Ok(out)
     }
 
     /// Where session `id` was forked from, if it is a fork.

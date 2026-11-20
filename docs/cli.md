@@ -79,6 +79,7 @@ codesmith run --format json "list the TODOs" | jq .
 | `-c, --continue` | Continue the most recent session in this folder. |
 | `-s, --session ID` | Continue this session. |
 | `--title TEXT` | Title for a new session (otherwise one is generated). |
+| `--archived` | Archive the session when the run ends, so it stays out of session lists (scripted or CI runs). |
 | `-w, --worktree[=NAME]` | Run in a new git worktree (a name needs the `=`). |
 
 Without `--auto`, requests that a rule marks `ask` are asked on the
@@ -88,7 +89,9 @@ terminal. See [answering a request](permissions.md#answering-a-request). The
 ## `codesmith session`
 
 ```sh
-codesmith session list [--all] [--json]   # this folder's sessions (--all: every folder)
+codesmith session list [--all] [--archived] [--json]   # this folder's sessions (--all: every folder; --archived: the archived ones)
+codesmith session archive ID              # keep it, out of lists
+codesmith session unarchive ID
 codesmith session export ID > session.json
 codesmith session import session.json     # or - for stdin
 codesmith session delete ID               # also deletes its subagent sessions

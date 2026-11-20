@@ -46,7 +46,7 @@
 //!   [`pty`]
 
 use anyhow::Result;
-use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request as HttpRequest, State};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, Request as HttpRequest, State};
 use axum::http::{header, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -806,7 +806,7 @@ pub fn router(st: St) -> Router {
     routes
         .route("/health", get(health))
         .route("/sessions", get(list).post(create))
-        .route("/sessions/{id}", get(show).delete(remove))
+        .route("/sessions/{id}", get(show).delete(remove).patch(update))
         .route("/sessions/{id}/messages", post(message))
         .route("/sessions/{id}/events", get(events))
         .route("/sessions/{id}/abort", post(abort))
@@ -893,10 +893,58 @@ async fn health(State(st): State<St>) -> Json<Value> {
     )
 }
 
-async fn list(State(st): State<St>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!(st
-        .store()?
-        .list(Some(&st.cwd.display().to_string()), false)?)))
+/// The sessions, each with `archived` (when it was, or null); with
+/// `?archived=true` or `false`, only those that are or are not.
+async fn list(
+    State(st): State<St>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    let archived = match q.get("archived").map(String::as_str) {
+        None => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(_) => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "archived is true or false".into(),
+            ))
+        }
+    };
+    let db = st.store()?;
+    let list = db.list_archived(Some(&st.cwd.display().to_string()), false, archived)?;
+    let mut out = Vec::new();
+    for i in list {
+        let when = db.archived(&i.id)?;
+        let mut v = json!(i);
+        v["archived"] = json!(when);
+        out.push(v);
+    }
+    Ok(Json(json!(out)))
+}
+
+/// Change a session (OpenCode's session update): `{archived}` archives it
+/// or brings it back.
+async fn update(
+    State(st): State<St>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let db = st.store()?;
+    if !db.get(&id)?.is_some_and(|i| st.ours(&i)) {
+        return Err(not_found(&id));
+    }
+    match &b["archived"] {
+        Value::Bool(true) => db.archive(&id)?,
+        Value::Bool(false) => db.unarchive(&id)?,
+        Value::Null => {}
+        _ => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "archived is true or false".into(),
+            ))
+        }
+    }
+    Ok(Json(json!({"id": id, "archived": db.archived(&id)?})))
 }
 
 async fn create(State(st): State<St>, body: Option<Json<Value>>) -> Result<Json<Value>, ApiError> {

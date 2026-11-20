@@ -276,6 +276,10 @@ struct RunArgs {
     /// separate word is part of the message).
     #[arg(short = 'w', long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_name = "NAME")]
     worktree: Option<String>,
+    /// Archive the session when the run ends, so it stays out of session
+    /// lists (for scripted or CI runs).
+    #[arg(long)]
+    archived: bool,
 }
 
 #[derive(Subcommand)]
@@ -630,11 +634,14 @@ enum McpCmd {
 
 #[derive(Subcommand)]
 enum SessionCmd {
-    /// List sessions, newest first.
+    /// List sessions, newest first (archived ones with --archived).
     List {
         /// Include sessions from every directory.
         #[arg(long)]
         all: bool,
+        /// List the archived sessions instead.
+        #[arg(long)]
+        archived: bool,
         /// Print JSON.
         #[arg(long)]
         json: bool,
@@ -653,6 +660,16 @@ enum SessionCmd {
     Import {
         /// Path to the exported JSON, or - to read stdin.
         file: String,
+    },
+    /// Archive a session: it stays, out of session lists.
+    Archive {
+        /// Session id (see `session list`).
+        id: String,
+    },
+    /// Bring an archived session back into session lists.
+    Unarchive {
+        /// Session id (see `session list --archived`).
+        id: String,
     },
     /// List a session's messages with their numbers (for `session fork --before`).
     Messages {
@@ -700,6 +717,7 @@ impl RunArgs {
             session: None,
             title: None,
             worktree: None,
+            archived: false,
         }
     }
 }
@@ -2117,9 +2135,14 @@ fn open_store() -> Result<Store> {
 fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
     let mut db = open_store()?;
     match what {
-        SessionCmd::List { all, json } => {
+        SessionCmd::List {
+            all,
+            archived,
+            json,
+        } => {
             let dir = cwd.display().to_string();
-            let list = db.list(if all { None } else { Some(&dir) }, false)?;
+            let list =
+                db.list_archived(if all { None } else { Some(&dir) }, false, Some(archived))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&list)?);
                 return Ok(());
@@ -2150,6 +2173,14 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
             } else {
                 return Err(anyhow!("no session {id}"));
             }
+        }
+        SessionCmd::Archive { id } => {
+            db.archive(&id)?;
+            println!("Archived {id}");
+        }
+        SessionCmd::Unarchive { id } => {
+            db.unarchive(&id)?;
+            println!("Unarchived {id}");
         }
         SessionCmd::Messages { id } => {
             let info = session_target(&db, &cwd, id)?;
@@ -2478,6 +2509,14 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         }
         None => run_turn(&mut session, &message, custom.as_ref(), media, &mut sink).await,
     };
+    if args.archived {
+        if let Some(db) = open_store()
+            .ok()
+            .filter(|db| db.get(&session.id).ok().flatten().is_some())
+        {
+            db.archive(&session.id)?;
+        }
+    }
     sink.done(
         &session.usage,
         result.as_ref().err().map(|e| e.to_string()),

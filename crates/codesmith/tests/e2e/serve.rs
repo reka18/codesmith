@@ -1657,3 +1657,61 @@ async fn mcp_elicitations_are_asked_as_questions_over_http() {
     let step = m.by("thanks").pop().unwrap().to_string();
     assert!(step.contains("Ava") && step.contains("accept"), "{step}");
 }
+
+/// `PATCH /sessions/{id} {archived}` archives a session or brings it back;
+/// `GET /sessions?archived=` filters by it.
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_archive_over_http() {
+    let e = Env::new();
+    let m = Model::start(Script::new().titled("Served").always(
+        "answer",
+        M::tools(),
+        Reply::text("Hi."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut ev = s.turn(&sid, "hello").await;
+    ev.until("done").await;
+    let r = s
+        .req(reqwest::Method::PATCH, &format!("/sessions/{sid}"))
+        .json(&json!({"archived": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: Value = r.json().await.unwrap();
+    assert!(body["archived"].is_i64(), "{body}");
+    let ids = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, all) = s.get("/sessions").await;
+    assert_eq!(ids(&all), std::slice::from_ref(&sid));
+    assert!(all[0]["archived"].is_i64());
+    let (_, active) = s.get("/sessions?archived=false").await;
+    assert!(ids(&active).is_empty());
+    let (_, archived) = s.get("/sessions?archived=true").await;
+    assert_eq!(ids(&archived), std::slice::from_ref(&sid));
+    let r = s
+        .req(reqwest::Method::PATCH, &format!("/sessions/{sid}"))
+        .json(&json!({"archived": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let (_, active) = s.get("/sessions?archived=false").await;
+    assert_eq!(ids(&active), std::slice::from_ref(&sid));
+    let r = s
+        .req(reqwest::Method::PATCH, "/sessions/ses_missing")
+        .json(&json!({"archived": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}

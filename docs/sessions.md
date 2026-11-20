@@ -58,6 +58,21 @@ model is told the conversation is a fork: work started before it (background
 commands, subagents) belongs to the original, and files and branches are
 shared with it.
 
+## Archiving
+
+An archived session keeps its history but stays out of session lists, the
+UI's `/sessions` picker and `-c`, as in OpenCode.
+
+```sh
+codesmith session archive ID
+codesmith session list --archived      # the archived ones
+codesmith session unarchive ID
+codesmith run --archived "check the build"   # a scripted run that stays out of lists
+```
+
+[`serve`](local-server.md) archives with `PATCH /sessions/{id} {archived}`.
+A fork of an archived session is not archived.
+
 ## Shell commands
 
 `!command` at the prompt (or `POST /sessions/{id}/shell` on

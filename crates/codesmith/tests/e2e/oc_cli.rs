@@ -338,3 +338,41 @@ async fn session_fork_copies_history_through_or_before_a_message() {
     assert_eq!(out.code, Some(1), "{}", out.both());
     assert!(out.stderr.contains("no message 9999"), "{}", out.both());
 }
+
+/// `session archive` takes a session out of `session list` (and `-c`), and
+/// `session list --archived` shows it; `run --archived` archives its run.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_archive_hides_sessions_from_lists() {
+    let e = Env::new();
+    let id = one_session(&e).await;
+    e.run(&["session", "archive", &id]).await.ok();
+    let listed = e.run(&["session", "list"]).await;
+    listed.ok();
+    assert!(!listed.stdout.contains(&id), "{}", listed.both());
+    let archived = e.run(&["session", "list", "--archived"]).await;
+    assert!(archived.stdout.contains(&id), "{}", archived.both());
+    e.run(&["session", "unarchive", &id]).await.ok();
+    let listed = e.run(&["session", "list"]).await;
+    assert!(listed.stdout.contains(&id), "{}", listed.both());
+    let out = e.run(&["session", "archive", "ses_missing"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(
+        out.stderr.contains("no session ses_missing"),
+        "{}",
+        out.both()
+    );
+
+    let m = Model::start(Script::new().titled("Again").always(
+        "answer",
+        M::tools(),
+        Reply::text("Hi again."),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let out = e.run(&["run", "--archived", "hello"]).await;
+    out.ok();
+    let st = e.store();
+    let newest = st.list(None, false).unwrap()[0].id.clone();
+    assert_ne!(newest, id);
+    assert!(st.archived(&newest).unwrap().is_some());
+}

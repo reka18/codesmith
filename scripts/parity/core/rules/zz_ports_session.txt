@@ -77,3 +77,7 @@
 187 :: ported :: tests/oc_image_eviction.rs::oc_oldest_images_are_replaced_down_to_the_target
 207 :: ported :: tests/oc_image_eviction.rs::oc_the_replaced_prefix_stays_stable_as_images_arrive
 222 :: ported :: tests/oc_image_eviction.rs::oc_images_in_tool_results_are_replaced :: the note joins the result's text
+@session-archive.test.ts
+33 :: ported :: tests/oc_session_archive.rs::oc_session_archives_and_unarchives :: adapted: kept as session meta; archiving twice keeps the first time
+58 :: ported :: tests/oc_session_archive.rs::oc_session_lists_filter_by_archive_state
+73 :: ported :: tests/oc_session_archive.rs::oc_session_archiving_rejects_an_unknown_session
