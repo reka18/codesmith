@@ -1502,6 +1502,71 @@ async fn adopted_jobs_outlive_the_old_session_and_are_reported_by_the_new_one() 
     );
 }
 
+/// Fixed: a resume that failed before reporting its finished commands (the
+/// store failing, another process holding the turn) left them unreported,
+/// so a front end waking the session for them resumed again at once: a
+/// tight error loop. Resumes now back off after a failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_that_fails_before_reporting_backs_off() {
+    let mut t = start(Setup {
+        store: true,
+        ..Default::default()
+    })
+    .await;
+    t.push([
+        call(
+            "c1",
+            "shell",
+            json!({"command": "echo bg-done", "description": "quick", "background": true}),
+        ),
+        text("Started it."),
+    ]);
+    t.prompt("start it").await.unwrap();
+    t.s.wait_background().await;
+    assert_eq!(t.s.background_finished(), 1);
+    assert_eq!(t.s.resume_due(), None);
+
+    // Another process holds the turn, and this session does not wait for it.
+    let path = t.data.path().join("sessions.db");
+    let other = store::TurnLease::acquire(&path, &t.s.id, "other", false, || {})
+        .await
+        .unwrap();
+    t.s.set_wait_for_turn(false);
+    t.s.set_retry_scale(1.0);
+    let mut sink = Rec(t.seen.clone());
+    let before = std::time::Instant::now();
+    assert!(t.s.resume_background(&mut sink).await.is_err());
+    assert_eq!(t.s.background_finished(), 1, "still unreported");
+    let due = t.s.resume_due().expect("backing off");
+    assert!(
+        due >= before + Duration::from_millis(900),
+        "{:?}",
+        due - before
+    );
+    // A front end waits until then; held after an interrupt, not at all.
+    assert_eq!(t.s.idle_wake(&mut None), session::IdleWake::At(due));
+    let mut held = Some(1);
+    assert_eq!(t.s.idle_wake(&mut held), session::IdleWake::Idle);
+    assert_eq!(held, Some(1));
+
+    // Called again early, the resume waits out the backoff first.
+    t.s.set_retry_scale(0.0001);
+    let again = std::time::Instant::now();
+    assert!(t.s.resume_background(&mut sink).await.is_err());
+    assert!(std::time::Instant::now() >= due, "{:?}", again.elapsed());
+    assert_eq!(t.requests().len(), 2, "no model call while failing");
+
+    // Once it can run, it reports the command and the backoff is over.
+    drop(other);
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    t.push([text("Saw it.")]);
+    t.s.resume_background(&mut sink).await.unwrap();
+    assert_eq!(t.s.background_finished(), 0);
+    assert_eq!(t.s.resume_due(), None);
+    let note = last_message(&t.requests()[2])["content"].to_string();
+    assert!(note.contains("bg-done"), "{note}");
+}
+
 /// A command that finished after its turn ended is reported at the next
 /// prompt, before the user's message.
 #[tokio::test(flavor = "multi_thread")]

@@ -76,6 +76,9 @@ struct Runner {
     /// Waits, while the UI is idle, for one of the session's background
     /// commands to finish, then sends `Ev::Background`.
     waiter: Option<tokio::task::JoinHandle<()>>,
+    /// After an interrupt, how many finished background commands are not
+    /// resumed for (see [`Session::idle_wake`]).
+    resume_held: Option<usize>,
     /// The current session's background commands, given to every rebuild
     /// of it (interrupt, undo, an agent or model switch), so they outlive
     /// the session object a turn's task dropped. Stopped when the TUI
@@ -123,6 +126,7 @@ impl Runner {
     /// would report them) and start the next one with none.
     fn end_jobs(&mut self) {
         self.stop_waiting();
+        self.resume_held = None;
         let old = std::mem::take(&mut self.jobs);
         tokio::spawn(async move { old.stop_all().await });
     }
@@ -319,6 +323,11 @@ impl Runner {
         if let Err(e) = self.reload() {
             self.app.error(format!("{e:#}"));
         }
+        // The user stopped the turn: commands that already finished wait
+        // for the next prompt (or another to finish) instead of resuming
+        // the session at once, which after an interrupted resume would
+        // restart it.
+        self.resume_held = self.session.as_ref().map(|s| s.background_finished());
     }
 
     /// Keep the status line's background count current and, while idle,
@@ -336,16 +345,28 @@ impl Runner {
             self.stop_waiting();
             return;
         }
-        if s.background_finished() > 0 {
+        let wake = s.idle_wake(&mut self.resume_held);
+        if wake == session::IdleWake::Resume {
             self.stop_waiting();
             self.resume_background();
-        } else if self.app.background > 0 && self.waiter.as_ref().is_none_or(|w| w.is_finished()) {
-            let (reaper, tx) = (s.reaper(), self.tx.clone());
-            self.waiter = Some(tokio::spawn(async move {
-                reaper.wait_any().await;
-                let _ = tx.send(Ev::Background);
-            }));
+            return;
         }
+        if self.waiter.as_ref().is_some_and(|w| !w.is_finished()) {
+            return;
+        }
+        let (reaper, tx) = (s.reaper(), self.tx.clone());
+        self.waiter = match wake {
+            // A resume failed: try again once it has backed off.
+            session::IdleWake::At(due) => Some(tokio::spawn(async move {
+                tokio::time::sleep_until(due.into()).await;
+                let _ = tx.send(Ev::Background);
+            })),
+            session::IdleWake::Finish(seen) => Some(tokio::spawn(async move {
+                reaper.wait_more(seen).await;
+                let _ = tx.send(Ev::Background);
+            })),
+            session::IdleWake::Resume | session::IdleWake::Idle => None,
+        };
     }
 
     fn stop_waiting(&mut self) {
@@ -834,6 +855,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         stopping: false,
         skip_done: 0,
         waiter: None,
+        resume_held: None,
         jobs: Jobs::default(),
     };
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)

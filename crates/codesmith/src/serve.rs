@@ -264,6 +264,9 @@ struct Live {
     /// Waits, while the session is idle, for one of its background
     /// commands to finish, to resume it (see [`wake`]).
     waiter: Option<tokio::task::JoinHandle<()>>,
+    /// After an abort, how many finished background commands are not
+    /// resumed for (see [`Session::idle_wake`]).
+    held: Option<usize>,
     prompter: Arc<Prompter>,
     /// The "always" approvals given in this session, kept across reloads.
     approvals: Approvals,
@@ -397,6 +400,7 @@ impl Server {
             session: Some(s),
             task: None,
             waiter: None,
+            held: None,
             prompter,
         })
     }
@@ -748,6 +752,10 @@ async fn events(
 /// it as a turn of its own (OpenCode wakes an idle session with the
 /// command's notice); if one still runs, wait for it and come back here.
 /// A prompt sent meanwhile cancels the wait and reports the command itself.
+///
+/// A resume that failed backs off before the next (see
+/// [`Session::resume_due`]), and after an abort the commands that had
+/// finished wait for the next prompt or for another one to finish ([`hold`]).
 fn wake(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
     if let Some(w) = g.waiter.take() {
         w.abort();
@@ -755,18 +763,38 @@ fn wake(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
     let Some(s) = g.session.as_ref().filter(|_| g.task.is_none()) else {
         return;
     };
-    if s.background_finished() > 0 {
-        resume(live, g);
-    } else if s.background_running() > 0 {
-        let (reaper, live) = (s.reaper(), live.clone());
-        g.waiter = Some(tokio::spawn(async move {
-            reaper.wait_any().await;
-            let mut g = live.lock().await;
-            // This task: drop its handle without aborting it.
-            g.waiter.take();
-            wake(&live, &mut g);
-        }));
+    let reaper = s.reaper();
+    match s.idle_wake(&mut g.held) {
+        session::IdleWake::Resume => resume(live, g),
+        session::IdleWake::At(due) => wake_after(live, g, tokio::time::sleep_until(due.into())),
+        session::IdleWake::Finish(seen) => {
+            wake_after(live, g, async move { reaper.wait_more(seen).await })
+        }
+        session::IdleWake::Idle => {}
     }
+}
+
+/// Run [`wake`] again once `wait` is over (aborted when `g`'s waiter is).
+fn wake_after(
+    live: &Arc<tokio::sync::Mutex<Live>>,
+    g: &mut Live,
+    wait: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let live = live.clone();
+    g.waiter = Some(tokio::spawn(async move {
+        wait.await;
+        let mut g = live.lock().await;
+        // This task: drop its handle without aborting it.
+        g.waiter.take();
+        wake(&live, &mut g);
+    }));
+}
+
+/// The user aborted `g`'s turn: don't resume it for the background
+/// commands already finished (they are reported with the next prompt, or
+/// when another finishes), or an aborted resume would start over at once.
+fn hold(g: &mut Live) {
+    g.held = g.session.as_ref().map(|s| s.background_finished());
 }
 
 /// Run the turn that reports `g`'s finished background commands. Its
@@ -891,7 +919,10 @@ async fn abort(
             let mut g = live.lock().await;
             if g.session.is_none() && g.task.is_none() {
                 match st.reload(&mut g, &id) {
-                    Ok(()) => wake(&live, &mut g),
+                    Ok(()) => {
+                        hold(&mut g);
+                        wake(&live, &mut g)
+                    }
                     Err(e) => eprintln!("serve: could not reload session {id}: {e:#}"),
                 }
             }
@@ -906,6 +937,7 @@ async fn abort(
     }
     // Its background commands survive the abort (as in OpenCode): wait
     // for them again. An abort of the idle session stops them.
+    hold(&mut g);
     wake(&live, &mut g);
     Ok(Json(json!({"aborted": true})))
 }

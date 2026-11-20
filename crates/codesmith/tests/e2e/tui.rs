@@ -431,6 +431,61 @@ async fn background_commands_survive_an_interrupt_switches_and_undo() {
     m.assert_done();
 }
 
+// Fixed: an interrupt reloaded the session and the idle UI resumed it at
+// once for background commands that had already finished, so a turn the
+// user stopped (a resume waiting for another process's turn too) started
+// again by itself. Those commands now wait for the next prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupt_does_not_resume_for_commands_already_finished() {
+    let e = Env::new();
+    let shell = "<shell id=\"shell_1\"";
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 1; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "wait",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::call("shell", json!({"command": "sleep 30", "description": "wait"})),
+            )
+            .then(
+                "next",
+                M::tools().and(M::prompt("what happened")),
+                Reply::text("It built fine."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
+        return;
+    };
+    ui.wait_for("sleep 30").await;
+    // The background command ends while the foreground one still runs.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    ui.send(b"\x03").await;
+    // Interrupted once the idle prompt's title is back.
+    ui.wait_for("Tab agents").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(m.unmatched().is_empty(), "resumed: {:#?}", m.unmatched());
+    ui.send(b"what happened\r").await;
+    ui.wait_for("It built fine.").await;
+    ui.quit().await;
+    let next = &m.by("next")[0];
+    let reported = crate::model::messages(next)
+        .iter()
+        .filter(|m| crate::model::content(m).contains(shell))
+        .count();
+    assert_eq!(reported, 1, "{next:#}");
+    m.assert_done();
+}
+
 // `/new` ends the current session: its background commands are stopped
 // (the UI shows and wakes one session only) and never reported.
 #[tokio::test(flavor = "multi_thread")]

@@ -301,6 +301,37 @@ struct Turn {
     offered: Vec<String>,
     /// Scales retry waits (tests shorten them).
     retry_scale: f64,
+    /// Resumes for finished background commands that failed in a row
+    /// before reporting them, and when the next one may start.
+    resume_failures: u32,
+    resume_due: Option<std::time::Instant>,
+}
+
+/// What a front end does for an idle session's background commands, from
+/// [`Session::idle_wake`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleWake {
+    /// Resume it now ([`Session::resume_background`]).
+    Resume,
+    /// Look again at this instant: resumes failed and back off.
+    At(std::time::Instant),
+    /// Look again when more than this many commands are finished and
+    /// unreported ([`tool::shell::Reaper::wait_more`]).
+    Finish(usize),
+    /// Nothing runs or waits.
+    Idle,
+}
+
+/// The longest wait between resumes that keep failing (see
+/// [`Session::resume_due`]).
+const RESUME_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// The wait after `failures` resumes failed in a row: 1 s, doubling, at
+/// most [`RESUME_BACKOFF_MAX`].
+fn resume_backoff(failures: u32) -> Duration {
+    Duration::from_secs(1)
+        .saturating_mul(1u32 << failures.saturating_sub(1).min(16))
+        .min(RESUME_BACKOFF_MAX)
 }
 
 /// Passes permission questions through and notes a plain decline, which ends
@@ -507,6 +538,8 @@ impl Session {
                 stopped: None,
                 offered: Vec::new(),
                 retry_scale: 1.0,
+                resume_failures: 0,
+                resume_due: None,
             },
             shared: Shared {
                 seen,
@@ -1324,15 +1357,74 @@ impl Session {
         Box::pin(self.resume_inner(sink))
     }
 
+    /// When a resume may start again after the last ones failed before
+    /// reporting their commands (`None`: now). A front end that wakes the
+    /// session for finished commands waits until then instead of retrying
+    /// at once, which with a persistent failure (the store, another
+    /// process holding the turn) would spin; [`Session::resume_background`]
+    /// called earlier waits for it itself.
+    pub fn resume_due(&self) -> Option<std::time::Instant> {
+        self.turn
+            .resume_due
+            .filter(|due| *due > std::time::Instant::now())
+    }
+
+    /// What to do for this idle session's background commands. `held` is
+    /// the front end's hold after the user interrupted a turn (set it to
+    /// `Some(background_finished())` then): the commands already finished
+    /// are not resumed for until another one finishes, so an interrupt is
+    /// not followed by a turn the user did not ask for. The hold lowers as
+    /// commands are reported and ends when one more finishes.
+    pub fn idle_wake(&self, held: &mut Option<usize>) -> IdleWake {
+        let finished = self.background_finished();
+        if let Some(h) = *held {
+            *held = (finished <= h).then_some(finished);
+        }
+        if finished > 0 && held.is_none() {
+            return match self.resume_due() {
+                Some(due) => IdleWake::At(due),
+                None => IdleWake::Resume,
+            };
+        }
+        if self.background_running() > 0 {
+            IdleWake::Finish(finished)
+        } else {
+            IdleWake::Idle
+        }
+    }
+
     async fn resume_inner(&mut self, sink: &mut dyn Sink) -> Result<()> {
         let finished = self.jobs.finished();
         if finished.is_empty() {
             return Ok(());
         }
+        if let Some(due) = self.resume_due() {
+            tokio::time::sleep_until(due.into()).await;
+        }
+        let result = self.resume_turn(sink, &finished).await;
+        let still = self.jobs.finished();
+        if result.is_err() && finished.iter().any(|j| still.iter().any(|s| s.id == j.id)) {
+            // Failed before the model saw them: they are still waiting, so
+            // a caller waking on them would come straight back.
+            self.turn.resume_failures = self.turn.resume_failures.saturating_add(1);
+            let wait = resume_backoff(self.turn.resume_failures).mul_f64(self.turn.retry_scale);
+            self.turn.resume_due = Some(std::time::Instant::now() + wait);
+        } else {
+            self.turn.resume_failures = 0;
+            self.turn.resume_due = None;
+        }
+        result
+    }
+
+    async fn resume_turn(
+        &mut self,
+        sink: &mut dyn Sink,
+        finished: &[tool::shell::Job],
+    ) -> Result<()> {
         // A turn like any other: one at a time across processes, after
         // what others appended meanwhile.
         let _lease = self.take_turn(sink).await?;
-        for j in &finished {
+        for j in finished {
             sink.notice(&format!(
                 "background command {} finished ({})",
                 j.id,
@@ -2804,6 +2896,13 @@ mod tests {
         assert!(s.gate.allows("external_directory", &output("ses_hosted")));
         assert!(!s.gate.allows("external_directory", &output(&generated)));
         assert!(!s.gate.allows("external_directory", &output("ses_other")));
+    }
+
+    #[test]
+    fn failed_resumes_back_off_exponentially_up_to_30s() {
+        let waits: Vec<u64> = (1..=8).map(|n| resume_backoff(n).as_secs()).collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(resume_backoff(u32::MAX), RESUME_BACKOFF_MAX);
     }
 
     #[test]

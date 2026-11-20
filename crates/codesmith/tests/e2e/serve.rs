@@ -929,6 +929,64 @@ async fn background_commands_survive_an_abort_and_undo() {
     m.assert_done();
 }
 
+/// Fixed: an abort reloaded the session and woke it at once for the
+/// background commands that had already finished, so a turn the user
+/// stopped (an aborted resume too) was followed by one they did not ask
+/// for. Those commands now wait for the next prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_abort_does_not_resume_for_commands_already_finished() {
+    let e = Env::new();
+    let shell = "<shell id=\"shell_1\"";
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                M::tools().and(M::prompt("build it")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 1; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "wait",
+                M::tools().and(M::prompt("build it")).and(M::step(1)),
+                Reply::call("shell", json!({"command": "sleep 30", "description": "wait"})),
+            )
+            .then(
+                "next",
+                M::tools().and(M::prompt("what happened")),
+                Reply::text("It built."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &["--auto"]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut ev = s.turn(&sid, "build it").await;
+    ev.until("tool_start").await;
+    ev.until("tool_start").await;
+    // The background command ends while the foreground one still runs.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let (code, r) = s.post(&format!("/sessions/{sid}/abort"), json!({})).await;
+    assert_eq!((code, &r), (200, &json!({"aborted": true})));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (_, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(shown["busy"], false, "{shown}");
+    assert!(m.unmatched().is_empty(), "resumed: {:#?}", m.unmatched());
+    // The next prompt reports it.
+    let turn = s.turn(&sid, "what happened").await.until("done").await;
+    assert_eq!(turn.last().unwrap().1["error"], Value::Null, "{turn:?}");
+    let next = &m.by("next")[0];
+    let reported = crate::model::messages(next)
+        .iter()
+        .filter(|m| crate::model::content(m).contains(shell))
+        .count();
+    assert_eq!(reported, 1, "{next:#}");
+    m.assert_done();
+}
+
 /// Deleting a session stops its background commands: the command never
 /// gets to its end, and nothing resumes the session.
 #[tokio::test(flavor = "multi_thread")]
