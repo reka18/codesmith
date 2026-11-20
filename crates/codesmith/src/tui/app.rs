@@ -325,6 +325,10 @@ pub struct App {
     pub entries: Vec<Entry>,
     pub input: Editor,
     pub history: Vec<String>,
+    /// The files each history entry attached, by index.
+    pub history_files: Vec<Vec<super::attach::Pending>>,
+    /// Prompts submitted since the runner last kept them in the history file.
+    pub history_new: Vec<serde_json::Value>,
     hist: Option<usize>,
     /// What was typed before stepping into the history, restored when
     /// stepping back past the newest entry.
@@ -692,6 +696,7 @@ impl App {
         std::mem::swap(&mut self.commands, &mut to.commands);
         std::mem::swap(&mut self.files, &mut to.files);
         std::mem::swap(&mut self.history, &mut to.history);
+        std::mem::swap(&mut self.history_files, &mut to.history_files);
         std::mem::swap(&mut self.diff_memory, &mut to.diff_memory);
         std::mem::swap(&mut self.tabs, &mut to.tabs);
         std::mem::swap(&mut self.session_labels, &mut to.session_labels);
@@ -1540,7 +1545,17 @@ impl App {
         };
         self.hist = next;
         match next {
-            Some(i) => self.input.set(self.history[i].clone()),
+            Some(i) => {
+                self.input.set(self.history[i].clone());
+                // Its files come back with it, as OpenCode restores them.
+                if let Some(files) = self.history_files.get(i).filter(|f| !f.is_empty()) {
+                    for f in files {
+                        if !self.attachments.iter().any(|a| a.label == f.label) {
+                            self.attachments.push(f.clone());
+                        }
+                    }
+                }
+            }
             None => self.input.set(std::mem::take(&mut self.draft)),
         }
     }
@@ -1551,8 +1566,27 @@ impl App {
         if text.is_empty() {
             return None;
         }
-        if self.history.last() != Some(&text) {
+        let files: Vec<super::attach::Pending> = self
+            .attachments
+            .iter()
+            .filter(|a| text.contains(&a.label))
+            .cloned()
+            .collect();
+        let entry = super::history::entry(&text, &files);
+        let last = self.history.len().checked_sub(1);
+        let repeat = last.is_some_and(|i| {
+            self.history[i] == text
+                && self
+                    .history_files
+                    .get(i)
+                    .map_or(files.is_empty(), |f| *f == files)
+        });
+        if !repeat {
             self.history.push(text.clone());
+            self.history_files
+                .resize(self.history.len() - 1, Vec::new());
+            self.history_files.push(files);
+            self.history_new.push(entry);
         }
         self.hist = None;
         self.input.clear();

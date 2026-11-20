@@ -26,6 +26,7 @@ mod diff_view;
 mod editor;
 mod external;
 mod group;
+mod history;
 pub(crate) mod keymap;
 mod markdown;
 mod mention;
@@ -153,6 +154,8 @@ struct Runner {
     tabs: tabs_host::Host,
     /// The window title, notifications and program status.
     outside: outside::Outside,
+    /// The prompt history file.
+    history: history::Store,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -1107,6 +1110,13 @@ impl Runner {
         self.flush_outside();
     }
 
+    /// Keep the prompts submitted since in the history file.
+    fn keep_history(&mut self) {
+        for e in std::mem::take(&mut self.app.history_new) {
+            self.history.append(e);
+        }
+    }
+
     fn flush_outside(&mut self) {
         if self.outside.out.is_empty() {
             return;
@@ -1530,6 +1540,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         clear: false,
         diffs: settings::Diffs::default(),
         tabs,
+        history: history::Store::default(),
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),
@@ -1563,6 +1574,11 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         .collect();
     r.app.set_commands(&cmds);
     r.app.cwd = r.cwd.clone();
+    r.history = history::Store::load(history::file());
+    for e in &r.history.entries {
+        r.app.history.push(history::text(e));
+        r.app.history_files.push(history::files(e));
+    }
     {
         let (tx, root) = (tx.clone(), r.cwd.clone());
         tokio::task::spawn_blocking(move || {
@@ -1625,6 +1641,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             r.watch_all();
             r.sync_tabs();
             r.attend();
+            r.keep_history();
             let tick = match &mut screen {
                 Screen::Full(t) => {
                     t.draw(|f| view::draw(f, &r.app))?;

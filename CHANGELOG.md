@@ -75,6 +75,9 @@ replays of its recorded provider traffic.
   throughput, measured as OpenCode measures them (`tui.session.tps`);
   `tui.debug.turn_tokens` adds each turn's token usage and flags likely
   cache busts.
+- **Prompt history:** kept across restarts in OpenCode's
+  `prompt-history.jsonl` shape (the newest 50, shared by all tabs, with
+  their attachments).
 - **Message navigation:** OpenCode's `session.message.*` commands jump
   to the next or previous prompt or answer; alt+end to the last prompt.
 - **External editor:** `<leader>e` or `/editor` edits the prompt in

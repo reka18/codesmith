@@ -402,3 +402,146 @@ fn turn_usage_rows_flag_likely_cache_busts() {
         "{text}"
     );
 }
+
+mod history {
+    use super::super::app::App;
+    use super::super::history::{self, Store};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn send(a: &mut App, s: &str) {
+        a.input.set(s);
+        a.on_key(key(KeyCode::Enter));
+    }
+
+    fn up(a: &mut App) -> String {
+        a.on_key(key(KeyCode::Up));
+        a.input.text().to_string()
+    }
+
+    fn down(a: &mut App) -> String {
+        a.on_key(key(KeyCode::Down));
+        a.input.text().to_string()
+    }
+
+    /// Switch from `shown` to `other`, as the tabs do.
+    fn switch(shown: &mut App, other: &mut App) {
+        shown.hand_over(other);
+        std::mem::swap(shown, other);
+    }
+
+    // history-provider.test.tsx: "shares prompt history across sessions and
+    // the home composer" (adapted: tabs hand the history to the shown one)
+    #[test]
+    fn oc_shares_prompt_history_across_sessions() {
+        let (mut a, mut b) = (App::new(), App::new());
+        send(&mut a, "a-one");
+        switch(&mut a, &mut b);
+        send(&mut a, "b-one");
+        switch(&mut a, &mut b);
+        send(&mut a, "a-two");
+        assert_eq!(up(&mut a), "a-two");
+        assert_eq!(up(&mut a), "b-one");
+        assert_eq!(up(&mut a), "a-one");
+    }
+
+    // history-provider.test.tsx: "keeps legacy unscoped history on the home
+    // composer" (adapted: the history file as it loads)
+    #[test]
+    fn oc_keeps_legacy_unscoped_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prompt-history.jsonl");
+        std::fs::write(
+            &path,
+            "{\"text\":\"legacy\",\"files\":[],\"agents\":[],\"pasted\":[]}\n",
+        )
+        .unwrap();
+        let store = Store::load(path);
+        let mut a = App::new();
+        a.history = store.entries.iter().map(history::text).collect();
+        assert_eq!(up(&mut a), "legacy");
+        assert_eq!(down(&mut a), "");
+    }
+
+    // history-provider.test.tsx: "reset clears browsing position and live
+    // draft, and move returns a deep copy" (adapted: editing a recalled
+    // prompt leaves the history, which keeps the entry as it was)
+    #[test]
+    fn oc_reset_clears_the_browsing_position_and_draft() {
+        let mut a = App::new();
+        send(&mut a, "[Pasted ~3 lines] ");
+        a.input.set("unsent draft");
+        assert_eq!(up(&mut a), "[Pasted ~3 lines]");
+        a.input.insert('!');
+        a.on_key(key(KeyCode::Char('x')));
+        // Down moves within the edited text: no draft comes back.
+        assert_eq!(down(&mut a), "[Pasted ~3 lines]!x");
+        a.input.set("fresh draft");
+        assert_eq!(up(&mut a), "[Pasted ~3 lines]");
+        assert_eq!(down(&mut a), "fresh draft");
+    }
+
+    // draft-stash.test.ts: "tab-keyed drafts stay on the tab they were
+    // written in" (adapted: each tab's app keeps its prompt)
+    #[test]
+    fn oc_tab_keyed_drafts_stay_on_their_tab() {
+        let (mut one, mut two) = (App::new(), App::new());
+        two.input.set("notes for session two");
+        switch(&mut two, &mut one);
+        assert_eq!(two.input.text(), "");
+        switch(&mut two, &mut one);
+        assert_eq!(two.input.text(), "notes for session two");
+    }
+
+    // draft-stash.test.ts: "each tab keeps its own draft, including home"
+    #[test]
+    fn oc_each_tab_keeps_its_own_draft() {
+        let (mut one, mut home) = (App::new(), App::new());
+        one.input.set("DRAFT-ONE");
+        home.input.set("draft on home");
+        switch(&mut one, &mut home);
+        assert_eq!(one.input.text(), "draft on home");
+        switch(&mut one, &mut home);
+        assert_eq!(one.input.text(), "DRAFT-ONE");
+    }
+
+    // draft-stash.test.ts: "a newer draft for the same slot replaces the older one"
+    #[test]
+    fn oc_a_newer_draft_replaces_the_older_one() {
+        let (mut a, mut b) = (App::new(), App::new());
+        a.input.set("first");
+        switch(&mut a, &mut b);
+        switch(&mut a, &mut b);
+        a.input.set("second");
+        switch(&mut a, &mut b);
+        switch(&mut a, &mut b);
+        assert_eq!(a.input.text(), "second");
+    }
+
+    // A recalled prompt brings back the files it attached.
+    #[test]
+    fn a_recalled_prompt_attaches_its_files_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("a.png");
+        std::fs::write(&png, b"x").unwrap();
+        let mut a = App::new();
+        a.attachments.push(super::super::attach::Pending {
+            label: "[Image 1]".into(),
+            path: png.clone(),
+        });
+        send(&mut a, "describe [Image 1]");
+        let kept = a.history_new.pop().unwrap();
+        assert_eq!(history::files(&kept)[0].path, png);
+        a.attachments.clear();
+        assert_eq!(up(&mut a), "describe [Image 1]");
+        assert_eq!(a.attachments.len(), 1);
+    }
+}

@@ -88,6 +88,13 @@ bindings](#key-bindings)), and `/help` lists the bindings in effect.
 | **ctrl+c** | Clear the prompt. |
 | **leader e** | Edit the prompt in `$VISUAL` or `$EDITOR` (`/editor` too). |
 
+The prompt history is kept across restarts, as OpenCode keeps it: the
+newest 50 prompts, shared by every tab and folder, in
+`~/.local/share/codesmith/prompt-history.jsonl` (one JSON entry a line, in
+OpenCode's shape). A recalled prompt brings back the images and files it
+attached, when they are still there. Each tab keeps its own unsent prompt
+while another is shown.
+
 Pastes go in at the cursor. The external editor gets the terminal while
 it runs (`$EDITOR` may carry arguments, as `code --wait`); what it saves
 comes back as the prompt, the one newline editors add after a single line

@@ -97,14 +97,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 345 | 222 | 657 | 13 |
+| tui: main UI | 1250 | 13 | 357 | 210 | 657 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **621** | **658** | **2357** | **259** |
+| **Total** | **4637** | **742** | **633** | **646** | **2357** | **259** |
 
 ## Fixes made while porting
 
@@ -622,6 +622,18 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/session-rows` | carries model identity with the cross-turn cache baseline | after a fix | oc_carries_model_identity_with_the_cross_turn_cache_baseline |
 | `tui/test/cli/tui/session-rows` | resets the cross-turn cache baseline after compaction | after a fix | oc_resets_the_cross_turn_cache_baseline_after_compaction |
 | `tui/test/cli/tui/session-rows` | closes turn usage on the idle marker so steered steps share one footer | after a fix | oc_closes_turn_usage_on_the_idle_marker (adapted: the usage rows; the transcript rows are CodeSmith's own) |
+| `tui/test/prompt/draft-stash` | tab-keyed drafts stay on the tab they were written in | after a fix | oc_tab_keyed_drafts_stay_on_their_tab (adapted: each tab's app keeps its prompt) |
+| `tui/test/prompt/draft-stash` | each tab keeps its own draft, including home | after a fix | oc_each_tab_keeps_its_own_draft (adapted) |
+| `tui/test/prompt/draft-stash` | a newer draft for the same slot replaces the older one | after a fix | oc_a_newer_draft_replaces_the_older_one (adapted) |
+| `tui/test/prompt/history-provider` | shares prompt history across sessions and the home composer | after a fix | oc_shares_prompt_history_across_sessions (adapted: tabs hand the history over) |
+| `tui/test/prompt/history-provider` | keeps legacy unscoped history on the home composer | after a fix | oc_keeps_legacy_unscoped_history (adapted: the file as it loads) |
+| `tui/test/prompt/history-provider` | reset clears browsing position and live draft, and move returns a deep copy | after a fix | oc_reset_clears_the_browsing_position_and_draft (adapted: no pasted-text parts) |
+| `tui/test/prompt/history` | recovers valid JSONL entries around corruption | after a fix | oc_recovers_valid_jsonl_entries_around_corruption (`tui/history.rs`) |
+| `tui/test/prompt/history` | ignores the legacy parts shape | after a fix | oc_ignores_the_legacy_parts_shape |
+| `tui/test/prompt/history` | retains only the newest entries | after a fix | oc_retains_only_the_newest_entries |
+| `tui/test/prompt/history` | does not dedupe entries with different attachments | after a fix | oc_does_not_dedupe_entries_with_different_attachments |
+| `tui/test/prompt/history` | preserves duplicate attachment mentions for prompt restoration | after a fix | oc_preserves_duplicate_attachment_mentions |
+| `tui/test/prompt/persistence` | persistence creates parent directories and supports text, append, and JSON | after a fix | oc_persistence_creates_parent_directories_and_appends (adapted: the history's writes) |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -822,23 +834,11 @@ transport and its tool presentation.
 - `tui/test/cli/tui/toast`: activation dismisses a toast without an action
 - `tui/test/cli/tui/toast`: toast hides only the terminal cursor it covers, until dismissed
 
-### tui: persistent prompt history and drafts (16)
+### tui: prompt stash, path frecency and appended prompts (4)
 
-- `tui/test/prompt/draft-stash`: tab-keyed drafts stay on the tab they were written in
-- `tui/test/prompt/draft-stash`: each tab keeps its own draft, including home
-- `tui/test/prompt/draft-stash`: a newer draft for the same slot replaces the older one
-- `tui/test/prompt/history-provider`: shares prompt history across sessions and the home composer
-- `tui/test/prompt/history-provider`: keeps legacy unscoped history on the home composer
-- `tui/test/prompt/history-provider`: reset clears browsing position and live draft, and move returns a deep copy
-- `tui/test/prompt/history`: recovers valid JSONL entries around corruption
-- `tui/test/prompt/history`: ignores the legacy parts shape
-- `tui/test/prompt/history`: retains only the newest entries
-- `tui/test/prompt/history`: does not dedupe entries with different attachments
-- `tui/test/prompt/history`: preserves duplicate attachment mentions for prompt restoration
 - `tui/test/prompt/history`: appends a prompt and shifts ranges by the %s offset (2 cases)
 - `tui/test/prompt/jsonl`: stash JSONL skips corruption and retains newest entries
 - `tui/test/prompt/jsonl`: frecency JSONL skips corruption, keeps latest path state, and limits entries
-- `tui/test/prompt/persistence`: persistence creates parent directories and supports text, append, and JSON
 
 ### tui: paste chips and prompt undo (14)
 
