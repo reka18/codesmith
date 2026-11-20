@@ -731,6 +731,13 @@ impl<'a> Scanner<'a> {
                 raw.push(c);
                 raw.push('(');
                 self.substitution(&mut nested)?;
+                if self
+                    .at(self.pos)
+                    .is_some_and(|c| !" \t\n;&|()<>".contains(c))
+                {
+                    // `<(cmd)""` is one word: where it ends is not plain.
+                    return Err("process-substitution");
+                }
                 raw.push_str(&self.text(start + 2, self.pos));
                 value = raw.clone();
                 return Ok(Word {
@@ -2508,7 +2515,7 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
     for item in scanned.commands {
         for (raw, value) in &item.writes {
             // Dash has no `$'...'`: such a target is another name there.
-            let path = (static_command_name(raw) && !raw.contains("$'"))
+            let path = (static_command_name(raw) && !raw.contains("$'") && !raw.contains("$\""))
                 .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
                 .flatten();
             let differs = path.as_deref() != Some(value.as_str());
@@ -4651,6 +4658,7 @@ mod tests {
             "\"\"=env rm F",
             "echo \"$${x-\"'$(rm F)'\"}\"",
             "echo \"${x:-$'`rm F`'}\"",
+            "bash < <(echo rm F)\"\"",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;

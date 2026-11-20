@@ -1615,3 +1615,9 @@ EOF
 e#cho "${x:-$'`rm F""`'}"
 %%
 echo "${x:-$'$(rm F)'}"
+%%
+>$""out rm F
+%%
+bash < <(echo rm F)""
+%%
+cat <(echo x)y
