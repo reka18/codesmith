@@ -22,7 +22,16 @@ the terminal (see [configuration](configuration.md)).
 - **Edits.** Edits and writes carry full-file diffs, in their tool calls and
   in their permission requests, which appear in the editor.
 - **Agents and models.** Agents (build, plan, ...) are modes. The model and
-  mode are config options the editor can switch.
+  mode are config options the editor can switch. A model with
+  [variants](configuration.md#provider-options-and-variants) also gets an
+  **Effort** option (`effort`, category `thought_level`) listing them plus
+  `default`, which drops the variant. A model can also be picked with its
+  variant, as `provider/model#variant` or `provider/model/variant`. Switching
+  to another model resets the effort to `default`; the same model keeps it.
+  A switch during a turn takes effect when the turn ends, and is saved with
+  the session (as `provider/model#variant`). Every switch is also announced
+  with a `config_option_update`. "Always" permission answers stay in force
+  for the session through these switches and through cancelled turns.
 - **Turn results.** Each turn ends with a stop reason (`end_turn`,
   `max_tokens`, `refusal`, `max_turn_requests`, `cancelled`) and token usage,
   followed by the context window use and cost when the model's limit and

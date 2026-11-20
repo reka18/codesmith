@@ -194,8 +194,10 @@ Model fields:
 | `modalities` | `{"input": [...], "output": [...]}`, as in OpenCode and models.dev. See [images and PDFs](tools.md#images-and-pdfs). |
 | `attachment` | OpenCode's older flag: `false` means text input only. |
 
-`codesmith debug model provider/model` shows what a model resolves to: the
-URL, protocol, limits and extra body. `codesmith models` lists providers and
+`codesmith debug model provider/model[#variant]` shows what a model resolves
+to: the URL, protocol, limits, extra body, the provider options sent with each
+request, the selected variant, and every variant the model has with its
+options. `codesmith models` lists providers and
 configured models, and `codesmith models <provider>` asks that provider's API
 which models it has.
 
@@ -211,7 +213,8 @@ knows and ignores the rest.
 Named `variants` bundle options under a name, picked with
 `provider/model#name` anywhere a model is chosen: config, `-m`, `/model` in
 the UI, or ACP model selection. `/variant` cycles through a model's variants
-in the UI. Common models also have built-in variants, such as
+in the UI, and editors over ACP show them as an Effort option (see
+[editors](editors-acp.md)). Common models also have built-in variants, such as
 `anthropic/claude-sonnet-4-5#high`, `openai/gpt-5#low` and
 `google/gemini-3-pro-preview#high`.
 

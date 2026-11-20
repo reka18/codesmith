@@ -521,9 +521,10 @@ enum Debug {
     Agents,
     /// List the plugins compiled into this binary and whether config enables them.
     Plugins,
-    /// Show what a model resolves to: provider, URL, limits, extra body.
+    /// Show what a model resolves to: provider, URL, limits, extra body,
+    /// provider options and variants.
     Model {
-        /// provider/model (default: the configured model).
+        /// provider/model or provider/model#variant (default: the configured model).
         spec: Option<String>,
     },
     /// Print the system prompt the build agent would get here.
@@ -1023,12 +1024,9 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 .or(loaded.config.model.clone())
                 .ok_or_else(|| anyhow!("no model given or configured"))?;
             let m = loaded.config.resolve_model(&spec)?;
-            println!(
-                "model:    {}/{} (sent as {})",
-                m.provider_id,
-                spec.split_once('/').map(|x| x.1).unwrap_or(""),
-                m.model_id
-            );
+            let base = config::split_variant(&spec).0;
+            let key = base.split_once('/').map(|x| x.1).unwrap_or("");
+            println!("model:    {base} (sent as {})", m.model_id);
             println!("protocol: {:?}", m.provider.protocol);
             println!("url:      {}", m.provider.base_url);
             println!(
@@ -1058,6 +1056,17 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                     .unwrap_or_else(|| "provider default".into())
             );
             println!("body:     {}", serde_json::Value::Object(m.body.clone()));
+            println!("options:  {}", serde_json::to_value(&m.options)?);
+            println!("variant:  {}", m.variant.as_deref().unwrap_or("default"));
+            let lines = variant_lines(&loaded.config, &m, key)?;
+            if lines.is_empty() {
+                println!("variants: none");
+            } else {
+                println!("variants: (select with {base}#name)");
+                for line in lines {
+                    println!("  {line}");
+                }
+            }
         }
         Debug::Plugins => {
             let loaded = config::load(&cwd)?;
@@ -1690,9 +1699,75 @@ async fn interrupt_signal() -> &'static str {
     }
 }
 
+/// `debug model`'s variant list: each variant with its options (body and
+/// header names too), the selected one starred. The variants are built as
+/// `resolve_model` builds them: the built-in reasoning ones, then the
+/// configured ones, which win.
+fn variant_lines(c: &config::Config, m: &config::ModelRef, key: &str) -> Result<Vec<String>> {
+    let configured = c
+        .provider(&m.provider_id)
+        .and_then(|p| p.models.get(key).cloned())
+        .unwrap_or_default();
+    let mut variants =
+        codesmith_ai::builtin_variants(m.provider.protocol, &m.model_id, m.max_output);
+    for (name, v) in configured.variants() {
+        match variants.iter_mut().find(|(n, _)| *n == name) {
+            Some(slot) => slot.1 = v,
+            None => variants.push((name, v)),
+        }
+    }
+    let width = variants.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let mut out = vec![];
+    for (name, v) in &variants {
+        let mark = if m.variant.as_deref() == Some(name.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        let mut line = format!(
+            "{mark} {name:width$}  {}",
+            serde_json::to_value(&v.options)?
+        );
+        if !v.body.is_empty() {
+            line.push_str(&format!(
+                " body {}",
+                serde_json::Value::Object(v.body.clone())
+            ));
+        }
+        if !v.headers.is_empty() {
+            let names: Vec<&str> = v.headers.iter().map(|h| h.0.as_str()).collect();
+            line.push_str(&format!(" headers {}", names.join(", ")));
+        }
+        out.push(line);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_model_lists_variants_with_their_options() {
+        let c: config::Config = serde_json::from_value(serde_json::json!({
+            "providers": {"f": {"protocol": "openai-chat", "settings": {"baseURL": "http://x/v1"},
+                "models": {"m": {"variants": {
+                    "high": {"reasoningEffort": "max"},
+                    "fast": {"options": {"reasoningEffort": "minimal"}, "headers": {"X-Key": "secret"}, "body": {"a": 1}},
+                }}}}}
+        }))
+        .unwrap();
+        let m = c.resolve_model("f/m#fast").unwrap();
+        assert_eq!(
+            variant_lines(&c, &m, "m").unwrap(),
+            [
+                r#"  low     {"reasoningEffort":"low"}"#,
+                r#"  medium  {"reasoningEffort":"medium"}"#,
+                r#"  high    {"reasoningEffort":"max"}"#,
+                r#"* fast    {"reasoningEffort":"minimal"} body {"a":1} headers X-Key"#,
+            ]
+        );
+    }
 
     fn req(title: &str) -> Request {
         Request {

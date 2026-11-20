@@ -199,5 +199,5 @@ an explicit `--token`. See [local server](local-server.md).
 | `debug config` | The merged config and the files it came from. |
 | `debug agents` | Every agent, its tools and its final permission rules. |
 | `debug plugins` | The plugins compiled into this binary, and whether config turns them off. |
-| `debug model [provider/model]` | What a model resolves to: provider, URL, protocol, limits, extra body. |
+| `debug model [provider/model[#variant]]` | What a model resolves to: provider, URL, protocol, limits, extra body, provider options (JSON), the selected variant, and every variant with its options. |
 | `debug prompt [-m MODEL] [--agent ID]` | The system prompt an agent would get here. |
