@@ -305,7 +305,7 @@ async fn a_finished_background_command_resumes_the_idle_ui() {
     // The turn is over (the idle prompt's title is back) before the
     // command finishes; the status line's count is checked by the view's
     // own tests, as only changed cells are redrawn here.
-    ui.wait_for("Tab agents").await;
+    ui.wait_for("tab agents").await;
     ui.wait_for("background command shell_1 finished").await;
     ui.wait_for("The build finished fine.").await;
     ui.quit().await;
@@ -356,7 +356,7 @@ async fn a_prompt_while_the_ui_waits_reports_the_command_once() {
         return;
     };
     // The turn is over once the idle prompt's title is back.
-    ui.wait_for("Tab agents").await;
+    ui.wait_for("tab agents").await;
     ui.send(b"check on it\r").await;
     ui.wait_for("It built after all.").await;
     // Nothing is resumed afterwards.
@@ -413,12 +413,12 @@ async fn background_commands_survive_an_interrupt_switches_and_undo() {
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
-    ui.wait_for("Tab agents").await;
+    ui.wait_for("tab agents").await;
     ui.send(b"wait a bit\r").await;
     ui.wait_for("sleep 30").await;
     // Interrupted once the idle prompt's title is back.
     ui.send(b"\x03").await;
-    ui.wait_for("Tab agents").await;
+    ui.wait_for("tab agents").await;
     ui.send(b"/agent plan\r/model fake/other\r/undo\r").await;
     ui.wait_for("the latest turn").await;
     ui.wait_for("The build finished fine.").await;
@@ -471,7 +471,7 @@ async fn an_interrupt_does_not_resume_for_commands_already_finished() {
     tokio::time::sleep(Duration::from_millis(2500)).await;
     ui.send(b"\x03").await;
     // Interrupted once the idle prompt's title is back.
-    ui.wait_for("Tab agents").await;
+    ui.wait_for("tab agents").await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(m.unmatched().is_empty(), "resumed: {:#?}", m.unmatched());
     ui.send(b"what happened\r").await;
@@ -513,7 +513,7 @@ async fn a_new_session_stops_the_old_ones_background_commands() {
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
-    ui.wait_for("Tab agents").await;
+    ui.wait_for("tab agents").await;
     ui.send(b"/new\r").await;
     ui.wait_for("new session").await;
     tokio::time::sleep(Duration::from_secs(3)).await;

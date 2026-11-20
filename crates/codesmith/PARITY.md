@@ -41,6 +41,12 @@ Where the tests live:
   triggers, pasted files and attachment labels (`tui/test/prompt*`,
   `dialog-select`, `app-lifecycle`, `mini/prompt.shared`,
   `mini/runtime.queue`).
+- `src/tui/theme/tests.rs`: themes, their V1 migration, mode selection and
+  the system theme (`tui/test/theme*`, `cli/tui/theme-mode`,
+  `context/theme`).
+- `src/tui/parity_keys.rs`: key bindings and the UI's settings
+  (`tui/test/config`, `config-v2`, `keymap`, `cli/tui/dialog-prompt`,
+  `cli/tui/reasoning-body`, `cli/test/config`).
 - `tests/e2e/oc_cli.rs`: tests that need the binary (`debug paths`, piped
   input, session export and import, `auth list` and `logout`, the session
   environment, XDG folders).
@@ -65,16 +71,16 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet |
 |---|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 37 | 6 | 63 | 163 | 0 |
+| cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 10 | 718 | 496 | 13 |
+| tui: main UI | 1250 | 13 | 98 | 610 | 516 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **198** | **1276** | **2162** | **259** |
+| **Total** | **4637** | **742** | **295** | **1157** | **2184** | **259** |
 
 ## Fixes made while porting
 
@@ -143,6 +149,30 @@ Where the tests live:
   ignored). One difference this adds: top-level `arguments` is the
   wrapper's empty arguments object where OpenCode throws a
   `ReferenceError`.
+- **Themes** (`tui/test/theme*`, `cli/tui/theme-mode`, `context/theme`):
+  the UI drew in fixed terminal colors. It now has OpenCode's themes: its
+  V2 documents (a `base` of semantic tokens over `light` and `dark` hue
+  scales, validated, mode-selected, state fallbacks expanded, references
+  resolved, dialog surfaces), its V1 format migrated as it loads, its 33
+  built-in themes (MIT, attributed), `themes/*.json` in the config folders,
+  and `system` from the terminal's palette; the mode follows the
+  terminal's background (OSC 11) unless pinned, a theme without the
+  requested mode shows its other one, and an invalid theme falls back to
+  `opencode`. `/themes` picks one. Every color the UI draws comes from it,
+  syntect's code highlighting included.
+- **Key bindings and TUI settings** (`tui/test/config`, `config-v2`,
+  `keymap`, `cli/tui/dialog-prompt`, `cli/tui/reasoning-body`,
+  `cli/test/config`): keys were fixed. They now go through OpenCode's
+  keymap: its command ids, descriptions and defaults, the leader key and
+  its timeout, sequences, `none`/`false`, binding objects, first-format
+  names (an id set directly wins), and `ctrl+z` taking undo where there is
+  no suspend; set in `tui.keybinds`, with `tui.leader`, `tui.cursor` and
+  `tui.session.thinking`/`markdown`, read in OpenCode's first `tui.json`
+  shape too. Following OpenCode's defaults, Home and End now scroll the
+  transcript, Ctrl+T cycles the model variant, Ctrl+U deletes to the line
+  start and Ctrl+Z suspends; CodeSmith keeps Tab and Shift+Tab for agents,
+  Ctrl+O, Ctrl+X h and b, Ctrl+End and Tab in pickers as its own defaults.
+  The help and every key hint show the bindings in effect.
 
 ## Differences found but not fixed
 
@@ -174,6 +204,101 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/mini/prompt.shared` | recognizes exit commands | after a fix | oc_exit_commands_ignore_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes the new-session command | after a fix | oc_the_new_session_command_ignores_case_and_space_but_not_arguments |
 | `tui/test/mini/prompt.shared` | recognizes only the compact command | after a fix | oc_only_the_compact_command_compacts |
+| `tui/test/theme/v2/resolve` | orders light hues dark-to-light and dark hues light-to-dark | after a fix | oc_orders_light_hues_dark_to_light_and_dark_hues_light_to_dark |
+| `tui/test/theme/v2/resolve` | resolves complete one-mode documents in the available mode | after a fix | oc_resolves_complete_one_mode_documents_in_the_available_mode |
+| `tui/test/theme/v2/resolve` | rejects theme documents without a mode | after a fix | oc_rejects_theme_documents_without_a_mode |
+| `tui/test/theme/v2/resolve` | validates and resolves categorical hues in configured order | after a fix | oc_validates_and_resolves_categorical_hues_in_configured_order |
+| `tui/test/theme/v2/resolve` | resolves arbitrary hue names across aliases, categorical colors, and token references | after a fix | oc_resolves_arbitrary_hue_names_across_aliases_categorical_colors_and_token_references |
+| `tui/test/theme/v2/resolve` | validates hue relationships in every provided mode while parsing | after a fix | oc_validates_hue_relationships_in_every_provided_mode_while_parsing |
+| `tui/test/theme/v2/resolve` | generates syntax with one categorical hue | after a fix | oc_generates_syntax_with_one_categorical_hue (adapted: a syntect theme) |
+| `tui/test/theme/v2/resolve` | rejects incomplete themes instead of merging defaults | after a fix | oc_rejects_incomplete_themes_instead_of_merging_defaults |
+| `tui/test/theme/v2/resolve` | resolves independent definitions and hue aliases | after a fix | oc_resolves_independent_definitions_and_hue_aliases |
+| `tui/test/theme/v2/resolve` | resolves base hue aliases and rejects circular hue aliases | after a fix | oc_resolves_base_hue_aliases_and_rejects_circular_hue_aliases |
+| `tui/test/theme/v2/resolve` | steps by hue source when adjacent colors have equal values | after a fix | oc_steps_by_hue_source_when_adjacent_colors_have_equal_values |
+| `tui/test/theme/v2/resolve` | resolves complete light and dark definitions independently | after a fix | oc_resolves_complete_light_and_dark_definitions_independently |
+| `tui/test/theme/v2/resolve` | expands structural state fallbacks within a complete theme | after a fix | oc_expands_structural_state_fallbacks_within_a_complete_theme |
+| `tui/test/theme/v2/resolve` | resolves matched action variants and states | after a fix | oc_resolves_matched_action_variants_and_states |
+| `tui/test/theme/v2/resolve` | defaults faint text to muted unless a theme sets it | after a fix | oc_defaults_faint_text_to_muted_unless_a_theme_sets_it |
+| `tui/test/theme/v2/resolve` | resolves dialog surfaces from direct colors | after a fix | oc_resolves_dialog_surfaces_from_direct_colors |
+| `tui/test/theme/v2/resolve` | resolves transparent colors | after a fix | oc_resolves_transparent_colors |
+| `tui/test/theme/v2/resolve` | reports theme decoding failures as native errors | after a fix | oc_reports_theme_decoding_failures_as_native_errors |
+| `tui/test/theme/v2/resolve` | surface overrides rewire references and reset action states from their base | after a fix | oc_surface_overrides_rewire_references_and_reset_action_states_from_their_base |
+| `tui/test/theme/v2/resolve` | dialog footer overrides layer on the dialog surface | after a fix | oc_dialog_footer_overrides_layer_on_the_dialog_surface |
+| `tui/test/theme/v2/resolve` | rejects missing and circular references | after a fix | oc_rejects_missing_and_circular_references |
+| `tui/test/theme/v2/resolve` | validates complete hues, resolved groups, and hue-only syntax | after a fix | oc_validates_complete_hues_resolved_groups_and_hue_only_syntax |
+| `tui/test/theme/v2/v1-migrate` | migrates resolved V1 modes into V2 tokens | after a fix | oc_migrates_resolved_v1_modes_into_v2_tokens |
+| `tui/test/theme/v2/v1-migrate` | references generated hues from matching token colors | after a fix | oc_references_generated_hues_from_matching_token_colors |
+| `tui/test/theme/v2/v1-migrate` | infers and emits only chromatic hues represented by V1 colors | after a fix | oc_infers_and_emits_only_chromatic_hues_represented_by_v1_colors |
+| `tui/test/theme/v2/v1-migrate` | orders categorical hues by V1 semantic color mapping | after a fix | oc_orders_categorical_hues_by_v1_semantic_color_mapping |
+| `tui/test/theme/v2/v1-migrate` | gives accent and primary ownership of their inferred hues | after a fix | oc_gives_accent_and_primary_ownership_of_their_inferred_hues |
+| `tui/test/theme/v2/v1-migrate` | uses the semantic neutral hue when V1 categorical colors are ambiguous | after a fix | oc_uses_the_semantic_neutral_hue_when_v1_categorical_colors_are_ambiguous |
+| `tui/test/theme/v2/v1-migrate` | builds and extrapolates gray from V1 surfaces and text without using menus or borders | after a fix | oc_builds_and_extrapolates_gray_from_v1_surfaces_and_text_without_using_menus_or_borders |
+| `tui/test/theme/v2/v1-migrate` | uses the base text reference for primary actions on transparent backgrounds | after a fix | oc_uses_the_base_text_reference_for_primary_actions_on_transparent_backgrounds |
+| `tui/test/theme/v2/v1-migrate` | retains V1 circular reference errors | after a fix | oc_retains_v1_circular_reference_errors |
+| `tui/test/theme/v2/v1-migrate` | migrates every built-in V1 theme in its supported modes | after a fix | oc_migrates_every_built_in_v1_theme_in_its_supported_modes |
+| `tui/test/theme/v2/v1-migrate` | collapses identical V1 backgrounds when both variants infer one mode | after a fix | oc_collapses_identical_v1_backgrounds_when_both_variants_infer_one_mode |
+| `tui/test/theme/v2/v1-migrate` | gives dialogs an opaque background when V1 panels are see-through | after a fix | oc_gives_dialogs_an_opaque_background_when_v1_panels_are_see_through |
+| `tui/test/theme/v2/v1-migrate` | keeps both modes when a shared background has different contrast | after a fix | oc_keeps_both_modes_when_a_shared_background_has_different_contrast |
+| `tui/test/theme` | rejects unrecognized theme structures | after a fix | oc_rejects_unrecognized_theme_structures |
+| `tui/test/theme` | registers opencode as a native V2 theme | after a fix | oc_registers_opencode_as_a_native_v2_theme |
+| `tui/test/theme` | keeps the experimental opencode2 theme out of the global theme list | after a fix | oc_keeps_the_experimental_opencode2_theme_out_of_the_global_theme_list |
+| `tui/test/theme` | detects V1 themes from their theme field and caches migrations | after a fix | oc_detects_v1_themes_from_their_theme_field_and_caches_migrations (adapted: no cache, parsing is pure) |
+| `tui/test/theme` | decodes native V2 themes lazily once | after a fix | oc_decodes_native_v2_themes_lazily_once (adapted: no cache) |
+| `tui/test/theme` | rejects invalid V2 themes when parsing | after a fix | oc_rejects_invalid_v2_themes_when_parsing |
+| `tui/test/theme` | rejects invalid V1 themes when parsing | after a fix | oc_rejects_invalid_v1_themes_when_parsing |
+| `tui/test/theme` | replacement sources receive independent parse caches | after a fix | oc_replacement_sources_receive_independent_parse_caches (adapted: no cache) |
+| `tui/test/theme` | hasTheme checks theme presence | after a fix | oc_has_theme_checks_theme_presence |
+| `tui/test/theme` | resolveTheme rejects circular color refs | after a fix | oc_resolve_theme_rejects_circular_color_refs |
+| `tui/test/theme` | resolveTheme preserves full theme numeric color and marker semantics | after a fix | oc_resolve_theme_preserves_full_theme_numeric_color_and_marker_semantics (adapted: no color intent) |
+| `tui/test/theme` | terminalMode derives mode from refreshed background | after a fix | oc_terminal_mode_derives_mode_from_refreshed_background |
+| `tui/test/theme` | terminalMode does not derive mode from ANSI slot zero | after a fix | oc_terminal_mode_does_not_derive_mode_from_ansi_slot_zero |
+| `tui/test/theme` | custom theme precedence follows directory order | after a fix | oc_custom_theme_precedence_follows_directory_order |
+| `tui/test/theme` | theme directories include global config before project directories | after a fix | oc_theme_directories_include_global_config_before_project_directories |
+| `tui/test/cli/tui/theme-mode` | uses an available mode while retaining the pinned preference | after a fix | oc_uses_an_available_mode_while_retaining_the_pinned_preference |
+| `tui/test/cli/tui/theme-mode` | falls back to OpenCode when configured V2 theme %s is invalid (3 cases) | after a fix | oc_falls_back_to_opencode_when_configured_v2_theme_*_is_invalid |
+| `tui/test/cli/tui/theme-mode` | dialog surfaces are absolute and can be inherited through the theme context | after a fix | oc_dialog_surfaces_are_absolute_and_can_be_inherited_through_the_theme_context |
+| `tui/test/context/theme` | the system theme follows a palette reply that arrives after the query | after a fix | oc_the_system_theme_follows_a_palette_reply_that_arrives_after_the_query (adapted) |
+| `tui/test/theme/v2/select` | selects complete light and dark themes independently | after a fix | oc_selects_complete_light_and_dark_themes_independently |
+| `tui/test/theme/v2/select` | selects the available mode when the requested mode is missing | after a fix | oc_selects_the_available_mode_when_the_requested_mode_is_missing |
+| `tui/test/theme/v2/component` | provides reactive properties, states, surfaces, and color operations | after a fix | oc_provides_reactive_properties_states_surfaces_and_color_operations (adapted: no signals) |
+| `tui/test/config-v2` | resolves nested config and keybind defaults | after a fix | oc_resolves_nested_config_and_keybind_defaults (adapted: the scroll, diffs, debug, tabs and session halves are dropped) |
+| `tui/test/config-v2` | uses command IDs as keybind keys | after a fix | oc_uses_command_ids_as_keybind_keys |
+| `tui/test/config-v2` | preserves current navigation defaults | after a fix | oc_preserves_current_navigation_defaults |
+| `tui/test/config-v2` | preserves migrated v1 keybind defaults | after a fix | oc_preserves_migrated_v1_keybind_defaults |
+| `tui/test/config-v2` | accepts every v2-only named command ID | after a fix | oc_accepts_every_v2_only_named_command_id |
+| `tui/test/config-v2` | centralizes named command defaults and resolves explicit none | after a fix | oc_centralizes_named_command_defaults_and_resolves_explicit_none |
+| `tui/test/config-v2` | retired diff tree keybinds remain accepted but have no default bindings | after a fix | oc_retired_diff_tree_keybinds_remain_accepted_but_have_no_default_bindings |
+| `tui/test/config-v2` | rejects orphaned keybind definitions | after a fix | oc_rejects_orphaned_keybind_definitions |
+| `tui/test/config-v2` | uses ctrl+z for input undo when terminal suspend is unavailable | after a fix | oc_uses_ctrl_z_for_input_undo_when_terminal_suspend_is_unavailable |
+| `tui/test/config` | validates config constraints | after a fix | oc_validates_config_constraints (adapted: the attention, prompt size, scroll and diff style halves are dropped) |
+| `tui/test/config` | resolves host-neutral defaults | after a fix | oc_resolves_host_neutral_defaults (adapted: the attention and mouse halves are dropped) |
+| `tui/test/config` | resolves overrides without mutating input | after a fix | oc_resolves_overrides_without_mutating_input (adapted: the attention and mouse halves are dropped) |
+| `tui/test/config` | resolves a session move keybind | after a fix | oc_resolves_a_session_move_keybind |
+| `tui/test/config` | resolves message navigation defaults | after a fix | oc_resolves_message_navigation_defaults (adapted: OpenCode's current table adds kphome) |
+| `tui/test/config` | reserves home and end for navigation | after a fix | oc_reserves_home_and_end_for_navigation |
+| `tui/test/config` | opens the subagent picker with down | after a fix | oc_opens_the_subagent_picker_with_down |
+| `tui/test/config` | navigates session tabs with option arrows | after a fix | oc_navigates_session_tabs_with_option_arrows |
+| `tui/test/config` | preserves pinned session bindings alongside tab bindings | after a fix | oc_preserves_pinned_session_bindings_alongside_tab_bindings |
+| `tui/test/config` | disables suspend and assigns ctrl+z to undo when unsupported | after a fix | oc_disables_suspend_and_assigns_ctrl_z_to_undo_when_unsupported |
+| `tui/test/config` | preserves an explicit undo binding when suspend is unsupported | after a fix | oc_preserves_an_explicit_undo_binding_when_suspend_is_unsupported |
+| `cli/test/config` | merges inline CLI config content over the global config | after a fix | oc_merges_inline_cli_config_content_over_the_global_config (adapted: tui in codesmith.json; the tabs, plugins and update halves are dropped) |
+| `cli/test/config` | migrates tui and kv config into cli.json | after a fix | oc_migrates_tui_and_kv_config_into_cli_json (adapted: no kv.json, no file written) |
+| `cli/test/config` | preserves legacy cursor settings | after a fix | oc_preserves_legacy_cursor_settings |
+| `cli/test/config` | migrates legacy keybind names in an existing cli.json | after a fix | oc_migrates_legacy_keybind_names_in_an_existing_cli_json (adapted: read without rewriting) |
+| `cli/test/config` | uses migrated keybinds when persistence fails | after a fix | oc_uses_migrated_keybinds_when_persistence_fails (adapted: never persisted) |
+| `cli/test/config` | preserves the effective value when migrating duplicate legacy keybinds | after a fix | oc_preserves_the_effective_value_when_migrating_duplicate_legacy_keybinds |
+| `cli/test/config` | migrates and updates the effective duplicate top-level keybinds | after a fix | oc_migrates_and_updates_the_effective_duplicate_top_level_keybinds (the update half is dropped) |
+| `cli/test/config` | updates effective duplicate canonical keybinds | after a fix | oc_updates_effective_duplicate_canonical_keybinds (the update half is dropped) |
+| `cli/test/config` | removes orphaned keybinds without deleting trailing comments | after a fix | oc_removes_orphaned_keybinds_without_deleting_trailing_comments |
+| `tui/test/keymap` | legacy page key aliases compile as page keys | after a fix | oc_legacy_page_key_aliases_compile_as_page_keys |
+| `tui/test/keymap` | formats navigation keys as arrows | after a fix | oc_formats_navigation_keys_as_arrows |
+| `tui/test/keymap` | returns every formatted command shortcut | after a fix | oc_returns_every_formatted_command_shortcut (adapted: a configured binding) |
+| `tui/test/cli/tui/dialog-prompt` | dialog prompt submit wins when return is also input newline | after a fix | oc_dialog_prompt_submit_wins_when_return_is_also_input_newline (adapted: the question dialog) |
+| `tui/test/cli/tui/dialog-prompt` | alt return inserts a newline with default keybinds | after a fix | oc_alt_return_inserts_a_newline_with_default_keybinds (adapted: the prompt) |
+| `tui/test/cli/tui/dialog-prompt` | dialog prompt submit can be rebound separately from input submit | after a fix | oc_dialog_prompt_submit_can_be_rebound_separately_from_input_submit (adapted: the question dialog) |
+| `tui/test/cli/tui/dialog-prompt` | dialog prompt submit can be disabled | after a fix | oc_dialog_prompt_submit_can_be_disabled (adapted: the question dialog) |
+| `tui/test/cli/tui/dialog-prompt` | dialog prompt renders block cursor and survives cursor hot reloads | after a fix | oc_dialog_prompt_renders_block_cursor_and_survives_cursor_hot_reloads (adapted: set at start; the hot-reload half is dropped) |
+| `tui/test/cli/tui/reasoning-body` | reasoning follows the markdown setting, also when it changes | after a fix | oc_reasoning_follows_the_markdown_setting_also_when_it_changes (adapted) |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -258,7 +383,7 @@ Missing features, largest first, with the OpenCode tests that would come
 with each (every test for groups up to 30 cases; by file, with examples,
 for larger ones).
 
-### tui: mini (inline scrollback) mode (417)
+### tui: mini (inline scrollback) mode (418)
 
 - `tui/test/mini/footer.view` (81): e.g. "mini pastes, previews, submits, and recalls an image ($"; "mini waits for image paste before submitting and drops a paste after editing the draft"
 - `tui/test/mini/stream-v2.transport` (70): e.g. "cancels the first local %s after attaching while busy"; "renders user content once (%s first)"
@@ -286,8 +411,9 @@ for larger ones).
 - `tui/test/mini/form.shared` (2): e.g. "builds every supported answer and preserves owner location"; "rejects invalid and deliberately unsupported shapes"
 - `tui/test/mini/prompt.shared` (2): e.g. "appends and shifts part ranges by the %s offset"
 - `tui/test/mini/stream` (2): e.g. "defaults status patches to running phase"; "delivers commits before ordered footer updates"
+- `tui/test/config-v2` (1): e.g. "validates mini replay and work spinner settings"
 
-### tui: diff viewer and review panel (163)
+### tui: diff viewer and review panel (164)
 
 - `tui/test/cli/tui/diff-viewer` (104): e.g. "closing the diff viewer returns to the route it opened from"; "standalone full-screen diff does not expose panel-only tog"
 - `tui/test/feature-plugins/diff-viewer-file-tree-utils` (16): e.g. "builds a nested tree with deduplicated directories and file indexes"; "sorts directories before files and alphabetically within each group"
@@ -296,8 +422,9 @@ for larger ones).
 - `tui/test/cli/tui/diff-viewer-image` (7): e.g. "recognizes only supported image file extensions"; "renders a real image at $width columns in $mode mode"
 - `tui/test/panel` (4): e.g. "presentation changes preserve the selected panel identity"; "narrow geometry overrides presentation without discarding the user's choice"
 - `tui/test/util/added-patch` (3): e.g. "splits a complete new-file patch into independently numbered chunks"; "retains a missing-final-newline marker only on the last chunk"
+- `tui/test/config-v2` (1): e.g. "validates the explicit diff source defaults"
 
-### tui: grouped transcript and verbosity levels (107)
+### tui: grouped transcript and verbosity levels (109)
 
 - `tui/test/cli/tui/session-rows` (22): e.g. "indexed tail footer calculations do not subscribe to an unrelated history prefix"; "filters OpenAI cache quantization from cache reuse drops"
 - `tui/test/session-history-interactions` (17): e.g. "pending history preserves the reader: $mode, $width col"
@@ -305,6 +432,7 @@ for larger ones).
 - `tui/test/cli/tui/session-verbosity` (16): e.g. "reasoning and exploration group at every level; other tools stand alone"; "medium and high add web tools to exploration and group instruction loads"
 - `tui/test/cli/tui/inline-tool-wrap-snapshot` (12): e.g. "falls back for unknown tool names"; "replaces pending copy when a tool fails before completion"
 - `tui/test/cli/tui/grouping-tree` (6): e.g. "groups adjacent entries by path and counts leaves, not wrappers"; "a direct child breaks a subgroup without ending the outer group"
+- `tui/test/config-v2` (2): e.g. "shows transcript verbosity in session settings"; "names tool grouping explicitly in settings"
 - `tui/test/cli/tui/group-view` (4): e.g. "retains nested expansion state and registers exact headers and parts"; "expanded instructions stay adjacent to their summary and each other"
 - `tui/test/session-activity-anchor` (4): e.g. "low activity details open below a summary that keeps it"; "a low activity summary that ends the transcript opens like v2 at the bottom"
 - `tui/test/session-group-navigation` (4): e.g. "restores exact part/group anchors at width %s with %s t"
@@ -313,36 +441,16 @@ for larger ones).
 - `tui/test/session-backfill-disclosure` (1): e.g. "clicking a backfilled thought group toggles it"
 - `tui/test/session-mount-budget` (1): e.g. "an expanded group spends the mounting budget that older rows used"
 
-### tui: session tabs (72)
+### tui: session tabs (75)
 
 - `tui/test/context/session-tabs-model` (34): e.g. "appends the branch to the project detail"; "labels tabs by ordinal"
 - `tui/test/context/session-tabs` (25): e.g. "loads persisted tab metadata concurrently on connect"; "loads VCS metadata for each persisted tab location"
 - `tui/test/component/session-tabs-mouse` (4): e.g. "releasing a transcript selection over tab controls does not activate them"; "middle-click closes a session tab without selecting it"
 - `tui/test/component/session-tabs-status` (4): e.g. "${orientation} tabs replace ordinals with status without moving titles and keep context me"; "vertical running tab pulse spans the full %i-column tab"
+- `tui/test/config-v2` (3): e.g. "validates the session tabs setting"; "resolves automatic tabs from the terminal environment"
 - `tui/test/app-lifecycle` (2): e.g. "vertical session tabs switch to horizontal below readable content width"; "narrow vertical session tabs collapse to a compact rail with the terminal"
 - `tui/test/feature-plugins/home-footer` (2): e.g. "keeps failure labels readable at the minimum supported width"; "adds secondary hints as space becomes available"
 - `tui/test/component/session-tabs-rail` (1): e.g. "compact rail renders and controls session tabs"
-
-### tui: themes (68)
-
-- `tui/test/theme/v2/resolve` (23): e.g. "orders light hues dark-to-light and dark hues light-to-dark"; "resolves complete one-mode documents in the available mode"
-- `tui/test/theme/v2/v1-migrate` (17): e.g. "migrates resolved V1 modes into V2 tokens"; "references generated hues from matching token colors"
-- `tui/test/theme` (15): e.g. "rejects unrecognized theme structures"; "registers opencode as a native V2 theme"
-- `tui/test/cli/tui/theme-mode` (5): e.g. "uses an available mode while retaining the pinned preference"; "falls back to OpenCode when configured V2 theme %s is inva"
-- `tui/test/component/terminal-pane-theme` (3): e.g. "builds the %s ANSI palette from semantic colors"; "falls back to accent when no hue is confidently blue or magenta"
-- `tui/test/context/theme` (2): e.g. "the system theme follows a palette reply that arrives after the query"; "offers opencode2 only while the new designs experiment is enabled"
-- `tui/test/theme/v2/select` (2): e.g. "selects complete light and dark themes independently"; "selects the available mode when the requested mode is missing"
-- `tui/test/theme/v2/component` (1): e.g. "provides reactive properties, states, surfaces, and color operations"
-
-### tui: configurable keybindings and TUI settings (62)
-
-- `tui/test/config-v2` (21): e.g. "validates the explicit diff source defaults"; "validates mini replay and work spinner settings"
-- `tui/test/config` (14): e.g. "defines attention sound names"; "validates config constraints"
-- `cli/test/config` (11): e.g. "generates reusable keybind schemas and preserves descriptions and numeric constraints"; "merges inline CLI config content over the global config"
-- `tui/test/keymap` (6): e.g. "legacy page key aliases compile as page keys"; "formats navigation keys as arrows"
-- `tui/test/cli/tui/dialog-prompt` (5): e.g. "dialog prompt submit wins when return is also input newline"; "alt return inserts a newline with default keybinds"
-- `tui/test/plugin-keymap` (4): e.g. "setup layers before and after await reach keyboard, palette, and slash across disable and "; "a component layer ends when its component unmounts while the plugin stays active"
-- `tui/test/cli/tui/reasoning-body` (1): e.g. "reasoning follows the markdown setting, also when it changes"
 
 ### cli: self-update (upgrade command, update checks) (43)
 
@@ -350,11 +458,12 @@ for larger ones).
 - `cli/src/services/updater` (12): e.g. "reads update policy from JSONC"; "maps the v1 update policy"
 - `cli/test/upgrade` (11): e.g. "is registered in root help and documents its options"; "detects the installation method and resolves the latest version"
 
-### tui: project, worktree and session browser (42)
+### tui: project, worktree and session browser (43)
 
 - `tui/test/cli/tui/dialog-open` (22): e.g. "selecting an unhydrated session preserves its location"; "finds and opens an exact child session ID outside the recent list"
 - `tui/test/cli/tui/prompt-move` (19): e.g. "passes the current project and uses server worktree defaul"; "uses Home's selected location instead of launch in $name"
 - `tui/test/cli/tui/dialog-session-list` (1): e.g. "scopes sessions to the active session location"
+- `tui/test/config-v2` (1): e.g. "shows the new session location default in settings"
 
 ### codemode: OpenAPI tools (39)
 
@@ -365,7 +474,7 @@ for larger ones).
 - `tui/test/cli/tui/form` (30): e.g. "restores the composer when terminal-form revalidation fails"; "restores the composer after a terminal ${status} reply"
 - `tui/test/util/form` (4): e.g. "initializes configured and custom defaults"; "validates every supported field constraint"
 
-### tui: mouse selection and copy (31)
+### tui: mouse selection and copy (32)
 
 - `tui/test/util/selection` (8): e.g. "copy writes selected text without clearing the highlight"; "copy-on-select ignores a later non-drag release"
 - `tui/test/util/selection-keys` (7): e.g. "terminal selections retain repeated copies until Escape or typing dismisses them"; "copy-on-select forwards Ctrl+C without recopying the selection"
@@ -374,6 +483,7 @@ for larger ones).
 - `tui/test/cli/tui/dialog-select` (2): e.g. "Escape clears text selection before invoking a custom back action"; "ctrl+c clears a dialog text selection before closing the dialog"
 - `tui/test/util/selection-copy-on-select` (2): e.g. "copy-on-select preserves multi-clicks at column $column"
 - `tui/test/ui/link` (1): e.g. "plain clicks on any row of a wrapped Markdown link resolve the full URL"
+- `tui/test/config-v2` (1): e.g. "validates terminal copy behavior"
 
 ### tui: shell mode (!) (21)
 
@@ -419,7 +529,7 @@ for larger ones).
 - `cli/test/acp/translate`: skips a running compaction on replay
 - `cli/test/acp/translate`: replays a compaction as a marker when the client lacks the capability
 
-### tui: notifications (toasts, sounds, completion notices) (18)
+### tui: notifications (toasts, sounds, completion notices) (19)
 
 - `tui/test/completion-notices`: shell completion notices do not navigate at width %s (2 cases)
 - `tui/test/completion-notices`: subagent completion notices navigate to the child session (2 cases)
@@ -435,6 +545,7 @@ for larger ones).
 - `tui/test/cli/tui/toast`: activation runs an action and keeps a queued toast paused
 - `tui/test/cli/tui/toast`: activation dismisses a toast without an action
 - `tui/test/cli/tui/toast`: toast hides only the terminal cursor it covers, until dismissed
+- `tui/test/config`: defines attention sound names
 
 ### tui: persistent prompt history and drafts (16)
 
@@ -506,7 +617,7 @@ for larger ones).
 - `tui/test/cli/tui/composer-keymap`: ctrl+c closes the active composer
 - `tui/test/cli/tui/composer-keymap`: shell output respects a configured binding with a focused textarea
 
-### tui: turn duration and throughput (9)
+### tui: turn duration and throughput (10)
 
 - `util/src/session-turn`: measures turn duration from the user prompt across assistant steps
 - `util/src/session-turn`: measures decode throughput from the first streamed token
@@ -516,6 +627,7 @@ for larger ones).
 - `util/src/session-turn`: measures historical footers without later inputs or inc (2 cases)
 - `util/src/session-turn`: preserves missing-anchor fallbacks without including the absent assistant's tokens
 - `util/src/session-turn`: measures a marker-era turn from its first prompt across steers
+- `tui/test/config-v2`: shows the TPS default in session settings
 
 ### tui: @session mentions (8)
 
@@ -643,7 +755,7 @@ for larger ones).
 | codemode: interpreter and host API | by design | 425 | 18 | OpenCode's own VM (bytecode, suspend/resume, snapshots) and Effect host API; CodeSmith runs Boa; assertions on OpenCode's scheduler traces and host gates |
 | session-ui: markdown | by design | 207 | 16 | the web renderer (streaming worker, caching, images); the TUI renders Markdown itself |
 | session-ui: review | by design | 144 | 13 | the web diff and review viewer |
-| plugins: JavaScript plugins | by design | 138 | 14 | plugins are native Rust, compiled in; server plugins |
+| plugins: JavaScript plugins | by design | 142 | 15 | plugins are native Rust, compiled in; server plugins; plugin key layers |
 | server: hosted features and internals | by design | 83 | 34 | experimental, hosted, PTY, VCS, workerd or Effect server internals |
 | codemode: Effect tools and host diagnostics | by design | 60 | 6 | Effect Schema signatures and decoding (CodeSmith's tools are JSON Schema), diagnostic kinds and suggestion fields, extension globals, `Date` keys in UTC; object fields list in name order (CodeSmith's JSON keeps keys sorted) |
 | server: managed service | by design | 55 | 6 | QR codes for pairing; no CORS configuration; browsers are refused; no background server service, pairing or remote access |
@@ -660,12 +772,15 @@ for larger ones).
 | server: session API | by design | 12 | 6 | CodeSmith's local API is smaller (sessions, turns, permissions, jobs, environment); this route or field is not part of it |
 | tui: attachments | by design | 7 | 1 | attachments are read on send by path; SVG is not media; no remote server |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |
+| tui: new designs experiment | by design | 6 | 3 | OpenCode's `opencode2` theme and its V1 migration exist only behind its `new-designs` experiment |
 | cli: stats | by design | 4 | 1 | statistics are computed locally (always with tool counts), no server request |
 | acp: separate server | by design | 4 | 3 | no separate server or plugin activation; no server defects to wrap; no shared event stream |
 | util: titles | by design | 4 | 1 | CodeSmith keeps untitled sessions untitled until a title is generated |
+| tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
 | server: API command | by design | 3 | 1 | no `api` command for a server |
 | tui: model notices | by design | 3 | 1 | model switch notices are worded differently |
 | codemode: limits | by design | 3 | 2 | 400 nested calls, 64 MiB buffers |
+| cli: TUI config writes | by design | 2 | 1 | no JSON schema is published, and the UI never writes its config: the theme picked in the UI is kept in a state file |
 | cli: debug config | by design | 2 | 1 | debug config prints a summary without secret values |
 | acp: auth | by design | 2 | 1 | provider 401/403 map to -32000; no auth-required server event |
 | tui: scrolling | by design | 2 | 1 | sending always follows the bottom; no setting |
@@ -678,8 +793,8 @@ for larger ones).
 | tui: permission dialog | by design | 1 | 1 | the dialog shows the request title itself |
 | tui: interrupt | by design | 1 | 1 | Esc interrupts at once; no armed state |
 | tui: slash commands | by design | 1 | 1 | commands complete only at the start of the prompt |
+| tui: OpenTUI internals | n/a | 272 | 41 | OpenTUI cell offsets; Solid config and keymap contexts, command object identity and keymap modes, developer tools; Solid batching and renderer internals; layout, virtualization, reactive data or event-stream internals; renderer lifecycle, caching and server sync; select widget layout and reconciliation; widgets, animation and layout helpers |
 | session-ui: web UI | n/a | 270 | 29 | web and desktop UI state machines |
-| tui: OpenTUI internals | n/a | 265 | 38 | OpenTUI cell offsets; Solid batching and renderer internals; layout, virtualization, reactive data or event-stream internals; renderer lifecycle, caching and server sync; select widget layout and reconciliation; widgets, animation and layout helpers |
 | util: helpers | n/a | 101 | 16 | TypeScript helpers with no CodeSmith counterpart (or covered by Rust std/crates) |
 | tui: prompt parts | n/a | 21 | 3 | OpenCode's prompt part model and media refs |
 | cli: runtime internals | n/a | 16 | 7 | Bun/Node runtime, bundling or web UI |

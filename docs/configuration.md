@@ -13,6 +13,7 @@ This page covers where config lives, how files combine, and every key.
 - [Compaction](#compaction)
 - [Tool output](#tool-output)
 - [Web search](#web-search)
+- [The terminal UI: `tui`](#the-terminal-ui-tui)
 - [Environment variables](#environment-variables)
 
 ## Files and precedence
@@ -95,6 +96,7 @@ is parsed:
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
+| `tui` | `{}` | The terminal UI: theme, key bindings, cursor and reasoning display. See [The terminal UI](#the-terminal-ui-tui). |
 
 Unknown keys are ignored, so a config written for a newer CodeSmith still
 loads.
@@ -621,6 +623,47 @@ set. Turn on SearXNG's JSON format in its `settings.yml`
 
 `results` (default 8) caps the results returned to the model, and `engines`
 (comma-separated) overrides the instance's default engines.
+
+## The terminal UI: `tui`
+
+The UI's own settings sit under `tui`, in the shape of OpenCode's TUI
+config, and merge across files like the rest (a project can set its own
+theme):
+
+```jsonc
+{
+  "tui": {
+    "theme": { "name": "tokyonight", "mode": "system" },
+    "keybinds": { "leader": "ctrl+o", "session.list": "ctrl+l", "help.show": "f1" },
+    "leader": { "timeout": 1500 },
+    "cursor": { "style": "line", "blinking": false },
+    "session": { "thinking": "show", "markdown": "rendered" }
+  }
+}
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `theme.name` | `opencode` | The theme. See [themes](interactive-ui.md#themes). |
+| `theme.mode` | `system` | `system` follows the terminal's background; `dark` or `light` pins one. |
+| `keybinds` | OpenCode's | Key bindings by command id. See [key bindings](interactive-ui.md#key-bindings). |
+| `leader.timeout` | `2000` | Milliseconds the leader key (and any key sequence) waits for its next key. |
+| `cursor.style` | `block` | `block`, `underline`, `line`, or `default` to keep the terminal's. |
+| `cursor.blinking` | `true` | Whether the cursor blinks. |
+| `session.thinking` | `hide` | `show` shows reasoning from the start (`/thinking` toggles it). |
+| `session.markdown` | `rendered` | Reasoning as rendered Markdown, or `source` for its highlighted Markdown text. |
+
+OpenCode's first TUI format (its `tui.json`) works here too and is read as
+the current one: `"theme": "name"`, `leader_timeout`, and keybind names
+like `session_list`. A name set both ways takes the command id's value.
+Settings OpenCode has for features CodeSmith lacks (`mouse`, `scroll`,
+`diffs`, `tabs`, `attention`, …) are ignored. A value that does not fit,
+an unknown command or key, and two configured bindings that clash are
+reported when the UI opens; the default is used instead.
+
+The theme picked with `/themes` is remembered (in
+`~/.local/share/codesmith/tui-state.json`) and wins over `theme.name`
+until `theme.name` itself changes.
 
 ## Environment variables
 

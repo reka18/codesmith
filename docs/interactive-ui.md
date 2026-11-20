@@ -26,7 +26,7 @@ See [CLI](cli.md#codesmith) for every flag.
   A `subagent` call's row follows its subagent, as OpenCode's does
   (`│ General Subagent — <description>`): while it runs, its latest three
   tool calls and a status line (`running · shell · 4 tool calls`); once it
-  ends, `✓` (or `✗`, `■` when interrupted) and how it ended. **Ctrl+O**
+  ends, `✓` (or `✗`, `■` when interrupted) and how it ended. **ctrl+o**
   shows its latest 20 calls and the text it wrote last. A permission prompt
   from a subagent says which one asks (`asked by the general subagent ·
   <description>`).
@@ -38,21 +38,26 @@ See [CLI](cli.md#codesmith) for every flag.
 
 ## Keys
 
+These are the defaults, which are OpenCode's (with a few kept from
+earlier CodeSmith, noted below); every one can be changed (see [key
+bindings](#key-bindings)), and `/help` lists the bindings in effect.
+
 ### Editing the prompt
 
 | Key | Action |
 |---|---|
-| **Enter** | Send. |
-| **Shift+Enter**, **Alt+Enter**, **Ctrl+J** | New line. |
-| **←/→**, **Ctrl+B/F** | Move by character. |
-| **Ctrl/Alt+←/→**, **Alt+B/F** | Move by word. |
-| **Home/End**, **Ctrl+A/E** | Start or end of the line. |
+| **enter** | Send. |
+| **shift+enter**, **ctrl+enter**, **alt+enter**, **ctrl+j** | New line. |
+| **←/→**, **ctrl+b/f** | Move by character. |
+| **alt+←/→**, **ctrl+←/→**, **alt+b/f** | Move by word. |
+| **ctrl+a/e**, **alt+a/e** | Start or end of the line. |
 | **↑/↓** | Move between lines; at the first or last line, step through earlier messages. |
-| **Backspace**, **Delete**, **Ctrl+D** | Delete a character. |
-| **Ctrl+W**, **Alt+Backspace**, **Ctrl+Backspace** | Delete the previous word. |
-| **Alt+D** | Delete the next word. |
-| **Ctrl+K** | Delete to the end of the line. |
-| **Ctrl+U** | Clear the prompt. |
+| **backspace**, **delete**, **ctrl+d** | Delete a character. |
+| **ctrl+w**, **alt+backspace**, **ctrl+backspace** | Delete the previous word. |
+| **alt+d**, **alt+delete**, **ctrl+delete** | Delete the next word. |
+| **ctrl+k** / **ctrl+u** | Delete to the end / the start of the line. |
+| **ctrl+shift+d** | Delete the line. |
+| **ctrl+c** | Clear the prompt. |
 
 Pastes go in at the cursor.
 
@@ -60,15 +65,112 @@ Pastes go in at the cursor.
 
 | Key | Action |
 |---|---|
-| **Tab** / **Shift+Tab** | Next or previous primary agent (`build`, `plan`, your own). |
-| **Esc** | Interrupt the running turn; when idle, clear the prompt. |
-| **Ctrl+C** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
-| **Ctrl+D** on an empty prompt | Quit. |
-| **Ctrl+O** | Expand or collapse all tool output and subagent activity. |
-| **Ctrl+T** | Show or hide the model's reasoning. |
-| **PgUp/PgDn** | Scroll the transcript. |
-| **Ctrl+End** | Follow the bottom again. |
-| **Ctrl+X**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session, **c** compact, **u** undo, **r** redo, **h** help, **b** move the running commands to the background. |
+| **tab** / **shift+tab** | Next or previous primary agent (`build`, `plan`, your own). CodeSmith's: OpenCode has shift+tab for the next one. |
+| **esc** | Interrupt the running turn; when idle, clear the prompt. |
+| **ctrl+c** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
+| **ctrl+d** on an empty prompt, **ctrl+x q** | Quit. |
+| **ctrl+o** | Expand or collapse all tool output and subagent activity (CodeSmith's). |
+| **ctrl+t** | Next model [variant](configuration.md#provider-options-and-variants) (as `/variant`). |
+| **pgup/pgdn**, **ctrl+alt+b/f** | Scroll the transcript a page. |
+| **ctrl+alt+u/d**, **ctrl+alt+y/e** | Scroll half a page, or a line. |
+| **home**, **ctrl+g** | Scroll to the top. |
+| **end**, **ctrl+end**, **ctrl+alt+g** | Follow the bottom again. |
+| **ctrl+b** while a command runs | Move the running commands to the background. |
+| **ctrl+z** | Suspend to the shell (Unix); `fg` returns. |
+| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help and **b** background. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
+
+Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
+`/thinking` shows or hides it.
+
+### Key bindings
+
+Bindings are set in [`tui.keybinds`](configuration.md#the-terminal-ui-tui)
+by OpenCode's command ids, so an OpenCode keymap carries over:
+
+```jsonc
+{
+  "tui": {
+    "keybinds": {
+      "leader": "ctrl+o",                  // the <leader> key
+      "session.list": "<leader>s,ctrl+l",  // alternatives, comma-separated
+      "session.toggle.thinking": "ctrl+r",
+      "agent.cycle.reverse": "none",       // or false: unbound
+      "prompt.paste": { "key": "ctrl+v" }  // a binding object
+    }
+  }
+}
+```
+
+A binding is `"none"` or `false`, a string of alternatives, a key object
+(`{"name": "x", "ctrl": true}`), a binding object (`{"key": "ctrl+x"}`) or a
+list of them. Keys are written `ctrl+`, `alt+` (or `meta+`), `shift+` and
+`super+` before a character or a name (`return`/`enter`, `escape`/`esc`,
+`tab`, `space`, `backspace`, `delete`, `up`, `pageup`/`pgup`, `home`, `f2`,
+…); `<leader>m` is the leader key then `m`, and `gg` or `ctrl+x ctrl+s` are
+sequences. OpenCode's first-format names (`session_list`,
+`messages_page_up`, …) are accepted too.
+
+The commands CodeSmith runs, by where they apply:
+
+- **Prompt:** `input.submit`, `input.newline`, `input.move.left/right/up/down`,
+  `input.word.forward/backward`, `input.line.home/end`,
+  `input.visual.line.home/end`, `input.buffer.home/end`, `input.backspace`,
+  `input.delete`, `input.delete.word.forward/backward`,
+  `input.delete.to.line.end/start`, `input.delete.line`,
+  `prompt.history.previous/next`, `prompt.clear`.
+- **Session:** `app.exit`, `session.interrupt`, `session.background`,
+  `agent.cycle`, `agent.cycle.reverse`, `agent.list`, `model.list`,
+  `variant.cycle`, `session.list`, `session.new`, `session.compact`,
+  `session.undo`, `session.redo`, `help.show`, `theme.switch`,
+  `theme.switch_mode`, `theme.mode.lock`, `session.toggle.thinking`,
+  `session.toggle.tool_output` (CodeSmith's), `session.page.up/down`,
+  `session.half.page.up/down`, `session.line.up/down`, `session.first`,
+  `session.last`, `terminal.suspend`.
+- **Autocomplete:** `prompt.autocomplete.prev/next/select/complete/hide`.
+- **Pickers:** `dialog.select.prev/next/page_up/page_down/home/end/submit`.
+- **Questions:** `dialog.prompt.submit`.
+- **Permission dialog:** `permission.allow.once` (**y**),
+  `permission.allow.always` (**a**), `permission.reject` (**n**), CodeSmith's.
+
+OpenCode's other commands (session tabs, the diff viewer, …) keep their ids
+and defaults, so a shared config loads, but do nothing here. When a key is
+bound to more than one command in the same place, a command whose binding
+you configured goes first, then the order above; two configured bindings
+that clash, or one that starts another (so the longer one never runs), are
+reported when the UI opens, as are unknown commands and keys.
+
+## Themes
+
+The UI draws in a theme: OpenCode's `opencode` theme by default, or one of
+its others (`tokyonight`, `catppuccin`, `gruvbox`, `nord`, `dracula`,
+`rosepine`, `github`, `solarized`, `one-dark`, `everforest`, …, all MIT,
+from OpenCode), or `system`, built from the terminal's own sixteen colors on
+the terminal's background. Every color follows it: the transcript,
+Markdown, code highlighting, diffs, the status line, the input box, popups
+and dialogs.
+
+`/themes` (or `/theme`) opens a picker that previews each theme as you move;
+**enter** keeps it, **esc** goes back. `/themes <name>` switches directly.
+The choice is remembered across runs; set a default in
+[`tui.theme`](configuration.md#the-terminal-ui-tui).
+
+Each theme has a light and/or a dark mode. The mode follows the terminal's
+background, which CodeSmith asks the terminal for as it starts (OSC 11, as
+OpenCode does); if the terminal does not answer, it is dark. `/themes
+dark` or `/themes light` pins a mode, `/themes system` follows the terminal
+again, and `tui.theme.mode` sets it in config. A theme with only one mode
+shows that one, and the pinned mode comes back with the next theme that
+has it.
+
+Your own themes go in `themes/<name>.json` in the global config folder
+(`~/.config/codesmith/themes/`) or a project's `.codesmith/themes/`;
+a project's override the global ones and the built-ins of the same name.
+Both of OpenCode's theme formats load: the current one (a `base` of
+semantic tokens, and `light`/`dark` modes with their hue scales, see
+OpenCode's `opencode.json`) and the first one (`defs` and a flat `theme`
+of named colors with `{"dark", "light"}` pairs), which is migrated as it
+loads, as OpenCode migrates it. A theme that does not load is reported
+and `opencode` is used.
 
 ## Slash commands
 
@@ -83,6 +185,7 @@ Pastes go in at the cursor.
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |
+| `/themes [name\|dark\|light\|system]` | Pick a [theme](#themes) (`/theme` too), or set its mode. |
 | `/help` | Keys and commands. |
 | `/exit` (`/quit`, `/q`) | Quit. |
 | `/init` | Write or improve `AGENTS.md` for the project. |
@@ -94,9 +197,10 @@ Press **Esc** first to interrupt it.
 
 ## Pickers
 
-`/model`, `/agent` and `/sessions` without arguments open a picker (and so do
-**Ctrl+X m**, **a** and **l**). Type to filter. **↑/↓** or **Ctrl+P/N** move,
-**PgUp/PgDn** jump, **Enter** chooses, and **Esc** closes. The model picker
+`/model`, `/agent`, `/sessions` and `/themes` without arguments open a
+picker (and so do **ctrl+x m**, **a** and **l**). Type to filter. **↑/↓**,
+**ctrl+p/n** or **tab** move, **pgup/pgdn** jump, **home/end** go to the
+ends, **enter** chooses, and **esc** closes. The model picker
 lists the models configured under `providers`, plus the current one. To use
 any other model, type `/model provider/model`.
 
