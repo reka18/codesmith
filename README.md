@@ -8,7 +8,9 @@ to match its features.
   keys and logs stay on your machine.
 - **Any model.** Use Anthropic, OpenAI, Gemini or another hosted provider,
   or a model on your own hardware through Ollama, LM Studio, llama.cpp,
-  vLLM, oMLX or any OpenAI-compatible server.
+  vLLM, oMLX or any OpenAI-compatible server. Reasoning effort, thinking
+  budgets and other provider options, with named variants
+  (`provider/model#high`); see [Configuration](docs/configuration.md#provider-options-and-variants).
 - **In the terminal, in your editor, or from scripts.** An interactive UI,
   `codesmith run` for one-shot use, ACP for editors such as Zed, and a local
   HTTP API.

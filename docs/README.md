@@ -16,7 +16,8 @@ New here? Start with [Getting started](getting-started.md).
 ## Configuring it
 
 - [Configuration](configuration.md): files and precedence, every key,
-  providers and models, instructions, environment variables.
+  providers and models (options and variants), instructions, environment
+  variables.
 - [Permissions](permissions.md): the rule model, shell checks, paths outside
   the project, defaults per agent, and why project config is trusted.
 - [Agents and subagents](agents-and-subagents.md): built-in agents, your own
