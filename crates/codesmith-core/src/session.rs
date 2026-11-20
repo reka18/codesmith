@@ -444,6 +444,10 @@ impl Session {
             self.last_prompt_tokens =
                 usage.input + usage.cache_read + usage.cache_write + usage.output;
             sink.step_end(&reason, &usage);
+            self.record(&Record::Step {
+                model: self.model_spec.clone(),
+                usage,
+            })?;
             let calls: Vec<(String, String, serde_json::Value)> = parts
                 .iter()
                 .filter_map(|p| match p {
@@ -473,6 +477,7 @@ impl Session {
             let mut results = Vec::new();
             for (id, name, input) in calls {
                 sink.tool_start(&id, &name, &input);
+                let started = std::time::Instant::now();
                 let verdict = repeats.check(&name, &input);
                 if verdict == Repeat::Abort {
                     return Err(anyhow!(
@@ -504,6 +509,11 @@ impl Session {
                         tool::execute(&ctx, &name, &input).await
                     }
                 };
+                self.record(&Record::Tool {
+                    name: name.clone(),
+                    ms: started.elapsed().as_millis() as u64,
+                    error: is_error,
+                })?;
                 sink.tool_end(&id, &name, &content, is_error);
                 results.push(Part::ToolResult {
                     id,

@@ -17,6 +17,7 @@ pub mod review;
 pub mod session;
 pub mod skill;
 pub mod snapshot;
+pub mod stats;
 pub mod store;
 pub mod title;
 pub mod tool;

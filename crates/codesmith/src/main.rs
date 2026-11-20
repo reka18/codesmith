@@ -71,6 +71,39 @@ enum Command {
         #[arg(short, long)]
         model: Option<String>,
     },
+    /// Usage statistics: activity, prompts, tokens, cost, models and tools.
+    Stats {
+        /// The last N days (0 or 1: today).
+        #[arg(long, conflicts_with_all = ["year", "all"])]
+        days: Option<u32>,
+        /// A calendar year (default: this year so far).
+        #[arg(long, conflicts_with = "all")]
+        year: Option<i32>,
+        /// All time.
+        #[arg(long)]
+        all: bool,
+        /// Only sessions in this project ("." for the current one) or folder.
+        #[arg(long)]
+        project: Option<String>,
+        /// Show the per-model table.
+        #[arg(long)]
+        models: bool,
+        /// Show the tool reliability table.
+        #[arg(long)]
+        tools: bool,
+        /// Show cost and token details.
+        #[arg(long)]
+        cost: bool,
+        /// Show every table.
+        #[arg(long)]
+        full: bool,
+        /// Rows per table.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Print the numbers as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List, create or remove git worktrees for isolated sessions.
     Worktree {
         #[command(subcommand)]
@@ -543,6 +576,71 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Auth { what }) => auth_cmd(&cwd, what),
+        Some(Command::Stats {
+            days,
+            year,
+            all,
+            project,
+            models,
+            tools,
+            cost,
+            full,
+            limit,
+            json,
+        }) => {
+            use codesmith_core::stats;
+            let loaded = config::load(&cwd)?;
+            let (from, to, label) = stats::range(days, year, all);
+            let (directory, scope) = match project.as_deref() {
+                None => (None, "all projects".to_string()),
+                Some(".") => (
+                    Some(loaded.root.display().to_string()),
+                    "current project".to_string(),
+                ),
+                Some(p) => {
+                    let d = std::path::Path::new(p)
+                        .canonicalize()
+                        .with_context(|| format!("no folder {p}"))?;
+                    (Some(d.display().to_string()), d.display().to_string())
+                }
+            };
+            let s = stats::compute(
+                &open_store()?,
+                &stats::Query {
+                    from,
+                    to,
+                    directory,
+                },
+                &|m| loaded.config.cost(m),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else {
+                let width = std::env::var("COLUMNS")
+                    .ok()
+                    .and_then(|c| c.parse().ok())
+                    .unwrap_or(80);
+                let color =
+                    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+                println!(
+                    "{}",
+                    stats::render(
+                        &s,
+                        &stats::Render {
+                            label,
+                            scope,
+                            models: models || full,
+                            tools: tools || full,
+                            cost: cost || full,
+                            limit,
+                            color,
+                            width
+                        }
+                    )
+                );
+            }
+            Ok(())
+        }
         Some(Command::Worktree { what }) => {
             use codesmith_core::worktree;
             let loaded = config::load(&cwd)?;

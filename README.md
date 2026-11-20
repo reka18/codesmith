@@ -177,6 +177,22 @@ reading `.env` files, which asks.
 directory (with `CLAUDE.md` as a fallback), plus
 `~/.config/codesmith/AGENTS.md` and anything listed under `instructions`.
 
+## Stats
+
+`codesmith stats` summarizes your usage from the local session store: an
+activity calendar, sessions, prompts, steps, tokens, tool success, active days
+and your best streak. `--days N`, `--year Y` or `--all` pick the range (this
+year by default), `--project .` limits it to the current project, and
+`--models`, `--tools`, `--cost` or `--full` add per-model, tool reliability
+(error rate, median duration) and cost tables. `--json` prints the numbers.
+
+Cost needs prices, since nothing is fetched from a catalog: give a model a
+`"cost"` in dollars per million tokens.
+
+```jsonc
+"models": { "claude-x": { "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 } } }
+```
+
 ## Worktrees
 
 `codesmith -w` (or `codesmith run -w "..."`) starts the session in a new git
@@ -327,7 +343,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    webfetch, undo/redo snapshots, skills, commands, background shell commands, the question tool, web search (self-hosted
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
-4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees~~, stats
+4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees, stats~~
 5. Native Rust plugins, code mode, ACP, automations
 
 ## License

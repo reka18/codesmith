@@ -49,6 +49,20 @@ pub enum Record {
     Redo {
         revert_seq: i64,
     },
+    /// Token usage of one model step (for `codesmith stats`).
+    Step {
+        model: String,
+        usage: Usage,
+    },
+    /// One tool call: how long it took and whether it failed.
+    Tool {
+        name: String,
+        ms: u64,
+        error: bool,
+    },
+    /// A record kind from a newer CodeSmith; ignored.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -224,8 +238,12 @@ impl Store {
     }
 
     pub fn append(&self, id: &str, record: &Record) -> Result<i64> {
+        self.append_at(id, record, now())
+    }
+
+    /// Append with an explicit time (milliseconds), e.g. when importing.
+    pub fn append_at(&self, id: &str, record: &Record, t: i64) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let t = now();
         let seq: i64 = conn.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM record WHERE session_id = ?1",
             [id],

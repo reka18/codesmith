@@ -87,6 +87,25 @@ pub struct ModelConfig {
     pub limit: ModelLimit,
     pub body: Map<String, Value>,
     pub temperature: Option<f32>,
+    /// Price in dollars per million tokens, for `codesmith stats`.
+    pub cost: Option<Cost>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Cost {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl Config {
+    /// The configured price of `provider/model`, if any.
+    pub fn cost(&self, spec: &str) -> Option<Cost> {
+        let (p, m) = spec.split_once('/')?;
+        self.provider(p)?.models.get(m)?.cost
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
