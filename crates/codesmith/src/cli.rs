@@ -1030,14 +1030,33 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             println!("model:    {base} (sent as {})", m.model_id);
             println!("protocol: {:?}", m.provider.protocol);
             println!("url:      {}", m.provider.base_url);
+            if !m.provider.query.is_empty() {
+                let q: Vec<String> = m
+                    .provider
+                    .query
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                println!("query:    {}", q.join("&"));
+            }
             println!(
-                "api key:  {}",
+                "api key:  {}{}",
                 if m.provider.api_key.is_some() {
                     "set"
                 } else {
                     "none"
+                },
+                match &m.provider.auth {
+                    codesmith_ai::Auth::Header(h) => format!(" (sent in {h})"),
+                    codesmith_ai::Auth::Default => String::new(),
                 }
             );
+            if m.provider.encoding != codesmith_ai::Encoding::None {
+                println!("encoding: {:?}", m.provider.encoding);
+            }
+            if m.provider.compat != codesmith_ai::Compatibility::default() {
+                println!("compat:   {:?}", m.provider.compat);
+            }
             println!(
                 "context:  {}",
                 m.context

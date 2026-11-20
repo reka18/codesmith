@@ -121,6 +121,9 @@ pub struct ProviderConfig {
     /// Prompt caching for every model of this provider (see
     /// [`ModelConfig::cache`]).
     pub cache: Option<Value>,
+    /// Overrides of detected OpenAI Chat behaviour for every model of this
+    /// provider (see [`ModelConfig::compatibility`]).
+    pub compatibility: Map<String, Value>,
     pub models: BTreeMap<String, ModelConfig>,
 }
 
@@ -133,6 +136,28 @@ pub struct ProviderSettings {
     pub api_key: Option<String>,
     /// OpenCode's spelling of the provider's `cache`.
     pub cache: Option<Value>,
+    /// Query parameters added to every request URL.
+    #[serde(alias = "queryParams")]
+    pub query_params: BTreeMap<String, String>,
+    /// The header that carries the key, sent as-is instead of the
+    /// protocol's own (`Authorization: Bearer`, `x-api-key`,
+    /// `x-goog-api-key`); a configured `Authorization` header is then not
+    /// sent. Azure's default is `api-key`.
+    #[serde(alias = "apiKeyHeader")]
+    pub api_key_header: Option<String>,
+    /// Request body compression: `gzip`, `zstd` or `none` (OpenCode's
+    /// `encoding`).
+    pub encoding: Option<String>,
+    /// Azure: the resource name, which gives the base URL when `baseURL` is
+    /// not set.
+    #[serde(alias = "resourceName")]
+    pub resource_name: Option<String>,
+    /// Azure: the `api-version` query parameter (default `v1`).
+    #[serde(alias = "apiVersion")]
+    pub api_version: Option<String>,
+    /// Azure: `<base>/deployments/<model>` URLs instead of the v1 API.
+    #[serde(alias = "useDeploymentBasedUrls")]
+    pub use_deployment_based_urls: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -168,6 +193,11 @@ pub struct ModelConfig {
     /// `messages` choose breakpoints exactly. Also read from `options`
     /// (`settings`), OpenCode's place for it. Variants cannot change it.
     pub cache: Option<Value>,
+    /// Overrides of what OpenAI Chat detects from the endpoint and model id
+    /// (OpenCode's `compatibility`): `maxTokensField`, `streamUsage`,
+    /// `requireReasoning`, `requireAssistantAfterTool`. Merged over the
+    /// provider's.
+    pub compatibility: Map<String, Value>,
 }
 
 impl ModelConfig {
@@ -595,6 +625,13 @@ pub const BUILTIN: &[(&str, &str, Protocol, &str, &[&str])] = &[
         ],
     ),
     (
+        "azure",
+        "Azure OpenAI",
+        Protocol::OpenaiResponses,
+        "",
+        &["AZURE_OPENAI_API_KEY"],
+    ),
+    (
         "openrouter",
         "OpenRouter",
         Protocol::OpenaiChat,
@@ -680,7 +717,7 @@ fn builtin(id: &str) -> Option<ProviderConfig> {
         protocol: Some(*protocol),
         env: env.iter().map(|s| s.to_string()).collect(),
         settings: ProviderSettings {
-            base_url: Some(url.to_string()),
+            base_url: Some(url.to_string()).filter(|u| !u.is_empty()),
             ..Default::default()
         },
         ..Default::default()
@@ -701,12 +738,13 @@ impl Config {
                 settings: ProviderSettings {
                     base_url: c.settings.base_url.or(b.settings.base_url),
                     api_key: c.settings.api_key.or(b.settings.api_key),
-                    cache: c.settings.cache,
+                    ..c.settings
                 },
                 headers: c.headers,
                 body: c.body,
                 options: c.options,
                 cache: c.cache,
+                compatibility: c.compatibility,
                 models: c.models,
             }),
         }
@@ -724,12 +762,27 @@ impl Config {
             anyhow!("unknown provider {pid:?}; add it under \"providers\" in codesmith.json")
         })?;
         let protocol = p.protocol.unwrap_or(Protocol::OpenaiChat);
+        let azure = pid == "azure";
         let base_url = p
             .settings
             .base_url
             .clone()
             .filter(|u| !u.is_empty())
-            .ok_or_else(|| anyhow!("provider {pid:?} has no settings.baseURL"))?;
+            .or_else(|| {
+                let r = p
+                    .settings
+                    .resource_name
+                    .as_deref()
+                    .filter(|r| !r.is_empty());
+                r.filter(|_| azure)
+                    .map(|r| codesmith_ai::azure_resource_url(r, protocol))
+            })
+            .ok_or_else(|| match azure {
+                true => {
+                    anyhow!("provider \"azure\" needs settings.resourceName or settings.baseURL")
+                }
+                false => anyhow!("provider {pid:?} has no settings.baseURL"),
+            })?;
         let api_key = p
             .settings
             .api_key
@@ -743,6 +796,35 @@ impl Config {
             .or_else(|| crate::auth::key(pid));
         let m = p.models.get(mid).cloned().unwrap_or_default();
         let model_id = m.id.clone().unwrap_or_else(|| mid.to_string());
+        let query: Vec<(String, String)> = p.settings.query_params.clone().into_iter().collect();
+        let (base_url, query) = match (azure, protocol) {
+            // Claude on Foundry: Messages with the resource key as `x-api-key`.
+            (true, Protocol::AnthropicMessages) | (false, _) => (base_url, query),
+            (true, _) => codesmith_ai::azure_endpoint(
+                &base_url,
+                &model_id,
+                p.settings.api_version.as_deref(),
+                &query,
+                p.settings.use_deployment_based_urls,
+            ),
+        };
+        let auth = match p.settings.api_key_header.clone().filter(|h| !h.is_empty()) {
+            Some(h) => codesmith_ai::Auth::Header(h),
+            None if azure && protocol != Protocol::AnthropicMessages => {
+                codesmith_ai::Auth::Header("api-key".into())
+            }
+            None => codesmith_ai::Auth::Default,
+        };
+        let encoding = match p.settings.encoding.as_deref() {
+            None => codesmith_ai::Encoding::None,
+            Some(e) => codesmith_ai::Encoding::parse(e).ok_or_else(|| {
+                anyhow!("provider {pid:?} has an invalid encoding {e:?}; use gzip, zstd or none")
+            })?,
+        };
+        let mut compat = p.compatibility.clone();
+        compat.extend(m.compatibility.clone());
+        let compat: codesmith_ai::Compatibility = serde_json::from_value(Value::Object(compat))
+            .map_err(|e| anyhow!("model {base:?} has an invalid compatibility setting: {e}"))?;
         let input = m.input().or_else(|| known_input(&model_id));
         let mut body = p.body.clone();
         body.extend(m.body.clone());
@@ -793,7 +875,10 @@ impl Config {
                 base_url,
                 api_key,
                 headers,
-                ..Default::default()
+                query,
+                auth,
+                encoding,
+                compat,
             },
             body,
             options,
@@ -1097,6 +1182,130 @@ mod tests {
             c.resolve_model("p/m").unwrap().provider.api_key.as_deref(),
             Some("kb")
         );
+    }
+
+    /// The HTTP request a resolved model sends.
+    fn prepared(c: &Config, spec: &str) -> reqwest::Request {
+        let m = c.resolve_model(spec).unwrap();
+        let req = codesmith_ai::Request {
+            model: m.model_id.clone(),
+            messages: vec![codesmith_ai::Message::user("Say hello.")],
+            ..Default::default()
+        };
+        m.provider.prepare(&reqwest::Client::new(), &req).unwrap()
+    }
+
+    // Ported from OpenCode's `provider/openai-responses.test.ts` (MIT).
+    #[test]
+    fn openai_responses_loads_openai_default_auth_from_effect_config() {
+        // Adapted: a test variable stands in for OPENAI_API_KEY.
+        std::env::set_var("CODESMITH_TEST_OPENAI_KEY", "env-key");
+        let c: Config = serde_json::from_value(json!({"providers": {"openai": {
+            "settings": {"baseURL": "https://api.openai.test/v1/"},
+            "env": ["CODESMITH_TEST_OPENAI_KEY"]
+        }}}))
+        .unwrap();
+        let r = prepared(&c, "openai/gpt-4.1-mini");
+        assert_eq!(r.url().as_str(), "https://api.openai.test/v1/responses");
+        assert_eq!(r.headers()["authorization"], "Bearer env-key");
+    }
+
+    #[test]
+    fn openai_responses_lets_explicit_auth_override_openai_default_api_key_auth() {
+        std::env::set_var("CODESMITH_TEST_OPENAI_KEY_2", "env-key");
+        let c: Config = serde_json::from_value(json!({"providers": {"openai": {
+            "settings": {"baseURL": "https://api.openai.test/v1/", "apiKey": "oauth-token"},
+            "env": ["CODESMITH_TEST_OPENAI_KEY_2"]
+        }}}))
+        .unwrap();
+        let r = prepared(&c, "openai/gpt-4.1-mini");
+        assert_eq!(r.headers()["authorization"], "Bearer oauth-token");
+    }
+
+    #[test]
+    fn azure_provider() {
+        let c: Config = serde_json::from_value(json!({"providers": {"azure": {
+            "settings": {"resourceName": "opencode-test", "apiKey": "azure-key"},
+            "headers": {"authorization": "Bearer stale"},
+            "models": {"chat": {"id": "gpt-4o-mini"}}
+        }}}))
+        .unwrap();
+        let r = prepared(&c, "azure/gpt-4.1-mini");
+        assert_eq!(
+            r.url().as_str(),
+            "https://opencode-test.openai.azure.com/openai/v1/responses?api-version=v1"
+        );
+        assert_eq!(r.headers()["api-key"], "azure-key");
+        assert!(r.headers().get("authorization").is_none());
+        // Deployment URLs, an api version, extra query parameters.
+        let c: Config = serde_json::from_value(json!({"providers": {"azure": {
+            "protocol": "openai-chat",
+            "settings": {"baseURL": "https://r.openai.azure.com/openai/", "apiKey": "k",
+                "apiVersion": "2025-04-01-preview", "useDeploymentBasedUrls": true,
+                "queryParams": {"x": "1"}}
+        }}}))
+        .unwrap();
+        assert_eq!(
+            prepared(&c, "azure/dep").url().as_str(),
+            "https://r.openai.azure.com/openai/deployments/dep/chat/completions?api-version=2025-04-01-preview&x=1"
+        );
+        // Claude on Foundry: the services host and `x-api-key`.
+        let c: Config = serde_json::from_value(json!({"providers": {"azure": {
+            "protocol": "anthropic-messages",
+            "settings": {"resourceName": "r", "apiKey": "k"}
+        }}}))
+        .unwrap();
+        let r = prepared(&c, "azure/claude-sonnet-4-5");
+        assert_eq!(
+            r.url().as_str(),
+            "https://r.services.ai.azure.com/anthropic/v1/messages"
+        );
+        assert_eq!(r.headers()["x-api-key"], "k");
+        let c: Config = serde_json::from_value(json!({})).unwrap();
+        assert!(c
+            .resolve_model("azure/gpt-5")
+            .unwrap_err()
+            .to_string()
+            .contains("resourceName"));
+    }
+
+    #[test]
+    fn endpoint_settings_and_compatibility() {
+        let c: Config = serde_json::from_value(json!({"providers": {"p": {
+            "settings": {"baseURL": "http://x/v1", "apiKey": "k",
+                "queryParams": {"api-version": "2026-01-01"}, "apiKeyHeader": "x-key",
+                "encoding": "gzip"},
+            "compatibility": {"streamUsage": false, "maxTokensField": "max_tokens"},
+            "models": {"m": {"compatibility": {"maxTokensField": "max_completion_tokens"}}}
+        }}}))
+        .unwrap();
+        let m = c.resolve_model("p/m").unwrap();
+        assert_eq!(
+            m.provider.query,
+            [("api-version".to_string(), "2026-01-01".to_string())]
+        );
+        assert_eq!(m.provider.auth, codesmith_ai::Auth::Header("x-key".into()));
+        assert_eq!(m.provider.encoding, codesmith_ai::Encoding::Gzip);
+        assert_eq!(m.provider.compat.stream_usage, Some(false));
+        assert_eq!(
+            m.provider.compat.max_tokens_field.as_deref(),
+            Some("max_completion_tokens")
+        );
+        let r = prepared(&c, "p/m");
+        assert_eq!(
+            r.url().as_str(),
+            "http://x/v1/chat/completions?api-version=2026-01-01"
+        );
+        assert_eq!(r.headers()["x-key"], "k");
+        assert_eq!(r.headers()["content-encoding"], "gzip");
+        let bad: Config = serde_json::from_value(json!({"providers": {"p": {
+            "settings": {"baseURL": "http://x", "encoding": "brotli"}}}}))
+        .unwrap();
+        assert!(bad.resolve_model("p/m").is_err());
+        let bad: Config = serde_json::from_value(json!({"providers": {"p": {
+            "settings": {"baseURL": "http://x"}, "compatibility": {"streamUsage": "no"}}}}))
+        .unwrap();
+        assert!(bad.resolve_model("p/m").is_err());
     }
 
     // --- Ported from OpenCode's config tests (`oc_config_*`). ---
