@@ -446,7 +446,7 @@ async fn stop_reasons_for_turns_cut_short() {
     assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
     let users: Vec<String> = model::messages(&m.by("fine")[0])
         .iter()
-        .filter(|m| m["role"] == "user")
+        .filter(|m| m["role"] == "user" && !model::is_date(m))
         .map(model::content)
         .filter(|t| !codesmith::core::runner::is_engine_message(t))
         .collect();

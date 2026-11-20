@@ -159,7 +159,8 @@ pub async fn serve(respond: impl Fn(&Seen) -> Reply + Send + Sync + 'static) -> 
 pub fn loaded(dir: &std::path::Path, base: &str, extra: Value) -> Loaded {
     let mut v = json!({
         "model": "fake/m", "snapshots": false,
-        "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
+        // A hosted provider, as in OpenCode, though it listens on loopback.
+        "providers": {"fake": {"protocol": "openai-chat", "local": false, "settings": {"baseURL": base, "apiKey": "x"}}},
     });
     for (k, val) in extra.as_object().unwrap() {
         v[k] = val.clone();

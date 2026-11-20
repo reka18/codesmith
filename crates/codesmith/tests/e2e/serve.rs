@@ -482,6 +482,7 @@ async fn aborting_a_streaming_turn_keeps_the_session_usable() {
     let roles: Vec<(String, String)> = crate::model::messages(after)
         .iter()
         .skip(1)
+        .filter(|m| !crate::model::is_date(m))
         .map(|m| {
             (
                 m["role"].as_str().unwrap().to_string(),

@@ -2,9 +2,10 @@
 //! the session title never competes with the turn, is capped and asks for
 //! no thinking; `small_model` and the title switches choose how titles are
 //! made. A background compaction summary runs only while the session is
-//! idle, and is stopped when a turn starts. And the request prefix (system prompt, tools, everything before
-//! the first user message) stays byte-identical across steps, turns and
-//! sessions of one project, so the server's prefix cache keeps it.
+//! idle, and is stopped when a turn starts. And the request prefix (system
+//! prompt, tools, everything before the first user message) stays
+//! byte-identical across steps, turns, sessions of one project and days,
+//! so the server's prefix cache keeps it: the date comes after it.
 
 mod support;
 
@@ -557,6 +558,12 @@ async fn the_prefix_is_byte_stable_across_steps_turns_and_sessions() {
         }});
     }
     let mut h = H::with(extra, None).await;
+    // The day the sessions are told, changed below.
+    let day = Arc::new(Mutex::new("Thu Nov 19 2026".to_string()));
+    let today = |day: &Arc<Mutex<String>>| {
+        let day = day.clone();
+        move || day.lock().unwrap().clone()
+    };
     let root = h.root();
     std::fs::write(root.join("AGENTS.md"), "Run the tests before committing.").unwrap();
     std::fs::create_dir_all(root.join(".codesmith/skills/deploy")).unwrap();
@@ -566,18 +573,23 @@ async fn the_prefix_is_byte_stable_across_steps_turns_and_sessions() {
     )
     .unwrap();
     h.renew();
+    h.s.set_today(today(&day));
     // Two steps (a tool call, then an answer), then a second turn.
     h.prompt("call read {\"filePath\": \"AGENTS.md\"}").await;
     h.prompt("thanks").await;
+    // Past midnight, a third turn in the same session.
+    *day.lock().unwrap() = "Fri Nov 20 2026".into();
+    h.prompt("one more").await;
     let first_session = h.requests();
-    assert_eq!(first_session.len(), 3);
-    // A new session in the same project, with its MCP servers started
-    // afresh as a new process would.
+    assert_eq!(first_session.len(), 4);
+    // A new session in the same project the next day, with its MCP servers
+    // started afresh as a new process would.
     if h.mcp.is_some() {
         let mcp = codesmith_core::mcp::Mcp::connect(&h.loaded.config.mcp, &h.loaded.root).await;
         h.mcp = Some(mcp);
     }
     h.renew();
+    h.s.set_today(today(&day));
     h.prompt("hello again").await;
     let all = h.requests();
     let second = all.last().unwrap();
@@ -613,8 +625,54 @@ async fn the_prefix_is_byte_stable_across_steps_turns_and_sessions() {
             "request {i}: the messages before the first user message changed"
         );
     }
-    // Within a session, each request extends the one before.
-    let msgs = |b: &Value| serde_json::to_string(&b["messages"].as_array().unwrap()[..2]).unwrap();
-    assert_eq!(msgs(&first_session[0]), msgs(&first_session[1]));
-    assert_eq!(msgs(&first_session[1]), msgs(&first_session[2]));
+    // The date is not in that prefix: it comes first after it, as a system
+    // update, so the prefix is the same from one day to the next.
+    assert!(!system.contains("Today's date"), "{system}");
+    let date = |b: &Value| b["messages"][1]["content"].as_str().unwrap().to_string();
+    assert_eq!(
+        date(&first_session[0]),
+        "<system-update>\nToday's date: Thu Nov 19 2026\n</system-update>"
+    );
+    assert_eq!(
+        date(second),
+        "<system-update>\nToday's date: Fri Nov 20 2026\n</system-update>"
+    );
+    // Within a session, each request extends the one before, the day
+    // change included: the new date is an update after the history.
+    let msgs = |b: &Value| serde_json::to_string(&b["messages"].as_array().unwrap()[..3]).unwrap();
+    for pair in first_session.windows(2) {
+        assert_eq!(msgs(&pair[0]), msgs(&pair[1]));
+    }
+    let late = serde_json::to_string(&first_session[3]["messages"]).unwrap();
+    assert!(
+        late.contains("Today's date is now: Fri Nov 20 2026"),
+        "{late}"
+    );
+    let earlier = serde_json::to_string(&first_session[2]["messages"]).unwrap();
+    let earlier = earlier.trim_end_matches(']');
+    assert!(
+        late.starts_with(earlier),
+        "the history before it is unchanged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosted_provider_keeps_the_date_in_the_system_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = Log::default();
+    let base = server(log.clone(), Duration::ZERO).await;
+    let extra = json!({"title": false, "providers": {"main": {"local": false}}});
+    let mut s = session(dir.path(), &base, "m", extra);
+    s.set_today(|| "Thu Nov 19 2026".to_string());
+    s.prompt("hello", &mut Quiet).await.unwrap();
+    let (_, main) = split(&log);
+    let messages = main[0].body["messages"].as_array().unwrap().clone();
+    let system = messages[0]["content"].as_str().unwrap();
+    assert!(
+        system.contains("Today's date: Thu Nov 19 2026"),
+        "as in OpenCode: {system}"
+    );
+    assert!(!serde_json::to_string(&messages[1..])
+        .unwrap()
+        .contains("Today's date"));
 }

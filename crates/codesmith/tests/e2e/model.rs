@@ -38,6 +38,12 @@ pub fn content(m: &Value) -> String {
     }
 }
 
+/// Whether a request message is the date a local server gets before the
+/// history (the scripted model listens on loopback).
+pub fn is_date(m: &Value) -> bool {
+    content(m).starts_with("<system-update>\nToday's date: ")
+}
+
 pub fn messages(body: &Value) -> &[Value] {
     body["messages"]
         .as_array()

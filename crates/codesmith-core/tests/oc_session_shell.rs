@@ -92,6 +92,8 @@ async fn oc_session_user_shells_reach_the_model_only_through_their_notification(
         .iter()
         .filter(|m| m["role"] == "user")
         .map(|m| m["content"].as_str().unwrap_or("").to_string())
+        // The date, which a local server gets before the history.
+        .filter(|c| !c.starts_with("<system-update>"))
         .collect();
     assert_eq!(users.len(), 2, "{users:?}");
     assert!(users[0].starts_with(user_shell::PREFIX), "{users:?}");

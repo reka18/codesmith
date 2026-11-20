@@ -165,8 +165,20 @@ fn native_updates(body: &Value) -> Vec<Value> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|m| m["role"] == "system")
+        .filter(|m| m["role"] == "system" && m.get("output_config").is_some())
         .map(|m| m["output_config"]["effort"].clone())
+        .collect()
+}
+
+/// The request's messages without the date, a native system update after
+/// the first user message.
+fn without_date(body: &Value) -> Vec<Value> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| !m["content"].to_string().contains("Today's date: "))
+        .cloned()
         .collect()
 }
 
@@ -188,10 +200,10 @@ async fn a_variant_switch_is_an_effort_update_and_keeps_the_top_level_effort() {
     );
     assert_eq!(native_updates(&second), [json!("low")]);
     // Everything before the update is sent as before.
-    let before: Vec<Value> = second["messages"].as_array().unwrap()[..2].to_vec();
-    assert_eq!(before[0]["role"], "user");
-    assert_eq!(before[1]["role"], "assistant");
-    assert_eq!(second["messages"][2]["role"], "system");
+    let messages = without_date(&second);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[2]["role"], "system");
 
     // The same variant again writes nothing more.
     t.turn("fake/claude-opus-5#low", Some(&id), "three").await;

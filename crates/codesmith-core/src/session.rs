@@ -286,6 +286,16 @@ pub struct Session {
     /// The instruction baseline without the date and environment, which
     /// Claude Code writes itself (for Claude Agent models).
     claude_instructions: String,
+    /// On a local server, the baseline's date ("Today's date: …"), sent as
+    /// a system update before the history rather than at the end of the
+    /// system prompt (where OpenCode has it, and where it stays for hosted
+    /// providers), so the prefix the server caches (the system prompt, then
+    /// the tools, in Qwen-style chat templates) does not change with the
+    /// day. A date change during the session is an update in the history,
+    /// as for any instruction.
+    date_note: Option<String>,
+    /// Today's date, as the date instruction reads it ([`prompt::today`]).
+    today: Arc<dyn Fn() -> String + Send + Sync>,
     /// The instruction state; `None` until the next observation makes a
     /// baseline.
     instruction: Option<crate::instruction_state::State>,
@@ -624,6 +634,8 @@ impl Session {
             base_system,
             env_block,
             claude_instructions: String::new(),
+            date_note: None,
+            today: Arc::new(prompt::today),
             instruction,
             tools,
             messages,
@@ -1087,10 +1099,7 @@ impl Session {
             req.system = ctx.system;
             // Metadata stays behind: it is never sent.
             let messages: Vec<Message> = ctx.messages.into_iter().map(|m| m.message).collect();
-            req.messages = crate::media::sendable(
-                &runner::model_messages(&messages),
-                self.model.input.as_deref(),
-            );
+            req.messages = self.sendable_history(&messages);
             let known = std::mem::take(&mut req.tools);
             for t in ctx.tools {
                 if !known.iter().any(|k| k.name == t.original) {
@@ -1172,10 +1181,7 @@ impl Session {
         Request {
             model: self.model.model_id.clone(),
             system: self.system_prompt(&code),
-            messages: crate::media::sendable(
-                &runner::model_messages(&self.messages),
-                self.model.input.as_deref(),
-            ),
+            messages: self.sendable_history(&self.messages),
             tools: self.tool_specs(plugins, &code),
             namespaces: Vec::new(),
             max_tokens: self.model.max_output,
@@ -1254,8 +1260,9 @@ impl Session {
             &config.instructions,
         );
         lists.push(instructions::source(instructions::read(&files)));
+        let today = self.today.clone();
         lists.push(prompt::builtin_sources(
-            prompt::today,
+            move || today(),
             self.env_block.clone(),
         ));
         let context = match &self.store {
@@ -1314,7 +1321,13 @@ impl Session {
             .map(|s| s.initial.clone())
             .unwrap_or_default();
         let rendered = is::render_initial(&list, &initial)?;
-        let text = is::join(&rendered);
+        // On a local server the date goes before the history instead (see
+        // `date_note`).
+        let local = self.model.local;
+        let is_note = |r: &is::Rendered| local && r.key == prompt::DATE_KEY;
+        self.date_note = rendered.iter().find(|r| is_note(r)).map(|r| r.text.clone());
+        let rest: Vec<is::Rendered> = rendered.iter().filter(|r| !is_note(r)).cloned().collect();
+        let text = is::join(&rest);
         self.system = assemble_system(&self.base_system, &text, self.agent.id == "plan");
         let own: Vec<is::Rendered> = rendered
             .into_iter()
@@ -1329,6 +1342,22 @@ impl Session {
         }
         self.claude_instructions = claude;
         Ok(())
+    }
+
+    /// Set where the date the session is told comes from (tests pass a
+    /// fixed one).
+    #[doc(hidden)]
+    pub fn set_today(&mut self, today: impl Fn() -> String + Send + Sync + 'static) {
+        self.today = Arc::new(today);
+    }
+
+    /// `history` as a request sends it: the baseline's date first (see
+    /// `date_note`), then the messages as the model sees them.
+    pub(super) fn sendable_history(&self, history: &[Message]) -> Vec<Message> {
+        let mut all = Vec::with_capacity(history.len() + 1);
+        all.extend(self.date_note.clone().map(Message::system));
+        all.extend_from_slice(history);
+        crate::media::sendable(&runner::model_messages(&all), self.model.input.as_deref())
     }
 
     /// Every tool offered to the model: built-in, MCP, resource, plugin,

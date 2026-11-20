@@ -697,10 +697,7 @@ impl Session {
         let mut request = self.base_request(&plugins);
         request.interaction = codesmith_ai::Interaction::Compaction;
         if end < self.messages.len() {
-            request.messages = crate::media::sendable(
-                &crate::runner::model_messages(&self.messages[..end]),
-                self.model.input.as_deref(),
-            );
+            request.messages = self.sendable_history(&self.messages[..end]);
         }
         // Hooks see the request without the summary prompt, as they see the
         // session's own requests, so a hook that shapes every request alike
@@ -723,11 +720,7 @@ impl Session {
                 self.claude_context(crate::plugin::RequestKind::Compaction, &mut request);
             }
         }
-        let head = crate::media::sendable(
-            &crate::runner::model_messages(&self.messages[..k]),
-            self.model.input.as_deref(),
-        )
-        .len();
+        let head = self.sendable_history(&self.messages[..k]).len();
         let mut history = request.clone();
         if request.messages.len() == sent && head < sent {
             history.messages.truncate(head);

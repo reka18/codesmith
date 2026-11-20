@@ -110,7 +110,7 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
     // Only the user's prompt is a user message: no engine nudges.
     let users: Vec<String> = model::messages(last)
         .iter()
-        .filter(|m| m["role"] == "user")
+        .filter(|m| m["role"] == "user" && !model::is_date(m))
         .map(model::content)
         .collect();
     assert_eq!(users, ["fix add.sh"]);
@@ -178,6 +178,7 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
     let recap = &m.by("recap")[0];
     let roles: Vec<&str> = model::messages(recap)
         .iter()
+        .filter(|m| !model::is_date(m))
         .map(|m| m["role"].as_str().unwrap())
         .collect();
     assert_eq!(

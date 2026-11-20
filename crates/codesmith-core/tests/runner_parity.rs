@@ -220,7 +220,8 @@ fn config(base: &str, extra: Value) -> Config {
 fn config_with(base: &str, protocol: &str, models: Value, extra: Value) -> Config {
     let mut v = json!({
         "model": "fake/m", "snapshots": false,
-        "providers": {"fake": {"protocol": protocol, "settings": {"baseURL": base, "apiKey": "x"}, "models": models}},
+        // A hosted provider, as in OpenCode, though it listens on loopback.
+        "providers": {"fake": {"protocol": protocol, "local": false, "settings": {"baseURL": base, "apiKey": "x"}, "models": models}},
     });
     for (k, val) in extra.as_object().unwrap() {
         v[k] = val.clone();

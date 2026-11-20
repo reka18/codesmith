@@ -317,7 +317,8 @@ async fn harness(cut: usize, context: &str) -> H {
     let server = chat(log.clone(), cut).await;
     let config: Config = serde_json::from_value(json!({
         "model": "fake/m", "snapshots": false,
-        "providers": {"fake": {"protocol": "openai-chat",
+        // A hosted provider, as in OpenCode, though it listens on loopback.
+        "providers": {"fake": {"protocol": "openai-chat", "local": false,
             "settings": {"baseURL": format!("{}/v1", server.url), "apiKey": "x"}, "models": {"m": {}}}},
         "instructions": [file.display().to_string()],
     }))

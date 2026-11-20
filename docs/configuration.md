@@ -377,11 +377,16 @@ prompt (prefill). CodeSmith is built to keep that cost down:
 - **The prompt prefix stays the same.** The system prompt, the tool
   definitions and everything before your first message are byte for byte
   the same on every step and every turn of a session, and across sessions
-  of the same project on the same day, so a server with a prefix cache
+  of the same project and across days, so a server with a prefix cache
   reads them once. When instruction files, skills or MCP servers change
   during a session, the change is sent as an update after the history
-  instead of rewriting the system prompt. The date has day granularity, and
-  a session that runs past midnight is told the new date the same way.
+  instead of rewriting the system prompt. The date is not in the system
+  prompt (where hosted providers get it, as in OpenCode): many chat
+  templates, Qwen's among them, put the tool definitions after the system
+  text, so a date there would make the first session of each day read the
+  tools again. It is sent as a short update right after that prefix,
+  before the conversation, and a session that runs past midnight is told
+  the new date as an update too.
 - **No cache fields it doesn't need.** Local servers cache by prefix on
   their own; they get no `prompt_cache_key`, no cache lifetime and no
   breakpoints unless you ask for them.

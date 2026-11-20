@@ -197,8 +197,9 @@ async fn attachments_ride_on_the_user_message() {
         .find(|r| r.get("tools").is_some())
         .unwrap()
         .clone();
+    // After the system prompt and the date.
     assert_eq!(
-        req["messages"][1],
+        req["messages"][2],
         json!({"role": "user", "content": [
             {"type": "text", "text": "summarize"},
             {"type": "file", "file": {"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}},

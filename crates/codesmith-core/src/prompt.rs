@@ -124,6 +124,13 @@ pub fn env_block(e: &Environment) -> String {
     .join("\n")
 }
 
+/// The key of the date's instruction source. On a local server its
+/// baseline text is not part of the system prompt: it is sent as a system
+/// update before the history (see `Session::date_note`), so the system
+/// prompt and the tool definitions after it in many chat templates (Qwen's
+/// among them) stay byte-identical from one day to the next.
+pub const DATE_KEY: &str = "core/date";
+
 /// The date and environment as instruction sources (OpenCode's built-in
 /// instructions): `date` is read at each observation, so a session that
 /// runs past midnight is told the new date, once a day.
@@ -133,7 +140,7 @@ pub fn builtin_sources(
 ) -> crate::instruction_state::List {
     use crate::instruction_state::{make, Definition, Observed};
     let mut list = make::<String>(Definition {
-        key: "core/date".into(),
+        key: DATE_KEY.into(),
         read: Box::new(move || Observed::Value(date())),
         initial: Box::new(|d| format!("Today's date: {d}")),
         changed: Box::new(|_, d| Some(format!("Today's date is now: {d}"))),

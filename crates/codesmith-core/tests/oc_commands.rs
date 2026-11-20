@@ -114,7 +114,8 @@ async fn project(extra: Value, files: &[(&str, &str)]) -> Project {
     let mut cfg = json!({
         "model": "test/parent",
         "snapshots": false,
-        "providers": {"test": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
+        // A hosted provider, as in OpenCode, though it listens on loopback.
+        "providers": {"test": {"protocol": "openai-chat", "local": false, "settings": {"baseURL": base, "apiKey": "x"}}},
         "agents": {"reviewer": {"mode": "subagent", "model": "test/child"}},
     });
     for (k, v) in extra.as_object().unwrap() {
