@@ -682,6 +682,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "url",
 ]
 
 [[package]]

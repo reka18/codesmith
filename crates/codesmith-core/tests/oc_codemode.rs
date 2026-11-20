@@ -1,6 +1,7 @@
 //! OpenCode's Code Mode language tests (`packages/codemode/test`, MIT; the
 //! Test262-derived ones under the BSD license in
-//! `fixtures/LICENSE.test262`), run through CodeSmith's Code Mode.
+//! `fixtures/LICENSE.test262`, the web-platform-tests-derived ones under the
+//! BSD license in `fixtures/LICENSE.wpt`), run through CodeSmith's Code Mode.
 //!
 //! OpenCode runs programs on its own interpreter, CodeSmith on Boa, so these
 //! pin the JavaScript a model's program can rely on: each case is a program
@@ -58,10 +59,6 @@ function __canon(v, seen) {
 }
 "#;
 
-/// Web APIs OpenCode's Code Mode provides and Boa does not: `URL`,
-/// `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
-/// `structuredClone`, `crypto`, `atob`, `Buffer`.
-const WEB: &str = "web globals Boa does not provide";
 /// OpenCode's interpreter restricts or converts values on purpose: opaque
 /// function and iterator references, cycles, typed arrays at the boundary,
 /// errors returned as `{ name, message }`, promises awaited inside results,
@@ -91,233 +88,10 @@ const TIMEZONE: &str = "Boa's answer depends on the local time zone";
 /// with the reason.
 const KNOWN: &[(&str, &str, usize, &str)] = &[
     (
-        "callbacks.test.ts",
-        r#"thisArg is accepted and ignored, like JS arrows > Map, Set, and URLSearchParams forEach ignore a thisArg"#,
-        3,
-        WEB,
-    ),
-    (
-        "classes.test.ts",
-        r#"showing and copying class values > JSON.stringify and structuredClone keep own enumerable fields and drop the prototype"#,
-        1,
-        WEB,
-    ),
-    (
-        "descriptors.test.ts",
-        r#"reading descriptors and names > a built-in accessor copied to a plain object, and a mixed native and program slot"#,
-        1,
-        WEB,
-    ),
-    (
-        "for-await-test262.test.ts",
-        r#"Test262 for-await-of adaptations > supports every existing collection iterable"#,
-        1,
-        WEB,
-    ),
-    (
-        "generator-test262.test.ts",
-        r#"confined generators > accepts iterable URLSearchParams entry pairs"#,
-        1,
-        WEB,
-    ),
-    (
-        "generator-test262.test.ts",
-        r#"confined generators > coerces URLSearchParams pair elements like JS and closes both generators"#,
-        1,
-        WEB,
-    ),
-    (
-        "generator-test262.test.ts",
-        r#"confined generators > constructs Map, Set, and URLSearchParams from generators lazily"#,
-        1,
-        WEB,
-    ),
-    (
-        "generator-test262.test.ts",
-        r#"confined generators > keeps built-in collection iteration live in loops and yield delegation"#,
-        1,
-        WEB,
-    ),
-    (
-        "generator-test262.test.ts",
-        r#"confined generators > validates URLSearchParams pair lengths after converting the outer sequence"#,
-        1,
-        WEB,
-    ),
-    (
-        "json-callbacks-test262.test.ts",
-        r#"Test262 JSON.stringify replacer adaptations > built-in toJSON conversion runs before the function replacer"#,
-        1,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"coercion parity: unknown static members read as undefined > feature detection on missing statics works like native JS"#,
-        9,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"coercion parity: unknown static members read as undefined > known statics still resolve and run"#,
-        11,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"destructuring assignment > supports array patterns over strings, Maps, Sets, and URLSearchParams"#,
-        1,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"iteration callbacks receive thisArg > Array, Array.from, Map, Set, URLSearchParams, Headers, and Uint8Array pass it as this"#,
-        1,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"structuredClone > deep-copies data values and keeps shared references shared"#,
-        1,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"structuredClone > functions, symbols, promises, wrappers, and tool references throw a DataCloneError TypeError"#,
-        1,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"structuredClone > regexps reset lastIndex, errors keep name, message, and cause, and extras are dropped"#,
-        1,
-        WEB,
-    ),
-    (
-        "parity.test.ts",
-        r#"structuredClone > the clone is a plain extensible object: prototypes, symbols, undefined fields, and frozen state drop"#,
-        1,
-        WEB,
-    ),
-    (
-        "regexp-math-test262.test.ts",
-        r#"Math.sumPrecise Test262 parity > rejects missing, non-iterable, sparse, and non-number inputs"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"Headers > constructs from records, pairs, Maps, and Headers; names fold to lowercase and values combine"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"Headers > iterates in sorted order everywhere iteration is allowed, and getSetCookie keeps cookies apart"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > crypto.getRandomValues fills the given bytes in place"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > encodes null as text while omitted and undefined inputs stay empty"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > keeps unread input in order after a fatal stream error"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > only strips the first BOM of each stream, including a split BOM"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > rejects primitive options before touching the partial character"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > reports malformed UTF-8 immediately and truncated UTF-8 on flush"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > round-trips UTF-8 and exposes the standard fields"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"TextEncoder and TextDecoder > streams an emoji one byte at a time and copies the pending bytes"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"URL and URI helpers > URL parsing failures are catchable and values use native JSON forms"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"URL and URI helpers > URLSearchParams supports records, pairs, mutation, callbacks, and materialization"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"URL and URI helpers > distinguishes omitted URL arguments from explicit undefined"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"URL and URI helpers > resolves and mutates URLs with linked search parameters"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"Uint8Array > BYTES_PER_ELEMENT is a read-only 1 on Uint8Array, Buffer and their instances"#,
-        1,
-        WEB,
-    ),
-    ("stdlib.test.ts", r#"Uint8Array > base64 and hex"#, 1, WEB),
-    (
-        "stdlib.test.ts",
-        r#"Uint8Array > from maps the original values with thisArg, after consuming the source"#,
-        1,
-        WEB,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"built-in iterators > keys/values/entries and [Symbol.iterator] step with next() and stay live"#,
-        2,
-        WEB,
-    ),
-    (
         "stdlib.test.ts",
         r#"stdlib integration > Object.fromEntries accepts every supported entry collection"#,
         1,
-        WEB,
-    ),
-    (
-        "web-wpt.test.ts",
-        r#"crypto.randomUUID WPT parity (WebCryptoAPI/randomUUID.https.any.js) > namespace format, version, and variant bits over 256 iterations without collision"#,
-        1,
-        WEB,
+        BOUNDARY,
     ),
     (
         "callbacks.test.ts",
@@ -478,12 +252,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     (
         "stdlib.test.ts",
         r#"RegExp > matchAll materializes match arrays with captures"#,
-        1,
-        BOUNDARY,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"Uint8Array > cannot cross the tool boundary; the error says how to encode it"#,
         1,
         BOUNDARY,
     ),
@@ -790,12 +558,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     (
         "generator-test262.test.ts",
         r#"confined generators > a generator's return() through for...of or destructuring surfaces a failing close, as break does"#,
-        1,
-        ENGINE,
-    ),
-    (
-        "generator-test262.test.ts",
-        r#"confined generators > closes entry constructors when a generator yields a malformed entry"#,
         1,
         ENGINE,
     ),

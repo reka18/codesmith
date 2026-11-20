@@ -24,6 +24,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+mod web;
+
 /// One tool available inside Code Mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
@@ -328,10 +330,10 @@ type Caller = Arc<dyn Fn(String, Value) -> Option<Result<String, String>> + Send
 fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -> Outcome {
     use boa_engine::builtins::promise::PromiseState;
     use boa_engine::object::builtins::JsPromise;
-    use boa_engine::{js_string, Context, JsNativeError, JsValue, NativeFunction, Source};
+    use boa_engine::{js_string, JsNativeError, JsValue, NativeFunction, Source};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let mut ctx = Context::default();
+    let mut ctx = web::context();
     ctx.runtime_limits_mut()
         .set_loop_iteration_limit(LOOP_LIMIT);
     ctx.runtime_limits_mut()
@@ -381,6 +383,9 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
         return fail(e.to_string(), &count);
     }
     if let Err(e) = ctx.eval(Source::from_bytes(prelude(&entries).as_bytes())) {
+        return fail(format!("prelude: {e}"), &count);
+    }
+    if let Err(e) = web::install(&mut ctx) {
         return fail(format!("prelude: {e}"), &count);
     }
     // Strict mode, as OpenCode's interpreter applies its checks (writes to
