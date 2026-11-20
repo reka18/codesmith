@@ -18,7 +18,7 @@ use std::sync::Arc;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    /// Print logs to stderr.
+    /// Reserved; currently has no effect (CodeSmith has no log output yet).
     #[arg(long, global = true)]
     print_logs: bool,
     /// Start in a new git worktree (optionally with this name) (interactive UI).
@@ -237,12 +237,15 @@ enum AutomationCmd {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Pause an automation; it keeps its schedule but does not run.
     Pause {
         id: String,
     },
+    /// Resume a paused automation (its next run is computed from now).
     Resume {
         id: String,
     },
+    /// Delete an automation and its run log.
     Remove {
         id: String,
     },

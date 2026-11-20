@@ -82,6 +82,8 @@ jobs:
           name="codesmith-$VERSION-$TARGET"
           mkdir -p "dist/$name"
           cp "target/$TARGET/release/codesmith" LICENSE README.md "dist/$name/"
+          # The README links into docs/, so ship the guide too.
+          cp -R docs "dist/$name/docs"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "ASSET=dist/$name.tar.gz" >> "$GITHUB_ENV"
 
