@@ -919,7 +919,11 @@ pub fn released(date: &str) -> i64 {
         .or_else(|_| NaiveDate::parse_from_str(&format!("{date}-01"), "%Y-%m-%d"))
         .or_else(|_| NaiveDate::parse_from_str(&format!("{date}-01-01"), "%Y-%m-%d"));
     if let Ok(d) = day {
-        if date.len() >= 4 && date[..4].chars().all(|c| c.is_ascii_digit()) {
+        // `get`: chrono skips leading whitespace, which may be multibyte.
+        if date
+            .get(..4)
+            .is_some_and(|y| y.chars().all(|c| c.is_ascii_digit()))
+        {
             return d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis();
         }
     }
@@ -1271,6 +1275,26 @@ pub fn decode_snapshot(text: &str) -> serde_json::Result<Vec<Snapshot>> {
     Ok(normalize(&Json::parse(text)?))
 }
 
+/// Whether catalog text (fetched, so untrusted) is a JSON object that
+/// normalizes in full without panicking. A catalog is only cached once it
+/// passes, so a bad one cannot fail every later start.
+pub fn usable(text: &str) -> bool {
+    std::panic::catch_unwind(|| {
+        index(text).is_some()
+            && Json::parse(text).is_ok_and(|j| {
+                j.is_object() && {
+                    let _ = offered(&normalize(&j));
+                    true
+                }
+            })
+    })
+    .unwrap_or(false)
+}
+
+/// Stamped on a cache entry that passed [`usable`] in this build; an entry
+/// without it is checked again before it is used.
+const CHECKED: &str = concat!("codesmith ", env!("CARGO_PKG_VERSION"));
+
 // ---------------------------------------------------------------------------
 // What CodeSmith offers from the catalog (OpenCode's models.dev plugin).
 
@@ -1416,8 +1440,13 @@ impl Catalog {
             .get_or_init(|| {
                 let text = self.text.as_deref()?;
                 let v = Json::parse(&text[slot.range.clone()]).ok()?;
-                let one = normalize(&Json::Object(vec![(slot.key.clone(), v)]));
-                offered(&one).into_iter().next()
+                // A provider that cannot be read is left out, never a crash.
+                std::panic::catch_unwind(|| {
+                    let one = normalize(&Json::Object(vec![(slot.key.clone(), v)]));
+                    offered(&one).into_iter().next()
+                })
+                .ok()
+                .flatten()
             })
             .as_ref()
     }
@@ -1824,7 +1853,12 @@ impl ModelsDev {
         let l = self.loaded();
         l.all
             .get_or_init(|| match &l.raw {
-                Raw::Text(t) => Arc::new(decode_snapshot(t).unwrap_or_default()),
+                Raw::Text(t) => Arc::new(
+                    std::panic::catch_unwind(|| decode_snapshot(t))
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default(),
+                ),
                 Raw::Data(d) => d.clone(),
             })
             .clone()
@@ -1878,6 +1912,17 @@ impl ModelsDev {
             .and(value.get("body"))
             .and_then(Value::as_str)
             .filter(|_| value.get("digest").is_none_or(Value::is_string))
+            .filter(|b| {
+                value.get("checked").and_then(Value::as_str) == Some(CHECKED) || {
+                    let ok = usable(b);
+                    if ok {
+                        let mut v = value.clone();
+                        v["checked"] = CHECKED.into();
+                        let _ = self.kv.set(&self.key, v);
+                    }
+                    ok
+                }
+            })
             .and_then(|b| Self::object(b.to_string()));
         if body.is_none() {
             self.kv.remove(&self.key);
@@ -1915,6 +1960,9 @@ impl ModelsDev {
                     .ok()?;
                 rt.block_on(async {
                     let r = self.fetch_api(None).await.ok()??;
+                    if !usable(&r.text) {
+                        return None;
+                    }
                     let t = Self::object(r.text.clone())?;
                     self.write_cache(&r.text, r.etag.as_deref(), None);
                     Some(t)
@@ -1945,7 +1993,7 @@ impl ModelsDev {
     fn write_cache(&self, text: &str, etag: Option<&str>, digest: Option<String>) {
         let digest = digest.unwrap_or_else(|| body_digest(text));
         let now = chrono::Utc::now().timestamp_millis();
-        let entry = json!({"updatedAt": now, "digest": digest, "body": text});
+        let entry = json!({"updatedAt": now, "digest": digest, "body": text, "checked": CHECKED});
         if self.kv.set(&self.key, entry).is_ok() {
             self.write_meta(now, Some(&digest), etag);
         }
@@ -2070,8 +2118,8 @@ impl ModelsDev {
             }
         }
         let response = response.ok_or_else(|| anyhow::anyhow!("unexpected 304 response"))?;
-        if !Json::parse(&response.text).is_ok_and(|j| j.is_object()) {
-            anyhow::bail!("the catalog is not a JSON object");
+        if !usable(&response.text) {
+            anyhow::bail!("the fetched catalog could not be read");
         }
         let same = stored
             .as_ref()
