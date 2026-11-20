@@ -11,12 +11,15 @@ mod openai;
 mod options;
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod parity_ws;
 pub mod partial_json;
 #[cfg(test)]
 mod replay_tests;
 mod responses;
 mod schema;
 mod sse;
+pub mod ws;
 
 pub use cache::{Cache, Messages as CacheMessages, Placement as CachePlacement};
 pub use endpoint::{azure_endpoint, azure_resource_url, Auth, Compatibility, Encoding};
