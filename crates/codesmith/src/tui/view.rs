@@ -1562,10 +1562,16 @@ fn input_hint(app: &App) -> String {
 
 pub(super) fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let p = theme::current();
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(input_hint(app), fg(p.muted)))
         .border_style(fg(if app.busy { p.warning } else { p.border }));
+    // Shell mode labels the prompt, as OpenCode's `SHELL` status.
+    if let Some(status) = app.prompt_traits().status {
+        block = block.title_top(
+            Line::from(Span::styled(format!(" {status} "), fg(p.accent))).right_aligned(),
+        );
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     let iw = inner.width.max(1) as usize;

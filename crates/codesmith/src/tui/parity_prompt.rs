@@ -264,3 +264,55 @@ fn a_line_range_mention_attaches_its_lines() {
     let e = attach::expand("see @a.txt#29", dir.path(), &Default::default());
     assert!(e.text.contains("lines 29-30"), "{}", e.text);
 }
+
+// ----- shell mode (tui/test/prompt/traits, prompt-shell-failure) ------------
+
+// traits.test.ts: "normal mode without autocomplete only captures tab"
+#[test]
+fn oc_normal_mode_without_autocomplete_only_captures_tab() {
+    let t = super::app::prompt_traits(false, false);
+    assert_eq!(t.capture, Some(vec!["tab"]));
+    assert_eq!((t.suspend, t.status), (None, None));
+}
+
+// traits.test.ts: "normal mode with autocomplete captures navigation keys"
+#[test]
+fn oc_normal_mode_with_autocomplete_captures_navigation_keys() {
+    let t = super::app::prompt_traits(false, true);
+    assert_eq!(t.capture, Some(vec!["escape", "navigate", "submit", "tab"]));
+    assert_eq!((t.suspend, t.status), (None, None));
+}
+
+// traits.test.ts: "shell mode disables capture and labels the prompt without suspending"
+#[test]
+fn oc_shell_mode_disables_capture_and_labels_the_prompt_without_suspending() {
+    let mut a = App::new();
+    a.input.set("!ls");
+    let t = a.prompt_traits();
+    assert_eq!(
+        (t.capture, t.suspend, t.status),
+        (None, None, Some("SHELL"))
+    );
+    assert!(frame(&a, 60, 12).contains(" SHELL "));
+}
+
+// prompt-shell-failure.test.tsx: "a failed shell command in an existing session toasts and restores the composer"
+// (adapted) the runner calls this when the command could not run.
+#[test]
+fn oc_a_failed_shell_command_toasts_and_restores_the_prompt() {
+    let mut a = App::new();
+    let sent = {
+        a.input.set("!echo restored");
+        a.on_key(key(KeyCode::Enter))
+    };
+    assert_eq!(sent, Some(Action::Submit("!echo restored".into())));
+    assert_eq!(a.input.text(), "");
+    a.shell_failed("echo restored", "Shell unavailable");
+    let f = frame(&a, 100, 30);
+    assert!(
+        f.contains("Failed to run shell command") && f.contains("Shell unavailable"),
+        "{f}"
+    );
+    assert!(f.contains("echo restored"));
+    assert_eq!(a.input.text(), "!echo restored");
+}

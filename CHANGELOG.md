@@ -81,6 +81,8 @@ replays of its recorded provider traffic.
 - **Model favourites and recents:** the model picker lists favourites
   (ctrl+f) and recent models first; F2 steps through the recent ones, and
   each model's variant is remembered, in OpenCode's `model.json`.
+- **Shell mode label and failures:** a `!command` prompt is labelled
+  `SHELL`, and one that cannot run comes back in the prompt with a toast.
 - **Shell mode completion:** a `!command`'s arguments complete to
   directories, as OpenCode completes locations.
 - **Question forms:** questions and MCP input requests open as OpenCode's

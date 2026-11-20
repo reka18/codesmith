@@ -174,6 +174,8 @@ struct Runner {
     models: models::Repository,
     /// The model each agent had in each session.
     selections: models::Selections,
+    /// The `!command` running, until its turn is done.
+    shell_command: Option<String>,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -354,6 +356,7 @@ impl Runner {
             return;
         };
         self.app.busy = true;
+        self.shell_command = Some(command.clone());
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
@@ -368,9 +371,10 @@ impl Runner {
                     sink.tool_end(&id, "shell", &shown, ran.failed());
                     Ok(())
                 }
+                // It could not run: the prompt comes back (see `shell_failed`).
                 Err(e) => {
                     sink.tool_end(&id, "shell", &format!("{e:#}"), true);
-                    Ok(())
+                    Err(format!("{e:#}"))
                 }
             };
             let _ = tx.send(Ev::Done {
@@ -1453,8 +1457,10 @@ impl Runner {
                     Err(e) => app::TurnEnd::Failed(e.clone()),
                 });
                 self.app.end_turn(false);
-                if let Err(e) = result {
-                    self.app.error(e);
+                match (result, self.shell_command.take()) {
+                    (Err(e), Some(command)) => self.app.shell_failed(&command, &e),
+                    (Err(e), None) => self.app.error(e),
+                    _ => {}
                 }
                 self.install(*session, false);
                 self.app.diff_turn_done();
@@ -1757,6 +1763,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         history: history::Store::default(),
         models: models::Repository::new(models::Repository::default_file()),
         selections: Default::default(),
+        shell_command: None,
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),

@@ -105,14 +105,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 15 | 452 | 98 | 672 | 13 |
+| tui: main UI | 1250 | 15 | 456 | 94 | 672 | 13 |
 | tui: mini mode | 425 | 3 | 65 | 323 | 34 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **744** | **728** | **534** | **2372** | **259** |
+| **Total** | **4637** | **744** | **732** | **530** | **2372** | **259** |
 
 ## Fixes made while porting
 
@@ -285,6 +285,12 @@ Where the tests live:
   had in the session, else its configured model.
 - **`@file` line ranges** (`prompt/parse`): `@file#12-20` named no file.
   It now attaches those lines, parsed as OpenCode's `parseFileLineRange`.
+- **Shell mode label and failures** (`prompt/traits`,
+  `prompt-shell-failure`): a `!command` prompt looked like any other, and
+  one that could not run left only a failed row. The prompt is now labelled
+  `SHELL` (OpenCode's prompt traits, which also say what the prompt
+  captures), and a command that cannot run toasts and comes back in the
+  prompt.
 
 ## Differences found but not fixed
 
@@ -785,6 +791,10 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/context/local-selection` | agent and model drafts are isolated across sessions and survive navigation | after a fix | oc_agent_and_model_drafts_are_isolated_across_sessions (adapted: the agent is saved with the session) |
 | `tui/test/context/local-selection` | retains an unavailable saved session model instead of selecting a fallback | after a fix | oc_retains_an_unavailable_saved_session_model (adapted) |
 | `tui/test/prompt/parse` | preserves file line-range parsing semantics | after a fix | oc_preserves_file_line_range_parsing_semantics |
+| `tui/test/prompt/traits` | normal mode without autocomplete only captures tab | after a fix | oc_normal_mode_without_autocomplete_only_captures_tab |
+| `tui/test/prompt/traits` | normal mode with autocomplete captures navigation keys | after a fix | oc_normal_mode_with_autocomplete_captures_navigation_keys |
+| `tui/test/prompt/traits` | shell mode disables capture and labels the prompt without suspending | after a fix | oc_shell_mode_disables_capture_and_labels_the_prompt_without_suspending |
+| `tui/test/prompt-shell-failure` | a failed shell command in an existing session toasts and restores the composer | after a fix | oc_a_failed_shell_command_toasts_and_restores_the_prompt (adapted: the runner's failure path) |
 | `cli/test/stats` | keeps the default card shareable | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | renders only requested detail tables | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
 | `cli/test/stats` | shows when detail tables omit rows | already passing | oc_stats_* (codesmith-core/tests/oc_stats.rs) |
@@ -908,13 +918,6 @@ transport and its tool presentation.
 - `tui/test/util/selection-copy-on-select` (2): e.g. "copy-on-select preserves multi-clicks at column $column"
 - `tui/test/ui/link` (1): e.g. "plain clicks on any row of a wrapped Markdown link resolve the full URL"
 - `tui/test/config-v2` (1): e.g. "validates terminal copy behavior"
-
-### tui: shell mode key capture and failures (4)
-
-- `tui/test/prompt-shell-failure`: a failed shell command in an existing session toasts and restores the composer
-- `tui/test/prompt/traits`: normal mode without autocomplete only captures tab
-- `tui/test/prompt/traits`: normal mode with autocomplete captures navigation keys
-- `tui/test/prompt/traits`: shell mode disables capture and labels the prompt without suspending
 
 ### acp: streamed compaction (20)
 

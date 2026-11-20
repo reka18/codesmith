@@ -371,6 +371,8 @@ in the session's folder (and [environment](local-server.md#session-environment))
 is drawn as a shell row (Ctrl+O shows its output), and its output and exit
 code join the conversation, so the model sees them with your next message.
 Esc leaves it running; it is recorded when it ends.
+The prompt is labelled `SHELL` while it holds one. A command that cannot
+run at all says why in a toast and comes back in the prompt to fix.
 
 The words after the command complete to directories as you type, as
 OpenCode completes a location: relative to the session's folder, or after

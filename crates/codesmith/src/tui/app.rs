@@ -516,6 +516,31 @@ struct Child {
     title: String,
 }
 
+/// What the prompt captures and its label (OpenCode's `PromptTraits`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PromptTraits {
+    pub capture: Option<Vec<&'static str>>,
+    pub suspend: Option<bool>,
+    pub status: Option<&'static str>,
+}
+
+pub fn prompt_traits(shell: bool, autocomplete: bool) -> PromptTraits {
+    if shell {
+        return PromptTraits {
+            status: Some("SHELL"),
+            ..Default::default()
+        };
+    }
+    PromptTraits {
+        capture: Some(if autocomplete {
+            vec!["escape", "navigate", "submit", "tab"]
+        } else {
+            vec!["tab"]
+        }),
+        ..Default::default()
+    }
+}
+
 /// Whether the palette lists command `id`: the prompt's commands, less
 /// its editing, scrolling and numbered-tab keys.
 fn palette_command(id: &str) -> bool {
@@ -1894,6 +1919,24 @@ impl App {
         };
         self.input.replace_all(joined);
         self.edited();
+    }
+
+    /// A `!command` could not run: say so in a toast and bring the
+    /// prompt back to fix, as OpenCode restores the composer.
+    pub fn shell_failed(&mut self, command: &str, error: &str) {
+        let mut t = super::toast::Toast::new(super::toast::Variant::Error, error);
+        t.title = Some("Failed to run shell command".into());
+        self.toast(t);
+        if self.input.is_empty() {
+            self.input.set(format!("!{command}"));
+        }
+    }
+
+    /// What the prompt captures from the keymap and how it is labelled,
+    /// as OpenCode's prompt traits: in shell mode (a `!command`) nothing
+    /// and `SHELL`; otherwise Tab, and the list's keys while it shows.
+    pub fn prompt_traits(&self) -> PromptTraits {
+        prompt_traits(self.input.text().starts_with('!'), self.popup.is_some())
     }
 
     /// Show a toast (or queue it behind the one shown).
