@@ -1167,6 +1167,14 @@ impl<'a> Scanner<'a> {
                     }
                     self.pos = i;
                 }
+                Some('$') if matches!(self.at(start + 2), Some('{') | Some('(') | Some('[')) => {
+                    // Bash's lexer looks again at the second `$` of `$${`:
+                    // `"$${x-"'$(cmd)'"}"` runs `cmd`.
+                    raw.push('$');
+                    value.push('$');
+                    self.pos = start + 1;
+                    return Ok(());
+                }
                 Some(n) if n.is_ascii_digit() || "@*#?$!-".contains(n) => {
                     self.pos = start + 2;
                 }
@@ -2495,7 +2503,8 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
     out.unknown_cwd |= scanned.cd_context;
     for item in scanned.commands {
         for (raw, value) in &item.writes {
-            let path = static_command_name(raw)
+            // Dash has no `$'...'`: such a target is another name there.
+            let path = (static_command_name(raw) && !raw.contains("$'"))
                 .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
                 .flatten();
             let differs = path.as_deref() != Some(value.as_str());
@@ -4636,6 +4645,7 @@ mod tests {
             "B\\\nASH_CMDS[ls]=../bin/rm; ls F",
             "\"\"=rm F",
             "\"\"=env rm F",
+            "echo \"$${x-\"'$(rm F)'\"}\"",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
