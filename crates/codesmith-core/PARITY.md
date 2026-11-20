@@ -21,7 +21,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
-| Model requests and transport | 68 | 6 | 0 | 16 | 40 | 6 | 0 |
+| Model requests and transport | 68 | 10 | 0 | 12 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
 | Sessions and their store | 308 | 29 | 0 | 56 | 169 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 0 | 0 | 23 | 67 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1396** | **15** | **427** | **2355** | **1395** | **0** |
+| **Total** | **5588** | **1400** | **15** | **423** | **2355** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -78,7 +78,7 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (427 cases in 48 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (423 cases in 47 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -104,7 +104,6 @@ Missing features, by how many OpenCode test cases each would unlock (427 cases i
 | [Shell Resolution Rules](#shell-resolution-rules) | 6 | shell name normalization, login shells, fallbacks and blacklists (CodeSmith uses config, then $SHELL, then /bin/sh) |
 | [Code Mode Tool Placement Policy](#code-mode-tool-placement-policy) | 5 | per-model direct vs Code Mode tool placement under full_codemode |
 | [HTTP Request Hooks](#http-request-hooks) | 4 | plugin hooks on raw HTTP requests/responses |
-| [Old Image Eviction](#old-image-eviction) | 4 | oldest images replaced to cap the retained payload |
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
@@ -586,15 +585,6 @@ Missing features, by how many OpenCode test cases each would unlock (427 cases i
 - `session-model-request-hooks.test.ts`: sends a kept request's original body and a replaced request's new body
 - `session-model-request-hooks.test.ts`: keeps hook edits to a tool schema out of later requests
 - `session-model-request-hooks.test.ts`: offers the WebSocket executor alongside HTTP hooks and routes the WebSocket hooks
-
-### Old Image Eviction
-
-4 cases.
-
-- `session-model-request.test.ts`: preserves images below the trigger
-- `session-model-request.test.ts`: replaces oldest images until the retained payload reaches the target
-- `session-model-request.test.ts`: keeps the replaced prefix stable as new images arrive, so the prompt cache survives
-- `session-model-request.test.ts`: replaces images nested in tool results
 
 ### Mid-session Effort Switch
 
@@ -1927,8 +1917,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (46 of 68)</summary>
+<details><summary>Model requests and transport (50 of 68)</summary>
 
+
+**`session-model-request.test.ts`**
+
+- P preserves images below the trigger — `tests/oc_image_eviction.rs::oc_images_below_the_trigger_are_kept`
+- P replaces oldest images until the retained payload reaches the target — `tests/oc_image_eviction.rs::oc_oldest_images_are_replaced_down_to_the_target`
+- P keeps the replaced prefix stable as new images arrive, so the prompt cache survives — `tests/oc_image_eviction.rs::oc_the_replaced_prefix_stays_stable_as_images_arrive`
+- P replaces images nested in tool results — `tests/oc_image_eviction.rs::oc_images_in_tool_results_are_replaced` (the note joins the result's text)
 
 **`session-model-transport-live.test.ts`**
 
