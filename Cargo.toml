@@ -31,6 +31,7 @@ ignore = "0.4"
 rand = "0.8"
 sha2 = "0.10"
 base64 = "0.22"
+boa_engine = "0.22.0"
 ratatui = "0.30"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -41,6 +41,10 @@ pub enum ServerConfig {
         environment: BTreeMap<String, String>,
         #[serde(default)]
         disabled: bool,
+        /// Offer this server's tools inside Code Mode (`execute`) instead of
+        /// as direct tool calls. Default true, as in OpenCode.
+        #[serde(default)]
+        codemode: Option<bool>,
         #[serde(default)]
         timeout: Option<Timeouts>,
     },
@@ -53,12 +57,24 @@ pub enum ServerConfig {
         oauth: Option<oauth::Setting>,
         #[serde(default)]
         disabled: bool,
+        /// Offer this server's tools inside Code Mode (`execute`) instead of
+        /// as direct tool calls. Default true, as in OpenCode.
+        #[serde(default)]
+        codemode: Option<bool>,
         #[serde(default)]
         timeout: Option<Timeouts>,
     },
 }
 
 impl ServerConfig {
+    pub fn codemode(&self) -> bool {
+        match self {
+            ServerConfig::Local { codemode, .. } | ServerConfig::Remote { codemode, .. } => {
+                codemode.unwrap_or(true)
+            }
+        }
+    }
+
     pub fn disabled(&self) -> bool {
         match self {
             ServerConfig::Local { disabled, .. } | ServerConfig::Remote { disabled, .. } => {
@@ -93,6 +109,8 @@ pub struct McpTool {
     pub remote: String,
     pub description: String,
     pub schema: Value,
+    /// Called through Code Mode rather than directly.
+    pub codemode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -321,6 +339,7 @@ impl Client {
                     continue;
                 };
                 out.push(McpTool {
+                    codemode: false,
                     name: tool_name(&self.server, remote),
                     server: self.server.clone(),
                     remote: remote.to_string(),
@@ -398,7 +417,9 @@ impl Mcp {
             pending.push(tokio::spawn(async move {
                 let r = async {
                     let c = connect(&name, &server, &root, &defaults).await?;
-                    let t = c.list_tools().await?;
+                    let mut t = c.list_tools().await?;
+                    t.iter_mut()
+                        .for_each(|tool| tool.codemode = server.codemode());
                     Ok::<_, anyhow::Error>((c, t))
                 }
                 .await;

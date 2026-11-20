@@ -45,6 +45,9 @@ pub struct Config {
     pub formatter: Option<crate::format::Setting>,
     /// Where `--worktree` creates worktrees and what it runs in them.
     pub worktree: crate::worktree::WorktreeConfig,
+    /// `false` offers every MCP tool as a direct tool call instead of
+    /// through Code Mode (useful for models that write JavaScript poorly).
+    pub codemode: Option<bool>,
     /// Compiled-in plugins: `false` turns one off, an object is its options.
     pub plugins: BTreeMap<String, Value>,
     /// Code review settings for `/review` and `/calibrate`.

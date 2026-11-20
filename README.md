@@ -304,6 +304,20 @@ tool, keyed by the tool's name: `{"action": "github_*", "resource": "*", "effect
 server's tools from the model.
 `codesmith mcp list` shows each server's status and tools.
 
+**Code Mode.** As in OpenCode, MCP tools are offered through Code Mode by
+default: instead of calling them one by one, the model writes a short
+JavaScript program in a single `execute` call —
+`const issues = await tools.github.list_issues({repo}); return issues.filter(...)`
+— and gets back the result and any `console.log` output. The tools are listed
+with TypeScript-style signatures in the system prompt. Programs run in
+[Boa](https://boajs.dev), a JavaScript engine written in Rust, with no
+filesystem, network, process or timer access of their own: the only way out
+is the listed tools, each call permission-checked like a direct one, capped at
+50 calls, three minutes, and bounded loops and recursion. Set
+`"codemode": false` on a server (or at the top level of the config) to offer
+its tools as direct calls instead, which suits models that write JavaScript
+poorly.
+
 Remote servers that require OAuth show as needing authorization;
 `codesmith mcp auth <name>` logs in through the browser (discovery, dynamic
 client registration and PKCE per the MCP authorization spec, with the
@@ -394,7 +408,7 @@ A turn's events are `text`, `reasoning`, `tool_start`, `tool_end`, `step_end`,
    SearXNG)~~
 3. ~~Interactive terminal UI, local server API~~
 4. ~~MCP (stdio, HTTP, OAuth), more providers, saved keys, formatters, worktrees, stats~~
-5. ~~ACP, native Rust plugins~~; code mode, automations
+5. ~~ACP, native Rust plugins, Code Mode~~; automations
 
 ## License
 

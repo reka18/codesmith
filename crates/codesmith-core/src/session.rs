@@ -357,9 +357,27 @@ impl Session {
     }
 
     fn base_request(&self, plugins: &crate::plugin::Registry) -> Request {
+        let code = self.code_entries();
+        let system = if code.is_empty() {
+            self.system.clone()
+        } else {
+            format!(
+                "{}\n\n{}",
+                self.system,
+                crate::codemode::instructions(&code)
+            )
+        };
+        let execute = (!code.is_empty()).then(|| {
+            let (description, parameters) = crate::codemode::spec();
+            codesmith_ai::ToolSpec {
+                name: crate::codemode::TOOL.into(),
+                description,
+                parameters,
+            }
+        });
         Request {
             model: self.model.model_id.clone(),
-            system: self.system.clone(),
+            system,
             messages: self.messages.clone(),
             tools: self
                 .tools
@@ -398,6 +416,7 @@ impl Session {
                             parameters: t.parameters(),
                         }),
                 )
+                .chain(execute)
                 .collect(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
@@ -578,7 +597,12 @@ impl Session {
                 {
                     _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
                     _ if refused.is_some() => (refused.clone().unwrap_or_default(), true),
-                    _ if self.mcp.tool(&name).is_some() => self.run_mcp(&name, &input).await,
+                    _ if name == crate::codemode::TOOL && !self.code_entries().is_empty() => {
+                        self.run_code(&input).await
+                    }
+                    _ if self.mcp_tools().any(|t| t.name == name) => {
+                        self.run_mcp(&name, &input).await
+                    }
                     _ if self.plugin_tools(&plugins).iter().any(|t| t.name() == name) => {
                         self.run_plugin_tool(&plugins, &name, &input).await
                     }
@@ -738,15 +762,68 @@ impl Session {
     }
 
     /// MCP tools this agent may use: hidden when its rules deny the tool outright.
-    fn mcp_tools(&self) -> impl Iterator<Item = &crate::mcp::McpTool> {
+    fn permitted_mcp(&self) -> impl Iterator<Item = &crate::mcp::McpTool> {
         let rules = &self.agent.permissions;
         self.mcp.tools.iter().filter(move |t| {
             crate::permission::evaluate(&t.name, "*", rules) != crate::permission::Effect::Deny
         })
     }
 
+    fn codemode_on(&self) -> bool {
+        self.loaded.config.codemode != Some(false)
+    }
+
+    /// MCP tools offered as direct tool calls.
+    fn mcp_tools(&self) -> impl Iterator<Item = &crate::mcp::McpTool> {
+        let on = self.codemode_on();
+        self.permitted_mcp().filter(move |t| !(on && t.codemode))
+    }
+
+    /// Tools callable inside Code Mode.
+    fn code_entries(&self) -> Vec<crate::codemode::Entry> {
+        if !self.codemode_on() {
+            return vec![];
+        }
+        self.permitted_mcp()
+            .filter(|t| t.codemode)
+            .map(|t| crate::codemode::Entry {
+                tool: t.name.clone(),
+                namespace: t.server.clone(),
+                name: t.remote.clone(),
+                description: t.description.clone(),
+                schema: t.schema.clone(),
+            })
+            .collect()
+    }
+
+    async fn run_code(&self, input: &serde_json::Value) -> (String, bool) {
+        let input = tool::repair(input);
+        let Some(code) = input["code"].as_str().filter(|c| !c.trim().is_empty()) else {
+            return ("Missing required string parameter `code`".into(), true);
+        };
+        let entries = self.code_entries();
+        let out = crate::codemode::execute(
+            code,
+            &entries,
+            crate::codemode::MAX_TOOL_CALLS,
+            crate::codemode::TIMEOUT,
+            |tool, args| async move {
+                match self.run_mcp(&tool, &args).await {
+                    (text, false) => Ok(text),
+                    (text, true) => Err(text),
+                }
+            },
+        )
+        .await;
+        let (text, is_error) = out.render();
+        (
+            tool::truncate(&text, self.limits, &paths::tool_output_dir()),
+            is_error,
+        )
+    }
+
     async fn run_mcp(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
-        if !self.mcp_tools().any(|t| t.name == name) {
+        if !self.permitted_mcp().any(|t| t.name == name) {
             return (
                 format!("The {name} tool is not available to this agent."),
                 true,

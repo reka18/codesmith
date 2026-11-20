@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod auth;
+pub mod codemode;
 pub mod command;
 pub mod compaction;
 pub mod config;
