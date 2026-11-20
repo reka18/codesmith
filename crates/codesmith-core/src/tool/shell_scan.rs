@@ -17,6 +17,20 @@
 //! `for x (a b) cmd`, `time`/`coproc` before a compound command, and C-style
 //! `for ((...))` headers containing substitutions. `&>` is accepted in every
 //! dialect (OpenCode treats it as `&` then `>` under plain `sh`).
+//!
+//! `tests/shell_differential.rs` checks this scanner against what Bash,
+//! Zsh, `/bin/sh`, Dash and macOS's Bash 3.2 actually run, and its corpus
+//! (`tests/fixtures/shell_differential/corpus.txt`) holds every bypass it
+//! found. Where the shells disagree, the reading that runs more is checked:
+//! Zsh's (`=cmd`, `$~x`, `""~`, `4=x`, tables like `commands[ls]=`), Bash
+//! 3.2's `$(` matching, and Dash's `((` (checked against deny rules only,
+//! see [`Command::alternate`]). Left open: wrappers this scanner does not
+//! know (`taskset`, `flock`, `chroot`, `script -c`... run as their own
+//! command names), interpreters given code (`python -c`, `awk`), and
+//! programs that run commands from their environment or config (`git`
+//! aliases, `GIT_SSH_COMMAND`, `PAGER`): those are the command's own
+//! business, like running a script. Under Dash, `(( $x ))` runs `$x`
+//! unchecked.
 
 use std::path::{Path, PathBuf};
 
@@ -2400,6 +2414,36 @@ pub fn analyze(command: &str, cwd: &Path) -> Result<Analysis, String> {
     let mut out = Analysis::default();
     analyze_into(command, cwd, 0, &mut out)
         .map_err(|reason| format!("Portable shell scanner cannot analyze command: {reason}"))?;
+    if command.contains("\\\n") {
+        // The shell removes line continuations before it reads anything
+        // else, so `$a\<newline>[x]` and `READNUL\<newline>LCMD=rm` mean
+        // what they say joined. Check that reading too: its commands as
+        // other names for what runs, everything else added.
+        let joined = join_continuations(command);
+        let mut alt = Analysis::default();
+        if joined != command && analyze_into(&joined, cwd, 0, &mut alt).is_ok() {
+            for entry in alt.commands.into_iter().chain(alt.delegated) {
+                if !out.commands.contains(&entry) && !out.delegated.contains(&entry) {
+                    out.delegated.push(entry);
+                }
+            }
+            out.deny_only.extend(alt.deny_only);
+            for w in alt.writes {
+                if !out.writes.contains(&w) {
+                    out.writes.push(w);
+                }
+            }
+            for d in alt.directories {
+                if !out.directories.contains(&d) {
+                    out.directories.push(d);
+                }
+            }
+            if let Some(d) = alt.dynamic {
+                out.dynamic.get_or_insert(d);
+            }
+            out.unknown_cwd |= alt.unknown_cwd;
+        }
+    }
     let executable =
         command.contains('`') || ["$(", "<(", ">("].iter().any(|t| command.contains(t));
     if out.commands.is_empty() && out.delegated.is_empty() && executable {
@@ -2409,6 +2453,36 @@ pub fn analyze(command: &str, cwd: &Path) -> Result<Analysis, String> {
             .push((command.to_string(), command.to_string()));
     }
     Ok(out)
+}
+
+/// `text` with backslash-newline pairs removed outside single quotes.
+fn join_continuations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let (mut single, mut double) = (false, false);
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '\\' if !single => {
+                match chars.peek() {
+                    Some('\n') => {
+                        chars.next();
+                    }
+                    Some(&n) => {
+                        out.push(c);
+                        out.push(n);
+                        chars.next();
+                    }
+                    None => out.push(c),
+                }
+                continue;
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
 }
 
 const MAX_DELEGATION: usize = 8;
@@ -2421,14 +2495,16 @@ fn analyze_into(command: &str, cwd: &Path, depth: usize, out: &mut Analysis) -> 
     out.unknown_cwd |= scanned.cd_context;
     for item in scanned.commands {
         for (raw, value) in &item.writes {
+            let path = static_command_name(raw)
+                .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
+                .flatten();
+            let differs = path.as_deref() != Some(value.as_str());
             out.writes.push(Write {
                 raw: raw.clone(),
                 // A glob in a redirect target is expanded when it matches one file.
-                path: static_command_name(raw)
-                    .then(|| expand_known_directory(value, cwd, tilde_prefix(raw, value)))
-                    .flatten(),
+                path,
             });
-            if tilde_prefix(raw, value) && !raw.starts_with('~') {
+            if value.starts_with('~') && !raw.starts_with('~') && differs {
                 // `""~/x`: `$HOME/x` in Zsh, `./~/x` in Bash.
                 out.writes.push(Write {
                     raw: raw.clone(),
@@ -2543,8 +2619,8 @@ fn delegate(
         return Ok(());
     }
     let mut base = name.rsplit('/').next().unwrap_or(name);
-    if raw[0].starts_with('=') {
-        // Zsh's `=rm` runs the `rm` found on PATH.
+    if strip_empty_quotes(&raw[0]).starts_with('=') {
+        // Zsh's `=rm` (or `""=rm`) runs the `rm` found on PATH.
         base = base.strip_prefix('=').unwrap_or(base);
     }
     if base != name && !base.is_empty() {
@@ -3073,9 +3149,14 @@ fn directory_args(raw: &[String], values: &[String], cwd: &Path) -> (Vec<String>
     let complete = resolved.iter().all(Option::is_some);
     let mut resolved = resolved;
     for (r, v) in &operands {
-        if is_static_word(r) && tilde_prefix(r, v) && !r.starts_with('~') {
+        let literal = Some(v.to_string());
+        if is_static_word(r)
+            && v.starts_with('~')
+            && !r.starts_with('~')
+            && !resolved.contains(&literal)
+        {
             // `cd ""~`: home in Zsh, `./~` in Bash.
-            resolved.push(Some(v.to_string()));
+            resolved.push(literal);
         }
     }
     (resolved.into_iter().flatten().collect(), complete)
@@ -3088,11 +3169,17 @@ fn home() -> PathBuf {
 /// Whether a word's leading `~` is expanded: unquoted, or after quotes that
 /// remove to nothing, which Zsh removes first (`""~/x` is `$HOME/x` there).
 fn tilde_prefix(raw: &str, value: &str) -> bool {
+    strip_empty_quotes(raw).starts_with('~') && value.starts_with('~')
+}
+
+/// `raw` without leading `''`/`""` pairs, which Zsh removes before it
+/// expands a leading `~` or `=`.
+fn strip_empty_quotes(raw: &str) -> &str {
     let mut r = raw;
     while let Some(rest) = r.strip_prefix("''").or_else(|| r.strip_prefix("\"\"")) {
         r = rest;
     }
-    r.starts_with('~') && value.starts_with('~')
+    r
 }
 
 fn expand_known_directory(value: &str, cwd: &Path, unquoted_tilde: bool) -> Option<String> {
@@ -4543,6 +4630,12 @@ mod tests {
             "bash rm F",
             "comman=d bash rm F",
             "repeat 1 X=1 rm F",
+            "READNUL\\\nLCMD=rm; <f1",
+            "x='a[$(rm F)]'; a=(1); echo $a\\\n[x]",
+            "x='a[;$(rm F)]'; echo ${x\\\n:x}",
+            "B\\\nASH_CMDS[ls]=../bin/rm; ls F",
+            "\"\"=rm F",
+            "\"\"=env rm F",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;

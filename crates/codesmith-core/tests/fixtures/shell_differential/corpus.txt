@@ -1578,3 +1578,24 @@ echo $(( (rm F) ))
 echo $((](rm F)))
 %%
 echo $(( ] ; rm F ))
+%% ---- continuations joining any two characters
+READNUL\
+LCMD=rm; <f1
+%%
+x='a[$(rm F)]'; a=(1); echo $a\
+[x]
+%%
+x='a[;$(rm F)]'; echo ${x\
+:x}
+%%
+x='a[$(rm F)]'; echo $\
+{x:x}
+%%
+B\
+ASH_CMDS[ls]=../bin/rm; ls F
+%%
+eccho x > ""\~	+/ou
+%%
+""=rm F
+%%
+""=env - rm F
