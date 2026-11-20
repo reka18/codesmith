@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// How the API key is sent.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub enum Auth {
     /// The protocol's own header: `Authorization: Bearer` (OpenAI Chat and
     /// Responses), `x-api-key` (Anthropic Messages), `x-goog-api-key`
@@ -20,6 +20,43 @@ pub enum Auth {
     /// `Authorization` header is not sent, so a stale bearer token cannot
     /// ride along.
     Header(String),
+    /// The key as `Authorization: Bearer` whatever the protocol (Bedrock
+    /// API keys, GitHub Copilot's Messages route).
+    Bearer,
+    /// Credentials applied to each built request just before it is sent
+    /// (AWS SigV4, Google ADC tokens, GitHub Copilot's account endpoint).
+    /// The key is not sent.
+    Dynamic(std::sync::Arc<dyn Authorizer>),
+}
+
+impl PartialEq for Auth {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Auth::Default, Auth::Default) | (Auth::Bearer, Auth::Bearer) => true,
+            (Auth::Header(a), Auth::Header(b)) => a == b,
+            (Auth::Dynamic(a), Auth::Dynamic(b)) => std::sync::Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Auth {}
+
+/// Credentials that need the final request (its URL, headers and body) or
+/// some I/O before it goes out: signing, a token exchange, an endpoint
+/// lookup. Implementations cache what they can; they never log secrets.
+pub trait Authorizer: Send + Sync + std::fmt::Debug {
+    /// Add credentials to (or otherwise adjust) `req` before it is sent.
+    fn authorize<'a>(
+        &'a self,
+        client: &'a reqwest::Client,
+        req: &'a mut reqwest::Request,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), Error>>;
+
+    /// A short description for `codesmith models --verbose` style output.
+    fn describe(&self) -> String {
+        "dynamic credentials".into()
+    }
 }
 
 /// The request body's content encoding (OpenCode's `RequestEncoding`).
@@ -156,12 +193,16 @@ impl Provider {
     /// configured) headers.
     pub(crate) fn auth_headers(&self, headers: Vec<(String, String)>) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        if let Some(k) = self.api_key.as_deref() {
+        let key = self
+            .api_key
+            .as_deref()
+            .filter(|_| !matches!(self.auth, Auth::Dynamic(_)));
+        if let Some(k) = key {
             out.push(match (&self.auth, self.protocol) {
                 (Auth::Header(h), _) => (h.clone(), k.to_string()),
                 (Auth::Default, Protocol::AnthropicMessages) => ("x-api-key".into(), k.into()),
                 (Auth::Default, Protocol::GoogleGemini) => ("x-goog-api-key".into(), k.into()),
-                (Auth::Default, _) => ("authorization".into(), format!("Bearer {k}")),
+                _ => ("authorization".into(), format!("Bearer {k}")),
             });
         }
         let custom = matches!(self.auth, Auth::Header(_));
@@ -220,9 +261,30 @@ impl Provider {
     }
 }
 
-/// Send a request and fail with the status and a bounded body on non-2xx.
-pub(crate) async fn send(rb: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
-    let resp = rb.send().await?;
+impl Provider {
+    /// The request `rb` builds, with any [`Auth::Dynamic`] credentials
+    /// applied.
+    pub(crate) async fn authorized(
+        &self,
+        rb: reqwest::RequestBuilder,
+    ) -> Result<(reqwest::Client, reqwest::Request), Error> {
+        let (client, req) = rb.build_split();
+        let mut req = req?;
+        if let Auth::Dynamic(a) = &self.auth {
+            a.authorize(&client, &mut req).await?;
+        }
+        Ok((client, req))
+    }
+}
+
+/// Send a request (with the provider's dynamic credentials) and fail with
+/// the status and a bounded body on non-2xx.
+pub(crate) async fn send(
+    p: &Provider,
+    rb: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, Error> {
+    let (client, req) = p.authorized(rb).await?;
+    let resp = client.execute(req).await?;
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();

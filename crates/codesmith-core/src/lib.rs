@@ -20,6 +20,7 @@ pub mod paths;
 pub mod permission;
 pub mod plugin;
 pub mod prompt;
+pub mod providers;
 pub mod question;
 pub mod reference;
 pub mod repository;

@@ -875,13 +875,14 @@ pub async fn stream(
     req: &Request,
 ) -> Result<EventStream, Error> {
     let body = body(req);
-    let resp = crate::endpoint::send(post_body(p, client, &req.model, &body)).await?;
+    let resp = crate::endpoint::send(p, post_body(p, client, &req.model, &body)).await?;
     // A response Gemini splits across requests continues with the same
     // body and the latest checkpoint's token.
     let (p, client, model) = (p.clone(), client.clone(), req.model.clone());
     let reopen: Reopen = Box::new(move |token: String| {
         let rb = post_body(&p, &client, &model, &continued(&body, &token));
-        async move { crate::endpoint::send(rb).await }.boxed()
+        let p = p.clone();
+        async move { crate::endpoint::send(&p, rb).await }.boxed()
     });
     Ok(drive_resuming(resp, Decode::default(), Some(reopen)))
 }

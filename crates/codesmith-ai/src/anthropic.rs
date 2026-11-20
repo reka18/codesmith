@@ -18,7 +18,7 @@ const MIN_THINKING_BUDGET: f64 = 1024.0;
 const INTERLEAVED_BETA: &str = "interleaved-thinking-2025-05-14";
 const COMPACT_BETA: &str = "compact-2026-01-12";
 const FAST_BETA: &str = "fast-mode-2026-02-01";
-const BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+pub(crate) const BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 const OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
 /// The effort a per-message change back to the default sends.
 const DEFAULT_EFFORT: &str = "high";
@@ -49,7 +49,7 @@ pub fn require_signature(p: &Provider, model: &str) -> bool {
 }
 
 /// Claude 5.1 and later take thinking block-binding controls.
-fn supports_binding(model: &str) -> bool {
+pub(crate) fn supports_binding(model: &str) -> bool {
     claude_version(model).is_some_and(|(_, major, minor)| major > 5 || (major == 5 && minor >= 1))
 }
 
@@ -1293,7 +1293,7 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let resp = crate::endpoint::send(request(p, client, req)).await?;
+    let resp = crate::endpoint::send(p, request(p, client, req)).await?;
     Ok(drive(resp, Decode::default()))
 }
 

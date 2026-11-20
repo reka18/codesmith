@@ -492,7 +492,15 @@ pub fn protocol(package: &str) -> Option<codesmith_ai::Protocol> {
         | "alibaba/messages"
         | "zai-coding-plan/messages"
         | "meta/messages" => AnthropicMessages,
-        "google" => GoogleGemini,
+        "google" | "google-vertex" | "google-vertex/gemini" => GoogleGemini,
+        "google-vertex/messages" | "google-vertex-messages" | "amazon-bedrock/mantle/messages" => {
+            AnthropicMessages
+        }
+        "google-vertex/chat" | "amazon-bedrock/mantle/chat" => OpenaiChat,
+        "google-vertex/responses" | "amazon-bedrock/mantle" | "amazon-bedrock/mantle/responses" => {
+            OpenaiResponses
+        }
+        "amazon-bedrock" => BedrockConverse,
         _ => return None,
     })
 }
@@ -506,6 +514,7 @@ pub fn protocol_package(p: codesmith_ai::Protocol) -> &'static str {
         OpenaiResponses => "@opencode/ai/providers/openai/responses",
         AnthropicMessages => "@opencode/ai/providers/anthropic",
         GoogleGemini => "@opencode/ai/providers/google",
+        BedrockConverse => "@opencode/ai/providers/amazon-bedrock",
     }
 }
 

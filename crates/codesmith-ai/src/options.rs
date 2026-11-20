@@ -219,7 +219,9 @@ pub fn defaults(protocol: Protocol, base_url: &str, model: &str) -> Options {
     let openai = url.contains("api.openai.com")
         || url.contains(".openai.azure.com")
         || url.contains(".cognitiveservices.azure.com")
-        || url.contains(".services.ai.azure.com");
+        || url.contains(".services.ai.azure.com")
+        // Bedrock Mantle's Responses route asks for the same.
+        || url.contains("bedrock-mantle.");
     if !openai {
         return o;
     }
@@ -314,6 +316,11 @@ pub fn builtin_variants(
         ]
     };
     match protocol {
+        // Converse takes Claude's thinking and effort options as they are.
+        Protocol::BedrockConverse if id.contains("anthropic.") => {
+            builtin_variants(Protocol::AnthropicMessages, model, output_limit)
+        }
+        Protocol::BedrockConverse => vec![],
         Protocol::OpenaiChat => {
             if id.contains('/') {
                 // Gateways (OpenRouter style) take a `reasoning` object.

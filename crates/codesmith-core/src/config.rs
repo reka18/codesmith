@@ -196,6 +196,10 @@ pub struct ProviderSettings {
     /// `http`. OpenAI, xAI and v1 Azure endpoints default to `websocket`,
     /// every other provider to `http`.
     pub transport: Option<String>,
+    /// Settings of the providers in [`crate::providers`] (`region`,
+    /// `profile`, `endpoint`, `auth`, `project`, `location`, …).
+    #[serde(flatten)]
+    pub plugin: crate::providers::Settings,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1038,27 +1042,29 @@ impl Config {
     /// same protocol there. Only a provider that is not configured at all
     /// runs on the catalog's protocol.
     pub fn provider(&self, id: &str) -> Option<ProviderConfig> {
-        let base = builtin(id).or_else(|| {
-            let c = self.models_dev.as_ref()?.catalog();
-            let p = c.provider(id)?;
-            let Some(user) = self.providers.get(id) else {
-                return catalog_provider(p);
-            };
-            let mine = user.protocol.unwrap_or(Protocol::OpenaiChat);
-            let same = crate::catalog::protocol(&p.info.package) == Some(mine);
-            let url = catalog_provider(p)
-                .filter(|_| same)
-                .and_then(|c| c.settings.base_url);
-            Some(ProviderConfig {
-                name: Some(p.info.name.clone()),
-                env: p.environment.clone(),
-                settings: ProviderSettings {
-                    base_url: url,
+        let base = builtin(id)
+            .or_else(|| crate::providers::builtin(id))
+            .or_else(|| {
+                let c = self.models_dev.as_ref()?.catalog();
+                let p = c.provider(id)?;
+                let Some(user) = self.providers.get(id) else {
+                    return catalog_provider(p);
+                };
+                let mine = user.protocol.unwrap_or(Protocol::OpenaiChat);
+                let same = crate::catalog::protocol(&p.info.package) == Some(mine);
+                let url = catalog_provider(p)
+                    .filter(|_| same)
+                    .and_then(|c| c.settings.base_url);
+                Some(ProviderConfig {
+                    name: Some(p.info.name.clone()),
+                    env: p.environment.clone(),
+                    settings: ProviderSettings {
+                        base_url: url,
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            })
-        });
+                })
+            });
         match (base, self.providers.get(id).cloned()) {
             (None, None) => None,
             (Some(b), None) => Some(b),
@@ -1122,6 +1128,23 @@ impl Config {
                 .unwrap_or(Protocol::OpenaiChat),
         };
         let azure = pid == "azure";
+        let model_id =
+            m.id.clone()
+                .or_else(|| cm.map(|cm| cm.model_id.clone()))
+                .unwrap_or_else(|| mid.to_string());
+        let configured_url = user
+            .and_then(|u| u.settings.base_url.clone())
+            .filter(|u| !u.is_empty());
+        let plugin = self.plugin_route(PluginRoute {
+            pid,
+            p: &p,
+            user,
+            configured_url: configured_url.as_deref(),
+            package: catalog_package,
+            catalog_url: cm.and_then(|cm| cm.settings.as_ref()?.base_url.as_deref()),
+            model_id: &model_id,
+        })?;
+        let protocol = plugin.as_ref().map_or(protocol, |r| r.protocol);
         // A configured provider URL beats the catalog model's own (when the
         // catalog speaks this protocol there), which beats the provider's
         // default.
@@ -1129,9 +1152,9 @@ impl Config {
             .filter(|_| catalog_package.and_then(crate::catalog::protocol) == Some(protocol))
             .and_then(|cm| cm.settings.as_ref()?.base_url.as_deref())
             .and_then(expand_url);
-        let base_url = user
-            .and_then(|u| u.settings.base_url.clone())
-            .filter(|u| !u.is_empty())
+        let base_url = configured_url
+            .clone()
+            .or_else(|| plugin.as_ref().map(|r| r.base_url.clone()))
             .or(catalog_url)
             .or_else(|| p.settings.base_url.clone())
             .filter(|u| !u.is_empty())
@@ -1150,21 +1173,10 @@ impl Config {
                 }
                 false => anyhow!("provider {pid:?} has no settings.baseURL"),
             })?;
-        let api_key = p
-            .settings
-            .api_key
-            .clone()
-            .filter(|k| !k.is_empty())
-            .or_else(|| {
-                p.env
-                    .iter()
-                    .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()))
-            })
-            .or_else(|| crate::auth::key(pid));
-        let model_id =
-            m.id.clone()
-                .or_else(|| cm.map(|cm| cm.model_id.clone()))
-                .unwrap_or_else(|| mid.to_string());
+        let api_key = match &plugin {
+            Some(r) => r.api_key.clone(),
+            None => provider_key(pid, &p),
+        };
         let query: Vec<(String, String)> = p.settings.query_params.clone().into_iter().collect();
         let (base_url, query) = match (azure, protocol) {
             // Claude on Foundry: Messages with the resource key as `x-api-key`.
@@ -1179,6 +1191,7 @@ impl Config {
         };
         let auth = match p.settings.api_key_header.clone().filter(|h| !h.is_empty()) {
             Some(h) => codesmith_ai::Auth::Header(h),
+            None if plugin.is_some() => plugin.as_ref().unwrap().auth.clone(),
             None if azure && protocol != Protocol::AnthropicMessages => {
                 codesmith_ai::Auth::Header("api-key".into())
             }
@@ -1237,6 +1250,11 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
         let mut headers: Vec<(String, String)> = p.headers.into_iter().collect();
+        for (k, v) in plugin.iter().flat_map(|r| r.headers.iter()) {
+            if !headers.iter().any(|(h, _)| h.eq_ignore_ascii_case(k)) {
+                headers.push((k.clone(), v.clone()));
+            }
+        }
         for (k, v) in cm.and_then(|cm| cm.headers.as_ref()).into_iter().flatten() {
             if let Some(v) = v.as_str() {
                 headers.retain(|(h, _)| !h.eq_ignore_ascii_case(k));
@@ -1322,6 +1340,49 @@ impl Config {
             input,
             cache,
             websocket,
+        })
+    }
+}
+
+/// The key of a provider: configured, from its key variables, or saved.
+fn provider_key(pid: &str, p: &ProviderConfig) -> Option<String> {
+    p.settings
+        .api_key
+        .clone()
+        .filter(|k| !k.is_empty())
+        .or_else(|| {
+            p.env
+                .iter()
+                .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()))
+        })
+        .or_else(|| crate::auth::key(pid))
+}
+
+/// What [`Config::plugin_route`] needs from `resolve_model`.
+struct PluginRoute<'a> {
+    pid: &'a str,
+    p: &'a ProviderConfig,
+    user: Option<&'a ProviderConfig>,
+    configured_url: Option<&'a str>,
+    package: Option<&'a str>,
+    catalog_url: Option<&'a str>,
+    model_id: &'a str,
+}
+
+impl Config {
+    /// The route a provider plugin gives the model, if one owns it.
+    fn plugin_route(&self, r: PluginRoute) -> Result<Option<crate::providers::Route>> {
+        crate::providers::route(&crate::providers::Input {
+            provider_id: r.pid,
+            settings: &r.p.settings,
+            configured_url: r.configured_url,
+            configured_protocol: r.user.and_then(|u| u.protocol),
+            package: r.package,
+            catalog_url: r.catalog_url,
+            model_id: r.model_id,
+            api_key: provider_key(r.pid, r.p),
+            stored: crate::auth::entry(r.pid),
+            env: codesmith_ai::aws::process_env(),
         })
     }
 }

@@ -492,8 +492,14 @@ fn enter_worktree(cwd: &std::path::Path, name: &str) -> Result<PathBuf> {
 enum AuthCmd {
     /// Save an API key for a provider (read from the terminal without echo, or from stdin).
     Login {
-        /// Provider id, such as anthropic or openai.
+        /// Provider id, such as anthropic, openai, amazon-bedrock or github-copilot.
         provider: String,
+        /// amazon-bedrock: sign with this AWS profile (SSO or named) instead of saving a key.
+        #[arg(long)]
+        profile: Option<String>,
+        /// github-copilot: log in to this GitHub Enterprise host (company.ghe.com).
+        #[arg(long)]
+        enterprise: Option<String>,
     },
     /// List providers with saved keys and where each provider's key comes from.
     List,
@@ -959,7 +965,22 @@ async fn run(cli: Cli) -> Result<()> {
                     .collect::<Vec<_>>(),
             );
             // Other catalog providers are listed once they have a key, as
-            // OpenCode lists the providers that are available.
+            // OpenCode lists the providers that are available; so are the
+            // provider plugins that ambient credentials make usable.
+            for (id, _, _) in codesmith_core::providers::PROVIDERS {
+                let p = c.provider(id).unwrap_or_default();
+                let env = codesmith_core::providers::process_env();
+                let keyed = p
+                    .env
+                    .iter()
+                    .any(|v| std::env::var(v).is_ok_and(|k| !k.is_empty()))
+                    || codesmith_core::auth::entry(id).is_some();
+                if (keyed || codesmith_core::providers::available(id, &p.settings.plugin, &env))
+                    && !ids.iter().any(|i| i == id)
+                {
+                    ids.push(id.to_string());
+                }
+            }
             for id in c.keyed_catalog_providers() {
                 if !ids.contains(&id) {
                     ids.push(id);
@@ -1191,6 +1212,8 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 },
                 match &m.provider.auth {
                     codesmith_ai::Auth::Header(h) => format!(" (sent in {h})"),
+                    codesmith_ai::Auth::Bearer => " (sent as a bearer token)".into(),
+                    codesmith_ai::Auth::Dynamic(a) => format!(" ({})", a.describe()),
                     codesmith_ai::Auth::Default => String::new(),
                 }
             );
@@ -1397,11 +1420,55 @@ fn read_secret(prompt: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
+/// Logins that are not an API key: an AWS profile for Bedrock, GitHub's
+/// device flow for Copilot. `None` for a provider that takes a key.
+fn plugin_login(
+    file: &std::path::Path,
+    provider: &str,
+    profile: Option<String>,
+    enterprise: Option<String>,
+) -> Result<Option<String>> {
+    use codesmith_core::providers;
+    if let Some(profile) = profile {
+        if provider != providers::bedrock::ID {
+            return Err(anyhow!("--profile is for amazon-bedrock"));
+        }
+        let known = codesmith_ai::aws::profiles(&providers::process_env());
+        if !known.contains(&profile) {
+            eprintln!(
+                "note: no profile {profile:?} in your AWS configuration ({})",
+                if known.is_empty() {
+                    "none found".to_string()
+                } else {
+                    known.join(", ")
+                }
+            );
+        }
+        providers::bedrock::save_profile(file, &profile)?;
+        return Ok(Some(format!(
+            "Saved AWS profile {profile} for amazon-bedrock in {}",
+            file.display()
+        )));
+    }
+    if enterprise.is_some() && provider != "github-copilot" {
+        return Err(anyhow!("--enterprise is for github-copilot"));
+    }
+    Ok(None)
+}
+
 fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
     use codesmith_core::auth;
     let file = paths::auth_file();
     match what {
-        AuthCmd::Login { provider } => {
+        AuthCmd::Login {
+            provider,
+            profile,
+            enterprise,
+        } => {
+            if let Some(done) = plugin_login(&file, &provider, profile, enterprise)? {
+                println!("{done}");
+                return Ok(());
+            }
             let key = read_secret(&format!("API key for {provider}: "))?;
             if key.is_empty() {
                 return Err(anyhow!("no key entered"));
@@ -1418,6 +1485,11 @@ fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             let c = &loaded.config;
             let saved = auth::providers_in(&file);
             let mut ids: Vec<String> = config::BUILTIN.iter().map(|b| b.0.to_string()).collect();
+            ids.extend(
+                codesmith_core::providers::PROVIDERS
+                    .iter()
+                    .map(|p| p.0.to_string()),
+            );
             ids.extend(
                 c.providers
                     .keys()
@@ -1439,6 +1511,12 @@ fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                     format!("${v}")
                 } else if let Some(k) = auth::key_in(&file, &id) {
                     format!("saved {}", auth::mask(&k))
+                } else if let Some(login) = codesmith_core::providers::describe_login(
+                    &id,
+                    auth::entry_in(&file, &id).as_ref(),
+                    &p.settings.plugin,
+                ) {
+                    login
                 } else if p.env.is_empty() {
                     "none needed".into()
                 } else {

@@ -125,6 +125,27 @@ pub fn remove_in(path: &Path, provider: &str) -> Result<bool> {
     })
 }
 
+/// A provider's saved entry as stored: `{"type": "api", "key"}`, a
+/// provider login (`{"type": "oauth", "access", "refresh", "expires",
+/// "metadata"}`) or an external one (`{"type": "external", "method",
+/// "metadata"}`, such as an AWS profile).
+pub fn entry_in(path: &Path, provider: &str) -> Option<Value> {
+    read(path).get(provider).cloned()
+}
+
+/// Save a provider's entry (see [`entry_in`]).
+pub fn set_entry_in(path: &Path, provider: &str, entry: Value) -> Result<()> {
+    update(path, |m| {
+        m.insert(provider.to_string(), entry);
+        ((), true)
+    })
+}
+
+/// The saved entry for `provider` in the default auth file.
+pub fn entry(provider: &str) -> Option<Value> {
+    entry_in(&crate::paths::auth_file(), provider)
+}
+
 pub fn providers_in(path: &Path) -> Vec<String> {
     read(path).keys().cloned().collect()
 }

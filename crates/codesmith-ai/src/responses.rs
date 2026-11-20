@@ -1213,7 +1213,7 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let resp = crate::endpoint::send(request(p, client, req)).await?;
+    let resp = crate::endpoint::send(p, request(p, client, req)).await?;
     Ok(drive(resp, Decode::default()))
 }
 

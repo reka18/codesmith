@@ -13,6 +13,11 @@ categories = ["api-bindings", "asynchronous"]
 [dependencies]
 async-stream.workspace = true
 base64.workspace = true
+chrono.workspace = true
+crc32fast.workspace = true
+dirs.workspace = true
+ring.workspace = true
+sha2.workspace = true
 flate2.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
@@ -26,4 +31,5 @@ webpki-roots.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 http = "1"

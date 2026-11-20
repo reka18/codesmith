@@ -191,16 +191,7 @@ impl Compat {
             // nine, which makes ids sharing a prefix (`tool<time>…`,
             // `toolu_01…`) collide; an id that does not already fit is
             // hashed in full instead, stably, so a call and its result agree.
-            let alnum: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
-            let mut s = if alnum.len() <= 9 {
-                alnum
-            } else {
-                mistral_hash(id)
-            };
-            while s.len() < 9 {
-                s.push('0');
-            }
-            s
+            mistral_call_id(id)
         } else if self.claude {
             scrub_id(id)
         } else if self.short_ids {
@@ -209,6 +200,21 @@ impl Compat {
             id.to_string()
         }
     }
+}
+
+/// A tool call id as Mistral-family models take it: exactly nine
+/// alphanumerics, hashed stably when the id does not already fit.
+pub(crate) fn mistral_call_id(id: &str) -> String {
+    let alnum: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
+    let mut s = if alnum.len() <= 9 {
+        alnum
+    } else {
+        mistral_hash(id)
+    };
+    while s.len() < 9 {
+        s.push('0');
+    }
+    s
 }
 
 /// Tool ids limited to `[A-Za-z0-9_-]`, as Anthropic requires.
@@ -1249,7 +1255,7 @@ pub async fn stream(
     client: &reqwest::Client,
     req: &Request,
 ) -> Result<EventStream, Error> {
-    let resp = crate::endpoint::send(request(p, client, req)).await?;
+    let resp = crate::endpoint::send(p, request(p, client, req)).await?;
     let compat = Compat::for_provider(p, &req.model);
     Ok(drive(resp, Decode::new(&compat)))
 }

@@ -23,6 +23,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 flate2 = "1"
+crc32fast = "1"
+ring = "0.17"
 futures-util = "0.3"
 globset = "0.4"
 grep-matcher = "0.1"

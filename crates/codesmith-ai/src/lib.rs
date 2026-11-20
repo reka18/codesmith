@@ -2,6 +2,8 @@
 //! into a stream of provider-neutral `Event`s.
 
 mod anthropic;
+pub mod aws;
+pub mod bedrock;
 mod billing;
 mod cache;
 mod endpoint;
@@ -19,11 +21,12 @@ mod replay_tests;
 mod responses;
 mod schema;
 mod shape;
+pub mod sigv4;
 mod sse;
 pub mod ws;
 
 pub use cache::{Cache, Messages as CacheMessages, Placement as CachePlacement};
-pub use endpoint::{azure_endpoint, azure_resource_url, Auth, Compatibility, Encoding};
+pub use endpoint::{azure_endpoint, azure_resource_url, Auth, Authorizer, Compatibility, Encoding};
 pub use hosted::{Hosted, HostedResult};
 pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
 
@@ -921,6 +924,8 @@ pub enum Protocol {
     OpenaiResponses,
     /// Google Gemini generateContent.
     GoogleGemini,
+    /// Amazon Bedrock Converse (`ConverseStream`, AWS event-stream framing).
+    BedrockConverse,
 }
 
 impl Protocol {
@@ -931,6 +936,7 @@ impl Protocol {
             Protocol::AnthropicMessages => "Anthropic Messages",
             Protocol::OpenaiResponses => "OpenAI Responses",
             Protocol::GoogleGemini => "Gemini",
+            Protocol::BedrockConverse => "Bedrock Converse",
         }
     }
 }
@@ -1104,6 +1110,7 @@ impl Provider {
             Protocol::AnthropicMessages => anthropic::stream(self, client, req).await,
             Protocol::OpenaiResponses => responses::stream(self, client, req).await,
             Protocol::GoogleGemini => gemini::stream(self, client, req).await,
+            Protocol::BedrockConverse => bedrock::stream(self, client, req).await,
         }
     }
 
@@ -1126,6 +1133,7 @@ impl Provider {
             Protocol::AnthropicMessages => anthropic::request(self, client, &req),
             Protocol::OpenaiResponses => responses::request(self, client, &req),
             Protocol::GoogleGemini => gemini::request(self, client, &req),
+            Protocol::BedrockConverse => bedrock::request(self, client, &req)?,
         };
         Ok(rb.build()?)
     }
@@ -1458,6 +1466,7 @@ pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
         Protocol::AnthropicMessages => anthropic::check(req),
         Protocol::OpenaiResponses => responses::check(req),
         Protocol::GoogleGemini => gemini::check(req),
+        Protocol::BedrockConverse => bedrock::check(req),
     }
 }
 
@@ -1468,7 +1477,8 @@ impl Provider {
             Protocol::GoogleGemini => self.get(client, "models?pageSize=1000"),
             _ => self.get(client, "models"),
         };
-        let resp = rb.send().await?;
+        let (client, req) = self.authorized(rb).await?;
+        let resp = client.execute(req).await?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
