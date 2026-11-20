@@ -68,6 +68,15 @@ pub trait Sink: Send {
     fn tool_output(&mut self, _id: &str, _delta: &str) {}
     fn step_end(&mut self, _reason: &FinishReason, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
+    /// A compaction started: its summary streams through
+    /// `compaction_delta`, and it ends with `compaction_end`.
+    fn compaction_start(&mut self) {}
+    /// Summary text as the model writes it. A retried or nudged summary
+    /// streams again from the start; `compaction_end` has the final one.
+    fn compaction_delta(&mut self, _delta: &str) {}
+    /// The compaction ended: `Ok` with the summary kept (then `compacted`
+    /// follows), or `Err` with why it failed.
+    fn compaction_end(&mut self, _outcome: Result<&str, &str>) {}
     fn compacted(&mut self, _before: u64, _after: u64) {}
     fn todos(&mut self, _todos: &[Todo]) {}
     /// Something worth telling the user that is not part of the answer.
@@ -1982,13 +1991,39 @@ impl Session {
         if k == 0 || self.messages.is_empty() {
             return Err(anyhow!("nothing to compact yet"));
         }
+        sink.compaction_start();
+        match self.summarize(sink, k).await {
+            Ok(summary) => {
+                sink.compaction_end(Ok(&summary));
+                self.keep_summary(summary, k)?;
+                sink.compacted(before, self.estimate_prompt());
+                Ok(())
+            }
+            Err(e) => {
+                sink.compaction_end(Err(&format!("{e:#}")));
+                Err(e)
+            }
+        }
+    }
+
+    /// The summary of `self.messages[..k]`, streamed to `sink`.
+    async fn summarize(&mut self, sink: &mut dyn Sink, k: usize) -> Result<String> {
         // Unstored sessions have no sequence numbers at all, so look at the text.
         let update =
             self.seqs.first() == Some(&None) && self.messages.first().is_some_and(is_checkpoint);
         let mut convo = compaction::for_summary(&self.messages[..k]);
         convo.push(Message::user(compaction::prompt(update)));
-        let (mut summary, usage) =
-            complete(&self.client, &self.model, SUMMARY_SYSTEM, &convo, None).await?;
+        let mut delta = |d: &str| sink.compaction_delta(d);
+        let (mut summary, usage) = complete_streaming(
+            &self.client,
+            &self.model,
+            SUMMARY_SYSTEM,
+            &convo,
+            None,
+            retry::Policy::default(),
+            &mut delta,
+        )
+        .await?;
         self.count_side_call(usage)?;
         if !compaction::is_summary(&summary) {
             convo.push(Message {
@@ -1997,8 +2032,17 @@ impl Session {
             });
             convo.push(Message::user(compaction::NUDGE));
             let usage;
-            (summary, usage) =
-                complete(&self.client, &self.model, SUMMARY_SYSTEM, &convo, None).await?;
+            let mut delta = |d: &str| sink.compaction_delta(d);
+            (summary, usage) = complete_streaming(
+                &self.client,
+                &self.model,
+                SUMMARY_SYSTEM,
+                &convo,
+                None,
+                retry::Policy::default(),
+                &mut delta,
+            )
+            .await?;
             self.count_side_call(usage)?;
         }
         if summary.trim().is_empty() {
@@ -2006,6 +2050,11 @@ impl Session {
                 "compaction failed: the model returned an empty summary"
             ));
         }
+        Ok(summary)
+    }
+
+    /// Replace `self.messages[..k]` with the checkpoint of `summary`.
+    fn keep_summary(&mut self, summary: String, k: usize) -> Result<()> {
         let kept_all_turn = k < self.messages.len();
         let keep_from = match self.seqs.get(k).copied().flatten() {
             Some(seq) => seq,
@@ -2031,7 +2080,6 @@ impl Session {
             self.push(Message::system(compaction::CONTINUE))?;
         }
         self.last_prompt_tokens = 0;
-        sink.compacted(before, self.estimate_prompt());
         Ok(())
     }
 
@@ -2315,7 +2363,30 @@ async fn complete_with(
     system: &str,
     messages: &[Message],
     max_tokens: Option<u32>,
+    policy: retry::Policy,
+) -> Result<(String, Usage)> {
+    complete_streaming(
+        client,
+        model,
+        system,
+        messages,
+        max_tokens,
+        policy,
+        &mut |_| {},
+    )
+    .await
+}
+
+/// [`complete_with`], handing each text delta to `delta` as it arrives (a
+/// retried attempt streams again from the start).
+async fn complete_streaming(
+    client: &reqwest::Client,
+    model: &ModelRef,
+    system: &str,
+    messages: &[Message],
+    max_tokens: Option<u32>,
     mut policy: retry::Policy,
+    delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<(String, Usage)> {
     let req = Request {
         model: model.model_id.clone(),
@@ -2342,7 +2413,10 @@ async fn complete_with(
             let mut s = model.provider.stream(client, &req).await?;
             while let Some(ev) = s.next().await {
                 match ev? {
-                    Event::TextDelta(d) => out.push_str(&d),
+                    Event::TextDelta(d) => {
+                        delta(&d);
+                        out.push_str(&d)
+                    }
                     Event::Finish { usage: u, .. } => usage = u,
                     _ => {}
                 }

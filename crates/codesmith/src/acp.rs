@@ -362,6 +362,59 @@ type Current = Arc<Mutex<Option<(String, String, Value)>>>;
 /// A file an edit is about to change, and its text (`None`: new file).
 type Before = (PathBuf, Option<String>);
 
+/// The compaction that is running (its id and reason), so a cancel can
+/// settle it.
+type Compacting = Arc<Mutex<Option<(String, &'static str)>>>;
+
+/// A compaction's `session/update`, as OpenCode's `ACPCompaction.update`
+/// sends it: `compaction_update` when the client renders those, else a
+/// `session_info_update` marker. `status` is `started`, `completed`,
+/// `cancelled` or `failed`; `detail` is the summary or the error.
+fn compaction_update(
+    standard: bool,
+    id: &str,
+    reason: &str,
+    status: &str,
+    detail: Option<&str>,
+) -> Value {
+    if !standard {
+        let mut marker = json!({"status": status, "messageId": id, "reason": reason});
+        match status {
+            "cancelled" => {
+                marker["status"] = json!("failed");
+                marker["error"] = json!({"type": "aborted", "message": "Compaction cancelled"});
+            }
+            "failed" => {
+                marker["error"] =
+                    json!({"type": "compaction.failed", "message": detail.unwrap_or_default()})
+            }
+            _ => {}
+        }
+        return json!({"sessionUpdate": "session_info_update", "_meta": {COMPACTION_META: marker}});
+    }
+    let mut u = json!({"sessionUpdate": "compaction_update", "compactionId": id});
+    match status {
+        "started" => u["status"] = json!("in_progress"),
+        "completed" => {
+            u["status"] = json!("completed");
+            u["summary"] = match detail.filter(|t| !t.is_empty()) {
+                Some(t) => json!([{"type": "text", "text": t}]),
+                None => Value::Null,
+            };
+        }
+        _ => {
+            u["status"] = json!(status);
+            u["summary"] = Value::Null;
+            if status == "failed" {
+                // OpenCode shows a multi-line cause as a plain failure.
+                let msg = detail.filter(|m| !m.is_empty() && !m.contains('\n'));
+                u["error"] = json!(msg.unwrap_or("Compaction failed"));
+            }
+        }
+    }
+    u
+}
+
 struct AcpSink {
     conn: Conn,
     session: String,
@@ -370,6 +423,12 @@ struct AcpSink {
     stats: Arc<Mutex<TurnStats>>,
     /// The client renders `compaction_update`.
     compaction: bool,
+    /// The compaction running, shared with the slot for a cancel.
+    compacting: Compacting,
+    /// Compactions run now are the user's `/compact` (else automatic).
+    manual: bool,
+    /// The summary a compaction just kept, for its completion.
+    summary: Option<String>,
     /// The assistant message being streamed.
     message: String,
     /// Reasoning parts started in this message, and whether one is open.
@@ -398,6 +457,9 @@ impl AcpSink {
             current: slot.current.clone(),
             stats: slot.stats.clone(),
             compaction,
+            compacting: slot.compacting.clone(),
+            manual: false,
+            summary: None,
             message: unique("msg"),
             reasoning: 0,
             in_reasoning: false,
@@ -560,12 +622,57 @@ impl Sink for AcpSink {
             }}}),
         );
     }
-    fn compacted(&mut self, before: u64, after: u64) {
-        let update = if self.compaction {
-            json!({"sessionUpdate": "compaction_update", "compactionId": unique("cmp"), "status": "completed"})
-        } else {
-            json!({"sessionUpdate": "session_info_update", "_meta": {COMPACTION_META: {"tokensBefore": before, "tokensAfter": after}}})
+    fn compaction_start(&mut self) {
+        self.settle_retry();
+        self.in_reasoning = false;
+        let (id, reason) = (unique("cmp"), if self.manual { "manual" } else { "auto" });
+        self.conn.update(
+            &self.session,
+            compaction_update(self.compaction, &id, reason, "started", None),
+        );
+        *self.compacting.lock().unwrap() = Some((id, reason));
+    }
+    fn compaction_delta(&mut self, delta: &str) {
+        let Some((id, _)) = self.compacting.lock().unwrap().clone() else {
+            return;
         };
+        if self.compaction && !delta.is_empty() {
+            self.conn.update(
+                &self.session,
+                json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": id, "content": {"type": "text", "text": delta}}),
+            );
+        }
+    }
+    fn compaction_end(&mut self, outcome: Result<&str, &str>) {
+        match outcome {
+            Ok(summary) => self.summary = Some(summary.to_string()),
+            Err(e) => {
+                if let Some((id, reason)) = self.compacting.lock().unwrap().take() {
+                    self.conn.update(
+                        &self.session,
+                        compaction_update(self.compaction, &id, reason, "failed", Some(e)),
+                    );
+                }
+            }
+        }
+    }
+    fn compacted(&mut self, before: u64, after: u64) {
+        let summary = self.summary.take();
+        let Some((id, reason)) = self.compacting.lock().unwrap().take() else {
+            return;
+        };
+        let mut update = compaction_update(
+            self.compaction,
+            &id,
+            reason,
+            "completed",
+            summary.as_deref(),
+        );
+        if !self.compaction {
+            let marker = &mut update["_meta"][COMPACTION_META];
+            marker["tokensBefore"] = json!(before);
+            marker["tokensAfter"] = json!(after);
+        }
         self.conn.update(&self.session, update);
     }
 }
@@ -795,6 +902,7 @@ struct Slot {
     /// Closed, deleted or replaced: never resume it again.
     closed: AtomicBool,
     current: Current,
+    compacting: Compacting,
     stats: Arc<Mutex<TurnStats>>,
     loaded: Loaded,
     cwd: PathBuf,
@@ -1381,6 +1489,7 @@ impl Agent {
             idle: tokio::sync::Notify::new(),
             closed: AtomicBool::new(false),
             current: Default::default(),
+            compacting: Default::default(),
             stats: Default::default(),
             loaded,
             cwd: cwd.to_path_buf(),
@@ -1481,7 +1590,7 @@ impl Agent {
                     let update = if compaction {
                         json!({"sessionUpdate": "compaction_update", "compactionId": cid, "status": "completed", "summary": [{"type": "text", "text": summary}]})
                     } else {
-                        json!({"sessionUpdate": "session_info_update", "_meta": {COMPACTION_META: {"messageId": cid}}})
+                        json!({"sessionUpdate": "session_info_update", "_meta": {COMPACTION_META: {"status": "completed", "messageId": cid}}})
                     };
                     self.conn.update(id, update);
                     continue;
@@ -2078,7 +2187,10 @@ impl Agent {
                 return s.prompt_with(&text, attached, sink).await;
             }
             if name == "compact" {
-                if let Err(e) = s.compact(sink).await {
+                sink.manual = true;
+                let compacted = s.compact(sink).await;
+                sink.manual = false;
+                if let Err(e) = compacted {
                     sink.text(&format!("{e:#}"));
                 }
                 return Ok(());
@@ -2148,6 +2260,13 @@ impl Agent {
             self.conn.update(
                 sid,
                 result_update(&slot.cwd, &id, &name, &input, "Cancelled", true, &[]),
+            );
+        }
+        if let Some((id, reason)) = slot.compacting.lock().unwrap().take() {
+            let standard = self.client_has("/session/compaction");
+            self.conn.update(
+                sid,
+                compaction_update(standard, &id, reason, "cancelled", None),
             );
         }
         let stats = std::mem::take(&mut *slot.stats.lock().unwrap());
@@ -2307,8 +2426,6 @@ pub async fn run() -> Result<()> {
 ///   it instead of steering into it);
 /// - terminal auth (`--login`) and the auth-required mapping from a server
 ///   event (provider HTTP 401/403 errors map to -32000 instead);
-/// - streamed compaction (`in_progress` and `compaction_summary_chunk`):
-///   CodeSmith reports a compaction once it is done;
 /// - full-file diffs on replay: CodeSmith does not record a call's
 ///   before/after text, so replayed edits show their output only;
 /// - live and replayed `messageId`s differ (replay ids come from the log),
@@ -2367,7 +2484,10 @@ mod tests {
             if b.get("tools").is_none() {
                 let system = msgs[0]["content"].as_str().unwrap_or("");
                 return sse(if system.contains("summaries") {
-                    reply("## Objective\nShip it.")
+                    vec![
+                        json!({"choices": [{"delta": {"content": "## Objective\n"}}]}),
+                        json!({"choices": [{"delta": {"content": "Ship it."}, "finish_reason": "stop"}]}),
+                    ]
                 } else {
                     reply("A title")
                 });
@@ -4174,9 +4294,52 @@ mod tests {
             let (done, seen) = c.until(id, |_| None).await;
             assert!(done.get("error").is_none(), "{done}");
             if text == "/compact" {
-                let u = updates(&seen, "compaction_update");
-                assert_eq!(u.len(), 1, "{seen:?}");
-                assert_eq!(u[0]["status"], "completed");
+                let u: Vec<&Value> = seen
+                    .iter()
+                    .map(|m| &m["params"]["update"])
+                    .filter(|u| {
+                        u["sessionUpdate"]
+                            .as_str()
+                            .is_some_and(|k| k.starts_with("compaction"))
+                    })
+                    .collect();
+                let cid = &u[0]["compactionId"];
+                assert!(cid.is_string());
+                assert_eq!(
+                    u,
+                    [
+                        &json!({"sessionUpdate": "compaction_update", "compactionId": cid, "status": "in_progress"}),
+                        &json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": cid, "content": {"type": "text", "text": "## Objective\n"}}),
+                        &json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": cid, "content": {"type": "text", "text": "Ship it."}}),
+                        &json!({"sessionUpdate": "compaction_update", "compactionId": cid, "status": "completed", "summary": [{"type": "text", "text": "## Objective\nShip it."}]}),
+                    ]
+                );
+            }
+        }
+        // Without the capability: a started and a completed marker, no chunks.
+        let mut c3 = start_with(&cwd, &base, json!({"compaction": {"keep": {"tokens": 0}}}));
+        let sid3 = c3.new_session(&cwd).await;
+        for text in ["think", "/compact"] {
+            let id = c3
+                .call(
+                    "session/prompt",
+                    json!({"sessionId": sid3, "prompt": [{"type": "text", "text": text}]}),
+                )
+                .await;
+            let (done, seen) = c3.until(id, |_| None).await;
+            assert!(done.get("error").is_none(), "{done}");
+            if text == "/compact" {
+                assert!(updates(&seen, "compaction_summary_chunk").is_empty());
+                let markers: Vec<&Value> = updates(&seen, "session_info_update")
+                    .into_iter()
+                    .filter_map(|u| u["_meta"].get(COMPACTION_META))
+                    .collect();
+                assert_eq!(markers.len(), 2, "{seen:?}");
+                assert_eq!(markers[0]["status"], "started");
+                assert_eq!(markers[0]["reason"], "manual");
+                assert_eq!(markers[1]["status"], "completed");
+                assert_eq!(markers[1]["messageId"], markers[0]["messageId"]);
+                assert!(markers[1]["tokensAfter"].is_u64());
             }
         }
         for (caps, kind) in [
@@ -4209,6 +4372,37 @@ mod tests {
                 assert!(marker[0]["_meta"][COMPACTION_META]["messageId"].is_string());
             }
         }
+    }
+
+    // compaction.ts `update`: failed and cancelled compactions, for clients
+    // with and without the capability.
+    #[test]
+    fn oc_acp_compaction_failure_shapes() {
+        assert_eq!(
+            compaction_update(true, "c", "auto", "failed", Some("model down")),
+            json!({"sessionUpdate": "compaction_update", "compactionId": "c", "status": "failed", "summary": null, "error": "model down"})
+        );
+        assert_eq!(
+            compaction_update(true, "c", "auto", "failed", Some("a\nb"))["error"],
+            "Compaction failed"
+        );
+        assert_eq!(
+            compaction_update(true, "c", "manual", "cancelled", None),
+            json!({"sessionUpdate": "compaction_update", "compactionId": "c", "status": "cancelled", "summary": null})
+        );
+        assert_eq!(
+            compaction_update(true, "c", "manual", "completed", Some("")),
+            json!({"sessionUpdate": "compaction_update", "compactionId": "c", "status": "completed", "summary": null})
+        );
+        assert_eq!(
+            compaction_update(false, "c", "manual", "cancelled", None)["_meta"][COMPACTION_META],
+            json!({"status": "failed", "messageId": "c", "reason": "manual", "error": {"type": "aborted", "message": "Compaction cancelled"}})
+        );
+        assert_eq!(
+            compaction_update(false, "c", "auto", "failed", Some("x"))["_meta"][COMPACTION_META]
+                ["error"]["message"],
+            "x"
+        );
     }
 
     // translate.test.ts / prompt.test.ts retry metadata: a scheduled retry is
