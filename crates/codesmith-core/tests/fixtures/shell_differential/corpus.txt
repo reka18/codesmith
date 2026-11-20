@@ -1611,3 +1611,7 @@ echo "$$(rm F)"
 cat > out$'' << EOF
 x
 EOF
+%%
+e#cho "${x:-$'`rm F""`'}"
+%%
+echo "${x:-$'$(rm F)'}"

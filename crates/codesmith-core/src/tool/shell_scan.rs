@@ -1384,6 +1384,10 @@ impl<'a> Scanner<'a> {
                     self.pos += 2
                 }
                 Some('\'') if self.in_dquote > 0 => self.pos += 1,
+                // `$'` is no quote inside double quotes either.
+                Some('$') if self.in_dquote > 0 && self.at(self.pos + 1) == Some('\'') => {
+                    self.pos += 1
+                }
                 Some('\'') => {
                     let close = (self.pos + 1..self.s.len())
                         .find(|&i| self.s[i] == '\'')
@@ -4646,6 +4650,7 @@ mod tests {
             "\"\"=rm F",
             "\"\"=env rm F",
             "echo \"$${x-\"'$(rm F)'\"}\"",
+            "echo \"${x:-$'`rm F`'}\"",
         ] {
             let Ok(a) = analyze(src, Path::new("/workspace")) else {
                 continue;
