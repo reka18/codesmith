@@ -46,6 +46,32 @@ pub trait Tool: Send + Sync {
     ) -> BoxFuture<'a, Result<String, String>>;
 }
 
+/// What a plugin command gets when it runs (OpenCode's command invocation).
+#[derive(Debug, Clone)]
+pub struct CommandContext {
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub root: PathBuf,
+    /// Everything after `/name`.
+    pub args: String,
+    /// Images and files attached to the message.
+    pub media: Vec<codesmith_ai::Media>,
+}
+
+/// A command a plugin runs as code (OpenCode's callback commands), invoked
+/// as `/name args` like any other command. Config commands of the same
+/// name replace it.
+pub trait Command: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> Option<&str> {
+        None
+    }
+    /// Run it: `Ok(Some(text))` sends `text` (with the attachments) to the
+    /// session as a prompt, `Ok(None)` ends the command there, and `Err`
+    /// fails it with that message.
+    fn execute<'a>(&'a self, ctx: CommandContext) -> BoxFuture<'a, Result<Option<String>, String>>;
+}
+
 /// A tool call about to run (mutable in [`Plugin::tool_before`]).
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -117,6 +143,11 @@ pub trait Plugin: Send + Sync {
 
     /// Extra tools offered to the model.
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+
+    /// Commands run as code.
+    fn commands(&self) -> Vec<Arc<dyn Command>> {
         vec![]
     }
 
@@ -219,6 +250,17 @@ impl Registry {
 
     pub fn tools(&self, config: &Config) -> Vec<Arc<dyn Tool>> {
         self.enabled(config).flat_map(|p| p.tools()).collect()
+    }
+
+    /// Commands from enabled plugins; a later plugin's replaces an earlier
+    /// one's of the same name.
+    pub fn commands(&self, config: &Config) -> Vec<Arc<dyn Command>> {
+        let mut out: Vec<Arc<dyn Command>> = Vec::new();
+        for c in self.enabled(config).flat_map(|p| p.commands()) {
+            out.retain(|o| o.name() != c.name());
+            out.push(c);
+        }
+        out
     }
 
     pub fn tool_before(&self, config: &Config, call: &mut ToolCall) -> Result<(), String> {

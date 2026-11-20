@@ -1664,8 +1664,10 @@ pub(crate) fn all_commands(
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
+    let mut builtins = command::builtins(&loaded.root);
+    builtins.extend(command::plugin_commands(&loaded.config));
     command::discover(
-        command::builtins(&loaded.root),
+        builtins,
         &command::roots(cwd, &loaded.root, &paths::config_dir(), &home),
         &loaded.config.commands,
     )

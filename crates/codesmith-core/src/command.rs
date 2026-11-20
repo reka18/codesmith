@@ -56,13 +56,17 @@ pub struct Command {
     /// when run (`/server:prompt args`).
     #[serde(skip)]
     pub mcp: Option<(String, String)>,
+    /// A plugin's command run as code (see [`crate::plugin::Command`]),
+    /// by name.
+    #[serde(skip)]
+    pub plugin: Option<String>,
 }
 
 impl Command {
     /// Whether the command runs in a child session: `subagent` (else
     /// `subtask`) when set, else whether its agent is a subagent.
     pub fn runs_as_subagent(&self, config: &crate::config::Config) -> bool {
-        if self.native || self.mcp.is_some() {
+        if self.native || self.mcp.is_some() || self.plugin.is_some() {
             return false;
         }
         self.subagent.or(self.subtask).unwrap_or_else(|| {
@@ -117,6 +121,24 @@ pub fn builtins(project: &Path) -> BTreeMap<String, Command> {
     m
 }
 
+/// The commands of the installed plugins `config` enables, which sit above
+/// the built-ins and below command files and config.
+pub fn plugin_commands(config: &crate::config::Config) -> BTreeMap<String, Command> {
+    crate::plugin::active()
+        .commands(config)
+        .into_iter()
+        .map(|c| {
+            let name = c.name().to_string();
+            let cmd = Command {
+                description: c.description().map(str::to_string),
+                plugin: Some(name.clone()),
+                ..Default::default()
+            };
+            (name, cmd)
+        })
+        .collect()
+}
+
 /// Claude Code's command folders, lowest precedence first: `<name>.md`
 /// files there sit below every config layer. (CodeSmith's own `commands/`
 /// folders are config layers: see [`documents`].)
@@ -155,6 +177,7 @@ pub fn parse_markdown(text: &str) -> Option<Command> {
         subtask: flag("subtask").ok()?,
         native: false,
         mcp: None,
+        plugin: None,
     })
 }
 
@@ -569,6 +592,7 @@ mod tests {
                 subtask: None,
                 native: false,
                 mcp: None,
+                plugin: None,
             }
         );
     }

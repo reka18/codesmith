@@ -1930,6 +1930,26 @@ impl Session {
         media: Vec<codesmith_ai::Media>,
         sink: &mut dyn Sink,
     ) -> Result<()> {
+        if let Some(name) = &c.plugin {
+            let plugins = crate::plugin::active();
+            let found = plugins
+                .commands(&self.loaded.config)
+                .into_iter()
+                .find(|p| p.name() == name)
+                .ok_or_else(|| anyhow!("Command not found: {name}"))?;
+            let ctx = crate::plugin::CommandContext {
+                session_id: self.id.clone(),
+                cwd: self.cwd.clone(),
+                root: self.root.clone(),
+                args: args.to_string(),
+                media: media.clone(),
+            };
+            return match found.execute(ctx).await {
+                Ok(Some(text)) => self.prompt_with(&text, media, sink).await,
+                Ok(None) => Ok(()),
+                Err(e) => Err(anyhow!("{e}")),
+            };
+        }
         let text = self.expand_command(c, args).await?;
         if !c.runs_as_subagent(&self.loaded.config) {
             return self.prompt_with(&text, media, sink).await;
