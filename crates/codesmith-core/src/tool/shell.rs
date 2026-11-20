@@ -2165,23 +2165,36 @@ mod tests {
         }
         result.unwrap();
         // macOS ships bash 3.2, which does not set `$!` for a process
-        // substitution, so `wait` returns before the write lands: poll.
-        let appears = |p: &std::path::Path| {
-            (0..60).any(|_| {
-                p.exists() || {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    false
+        // substitution, so `wait` returns before the write lands, and the
+        // redirect creates the file before `printf` fills it: poll for the
+        // whole content, generously, as a loaded machine can be slow.
+        async fn reached(p: &std::path::Path) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                if std::fs::read_to_string(p).is_ok_and(|s| s == "reached") {
+                    return true;
                 }
-            }) || p.exists()
-        };
-        assert!(appears(&marker));
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "reached");
+                if std::time::Instant::now() > deadline {
+                    return false;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        assert!(
+            reached(&marker).await,
+            "{:?}",
+            std::fs::read_to_string(&marker)
+        );
         std::fs::remove_file(&marker).unwrap();
         let _ = sh(&ctx, command).await;
         let always = reply == Reply::Always;
         assert_eq!(asker.take().len(), if always { 0 } else { 1 });
         if always {
-            assert!(appears(&marker));
+            assert!(
+                reached(&marker).await,
+                "{:?}",
+                std::fs::read_to_string(&marker)
+            );
         } else {
             std::thread::sleep(std::time::Duration::from_millis(300));
             assert!(!marker.exists());
