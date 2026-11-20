@@ -57,7 +57,8 @@ async fn output_limit_continues_then_answers_and_gives_up_after_two() {
         .collect();
     assert_eq!(steps, ["length", "stop"]);
     assert_eq!(out.done()["error"], Value::Null);
-    assert_eq!(out.done()["usage"]["input"], 250);
+    // Both steps and the title call.
+    assert_eq!(out.done()["usage"]["input"], 350);
 
     // The model got the nudge after its own truncated answer.
     let rest = &m.by("rest")[0];

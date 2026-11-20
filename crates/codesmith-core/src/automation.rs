@@ -1065,6 +1065,8 @@ impl Runner {
         };
         let mut out = Quiet(String::new());
         s.prompt(prompt, &mut out).await?;
+        // The session is dropped next, which would stop its background commands.
+        s.settle_background(&mut out).await?;
         Ok((s.id.clone(), out.0))
     }
 

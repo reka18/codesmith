@@ -10,7 +10,7 @@
 use codesmith_ai::{Message, Part, Role, Usage};
 use codesmith_core::config::{Config, Loaded};
 use codesmith_core::permission::{Fixed, Reply};
-use codesmith_core::session::{self, Options, Session, Sink};
+use codesmith_core::session::{self, Options, RepeatGuard, Session, Sink};
 use codesmith_core::store::{self, Info, Record, Store};
 use codesmith_core::{runner, snapshot::Snapshots};
 use serde_json::{json, Value};
@@ -1159,4 +1159,256 @@ async fn oc_session_revert_undoes_and_restores_a_file_rename_without_losing_eith
         std::fs::read_to_string(root.join("unrelated.txt")).unwrap(),
         "Keep this later edit.\n"
     );
+}
+
+// --- Engine fixes found in review (not OpenCode ports) ---
+
+/// An OpenAI chat stream that answers `t` and reports token usage.
+fn text_with_usage(t: &str, input: u64, output: u64) -> String {
+    sse(&[
+        json!({"choices": [{"delta": {"content": t}, "finish_reason": "stop"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": input, "completion_tokens": output}}),
+    ])
+}
+
+/// Fixed: a turn whose model answered while a background command still ran
+/// waited for the command, so the TUI and server stayed busy (and `run`
+/// hung) until it ended. As in OpenCode, the turn now ends; the command is
+/// reported when it finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_ends_while_its_background_command_runs_and_resumes_when_it_finishes() {
+    let mut t = plain().await;
+    t.push([
+        call(
+            "c1",
+            "shell",
+            json!({"command": "sleep 1; echo bg-finished", "description": "slow", "background": true}),
+        ),
+        text("Started it."),
+    ]);
+    let started = std::time::Instant::now();
+    t.prompt("start it").await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "the turn waited"
+    );
+    assert_eq!(t.s.background_running(), 1);
+    assert_eq!(texts(&t.s), ["Started it."]);
+
+    // Nothing finished yet: resuming does nothing.
+    let mut sink = Rec(t.seen.clone());
+    t.s.resume_background(&mut sink).await.unwrap();
+    assert_eq!(t.requests().len(), 2);
+
+    t.s.wait_background().await;
+    assert_eq!(t.s.background_finished(), 1);
+    t.push([text("It printed bg-finished.")]);
+    t.s.resume_background(&mut sink).await.unwrap();
+    let reqs = t.requests();
+    assert_eq!(reqs.len(), 3);
+    let note = last_message(&reqs[2]);
+    assert_eq!(note["role"], "user");
+    let note = note["content"].to_string();
+    assert!(
+        note.contains("<shell id=\\\"shell_1\\\"") && note.contains("bg-finished"),
+        "{note}"
+    );
+    assert_eq!(texts(&t.s), ["Started it.", "It printed bg-finished."]);
+    assert_eq!(t.s.background_finished(), 0);
+}
+
+/// A command that finished after its turn ended is reported at the next
+/// prompt, before the user's message.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_background_command_is_reported_with_the_next_prompt() {
+    let mut t = plain().await;
+    t.push([
+        call(
+            "c1",
+            "shell",
+            json!({"command": "sleep 0.3; echo quick", "description": "quick", "background": true}),
+        ),
+        text("Started."),
+    ]);
+    t.prompt("start it").await.unwrap();
+    t.s.wait_background().await;
+    t.push([text("Saw it.")]);
+    t.prompt("anything new?").await.unwrap();
+    let reqs = t.requests();
+    let msgs = reqs.last().unwrap()["messages"].as_array().unwrap().clone();
+    let n = msgs.len();
+    assert!(
+        msgs[n - 2]["content"].to_string().contains("quick"),
+        "{msgs:?}"
+    );
+    assert_eq!(msgs[n - 1]["content"], "anything new?");
+}
+
+/// What a one-shot caller (`codesmith run`, a subagent, an automation)
+/// does: wait for the commands and let the model act on each result.
+#[tokio::test(flavor = "multi_thread")]
+async fn settling_waits_for_background_commands_and_resumes_the_model() {
+    let mut t = plain().await;
+    t.push([
+        call(
+            "c1",
+            "shell",
+            json!({"command": "sleep 0.3; echo one", "description": "a", "background": true}),
+        ),
+        text("Started."),
+        text("Done: one."),
+    ]);
+    t.prompt("start it").await.unwrap();
+    let mut sink = Rec(t.seen.clone());
+    t.s.settle_background(&mut sink).await.unwrap();
+    assert_eq!(texts(&t.s), ["Started.", "Done: one."]);
+    assert_eq!(t.s.background_running() + t.s.background_finished(), 0);
+    let notices = t.seen.lock().unwrap().notices.clone();
+    assert!(
+        notices
+            .iter()
+            .any(|n| n == "waiting for 1 background command: shell_1 (sleep 0.3; echo one)"),
+        "{notices:?}"
+    );
+}
+
+/// Fixed: when the repeat guard stopped the turn, the batch's results were
+/// thrown away, so a call that really ran earlier in it (here a write) was
+/// later reported to the model as interrupted.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_repeat_guard_keeps_the_results_of_calls_that_ran() {
+    let mut t = plain().await;
+    let read = json!({"path": "a.txt"}).to_string();
+    let write = json!({"path": "a.txt", "content": "hello"}).to_string();
+    let mut batch: Vec<(&str, &str, &str)> = vec![("w", "write", write.as_str())];
+    let ids: Vec<String> = (0..RepeatGuard::ABORT + 1)
+        .map(|i| format!("r{i}"))
+        .collect();
+    for id in &ids {
+        batch.push((id.as_str(), "read", read.as_str()));
+    }
+    batch.push(("after", "read", r#"{"path": "b.txt"}"#));
+    t.push([calls(&batch)]);
+    let err = t.prompt("go").await.unwrap_err();
+    assert!(
+        err.to_string().contains("repeated the same read call"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(t.path("a.txt")).unwrap(), "hello");
+    let r = results(&t.s);
+    assert_eq!(r.len(), batch.len(), "every call is settled: {r:?}");
+    assert_eq!(r[0].0, "w");
+    assert!(!r[0].2 && r[0].1 != runner::TOOLS_INTERRUPTED, "{:?}", r[0]);
+    assert!(!r[1].2 && r[1].1.contains("hello"), "{:?}", r[1]);
+    let aborted = &r[RepeatGuard::ABORT as usize + 1];
+    assert!(aborted.2 && aborted.1.contains("repeated"), "{aborted:?}");
+    assert_eq!(r.last().unwrap().1, runner::TOOLS_INTERRUPTED);
+
+    // The next request carries the real results, not "interrupted".
+    t.push([text("ok")]);
+    t.prompt("again").await.unwrap();
+    let next = t.requests().last().unwrap().clone();
+    let tool_msgs: Vec<&Value> = next["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .collect();
+    assert_eq!(tool_msgs.len(), batch.len());
+    assert_ne!(tool_msgs[0]["content"], runner::TOOLS_INTERRUPTED);
+}
+
+/// Fixed: summary calls' tokens were dropped, understating the session's
+/// usage and cost and `codesmith stats`.
+#[tokio::test(flavor = "multi_thread")]
+async fn compaction_counts_the_summary_calls_tokens() {
+    let mut t = start(Setup {
+        store: true,
+        ..Default::default()
+    })
+    .await;
+    t.push([text_with_usage("one", 10, 1), text_with_usage("two", 20, 2)]);
+    t.prompt("first").await.unwrap();
+    t.prompt("second").await.unwrap();
+    assert_eq!((t.s.usage.input, t.s.usage.output), (30, 3));
+    t.push([text_with_usage("## Objective\n- summary", 70, 7)]);
+    let mut sink = Rec(t.seen.clone());
+    t.s.compact(&mut sink).await.unwrap();
+    assert_eq!((t.s.usage.input, t.s.usage.output), (100, 10));
+    let steps: Vec<(String, Usage)> = t
+        .store()
+        .entries(&t.s.id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.record {
+            Record::Step { model, usage } => Some((model, usage)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(steps.len(), 3);
+    assert_eq!(steps[2].0, "fake/m");
+    assert_eq!((steps[2].1.input, steps[2].1.output), (70, 7));
+}
+
+/// Fixed: when the system prompt and tools alone filled the window, every
+/// step summarized the (already small) history again. After the first
+/// compaction it now says so once and stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn compaction_does_not_repeat_when_the_history_is_already_small() {
+    let mut t = start(Setup {
+        models: json!({"m": {"limit": {"context": 3000, "output": 500}}}),
+        ..Default::default()
+    })
+    .await;
+    assert!(
+        t.s.estimate_prompt() > 2_550,
+        "the tools alone are over the ceiling: {}",
+        t.s.estimate_prompt()
+    );
+    let is_summary = |b: &Value| {
+        b["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("You are a helpful assistant that writes concise"))
+    };
+    t.push([text("one")]);
+    t.prompt("first").await.unwrap();
+    t.push([text("## Objective\n- summary"), text("two")]);
+    t.prompt("second").await.unwrap();
+    assert_eq!(t.requests().iter().filter(|b| is_summary(b)).count(), 1);
+    for (i, p) in ["third", "fourth"].into_iter().enumerate() {
+        t.push([text(&format!("answer {i}"))]);
+        t.prompt(p).await.unwrap();
+    }
+    assert_eq!(
+        t.requests().iter().filter(|b| is_summary(b)).count(),
+        1,
+        "compacted again with nothing to summarize"
+    );
+    let notices = t.seen.lock().unwrap().notices.clone();
+    let skipped: Vec<&String> = notices
+        .iter()
+        .filter(|n| n.contains("not compacted"))
+        .collect();
+    assert_eq!(skipped.len(), 1, "{notices:?}");
+}
+
+/// Fixed: the prompt estimate counted only the built-in tools, not MCP,
+/// plugin, Code Mode or automation tools the model is also sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prompt_estimate_counts_every_offered_tool() {
+    let plain = plain().await;
+    let stored = start(Setup {
+        store: true,
+        ..Default::default()
+    })
+    .await;
+    let (description, parameters) = codesmith_core::automation::tool_spec();
+    let spec = codesmith_ai::ToolSpec {
+        name: codesmith_core::automation::TOOL.into(),
+        description,
+        parameters,
+    };
+    let extra = serde_json::to_string(&spec).unwrap().len() as u64 / 4;
+    let diff = stored.s.estimate_prompt() - plain.s.estimate_prompt();
+    assert!(diff.abs_diff(extra) <= 1, "{diff} vs {extra}");
 }

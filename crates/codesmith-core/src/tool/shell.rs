@@ -279,12 +279,85 @@ pub struct Job {
     pub notified: bool,
 }
 
-/// The background commands of one session.
-#[derive(Clone, Default)]
+/// The commands of one session: its background jobs, and the process groups
+/// of foreground commands while they run.
+///
+/// Handles are cheap clones. When the session's last handle goes (the
+/// session is dropped, or replaced by a reload after an interrupt, undo or
+/// abort), every command still running is stopped: its process group gets
+/// SIGTERM, then SIGKILL after [`KILL_GRACE`]. The watcher tasks hold only
+/// the shared state, so they do not keep the commands alive.
+#[derive(Clone)]
 pub struct Jobs {
-    inner: Arc<Mutex<Vec<Job>>>,
-    wake: Arc<tokio::sync::Notify>,
+    shared: Arc<Shared>,
     next: Arc<AtomicU32>,
+    _owner: Arc<Owner>,
+}
+
+#[derive(Default)]
+struct Shared {
+    jobs: Mutex<Vec<Job>>,
+    wake: tokio::sync::Notify,
+    /// Process groups of the foreground commands now running.
+    foreground: Mutex<Vec<u32>>,
+}
+
+impl Shared {
+    fn finish(&self, id: &str, ending: Ending) {
+        if let Some(j) = self.jobs.lock().unwrap().iter_mut().find(|j| j.id == id) {
+            j.ending = Some(ending);
+        }
+        self.wake.notify_waiters();
+    }
+
+    /// Process groups of every command still running.
+    fn groups(&self) -> Vec<u32> {
+        let mut groups: Vec<u32> = self
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|j| j.ending.is_none())
+            .filter_map(|j| j.pid)
+            .collect();
+        groups.extend(self.foreground.lock().unwrap().iter().copied());
+        groups
+    }
+}
+
+/// Kills a session's commands from elsewhere (a signal handler about to
+/// exit the process) without keeping them alive the way a [`Jobs`] handle
+/// does.
+#[derive(Clone)]
+pub struct Reaper(Arc<Shared>);
+
+impl Reaper {
+    /// SIGKILL every running command's process group, now.
+    pub fn kill_all(&self) {
+        for g in self.0.groups() {
+            signal_group(g, Signal::Kill);
+        }
+    }
+}
+
+/// Stops what is still running when the last [`Jobs`] handle is dropped.
+struct Owner(Arc<Shared>);
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        terminate_groups(self.0.groups());
+    }
+}
+
+impl Default for Jobs {
+    fn default() -> Self {
+        let shared = Arc::new(Shared::default());
+        Jobs {
+            _owner: Arc::new(Owner(shared.clone())),
+            shared,
+            next: Arc::default(),
+        }
+    }
 }
 
 impl Jobs {
@@ -293,19 +366,13 @@ impl Jobs {
     }
 
     fn add(&self, job: Job) {
-        self.inner.lock().unwrap().push(job);
-    }
-
-    fn finish(&self, id: &str, ending: Ending) {
-        if let Some(j) = self.inner.lock().unwrap().iter_mut().find(|j| j.id == id) {
-            j.ending = Some(ending);
-        }
-        self.wake.notify_waiters();
+        self.shared.jobs.lock().unwrap().push(job);
     }
 
     /// Jobs still running or finished but not yet reported.
     pub fn running_or_unreported(&self) -> usize {
-        self.inner
+        self.shared
+            .jobs
             .lock()
             .unwrap()
             .iter()
@@ -314,7 +381,8 @@ impl Jobs {
     }
 
     pub fn running(&self) -> usize {
-        self.inner
+        self.shared
+            .jobs
             .lock()
             .unwrap()
             .iter()
@@ -322,10 +390,22 @@ impl Jobs {
             .count()
     }
 
+    /// The background jobs still running.
+    pub fn running_jobs(&self) -> Vec<Job> {
+        self.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|j| j.ending.is_none())
+            .cloned()
+            .collect()
+    }
+
     /// Finished jobs not yet reported, marked as reported.
     pub fn take_finished(&self) -> Vec<Job> {
         let mut out = Vec::new();
-        for j in self.inner.lock().unwrap().iter_mut() {
+        for j in self.shared.jobs.lock().unwrap().iter_mut() {
             if j.ending.is_some() && !j.notified {
                 j.notified = true;
                 out.push(j.clone());
@@ -337,9 +417,9 @@ impl Jobs {
     /// Wait until a job finishes (returns at once if one already has, or if none are running).
     pub async fn wait_any(&self) {
         loop {
-            let notified = self.wake.notified();
+            let notified = self.shared.wake.notified();
             {
-                let jobs = self.inner.lock().unwrap();
+                let jobs = self.shared.jobs.lock().unwrap();
                 if jobs.iter().any(|j| j.ending.is_some() && !j.notified)
                     || !jobs.iter().any(|j| j.ending.is_none())
                 {
@@ -350,9 +430,42 @@ impl Jobs {
         }
     }
 
+    /// Stop every command still running, background and foreground: SIGTERM
+    /// to each process group, then SIGKILL to those still there after
+    /// [`KILL_GRACE`]. Returns once the background jobs have ended (or the
+    /// grace period passed).
+    pub async fn stop_all(&self) {
+        let groups = self.shared.groups();
+        if groups.is_empty() {
+            return;
+        }
+        for &g in &groups {
+            signal_group(g, Signal::Term);
+        }
+        let deadline = tokio::time::Instant::now() + KILL_GRACE;
+        loop {
+            let notified = self.shared.wake.notified();
+            if self.running() == 0 && self.shared.foreground.lock().unwrap().is_empty() {
+                break;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                break;
+            }
+        }
+        for g in groups {
+            signal_group(g, Signal::Kill);
+        }
+    }
+
+    /// A handle that can kill these commands but does not own them.
+    pub fn reaper(&self) -> Reaper {
+        Reaper(self.shared.clone())
+    }
+
     /// Watch a spawned child until it exits (or `stop_after` passes).
     fn watch(&self, id: String, mut child: tokio::process::Child, stop_after: Option<Duration>) {
-        let jobs = self.clone();
+        // Only the shared state: a watcher must not keep the owner alive.
+        let shared = self.shared.clone();
         tokio::spawn(async move {
             let ending = match stop_after {
                 Some(d) => match tokio::time::timeout(d, child.wait()).await {
@@ -366,9 +479,101 @@ impl Jobs {
                     .map(ending_of)
                     .unwrap_or(Ending::Exited(-1)),
             };
-            jobs.finish(&id, ending);
+            shared.finish(&id, ending);
         });
     }
+
+    /// Track a foreground command's process group until the guard is
+    /// disarmed; a guard dropped while armed (the call was interrupted)
+    /// stops the whole group.
+    fn guard(&self, pid: Option<u32>) -> GroupGuard {
+        if let Some(p) = pid {
+            self.shared.foreground.lock().unwrap().push(p);
+        }
+        GroupGuard {
+            pgid: pid,
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+/// Stops a foreground command's process group if the call is dropped
+/// before the command ends. `kill_on_drop` alone kills only the shell, not
+/// what it started.
+struct GroupGuard {
+    pgid: Option<u32>,
+    shared: Arc<Shared>,
+}
+
+impl GroupGuard {
+    /// The command ended (or moved to the background): nothing to stop.
+    fn disarm(mut self) {
+        self.untrack();
+    }
+
+    fn untrack(&mut self) -> Option<u32> {
+        let p = self.pgid.take()?;
+        self.shared.foreground.lock().unwrap().retain(|g| *g != p);
+        Some(p)
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if let Some(p) = self.untrack() {
+            terminate_groups(vec![p]);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Signal {
+    Term,
+    Kill,
+}
+
+/// Send `sig` to process group `pgid`; false when there is no such group.
+fn signal_group(pgid: u32, sig: Signal) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pgid) = i32::try_from(pgid) else {
+            return false;
+        };
+        if pgid <= 1 {
+            return false;
+        }
+        let sig = match sig {
+            Signal::Term => libc::SIGTERM,
+            Signal::Kill => libc::SIGKILL,
+        };
+        // SAFETY: kill(2) takes no pointers; a negative pid names a group.
+        unsafe { libc::kill(-pgid, sig) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pgid, sig);
+        false
+    }
+}
+
+/// SIGTERM these process groups now and SIGKILL any still there after
+/// [`KILL_GRACE`], without blocking the caller (usable from `Drop`).
+fn terminate_groups(groups: Vec<u32>) {
+    let alive: Vec<u32> = groups
+        .into_iter()
+        .filter(|&g| signal_group(g, Signal::Term))
+        .collect();
+    if alive.is_empty() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("codesmith-reap".into())
+        .spawn(move || {
+            std::thread::sleep(KILL_GRACE);
+            for g in alive {
+                signal_group(g, Signal::Kill);
+            }
+        });
 }
 
 /// The message the session sends when a background command finishes
@@ -668,20 +873,31 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         jobs.watch(id, child, stop_after);
         return Ok(Output::bounded(background_text(&job, None)));
     }
+    // Declared after `child`, so it drops first: an interrupted call stops
+    // the command's whole process group while the shell is still unreaped.
+    let guard = jobs.guard(child.id());
     // A foreground timeout of 0 falls back to the default, so a call can't
     // block until the command exits.
     let limit = timeout.filter(|t| *t > 0).unwrap_or(DEFAULT_TIMEOUT_MS);
     let ending = match tokio::time::timeout(Duration::from_millis(limit), child.wait()).await {
-        Ok(status) => status
-            .map(ending_of)
-            .map_err(|e| format!("Command failed: {e}"))?,
+        Ok(status) => {
+            guard.disarm();
+            status
+                .map(ending_of)
+                .map_err(|e| format!("Command failed: {e}"))?
+        }
         Err(_) if ctx.jobs.is_some() => {
+            guard.disarm();
             job.timeout_ms = limit;
             jobs.add(job.clone());
             jobs.watch(id, child, None);
             return Ok(Output::bounded(background_text(&job, Some(limit))));
         }
-        Err(_) => Ending::TimedOut(stop(&mut child).await.map(Box::new)),
+        Err(_) => {
+            let ending = Ending::TimedOut(stop(&mut child).await.map(Box::new));
+            guard.disarm();
+            ending
+        }
     };
     let (text, truncated) = result_text(&file, &ending, limit, ctx.limits);
     if !truncated {
@@ -932,6 +1148,125 @@ mod tests {
         rt.block_on(Jobs::default().wait_any());
     }
 
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// Wait for `marker` to hold a pid, then poll until it is gone (or the
+    /// deadline passes); kills it regardless so a failure leaves nothing.
+    async fn outlives(marker: &Path, within: Duration) -> (String, bool) {
+        let mut pid = String::new();
+        for _ in 0..100 {
+            pid = std::fs::read_to_string(marker)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !pid.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!pid.is_empty(), "the command never started");
+        let deadline = std::time::Instant::now() + within;
+        let mut still = alive(&pid);
+        while still && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            still = alive(&pid);
+        }
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-9", &pid])
+            .stderr(Stdio::null())
+            .status();
+        (pid, still)
+    }
+
+    /// Fixed: dropping a foreground call (the user stopped the turn) killed
+    /// only the shell; what it started kept running in its process group.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dropped_foreground_call_stops_its_process_group() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let marker = env.root().join("pid");
+        let command = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+        let input = json!({"command": command, "description": "x"});
+        let fut = run(&ctx, &input);
+        let _ = tokio::time::timeout(Duration::from_millis(1500), fut).await;
+        let (pid, survived) = outlives(&marker, Duration::from_secs(2)).await;
+        assert!(!survived, "grandchild {pid} survived the dropped call");
+        assert!(ctx.jobs.as_ref().unwrap().shared.groups().is_empty());
+    }
+
+    /// Fixed: background commands outlived their session (a reload after an
+    /// interrupt, undo or abort made a fresh registry and forgot them).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_the_registry_stops_background_commands() {
+        let env = Env::new();
+        let mut ctx = env.ctx();
+        let jobs = Jobs::default();
+        ctx.jobs = Some(jobs.clone());
+        let marker = env.root().join("pid");
+        let command = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+        run(&ctx, &json!({"command": command, "background": true}))
+            .await
+            .unwrap();
+        assert_eq!(jobs.running(), 1);
+        while std::fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        drop(ctx);
+        drop(jobs);
+        let (pid, survived) = outlives(&marker, Duration::from_secs(2)).await;
+        assert!(
+            !survived,
+            "background grandchild {pid} outlived the session"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_all_ends_background_commands() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let marker = env.root().join("pid");
+        let command = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+        run(&ctx, &json!({"command": command, "background": true}))
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let (_, survived) = {
+            // Wait for the marker before stopping, so the grandchild exists.
+            while std::fs::read_to_string(&marker)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            jobs.stop_all().await;
+            outlives(&marker, Duration::from_millis(500)).await
+        };
+        assert!(!survived, "a stopped job's grandchild survived");
+        assert!(started.elapsed() < KILL_GRACE, "SIGTERM was enough");
+        assert_eq!(jobs.running(), 0);
+        jobs.wait_any().await;
+        assert!(matches!(
+            jobs.take_finished()[0].ending,
+            Some(Ending::Signaled(_))
+        ));
+    }
+
     // ---------------------------------------------------------------------
     // Ported from OpenCode's packages/core/test/tool-shell.test.ts (MIT).
     // One `oc_shell_*` test per OpenCode case, in the same order.
@@ -950,8 +1285,10 @@ mod tests {
     // - No Code Mode, no PowerShell, no persistent process daemon, no
     //   tracing spans, no progress events, no job cancel/backgroundAll and
     //   no `shell.timeout` update API: those cases are not ported. A user's
-    //   stop drops the running call, which kills the command
-    //   (`kill_on_drop`), so the "stopped" suite has no counterpart.
+    //   stop drops the running call, whose guard stops the command's whole
+    //   process group (SIGTERM, then SIGKILL after the grace period), so
+    //   the "stopped" suite has no counterpart; see
+    //   `a_dropped_foreground_call_stops_its_process_group`.
     // - Saved ("always") approvals and configured rules are both `Gate`
     //   rules; a test's pre-saved approvals are configured allow rules.
     // ---------------------------------------------------------------------
@@ -1721,7 +2058,7 @@ mod tests {
             .await
             .unwrap()
             .content;
-        let job = jobs.inner.lock().unwrap()[0].clone();
+        let job = jobs.shared.jobs.lock().unwrap()[0].clone();
         assert!(job.pid.unwrap() > 0);
         assert!(out.starts_with(&format!(
             "Command moved to the background (shell ID: shell_1).\nPID: {}\nOutput is streaming to: {}\n\nThe command did not finish within its timeout of 0.01 seconds and was moved to the background. Do not start another copy while it is running.",
@@ -1904,7 +2241,7 @@ mod tests {
         .await
         .unwrap()
         .content;
-        let job = jobs.inner.lock().unwrap()[0].clone();
+        let job = jobs.shared.jobs.lock().unwrap()[0].clone();
         assert_eq!(
             out,
             format!(
@@ -2022,7 +2359,7 @@ mod tests {
         run(&ctx, &json!({"command": "sleep 60", "background": true}))
             .await
             .unwrap();
-        let pid = jobs.inner.lock().unwrap()[0].pid.unwrap();
+        let pid = jobs.shared.jobs.lock().unwrap()[0].pid.unwrap();
         std::process::Command::new("/bin/kill")
             .args(["-TERM", &format!("-{pid}")])
             .status()

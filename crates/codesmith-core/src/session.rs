@@ -14,6 +14,13 @@
 //!   (`stopped()` says why) instead of interrupting it; calls after the
 //!   declined one in the same response are not run.
 //! - Retries never consult `retry-after`; see `retry.rs`.
+//! - Background commands: as in OpenCode, a turn ends when the model
+//!   answers, even while its background commands run. A command that
+//!   finishes is reported with [`Session::resume_background`] (OpenCode
+//!   resumes the session by itself) or else at the next prompt. One-shot
+//!   callers wait with [`Session::settle_background`], as OpenCode's `run`
+//!   does; a subagent waits too before it reports, since it cannot be
+//!   resumed later. Dropping a session stops the commands it still runs.
 
 use crate::agent::{self, Agent};
 use crate::compaction;
@@ -125,7 +132,9 @@ pub struct Session {
     client: reqwest::Client,
     store: Option<Store>,
     stored: bool,
-    title_task: Option<tokio::task::JoinHandle<Option<String>>>,
+    title_task: Option<tokio::task::JoinHandle<(Option<String>, Usage)>>,
+    /// Whether the user was told that compaction cannot help (said once).
+    compaction_skipped: bool,
     loaded: Loaded,
     parent: Option<String>,
     depth: u32,
@@ -316,6 +325,7 @@ impl Session {
             usage,
             title,
             last_prompt_tokens: 0,
+            compaction_skipped: false,
             gate,
             shell,
             limits: config.tool_output,
@@ -445,13 +455,40 @@ impl Session {
 
     fn base_request(&self, plugins: &crate::plugin::Registry) -> Request {
         let code = self.code_entries();
+        Request {
+            model: self.model.model_id.clone(),
+            system: self.system_prompt(&code),
+            messages: crate::media::sendable(
+                &runner::model_messages(&self.messages),
+                self.model.input.as_deref(),
+            ),
+            tools: self.tool_specs(plugins, &code),
+            max_tokens: self.model.max_output,
+            temperature: self.model.temperature,
+            options: self.model.options.clone(),
+            body: self.model.body.clone(),
+        }
+    }
+
+    /// The system prompt with Code Mode and MCP server instructions.
+    fn system_prompt(&self, code: &[crate::codemode::Entry]) -> String {
         let mut system = self.system.clone();
         if !code.is_empty() {
-            system = format!("{system}\n\n{}", crate::codemode::instructions(&code));
+            system = format!("{system}\n\n{}", crate::codemode::instructions(code));
         }
-        if let Some(mcp) = self.mcp_instructions(&code) {
+        if let Some(mcp) = self.mcp_instructions(code) {
             system = format!("{system}\n\n{mcp}");
         }
+        system
+    }
+
+    /// Every tool offered to the model: built-in, MCP, resource, plugin,
+    /// Code Mode and automation tools.
+    fn tool_specs(
+        &self,
+        plugins: &crate::plugin::Registry,
+        code: &[crate::codemode::Entry],
+    ) -> Vec<codesmith_ai::ToolSpec> {
         let automation = self
             .store
             .as_ref()
@@ -475,63 +512,50 @@ impl Session {
                 parameters,
             }
         });
-        Request {
-            model: self.model.model_id.clone(),
-            system,
-            messages: crate::media::sendable(
-                &runner::model_messages(&self.messages),
-                self.model.input.as_deref(),
-            ),
-            tools: self
-                .tools
-                .iter()
-                .map(|t| match t {
-                    Tool::Subagent => {
-                        let (description, parameters) =
-                            tool::subagent::spec(&agent::subagents(&self.loaded.config));
-                        codesmith_ai::ToolSpec {
-                            name: t.name().into(),
-                            description,
-                            parameters,
-                        }
+        self.tools
+            .iter()
+            .map(|t| match t {
+                Tool::Subagent => {
+                    let (description, parameters) =
+                        tool::subagent::spec(&agent::subagents(&self.loaded.config));
+                    codesmith_ai::ToolSpec {
+                        name: t.name().into(),
+                        description,
+                        parameters,
                     }
-                    Tool::Skill => {
-                        let (description, parameters) = crate::skill::tool_spec(&self.skills);
-                        codesmith_ai::ToolSpec {
-                            name: t.name().into(),
-                            description,
-                            parameters,
-                        }
+                }
+                Tool::Skill => {
+                    let (description, parameters) = crate::skill::tool_spec(&self.skills);
+                    codesmith_ai::ToolSpec {
+                        name: t.name().into(),
+                        description,
+                        parameters,
                     }
-                    t => t.spec(&self.shell),
-                })
-                .chain(
-                    self.mcp_tools()
-                        .into_iter()
-                        .map(|t| codesmith_ai::ToolSpec {
-                            name: t.name,
-                            description: t.description,
-                            parameters: t.schema,
-                        }),
-                )
-                .chain(self.resource_tools())
-                .chain(
-                    self.plugin_tools(plugins)
-                        .iter()
-                        .map(|t| codesmith_ai::ToolSpec {
-                            name: t.name().to_string(),
-                            description: t.description().to_string(),
-                            parameters: t.parameters(),
-                        }),
-                )
-                .chain(execute)
-                .chain(automation)
-                .collect(),
-            max_tokens: self.model.max_output,
-            temperature: self.model.temperature,
-            options: self.model.options.clone(),
-            body: self.model.body.clone(),
-        }
+                }
+                t => t.spec(&self.shell),
+            })
+            .chain(
+                self.mcp_tools()
+                    .into_iter()
+                    .map(|t| codesmith_ai::ToolSpec {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.schema,
+                    }),
+            )
+            .chain(self.resource_tools())
+            .chain(
+                self.plugin_tools(plugins)
+                    .iter()
+                    .map(|t| codesmith_ai::ToolSpec {
+                        name: t.name().to_string(),
+                        description: t.description().to_string(),
+                        parameters: t.parameters(),
+                    }),
+            )
+            .chain(execute)
+            .chain(automation)
+            .collect()
     }
 
     /// One user turn: runs steps until the model answers without tool calls.
@@ -588,6 +612,9 @@ impl Session {
             self.push(results)?;
         }
         self.turn.stopped = None;
+        // Commands that finished since the last turn ended come first, in
+        // the order things happened.
+        self.report_finished_jobs()?;
         let mut user = Message::user(text);
         user.parts.extend(media.into_iter().map(Part::Media));
         self.push(user)?;
@@ -614,12 +641,13 @@ impl Session {
                 error: err.as_deref(),
             },
         );
+        // The title call's tokens count too, so finish it before saving usage.
+        self.finish_title().await;
         if let Some(s) = &self.store {
             if self.stored {
                 let _ = s.set_usage(&self.id, &self.usage);
             }
         }
-        self.finish_title().await;
         result
     }
 
@@ -637,8 +665,16 @@ impl Session {
         loop {
             self.report_finished_jobs()?;
             if !compacted_this_step && self.due_for_compaction() {
-                self.compact(sink).await?;
-                compacted_this_step = true;
+                if self.worth_compacting() {
+                    self.compact(sink).await?;
+                    compacted_this_step = true;
+                } else if !self.compaction_skipped {
+                    self.compaction_skipped = true;
+                    sink.notice(&format!(
+                        "the prompt (~{} tokens) is over the compaction limit, but the recent history is already small: the system prompt and tool definitions take most of it, so it is not compacted. Use a model with a larger context or fewer tools.",
+                        self.last_prompt_tokens.max(self.estimate_prompt())
+                    ));
+                }
             }
             // The last allowed step must answer in text (OpenCode's MAX_STEPS).
             let final_step = steps + 1 >= max_steps;
@@ -727,7 +763,12 @@ impl Session {
                     self.push(Message::user(runner::CONTINUE_AFTER_OUTPUT_LIMIT))?;
                     continue;
                 }
-                if self.jobs.running() == 0 && self.jobs_pending() == 0 {
+                if self.jobs_pending() > 0 {
+                    // A background command finished meanwhile: report it
+                    // (at the top of the loop) and let the model carry on.
+                    continue;
+                }
+                if self.jobs.running() == 0 {
                     let answer = self.last_answer();
                     let idle = crate::plugin::Idle {
                         session_id: &self.id,
@@ -743,18 +784,20 @@ impl Session {
                     }
                     return Ok(());
                 }
-                // The model is done for now, but background commands are still
-                // running: wait for one, report it, and let the model continue.
-                sink.notice(&format!(
-                    "waiting for {} background command(s)…",
-                    self.jobs.running()
-                ));
-                self.jobs.wait_any().await;
-                continue;
+                // The model answered while background commands still run:
+                // the turn ends here, as in OpenCode, and each command is
+                // reported when it finishes (`resume_background`, or the
+                // next prompt). One-shot callers (`codesmith run`,
+                // subagents, automations) wait with `settle_background`.
+                return Ok(());
             }
             let mut results = Vec::new();
             let plugins = crate::plugin::active();
-            for (id, name, input) in calls {
+            // An error part way through still settles the batch: the calls
+            // that ran keep their real results, the rest are interrupted.
+            let mut failure: Option<anyhow::Error> = None;
+            let mut pending = calls.into_iter();
+            for (id, name, input) in pending.by_ref() {
                 if self.turn.stopped.is_some() {
                     // The user stopped the turn: leave the rest unrun.
                     results.push(Part::ToolResult {
@@ -787,10 +830,20 @@ impl Session {
                 let started = std::time::Instant::now();
                 let verdict = repeats.check(&name, &input);
                 if verdict == Repeat::Abort {
-                    return Err(anyhow!(
+                    let why = format!(
                         "stopped: the model repeated the same {name} call {} times",
                         RepeatGuard::ABORT
-                    ));
+                    );
+                    sink.tool_end(&id, &name, &why, true);
+                    results.push(Part::ToolResult {
+                        id,
+                        name,
+                        content: why.clone(),
+                        is_error: true,
+                        media: Vec::new(),
+                    });
+                    failure = Some(anyhow!(why));
+                    break;
                 }
                 self.turn.declined.store(false, Ordering::SeqCst);
                 let mut media = Vec::new();
@@ -857,11 +910,13 @@ impl Session {
                     content.push('\n');
                     content.push_str(&note);
                 }
-                self.record(&Record::Tool {
+                if let Err(e) = self.record(&Record::Tool {
                     name: name.clone(),
                     ms: started.elapsed().as_millis() as u64,
                     error: is_error,
-                })?;
+                }) {
+                    failure = Some(e);
+                }
                 if !media.is_empty() {
                     sink.tool_media(&id, &media);
                 }
@@ -883,11 +938,26 @@ impl Session {
                     is_error,
                     media,
                 });
+                if failure.is_some() {
+                    break;
+                }
+            }
+            for (id, name, _) in pending {
+                results.push(Part::ToolResult {
+                    id,
+                    name,
+                    content: runner::TOOLS_INTERRUPTED.into(),
+                    is_error: true,
+                    media: Vec::new(),
+                });
             }
             self.push(Message {
                 role: Role::User,
                 parts: results,
             })?;
+            if let Some(e) = failure {
+                return Err(e);
+            }
             if let Some(why) = self.turn.stopped {
                 sink.notice(&format!("stopped: {why}"));
                 return Ok(());
@@ -896,6 +966,100 @@ impl Session {
                 return Ok(());
             }
         }
+    }
+
+    /// Background commands still running.
+    pub fn background_running(&self) -> usize {
+        self.jobs.running()
+    }
+
+    /// Background commands that finished but were not reported to the model yet.
+    pub fn background_finished(&self) -> usize {
+        self.jobs_pending()
+    }
+
+    /// Wait until a background command finishes (at once if one already
+    /// has, or if none are running).
+    pub async fn wait_background(&self) {
+        self.jobs.wait_any().await;
+    }
+
+    /// Kills this session's commands from a signal handler (see [`tool::shell::Reaper`]).
+    pub fn reaper(&self) -> tool::shell::Reaper {
+        self.jobs.reaper()
+    }
+
+    /// Stop every command this session still runs (SIGTERM to each process
+    /// group, SIGKILL after a grace period).
+    pub async fn stop_background(&self) {
+        self.jobs.stop_all().await;
+    }
+
+    /// Report background commands that finished since the turn ended and
+    /// let the model carry on (OpenCode resumes a session with each
+    /// finished command's notice). Does nothing when none finished.
+    pub fn resume_background<'a>(
+        &'a mut self,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.resume_inner(sink))
+    }
+
+    async fn resume_inner(&mut self, sink: &mut dyn Sink) -> Result<()> {
+        if self.jobs_pending() == 0 {
+            return Ok(());
+        }
+        if let Some(results) = runner::unsettled(&self.messages) {
+            self.push(results)?;
+        }
+        self.turn.stopped = None;
+        let result = self.run_steps(sink).await;
+        // Another end tree for the same turn: undo then covers these changes too.
+        if self.parent.is_none() && self.stored && self.loaded.config.snapshots.unwrap_or(true) {
+            if let Some(snaps) = Snapshots::for_project(&self.root) {
+                if let Ok(tree) = tokio::task::block_in_place(|| snaps.capture()) {
+                    self.record(&Record::TurnEnd { tree })?;
+                }
+            }
+        }
+        if let (Some(s), true) = (&self.store, self.stored) {
+            let _ = s.set_usage(&self.id, &self.usage);
+        }
+        result
+    }
+
+    /// Wait for this session's background commands and let the model act on
+    /// each result, until none are left: what a one-shot caller does after
+    /// [`Session::prompt`] (OpenCode's `run` waits for the jobs its prompt
+    /// started, then exits). A command that never ends (a dev server) keeps
+    /// this waiting until it is stopped.
+    pub fn settle_background<'a>(
+        &'a mut self,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            while self.jobs.running_or_unreported() > 0 {
+                if self.turn.stopped.is_some() {
+                    return Ok(());
+                }
+                if self.jobs_pending() == 0 {
+                    let running = self.jobs.running_jobs();
+                    let names: Vec<String> = running
+                        .iter()
+                        .map(|j| format!("{} ({})", j.id, short_command(&j.command)))
+                        .collect();
+                    sink.notice(&format!(
+                        "waiting for {} background command{}: {}",
+                        running.len(),
+                        if running.len() == 1 { "" } else { "s" },
+                        names.join(", ")
+                    ));
+                    self.jobs.wait_any().await;
+                }
+                self.resume_inner(sink).await?;
+            }
+            Ok(())
+        })
     }
 
     fn jobs_pending(&self) -> usize {
@@ -1492,7 +1656,13 @@ impl Session {
             parent: sink,
             label: agent_id.to_string(),
         };
-        let outcome = child.prompt(&task, &mut csink).await;
+        // The child is dropped (stopping its commands) once it reports, so
+        // it waits for its background commands first. OpenCode reports at
+        // once and resumes the child later; a child here cannot be resumed.
+        let outcome = match child.prompt(&task, &mut csink).await {
+            Ok(()) => child.settle_background(&mut csink).await,
+            Err(e) => Err(e),
+        };
         add(&mut self.usage, &child.usage);
         let answer = child
             .messages
@@ -1532,19 +1702,19 @@ impl Session {
         }
     }
 
-    /// Estimated size of the next request: system prompt, tool definitions
-    /// and history (about four characters per token).
+    /// Estimated size of the next request: system prompt, every offered
+    /// tool definition (MCP, plugin and the rest, not only the built-in
+    /// tools) and history (about four characters per token).
     pub fn estimate_prompt(&self) -> u64 {
+        let plugins = crate::plugin::active();
+        let code = self.code_entries();
         let tools: usize = self
-            .tools
+            .tool_specs(&plugins, &code)
             .iter()
-            .map(|t| {
-                serde_json::to_string(&t.spec(&self.shell))
-                    .map(|s| s.len())
-                    .unwrap_or(0)
-            })
+            .map(|t| serde_json::to_string(t).map(|s| s.len()).unwrap_or(0))
             .sum();
-        (self.system.len() + tools).div_ceil(4) as u64 + compaction::estimate(&self.messages)
+        (self.system_prompt(&code).len() + tools).div_ceil(4) as u64
+            + compaction::estimate(&self.messages)
     }
 
     fn due_for_compaction(&self) -> bool {
@@ -1561,6 +1731,22 @@ impl Session {
         }
     }
 
+    /// Whether summarizing again could shrink the prompt: not when the
+    /// history after the checkpoint still fits in what compaction keeps.
+    /// The prompt is then over the limit because of the system prompt and
+    /// tool definitions (many MCP tools on a small model), and every step
+    /// would summarize again for nothing. Without a checkpoint the history
+    /// itself may be what fills the window (the estimate can be well off),
+    /// so the first compaction always runs.
+    fn worth_compacting(&self) -> bool {
+        match self.messages.first() {
+            Some(m) if is_checkpoint(m) => {
+                compaction::estimate(&self.messages[1..]) > self.loaded.config.compaction.keep()
+            }
+            _ => true,
+        }
+    }
+
     /// Replace older history with a structured summary, keeping the newest turns.
     pub async fn compact(&mut self, sink: &mut dyn Sink) -> Result<()> {
         let before = self.estimate_prompt();
@@ -1569,23 +1755,23 @@ impl Session {
             return Err(anyhow!("nothing to compact yet"));
         }
         // Unstored sessions have no sequence numbers at all, so look at the text.
-        let update = self.seqs.first() == Some(&None)
-            && self.messages.first().is_some_and(|m| {
-                matches!(m.parts.first(), Some(Part::Text(t)) if t.starts_with("<conversation-checkpoint>"))
-            });
+        let update =
+            self.seqs.first() == Some(&None) && self.messages.first().is_some_and(is_checkpoint);
         let mut convo = compaction::for_summary(&self.messages[..k]);
         convo.push(Message::user(compaction::prompt(update)));
-        let (mut summary, _) =
+        let (mut summary, usage) =
             complete(&self.client, &self.model, SUMMARY_SYSTEM, &convo, None).await?;
+        self.count_side_call(usage)?;
         if !compaction::is_summary(&summary) {
             convo.push(Message {
                 role: Role::Assistant,
                 parts: vec![Part::Text(summary.clone())],
             });
             convo.push(Message::user(compaction::NUDGE));
-            summary = complete(&self.client, &self.model, SUMMARY_SYSTEM, &convo, None)
-                .await?
-                .0;
+            let usage;
+            (summary, usage) =
+                complete(&self.client, &self.model, SUMMARY_SYSTEM, &convo, None).await?;
+            self.count_side_call(usage)?;
         }
         if summary.trim().is_empty() {
             return Err(anyhow!(
@@ -1621,7 +1807,22 @@ impl Session {
         Ok(())
     }
 
-    fn spawn_title(&self, first: &str) -> tokio::task::JoinHandle<Option<String>> {
+    /// Count a model call made outside the steps (a summary or a title):
+    /// its tokens go into the session usage, and a step record lets
+    /// `codesmith stats` count them for the model that made the call.
+    fn count_side_call(&mut self, usage: Usage) -> Result<()> {
+        if usage == Usage::default() {
+            return Ok(());
+        }
+        add(&mut self.usage, &usage);
+        self.record(&Record::Step {
+            model: self.model_spec.clone(),
+            usage,
+        })?;
+        Ok(())
+    }
+
+    fn spawn_title(&self, first: &str) -> tokio::task::JoinHandle<(Option<String>, Usage)> {
         let client = self.client.clone();
         let model = self.model.clone();
         let msg = vec![Message::user(title::request(first))];
@@ -1637,9 +1838,10 @@ impl Session {
                 policy,
             )
             .await
-            .ok()
-            .map(|r| r.0);
-            Some(reply.and_then(|r| title::clean(&r)).unwrap_or(fallback))
+            .ok();
+            let usage = reply.as_ref().map(|r| r.1).unwrap_or_default();
+            let title = reply.and_then(|r| title::clean(&r.0)).unwrap_or(fallback);
+            (Some(title), usage)
         })
     }
 
@@ -1647,7 +1849,11 @@ impl Session {
         let Some(task) = self.title_task.take() else {
             return;
         };
-        if let Ok(Ok(Some(t))) = tokio::time::timeout(Duration::from_secs(20), task).await {
+        if let Ok(Ok((title, usage))) = tokio::time::timeout(Duration::from_secs(20), task).await {
+            let _ = self.count_side_call(usage);
+            let Some(t) = title else {
+                return;
+            };
             // A title set while this one was generating wins.
             if self.title.is_some() {
                 return;
@@ -1740,6 +1946,22 @@ impl Session {
 }
 
 /// A tool-free model call that returns the whole text reply.
+/// The summary message a compaction leaves at the start of the history.
+fn is_checkpoint(m: &Message) -> bool {
+    m.role == Role::User
+        && matches!(m.parts.first(), Some(Part::Text(t)) if t.starts_with("<conversation-checkpoint>"))
+}
+
+/// A command's first line, cut to 60 characters, for a progress notice.
+fn short_command(command: &str) -> String {
+    let line = command.lines().next().unwrap_or("").trim();
+    if line.chars().count() > 60 || command.trim().contains('\n') {
+        format!("{}…", line.chars().take(60).collect::<String>())
+    } else {
+        line.to_string()
+    }
+}
+
 pub async fn complete(
     client: &reqwest::Client,
     model: &ModelRef,

@@ -103,8 +103,9 @@ async fn the_explore_subagent_searches_and_reports_back() {
             kid.id
         )
     );
-    // The parent's usage includes the child's three steps.
-    assert_eq!(out.done()["usage"]["input"], 500);
+    // The parent's usage includes the child's three steps (and its own
+    // title call).
+    assert_eq!(out.done()["usage"]["input"], 600);
     // Children stay out of the default listing.
     assert_eq!(db.list(None, false).unwrap().len(), 1);
     let stats = e.run(&["stats", "--all", "--json"]).await;

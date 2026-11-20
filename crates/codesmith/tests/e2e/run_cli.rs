@@ -89,8 +89,9 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
     let done = out.done();
     assert_eq!(done["error"], Value::Null);
     assert_eq!(done["title"], "Fix add.sh");
-    assert_eq!(done["usage"]["input"], 400);
-    assert_eq!(done["usage"]["output"], 40);
+    // Four steps and the title call.
+    assert_eq!(done["usage"]["input"], 500);
+    assert_eq!(done["usage"]["output"], 50);
     let sid = done["session"].as_str().unwrap().to_string();
 
     // What the model was sent.
@@ -119,15 +120,20 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
     let info = db.get(&sid).unwrap().unwrap();
     assert_eq!(info.directory, e.project.display().to_string());
     assert_eq!(info.title.as_deref(), Some("Fix add.sh"));
-    assert_eq!((info.usage.input, info.usage.output), (400, 40));
+    assert_eq!((info.usage.input, info.usage.output), (500, 50));
     let h = e.history(&sid);
     assert_eq!(user_texts(&h), ["fix add.sh"]);
     assert_eq!(tool_results(&h).len(), 3);
     let kinds = e.record_kinds(&sid);
-    assert_eq!(kinds.iter().filter(|k| *k == "step").count(), 4);
+    // Four steps, then the title call's.
+    assert_eq!(kinds.iter().filter(|k| *k == "step").count(), 5);
     assert_eq!(kinds.iter().filter(|k| *k == "tool").count(), 3);
     assert_eq!(kinds.first().map(String::as_str), Some("snapshot"));
-    assert_eq!(kinds.last().map(String::as_str), Some("turn_end"));
+    // The turn ends, then the title call (which ran beside it) is counted.
+    assert_eq!(
+        kinds[kinds.len() - 2..],
+        ["turn_end".to_string(), "step".to_string()]
+    );
 
     // diff → undo → redo.
     let diff = e.run(&["session", "diff"]).await;
@@ -214,20 +220,24 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
 }
 
 /// The numbers `stats --json` reports after the fix (four steps, three
-/// tools) and the recap (one step), priced at $1/$2 per million tokens.
+/// tools, the title call) and the recap (one step), priced at $1/$2 per
+/// million tokens.
 fn assert_stats(s: &Value) {
     assert_eq!(
         (&s["sessions"], &s["subagents"], &s["prompts"], &s["steps"]),
-        (&json!(1), &json!(0), &json!(2), &json!(5)),
+        (&json!(1), &json!(0), &json!(2), &json!(6)),
         "{s:#}"
     );
     assert_eq!(
         (&s["tokens"]["input"], &s["tokens"]["output"]),
-        (&json!(500), &json!(50))
+        (&json!(600), &json!(60))
     );
-    assert!((s["cost"].as_f64().unwrap() - 0.0006).abs() < 1e-9, "{s:#}");
+    assert!(
+        (s["cost"].as_f64().unwrap() - 0.00072).abs() < 1e-9,
+        "{s:#}"
+    );
     assert_eq!(s["models"][0]["model"], "fake/m");
-    assert_eq!(s["models"][0]["steps"], 5);
+    assert_eq!(s["models"][0]["steps"], 6);
     let mut tools: Vec<(String, u64, u64)> = s["tools"]
         .as_array()
         .unwrap()
@@ -443,4 +453,138 @@ async fn processes_opening_a_new_database_together_all_succeed() {
             );
         }
     }
+}
+
+/// As OpenCode's `run`: the prompt's background commands are waited for,
+/// and the model is resumed with each result before the run exits.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_waits_for_background_commands_and_resumes_the_model() {
+    let e = Env::new();
+    let ask = M::tools().and(M::prompt("build it"));
+    let notified = M::last("<shell id=\"shell_1\"");
+    let m = Model::start(
+        Script::new()
+            .titled("Build")
+            .then(
+                "start",
+                ask.clone().and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "sleep 1; echo built-ok", "description": "build", "background": true}),
+                ),
+            )
+            .then(
+                "answer",
+                ask.clone().and(M::step(1)).and(notified.clone().not()),
+                Reply::text("The build is running."),
+            )
+            .always(
+                "resumed",
+                M::tools().and(notified),
+                Reply::text(" It finished."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let out = e
+        .run(&["run", "--auto", "--format", "json", "build it"])
+        .await;
+    out.ok();
+    assert_eq!(
+        out.text(),
+        "The build is running. It finished.",
+        "{}",
+        out.both()
+    );
+    let resumed = &m.by("resumed")[0];
+    let last = model::messages(resumed).last().cloned().unwrap();
+    assert!(model::content(&last).contains("built-ok"), "{last}");
+}
+
+/// Fixed: Ctrl-C on a run waiting for a background server left the server
+/// running (it is in its own process group, which never got the signal).
+/// Now the run stops it and exits; before the fix the turn itself never
+/// ended while the command ran, in `run` and in the TUI and server.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupting_a_run_stops_its_background_server() {
+    let e = Env::new();
+    let pid_file = e.path("server.pid");
+    let command = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
+    let m = Model::start(
+        Script::new()
+            .titled("Bg")
+            .then(
+                "start",
+                M::tools()
+                    .and(M::prompt("start the server"))
+                    .and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": command, "description": "server", "background": true}),
+                ),
+            )
+            .always(
+                "said",
+                M::tools()
+                    .and(M::prompt("start the server"))
+                    .and(M::step(0).not()),
+                Reply::text("The server is running in the background."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let child = e
+        .command(&["run", "--auto", "start the server"])
+        .spawn()
+        .unwrap();
+    let mut server = String::new();
+    for _ in 0..300 {
+        server = std::fs::read_to_string(&pid_file)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !server.is_empty() && !m.by("said").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!server.is_empty(), "the server never started");
+    // Let the run settle into waiting.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let alive = |pid: &str| {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(
+        alive(&server),
+        "the run should still be waiting on the server"
+    );
+    let pid = child.id().unwrap().to_string();
+    std::process::Command::new("/bin/kill")
+        .args(["-INT", &pid])
+        .status()
+        .unwrap();
+    let t = std::time::Instant::now();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+        .await
+        .expect("the run did not exit after Ctrl-C")
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let gone = !alive(&server);
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-9", &server])
+        .status();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{stderr}");
+    assert_ne!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("waiting for 1 background command: shell_1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("interrupted"), "{stderr}");
+    assert!(gone, "the server {server} outlived the run:\n{stderr}");
 }

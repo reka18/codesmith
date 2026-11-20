@@ -238,21 +238,13 @@ enum AutomationCmd {
         agent: Option<String>,
     },
     /// Pause an automation; it keeps its schedule but does not run.
-    Pause {
-        id: String,
-    },
+    Pause { id: String },
     /// Resume a paused automation (its next run is computed from now).
-    Resume {
-        id: String,
-    },
+    Resume { id: String },
     /// Delete an automation and its run log.
-    Remove {
-        id: String,
-    },
+    Remove { id: String },
     /// Show an automation's runs.
-    Log {
-        id: String,
-    },
+    Log { id: String },
     /// Run automations in the foreground until stopped (for launchd or systemd).
     Serve,
     /// Fire whatever is due once and exit.
@@ -1618,7 +1610,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
                 Err(e) => Err(e),
             }
         }
-        None => session.prompt_with(&message, media, &mut sink).await,
+        None => run_turn(&mut session, &message, media, &mut sink).await,
     };
     sink.done(
         &session.usage,
@@ -1627,6 +1619,75 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         session.title.as_deref(),
     );
     result
+}
+
+/// The prompt of `codesmith run`, then its background commands, as
+/// OpenCode's `run` does: the model is resumed with each result until none
+/// are left. Ctrl-C (or SIGTERM) stops the turn and every command it
+/// started, process groups included, and fails the run; a second Ctrl-C
+/// while the first is still being handled (a permission prompt is waiting
+/// on the terminal, say) kills the commands and exits at once.
+async fn run_turn(
+    session: &mut Session,
+    message: &str,
+    media: Vec<codesmith_ai::Media>,
+    sink: &mut render::Printer,
+) -> Result<()> {
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<&'static str>();
+    let reaper = session.reaper();
+    let watcher = tokio::spawn(async move {
+        let why = interrupt_signal().await;
+        let _ = tx.send(why);
+        interrupt_signal().await;
+        eprintln!("\x1b[2minterrupted again: exiting\x1b[0m");
+        reaper.kill_all();
+        std::process::exit(130);
+    });
+    let outcome = {
+        let turn = async {
+            session.prompt_with(message, media, &mut *sink).await?;
+            session.settle_background(&mut *sink).await
+        };
+        tokio::select! {
+            r = turn => Ok(r),
+            why = &mut rx => Err(why.unwrap_or("interrupted")),
+        }
+    };
+    let result = match outcome {
+        Ok(r) => r,
+        Err(why) => {
+            // The turn future is gone: a running foreground command was
+            // stopped with it. Now the background ones.
+            eprintln!("\x1b[2m{why}: stopping background commands…\x1b[0m");
+            session.stop_background().await;
+            Err(anyhow!("{why}"))
+        }
+    };
+    watcher.abort();
+    result
+}
+
+/// Resolves on the next SIGINT or SIGTERM, naming it.
+async fn interrupt_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let (Ok(mut int), Ok(mut term)) = (
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::terminate()),
+        ) else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = int.recv() => "interrupted",
+            _ = term.recv() => "terminated",
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "interrupted"
+    }
 }
 
 #[cfg(test)]
