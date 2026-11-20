@@ -168,12 +168,54 @@ pub fn copied(entries: &[Entry], boundary: Boundary) -> Vec<Entry> {
             }
         }
     }
+    // Metadata a plugin's prompt hook kept with a copied message goes with
+    // it, though it was written just after the boundary message; that of a
+    // message left behind does not.
+    let kept: std::collections::HashSet<i64> = out
+        .iter()
+        .filter(|e| matches!(e.record, Record::Message { .. }))
+        .map(|e| e.seq)
+        .collect();
+    out.retain(|e| !matches!(&e.record, Record::Metadata { seq, .. } if !kept.contains(seq)));
+    for e in entries.iter().filter(|e| e.seq >= end) {
+        if matches!(&e.record, Record::Metadata { seq, .. } if kept.contains(seq)) {
+            out.push(e.clone());
+        }
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_prompt_metadata_with_its_message() {
+        let e = |seq, record| Entry {
+            seq,
+            created: 0,
+            record,
+        };
+        let user = |t: &str| Record::Message {
+            message: codesmith_ai::Message::user(t),
+        };
+        let meta = |seq| Record::Metadata {
+            seq,
+            metadata: serde_json::json!({"tag": seq}),
+        };
+        let entries = vec![
+            e(1, user("first")),
+            e(2, meta(1)),
+            e(3, user("second")),
+            e(4, meta(3)),
+        ];
+        // Through the last message: its metadata, written after it, too.
+        let all = copied(&entries, Boundary::Through(3));
+        assert_eq!(all.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        // Before the second: only the first message's.
+        let first = copied(&entries, Boundary::Before(3));
+        assert_eq!(first.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2]);
+    }
 
     #[test]
     fn titles_count_forks() {

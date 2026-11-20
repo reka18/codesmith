@@ -61,8 +61,12 @@ impl Tool for Lookup {
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]})
     }
-    fn execute<'a>(&'a self, _: ToolContext, _: Value) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(async { Ok(String::new()) })
+    fn execute<'a>(
+        &'a self,
+        _: ToolContext,
+        input: Value,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move { Ok(format!("looked up {input}")) })
     }
 }
 
@@ -308,4 +312,165 @@ async fn oc_keeps_hook_edits_to_a_tool_schema_out_of_later_requests() {
         .collect();
     assert_eq!(required, [json!(["id", "extra"]), json!(["id", "extra"])]);
     assert_eq!(Lookup.parameters()["required"], json!(["id"]));
+}
+
+/// The tool results of a request, in order.
+fn tool_results(body: &Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A context hook's renames compose with input repair: a call is repaired
+/// against the schema the tool was offered with, and another harness's
+/// name (`bash`) reaches `shell` only while `shell` is offered as itself,
+/// never a renamed tool by its old name.
+#[tokio::test(flavor = "multi_thread")]
+async fn renamed_tools_are_repaired_against_their_offered_schema_and_not_reached_by_alias() {
+    let (state, _lock) = state();
+    *state.context.lock().unwrap() = Some(Box::new(|c: &mut Context| {
+        for t in &mut c.tools {
+            match t.name.as_str() {
+                "shell" => t.name = "run".into(),
+                "lookup" => {
+                    t.name = "find".into();
+                    t.parameters["properties"]["n"] = json!({"type": "integer"});
+                }
+                _ => {}
+            }
+        }
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    let m = serve(|r| {
+        let n = tool_results(&r.body).len();
+        match n {
+            0 => tool(
+                "c0",
+                "bash",
+                json!({"command": "echo via-bash", "description": "x"}),
+            ),
+            1 => tool(
+                "c1",
+                "shell",
+                json!({"command": "echo via-shell", "description": "x"}),
+            ),
+            2 => tool("c2", "find", json!({"id": "a", "n": "2"})),
+            3 => tool(
+                "c3",
+                "run",
+                json!({"command": "echo via-run", "description": "x"}),
+            ),
+            _ => text("Done"),
+        }
+    })
+    .await;
+    let l = loaded(dir.path(), &m.base, json!({}));
+    let mut s = session(&l, dir.path(), None);
+    s.prompt("Go", &mut Collect::default()).await.unwrap();
+    let results = tool_results(&m.requests().last().unwrap().body);
+    assert!(results[0].contains("No tool named \"bash\""), "{results:?}");
+    assert!(
+        results[1].contains("No tool named \"shell\""),
+        "{results:?}"
+    );
+    assert!(
+        results[2].contains("\"n\":2"),
+        "repaired against the hook's schema: {results:?}"
+    );
+    assert!(results[3].contains("via-run"), "{results:?}");
+    assert!(!results
+        .iter()
+        .any(|r| r.contains("via-bash") || r.contains("via-shell")));
+}
+
+/// Metadata a prompt hook keeps goes with the message that carries a
+/// mentioned skill's content, survives a user shell command beside it, and
+/// is copied into a fork.
+#[tokio::test(flavor = "multi_thread")]
+async fn prompt_metadata_survives_skill_mentions_user_shell_commands_and_forks() {
+    let (state, _lock) = state();
+    *state.prompt.lock().unwrap() = Some(Box::new(|p: &mut Prompt| {
+        if p.text.contains("CANARY") {
+            p.metadata = Some(json!({"tag": "canary"}));
+        }
+    }));
+    *state.context.lock().unwrap() = Some(Box::new(|c: &mut Context| {
+        for m in &mut c.messages {
+            if m.metadata.as_ref().is_some_and(|v| v["tag"] == "canary") {
+                m.message.parts.insert(0, Part::text("META-MARK"));
+            }
+        }
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".codesmith/skills/deploy");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: deploy\ndescription: Deploy things\n---\nDeploy carefully\n",
+    )
+    .unwrap();
+    let db = dir.path().join("db.sqlite");
+    let m = serve(|_| text("Done")).await;
+    let l = loaded(dir.path(), &m.base, json!({}));
+    let mut s = session(&l, dir.path(), Some(Store::open(&db).unwrap()));
+    s.prompt("Use @deploy CANARY", &mut Collect::default())
+        .await
+        .unwrap();
+    let user = |body: &Value, i: usize| {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .nth(i)
+            .unwrap()["content"]
+            .to_string()
+    };
+    let first = user(&m.requests()[0].body, 0);
+    assert!(
+        first.contains("META-MARK")
+            && first.contains("Deploy carefully")
+            && first.contains("CANARY"),
+        "{first}"
+    );
+    s.shell("echo shell-ran").await.unwrap();
+    s.prompt("next", &mut Collect::default()).await.unwrap();
+    let body = m.requests().last().unwrap().body.clone();
+    assert!(user(&body, 0).contains("META-MARK"));
+    let all = body.to_string();
+    assert_eq!(
+        all.matches("META-MARK").count(),
+        1,
+        "only the tagged message: {all}"
+    );
+    assert!(all.contains("shell-ran"));
+
+    let id = s.id.clone();
+    drop(s);
+    *state.prompt.lock().unwrap() = None;
+    let mut st = Store::open(&db).unwrap();
+    st.fork_at(&id, "ses_forked", None).unwrap();
+    let mut o = options();
+    o.resume = Some("ses_forked".into());
+    let mut f = Session::new(
+        &l,
+        dir.path().to_path_buf(),
+        o,
+        Arc::new(Fixed(Reply::Once)),
+        Some(st),
+    )
+    .unwrap();
+    f.prompt("after the fork", &mut Collect::default())
+        .await
+        .unwrap();
+    let body = m.requests().last().unwrap().body.to_string();
+    assert_eq!(
+        body.matches("META-MARK").count(),
+        1,
+        "the fork keeps it: {body}"
+    );
 }
