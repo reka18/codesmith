@@ -818,7 +818,8 @@ theme):
     "keybinds": { "leader": "ctrl+o", "session.list": "ctrl+l", "help.show": "f1" },
     "leader": { "timeout": 1500 },
     "cursor": { "style": "line", "blinking": false },
-    "session": { "thinking": "show", "markdown": "rendered", "verbosity": "medium", "grouping": "auto" }
+    "session": { "thinking": "show", "markdown": "rendered", "verbosity": "medium", "grouping": "auto" },
+    "diffs": { "source": "working", "view": "auto", "tree": true, "single": false, "fullscreen": false }
   }
 }
 ```
@@ -835,18 +836,25 @@ theme):
 | `session.markdown` | `rendered` | Reasoning as rendered Markdown, or `source` for its highlighted Markdown text. |
 | `session.verbosity` | `low` | How much tool activity the transcript shows: `low` sums up each run of tool calls and thoughts on one row, `medium` shows calls on their own rows with reads and searches grouped, `high` also opens those groups. See [verbosity](interactive-ui.md#verbosity). |
 | `session.grouping` | `auto` | `none` draws reads and searches one by one rather than as one `Explored` row. |
+| `diffs.source` | `branch` | What the [diff viewer](interactive-ui.md#the-diff-viewer-and-review-panel) opens on: `branch` (the branch's commits and local changes against its base), `committed`, `working` (uncommitted changes) or `turn` (the session's last turn). |
+| `diffs.view` | `auto` | `split` or `unified` patches; `auto` splits when the pane is 100 columns wide. |
+| `diffs.tree` | `true` | Show the file tree beside the patches (full screen, at 88 columns or more). |
+| `diffs.single` | `false` | Show one file at a time. |
+| `diffs.fullscreen` | `false` | Open the viewer full screen rather than docked beside the session. |
 
 OpenCode's first TUI format (its `tui.json`) works here too and is read as
 the current one: `"theme": "name"`, `leader_timeout`, and keybind names
 like `session_list`. A name set both ways takes the command id's value.
 Settings OpenCode has for features CodeSmith lacks (`mouse`, `scroll`,
-`diffs`, `tabs`, `attention`, …) are ignored. A value that does not fit,
+`tabs`, `attention`, …) are ignored. A value that does not fit,
 an unknown command or key, and two configured bindings that clash are
 reported when the UI opens; the default is used instead.
 
 The theme picked with `/themes` is remembered (in
 `~/.local/share/codesmith/tui-state.json`) and wins over `theme.name`
-until `theme.name` itself changes.
+until `theme.name` itself changes. So are the diff viewer's layout choices
+(`tui-diff.json` beside it), until `diffs` changes: OpenCode writes them
+back to its config, and CodeSmith's UI never writes the config.
 
 ## File watching
 

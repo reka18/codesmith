@@ -47,6 +47,12 @@ replays of its recorded provider traffic.
   (`tui.session.verbosity`, `/verbosity`): at `low` each run of tool calls
   and thoughts is one summary row, at `medium` and `high` reads and
   searches are grouped; ctrl+o opens the groups.
+- **Diff viewer and review panel:** `/diff` opens OpenCode's viewer,
+  docked beside the session or full screen, on the branch against its
+  base, its commits, the uncommitted changes or the session's last turn:
+  a file tree, split or unified patches with syntax colors, hunk and file
+  navigation, review marks and single-file review, all on rebindable
+  `diff.*` keys.
 - **Tools:** read, write, edit, glob, grep, shell, web fetch, self-hosted
   web search, todos, questions, and image, PDF and video input (video only
   for models that take it).

@@ -148,8 +148,16 @@ The commands CodeSmith runs, by where they apply:
 - **Permission dialog:** `permission.allow.once` (**y**),
   `permission.allow.always` (**a**), `permission.reject` (**n**), CodeSmith's.
 
-OpenCode's other commands (session tabs, the diff viewer, …) keep their ids
-and defaults, so a shared config loads, but do nothing here. When a key is
+- **Diff viewer:** `diff.open` (unbound by default), `diff.close`,
+  `diff.down/up`, `diff.page.down/up`, `diff.half_page.down/up`,
+  `diff.first/last`, `diff.next_hunk/previous_hunk`,
+  `diff.next_file/previous_file`, `diff.mark_reviewed`,
+  `diff.toggle_file_tree`, `diff.single_patch`, `diff.switch_source`,
+  `diff.toggle_view`, `diff.toggle_fullscreen`, `diff.help`, and
+  `pane.focus.left/right`. See [the diff viewer](#the-diff-viewer-and-review-panel).
+
+OpenCode's other commands (session tabs, the terminal pane, …) keep their
+ids and defaults, so a shared config loads, but do nothing here. When a key is
 bound to more than one command in the same place, a command whose binding
 you configured goes first, then the order above; two configured bindings
 that clash, or one that starts another (so the longer one never runs), are
@@ -175,6 +183,75 @@ every group at any level and shows output and diffs in full.
 draws reads and searches one by one at `medium` and `high`. The level and
 grouping changed in the UI last for the run; the config sets them for the
 next one. A continued session's transcript is grouped the same way.
+
+## The diff viewer and review panel
+
+`/diff` (or `diff.open`, when bound) opens OpenCode's diff viewer on the
+session's folder; `/diff` again closes it. On a terminal 108 columns or
+wider it is docked on the right half, beside the session, with the keys
+going to it; **ctrl+x ←** gives them back to the prompt and **ctrl+x →**
+to the viewer (`pane.focus.left/right`). **f** shows it full screen (and
+back), which is remembered for next time; on a narrower terminal it is
+always full screen.
+
+What it compares (**d** chooses):
+
+| Source | What it shows |
+|---|---|
+| All | The branch's commits and local changes (untracked files too), against where it left its base branch (`· vs main`). |
+| Committed | The branch's commits only. |
+| Uncommitted | Local changes, against `HEAD` (`· vs HEAD`). |
+| Last turn | The files the session's last finished turn changed, from the snapshots undo keeps; it follows each new turn. |
+
+The base is found as OpenCode finds it: the branch the current one was
+created from (its reflog), or the default branch when that is the one
+checked out. When neither tells, the viewer asks you to choose rather than
+guess: the chooser's **Base** row lists local and remote branches (type to
+filter). The source and the base chosen for a branch are kept until the
+UI exits. `tui.diffs.source` sets the source it opens on.
+
+Each changed file is a card: its path and `+added -removed`, then its
+hunks with line numbers, in the theme's diff colors with syntax
+highlighting (files of more than 5000 lines are shown without it). Wide enough (a 100-column patch pane), modified files are
+shown side by side; **v** switches split and unified. Full screen at 88
+columns or more, a file tree lists the files beside the patches (folders
+first, single-folder chains on one row, `A`/`M`/`D` or `✓`); **b** hides
+it. Binary files and images have a note instead of a patch (images are not
+previewed in the terminal); git's patch text is read up to 10 MB in all,
+and untracked files only when they are text files inside the project,
+under 1 MB, not through a symlink.
+
+| Key | Action |
+|---|---|
+| **j**/**k**, **↓**/**↑** | Scroll a line. |
+| **ctrl+d**/**ctrl+u** | Half a page. |
+| **pgdn**/**pgup**, **ctrl+f**/**ctrl+b** | A page. |
+| **gg**, **home** / **G**, **end** | The start or the end. |
+| **]** / **[** | The next or previous hunk. |
+| **n**, **alt+↓** / **p**, **alt+↑** | The next or previous file (opening its folder in the tree). |
+| **m** | Mark the file in view reviewed (its card folds to its title), or unmark it. |
+| **s** | One file at a time; reviewing moves on to the next. |
+| **v** | Split or unified. |
+| **b** | Show or hide the file tree. |
+| **d** | Choose the source or the base. |
+| **f** | Full screen or docked. |
+| **?** | The viewer's shortcuts, with the bindings in effect. |
+| **esc**, **q**, **ctrl+c** | Close the viewer. |
+
+The review count (`2/5`) is in the header. Review marks belong to the
+viewer: they are cleared when its files change (another source, a new
+turn) or it closes, and, as in OpenCode, they are not sent to the model or
+to `/review`. A file's title stays at the top while its card is in view.
+Only the rows in view are drawn, so a diff of thousands of lines scrolls as
+fast as a small one. While a permission or question waits, the docked
+viewer keeps its keys (focus the prompt to answer); full screen, its last
+row says so.
+
+The layout chosen in the viewer (tree, single file, split or unified, full
+screen) is remembered across runs until `tui.diffs` changes; see
+[`tui.diffs`](configuration.md#the-terminal-ui-tui). OpenCode's mouse
+actions (clicking folders and the source label, the right-click file menu,
+image previews) have no counterpart.
 
 ## Themes
 
@@ -222,6 +299,7 @@ and `opencode` is used.
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |
+| `/diff` | Open or close the [diff viewer and review panel](#the-diff-viewer-and-review-panel). |
 | `/verbosity [low\|medium\|high]` | Cycle the transcript's [verbosity](#verbosity), or set it. |
 | `/themes [name\|dark\|light\|system]` | Pick a [theme](#themes) (`/theme` too), or set its mode. |
 | `/help` | Keys and commands. |

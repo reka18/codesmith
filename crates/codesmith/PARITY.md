@@ -49,6 +49,11 @@ Where the tests live:
   `grouping-tree`, `session-grouping`, `session-rows`, `group-view`,
   `session-activity-anchor`, `session-backfill-disclosure`,
   `session-mount-budget`, and the grouping settings of `config-v2`).
+- `src/tui/parity_diff.rs`, `src/tui/diff_tree.rs` and
+  `src/tui/diff_source.rs`: the diff viewer and review panel
+  (`cli/tui/diff-viewer`, `diff-viewer-file-tree`, `diff-viewer-image`,
+  `feature-plugins/diff-viewer-file-tree-utils`, `session-panel`, `panel`,
+  and the diff settings of `config-v2`).
 - `src/tui/parity_keys.rs`: key bindings and the UI's settings
   (`tui/test/config`, `config-v2`, `keymap`, `cli/tui/dialog-prompt`,
   `cli/tui/reasoning-body`, `cli/test/config`).
@@ -78,14 +83,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 37 | 15 | 52 | 165 | 0 |
 | cli: ACP | 105 | 40 | 0 | 22 | 22 | 21 |
-| tui: main UI | 1250 | 13 | 129 | 508 | 587 | 13 |
+| tui: main UI | 1250 | 13 | 256 | 344 | 624 | 13 |
 | tui: mini mode | 425 | 3 | 3 | 417 | 2 | 0 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 |
 | codemode | 1666 | 647 | 179 | 39 | 586 | 215 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 |
 | util | 140 | 2 | 0 | 17 | 111 | 10 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 |
-| **Total** | **4637** | **742** | **326** | **1055** | **2255** | **259** |
+| **Total** | **4637** | **742** | **453** | **891** | **2292** | **259** |
 
 ## Fixes made while porting
 
@@ -192,6 +197,31 @@ Where the tests live:
   command's output and a running subagent's row stay in view below their
   collapsed group, as OpenCode keeps a call waiting for permission there.
   The level is not written back to the config (the UI never writes it).
+
+- **The diff viewer and review panel** (`cli/tui/diff-viewer` and the
+  rest of its roadmap group): there was none. `/diff` (or `diff.open`)
+  now opens OpenCode's viewer, docked beside the session from 108 columns
+  (`pane.focus.left/right` move the keys between the two) or full screen
+  (`f`, remembered). Its sources are OpenCode's: `All` (the branch against
+  its base, found from its reflog or the default branch, never guessed),
+  `Committed`, `Uncommitted` and `Last turn` (from the snapshots undo
+  keeps); the chooser (`d`) also picks the base among the branches, kept
+  per branch until the UI exits. Files are cards with a file tree beside
+  them (full screen, 88 columns and up), split or unified patches (`v`,
+  split from a 100-column pane) with syntax colors, hunk (`[`/`]`) and file
+  (`n`/`p`) navigation, review marks (`m`) with the count in the header,
+  single-file view (`s`), sticky file titles, OpenCode's shortcuts dialog
+  (`?`), and every key rebindable under its `diff.*` id. Only the rows in
+  view are drawn, so a large diff costs what a small one does (0.1 ms a
+  frame). Review marks stay in the viewer: OpenCode sends them nowhere,
+  `/review` included. Differences: the layout choices are remembered beside
+  the config rather than written to it (the UI never writes the config);
+  OpenCode's mouse actions (its file menu, clicked folders and source
+  label) and image previews have no counterpart; while a permission or
+  question waits, `y` answers it once the prompt has the keys (a stray
+  Enter rejects in CodeSmith, as before); TypeScript is highlighted as
+  JavaScript (syntect has no TypeScript), and files over 5000 lines are
+  shown without colors.
 
 ## Differences found but not fixed
 
@@ -349,6 +379,101 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/session-mount-budget` | an expanded group spends the mounting budget that older rows used | after a fix | oc_an_expanded_group_spends_the_mounting_budget_that_older_rows_used (adapted: only the rows in view are laid out) |
 | `tui/test/config-v2` | shows transcript verbosity in session settings | after a fix | oc_shows_transcript_verbosity_in_session_settings (adapted: no settings dialog; the `tui` setting) |
 | `tui/test/config-v2` | names tool grouping explicitly in settings | after a fix | oc_names_tool_grouping_explicitly_in_settings (adapted: the `tui` setting) |
+| `tui/test/cli/tui/diff-viewer` | closing the diff viewer returns to the route it opened from | after a fix | oc_closing_the_diff_viewer_returns_to_the_route_it_opened_from (adapted: back to the session) |
+| `tui/test/cli/tui/diff-viewer` | standalone full-screen diff does not expose panel-only toggling at %i columns | after a fix | oc_standalone_full_screen_diff_does_not_expose_panel_only_toggling_at_80_columns (adapted: the 80-column case; the 160-column standalone route is by design) |
+| `tui/test/cli/tui/diff-viewer` | ctrl+c closes the diff viewer without exiting the application | after a fix | oc_ctrl_c_closes_the_diff_viewer_without_exiting_the_application |
+| `tui/test/cli/tui/diff-viewer` | shows an error instead of an empty diff when loading fails | after a fix | oc_shows_an_error_instead_of_an_empty_diff_when_loading_fails |
+| `tui/test/cli/tui/diff-viewer` | base lookup is lazy until the viewer opens | after a fix | oc_base_lookup_is_lazy_until_the_viewer_opens |
+| `tui/test/cli/tui/diff-viewer` | the source chooser selects all three scopes directly at %i columns (2 cases) | after a fix | oc_the_source_chooser_selects_all_three_scopes_directly_at_50_columns, …_at_160_columns |
+| `tui/test/cli/tui/diff-viewer` | reopening remembers the last source choice instead of the initial %s setting (3 cases) | after a fix | oc_reopening_remembers_the_last_source_choice_instead_of_the_initial_branch_setting, …_committed_setting, …_working_setting |
+| `tui/test/cli/tui/diff-viewer` | the turn source diffs the session's last turn without resolving a base | after a fix | oc_the_turn_source_diffs_the_sessions_last_turn_without_resolving_a_base |
+| `tui/test/cli/tui/diff-viewer` | the turn source refreshes only when the session finishes a turn | after a fix | oc_the_turn_source_refreshes_only_when_the_session_finishes_a_turn |
+| `tui/test/cli/tui/diff-viewer` | an empty or failing turn diff uses the viewer's empty and error states | after a fix | oc_an_empty_or_failing_turn_diff_uses_the_viewers_empty_and_error_states |
+| `tui/test/cli/tui/diff-viewer` | keeps scope, base, and review count on one row with a selectable base at %i columns (3 cases) | after a fix | oc_keeps_scope_base_and_review_count_on_one_row_with_a_selectable_base_at_50_columns, …_80_columns, …_160_columns (adapted: the chooser opens by its key) |
+| `tui/test/cli/tui/diff-viewer` | long comparison bases cannot hide the source or review count at %i columns (4 cases) | after a fix | oc_long_comparison_bases_cannot_hide_the_source_or_review_count_at_50_columns, …_80_columns, …_100_columns, …_160_columns |
+| `tui/test/cli/tui/diff-viewer` | opening the source chooser from initial Uncommitted does not resolve a branch base | after a fix | oc_opening_the_source_chooser_from_initial_uncommitted_does_not_resolve_a_branch_base |
+| `tui/test/cli/tui/diff-viewer` | choosing a base remembers it and refreshes only the affected %s comparison (3 cases) | after a fix | oc_choosing_a_base_remembers_it_and_refreshes_only_the_affected_branch_comparison, …_committed_comparison, …_working_comparison (adapted: the picker filters the listed branches) |
+| `tui/test/cli/tui/diff-viewer` | an ambiguous base never requests a guessed %s diff (2 cases) | after a fix | oc_an_ambiguous_base_never_requests_a_guessed_branch_diff, …_committed_diff |
+| `tui/test/cli/tui/diff-viewer` | base and scope choices survive reopening but not a new TUI instance | after a fix | oc_base_and_scope_choices_survive_reopening_but_not_a_new_tui_instance |
+| `tui/test/cli/tui/diff-viewer` | base choices are isolated by branch within the same location | after a fix | oc_base_choices_are_isolated_by_branch_within_the_same_location (adapted: the branch is read as the viewer opens) |
+| `tui/test/cli/tui/diff-viewer` | an invalid comparison reports an error and allows another base choice | after a fix | oc_an_invalid_comparison_reports_an_error_and_allows_another_base_choice |
+| `tui/test/cli/tui/diff-viewer` | base search failures are visible without changing the diff | after a fix | oc_base_search_failures_are_visible_without_changing_the_diff |
+| `tui/test/cli/tui/diff-viewer` | a late base lookup cannot overwrite an in-memory base choice | after a fix | oc_a_late_base_lookup_cannot_overwrite_an_in_memory_base_choice |
+| `tui/test/cli/tui/diff-viewer` | dismissing the base picker leaves the comparison unchanged | after a fix | oc_dismissing_the_base_picker_leaves_the_comparison_unchanged |
+| `tui/test/cli/tui/diff-viewer` | tree, single-file, and layout preferences do not refetch base or diff | after a fix | oc_tree_single_file_and_layout_preferences_do_not_refetch_base_or_diff (adapted: remembered beside the config, not written to it) |
+| `tui/test/cli/tui/diff-viewer` | the remapped source chooser preserves its current selection marker | after a fix | oc_the_remapped_source_chooser_preserves_its_current_selection_marker |
+| `tui/test/cli/tui/diff-viewer` | pending and failed scopes never render the previous scope's files | after a fix | oc_pending_and_failed_scopes_never_render_the_previous_scopes_files |
+| `tui/test/cli/tui/diff-viewer` | late diff responses cannot replace the selected scope | after a fix | oc_late_diff_responses_cannot_replace_the_selected_scope |
+| `tui/test/cli/tui/diff-viewer` | switching to uncommitted does not wait for or display a late base result | after a fix | oc_switching_to_uncommitted_does_not_wait_for_or_display_a_late_base_result |
+| `tui/test/cli/tui/diff-viewer` | missing base metadata preserves provider branch review (has branch changes: %s) (2 cases) | after a fix | oc_missing_base_metadata_preserves_provider_branch_review_has_branch_changes_false, …_true |
+| `tui/test/cli/tui/diff-viewer` | unresolved branch comparisons report errors without switching to working | after a fix | oc_unresolved_branch_comparisons_report_errors_without_switching_to_working |
+| `tui/test/cli/tui/diff-viewer` | base lookup failures are errors rather than missing-base fallbacks | after a fix | oc_base_lookup_failures_are_errors_rather_than_missing_base_fallbacks |
+| `tui/test/cli/tui/diff-viewer` | committed images never read the working-tree image (patch: %s) (2 cases) | after a fix | oc_committed_images_never_read_the_working_tree_image_patch_undefined, …_patch_binary (adapted: no image is read at all) |
+| `tui/test/cli/tui/diff-viewer` | brackets navigate diff hunks | after a fix | oc_brackets_navigate_diff_hunks |
+| `tui/test/cli/tui/diff-viewer` | disabled diff keybinds have no component fallbacks | after a fix | oc_disabled_diff_keybinds_have_no_component_fallbacks |
+| `tui/test/cli/tui/diff-viewer` | %s files use full width even in split view (2 cases) | after a fix | oc_added_files_use_full_width_even_in_split_view, oc_deleted_files_use_full_width_even_in_split_view |
+| `tui/test/cli/tui/diff-viewer` | adapts navigation and modified patches at %i columns (2 cases) | after a fix | oc_adapts_navigation_and_modified_patches_at_80_columns, …_160_columns |
+| `tui/test/cli/tui/diff-viewer` | the first file title sits below full-height top padding with a blank row below | after a fix | oc_the_first_file_title_sits_below_full_height_top_padding_with_a_blank_row_below |
+| `tui/test/cli/tui/diff-viewer` | shared pane edges align headings and stay fixed at %i columns (2 cases) | after a fix | oc_shared_pane_edges_align_headings_and_stay_fixed_at_100_columns, …_160_columns |
+| `tui/test/cli/tui/diff-viewer` | the pane edge matches the visible reviewed card in %s mode (2 cases) | after a fix | oc_the_pane_edge_matches_the_visible_reviewed_card_in_dark_mode, …_light_mode (adapted: the default theme's colors) |
+| `tui/test/cli/tui/diff-viewer` | the sidebar holds a compact help hint and the patch pane reaches the screen bottom | after a fix | oc_the_sidebar_holds_a_compact_help_hint_and_the_patch_pane_reaches_the_screen_bottom (adapted: no right-click row) |
+| `tui/test/cli/tui/diff-viewer` | compact gutter help leaves the full patch viewport available when the sidebar is hidden | after a fix | oc_compact_gutter_help_leaves_the_full_patch_viewport_available_when_the_sidebar_is_hidden (adapted: `?` rather than a click; `esc close`) |
+| `tui/test/cli/tui/diff-viewer` | full screen keeps its tree down to 88 columns and uses the compact layout below | after a fix | oc_full_screen_keeps_its_tree_down_to_88_columns_and_uses_the_compact_layout_below |
+| `tui/test/cli/tui/diff-viewer` | compact help scrolls at a narrow size and reflects customized bindings | after a fix | oc_compact_help_scrolls_at_a_narrow_size_and_reflects_customized_bindings |
+| `tui/test/cli/tui/diff-viewer` | the viewer opens help from $key with shift=$shift (3 cases) | after a fix | oc_the_viewer_opens_help_from_question_mark_with_shift_false, …_shift_true, oc_the_viewer_opens_help_from_slash_with_shift_true |
+| `tui/test/cli/tui/diff-viewer` | file titles stick to the viewport and hand off while scrolling at %i columns (2 cases) | after a fix | oc_file_titles_stick_to_the_viewport_and_hand_off_while_scrolling_at_80_columns, …_160_columns |
+| `tui/test/cli/tui/diff-viewer` | split diff filler keeps the full card background | after a fix | oc_split_diff_filler_keeps_the_full_card_background |
+| `tui/test/cli/tui/diff-viewer` | reviewing collapses a %s body and unmarking reopens it (3 cases) | after a fix | oc_reviewing_collapses_a_patch_body_and_unmarking_reopens_it, …_image_body_…, …_fallback_body_… (adapted: the image card has a note, not a preview) |
+| `tui/test/cli/tui/diff-viewer` | reviewing after scrolling targets the visible file rather than the initial file | after a fix | oc_reviewing_after_scrolling_targets_the_visible_file_rather_than_the_initial_file |
+| `tui/test/cli/tui/diff-viewer` | single-file review advances, but reopening and the last file stay put at %i columns (2 cases) | after a fix | oc_single_file_review_advances_but_reopening_and_the_last_file_stay_put_at_80_columns, …_160_columns |
+| `tui/test/cli/tui/diff-viewer` | Alt+arrows navigate files rather than session tabs (after Tab: %s) (2 cases) | after a fix | oc_alt_arrows_navigate_files_rather_than_session_tabs_after_tab_false, …_true (adapted: there are no session tabs) |
+| `tui/test/cli/tui/diff-viewer` | pads $file fallback messages inside the card without reading images (2 cases) | after a fix | oc_pads_bun_lock_fallback_messages_inside_the_card_without_reading_images, oc_pads_assets_old_png_fallback_messages_inside_the_card_without_reading_images |
+| `tui/test/cli/tui/diff-viewer` | Ctrl+D and Ctrl+U scroll the patch viewport by half a page, without closing | after a fix | oc_ctrl_d_and_ctrl_u_scroll_the_patch_viewport_by_half_a_page_without_closing |
+| `tui/test/cli/tui/diff-viewer` | Tab and file clicks never redirect scrolling keys into the tree at %i rows (2 cases) | after a fix | oc_tab_and_file_clicks_never_redirect_scrolling_keys_into_the_tree_at_20_rows, …_32_rows (adapted: no clicks) |
+| `tui/test/cli/tui/diff-viewer` | folders are mouse controlled and n/p reveal files inside collapsed folders | after a fix | oc_folders_are_mouse_controlled_and_n_p_reveal_files_inside_collapsed_folders (adapted: the folder is closed directly) |
+| `tui/test/cli/tui/diff-viewer` | n/p jump between files and gg/G always navigate the diff | after a fix | oc_n_p_jump_between_files_and_gg_g_always_navigate_the_diff |
+| `tui/test/cli/tui/diff-viewer` | virtualizes a large added file at %i columns without losing its end (2 cases) | after a fix | oc_virtualizes_a_large_added_file_at_80_columns_without_losing_its_end, …_160_columns_… (adapted: only the rows in view are drawn; nothing is split) |
+| `tui/test/cli/tui/diff-viewer` | keeps the line-number gutter the same width across virtual chunks | after a fix | oc_keeps_the_line_number_gutter_the_same_width_across_virtual_chunks |
+| `tui/test/cli/tui/diff-viewer` | highlights virtual chunks with whole-file syntax context | after a fix | oc_highlights_virtual_chunks_with_whole_file_syntax_context (adapted: TypeScript is highlighted as JavaScript) |
+| `tui/test/cli/tui/diff-viewer` | file navigation and review still work after a virtualized patch | after a fix | oc_file_navigation_and_review_still_work_after_a_virtualized_patch |
+| `tui/test/cli/tui/diff-viewer` | the sidebar source picker switches VCS sources at %i columns (2 cases) | after a fix | oc_the_sidebar_source_picker_switches_vcs_sources_at_100_columns, …_160_columns (adapted: the chooser opens by its key) |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | builds a nested tree with deduplicated directories and file indexes | after a fix | oc_builds_a_nested_tree_with_deduplicated_directories_and_file_indexes |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | sorts directories before files and alphabetically within each group | after a fix | oc_sorts_directories_before_files_and_alphabetically_within_each_group |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | sorts root-level files without creating directories | after a fix | oc_sorts_root_level_files_without_creating_directories |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | collapses unary directory chains while flattening | after a fix | oc_collapses_unary_directory_chains_while_flattening |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | does not collapse a directory into a file row | after a fix | oc_does_not_collapse_a_directory_into_a_file_row |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | stops collapsing at branches | after a fix | oc_stops_collapsing_at_branches |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | keeps same directory names under different parents separate | after a fix | oc_keeps_same_directory_names_under_different_parents_separate |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | flattens all-expanded rows depth-first with depths and file references | after a fix | oc_flattens_all_expanded_rows_depth_first_with_depths_and_file_references |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | collapses expanded unary children under the first visible directory id | after a fix | oc_collapses_expanded_unary_children_under_the_first_visible_directory_id |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | flattens only expanded directory descendants when expansion is provided | after a fix | oc_flattens_only_expanded_directory_descendants_when_expansion_is_provided |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | finds the parent directories to expand for a patch file | after a fix | oc_finds_the_parent_directories_to_expand_for_a_patch_file |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | prefers the selected file when choosing the single patch file | after a fix | oc_prefers_the_selected_file_when_choosing_the_single_patch_file |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | orders patches by the flattened file tree order | after a fix | oc_orders_patches_by_the_flattened_file_tree_order |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | shows the diff viewer file tree only when enabled and files exist | after a fix | oc_shows_the_diff_viewer_file_tree_only_when_enabled_and_files_exist |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | moves patch selection through the ordered patch file indexes | after a fix | oc_moves_patch_selection_through_the_ordered_patch_file_indexes |
+| `tui/test/feature-plugins/diff-viewer-file-tree-utils` | toggles only selected directory expansion | after a fix | oc_toggles_only_selected_directory_expansion |
+| `tui/test/cli/tui/diff-viewer-file-tree` | defaults to text-line file icons and triangle folders with straight rails | after a fix | oc_defaults_to_text_line_file_icons_and_triangle_folders_with_straight_rails (adapted: the viewer's tree, titled by its source) |
+| `tui/test/cli/tui/diff-viewer-file-tree` | %s layout uses two-cell horizontal sidebar padding | after a fix | oc_tree_layout_uses_two_cell_horizontal_sidebar_padding (adapted: the tree layout; the list layout is by design) |
+| `tui/test/cli/tui/diff-viewer-file-tree` | full top padding keeps the heading one row down in %s mode (2 cases) | after a fix | oc_full_top_padding_keeps_the_heading_one_row_down_in_dark_mode, …_light_mode |
+| `tui/test/cli/tui/diff-viewer-file-tree` | does not render text markers for selected files | after a fix | oc_does_not_render_text_markers_for_selected_files |
+| `tui/test/cli/tui/diff-viewer-file-tree` | renders collapsed and expanded directory rows | after a fix | oc_renders_collapsed_and_expanded_directory_rows |
+| `tui/test/cli/tui/diff-viewer-file-tree` | keeps rows quiet: straight rails, single status letters, no hooks or dots | after a fix | oc_keeps_rows_quiet_straight_rails_single_status_letters_no_hooks_or_dots |
+| `tui/test/cli/tui/diff-viewer-file-tree` | narrow collapsed chains drop whole leading segments | after a fix | oc_narrow_collapsed_chains_drop_whole_leading_segments (adapted: the chain's truncation at that width) |
+| `tui/test/cli/tui/diff-viewer-image` | recognizes only supported image file extensions | after a fix | oc_recognizes_only_supported_image_file_extensions |
+| `tui/test/session-panel` | /diff focuses the production session panel without sending typing to the prompt | after a fix | oc_diff_focuses_the_production_session_panel_without_sending_typing_to_the_prompt |
+| `tui/test/session-panel` | repeated fullscreen toggles retain the viewer, transcript, scroll, and reviewed files | after a fix | oc_repeated_fullscreen_toggles_retain_the_viewer_transcript_scroll_and_reviewed_files |
+| `tui/test/session-panel` | the diff panel reopens in the presentation last chosen with the fullscreen toggle | after a fix | oc_the_diff_panel_reopens_in_the_presentation_last_chosen_with_the_fullscreen_toggle |
+| `tui/test/session-panel` | docked tree commands leave the full-screen tree preference unchanged | after a fix | oc_docked_tree_commands_leave_the_full_screen_tree_preference_unchanged |
+| `tui/test/session-panel` | a panel opened at %i columns can split after growing without remounting (2 cases) | after a fix | oc_a_panel_opened_at_60_columns_can_split_after_growing_without_remounting, …_80_columns_… |
+| `tui/test/session-panel` | narrow terminals show the panel full screen, then compact, and dock again without remounting | after a fix | oc_narrow_terminals_show_the_panel_full_screen_then_compact_and_dock_again_without_remounting |
+| `tui/test/session-panel` | panel focus, scrolling, and fullscreen use customized keys | after a fix | oc_panel_focus_scrolling_and_fullscreen_use_customized_keys |
+| `tui/test/session-panel` | disabled panel keys (%s) have no behavioral or hint fallbacks (2 cases) | after a fix | oc_disabled_panel_keys_none_have_no_behavioral_or_hint_fallbacks, …_false_… (adapted: the prompt click is dropped) |
+| `tui/test/session-panel` | Enter in the diff panel cannot approve a pending permission in either presentation | after a fix | oc_enter_in_the_diff_panel_cannot_approve_a_pending_permission_in_either_presentation (adapted: `y` approves in CodeSmith) |
+| `tui/test/session-panel` | a form cannot capture diff keys (form already pending: %s) (2 cases) | after a fix | oc_a_form_cannot_capture_diff_keys_form_already_pending_true, …_false (adapted: a question) |
+| `tui/test/panel` | presentation changes preserve the selected panel identity | after a fix | oc_presentation_changes_preserve_the_selected_panel_identity (adapted: `/diff` closes an open viewer) |
+| `tui/test/panel` | narrow geometry overrides presentation without discarding the user's choice | after a fix | oc_narrow_geometry_overrides_presentation_without_discarding_the_users_choice |
+| `tui/test/config-v2` | validates the explicit diff source defaults | after a fix | oc_validates_the_explicit_diff_source_defaults (adapted: the `tui.diffs` setting) |
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
@@ -462,17 +587,6 @@ for larger ones).
 - `tui/test/mini/prompt.shared` (2): e.g. "appends and shifts part ranges by the %s offset"
 - `tui/test/mini/stream` (2): e.g. "defaults status patches to running phase"; "delivers commits before ordered footer updates"
 - `tui/test/config-v2` (1): e.g. "validates mini replay and work spinner settings"
-
-### tui: diff viewer and review panel (164)
-
-- `tui/test/cli/tui/diff-viewer` (104): e.g. "closing the diff viewer returns to the route it opened from"; "standalone full-screen diff does not expose panel-only tog"
-- `tui/test/feature-plugins/diff-viewer-file-tree-utils` (16): e.g. "builds a nested tree with deduplicated directories and file indexes"; "sorts directories before files and alphabetically within each group"
-- `tui/test/session-panel` (16): e.g. "/diff focuses the production session panel without sending typing to the prompt"; "repeated fullscreen toggles retain the viewer, transcript, scroll, and reviewed files"
-- `tui/test/cli/tui/diff-viewer-file-tree` (13): e.g. "defaults to text-line file icons and triangle folders with straight rails"; "keeps loading and error quiet while rendering an empty settled state"
-- `tui/test/cli/tui/diff-viewer-image` (7): e.g. "recognizes only supported image file extensions"; "renders a real image at $width columns in $mode mode"
-- `tui/test/panel` (4): e.g. "presentation changes preserve the selected panel identity"; "narrow geometry overrides presentation without discarding the user's choice"
-- `tui/test/util/added-patch` (3): e.g. "splits a complete new-file patch into independently numbered chunks"; "retains a missing-final-newline marker only on the last chunk"
-- `tui/test/config-v2` (1): e.g. "validates the explicit diff source defaults"
 
 ### tui: session tabs (75)
 
@@ -826,6 +940,7 @@ for larger ones).
 | cli: stats | by design | 4 | 1 | statistics are computed locally (always with tool counts), no server request |
 | acp: separate server | by design | 4 | 3 | no separate server or plugin activation; no server defects to wrap; no shared event stream |
 | util: titles | by design | 4 | 1 | CodeSmith keeps untitled sessions untitled until a title is generated |
+| tui: diff viewer: mouse, images and routes | by design | 33 | 5 | no mouse: OpenCode's right-click file menu, clicked folders and source label; no image previews in the terminal; the viewer is always a session's panel (no standalone route, session tabs or plugin to disable, one kind of panel); the file tree's unused list layout, and its loading and empty states, which the viewer never shows |
 | tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
 | tui: group disclosure | by design | 3 | 1 | no mouse: ctrl+o opens every group, so the rows above an opened group move when scrolled up |
 | server: API command | by design | 3 | 1 | no `api` command for a server |
@@ -848,6 +963,7 @@ for larger ones).
 | session-ui: web UI | n/a | 270 | 29 | web and desktop UI state machines |
 | util: helpers | n/a | 101 | 16 | TypeScript helpers with no CodeSmith counterpart (or covered by Rust std/crates) |
 | tui: paged history and anchors | n/a | 48 | 6 | the whole session is in memory and the visible tail is regrouped each frame: no history pages to load, merge at a seam or split, no row anchors or ids to restore, no reactive footer indexes |
+| tui: patch chunking | n/a | 4 | 2 | OpenTUI draws a large added file in chunks (`splitAddedPatch`, its size threshold); CodeSmith draws only the rows in view and never splits a patch |
 | tui: prompt parts | n/a | 21 | 3 | OpenCode's prompt part model and media refs |
 | cli: runtime internals | n/a | 16 | 7 | Bun/Node runtime, bundling or web UI |
 | cli: cli.json | n/a | 7 | 1 | cli.json schema, migration and file locking |
