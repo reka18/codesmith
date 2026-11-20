@@ -21,6 +21,7 @@ grep-matcher.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
 ignore.workspace = true
+notify.workspace = true
 rand.workspace = true
 url.workspace = true
 sha2.workspace = true
@@ -43,6 +44,7 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true
 
 [[bench]]

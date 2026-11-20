@@ -29,6 +29,7 @@ grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
 libc = "0.2"
 rand = "0.8"
 url = "2.5"

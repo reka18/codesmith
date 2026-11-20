@@ -106,6 +106,9 @@ pub struct Config {
     /// "..."}` opts in to fetching it (off by default; the bundled snapshot
     /// and the cache serve without the network).
     pub catalog: CatalogConfig,
+    /// File watching: `ignore` lists paths or globs (relative to the
+    /// project) to leave unwatched.
+    pub watcher: crate::watch::WatcherConfig,
     /// The models.dev catalog that fills in what model config leaves out
     /// (limits, costs, modalities, variants) and adds its providers. Set by
     /// [`load`]; a config built any other way has none.
