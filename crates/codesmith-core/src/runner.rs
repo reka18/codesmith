@@ -40,6 +40,14 @@ pub const TOOLS_DISABLED: &str = "Tools are disabled after the maximum agent ste
 /// Sent after a response cut off by the output token limit.
 pub const CONTINUE_AFTER_OUTPUT_LIMIT: &str = "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces.";
 
+/// Whether a user-role message is one the engine wrote itself (an
+/// output-limit nudge, the final-step instruction), not something the user
+/// typed; views of a conversation leave these out.
+pub fn is_engine_message(text: &str) -> bool {
+    let t = text.trim();
+    t == CONTINUE_AFTER_OUTPUT_LIMIT || t == MAX_STEPS_PROMPT.trim()
+}
+
 /// The turn's error after three truncated responses in a row.
 pub const OUTPUT_LIMIT_EXHAUSTED: &str =
     "Response still truncated after two output token limit continuations";

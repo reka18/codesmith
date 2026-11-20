@@ -1206,7 +1206,9 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                     out.push(Entry::Notice("(earlier conversation summarized)".into()));
                 }
                 (Role::User, Part::Text(t))
-                    if t.starts_with("<shell ") || t.starts_with("<system-reminder>") => {}
+                    if t.starts_with("<shell ")
+                        || t.starts_with("<system-reminder>")
+                        || codesmith_core::runner::is_engine_message(t) => {}
                 (Role::User, Part::Text(t)) => {
                     out.push(Entry::User(super::attach::typed(t).to_string()))
                 }

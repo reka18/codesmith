@@ -573,11 +573,17 @@ async fn oc_session_settles_unfinished_tool_input_after_an_output_limit() {
         text("done"),
     ]);
     t.prompt("Big call").await.unwrap();
-    let r = results(&t.s);
-    assert!(r[0].1.starts_with("The tool call was not executed because the output token limit (stop reason: length) was reached"), "{}", r[0].1);
-    // The failed call continues the turn; no nudge is needed.
+    // Difference from OpenCode: CodeSmith's provider layer drops a tool call
+    // cut off by the output limit (as OpenCode's own provider tests expect),
+    // so the session never sees it and continues with the output-limit nudge
+    // instead of recording a failed call. Either way the model is told it hit
+    // the limit and nothing half-formed runs.
+    assert!(results(&t.s).is_empty(), "the truncated call never ran");
     assert_eq!(t.requests().len(), 2);
-    assert_eq!(last_message(&t.requests()[1])["role"], "tool");
+    assert_eq!(
+        last_message(&t.requests()[1])["content"],
+        codesmith_core::runner::CONTINUE_AFTER_OUTPUT_LIMIT
+    );
 }
 
 // --- Output limits and filtered responses ---

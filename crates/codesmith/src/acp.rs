@@ -935,10 +935,11 @@ fn config_options(config: &config::Config, model: &str, mode: &str) -> Value {
 }
 
 fn is_prompt(t: &str) -> bool {
-    let t = t.trim_start();
+    let s = t.trim_start();
     !["<shell ", "<system-reminder>", "<conversation-checkpoint>"]
         .iter()
-        .any(|p| t.starts_with(p))
+        .any(|p| s.starts_with(p))
+        && !codesmith_core::runner::is_engine_message(t)
 }
 
 /// A replayed history item: a message or the checkpoint of a compaction.
@@ -1454,8 +1455,17 @@ impl Agent {
             };
             match result {
                 Ok(()) => response(stop_reason(stats.finish.as_deref())),
-                Err(e) if e.to_string().contains("without a final answer") => {
-                    response("max_turn_requests")
+                Err(e)
+                    if e.to_string()
+                        .contains(codesmith_core::runner::OUTPUT_LIMIT_EXHAUSTED) =>
+                {
+                    response("max_tokens")
+                }
+                Err(e)
+                    if e.to_string()
+                        .contains(codesmith_core::runner::CONTENT_FILTERED) =>
+                {
+                    response("refusal")
                 }
                 Err(e) => {
                     let msg = format!("{e:#}");
@@ -1760,7 +1770,15 @@ mod tests {
                     reply("A title")
                 });
             }
-            let at = msgs.iter().rposition(|m| m["role"] == "user").unwrap();
+            // The engine's continuation nudge continues the same prompt.
+            let at = msgs
+                .iter()
+                .rposition(|m| {
+                    m["role"] == "user"
+                        && m["content"].as_str()
+                            != Some(codesmith_core::runner::CONTINUE_AFTER_OUTPUT_LIMIT)
+                })
+                .unwrap();
             let prompt = msgs[at]["content"].as_str().unwrap_or("").to_string();
             let done = msgs[at..].iter().filter(|m| m["role"] == "tool").count();
             let last = msgs.last().unwrap()["content"]
@@ -2273,7 +2291,9 @@ mod tests {
         let (done, seen) = c.until(id, |_| None).await;
         assert_eq!(
             done["result"],
-            json!({"stopReason": "max_tokens", "usage": {"inputTokens": 100, "outputTokens": 40, "cachedReadTokens": 11, "totalTokens": 151}})
+            // The engine continues a truncated answer twice before giving up,
+            // so the turn is three length-limited steps, summed.
+            json!({"stopReason": "max_tokens", "usage": {"inputTokens": 300, "outputTokens": 120, "cachedReadTokens": 33, "totalTokens": 453}})
         );
         let streamed: Vec<(String, String)> = seen
             .iter()
@@ -2302,9 +2322,10 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        assert_eq!(streamed, expected);
+        assert_eq!(streamed.len(), 12, "three steps of four chunks");
+        assert_eq!(streamed[..4], expected[..], "the first step");
         let usage = updates(&seen, "usage_update");
-        assert_eq!(usage.len(), 1);
+        assert_eq!(usage.len(), 1, "sent once, at the end of the turn");
         assert_eq!(
             (
                 &usage[0]["used"],
@@ -2314,7 +2335,10 @@ mod tests {
             (&json!(151), &json!(200000), &json!("USD"))
         );
         let cost = usage[0]["cost"]["amount"].as_f64().unwrap();
-        assert!((cost - 180e-6).abs() < 1e-9, "{cost}");
+        assert!(
+            (cost - 3.0 * 180e-6).abs() < 1e-9,
+            "the turn's three steps: {cost}"
+        );
         // The title is published once generated.
         assert_eq!(
             updates(&seen, "session_info_update")
@@ -2934,6 +2958,12 @@ mod tests {
             kinds(&seen),
             [
                 "user_message_chunk",
+                // The truncated answer and the engine's two continuations
+                // (their nudges are not replayed as user messages).
+                "agent_thought_chunk",
+                "agent_message_chunk",
+                "agent_thought_chunk",
+                "agent_message_chunk",
                 "agent_thought_chunk",
                 "agent_message_chunk",
                 "user_message_chunk",
@@ -2948,15 +2978,15 @@ mod tests {
         // CodeSmith stores a step's reasoning as one part.
         assert_eq!(u[1]["content"]["text"], "think-1 continuedthink-2");
         assert_eq!(
-            (&u[4]["toolCallId"], &u[4]["status"], &u[4]["kind"]),
+            (&u[8]["toolCallId"], &u[8]["status"], &u[8]["kind"]),
             (&json!("c1"), &json!("pending"), &json!("read"))
         );
         assert_eq!(
-            u[4]["locations"],
+            u[8]["locations"],
             json!([{"path": cwd.join("missing.txt")}])
         );
         assert_eq!(
-            (&u[5]["toolCallId"], &u[5]["status"]),
+            (&u[9]["toolCallId"], &u[9]["status"]),
             (&json!("c1"), &json!("failed"))
         );
     }

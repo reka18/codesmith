@@ -85,6 +85,7 @@ fn is_prompt(text: &str) -> bool {
     ]
     .iter()
     .any(|p| t.starts_with(p))
+        && !crate::runner::is_engine_message(text)
 }
 
 fn date(ms: i64) -> String {

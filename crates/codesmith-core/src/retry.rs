@@ -569,18 +569,33 @@ mod tests {
         assert_eq!(decisions(&status(401, "no"), 1), [false]);
     }
 
-#[cfg(test)]
-mod provider_error_tests {
-    use super::*;
+    #[cfg(test)]
+    mod provider_error_tests {
+        use super::*;
 
-    #[test]
-    fn stream_errors_from_providers_are_classified() {
-        let p = |m: &str, r: bool| classify(&Error::Provider { message: m.into(), retryable: r });
-        assert_eq!(p("overloaded_error: Overloaded", true), Class::ProviderInternal);
-        assert_eq!(p("something odd happened", true), Class::ProviderInternal, "the protocol's retryable judgement is kept");
-        assert_eq!(p("something odd happened", false), Class::Unknown);
-        assert_ne!(p("insufficient_quota: You exceeded your current quota", false), Class::ProviderInternal, "quota is not a transient failure");
+        #[test]
+        fn stream_errors_from_providers_are_classified() {
+            let p = |m: &str, r: bool| {
+                classify(&Error::Provider {
+                    message: m.into(),
+                    retryable: r,
+                })
+            };
+            assert_eq!(
+                p("overloaded_error: Overloaded", true),
+                Class::ProviderInternal
+            );
+            assert_eq!(
+                p("something odd happened", true),
+                Class::ProviderInternal,
+                "the protocol's retryable judgement is kept"
+            );
+            assert_eq!(p("something odd happened", false), Class::Unknown);
+            assert_ne!(
+                p("insufficient_quota: You exceeded your current quota", false),
+                Class::ProviderInternal,
+                "quota is not a transient failure"
+            );
+        }
     }
-}
-
 }
