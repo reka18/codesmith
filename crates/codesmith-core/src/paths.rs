@@ -26,6 +26,12 @@ pub fn data_dir() -> PathBuf {
     xdg("XDG_DATA_HOME", ".local/share").join("codesmith")
 }
 
+/// `$XDG_CACHE_HOME/codesmith`, else `~/.cache/codesmith`: things that can
+/// be fetched again, such as the models.dev catalog.
+pub fn cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("codesmith")
+}
+
 /// API keys saved with `codesmith auth login`.
 pub fn auth_file() -> PathBuf {
     data_dir().join("auth.json")

@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod auth;
 pub mod automation;
+pub mod catalog;
 pub mod codemode;
 pub mod command;
 pub mod compaction;
