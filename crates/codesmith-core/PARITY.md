@@ -3652,10 +3652,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P get() falls back to the bundled snapshot when KV is empty and fetch is disabled — `tests/oc_catalog.rs::oc_catalog_get_falls_back_to_the_bundled_snapshot_when_kv_is_empty_and_fetch_is_disabled`
 - P get() recovers from a corrupted KV entry by fetching a fresh catalog — `tests/oc_catalog.rs::oc_catalog_get_recovers_from_a_corrupted_kv_entry_by_fetching_a_fresh_catalog`
 - P get() still populates the catalog when the KV cache write fails — `tests/oc_catalog.rs::oc_catalog_get_still_populates_the_catalog_when_the_kv_cache_write_fails`
-- P uses the default models URL when the configured URL is empty — `tests/oc_catalog.rs::oc_catalog_uses_the_default_models_url_when_the_configured_url_is_empty` (adapted: checks the source rather than sending the request)
+- P uses the default models URL when the configured URL is empty — `tests/oc_catalog.rs::oc_catalog_uses_the_default_models_url_when_the_configured_url_is_empty` (adapted: checks the source rather than sending the request; CodeSmith defaults to models.dev v1)
 - P get() is single-flight under concurrent calls — `tests/oc_catalog.rs::oc_catalog_get_is_single_flight_under_concurrent_calls`
 - P get() caches across calls (later KV writes are ignored until invalidate) — `tests/oc_catalog.rs::oc_catalog_get_caches_across_calls_later_kv_writes_are_ignored_until_invalidate`
-- P refresh(true) fetches via HttpClient and updates the cache — `tests/oc_catalog.rs::oc_catalog_refresh_true_fetches_via_http_and_updates_the_cache` (adapted: a generic codesmith/<version> User-Agent)
+- P refresh(true) fetches via HttpClient and updates the cache — `tests/oc_catalog.rs::oc_catalog_refresh_true_fetches_via_http_and_updates_the_cache` (adapted: a generic codesmith/<version> User-Agent; fetching is opt-in in CodeSmith)
 - P refresh(false) skips fetch when the KV entry is fresh — `tests/oc_catalog.rs::oc_catalog_refresh_false_skips_fetch_when_the_kv_entry_is_fresh`
 - P refresh(false) fetches when the KV entry is stale — `tests/oc_catalog.rs::oc_catalog_refresh_false_fetches_when_the_kv_entry_is_stale` (adapted: the subscribe channel for the Refreshed event)
 - D refresh publishes Refreshed globally across locations — client-server: the Refreshed event across OpenCode Locations; CodeSmith has one catalog per process
