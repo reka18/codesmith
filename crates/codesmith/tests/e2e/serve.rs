@@ -445,3 +445,214 @@ async fn aborting_a_streaming_turn_keeps_the_session_usable() {
     );
     m.assert_done();
 }
+
+/// Tool calls and results of an OpenAI-style request body: every result
+/// answers a call made before it, and no call is answered twice.
+fn assert_tool_pairs_valid(body: &Value) {
+    let mut calls = std::collections::HashSet::new();
+    let mut answered = std::collections::HashSet::new();
+    for m in body["messages"].as_array().unwrap() {
+        for c in m["tool_calls"].as_array().into_iter().flatten() {
+            calls.insert(c["id"].as_str().unwrap().to_string());
+        }
+        if m["role"] == "tool" {
+            let id = m["tool_call_id"].as_str().unwrap().to_string();
+            assert!(calls.contains(&id), "a result for no call: {body:#}");
+            assert!(answered.insert(id), "a call answered twice: {body:#}");
+        }
+    }
+}
+
+/// Tool-result ids of a stored history that occur more than once.
+fn repeated_result_ids(history: &[Value]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    crate::harness::tool_results(history)
+        .iter()
+        .filter_map(|p| p["id"].as_str().map(str::to_string))
+        .filter(|id| !seen.insert(id.clone()))
+        .collect()
+}
+
+// An abort while the turn waits for a permission answer: the declined
+// result is recorded before the session reloads, so the next prompt does
+// not answer the call again (which providers reject for good).
+#[tokio::test(flavor = "multi_thread")]
+async fn aborting_during_a_permission_prompt_answers_the_call_once() {
+    need_git!();
+    let e = Env::new();
+    e.write("victim.txt", "keep me\n");
+    e.commit("files");
+    let m = Model::start(
+        Script::new()
+            .titled("T")
+            .always(
+                "delete",
+                M::tools().and(M::prompt("delete the victim")),
+                Reply::call(
+                    "shell",
+                    json!({"command": "rm victim.txt", "description": "Delete"}),
+                ),
+            )
+            .always("next", M::tools().and(M::prompt("next")), Reply::text("ok")),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}),
+    );
+    let s = Server::start(&e, &[]).await;
+    for _ in 0..6 {
+        let (_, created) = s.post("/sessions", json!({})).await;
+        let sid = created["id"].as_str().unwrap().to_string();
+        let mut ev = s.turn(&sid, "delete the victim").await;
+        ev.until("permission").await;
+        let (code, r) = s.post(&format!("/sessions/{sid}/abort"), json!({})).await;
+        assert_eq!((code, &r["aborted"]), (200, &json!(true)));
+        let end = ev.until("done").await;
+        assert_eq!(end.last().unwrap().1["error"], "aborted");
+        let mut ev = s.turn(&sid, "next").await;
+        let end = ev.until("done").await;
+        assert_eq!(end.last().unwrap().1["error"], Value::Null, "{end:?}");
+        let h = e.history(&sid);
+        assert_eq!(crate::harness::tool_results(&h).len(), 1, "{h:#?}");
+        assert!(repeated_result_ids(&h).is_empty(), "{h:#?}");
+    }
+    assert_eq!(e.read("victim.txt"), "keep me\n");
+    let next = m.by("next");
+    assert_eq!(next.len(), 6);
+    for body in &next {
+        assert_tool_pairs_valid(body);
+    }
+}
+
+// An abort before anything was stored (the attachment's permission prompt
+// comes first) keeps the session's id: it is not swapped for a new one.
+#[tokio::test(flavor = "multi_thread")]
+async fn aborting_before_anything_is_stored_keeps_the_session_id() {
+    let e = Env::new();
+    let outside = e.root.join("outside.png");
+    // A 1x1 PNG.
+    std::fs::write(
+        &outside,
+        [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ],
+    )
+    .unwrap();
+    let m = Model::start(Script::new().titled("T").always(
+        "hi",
+        M::tools().and(M::prompt("hello")),
+        Reply::text("hi"),
+    ))
+    .await;
+    e.config(&m.url, json!({}));
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({"agent": "plan"})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let r = s
+        .req(reqwest::Method::POST, &format!("/sessions/{sid}/messages"))
+        .json(&json!({"text": "look", "attachments": [{"path": outside.display().to_string()}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let mut ev = Events {
+        body: Box::pin(r.bytes_stream()),
+        buf: String::new(),
+    };
+    let asked = ev.until("permission").await;
+    assert_eq!(asked.last().unwrap().1["action"], "external_directory");
+    let (code, r) = s.post(&format!("/sessions/{sid}/abort"), json!({})).await;
+    assert_eq!((code, &r["aborted"]), (200, &json!(true)));
+    ev.until("done").await;
+    let (code, shown) = s.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(code, 200);
+    assert_eq!(shown["id"], json!(sid));
+    assert_eq!(shown["agent"], "Plan", "the selection is kept too");
+    assert_eq!(shown["busy"], false);
+    let mut ev = s.turn(&sid, "hello").await;
+    let end = ev.until("done").await;
+    assert_eq!(end.last().unwrap().1["error"], Value::Null, "{end:?}");
+    let stored: Vec<String> = e
+        .store()
+        .list(None, false)
+        .unwrap()
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(stored, [sid]);
+}
+
+// "Always" approvals survive the reload an abort makes.
+#[tokio::test(flavor = "multi_thread")]
+async fn always_approvals_survive_an_abort() {
+    let e = Env::new();
+    let echo = || {
+        Reply::call(
+            "shell",
+            json!({"command": "echo hi", "description": "Echo"}),
+        )
+    };
+    let m = Model::start(
+        Script::new()
+            .titled("T")
+            .then(
+                "first",
+                M::tools().and(M::prompt("first")).and(M::step(0)),
+                echo(),
+            )
+            .then(
+                "stall",
+                M::tools().and(M::prompt("first")).and(M::step(1)),
+                Reply::text("thinking").then_stall(),
+            )
+            .then(
+                "second",
+                M::tools().and(M::prompt("second")).and(M::step(0)),
+                echo(),
+            )
+            .then(
+                "done",
+                M::tools().and(M::prompt("second")).and(M::step(1)),
+                Reply::text("done"),
+            ),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}),
+    );
+    let s = Server::start(&e, &[]).await;
+    let (_, created) = s.post("/sessions", json!({})).await;
+    let sid = created["id"].as_str().unwrap().to_string();
+    let mut ev = s.turn(&sid, "first").await;
+    let asked = ev.until("permission").await;
+    let rid = asked.last().unwrap().1["id"].as_str().unwrap().to_string();
+    let (code, _) = s
+        .post(
+            &format!("/sessions/{sid}/permissions/{rid}"),
+            json!({"reply": "always"}),
+        )
+        .await;
+    assert_eq!(code, 200);
+    ev.until("text").await;
+    let (code, r) = s.post(&format!("/sessions/{sid}/abort"), json!({})).await;
+    assert_eq!((code, &r["aborted"]), (200, &json!(true)));
+    ev.until("done").await;
+    let mut ev = s.turn(&sid, "second").await;
+    let mut all = vec![];
+    while let Some(e) = ev.next().await {
+        assert_ne!(e.0, "permission", "asked again: {all:?}");
+        let done = e.0 == "done";
+        all.push(e);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(all.last().unwrap().1["error"], Value::Null, "{all:?}");
+    assert_eq!(m.by("done").len(), 1);
+}

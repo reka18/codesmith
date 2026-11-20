@@ -370,7 +370,12 @@ impl App {
                     reply: Some(reply),
                 });
             }
-            Ev::Key(_) | Ev::Paste(_) | Ev::Resize | Ev::Files(_) | Ev::Done { .. } => {}
+            Ev::Key(_)
+            | Ev::Paste(_)
+            | Ev::Resize
+            | Ev::Files(_)
+            | Ev::Done { .. }
+            | Ev::Stopped => {}
         }
     }
 

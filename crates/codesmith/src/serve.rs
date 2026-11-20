@@ -37,7 +37,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use codesmith_ai::Usage;
 use codesmith_core::config::Loaded;
-use codesmith_core::permission::{Asker, Fixed, Reply, Request};
+use codesmith_core::permission::{Approvals, Asker, Fixed, Reply, Request};
 use codesmith_core::question::{Prompt, Questioner};
 use codesmith_core::session::{self, Options, Session, Sink};
 use codesmith_core::snapshot::Snapshots;
@@ -165,7 +165,16 @@ struct Live {
     session: Option<Session>,
     task: Option<tokio::task::JoinHandle<()>>,
     prompter: Arc<Prompter>,
+    /// The "always" approvals given in this session, kept across reloads.
+    approvals: Approvals,
+    /// The agent and model it was made with, for a reload before anything
+    /// was stored.
+    selection: (String, String),
 }
+
+/// How long an abort waits for the turn's task to stop. A tool parked in a
+/// blocking call only notices the abort when that call returns.
+const STOP_WAIT: Duration = Duration::from_secs(10);
 
 pub struct Server {
     pub loaded: Loaded,
@@ -265,10 +274,32 @@ impl Server {
             Some(self.store()?),
         )?;
         Ok(Live {
+            approvals: s.approvals(),
+            selection: (s.agent.id.clone(), s.model_spec.clone()),
             session: Some(s),
             task: None,
             prompter,
         })
+    }
+
+    /// Rebuild `g`'s session `id` from the store, where every message of
+    /// a stopped turn already is. One never stored starts empty under the
+    /// same id and selection. "Always" approvals carry over.
+    fn reload(&self, g: &mut Live, id: &str) -> Result<()> {
+        let stored = self.store()?.get(id)?.is_some();
+        let fresh = if stored {
+            self.make(Some(id.to_string()), None, None)?
+        } else {
+            let (agent, model) = g.selection.clone();
+            self.make(None, Some(agent), Some(model))?
+        };
+        let mut s = fresh.session.expect("a made session");
+        s.id = id.to_string();
+        s.share_approvals(g.approvals.clone());
+        g.selection = fresh.selection;
+        g.session = Some(s);
+        g.prompter = fresh.prompter;
+        Ok(())
     }
 
     /// The in-memory session, loading it from the store on first use.
@@ -470,11 +501,15 @@ async fn remove(
     if !st.store()?.get(&id)?.is_some_and(|i| st.ours(&i)) {
         return Err(not_found(&id));
     }
-    if let Some(l) = st.live.lock().await.remove(&id) {
+    let gone = st.live.lock().await.remove(&id);
+    if let Some(l) = gone {
         let mut g = l.lock().await;
-        if let Some(t) = g.task.take() {
-            g.prompter.clear();
+        if let Some(mut t) = g.task.take() {
             t.abort();
+            g.prompter.set(None);
+            g.prompter.clear();
+            // Let it stop before deleting, so it cannot write afterwards.
+            let _ = tokio::time::timeout(STOP_WAIT, &mut t).await;
         }
     }
     let deleted = st.store()?.delete(&id)?;
@@ -602,19 +637,43 @@ async fn abort(
 ) -> Result<Json<Value>, ApiError> {
     let live = st.live(&id).await?;
     let mut g = live.lock().await;
-    let Some(t) = g.task.take() else {
+    let Some(mut t) = g.task.take() else {
         return Ok(Json(json!({"aborted": false})));
     };
     t.abort();
+    // Unblocks a tool waiting on a prompt (it is declined), and any later
+    // prompt is refused at once; the abort lands at the task's next await.
+    let events = g.prompter.events.lock().unwrap().take();
     g.prompter.clear();
-    g.prompter.send(json!({"type": "done", "error": "aborted"}));
-    g.prompter.set(None);
-    // Every message is already stored; reload the session from there.
-    let fresh = st
-        .make(Some(id.clone()), None, None)
-        .or_else(|_| st.make(None, None, None))?;
-    g.session = fresh.session;
-    g.prompter = fresh.prompter;
+    // Until the task stops it can still record a result. Reloading first
+    // would leave the call unanswered in the reloaded session, which the
+    // next prompt then answers a second time. The task cannot finish
+    // normally meanwhile: it needs this lock to hand the session back.
+    let stopped = tokio::time::timeout(STOP_WAIT, &mut t).await.is_ok();
+    if let Some(tx) = events {
+        let _ = tx.send(json!({"type": "done", "error": "aborted"}));
+    }
+    if !stopped {
+        // Still inside a blocking call: reload when it returns. The
+        // session stays busy until then.
+        let (st, live, id) = (st.clone(), live.clone(), id.clone());
+        tokio::spawn(async move {
+            let _ = t.await;
+            let mut g = live.lock().await;
+            if g.session.is_none() && g.task.is_none() {
+                if let Err(e) = st.reload(&mut g, &id) {
+                    eprintln!("serve: could not reload session {id}: {e:#}");
+                }
+            }
+        });
+        return Ok(Json(json!({"aborted": true, "stopping": true})));
+    }
+    if let Err(e) = st.reload(&mut g, &id) {
+        // Not left busy forever: the next request loads it afresh.
+        drop(g);
+        st.live.lock().await.remove(&id);
+        return Err(e.into());
+    }
     Ok(Json(json!({"aborted": true})))
 }
 
@@ -710,9 +769,7 @@ async fn undo_redo(
     } else {
         session::redo(&db, &id, &snaps)?
     };
-    let fresh = st.make(Some(id.clone()), None, None)?;
-    g.session = fresh.session;
-    g.prompter = fresh.prompter;
+    st.reload(&mut g, &id)?;
     Ok(Json(
         json!({"files": changes.map(|c| c.into_iter().map(|c| c.path).collect::<Vec<_>>())}),
     ))

@@ -9,6 +9,7 @@ use codesmith_core::session::{Session, Sink};
 use codesmith_core::tool::todo::Todo;
 use ratatui::crossterm::event::KeyEvent;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
@@ -46,6 +47,8 @@ pub enum Ev {
         result: Result<(), String>,
         session: Box<Session>,
     },
+    /// An interrupted turn that outlasted the wait for it has now stopped.
+    Stopped,
 }
 
 pub struct ChanSink {
@@ -104,25 +107,112 @@ impl Sink for ChanSink {
 }
 
 /// Answers permission requests and questions through the UI. Called on a
-/// blocking section of the session task, so it may wait.
-pub struct ChanPrompter(pub UnboundedSender<Ev>);
+/// blocking section of the session task, so it may wait. While the UI stops
+/// a turn (`stopping`), open and new prompts are refused at once, so the
+/// task reaches the await where its abort lands.
+pub struct ChanPrompter {
+    tx: UnboundedSender<Ev>,
+    stopping: AtomicBool,
+}
+
+/// How often a waiting prompt checks whether its turn is being stopped.
+const POLL: Duration = Duration::from_millis(20);
+
+impl ChanPrompter {
+    pub fn new(tx: UnboundedSender<Ev>) -> Self {
+        ChanPrompter {
+            tx,
+            stopping: AtomicBool::new(false),
+        }
+    }
+
+    pub fn set_stopping(&self, on: bool) {
+        self.stopping.store(on, Ordering::SeqCst);
+    }
+
+    /// The answer on `rx`, or `None` once the turn is being stopped (or
+    /// the UI dropped the prompt).
+    fn wait<T>(&self, mut rx: oneshot::Receiver<T>) -> Option<T> {
+        loop {
+            if self.stopping.load(Ordering::SeqCst) {
+                return None;
+            }
+            match rx.try_recv() {
+                Ok(v) => return Some(v),
+                Err(oneshot::error::TryRecvError::Closed) => return None,
+                Err(oneshot::error::TryRecvError::Empty) => std::thread::sleep(POLL),
+            }
+        }
+    }
+}
 
 impl Asker for ChanPrompter {
     fn ask(&self, req: &Request) -> Reply {
         let (tx, rx) = oneshot::channel();
-        if self.0.send(Ev::Permission(req.clone(), tx)).is_err() {
+        if self.stopping.load(Ordering::SeqCst)
+            || self.tx.send(Ev::Permission(req.clone(), tx)).is_err()
+        {
             return Reply::Reject(None);
         }
-        rx.blocking_recv().unwrap_or(Reply::Reject(None))
+        self.wait(rx).unwrap_or(Reply::Reject(None))
     }
 }
 
 impl Questioner for ChanPrompter {
     fn ask(&self, prompts: &[Prompt]) -> Answers {
         let (tx, rx) = oneshot::channel();
-        if self.0.send(Ev::Question(prompts.to_vec(), tx)).is_err() {
+        if self.stopping.load(Ordering::SeqCst)
+            || self.tx.send(Ev::Question(prompts.to_vec(), tx)).is_err()
+        {
             return None;
         }
-        rx.blocking_recv().ok().flatten()
+        self.wait(rx).flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn req() -> Request {
+        Request {
+            action: "shell".into(),
+            resources: vec!["rm x".into()],
+            save: vec![],
+            title: String::new(),
+        }
+    }
+
+    #[test]
+    fn stopping_refuses_waiting_and_new_prompts() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let p = Arc::new(ChanPrompter::new(tx));
+        let asking = {
+            let p = p.clone();
+            std::thread::spawn(move || Asker::ask(&*p, &req()))
+        };
+        // The prompt reaches the UI; its reply channel stays open (as when
+        // it is still queued behind the key that stops the turn).
+        let Some(Ev::Permission(_, reply)) = rx.blocking_recv() else {
+            panic!("no permission prompt");
+        };
+        p.set_stopping(true);
+        assert!(matches!(asking.join().unwrap(), Reply::Reject(None)));
+        assert!(matches!(Asker::ask(&*p, &req()), Reply::Reject(None)));
+        assert!(Questioner::ask(&*p, &[]).is_none());
+        assert!(rx.try_recv().is_err(), "nothing more was shown");
+        drop(reply);
+        // Answered as usual once the stop is over.
+        p.set_stopping(false);
+        let asking = {
+            let p = p.clone();
+            std::thread::spawn(move || Asker::ask(&*p, &req()))
+        };
+        let Some(Ev::Permission(_, reply)) = rx.blocking_recv() else {
+            panic!("no permission prompt");
+        };
+        reply.send(Reply::Once).unwrap();
+        assert!(matches!(asking.join().unwrap(), Reply::Once));
     }
 }

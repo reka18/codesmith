@@ -372,6 +372,17 @@ impl Session {
         Ok(())
     }
 
+    /// The "always" approvals given in this session, shared with it.
+    pub fn approvals(&self) -> crate::permission::Approvals {
+        self.gate.approvals()
+    }
+
+    /// Keep `approvals` (from an earlier copy of this session, before it
+    /// was reloaded) in force here; later ones join them.
+    pub fn share_approvals(&mut self, approvals: crate::permission::Approvals) {
+        self.gate.share_approvals(approvals);
+    }
+
     /// Replace who answers this session's permission requests.
     pub fn set_asker(&mut self, asker: Arc<dyn crate::permission::Asker>) {
         self.gate

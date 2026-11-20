@@ -132,10 +132,14 @@ impl std::fmt::Display for Denied {
 
 impl std::error::Error for Denied {}
 
+/// Approvals saved by "always" answers. Shared, so a session rebuilt from
+/// the store (after an interrupt, undo or agent switch) keeps them.
+pub type Approvals = Arc<Mutex<Vec<Rule>>>;
+
 /// The rules in force for a session plus approvals saved during it.
 pub struct Gate {
     rules: Vec<Rule>,
-    saved: Mutex<Vec<Rule>>,
+    saved: Approvals,
     asker: Arc<dyn Asker>,
 }
 
@@ -143,9 +147,32 @@ impl Gate {
     pub fn new(rules: Vec<Rule>, asker: Arc<dyn Asker>) -> Self {
         Gate {
             rules,
-            saved: Mutex::new(Vec::new()),
+            saved: Approvals::default(),
             asker,
         }
+    }
+
+    /// The approvals saved so far; later "always" answers join them too.
+    pub fn approvals(&self) -> Approvals {
+        self.saved.clone()
+    }
+
+    /// Use `saved` (another gate's approvals) from now on. Approvals saved
+    /// here before are kept in it.
+    pub fn share_approvals(&mut self, saved: Approvals) {
+        if Arc::ptr_eq(&self.saved, &saved) {
+            return;
+        }
+        let mine = std::mem::take(&mut *self.saved.lock().unwrap());
+        {
+            let mut all = saved.lock().unwrap();
+            for r in mine {
+                if !all.contains(&r) {
+                    all.push(r);
+                }
+            }
+        }
+        self.saved = saved;
     }
 
     /// Replace who answers permission requests (rules and "always" answers stay).
@@ -504,6 +531,32 @@ mod tests {
             g.assert(&req("shell", &["rm -rf /"])),
             Err(Denied::Blocked { .. })
         ));
+    }
+
+    #[test]
+    fn shared_approvals_outlive_the_gate_that_saved_them() {
+        let n = Arc::new(AtomicUsize::new(0));
+        let rules = vec![Rule::new("*", "*", Effect::Ask)];
+        let first = Gate::new(rules.clone(), Arc::new(Fixed(Reply::Always)));
+        first.assert(&req("shell", &["ls"])).unwrap();
+        let kept = first.approvals();
+        drop(first);
+        // A rebuilt gate with a fresh approval of its own, then the kept ones.
+        let mut second = Gate::new(rules.clone(), Arc::new(Fixed(Reply::Always)));
+        second.assert(&req("edit", &["a.rs"])).unwrap();
+        second.share_approvals(kept.clone());
+        second.set_asker(Arc::new(Counting(n.clone(), Reply::Reject(None))));
+        second.assert(&req("shell", &["ls"])).unwrap();
+        second.assert(&req("edit", &["a.rs"])).unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 0, "both approvals hold");
+        // Sharing the same approvals again changes nothing.
+        second.share_approvals(kept.clone());
+        assert_eq!(kept.lock().unwrap().len(), 2);
+        // A new answer joins the shared list.
+        let mut third = Gate::new(rules, Arc::new(Fixed(Reply::Always)));
+        third.share_approvals(kept.clone());
+        third.assert(&req("webfetch", &["https://x"])).unwrap();
+        assert_eq!(kept.lock().unwrap().len(), 3);
     }
 
     #[test]

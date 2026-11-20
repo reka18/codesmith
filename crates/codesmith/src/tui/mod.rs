@@ -20,7 +20,7 @@ use anyhow::{anyhow, Result};
 use app::{Action, App, Entry, Modal, Pick, PickItem, Picker};
 use bridge::{ChanPrompter, ChanSink, Ev};
 use codesmith_core::config::{self, Loaded};
-use codesmith_core::permission::{Asker, Fixed, Reply};
+use codesmith_core::permission::{Approvals, Asker, Fixed, Reply};
 use codesmith_core::question::Questioner;
 use codesmith_core::session::{self, Options, Session};
 use codesmith_core::snapshot::Snapshots;
@@ -32,6 +32,7 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 pub struct Opts {
@@ -55,7 +56,19 @@ struct Runner {
     session: Option<Session>,
     session_id: String,
     task: Option<tokio::task::JoinHandle<()>>,
+    /// The UI's prompter (none with `--auto`), told when a turn is stopping.
+    prompter: Option<Arc<ChanPrompter>>,
+    /// The current session's "always" approvals, kept across reloads.
+    approvals: Approvals,
+    /// An interrupted turn is still finishing a blocking call.
+    stopping: bool,
+    /// `Done` messages of interrupted turns that finished anyway, to ignore.
+    skip_done: usize,
 }
+
+/// How long an interrupt waits for the turn's task to stop. A tool parked
+/// in a blocking call only notices the abort when that call returns.
+const STOP_WAIT: Duration = Duration::from_secs(10);
 
 fn open_store() -> Option<Store> {
     Store::open(&store::default_path()).ok()
@@ -63,7 +76,7 @@ fn open_store() -> Option<Store> {
 
 impl Runner {
     fn make(&self, resume: Option<String>) -> Result<Session> {
-        Session::new(
+        let mut s = Session::new(
             &self.loaded,
             self.cwd.clone(),
             Options {
@@ -77,7 +90,14 @@ impl Runner {
             },
             self.asker.clone(),
             open_store(),
-        )
+        )?;
+        s.share_approvals(self.approvals.clone());
+        Ok(s)
+    }
+
+    /// Start over with no approvals, for a different session.
+    fn forget_approvals(&mut self) {
+        self.approvals = Approvals::default();
     }
 
     /// Install a session and refresh the header (and transcript when continuing).
@@ -99,12 +119,19 @@ impl Runner {
         self.session = Some(s);
     }
 
-    /// Reload the current session from the store (or start fresh if it was never saved).
+    /// Reload the current session from the store (or start fresh if it was
+    /// never saved), with the selected agent and model, which a stored
+    /// session keeps for `-s` and automations.
     fn reload(&mut self) -> Result<()> {
-        let stored = open_store()
+        let db = open_store();
+        let stored = db
+            .as_ref()
             .and_then(|db| db.get(&self.session_id).ok().flatten())
             .is_some();
         let s = self.make(stored.then(|| self.session_id.clone()))?;
+        if let Some(db) = db.filter(|_| stored) {
+            let _ = db.set_selection(&s.id, &s.agent.id, &s.model_spec);
+        }
         self.install(s, stored);
         Ok(())
     }
@@ -214,11 +241,50 @@ impl Runner {
         }));
     }
 
-    fn interrupt(&mut self) {
-        self.app.cancel_modal();
-        if let Some(t) = self.task.take() {
-            t.abort();
+    /// Stop the running turn and reload the session from the store. The
+    /// task is awaited first: until it stops it can still record a result
+    /// (a declined permission), and a session reloaded before that would
+    /// see the call unanswered and answer it a second time.
+    async fn interrupt(&mut self) {
+        if self.stopping {
+            self.app
+                .notice("still stopping the interrupted turn; it reloads when it ends");
+            return;
         }
+        if let Some(p) = &self.prompter {
+            p.set_stopping(true);
+        }
+        self.app.cancel_modal();
+        if let Some(mut t) = self.task.take() {
+            t.abort();
+            match tokio::time::timeout(STOP_WAIT, &mut t).await {
+                // It ended before the abort landed; its `Done` is queued.
+                Ok(Ok(())) => self.skip_done += 1,
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    self.stopping = true;
+                    let tx = self.tx.clone();
+                    self.task = Some(tokio::spawn(async move {
+                        let _ = t.await;
+                        let _ = tx.send(Ev::Stopped);
+                    }));
+                    self.app.notice(
+                        "stopping: a tool is still finishing; the session reloads when it ends",
+                    );
+                    return;
+                }
+            }
+        }
+        self.stopped();
+    }
+
+    /// The interrupted turn has stopped: reload its session.
+    fn stopped(&mut self) {
+        if let Some(p) = &self.prompter {
+            p.set_stopping(false);
+        }
+        self.stopping = false;
+        self.task = None;
         self.app.busy = false;
         self.app.notice("interrupted");
         if let Err(e) = self.reload() {
@@ -252,6 +318,7 @@ impl Runner {
                 ));
             }
             "new" if self.idle_or_say() => {
+                self.forget_approvals();
                 let s = self.make(None)?;
                 self.app.entries.clear();
                 self.install(s, false);
@@ -461,6 +528,9 @@ impl Runner {
     fn picked(&mut self, kind: Pick, id: String) -> Result<()> {
         match kind {
             Pick::Session => {
+                if id != self.session_id {
+                    self.forget_approvals();
+                }
                 let s = self.make(Some(id))?;
                 self.install(s, true);
             }
@@ -473,7 +543,7 @@ impl Runner {
         Ok(())
     }
 
-    fn handle(&mut self, ev: Ev) {
+    async fn handle(&mut self, ev: Ev) {
         match ev {
             Ev::Key(k) => {
                 let result = match self.app.on_key(k) {
@@ -507,7 +577,7 @@ impl Runner {
                     }
                     Some(Action::Slash { name, args }) => self.slash(&name, &args),
                     Some(Action::Interrupt) => {
-                        self.interrupt();
+                        self.interrupt().await;
                         Ok(())
                     }
                     Some(Action::Picked(kind, id)) => self.picked(kind, id),
@@ -523,6 +593,12 @@ impl Runner {
             Ev::Files(f) => {
                 self.app.set_files(f);
             }
+            // An interrupted turn that finished anyway: already reloaded,
+            // or reloading once `Stopped` arrives.
+            Ev::Done { .. } if self.skip_done > 0 || self.stopping => {
+                self.skip_done = self.skip_done.saturating_sub(1);
+            }
+            Ev::Stopped => self.stopped(),
             Ev::Done { result, session } => {
                 self.task = None;
                 self.app.busy = false;
@@ -613,13 +689,17 @@ fn spawn_input(tx: UnboundedSender<Ev>) {
 pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     let loaded = config::load(&cwd)?;
     let (tx, mut rx): (UnboundedSender<Ev>, UnboundedReceiver<Ev>) = unbounded_channel();
-    let prompter = Arc::new(ChanPrompter(tx.clone()));
+    let prompter = Arc::new(ChanPrompter::new(tx.clone()));
     let asker: Arc<dyn Asker> = if opts.auto {
         Arc::new(Fixed(Reply::Once))
     } else {
         prompter.clone()
     };
-    let questioner: Option<Arc<dyn Questioner>> = if opts.auto { None } else { Some(prompter) };
+    let questioner: Option<Arc<dyn Questioner>> = if opts.auto {
+        None
+    } else {
+        Some(prompter.clone())
+    };
     codesmith_core::automation::spawn_scheduler(&loaded);
     let mcp = crate::connect_mcp(&loaded, false).await;
     let mcp_failures: Vec<String> = mcp
@@ -648,6 +728,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         session: None,
         session_id: String::new(),
         task: None,
+        prompter: (!opts.auto).then_some(prompter),
+        approvals: Approvals::default(),
+        stopping: false,
+        skip_done: 0,
     };
     let cmds: Vec<(String, String)> = crate::all_commands_with(&r.cwd, &r.loaded, &r.mcp)
         .into_iter()
@@ -684,10 +768,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         loop {
             terminal.draw(|f| view::draw(f, &r.app))?;
             let Some(ev) = rx.recv().await else { break };
-            r.handle(ev);
+            r.handle(ev).await;
             // Apply everything already queued (streamed text arrives in bursts) before redrawing.
             while let Ok(ev) = rx.try_recv() {
-                r.handle(ev);
+                r.handle(ev).await;
             }
             if r.app.quit {
                 break;
@@ -696,9 +780,14 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         Ok(())
     }
     .await;
-    if let Some(t) = r.task.take() {
+    if let Some(mut t) = r.task.take() {
+        if let Some(p) = &r.prompter {
+            p.set_stopping(true);
+        }
         r.app.cancel_modal();
         t.abort();
+        // Let it stop writing to the store before the process exits.
+        let _ = tokio::time::timeout(Duration::from_secs(2), &mut t).await;
     }
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
