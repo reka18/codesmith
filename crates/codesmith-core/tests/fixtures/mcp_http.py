@@ -46,4 +46,9 @@ class H(BaseHTTPRequestHandler):
 
 srv = HTTPServer(("127.0.0.1", 0), H)
 print(srv.server_address[1], flush=True)
-srv.serve_forever()
+# Serve until stdin closes: the test holds the other end of the pipe, so
+# the server goes when the test does, however it ends (even killed).
+import os, threading
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+sys.stdin.read()
+os._exit(0)

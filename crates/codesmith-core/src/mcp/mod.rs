@@ -2384,6 +2384,8 @@ mod tests {
         let Some(py) = python() else { return };
         let mut child = tokio::process::Command::new(py)
             .arg(fixture("mcp_http.py"))
+            // The fixture exits when this pipe closes (see the fixture).
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
@@ -2592,6 +2594,8 @@ mod oauth_flow_tests {
                 "{}/tests/fixtures/mcp_oauth.py",
                 env!("CARGO_MANIFEST_DIR")
             ))
+            // The fixture exits when this pipe closes (see the fixture).
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
