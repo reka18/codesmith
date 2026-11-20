@@ -158,10 +158,11 @@ Limits:
 - Once a conversation's images pass 25 MiB, the oldest are replaced by a
   note until 15 MiB remain.
 
-With no model catalog, CodeSmith assumes a model accepts images and PDFs
-unless its config says otherwise. DeepSeek models (other than `-vl` ones) are
-known to be text-only. For a text-only model, set its input modalities as in
-OpenCode:
+A model's input modalities come from its config, else from the
+[model catalog](configuration.md#the-model-catalog-modelsdev). For a model
+neither knows, CodeSmith assumes it accepts images and PDFs (DeepSeek models
+other than `-vl` ones are taken as text-only). To mark a model text-only, set
+its input modalities as in OpenCode:
 
 ```jsonc
 "models": { "qwen3-coder": { "modalities": { "input": ["text"], "output": ["text"] } } }
