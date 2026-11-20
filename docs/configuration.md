@@ -111,6 +111,7 @@ from `settings.apiKey` in config.
 | `anthropic` | Anthropic Messages | `ANTHROPIC_API_KEY` |
 | `openai` | OpenAI Responses | `OPENAI_API_KEY` |
 | `google` | Gemini | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY` |
+| `azure` | OpenAI Responses | `AZURE_OPENAI_API_KEY` (needs `settings.resourceName` or `settings.baseURL`; see [Azure](#azure-openai)) |
 | `openrouter` | OpenAI Chat | `OPENROUTER_API_KEY` |
 | `groq` | OpenAI Chat | `GROQ_API_KEY` |
 | `deepseek` | OpenAI Chat | `DEEPSEEK_API_KEY` |
@@ -177,6 +178,10 @@ Provider fields:
 | `settings.apiKey` | The key. Use `{env:}` or `{file:}` rather than writing it in the file. |
 | `env` | Environment variables that may hold the key, in order. |
 | `headers` | Extra HTTP headers. |
+| `settings.queryParams` | Query parameters added to every request URL, e.g. `{"api-version": "2026-01-01"}`. |
+| `settings.apiKeyHeader` | Send the key as-is in this header instead of the protocol's own (`Authorization: Bearer`, `x-api-key`, `x-goog-api-key`). A configured `Authorization` header is then not sent. |
+| `settings.encoding` | Compress request bodies: `gzip`, `zstd` or `none` (the default). Only for servers that accept a compressed body. |
+| `compatibility` | [Compatibility overrides](#compatibility-overrides) for every model of this provider. |
 | `body` | Extra request-body fields for every model of this provider, merged into each request. |
 | `cache` | [Prompt caching](#prompt-caching) for every model of this provider (`settings.cache` also works). |
 | `models` | Per-model settings, keyed by the id you use in `provider/model`. |
@@ -191,10 +196,11 @@ Model fields:
 | `limit.output` | Maximum output tokens per response. |
 | `temperature` | Sampling temperature. |
 | `body` | Extra request-body fields for this model, merged after the provider's `body`. |
-| `cost` | Dollars per million tokens: `input`, `output`, `cache_read`, `cache_write`. Used for the session cost and `codesmith stats --cost`. |
+| `cost` | Dollars per million tokens: `input`, `output`, `cache_read`, `cache_write`. Used for the session cost and `codesmith stats --cost` when the provider does not report what it billed (see [Billed cost](#billed-cost)). |
 | `modalities` | `{"input": [...], "output": [...]}`, as in OpenCode and models.dev. See [images and PDFs](tools.md#images-and-pdfs). |
 | `attachment` | OpenCode's older flag: `false` means text input only. |
 | `cache` | [Prompt caching](#prompt-caching) for this model, over the provider's (`options.cache` also works). |
+| `compatibility` | [Compatibility overrides](#compatibility-overrides) for this model, over the provider's. |
 
 `codesmith debug model provider/model[#variant]` shows what a model resolves
 to: the URL, protocol, limits, extra body, the provider options sent with each
@@ -202,6 +208,54 @@ request, the selected variant, and every variant the model has with its
 options. `codesmith models` lists providers and
 configured models, and `codesmith models <provider>` asks that provider's API
 which models it has.
+
+### Azure OpenAI
+
+The built-in `azure` provider takes the resource name or a base URL:
+
+```jsonc
+"providers": { "azure": {
+  "settings": { "resourceName": "my-resource", "apiVersion": "v1" },
+  "models": { "gpt-5": { "id": "my-gpt5-deployment" } }
+} }
+```
+
+As in OpenCode, a `*.openai.azure.com` base URL (or the one built from
+`resourceName`) gets the v1 API under `/openai/v1` with
+`?api-version=v1` (`settings.apiVersion` changes it), and the key goes in the
+`api-key` header. `settings.useDeploymentBasedUrls: true` uses
+`/openai/deployments/<model>` instead. `settings.queryParams` adds or
+overrides query parameters. A base URL on another host (a proxy) is used as
+given, with only `queryParams`. With `"protocol": "anthropic-messages"`, the
+resource's Claude endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1`)
+is used with the key in `x-api-key`. Set `"protocol": "openai-chat"` for Chat
+Completions.
+
+### Compatibility overrides
+
+CodeSmith detects what an OpenAI Chat server needs from its URL and the model
+id. `compatibility` on a provider or a model (the model's wins) overrides it,
+with OpenCode's names:
+
+| Field | Detected | Override |
+|---|---|---|
+| `maxTokensField` | `max_completion_tokens` on OpenAI and Azure, else `max_tokens` | `"max_tokens"` or `"max_completion_tokens"` |
+| `streamUsage` | `true`: sends `stream_options.include_usage` | `false` for servers that reject it |
+| `requireReasoning` | `true` on DeepSeek: every assistant message carries `reasoning_content` | `true` or `false` |
+| `requireAssistantAfterTool` | `true` on Mistral-family models: an assistant turn between tool results and user text | `true` or `false` |
+
+```jsonc
+"models": { "my-model": { "compatibility": { "maxTokensField": "max_completion_tokens", "streamUsage": false } } }
+```
+
+### Billed cost
+
+When a provider reports what it charged for a response, CodeSmith uses that
+instead of pricing the tokens with `cost`, as OpenCode does: `usage.cost`
+(OpenRouter, LiteLLM, OpenCode Zen and other gateways) and GitHub Copilot's
+`copilot_usage.total_nano_aiu` credits (converted at $0.01 a credit). Steps
+without a reported cost are priced from the model's `cost` as before, so the
+session cost in the status line and `codesmith stats --cost` can mix both.
 
 ### Provider options and variants
 

@@ -26,6 +26,54 @@ pub struct ModelStat {
     pub steps: u64,
     pub tokens: Usage,
     pub cost: f64,
+    /// What the steps the provider billed cost, and the tokens of the
+    /// others, which are priced from the model's configured cost.
+    #[serde(skip)]
+    spend: Spend,
+}
+
+/// Spending over steps: the cost providers reported billing, and the tokens
+/// of the steps without one (OpenCode uses a step's billed cost when the
+/// endpoint reports it, and prices its tokens otherwise).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Spend {
+    pub billed: Option<f64>,
+    pub unbilled: Usage,
+}
+
+impl Spend {
+    /// Spending from a stored total, whose steps are no longer known
+    /// apart: billed when it carries a billed cost (a provider bills every
+    /// step or none), else its tokens.
+    pub fn of_total(u: &Usage) -> Self {
+        match u.cost {
+            Some(c) => Spend {
+                billed: Some(c),
+                unbilled: Usage::default(),
+            },
+            None => Spend {
+                billed: None,
+                unbilled: *u,
+            },
+        }
+    }
+
+    pub fn add(&mut self, u: &Usage) {
+        match u.cost {
+            Some(c) => self.billed = Some(self.billed.unwrap_or(0.0) + c),
+            None => add(&mut self.unbilled, u),
+        }
+    }
+
+    /// The cost in dollars: billed plus the unbilled tokens at `price`.
+    /// `None` when nothing was billed and there is no price.
+    pub fn cost(&self, price: Option<&Cost>) -> Option<f64> {
+        let priced = price.map(|c| self::price(&self.unbilled, c));
+        match (self.billed, priced) {
+            (None, None) => None,
+            (b, p) => Some(b.unwrap_or(0.0) + p.unwrap_or(0.0)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -60,13 +108,18 @@ fn total(u: &Usage) -> u64 {
     u.input + u.output + u.cache_read + u.cache_write
 }
 
-fn add(a: &mut Usage, b: &Usage) {
+/// Add `b` to the total `a`, billed costs included.
+pub fn add(a: &mut Usage, b: &Usage) {
     a.input += b.input;
     a.output += b.output;
     a.cache_read += b.cache_read;
     a.cache_write += b.cache_write;
+    if let Some(c) = b.cost {
+        a.cost = Some(a.cost.unwrap_or(0.0) + c);
+    }
 }
 
+/// The tokens of `u` at the configured price (any billed cost aside).
 pub fn price(u: &Usage, c: &Cost) -> f64 {
     (u.input as f64 * c.input
         + u.output as f64 * c.output
@@ -301,6 +354,7 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
                     });
                     m.steps += 1;
                     add(&mut m.tokens, usage);
+                    m.spend.add(usage);
                 }
                 Lite::Tool { name, ms, error } => {
                     let (t, d) = tools.entry(name.clone()).or_insert_with(|| {
@@ -331,16 +385,14 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
         // Sessions from before per-step records: use the session's totals.
         if !has_steps && in_range(info.created) {
             add(&mut s.tokens, &info.usage);
-            add(
-                &mut models
-                    .entry(info.model.clone())
-                    .or_insert_with(|| ModelStat {
-                        model: info.model.clone(),
-                        ..Default::default()
-                    })
-                    .tokens,
-                &info.usage,
-            );
+            let m = models
+                .entry(info.model.clone())
+                .or_insert_with(|| ModelStat {
+                    model: info.model.clone(),
+                    ..Default::default()
+                });
+            add(&mut m.tokens, &info.usage);
+            m.spend.add(&info.usage);
         }
         if active {
             if info.parent_id.is_some() {
@@ -358,7 +410,7 @@ pub fn compute(db: &Store, q: &Query, cost: &dyn Fn(&str) -> Option<Cost>) -> Re
         .filter(|m| m.steps > 0 || total(&m.tokens) > 0)
         .collect();
     for m in &mut models {
-        m.cost = cost(&m.model).map(|c| price(&m.tokens, &c)).unwrap_or(0.0);
+        m.cost = m.spend.cost(cost(&m.model).as_ref()).unwrap_or(0.0);
         s.cost += m.cost;
     }
     models.sort_by(|a, b| {
@@ -923,6 +975,72 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn billed_steps_use_the_billed_cost() {
+        let db = Store::memory().unwrap();
+        db.create(&info("b", "/p", None, day(10, 9))).unwrap();
+        let step = |input, cost| Record::Step {
+            model: "p/m".into(),
+            usage: Usage {
+                input,
+                output: 0,
+                cost,
+                ..Default::default()
+            },
+        };
+        for r in [
+            step(1_000_000, Some(0.5)),
+            step(1_000_000, None),
+            step(10, Some(0.0)),
+        ] {
+            db.append_at("b", &r, day(10, 9)).unwrap();
+        }
+        let q = Query {
+            from: None,
+            to: day(20, 0),
+            directory: None,
+        };
+        let price = |_: &str| {
+            Some(Cost {
+                input: 2.0,
+                ..Default::default()
+            })
+        };
+        let s = compute(&db, &q, &price).unwrap();
+        // $0.50 billed, $0 billed, and one unbilled step priced at $2.
+        assert!((s.cost - 2.5).abs() < 1e-12, "{}", s.cost);
+        assert_eq!(s.tokens.input, 2_000_010);
+        // Without a price, only what was billed counts.
+        let s = compute(&db, &q, &|_| None).unwrap();
+        assert!((s.cost - 0.5).abs() < 1e-12, "{}", s.cost);
+        // A total keeps the sum of what was billed.
+        let mut t = Usage::default();
+        add(
+            &mut t,
+            &Usage {
+                cost: Some(0.25),
+                ..Default::default()
+            },
+        );
+        add(
+            &mut t,
+            &Usage {
+                input: 3,
+                ..Default::default()
+            },
+        );
+        add(
+            &mut t,
+            &Usage {
+                cost: Some(0.5),
+                ..Default::default()
+            },
+        );
+        assert_eq!((t.input, t.cost), (3, Some(0.75)));
+        assert_eq!(Spend::of_total(&t).cost(None), Some(0.75));
+        assert_eq!(Spend::of_total(&Usage::default()).cost(None), None);
     }
 
     #[test]

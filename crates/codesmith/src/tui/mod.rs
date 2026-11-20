@@ -139,6 +139,7 @@ impl Runner {
             self.app.context = 0;
         }
         self.app.usage = s.usage;
+        self.app.spend = codesmith_core::stats::Spend::of_total(&s.usage);
         if replay {
             self.app.entries = app::replay(&s.messages);
         }

@@ -165,6 +165,8 @@ pub struct App {
     pub busy: bool,
     pub header: Header,
     pub usage: Usage,
+    /// The session's spending: billed costs, and tokens to price.
+    pub spend: codesmith_core::stats::Spend,
     /// Tokens the last model call used (prompt plus reply): the context in use.
     pub context: u64,
     pub modal: Option<Modal>,
@@ -282,9 +284,7 @@ impl App {
 
     /// The session's cost so far in dollars, when the model is priced.
     pub fn cost(&self) -> Option<f64> {
-        self.header
-            .cost
-            .map(|c| codesmith_core::stats::price(&self.usage, &c))
+        self.spend.cost(self.header.cost.as_ref())
     }
 
     /// Apply a session event.
@@ -338,10 +338,8 @@ impl App {
                 self.notice(format!("compacted context: ~{b} → ~{a} tokens"))
             }
             Ev::StepEnd(u) => {
-                self.usage.input += u.input;
-                self.usage.output += u.output;
-                self.usage.cache_read += u.cache_read;
-                self.usage.cache_write += u.cache_write;
+                codesmith_core::stats::add(&mut self.usage, &u);
+                self.spend.add(&u);
                 self.context = u.input + u.cache_read + u.cache_write + u.output;
             }
             Ev::Permission(req, reply) => {
@@ -1230,6 +1228,16 @@ mod tests {
         });
         let c = a.cost().unwrap();
         assert!((c - 0.0003).abs() < 1e-9, "{c}");
+        // A step the provider billed counts at its billed cost.
+        a.on_event(Ev::StepEnd(Usage {
+            input: 1_000_000,
+            cost: Some(0.01),
+            ..Default::default()
+        }));
+        let c = a.cost().unwrap();
+        assert!((c - 0.0103).abs() < 1e-9, "{c}");
+        a.header.cost = None;
+        assert_eq!(a.cost(), Some(0.01));
     }
 
     #[test]

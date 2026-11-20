@@ -2286,10 +2286,7 @@ pub fn turn_diff(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Strin
 }
 
 fn add(total: &mut Usage, u: &Usage) {
-    total.input += u.input;
-    total.output += u.output;
-    total.cache_read += u.cache_read;
-    total.cache_write += u.cache_write;
+    crate::stats::add(total, u);
 }
 
 fn new_id() -> String {

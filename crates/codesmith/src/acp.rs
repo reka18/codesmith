@@ -1958,13 +1958,13 @@ impl Agent {
         }
         let mut update =
             json!({"sessionUpdate": "usage_update", "used": total(&last), "size": size});
-        if let Some(c) = slot.loaded.config.cost(&s.model_spec) {
-            let u = &s.usage;
-            let amount = (u.input as f64 * c.input
-                + u.output as f64 * c.output
-                + u.cache_read as f64 * c.cache_read
-                + u.cache_write as f64 * c.cache_write)
-                / 1e6;
+        // What the provider billed when it reports that (a provider bills
+        // every step or none), else the tokens at the configured price.
+        let amount = s.usage.cost.or_else(|| {
+            let c = slot.loaded.config.cost(&s.model_spec)?;
+            Some(codesmith_core::stats::price(&s.usage, &c))
+        });
+        if let Some(amount) = amount {
             update["cost"] = json!({"amount": amount, "currency": "USD"});
         }
         self.conn.update(sid, update);
