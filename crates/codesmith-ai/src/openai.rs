@@ -4,9 +4,9 @@ use crate::gemini::split_id;
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
     stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Message,
-    Part, Provider, Request, Role, Usage,
+    Part, Protocol, Provider, ReasoningMeta, Request, Role, Usage,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 /// What differs between Chat Completions servers, read from the endpoint and
 /// model id the way OpenCode detects it.
@@ -26,6 +26,8 @@ pub struct Compat {
     pub short_ids: bool,
     /// DeepSeek: every assistant message carries `reasoning_content`.
     pub require_reasoning: bool,
+    /// Z.ai GLM models after 4.5 stream tool calls only with `tool_stream`.
+    pub zai_tool_stream: bool,
 }
 
 impl Compat {
@@ -44,6 +46,11 @@ impl Compat {
             claude: id.contains("claude"),
             short_ids: openai || id.starts_with("openai/"),
             require_reasoning: url.contains("deepseek.com") || id.contains("deepseek"),
+            zai_tool_stream: (url.contains("api.z.ai") || url.contains("open.bigmodel.cn"))
+                && !matches!(
+                    id.as_str(),
+                    "glm-4.5" | "glm-4.5-air" | "glm-4.5-flash" | "glm-4.5v"
+                ),
         }
     }
 
@@ -160,8 +167,86 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
+    if compat.zai_tool_stream && !req.tools.is_empty() {
+        body["tool_stream"] = json!(true);
+    }
+    merge_body(&mut body, &lower_options(req, compat));
     merge_body(&mut body, &req.body);
     body
+}
+
+/// Body fields from the request's provider options (after OpenCode's Chat
+/// `lowerOptions`, plus the reasoning switches OpenAI-compatible servers
+/// read: OpenRouter's `reasoning`, Moonshot, Z.ai and DeepSeek `thinking`,
+/// Qwen `enable_thinking`/`thinking_budget`, Groq `include_reasoning`). A
+/// malformed option is dropped on its own.
+fn lower_options(req: &Request, compat: &Compat) -> Map<String, Value> {
+    let o = &req.options;
+    let mut out = Map::new();
+    if compat.openai {
+        if let Some(b) = o.bool("store") {
+            out.insert("store".into(), json!(b));
+        }
+    }
+    for (key, wire) in [
+        ("reasoningEffort", "reasoning_effort"),
+        ("textVerbosity", "verbosity"),
+        ("serviceTier", "service_tier"),
+        ("safetyIdentifier", "safety_identifier"),
+    ] {
+        if let Some(v) = o.str(key) {
+            out.insert(wire.into(), json!(v));
+        }
+    }
+    if let Some(b) = o
+        .bool("parallelToolCalls")
+        .filter(|_| !req.tools.is_empty())
+    {
+        out.insert("parallel_tool_calls".into(), json!(b));
+    }
+    if let Some(m) = o.string_record("metadata") {
+        out.insert("metadata".into(), Value::Object(m));
+    }
+    for (key, wire) in [
+        ("topP", "top_p"),
+        ("frequencyPenalty", "frequency_penalty"),
+        ("presencePenalty", "presence_penalty"),
+    ] {
+        if let Some(n) = o.num(key) {
+            out.insert(wire.into(), json!(n));
+        }
+    }
+    if let Some(n) = o.int("seed") {
+        out.insert("seed".into(), json!(n));
+    }
+    if let Some(s) = o.strings("stop") {
+        out.insert("stop".into(), json!(s));
+    }
+    // OpenRouter passes `reasoning.max_tokens` on as the upstream thinking
+    // budget, which must stay under the output limit.
+    if let Some(r) = o.object("reasoning") {
+        let mut r = r.clone();
+        if let Some(n) = r.get("max_tokens").and_then(Value::as_f64) {
+            let fitted = crate::options::fit_budget(n, req.max_tokens, 1024.0);
+            r.insert("max_tokens".into(), crate::options::number(fitted));
+        }
+        out.insert("reasoning".into(), Value::Object(r));
+    }
+    if let Some(t) = o.object("thinking") {
+        out.insert("thinking".into(), Value::Object(t.clone()));
+    }
+    for (key, wire) in [
+        ("enableThinking", "enable_thinking"),
+        ("includeReasoning", "include_reasoning"),
+    ] {
+        if let Some(b) = o.bool(key) {
+            out.insert(wire.into(), json!(b));
+        }
+    }
+    if let Some(n) = o.int("thinkingBudget") {
+        out.insert("thinking_budget".into(), json!(n));
+    }
+    out
 }
 
 /// Mistral wants an assistant turn between tool results and user content.
@@ -242,10 +327,33 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
             let mut text = String::new();
             let mut reasoning = String::new();
             let mut calls = Vec::new();
+            // Structured reasoning this API streamed, replayed verbatim, and
+            // the field the model streamed its reasoning text under.
+            let mut details: Option<Vec<Value>> = None;
+            let mut opaque: Option<&str> = None;
+            let mut field: Option<&str> = None;
+            let mut structured_only = true;
+            let mut any_reasoning = false;
             for p in &m.parts {
                 match p {
                     Part::Text(t) => text.push_str(t),
-                    Part::Reasoning(r) => reasoning.push_str(r),
+                    Part::Reasoning(r) => {
+                        any_reasoning = true;
+                        reasoning.push_str(r);
+                        let meta = r.meta_for(Protocol::OpenaiChat);
+                        match meta.and_then(|m| m.details.as_ref()) {
+                            Some(d) => details
+                                .get_or_insert_with(Vec::new)
+                                .extend(d.iter().map(replay_detail)),
+                            None => structured_only = false,
+                        }
+                        if let Some(o) = meta.and_then(|m| m.opaque.as_deref()) {
+                            opaque = Some(o);
+                        }
+                        if field.is_none() {
+                            field = meta.and_then(|m| m.field.as_deref());
+                        }
+                    }
                     Part::ToolCall { id, name, input } => {
                         let mut call = json!({
                             "id": compat.call_id(id), "type": "function",
@@ -265,8 +373,11 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
             }
             if compat.mistral {
                 reasoning.clear();
+                details = None;
+                opaque = None;
+                any_reasoning = false;
             }
-            if text.is_empty() && calls.is_empty() && reasoning.is_empty() {
+            if text.is_empty() && calls.is_empty() && !any_reasoning {
                 return vec![];
             }
             let content = if text.is_empty() && !calls.is_empty() {
@@ -278,8 +389,35 @@ fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
             if !calls.is_empty() {
                 msg["tool_calls"] = json!(calls);
             }
-            if !reasoning.is_empty() || compat.require_reasoning {
-                msg["reasoning_content"] = json!(reasoning);
+            let kimi = details.as_ref().is_some_and(|d| {
+                d.iter()
+                    .any(|d| matches!(d["type"].as_str(), Some("summary" | "encrypted")))
+            });
+            // The scalar field (after OpenCode): the one the model streamed
+            // under, else `reasoning_content`; fully structured reasoning
+            // (OpenRouter) is the details list itself, but Kimi wants
+            // `reasoning_content` beside its details.
+            let field = match field {
+                _ if !any_reasoning => compat.require_reasoning.then_some("reasoning_content"),
+                Some(f) => Some(f),
+                None if !structured_only || compat.require_reasoning || kimi => {
+                    Some("reasoning_content")
+                }
+                None => None,
+            };
+            let scalar = if !any_reasoning || (opaque.is_some() && reasoning.is_empty()) {
+                compat.require_reasoning.then_some("")
+            } else {
+                Some(reasoning.as_str())
+            };
+            if let Some(d) = details {
+                msg["reasoning_details"] = json!(d);
+            }
+            if let Some(o) = opaque {
+                msg["reasoning_opaque"] = json!(o);
+            }
+            if let (Some(f), Some(t)) = (field.filter(|f| *f != "reasoning_details"), scalar) {
+                msg[f] = json!(t);
             }
             vec![msg]
         }
@@ -299,6 +437,85 @@ pub struct State {
     calls: Vec<Call>,
     finish: Option<String>,
     usage: Usage,
+    /// `reasoning_details` seen so far (merged), and whether any came.
+    details: Vec<Value>,
+    details_seen: bool,
+    /// The latest `reasoning_opaque`.
+    opaque: Option<String>,
+    /// The field scalar reasoning text streamed under.
+    field: Option<String>,
+}
+
+/// A `reasoning_details` entry in a dialect CodeSmith knows: OpenRouter's
+/// `reasoning.text` / `reasoning.summary` / `reasoning.encrypted`, and
+/// Kimi's bare `summary` / `encrypted`.
+fn known_detail(d: &Value) -> bool {
+    match d["type"].as_str() {
+        Some("reasoning.text" | "reasoning.summary") => true,
+        Some("reasoning.encrypted") => d["data"].is_string(),
+        Some("summary") => d["summary"].is_string(),
+        Some("encrypted") => d["encrypted"].is_string(),
+        _ => false,
+    }
+}
+
+/// The text a detail shows, if any.
+fn detail_text(d: &Value) -> Option<&str> {
+    match d["type"].as_str() {
+        Some("reasoning.text") => d["text"].as_str(),
+        Some("reasoning.summary" | "summary") => d["summary"].as_str(),
+        _ => None,
+    }
+}
+
+/// Merge a detail delta into the previous entry: consecutive text or
+/// summary deltas of one block join; encrypted entries never merge.
+fn merge_detail(prev: &mut Value, d: &Value) -> bool {
+    let kind = d["type"].as_str().unwrap_or("");
+    let key = match kind {
+        "reasoning.text" => "text",
+        "reasoning.summary" | "summary" => "summary",
+        _ => return false,
+    };
+    if prev["type"] != kind {
+        return false;
+    }
+    for k in ["id", "index", "format"] {
+        let (a, b) = (&prev[k], &d[k]);
+        if !a.is_null() && !b.is_null() && a != b {
+            return false;
+        }
+    }
+    let (a, b) = (&prev["signature"], &d["signature"]);
+    if a.as_str().is_some_and(|s| !s.is_empty())
+        && b.as_str().is_some_and(|s| !s.is_empty())
+        && a != b
+    {
+        return false;
+    }
+    let joined = format!(
+        "{}{}",
+        prev[key].as_str().unwrap_or(""),
+        d[key].as_str().unwrap_or("")
+    );
+    if let (Some(p), Some(n)) = (prev.as_object_mut(), d.as_object()) {
+        for (k, v) in n {
+            if !v.is_null() && !(k == "signature" && v.as_str() == Some("")) {
+                p.insert(k.clone(), v.clone());
+            }
+        }
+        p.insert(key.into(), json!(joined));
+    }
+    true
+}
+
+/// A stored detail as it is sent back: Kimi rejects its stream-only `index`.
+fn replay_detail(d: &Value) -> Value {
+    match d["type"].as_str() {
+        Some("summary") => json!({"type": "summary", "summary": d["summary"]}),
+        Some("encrypted") => json!({"type": "encrypted", "encrypted": d["encrypted"]}),
+        _ => d.clone(),
+    }
 }
 
 impl State {
@@ -332,11 +549,33 @@ pub fn handle(state: &mut State, v: &Value) -> Vec<Event> {
     };
     let delta = &choice["delta"];
     // Servers name the field differently; some send the same text under two.
-    if let Some(r) = ["reasoning_content", "reasoning", "reasoning_text"]
+    let scalar = ["reasoning_content", "reasoning", "reasoning_text"]
         .iter()
-        .find_map(|k| delta[k].as_str().filter(|s| !s.is_empty()))
-    {
+        .find_map(|k| Some((*k, delta[k].as_str().filter(|s| !s.is_empty())?)));
+    if let Some((k, r)) = scalar {
+        state.field.get_or_insert_with(|| k.to_string());
         out.push(Event::ReasoningDelta(r.to_string()));
+    }
+    if let Some(ds) = delta["reasoning_details"].as_array() {
+        state.details_seen = true;
+        for d in ds.iter().filter(|d| known_detail(d)) {
+            // Details show as reasoning when no scalar reasoning streams.
+            if state.field.is_none() {
+                if let Some(t) = detail_text(d).filter(|t| !t.is_empty()) {
+                    out.push(Event::ReasoningDelta(t.to_string()));
+                }
+            }
+            let merged = state
+                .details
+                .last_mut()
+                .is_some_and(|prev| merge_detail(prev, d));
+            if !merged {
+                state.details.push(d.clone());
+            }
+        }
+    }
+    if let Some(o) = delta["reasoning_opaque"].as_str().filter(|s| !s.is_empty()) {
+        state.opaque = Some(o.to_string());
     }
     if let Some(t) = delta["content"].as_str().filter(|s| !s.is_empty()) {
         out.push(Event::TextDelta(t.to_string()));
@@ -439,6 +678,20 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
         _ => {}
     }
     let mut out = Vec::new();
+    let named = state
+        .field
+        .as_deref()
+        .is_some_and(|f| f != "reasoning_content");
+    if state.details_seen || state.opaque.is_some() || named {
+        let mut meta = ReasoningMeta::of(Protocol::OpenaiChat);
+        // `reasoning_content` is where reasoning goes back by default.
+        meta.field = state.field.take().filter(|f| f != "reasoning_content");
+        if state.details_seen {
+            meta.details = Some(std::mem::take(&mut state.details));
+        }
+        meta.opaque = state.opaque.take();
+        out.push(Event::ReasoningEnd(meta));
+    }
     let calls = std::mem::take(&mut state.calls);
     if !matches!(reason.as_str(), "length" | "content_filter") {
         for c in calls {

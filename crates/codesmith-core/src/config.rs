@@ -107,6 +107,9 @@ pub struct ProviderConfig {
     pub headers: BTreeMap<String, String>,
     /// Extra request-body fields for every model of this provider.
     pub body: Map<String, Value>,
+    /// Provider options for every model of this provider (see
+    /// [`ModelConfig::options`]).
+    pub options: Map<String, Value>,
     pub models: BTreeMap<String, ModelConfig>,
 }
 
@@ -136,6 +139,37 @@ pub struct ModelConfig {
     pub modalities: Option<Modalities>,
     /// OpenCode's older flag: `false` means text input only.
     pub attachment: Option<bool>,
+    /// Provider options sent with every request (OpenCode's model
+    /// `options`/`settings`): `reasoningEffort`, `thinking`,
+    /// `thinkingConfig`, `serviceTier`, `textVerbosity`, … in camelCase or
+    /// snake_case. Each protocol lowers the ones it knows.
+    #[serde(alias = "settings")]
+    pub options: Map<String, Value>,
+    /// Named request variants, selected as `provider/model#name`: a map of
+    /// name to options (or to `{"options", "body", "headers"}`), or
+    /// OpenCode's list of `{"id", "settings", "body", "headers"}`. They add
+    /// to (and override) the built-in reasoning variants.
+    pub variants: Option<Value>,
+}
+
+impl ModelConfig {
+    /// The configured variants by name.
+    pub fn variants(&self) -> Vec<(String, codesmith_ai::Variant)> {
+        match &self.variants {
+            Some(Value::Object(m)) => m
+                .iter()
+                .map(|(k, v)| (k.clone(), codesmith_ai::variant_from_config(v)))
+                .collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| {
+                    let id = v["id"].as_str()?.to_string();
+                    Some((id, codesmith_ai::variant_from_config(v)))
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -177,7 +211,7 @@ pub struct Cost {
 impl Config {
     /// The configured price of `provider/model`, if any.
     pub fn cost(&self, spec: &str) -> Option<Cost> {
-        let (p, m) = spec.split_once('/')?;
+        let (p, m) = split_variant(spec).0.split_once('/')?;
         self.provider(p)?.models.get(m)?.cost
     }
 }
@@ -478,6 +512,19 @@ pub fn merge(base: &mut Value, top: Value) {
     }
 }
 
+/// Split `provider/model#variant` into the model and its variant
+/// (OpenCode's syntax: the variant follows the first `#` after the `/`).
+pub fn split_variant(spec: &str) -> (&str, Option<&str>) {
+    let slash = spec.find('/').map_or(0, |i| i + 1);
+    match spec[slash..].find('#') {
+        Some(i) => {
+            let (base, v) = spec.split_at(slash + i);
+            (base, Some(&v[1..]).filter(|v| !v.is_empty()))
+        }
+        None => (spec, None),
+    }
+}
+
 /// A resolved provider and model, ready to call.
 #[derive(Debug, Clone)]
 pub struct ModelRef {
@@ -485,6 +532,12 @@ pub struct ModelRef {
     pub model_id: String,
     pub provider: codesmith_ai::Provider,
     pub body: Map<String, Value>,
+    /// Provider options: the provider's, the model's, then the variant's.
+    pub options: codesmith_ai::Options,
+    /// The selected variant (`#name` in the spec), if any.
+    pub variant: Option<String>,
+    /// Every variant the model offers, in order.
+    pub variants: Vec<String>,
     pub max_output: Option<u32>,
     pub context: Option<u64>,
     pub temperature: Option<f32>,
@@ -631,15 +684,19 @@ impl Config {
                 },
                 headers: c.headers,
                 body: c.body,
+                options: c.options,
                 models: c.models,
             }),
         }
     }
 
-    /// Resolve `provider/model` (the first `/` splits; model ids may contain more).
+    /// Resolve `provider/model` or `provider/model#variant` (the first `/`
+    /// splits; model ids may contain more).
     pub fn resolve_model(&self, spec: &str) -> Result<ModelRef> {
-        let (pid, mid) = spec
+        let (base, variant) = split_variant(spec);
+        let (pid, mid) = base
             .split_once('/')
+            .filter(|(p, m)| !p.is_empty() && !m.is_empty())
             .ok_or_else(|| anyhow!("model must be provider/model, got {spec:?}"))?;
         let p = self.provider(pid).ok_or_else(|| {
             anyhow!("unknown provider {pid:?}; add it under \"providers\" in codesmith.json")
@@ -667,6 +724,36 @@ impl Config {
         let input = m.input().or_else(|| known_input(&model_id));
         let mut body = p.body.clone();
         body.extend(m.body.clone());
+        let mut options = codesmith_ai::Options::from_map(p.options.clone());
+        options.merge(&codesmith_ai::Options::from_map(m.options.clone()));
+        let mut headers: Vec<(String, String)> = p.headers.into_iter().collect();
+        // Built-in reasoning variants, then the configured ones (which win).
+        let mut variants = codesmith_ai::builtin_variants(protocol, &model_id, m.limit.output);
+        for (name, v) in m.variants() {
+            match variants.iter_mut().find(|(n, _)| *n == name) {
+                Some(slot) => slot.1 = v,
+                None => variants.push((name, v)),
+            }
+        }
+        let variant = variant.filter(|v| *v != "default");
+        if let Some(name) = variant {
+            let (_, v) = variants.iter().find(|(n, _)| n == name).ok_or_else(|| {
+                anyhow!(
+                    "model {base:?} has no variant {name:?}; available: {}",
+                    variants
+                        .iter()
+                        .map(|v| v.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            options.merge(&v.options);
+            body.extend(v.body.clone());
+            for (k, val) in &v.headers {
+                headers.retain(|(h, _)| !h.eq_ignore_ascii_case(k));
+                headers.push((k.clone(), val.clone()));
+            }
+        }
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id,
@@ -674,9 +761,12 @@ impl Config {
                 protocol,
                 base_url,
                 api_key,
-                headers: p.headers.into_iter().collect(),
+                headers,
             },
             body,
+            options,
+            variant: variant.map(str::to_string),
+            variants: variants.into_iter().map(|v| v.0).collect(),
             max_output: m.limit.output,
             context: m.limit.context,
             temperature: m.temperature,
@@ -851,6 +941,76 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("baseURL"));
+    }
+
+    #[test]
+    fn options_and_variants() {
+        let c: Config = serde_json::from_value(json!({"providers": {"p": {
+            "protocol": "openai-chat",
+            "settings": {"baseURL": "http://x"},
+            "options": {"service_tier": "flex", "reasoningEffort": "low"},
+            "headers": {"x-a": "1"},
+            "models": {"m": {
+                "options": {"textVerbosity": "low"},
+                "variants": {
+                    "high": {"reasoning_effort": "high"},
+                    "fast": {"options": {"serviceTier": "priority"}, "body": {"extra": true}, "headers": {"x-a": "2"}}
+                }
+            }, "o": {
+                "settings": {"reasoningEffort": "minimal"},
+                "variants": [{"id": "deep", "settings": {"reasoningEffort": "xhigh"}}]
+            }}
+        }}}))
+        .unwrap();
+        let m = c.resolve_model("p/m").unwrap();
+        assert_eq!(m.variant, None);
+        assert_eq!(m.options.reasoning_effort(), Some("low"));
+        assert_eq!(m.options.str("serviceTier"), Some("flex"));
+        assert_eq!(m.options.str("textVerbosity"), Some("low"));
+        // Built-in Chat effort variants, then the configured ones.
+        assert_eq!(m.variants, ["low", "medium", "high", "fast"]);
+        let high = c.resolve_model("p/m#high").unwrap();
+        assert_eq!(high.variant.as_deref(), Some("high"));
+        assert_eq!(high.options.reasoning_effort(), Some("high"));
+        assert_eq!(high.options.str("textVerbosity"), Some("low"));
+        let fast = c.resolve_model("p/m#fast").unwrap();
+        assert_eq!(fast.options.str("serviceTier"), Some("priority"));
+        assert_eq!(fast.body["extra"], true);
+        assert_eq!(
+            fast.provider.headers,
+            [("x-a".to_string(), "2".to_string())]
+        );
+        let medium = c.resolve_model("p/m#medium").unwrap();
+        assert_eq!(medium.options.reasoning_effort(), Some("medium"));
+        assert_eq!(c.resolve_model("p/m#default").unwrap().variant, None);
+        let err = c.resolve_model("p/m#nope").unwrap_err().to_string();
+        assert!(
+            err.contains("no variant \"nope\"") && err.contains("fast"),
+            "{err}"
+        );
+        // OpenCode's list form and `settings` spelling.
+        let o = c.resolve_model("p/o#deep").unwrap();
+        assert_eq!(o.options.reasoning_effort(), Some("xhigh"));
+        assert_eq!(
+            c.resolve_model("p/o").unwrap().options.reasoning_effort(),
+            Some("minimal")
+        );
+        assert_eq!(split_variant("p/a#b"), ("p/a", Some("b")));
+        assert_eq!(split_variant("p#x/a"), ("p#x/a", None));
+        assert_eq!(split_variant("p/a#"), ("p/a", None));
+    }
+
+    #[test]
+    fn builtin_variants_need_no_config() {
+        let c = Config::default();
+        let m = c.resolve_model("anthropic/claude-sonnet-4-5#high").unwrap();
+        assert_eq!(
+            m.options.get("thinking"),
+            Some(&json!({"type": "enabled", "budgetTokens": 16000}))
+        );
+        let g = c.resolve_model("openai/gpt-5#low").unwrap();
+        assert_eq!(g.options.reasoning_effort(), Some("low"));
+        assert_eq!(g.options.str("reasoningSummary"), Some("auto"));
     }
 
     #[test]

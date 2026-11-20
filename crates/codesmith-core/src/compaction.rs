@@ -186,7 +186,8 @@ fn estimate_one(m: &Message) -> u64 {
         .parts
         .iter()
         .map(|p| match p {
-            Part::Text(t) | Part::Reasoning(t) => t.len(),
+            Part::Text(t) => t.len(),
+            Part::Reasoning(r) => r.len(),
             Part::ToolCall { name, input, .. } => name.len() + input.to_string().len(),
             Part::ToolResult { content, media, .. } => {
                 content.len() + media.iter().map(media_chars).sum::<usize>()

@@ -327,6 +327,7 @@ impl Runner {
                     self.set_model(args)?;
                 }
             }
+            "variant" if self.idle_or_say() => self.set_variant(args)?,
             "compact" if self.idle_or_say() => {
                 let Some(mut s) = self.session.take() else {
                     return Ok(());
@@ -343,7 +344,7 @@ impl Runner {
                     });
                 }));
             }
-            "new" | "sessions" | "undo" | "redo" | "agent" | "model" | "compact" => {}
+            "new" | "sessions" | "undo" | "redo" | "agent" | "model" | "variant" | "compact" => {}
             other => {
                 let all = crate::all_commands_with(&self.cwd, &self.loaded, &self.mcp);
                 let c = all
@@ -399,6 +400,33 @@ impl Runner {
         }
         self.app.notice(format!("model: {spec}"));
         Ok(())
+    }
+
+    /// Select a model variant (`/variant high`, `/variant default`), or
+    /// with no name move to the next one, wrapping back to the default.
+    fn set_variant(&mut self, name: &str) -> Result<()> {
+        let Some(s) = &self.session else {
+            return Ok(());
+        };
+        let (base, current) = config::split_variant(&s.model_spec);
+        let base = base.to_string();
+        let variants = s.model.variants.clone();
+        if variants.is_empty() {
+            self.app.notice(format!("{base} has no variants"));
+            return Ok(());
+        }
+        let next = match name {
+            "" => match current.and_then(|c| variants.iter().position(|v| v == c)) {
+                None => variants.first().cloned(),
+                Some(i) => variants.get(i + 1).cloned(),
+            },
+            "default" => None,
+            n => Some(n.to_string()),
+        };
+        match next {
+            Some(v) => self.set_model(&format!("{base}#{v}")),
+            None => self.set_model(&base),
+        }
     }
 
     fn current_agent(&self) -> String {

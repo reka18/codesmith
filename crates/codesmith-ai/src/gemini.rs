@@ -6,8 +6,8 @@
 
 use crate::{
     all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
-    stream_error, Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Provider,
-    Request, Role, Usage,
+    stream_error, Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Protocol,
+    Provider, ReasoningMeta, Request, Role, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -82,6 +82,15 @@ fn parts(m: &Message, omit_ids: bool, legacy: bool, pending: &mut Vec<Value>) ->
     for p in &m.parts {
         match p {
             Part::Text(t) if !t.is_empty() => out.push(json!({"text": t})),
+            // Thoughts go back only with the signature Gemini gave them.
+            Part::Reasoning(r) if m.role == Role::Assistant => {
+                if let Some(sig) = r
+                    .meta_for(Protocol::GoogleGemini)
+                    .and_then(|m| m.signature.as_deref())
+                {
+                    out.push(json!({"text": r.text, "thought": true, "thoughtSignature": sig}));
+                }
+            }
             Part::Media(media) => out.extend(media_part(media)),
             Part::ToolCall { id, name, input } => {
                 let (base, sig) = split_id(id);
@@ -191,11 +200,70 @@ pub fn body(req: &Request) -> Value {
     if let Some(t) = req.temperature {
         gen.insert("temperature".into(), json!(t));
     }
+    let o = &req.options;
+    for (key, wire) in [
+        ("topP", "topP"),
+        ("frequencyPenalty", "frequencyPenalty"),
+        ("presencePenalty", "presencePenalty"),
+    ] {
+        if let Some(n) = o.num(key) {
+            gen.insert(wire.into(), json!(n));
+        }
+    }
+    for key in ["topK", "seed"] {
+        if let Some(n) = o.int(key) {
+            gen.insert(key.into(), json!(n));
+        }
+    }
+    if let Some(s) = o.strings("stop") {
+        gen.insert("stopSequences".into(), json!(s));
+    }
+    if let Some(t) = o.object("thinkingConfig") {
+        gen.insert("thinkingConfig".into(), thinking_config(t, req.max_tokens));
+    }
     if !gen.is_empty() {
         body["generationConfig"] = Value::Object(gen);
     }
+    if let Some(c) = o.str("cachedContent") {
+        body["cachedContent"] = json!(c);
+    }
+    if let Some(s) = o.get("safetySettings").filter(|s| {
+        s.as_array().is_some_and(|a| {
+            a.iter()
+                .all(|x| x["category"].is_string() && x["threshold"].is_string())
+        })
+    }) {
+        body["safetySettings"] = s.clone();
+    }
+    if let Some(t) = o.str("serviceTier") {
+        body["serviceTier"] = json!(t);
+    }
     merge_body(&mut body, &req.body);
     body
+}
+
+const MIN_THINKING_BUDGET: f64 = 512.0;
+
+/// `generationConfig.thinkingConfig` from the option (after OpenCode):
+/// malformed fields are dropped, thoughts are included unless turned off,
+/// and the budget leaves room for the answer.
+fn thinking_config(t: &Map<String, Value>, max_tokens: Option<u32>) -> Value {
+    use crate::options::{field, fit_budget, number};
+    let mut out = Map::new();
+    if let Some(b) = field(t, "thinkingBudget").and_then(Value::as_f64) {
+        out.insert(
+            "thinkingBudget".into(),
+            number(fit_budget(b, max_tokens, MIN_THINKING_BUDGET)),
+        );
+    }
+    let include = field(t, "includeThoughts")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    out.insert("includeThoughts".into(), json!(include));
+    if let Some(l) = field(t, "thinkingLevel").and_then(Value::as_str) {
+        out.insert("thinkingLevel".into(), json!(l));
+    }
+    Value::Object(out)
 }
 
 #[derive(Default)]
@@ -203,6 +271,22 @@ pub struct State {
     usage: Usage,
     ids: Vec<String>,
     finish: Option<String>,
+    /// A thought block is open, and the signature it has so far.
+    thinking: bool,
+    signature: Option<String>,
+}
+
+impl State {
+    /// Close an open thought block; a signed one ends with its signature.
+    fn end_thinking(&mut self, out: &mut Vec<Event>) {
+        if std::mem::take(&mut self.thinking) {
+            if let Some(sig) = self.signature.take() {
+                let mut meta = ReasoningMeta::of(Protocol::GoogleGemini);
+                meta.signature = Some(sig);
+                out.push(Event::ReasoningEnd(meta));
+            }
+        }
+    }
 }
 
 /// Finish reasons that mean the output is unusable; the first three are
@@ -251,6 +335,17 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
         return Ok(out);
     };
     for p in c["content"]["parts"].as_array().into_iter().flatten() {
+        if p["thought"].as_bool() == Some(true) && p.get("functionCall").is_none() {
+            state.thinking = true;
+            if let Some(s) = p["thoughtSignature"].as_str().filter(|s| !s.is_empty()) {
+                state.signature = Some(s.to_string());
+            }
+            if let Some(t) = p["text"].as_str().filter(|t| !t.is_empty()) {
+                out.push(Event::ReasoningDelta(t.to_string()));
+            }
+            continue;
+        }
+        state.end_thinking(&mut out);
         if let Some(f) = p.get("functionCall") {
             // A repeated or missing id gets a fresh one.
             let base = f["id"]
@@ -273,11 +368,7 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
                     .unwrap_or_else(|| json!({})),
             });
         } else if let Some(t) = p["text"].as_str().filter(|t| !t.is_empty()) {
-            if p["thought"].as_bool() == Some(true) {
-                out.push(Event::ReasoningDelta(t.to_string()));
-            } else {
-                out.push(Event::TextDelta(t.to_string()));
-            }
+            out.push(Event::TextDelta(t.to_string()));
         }
     }
     if let Some(f) = c["finishReason"].as_str() {
@@ -296,16 +387,20 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     Ok(out)
 }
 
-pub fn finish(state: &mut State) -> Event {
+/// The events that end the stream: an open thought block's end, then `Finish`.
+pub fn finish(state: &mut State) -> Vec<Event> {
+    let mut out = Vec::new();
+    state.end_thinking(&mut out);
     let reason = if !state.ids.is_empty() {
         "tool_calls".to_string()
     } else {
         state.finish.take().unwrap_or_else(|| "stop".into())
     };
-    Event::Finish {
+    out.push(Event::Finish {
         reason,
         usage: state.usage,
-    }
+    });
+    out
 }
 
 #[derive(Default)]
@@ -323,7 +418,7 @@ impl Decoder for Decode {
         false
     }
     fn end(&mut self) -> Result<Vec<Event>, Error> {
-        Ok(vec![finish(&mut self.state)])
+        Ok(finish(&mut self.state))
     }
 }
 
@@ -365,6 +460,7 @@ mod tests {
             }],
             max_tokens: Some(100),
             temperature: None,
+            options: Default::default(),
             body: Map::new(),
         }
     }
@@ -444,7 +540,7 @@ mod tests {
                 if id.starts_with("tool_") && id.ends_with("~S1") && name == "read" && *input == json!({"path": "a"})
         ));
         assert_eq!(
-            finish(&mut s),
+            finish(&mut s).pop().unwrap(),
             Event::Finish {
                 reason: "tool_calls".into(),
                 usage: Usage {
@@ -474,6 +570,8 @@ mod tests {
         .to_string()
         .contains("SAFETY"));
         handle(&mut s, &json!({"candidates": [{"content": {"parts": [{"text": "x"}]}, "finishReason": "MAX_TOKENS"}]})).unwrap();
-        assert!(matches!(finish(&mut s), Event::Finish { reason, .. } if reason == "length"));
+        assert!(
+            matches!(finish(&mut s).pop().unwrap(), Event::Finish { reason, .. } if reason == "length")
+        );
     }
 }

@@ -4,6 +4,7 @@
 mod anthropic;
 mod gemini;
 mod openai;
+mod options;
 #[cfg(test)]
 mod parity_tests;
 #[cfg(test)]
@@ -11,6 +12,8 @@ mod replay_tests;
 mod responses;
 mod schema;
 mod sse;
+
+pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
 
 use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -28,7 +31,7 @@ pub enum Role {
 pub enum Part {
     Text(String),
     /// Model reasoning, kept so it can be replayed to providers that want it.
-    Reasoning(String),
+    Reasoning(Reasoning),
     ToolCall {
         id: String,
         name: String,
@@ -46,6 +49,121 @@ pub enum Part {
     },
     /// An image, PDF or other file attached to a user message.
     Media(Media),
+}
+
+/// Model reasoning: the text shown to the user, and what the provider needs
+/// to accept it back (a signature, encrypted state).
+///
+/// Stored as a plain string when there is no provider state, as sessions
+/// written before provider state existed are; otherwise as
+/// `{"text": ..., "meta": {...}}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ReasoningRepr", into = "ReasoningRepr")]
+pub struct Reasoning {
+    pub text: String,
+    pub meta: Option<ReasoningMeta>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum ReasoningRepr {
+    Plain(String),
+    Full {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        meta: Option<ReasoningMeta>,
+    },
+}
+
+impl From<ReasoningRepr> for Reasoning {
+    fn from(r: ReasoningRepr) -> Self {
+        match r {
+            ReasoningRepr::Plain(text) => Reasoning { text, meta: None },
+            ReasoningRepr::Full { text, meta } => Reasoning { text, meta },
+        }
+    }
+}
+
+impl From<Reasoning> for ReasoningRepr {
+    fn from(r: Reasoning) -> Self {
+        match r.meta {
+            None => ReasoningRepr::Plain(r.text),
+            meta => ReasoningRepr::Full { text: r.text, meta },
+        }
+    }
+}
+
+impl From<String> for Reasoning {
+    fn from(text: String) -> Self {
+        Reasoning { text, meta: None }
+    }
+}
+
+impl From<&str> for Reasoning {
+    fn from(text: &str) -> Self {
+        Reasoning::from(text.to_string())
+    }
+}
+
+impl std::ops::Deref for Reasoning {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl Reasoning {
+    pub fn new(text: impl Into<String>, meta: ReasoningMeta) -> Self {
+        Reasoning {
+            text: text.into(),
+            meta: Some(meta),
+        }
+    }
+
+    /// The provider state, when it came from `protocol`.
+    pub fn meta_for(&self, protocol: Protocol) -> Option<&ReasoningMeta> {
+        self.meta.as_ref().filter(|m| m.protocol == Some(protocol))
+    }
+}
+
+/// Opaque provider state that lets reasoning be replayed. Only the protocol
+/// that produced it reads it back.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
+    /// Anthropic thinking signature, or Gemini `thoughtSignature`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// Anthropic `redacted_thinking` data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<String>,
+    /// OpenAI Responses reasoning item id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    /// OpenAI Responses `encrypted_content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<String>,
+    /// Chat Completions `reasoning_details` (OpenRouter, Kimi).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<Value>>,
+    /// Chat Completions `reasoning_opaque` (GitHub Copilot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opaque: Option<String>,
+    /// The Chat Completions field the reasoning text streamed under
+    /// (`reasoning_content`, `reasoning`), where it is sent back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+impl ReasoningMeta {
+    pub fn of(protocol: Protocol) -> Self {
+        ReasoningMeta {
+            protocol: Some(protocol),
+            ..Default::default()
+        }
+    }
 }
 
 /// An image, PDF or other file for the model to see.
@@ -217,6 +335,9 @@ pub struct Request {
     pub tools: Vec<ToolSpec>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// Provider options (reasoning effort, thinking, service tier, …),
+    /// lowered per protocol.
+    pub options: Options,
     /// Extra top-level body fields, merged last (e.g. `chat_template_kwargs`).
     pub body: serde_json::Map<String, Value>,
 }
@@ -233,6 +354,10 @@ pub struct Usage {
 pub enum Event {
     TextDelta(String),
     ReasoningDelta(String),
+    /// The current reasoning block is complete, with the provider state
+    /// needed to replay it. A block that streamed no text (redacted or
+    /// omitted thinking) is still a block.
+    ReasoningEnd(ReasoningMeta),
     ToolCall {
         id: String,
         name: String,
@@ -312,6 +437,17 @@ impl Provider {
         client: &reqwest::Client,
         req: &Request,
     ) -> Result<EventStream, Error> {
+        let defaults = options::defaults(self.protocol, &self.base_url, &req.model);
+        let owned;
+        let req = if defaults.is_empty() {
+            req
+        } else {
+            owned = Request {
+                options: defaults.merged(&req.options),
+                ..req.clone()
+            };
+            &owned
+        };
         check(self.protocol, req)?;
         match self.protocol {
             Protocol::OpenaiChat => openai::stream(self, client, req).await,
@@ -322,7 +458,112 @@ impl Provider {
     }
 }
 
-/// Reject a request with media `protocol` cannot carry, before sending it.
+/// Builds an assistant message's parts from its stream events, in stream
+/// order: consecutive text or reasoning deltas join into one part, and a
+/// reasoning block ends at its [`Event::ReasoningEnd`]. Reasoning from a
+/// protocol without block ends (Chat) is one part, however it interleaves
+/// with text.
+#[derive(Debug, Default)]
+pub struct Collector {
+    parts: Vec<Part>,
+    open: Option<Open>,
+    /// A reasoning part closed by other content rather than by its end.
+    loose: Option<usize>,
+}
+
+#[derive(Debug)]
+enum Open {
+    Text(String),
+    Reasoning(String),
+}
+
+impl Collector {
+    pub fn push(&mut self, ev: &Event) {
+        match ev {
+            Event::TextDelta(d) if !d.is_empty() => match &mut self.open {
+                Some(Open::Text(t)) => t.push_str(d),
+                _ => {
+                    self.close();
+                    self.open = Some(Open::Text(d.clone()));
+                }
+            },
+            Event::ReasoningDelta(d) if !d.is_empty() => match (&mut self.open, self.loose) {
+                (Some(Open::Reasoning(t)), _) => t.push_str(d),
+                (_, Some(i)) => {
+                    if let Some(Part::Reasoning(r)) = self.parts.get_mut(i) {
+                        r.text.push_str(d);
+                    }
+                }
+                _ => {
+                    self.close();
+                    self.open = Some(Open::Reasoning(d.clone()));
+                }
+            },
+            Event::ReasoningEnd(meta) => {
+                self.loose = None;
+                if let Some(Open::Reasoning(t)) = &mut self.open {
+                    let text = std::mem::take(t);
+                    self.open = None;
+                    self.parts
+                        .push(Part::Reasoning(Reasoning::new(text, meta.clone())));
+                    return;
+                }
+                // State that arrives after its reasoning closed (Chat sends
+                // it at the end of the stream) joins that reasoning.
+                let late = self.parts.iter_mut().rev().find_map(|p| match p {
+                    Part::Reasoning(r) if r.meta.is_none() => Some(r),
+                    _ => None,
+                });
+                match late {
+                    Some(r) => r.meta = Some(meta.clone()),
+                    None => {
+                        self.close();
+                        self.parts
+                            .push(Part::Reasoning(Reasoning::new("", meta.clone())));
+                    }
+                }
+            }
+            Event::ToolCall { id, name, input } => {
+                self.close();
+                self.parts.push(Part::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn close(&mut self) {
+        match self.open.take() {
+            Some(Open::Text(t)) => self.parts.push(Part::Text(t)),
+            Some(Open::Reasoning(t)) => {
+                self.loose = Some(self.parts.len());
+                self.parts.push(Part::Reasoning(t.into()));
+            }
+            None => {}
+        }
+    }
+
+    /// The parts so far, in order.
+    pub fn finish(mut self) -> Vec<Part> {
+        self.close();
+        self.parts
+    }
+}
+
+/// The parts of the message a complete event stream describes.
+pub fn collect<'a>(events: impl IntoIterator<Item = &'a Event>) -> Vec<Part> {
+    let mut c = Collector::default();
+    for e in events {
+        c.push(e);
+    }
+    c.finish()
+}
+
+/// Reject a request with media `protocol` cannot carry, or (Anthropic)
+/// malformed provider options, before sending it.
 pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
     match protocol {
         Protocol::OpenaiChat => openai::check(req),
@@ -784,6 +1025,73 @@ mod serde_tests {
     fn v_has_no_media(m: &Message) -> bool {
         let v = serde_json::to_value(m).unwrap();
         v["parts"][3]["data"].get("media").is_none()
+    }
+
+    #[test]
+    fn reasoning_with_provider_state_round_trips() {
+        // Sessions stored before provider state hold reasoning as a string,
+        // and plain reasoning is still written that way.
+        let old = json!({"type": "reasoning", "data": "r"});
+        let p: Part = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(p, Part::Reasoning("r".into()));
+        assert_eq!(serde_json::to_value(&p).unwrap(), old);
+        let mut meta = ReasoningMeta::of(Protocol::AnthropicMessages);
+        meta.signature = Some("sig".into());
+        let signed = Part::Reasoning(Reasoning::new("t", meta));
+        let v = serde_json::to_value(&signed).unwrap();
+        assert_eq!(
+            v,
+            json!({"type": "reasoning", "data": {"text": "t", "meta": {"protocol": "anthropic-messages", "signature": "sig"}}})
+        );
+        assert_eq!(serde_json::from_value::<Part>(v).unwrap(), signed);
+    }
+
+    #[test]
+    fn collector_keeps_stream_order_and_reasoning_blocks() {
+        let signed = |s: &str| {
+            let mut m = ReasoningMeta::of(Protocol::AnthropicMessages);
+            m.signature = Some(s.into());
+            m
+        };
+        let parts = collect(&[
+            Event::ReasoningDelta("a".into()),
+            Event::ReasoningEnd(signed("s1")),
+            Event::ReasoningEnd(signed("s2")),
+            Event::TextDelta("x".into()),
+            Event::ToolCall {
+                id: "c".into(),
+                name: "n".into(),
+                input: json!({}),
+            },
+            Event::ReasoningDelta("b".into()),
+            Event::ReasoningEnd(signed("s3")),
+            Event::ToolCall {
+                id: "d".into(),
+                name: "n".into(),
+                input: json!({}),
+            },
+        ]);
+        assert_eq!(parts.len(), 6);
+        assert_eq!(parts[0], Part::Reasoning(Reasoning::new("a", signed("s1"))));
+        assert_eq!(parts[1], Part::Reasoning(Reasoning::new("", signed("s2"))));
+        assert_eq!(parts[2], Part::Text("x".into()));
+        assert_eq!(parts[4], Part::Reasoning(Reasoning::new("b", signed("s3"))));
+        // Reasoning without block ends (Chat) stays one part around text,
+        // and state sent at the end joins it.
+        let chat = ReasoningMeta::of(Protocol::OpenaiChat);
+        let parts = collect(&[
+            Event::ReasoningDelta("a".into()),
+            Event::TextDelta("x".into()),
+            Event::ReasoningDelta("b".into()),
+            Event::ReasoningEnd(chat.clone()),
+        ]);
+        assert_eq!(
+            parts,
+            [
+                Part::Reasoning(Reasoning::new("ab", chat)),
+                Part::Text("x".into())
+            ]
+        );
     }
 
     #[test]

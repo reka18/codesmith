@@ -206,6 +206,7 @@ fn out(events: Result<Vec<Event>, Error>) -> Out {
             Event::TextDelta(t) => o.text.push_str(&t),
             Event::ReasoningDelta(t) => o.reasoning.push_str(&t),
             Event::ToolCall { id, name, input } => o.calls.push((id, name, input)),
+            Event::ReasoningEnd(_) => {}
             Event::Finish { reason, usage } => {
                 o.finish = reason;
                 o.usage = usage;

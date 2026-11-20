@@ -201,7 +201,8 @@ PgUp/PgDn scroll · Ctrl+End follow
 /sessions       pick a session to continue
 /undo, /redo    undo or redo the latest turn's file changes
 /agent [id]     switch agent (build, plan, …)
-/model [p/m]    switch model
+/model [p/m]    switch model (p/m#variant picks a variant)
+/variant [name] cycle the model's variants (reasoning effort), or pick one
 /compact        summarize older history now
 /clear          clear the screen (the session is kept)
 /help           this help
@@ -218,6 +219,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("redo", "redo the latest undone turn"),
     ("agent", "switch agent"),
     ("model", "switch model"),
+    (
+        "variant",
+        "cycle or pick the model variant (reasoning effort)",
+    ),
     ("compact", "summarize older history now"),
     ("clear", "clear the screen"),
     ("thinking", "show or hide reasoning"),
@@ -1265,7 +1270,7 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                     codesmith_core::media::label(m)
                 ))),
                 (Role::Assistant, Part::Text(t)) => out.push(Entry::Assistant(t.clone())),
-                (Role::Assistant, Part::Reasoning(t)) => out.push(Entry::Reasoning(t.clone())),
+                (Role::Assistant, Part::Reasoning(t)) => out.push(Entry::Reasoning(t.to_string())),
                 (Role::Assistant, Part::ToolCall { id, name, input }) => {
                     out.push(Entry::Tool(Tool {
                         id: id.clone(),

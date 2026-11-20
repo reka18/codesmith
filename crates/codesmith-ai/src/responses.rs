@@ -4,9 +4,167 @@
 use crate::gemini::split_id;
 use crate::{
     drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
-    Event, EventStream, Media, MediaKind, Part, Provider, Request, Role, Usage,
+    Event, EventStream, Media, MediaKind, Message, Part, Protocol, Provider, ReasoningMeta,
+    Request, Role, Usage,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+
+/// Body fields from the request's provider options (after OpenCode's
+/// `lowerGeneration`); a malformed option is dropped on its own.
+fn lower_options(req: &Request) -> Map<String, Value> {
+    let o = &req.options;
+    let mut out = Map::new();
+    let mut put = |k: &str, v: Value| {
+        out.insert(k.into(), v);
+    };
+    if let Some(b) = o.bool("store") {
+        put("store", json!(b));
+    }
+    if let Some(m) = o.string_record("metadata") {
+        put("metadata", Value::Object(m));
+    }
+    if let Some(s) = o.str("safetyIdentifier") {
+        put("safety_identifier", json!(s));
+    }
+    if let Some(b) = o
+        .object("streamOptions")
+        .and_then(|so| crate::options::field(so, "includeObfuscation"))
+        .and_then(Value::as_bool)
+    {
+        put("stream_options", json!({"include_obfuscation": b}));
+    }
+    if let Some(n) = o.int("topLogprobs").filter(|n| (0..=20).contains(n)) {
+        put("top_logprobs", json!(n));
+    }
+    if let Some(i) = o.strings("include").filter(|i| !i.is_empty()) {
+        put("include", json!(i));
+    }
+    let mut reasoning = Map::new();
+    if let Some(e) = o.reasoning_effort() {
+        reasoning.insert("effort".into(), json!(e));
+    }
+    if let Some(s) = o
+        .str("reasoningSummary")
+        .filter(|s| matches!(*s, "auto" | "concise" | "detailed"))
+    {
+        reasoning.insert("summary".into(), json!(s));
+    }
+    for (key, wire) in [("reasoningMode", "mode"), ("reasoningContext", "context")] {
+        if let Some(v) = o.str(key) {
+            reasoning.insert(wire.into(), json!(v));
+        }
+    }
+    if !reasoning.is_empty() {
+        put("reasoning", Value::Object(reasoning));
+    }
+    if let Some(v) = o.str("textVerbosity") {
+        put("text", json!({"verbosity": v}));
+    }
+    if let Some(v) = o.str("serviceTier") {
+        put("service_tier", json!(v));
+    }
+    if let Some(v) = o
+        .str("truncation")
+        .filter(|t| matches!(*t, "auto" | "disabled"))
+    {
+        put("truncation", json!(v));
+    }
+    if let Some(n) = o.int("maxToolCalls") {
+        put("max_tool_calls", json!(n));
+    }
+    if let Some(b) = o.bool("parallelToolCalls") {
+        put("parallel_tool_calls", json!(b));
+    }
+    for (key, wire) in [
+        ("topP", "top_p"),
+        ("presencePenalty", "presence_penalty"),
+        ("frequencyPenalty", "frequency_penalty"),
+    ] {
+        if let Some(n) = o.num(key) {
+            put(wire, json!(n));
+        }
+    }
+    // `allowedTools` restricts the declared tools (`tool_choice:
+    // allowed_tools`); it only means something when tools are declared.
+    if let Some(a) = o.object("allowedTools").filter(|_| !req.tools.is_empty()) {
+        let names: Option<Vec<&str>> = crate::options::field(a, "toolNames")
+            .and_then(Value::as_array)
+            .and_then(|n| n.iter().map(Value::as_str).collect());
+        let mode = a.get("mode").and_then(Value::as_str).unwrap_or("auto");
+        if let Some(names) = names.filter(|n| !n.is_empty()) {
+            if matches!(mode, "auto" | "none" | "required") {
+                put(
+                    "tool_choice",
+                    json!({"type": "allowed_tools", "mode": mode, "tools": names.iter().map(|n| json!({"type": "function", "name": n})).collect::<Vec<_>>()}),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// One assistant message's input items. Reasoning replays as a `reasoning`
+/// item when it carries encrypted state from this API (nothing is stored
+/// server-side, so an item without it cannot be resolved) and some output
+/// follows it in the message (the API rejects a reasoning item without its
+/// following item). Reasoning parts of one item merge.
+fn assistant_items(m: &Message, input: &mut Vec<Value>) {
+    let has_output = |from: usize| {
+        m.parts[from..].iter().any(|p| match p {
+            Part::Text(t) => !t.trim().is_empty(),
+            Part::ToolCall { .. } => true,
+            _ => false,
+        })
+    };
+    let mut items: Vec<(String, usize)> = Vec::new();
+    for (i, p) in m.parts.iter().enumerate() {
+        match p {
+            Part::Text(t) if !t.trim().is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
+            Part::ToolCall { id, name, input: args } => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
+            Part::Reasoning(r) => {
+                let Some(meta) = r.meta_for(Protocol::OpenaiResponses) else {
+                    continue;
+                };
+                let id = meta.item_id.clone().unwrap_or_default();
+                if let Some(&(_, at)) = items.iter().find(|(i, _)| !id.is_empty() && *i == id) {
+                    let item = &mut input[at];
+                    if !r.text.is_empty() {
+                        item["summary"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(json!({"type": "summary_text", "text": r.text}));
+                    }
+                    if let Some(e) = &meta.encrypted {
+                        item["encrypted_content"] = json!(e);
+                    }
+                    continue;
+                }
+                if !has_output(i + 1) {
+                    continue;
+                }
+                let mut item = json!({"type": "reasoning", "summary": []});
+                if !id.is_empty() {
+                    item["id"] = json!(id);
+                }
+                if !r.text.is_empty() {
+                    item["summary"] = json!([{"type": "summary_text", "text": r.text}]);
+                }
+                if let Some(e) = &meta.encrypted {
+                    item["encrypted_content"] = json!(e);
+                }
+                items.push((id, input.len()));
+                input.push(item);
+            }
+            _ => {}
+        }
+    }
+    // Items still without encrypted state cannot be replayed statelessly.
+    for (_, at) in items.into_iter().rev() {
+        if input[at].get("encrypted_content").is_none() {
+            input.remove(at);
+        }
+    }
+}
 
 /// An `input_image` / `input_file` / `input_video` item (after OpenCode's
 /// open-responses `lowerMedia`); every media type lowers.
@@ -45,12 +203,15 @@ pub fn body(req: &Request) -> Value {
             input.push(json!({"type": "message", "role": "user", "content": content}));
             continue;
         }
+        if m.role == Role::Assistant {
+            assistant_items(m, &mut input);
+            continue;
+        }
         for p in &m.parts {
-            match (&m.role, p) {
-                (Role::User, Part::Text(t)) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]})),
-                (Role::Assistant, Part::Text(t)) if !t.trim().is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
-                (_, Part::ToolCall { id, name, input: args }) => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
-                (_, Part::ToolResult { .. }) => input.push(tool_output(p)),
+            match p {
+                Part::Text(t) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]})),
+                Part::ToolCall { id, name, input: args } => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
+                Part::ToolResult { .. } => input.push(tool_output(p)),
                 _ => {}
             }
         }
@@ -69,6 +230,7 @@ pub fn body(req: &Request) -> Value {
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
+    merge_body(&mut body, &lower_options(req));
     merge_body(&mut body, &req.body);
     body
 }
@@ -103,11 +265,52 @@ struct Pending {
     args: String,
 }
 
+/// A reasoning output item between `output_item.added` and its completion.
+#[derive(Debug, Default)]
+struct Thinking {
+    id: String,
+    encrypted: Option<String>,
+    /// Some summary text has been sent as deltas.
+    streamed: bool,
+    /// Summary indices that streamed text.
+    texted: Vec<u64>,
+    /// A finished summary part; the next one starts after a blank line.
+    separate: bool,
+}
+
 #[derive(Default)]
 pub struct State {
     calls: usize,
     pending: Vec<Pending>,
+    thinking: Option<Thinking>,
     pub done: bool,
+}
+
+impl State {
+    /// Reasoning text, after a blank line when it starts a new summary part.
+    fn reasoning(&mut self, text: &str, index: Option<u64>, out: &mut Vec<Event>) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(t) = &mut self.thinking {
+            if std::mem::take(&mut t.separate) && t.streamed {
+                out.push(Event::ReasoningDelta("\n\n".into()));
+            }
+            t.streamed = true;
+            t.texted.extend(index);
+        }
+        out.push(Event::ReasoningDelta(text.to_string()));
+    }
+
+    /// End the open reasoning item, with its replay state.
+    fn end_thinking(&mut self, out: &mut Vec<Event>) {
+        if let Some(t) = self.thinking.take() {
+            let mut meta = ReasoningMeta::of(Protocol::OpenaiResponses);
+            meta.item_id = Some(t.id).filter(|i| !i.is_empty());
+            meta.encrypted = t.encrypted;
+            out.push(Event::ReasoningEnd(meta));
+        }
+    }
 }
 
 impl State {
@@ -168,10 +371,59 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
         "response.output_text.delta" | "response.refusal.delta" => out.push(Event::TextDelta(
             v["delta"].as_str().unwrap_or("").to_string(),
         )),
-        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => out.push(
-            Event::ReasoningDelta(v["delta"].as_str().unwrap_or("").to_string()),
-        ),
-        "response.reasoning_summary_part.done" => out.push(Event::ReasoningDelta("\n\n".into())),
+        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+            let d = v["delta"].as_str().unwrap_or("");
+            state.reasoning(d, v["summary_index"].as_u64(), &mut out);
+        }
+        // A final whose part streamed nothing carries the only copy.
+        "response.reasoning_summary_text.done" => {
+            let i = v["summary_index"].as_u64();
+            let streamed = state.thinking.as_ref().is_some_and(|t| {
+                t.texted.iter().any(|x| Some(*x) == i) || (i.is_none() && t.streamed)
+            });
+            if !streamed {
+                state.reasoning(v["text"].as_str().unwrap_or(""), i, &mut out);
+            }
+        }
+        "response.reasoning_summary_part.done" => {
+            if let Some(t) = &mut state.thinking {
+                t.separate = true;
+            } else {
+                out.push(Event::ReasoningDelta("\n\n".into()));
+            }
+        }
+        "response.output_item.added" if v["item"]["type"] == "reasoning" => {
+            state.end_thinking(&mut out);
+            let it = &v["item"];
+            state.thinking = Some(Thinking {
+                id: item_str(it, "id").into(),
+                encrypted: it["encrypted_content"].as_str().map(str::to_string),
+                ..Default::default()
+            });
+        }
+        "response.output_item.done" if v["item"]["type"] == "reasoning" => {
+            let it = &v["item"];
+            if state.thinking.is_none() {
+                state.thinking = Some(Thinking {
+                    id: item_str(it, "id").into(),
+                    ..Default::default()
+                });
+            }
+            if !state.thinking.as_ref().is_some_and(|t| t.streamed) {
+                let summary: Vec<&str> = it["summary"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s["text"].as_str())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                state.reasoning(&summary.join("\n\n"), None, &mut out);
+            }
+            if let (Some(t), Some(e)) = (&mut state.thinking, it["encrypted_content"].as_str()) {
+                t.encrypted = Some(e.to_string());
+            }
+            state.end_thinking(&mut out);
+        }
         "response.output_item.added" if v["item"]["type"] == "function_call" => {
             let it = &v["item"];
             state.pending.push(Pending {
@@ -207,6 +459,9 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
             ));
         }
         "response.completed" | "response.incomplete" => {
+            // Reasoning never completed by an output item ends with what
+            // its start said; the terminal output is not reconciled.
+            state.end_thinking(&mut out);
             let r = &v["response"];
             let complete = kind == "response.completed";
             // Calls never completed by an output item: the final response
@@ -374,6 +629,7 @@ mod tests {
             }],
             max_tokens: Some(64),
             temperature: None,
+            options: Default::default(),
             body: Default::default(),
         };
         let b = body(&req);

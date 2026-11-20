@@ -529,6 +529,7 @@ impl Session {
                 .collect(),
             max_tokens: self.model.max_output,
             temperature: self.model.temperature,
+            options: self.model.options.clone(),
             body: self.model.body.clone(),
         }
     }
@@ -1705,28 +1706,25 @@ impl Session {
             .stream(&self.client, req)
             .await
             .map_err(|e| (e, false))?;
-        let mut text = String::new();
-        let mut reasoning = String::new();
-        let mut calls = Vec::new();
+        // Parts in stream order, reasoning with its provider signature.
+        let mut parts = codesmith_ai::Collector::default();
         let mut streamed = false;
         let mut finish = None;
         while let Some(ev) = stream.next().await {
-            match ev.map_err(|e| (e, streamed))? {
+            let ev = ev.map_err(|e| (e, streamed))?;
+            match &ev {
                 Event::TextDelta(d) => {
                     streamed = true;
-                    text.push_str(&d);
-                    sink.text(&d);
+                    sink.text(d);
                 }
                 Event::ReasoningDelta(d) => {
                     streamed = true;
-                    reasoning.push_str(&d);
-                    sink.reasoning(&d);
+                    sink.reasoning(d);
                 }
-                Event::ToolCall { id, name, input } => {
-                    calls.push(Part::ToolCall { id, name, input })
-                }
-                Event::Finish { reason, usage } => finish = Some((reason, usage)),
+                Event::Finish { reason, usage } => finish = Some((reason.clone(), *usage)),
+                _ => {}
             }
+            parts.push(&ev);
         }
         // A stream that ends without finishing was cut off: retry it.
         let Some((reason, usage)) = finish else {
@@ -1737,15 +1735,7 @@ impl Session {
                 streamed,
             ));
         };
-        let mut parts = Vec::new();
-        if !reasoning.is_empty() {
-            parts.push(Part::Reasoning(reasoning));
-        }
-        if !text.is_empty() {
-            parts.push(Part::Text(text));
-        }
-        parts.extend(calls);
-        Ok((parts, reason, usage))
+        Ok((parts.finish(), reason, usage))
     }
 }
 
@@ -1783,6 +1773,13 @@ async fn complete_with(
         tools: vec![],
         max_tokens: max_tokens.or(model.max_output),
         temperature: model.temperature,
+        // A capped side request (the title) has no room for thinking, so it
+        // leaves the reasoning options out.
+        options: if max_tokens.is_some() {
+            Default::default()
+        } else {
+            model.options.clone()
+        },
         body: model.body.clone(),
     };
     loop {

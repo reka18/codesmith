@@ -284,7 +284,7 @@ mod tests {
             Message::user("hi"),
             assistant(vec![]),
             assistant(vec![Part::Text(String::new())]),
-            assistant(vec![Part::Reasoning(String::new())]),
+            assistant(vec![Part::Reasoning(String::new().into())]),
             assistant(vec![Part::Text("Partial".into())]),
         ];
         let got = model_messages(&history);
