@@ -110,6 +110,12 @@ struct Ui {
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     screen: String,
+    /// Where the chunk that held the last `wait_for` match starts, so the
+    /// next wait also sees text that arrived in that same chunk.
+    since: usize,
+    /// The terminal as drawn: diff-based redraws split text in the byte
+    /// stream, so waits also look at the screen itself.
+    term: vt100::Parser,
 }
 
 impl Ui {
@@ -141,26 +147,47 @@ impl Ui {
             stdout: child.stdout.take().unwrap(),
             child,
             screen: String::new(),
+            since: 0,
+            term: vt100::Parser::new(30, 100, 0),
         })
     }
 
     /// Read output until `text` is drawn (after what was read before).
     async fn wait_for(&mut self, text: &str) {
         let mut buf = [0u8; 8192];
-        let mut fresh = String::new();
+        // Text read before this wait but after the previous match's chunk
+        // began counts too: two expected texts often arrive in one read.
+        let before = self.since;
+        let mut fresh = self.screen.split_off(before);
+        // Where the chunk read last starts in `fresh`: the next wait looks
+        // again from there.
+        let mut last = 0;
+        let stdout = &mut self.stdout;
+        let term = &mut self.term;
+        let on_screen = |term: &vt100::Parser| {
+            let shown = term.screen().contents();
+            shown
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(text)
+        };
         let seen = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                if plain(&fresh).contains(text) {
+                if plain(&fresh).contains(text) || on_screen(term) {
                     return true;
                 }
-                let n = self.stdout.read(&mut buf).await.unwrap();
+                let n = stdout.read(&mut buf).await.unwrap();
                 if n == 0 {
                     return false;
                 }
+                term.process(&buf[..n]);
+                last = fresh.len();
                 fresh.push_str(&String::from_utf8_lossy(&buf[..n]));
             }
         })
         .await;
+        self.since = before + last;
         self.screen.push_str(&fresh);
         assert_eq!(seen, Ok(true), "{text:?} was not drawn:\n{}", plain(&fresh));
     }
@@ -645,7 +672,12 @@ async fn a_subagents_activity_is_drawn_in_its_row() {
     .await;
     e.config(
         &m.url,
-        json!({"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}),
+        // Medium verbosity: at the default (low) the finished row folds into
+        // its group's summary, so its ending may never be drawn.
+        json!({
+            "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}],
+            "tui": {"session": {"verbosity": "medium"}}
+        }),
     );
     let Some(mut ui) = Ui::start(&e, "--prompt 'delegate it'") else {
         return;

@@ -45,6 +45,7 @@ hyper-util.workspace = true
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]
+vt100 = "0.15"
 base64.workspace = true
 tempfile.workspace = true
 rusqlite.workspace = true
