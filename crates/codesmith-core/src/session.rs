@@ -466,7 +466,9 @@ impl Session {
         }
         // GPT-5 and later edit with `patch`; other models with `edit` and `write`.
         tool::apply_patch::offer_for_spec(&mut tools, &model_spec, &model.model_id);
-        let lsp = crate::lsp::Lsp::new(config.lsp.as_ref(), loaded.root.clone()).map(Arc::new);
+        let lsp = crate::lsp::Lsp::new(config.lsp.as_ref(), loaded.root.clone())
+            .map(|l| l.watch_with(crate::watch::global(), config.watcher.ignore.clone()))
+            .map(Arc::new);
         if lsp.is_none() {
             tools.retain(|t| *t != Tool::Lsp);
         }

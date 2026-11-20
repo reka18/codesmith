@@ -258,3 +258,82 @@ async fn language_servers_do_not_inherit_the_server_token() {
         format!("[][{home}]")
     );
 }
+
+/// Files changed outside the agent reach the servers: the changes a server
+/// registered a watcher for go out as `didChangeWatchedFiles` (ignored
+/// paths and files it did not ask about do not), and a document it has
+/// open gets its new text.
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_made_outside_the_agent_reach_the_servers() {
+    use codesmith_core::lsp::path_to_uri;
+    use codesmith_core::watch::{native::Notify, Watcher};
+    let Some(py) = python() else { return };
+    let fixture = format!("{}/tests/fixtures/lsp_fake.py", env!("CARGO_MANIFEST_DIR"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("ignored")).unwrap();
+    let setting: Setting = serde_json::from_value(json!({
+        "fake": {"command": [py, fixture], "extensions": [".fake"],
+                 "initialization": {"watch": "**/*.fake"}}
+    }))
+    .unwrap();
+    let watcher = Watcher::new(Arc::new(Notify::new()));
+    let lsp = Lsp::new(Some(&setting), root.clone())
+        .unwrap()
+        .watch_with(watcher.clone(), vec!["ignored".into()]);
+    let a = root.join("a.fake");
+    std::fs::write(&a, "fine\n").unwrap();
+    lsp.touch(&a, true).await;
+    assert_eq!(
+        watcher.active(),
+        1,
+        "the project is watched once a server runs"
+    );
+
+    let watched = || async {
+        lsp.request(Some(&a), "fake/watched", json!(null))
+            .await
+            .first()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+    };
+    let has = |list: &[serde_json::Value], path: &Path, kinds: &[u64]| {
+        let uri = path_to_uri(path);
+        list.iter()
+            .any(|c| c["uri"] == uri && kinds.contains(&c["type"].as_u64().unwrap_or(0)))
+    };
+    let b = root.join("b.fake");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        std::fs::write(&b, format!("{:?}", Instant::now())).unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        std::fs::write(root.join("ignored/c.fake"), "x").unwrap();
+        std::fs::write(&a, "ERROR outside\n").unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let list = watched().await;
+        let errors = lsp
+            .diagnostics()
+            .get(&a)
+            .is_some_and(|d| d.iter().any(|d| d.is_error()));
+        if has(&list, &b, &[1, 2]) && errors {
+            assert!(!has(&list, &root.join("notes.txt"), &[1, 2, 3]), "{list:?}");
+            assert!(
+                !has(&list, &root.join("ignored/c.fake"), &[1, 2, 3]),
+                "{list:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no external change arrived: {list:?}"
+        );
+    }
+    std::fs::remove_file(&b).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !has(&watched().await, &b, &[3]) {
+        assert!(Instant::now() < deadline, "no deletion arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    lsp.shutdown().await;
+    assert_eq!(watcher.active(), 0, "the watch stops with the servers");
+}

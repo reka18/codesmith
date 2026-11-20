@@ -3,13 +3,17 @@ document containing ERROR becomes an error diagnostic (WARN a warning). It
 first publishes an empty list, then the real one a moment later, so the
 client's debounce is exercised; every push also reports an error in a
 second file, `other.fake`. It asks the client for its configuration after
-`initialized` and answers definition requests with the first ERROR line."""
+`initialized` and answers definition requests with the first ERROR line.
+With `"watch": "<glob>"` in its options it registers a file watcher for
+that glob, and `fake/watched` returns the didChangeWatchedFiles changes it
+got."""
 import json, os, sys, threading, time
 
 out = sys.stdout.buffer
 lock = threading.Lock()
 docs = {}
 config = {}
+watched = []
 
 
 def send(m):
@@ -74,6 +78,16 @@ while True:
     elif method == "initialized":
         send({"jsonrpc": "2.0", "id": "cfg-1", "method": "workspace/configuration",
               "params": {"items": [{"section": "fake"}]}})
+        if config.get("watch"):
+            send({"jsonrpc": "2.0", "id": "reg-1", "method": "client/registerCapability",
+                  "params": {"registrations": [{"id": "w1", "method": "workspace/didChangeWatchedFiles",
+                             "registerOptions": {"watchers": [{"globPattern": config["watch"]}]}}]}})
+    elif method == "workspace/didChangeWatchedFiles":
+        watched.extend(m["params"]["changes"])
+    elif method == "fake/watched":
+        send({"jsonrpc": "2.0", "id": mid, "result": watched})
+    elif method is None and mid == "reg-1":
+        pass
     elif method is None and mid == "cfg-1":
         config = (m.get("result") or [{}])[0] or config
     elif method == "textDocument/didOpen":

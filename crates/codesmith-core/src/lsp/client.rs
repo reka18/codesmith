@@ -86,6 +86,11 @@ pub struct Client {
     events: broadcast::Sender<PathBuf>,
     /// Open documents and their versions.
     files: Mutex<HashMap<PathBuf, i64>>,
+    /// A hash of the text last sent for each open document, so a watcher
+    /// echo of an edit already sent is not sent again.
+    sent: Mutex<HashMap<PathBuf, u64>>,
+    /// File watchers the server registered (`client/registerCapability`).
+    watchers: Mutex<Vec<Registered>>,
     initialization: Option<Value>,
     /// The first push for a file is not waited on (TypeScript publishes an
     /// early, incomplete one).
@@ -129,6 +134,8 @@ impl Client {
             diagnostics: Mutex::new(HashMap::new()),
             events,
             files: Mutex::new(HashMap::new()),
+            sent: Mutex::new(HashMap::new()),
+            watchers: Mutex::new(Vec::new()),
             initialization: launch.initialization,
             skip_first,
             _child: child,
@@ -211,6 +218,7 @@ impl Client {
         let text = std::fs::read_to_string(path)?;
         let uri = path_to_uri(path);
         let key = path_key(path);
+        self.sent.lock().unwrap().insert(key.clone(), hash(&text));
         let version = self.files.lock().unwrap().get(&key).copied();
         match version {
             Some(v) => {
@@ -249,6 +257,58 @@ impl Client {
                 .await
             }
         }
+    }
+
+    /// Whether the server registered a file watcher covering `path` for
+    /// `kind` (1 created, 2 changed, 3 deleted); `None` when it registered
+    /// none.
+    pub fn watches(&self, path: &Path, kind: u8) -> Option<bool> {
+        let w = self.watchers.lock().unwrap();
+        if w.is_empty() {
+            return None;
+        }
+        Some(w.iter().any(|r| r.matches(path, kind)))
+    }
+
+    /// Files changed outside the agent (`(path, kind)`, kinds as in
+    /// [`Self::watches`]): open documents get their new text, unless it is
+    /// what was last sent (the watcher echoing an edit already reported),
+    /// and the changes `wanted` keeps go out as `didChangeWatchedFiles`.
+    pub async fn external(
+        &self,
+        changes: &[(PathBuf, u8)],
+        wanted: impl Fn(&Path, u8) -> bool,
+    ) -> Result<usize> {
+        let mut out = Vec::new();
+        for (path, kind) in changes {
+            let key = path_key(path);
+            let open = self.files.lock().unwrap().get(&key).copied();
+            if let (Some(v), 1 | 2) = (open, kind) {
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    continue;
+                };
+                let h = hash(&text);
+                if self.sent.lock().unwrap().insert(key.clone(), h) == Some(h) {
+                    continue;
+                }
+                self.files.lock().unwrap().insert(key, v + 1);
+                self.notify(
+                    "textDocument/didChange",
+                    json!({
+                        "textDocument": {"uri": path_to_uri(path), "version": v + 1},
+                        "contentChanges": [{"text": text}]
+                    }),
+                )
+                .await?;
+            }
+            if wanted(path, *kind) {
+                out.push(json!({"uri": path_to_uri(path), "type": kind}));
+            }
+        }
+        if !out.is_empty() {
+            self.notify(WATCHED, json!({ "changes": out })).await?;
+        }
+        Ok(out.len())
     }
 
     /// Subscribe before `open`, then wait for the push it causes.
@@ -325,6 +385,35 @@ impl Client {
             "workspace/workspaceFolders" => {
                 json!([{"name": "workspace", "uri": path_to_uri(&self.root)}])
             }
+            "client/registerCapability" => {
+                let list = params.get("registrations").and_then(Value::as_array);
+                let mut w = self.watchers.lock().unwrap();
+                for r in list.into_iter().flatten() {
+                    if r.get("method").and_then(Value::as_str) == Some(WATCHED) {
+                        let id = r.get("id").and_then(Value::as_str).unwrap_or_default();
+                        w.extend(Registered::parse(id, r.get("registerOptions")));
+                    }
+                }
+                Value::Null
+            }
+            "client/unregisterCapability" => {
+                // The spec's own spelling.
+                let list = params
+                    .get("unregisterations")
+                    .or_else(|| params.get("unregistrations"))
+                    .and_then(Value::as_array);
+                let ids: Vec<&str> = list
+                    .into_iter()
+                    .flatten()
+                    .filter(|r| r.get("method").and_then(Value::as_str) == Some(WATCHED))
+                    .filter_map(|r| r.get("id").and_then(Value::as_str))
+                    .collect();
+                self.watchers
+                    .lock()
+                    .unwrap()
+                    .retain(|w| !ids.contains(&w.id.as_str()));
+                Value::Null
+            }
             _ => Value::Null,
         }
     }
@@ -388,6 +477,85 @@ pub async fn wait_for(
             }
             Ok(Ok(_)) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
             Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return,
+        }
+    }
+}
+
+const WATCHED: &str = "workspace/didChangeWatchedFiles";
+
+fn hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// One registered file watcher: a glob, optionally relative to a base
+/// folder, and the change kinds it wants (bits 1 create, 2 change, 4
+/// delete; default all).
+struct Registered {
+    id: String,
+    glob: globset::GlobMatcher,
+    base: Option<PathBuf>,
+    kinds: u8,
+}
+
+impl Registered {
+    fn parse(id: &str, options: Option<&Value>) -> Vec<Registered> {
+        let list = options
+            .and_then(|o| o.get("watchers"))
+            .and_then(Value::as_array);
+        list.into_iter()
+            .flatten()
+            .filter_map(|w| {
+                let g = w.get("globPattern")?;
+                let (pattern, base) = match g {
+                    Value::String(p) => (p.clone(), None),
+                    Value::Object(o) => {
+                        let base = match o.get("baseUri")? {
+                            Value::String(u) => uri_to_path(u),
+                            v => v.get("uri").and_then(Value::as_str).and_then(uri_to_path),
+                        }?;
+                        (
+                            o.get("pattern")?.as_str()?.to_string(),
+                            Some(path_key(&base)),
+                        )
+                    }
+                    _ => return None,
+                };
+                let glob = globset::GlobBuilder::new(&pattern)
+                    .literal_separator(true)
+                    .build()
+                    .ok()?
+                    .compile_matcher();
+                let kinds = w.get("kind").and_then(Value::as_u64).unwrap_or(7) as u8;
+                Some(Registered {
+                    id: id.to_string(),
+                    glob,
+                    base,
+                    kinds,
+                })
+            })
+            .collect()
+    }
+
+    fn matches(&self, path: &Path, kind: u8) -> bool {
+        let bit = match kind {
+            1 => 1,
+            2 => 2,
+            _ => 4,
+        };
+        if self.kinds & bit == 0 {
+            return false;
+        }
+        match &self.base {
+            Some(base) => {
+                let key = path_key(path);
+                key.strip_prefix(base)
+                    .or_else(|_| path.strip_prefix(base))
+                    .is_ok_and(|rel| self.glob.is_match(rel))
+            }
+            None => self.glob.is_match(path) || self.glob.is_match(path_key(path)),
         }
     }
 }

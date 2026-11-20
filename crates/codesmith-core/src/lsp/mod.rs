@@ -221,13 +221,33 @@ enum State {
     Broken,
 }
 
+type Slots = Arc<Mutex<HashMap<(String, PathBuf), watch::Receiver<State>>>>;
+
+/// How long file changes seen by the watcher are gathered before they are
+/// sent on, so a burst (a checkout, a build) goes out as one notification.
+pub const WATCH_BATCH: Duration = Duration::from_millis(100);
+
 /// The language servers of one session.
 pub struct Lsp {
     servers: Vec<server::Info>,
     project: PathBuf,
     /// (server id, root) → its state, so each starts at most once.
-    slots: Mutex<HashMap<(String, PathBuf), watch::Receiver<State>>>,
+    slots: Slots,
     pub timeouts: Timeouts,
+    /// Where changes made outside the agent come from, and what to leave
+    /// out (`watcher.ignore`).
+    watch: Option<(crate::watch::Watcher, Vec<String>)>,
+    /// Forwards those changes to the running servers, from when the first
+    /// one is ready.
+    forwarder: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for Lsp {
+    fn drop(&mut self) {
+        if let Some(f) = self.forwarder.lock().unwrap().take() {
+            f.abort();
+        }
+    }
 }
 
 impl Lsp {
@@ -237,9 +257,42 @@ impl Lsp {
         (!servers.is_empty()).then(|| Lsp {
             servers,
             project,
-            slots: Mutex::new(HashMap::new()),
+            slots: Arc::default(),
             timeouts: Timeouts::default(),
+            watch: None,
+            forwarder: Mutex::new(None),
         })
+    }
+
+    /// Tell running servers about files changed outside the agent, as seen
+    /// by `watcher` on the project tree minus `ignore` (paths or globs
+    /// relative to the project). Nothing is watched until a server is ready.
+    pub fn watch_with(mut self, watcher: crate::watch::Watcher, ignore: Vec<String>) -> Lsp {
+        self.watch = watcher.enabled().then_some((watcher, ignore));
+        self
+    }
+
+    /// Start forwarding watched changes (once).
+    fn start_forwarding(&self) {
+        let Some((watcher, ignore)) = &self.watch else {
+            return;
+        };
+        let mut f = self.forwarder.lock().unwrap();
+        if f.is_some() {
+            return;
+        }
+        let updates = watcher.subscribe(
+            crate::watch::WatchInput::Directory {
+                path: self.project.clone(),
+                ignore: ignore.clone(),
+            },
+            None,
+        );
+        *f = Some(tokio::spawn(forward(
+            updates,
+            self.slots.clone(),
+            self.servers.clone(),
+        )));
     }
 
     /// Servers that handle `file`, with the root each would use. Files
@@ -321,6 +374,9 @@ impl Lsp {
                 }
             }
         }
+        if !out.is_empty() {
+            self.start_forwarding();
+        }
         out
     }
 
@@ -392,9 +448,93 @@ impl Lsp {
 
     /// Shut every running server down gracefully.
     pub async fn shutdown(&self) {
+        if let Some(f) = self.forwarder.lock().unwrap().take() {
+            f.abort();
+        }
         let clients = self.running();
         futures_util::future::join_all(clients.iter().map(|c| c.shutdown())).await;
         self.slots.lock().unwrap().clear();
+    }
+}
+
+/// Send each batch of watched changes to the ready servers whose root holds
+/// them: the changes a server registered watchers for (or, if it
+/// registered none, those with its extensions), and the new text of the
+/// documents it has open.
+async fn forward(mut updates: crate::watch::Updates, slots: Slots, servers: Vec<server::Info>) {
+    use crate::watch::Kind;
+    loop {
+        let Some(first) = updates.recv().await else {
+            return;
+        };
+        let mut batch = vec![first];
+        let until = tokio::time::Instant::now() + WATCH_BATCH;
+        while let Ok(Some(u)) = tokio::time::timeout_at(until, updates.recv()).await {
+            batch.push(u);
+        }
+        // One change per path, in first-seen order. Backends may report one
+        // write as several events in any order (FSEvents coalesces), so
+        // where the file is now decides: gone is a deletion, and a path
+        // created in this batch stays a creation.
+        let mut changes: Vec<(PathBuf, u8)> = Vec::new();
+        for u in batch {
+            if u.kind == Kind::Overflow {
+                continue;
+            }
+            let created = u.kind == Kind::Create;
+            match changes.iter_mut().find(|(p, _)| *p == u.path) {
+                Some((_, k)) => *k = if created { 1 } else { *k },
+                None => changes.push((u.path, if created { 1 } else { 2 })),
+            }
+        }
+        changes.retain_mut(|(p, k)| match std::fs::metadata(&*p) {
+            Ok(m) => !m.is_dir(),
+            Err(_) => {
+                *k = 3;
+                true
+            }
+        });
+        if changes.is_empty() {
+            continue;
+        }
+        let ready: Vec<(String, Arc<Client>)> = slots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|((id, _), rx)| match &*rx.borrow() {
+                State::Ready(c) => Some((id.clone(), c.clone())),
+                _ => None,
+            })
+            .collect();
+        for (id, client) in ready {
+            let mine: Vec<(PathBuf, u8)> = changes
+                .iter()
+                .filter(|(p, _)| p.starts_with(&client.root))
+                .cloned()
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            let exts = servers
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.extensions.clone())
+                .unwrap_or_default();
+            let wanted = |p: &Path, kind: u8| {
+                client.watches(p, kind).unwrap_or_else(|| {
+                    let ext = p
+                        .extension()
+                        .map(|e| format!(".{}", e.to_string_lossy()))
+                        .unwrap_or_default();
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    exts.iter().any(|e| *e == ext || *e == name)
+                })
+            };
+            let _ = client.external(&mine, wanted).await;
+        }
     }
 }
 
