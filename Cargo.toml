@@ -6,7 +6,7 @@ members = ["crates/codesmith-ai", "crates/codesmith-core", "crates/codesmith"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/Skeptic-Dog-Software/codesmith"
+repository = "https://github.com/reka18/codesmith"
 rust-version = "1.85"
 
 [workspace.dependencies]
