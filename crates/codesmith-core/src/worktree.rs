@@ -43,6 +43,7 @@ pub fn slug() -> String {
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
+        .env_remove(crate::SERVER_TOKEN_VAR)
         .args(args)
         .current_dir(dir)
         .output()
@@ -172,6 +173,7 @@ pub fn create(cfg: &WorktreeConfig, cwd: &Path, opts: &Create) -> Result<(PathBu
         .filter(|c| !c.is_empty())
     {
         let status = Command::new("bash")
+            .env_remove(crate::SERVER_TOKEN_VAR)
             .args(["-lc", cmd])
             .current_dir(&dir)
             .env("CODESMITH_WORKTREE_BASE", &toplevel)

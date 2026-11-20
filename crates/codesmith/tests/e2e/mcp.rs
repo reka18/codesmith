@@ -175,3 +175,39 @@ async fn an_mcp_prompt_runs_as_a_slash_command() {
     assert!(model::system(sent).contains("Always cite ticket ids."));
     m.assert_done();
 }
+
+/// A local MCP server never inherits the local server's token
+/// (OpenCode's `cli/test/env`, "session environment omits server
+/// credentials", for MCP servers).
+#[tokio::test(flavor = "multi_thread")]
+async fn local_mcp_servers_do_not_see_the_server_token() {
+    let Some(py) = python() else {
+        eprintln!("skipped: python3 is not installed");
+        return;
+    };
+    let e = Env::new();
+    let seen = e.root.join("mcp-env.txt");
+    let wrapper = format!(
+        "import os, runpy, sys\n\
+         open({seen:?}, 'w').write('[' + os.environ.get('CODESMITH_SERVER_TOKEN', '') + '][' + os.environ.get('SESSION_ENV_TEST', '') + ']')\n\
+         sys.argv = [{fixture:?}]\n\
+         runpy.run_path({fixture:?}, run_name='__main__')\n",
+        seen = seen.display().to_string(),
+        fixture = fixture("mcp_rich.py"),
+    );
+    let m = Model::start(Script::new()).await;
+    e.config(
+        &m.url,
+        json!({"mcp": {"servers": {"rich": {"type": "local", "command": [py, "-c", wrapper]}}}}),
+    );
+    let out = e
+        .command(&["commands"])
+        .env("CODESMITH_SERVER_TOKEN", "secret-token")
+        .env("SESSION_ENV_TEST", "included")
+        .output()
+        .await
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("/rich:review"), "{stdout}");
+    assert_eq!(std::fs::read_to_string(&seen).unwrap(), "[][included]");
+}

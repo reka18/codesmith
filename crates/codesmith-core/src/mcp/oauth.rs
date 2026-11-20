@@ -566,6 +566,7 @@ pub fn open_browser(url: &str) {
         "xdg-open"
     };
     let _ = std::process::Command::new(cmd)
+        .env_remove(crate::SERVER_TOKEN_VAR)
         .arg(url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

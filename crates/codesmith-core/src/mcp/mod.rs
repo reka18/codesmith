@@ -1548,6 +1548,7 @@ async fn connect(
             crate::paths::private_dir(&log_dir)?;
             let stderr = crate::paths::create_private(&log)?;
             let mut child = tokio::process::Command::new(prog)
+                .env_remove(crate::SERVER_TOKEN_VAR)
                 .args(args)
                 .current_dir(dir)
                 .envs(environment)

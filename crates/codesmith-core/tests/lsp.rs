@@ -223,3 +223,38 @@ async fn clangd_reports_a_syntax_error() {
     assert!(out.contains("ERROR [2:"), "{out}");
     lsp.shutdown().await;
 }
+
+/// A language server's environment is CodeSmith's without the local
+/// server's token (OpenCode's `cli/test/env`, "session environment omits
+/// server credentials", for language servers). Every test in this file
+/// spawns children that must not see it, so setting it here is safe.
+#[tokio::test(flavor = "multi_thread")]
+async fn language_servers_do_not_inherit_the_server_token() {
+    let Some(py) = python() else { return };
+    std::env::set_var(codesmith_core::SERVER_TOKEN_VAR, "secret-token");
+    let fixture = format!("{}/tests/fixtures/lsp_fake.py", env!("CARGO_MANIFEST_DIR"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let seen = root.join("env.txt");
+    let wrapper = format!(
+        "import os, runpy, sys\n\
+         open({seen:?}, 'w').write('[' + os.environ.get('CODESMITH_SERVER_TOKEN', '') + '][' + os.environ.get('HOME', '') + ']')\n\
+         sys.argv = [{fixture:?}]\n\
+         runpy.run_path({fixture:?}, run_name='__main__')\n",
+        seen = seen.display().to_string(),
+    );
+    let setting: Setting = serde_json::from_value(json!({
+        "fake": {"command": [py, "-c", wrapper], "extensions": [".fake"]}
+    }))
+    .unwrap();
+    let lsp = Lsp::new(Some(&setting), root.clone()).unwrap();
+    assert!(
+        lsp.has_clients(&root.join("a.fake")).await,
+        "the server started"
+    );
+    let home = std::env::var("HOME").unwrap_or_default();
+    assert_eq!(
+        std::fs::read_to_string(&seen).unwrap(),
+        format!("[][{home}]")
+    );
+}

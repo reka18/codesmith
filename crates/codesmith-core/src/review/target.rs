@@ -7,6 +7,7 @@ use std::process::Command;
 
 pub fn git(root: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
+        .env_remove(crate::SERVER_TOKEN_VAR)
         .args(args)
         .current_dir(root)
         .output()
@@ -23,6 +24,7 @@ pub fn git(root: &Path, args: &[&str]) -> Result<String> {
 
 fn gh(root: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("gh")
+        .env_remove(crate::SERVER_TOKEN_VAR)
         .args(args)
         .current_dir(root)
         .output()
@@ -129,6 +131,7 @@ fn untracked_diff(root: &Path) -> Result<String> {
     .filter(|l| !l.is_empty())
     {
         let o = Command::new("git")
+            .env_remove(crate::SERVER_TOKEN_VAR)
             .args(["diff", "--no-index", "--", "/dev/null", f])
             .current_dir(root)
             .output()?;

@@ -30,3 +30,10 @@ pub mod title;
 pub mod tool;
 pub mod wildcard;
 pub mod worktree;
+
+/// The environment variable that carries the local server's bearer token.
+/// No child process CodeSmith starts may see it, as it would let the child
+/// drive the server (OpenCode keeps its server password out of sessions the
+/// same way): `codesmith` takes it out of its own environment at startup,
+/// and every spawn removes it again.
+pub const SERVER_TOKEN_VAR: &str = "CODESMITH_SERVER_TOKEN";

@@ -33,6 +33,9 @@ pub(crate) use cli::{all_commands_with, connect_mcp};
 pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
     // Code Mode programs run in a child copy of this binary.
     codesmith_core::codemode::child_main_if_requested();
+    // Before any thread starts: `serve` alone gets the server token, and no
+    // child process inherits it.
+    cli::take_server_token();
     plugin::install(plugins);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

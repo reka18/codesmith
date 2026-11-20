@@ -57,6 +57,7 @@ impl Snapshots {
 
     fn git(&self, args: &[&str]) -> Result<String> {
         let out = Command::new("git")
+            .env_remove(crate::SERVER_TOKEN_VAR)
             .arg("--git-dir")
             .arg(&self.git_dir)
             .arg("--work-tree")
@@ -93,6 +94,7 @@ impl Snapshots {
         }
         std::fs::create_dir_all(&self.git_dir)?;
         let out = Command::new("git")
+            .env_remove(crate::SERVER_TOKEN_VAR)
             .arg("init")
             .arg("--quiet")
             .arg("--bare")

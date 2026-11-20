@@ -509,6 +509,7 @@ fn eslint(root: &Path, project: &Path) -> Option<Launch> {
 fn oxlint(root: &Path, project: &Path) -> Option<Launch> {
     if let Some(bin) = node_module(".bin/oxlint", root, project) {
         let help = std::process::Command::new(&bin)
+            .env_remove(crate::SERVER_TOKEN_VAR)
             .arg("--help")
             .stdin(std::process::Stdio::null())
             .output()
@@ -544,6 +545,7 @@ fn sourcekit(_: &Path, _: &Path) -> Option<Launch> {
     }
     which("xcrun")?;
     let out = std::process::Command::new("xcrun")
+        .env_remove(crate::SERVER_TOKEN_VAR)
         .args(["--find", "sourcekit-lsp"])
         .stdin(std::process::Stdio::null())
         .output()

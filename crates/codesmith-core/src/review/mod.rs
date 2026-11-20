@@ -680,6 +680,7 @@ pub fn comment(root: &std::path::Path, r: &Report) -> Result<()> {
         .pr
         .ok_or_else(|| anyhow!("--comment only applies to a pull request"))?;
     let out = std::process::Command::new("gh")
+        .env_remove(crate::SERVER_TOKEN_VAR)
         .args(["pr", "comment", &n.to_string(), "--body", &r.render()])
         .current_dir(root)
         .output()?;

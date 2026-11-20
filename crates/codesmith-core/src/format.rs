@@ -325,6 +325,7 @@ fn detect(d: &Detect, dir: &Path, root: &Path) -> Option<Vec<String>> {
         Detect::Air => {
             let bin = which("air")?;
             let out = std::process::Command::new(&bin)
+                .env_remove(crate::SERVER_TOKEN_VAR)
                 .arg("--help")
                 .stdin(std::process::Stdio::null())
                 .output()
@@ -340,6 +341,7 @@ fn detect(d: &Detect, dir: &Path, root: &Path) -> Option<Vec<String>> {
         Detect::Uv => {
             let bin = which("uv")?;
             let ok = std::process::Command::new(&bin)
+                .env_remove(crate::SERVER_TOKEN_VAR)
                 .args(["format", "--help"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -422,6 +424,7 @@ impl Formatter {
             let file = path.display().to_string();
             let cmd: Vec<String> = cmd.iter().map(|a| a.replace("$FILE", &file)).collect();
             let run = tokio::process::Command::new(&cmd[0])
+                .env_remove(crate::SERVER_TOKEN_VAR)
                 .args(&cmd[1..])
                 .current_dir(&self.dir)
                 .envs(&f.environment)

@@ -95,6 +95,13 @@ Where the tests live:
   with a `# comment` line (as some terminals send for dropped files) was not
   recognized. The whole paste is tried as one path first, and comment lines
   are skipped.
+- **The server token reached other children** (`cli/test/env`, extended):
+  after shell commands, local MCP servers, language servers, formatters,
+  git and the worktree start command still inherited
+  `$CODESMITH_SERVER_TOKEN`. `codesmith` now takes it out of its own
+  environment at startup, before any thread starts (`serve` keeps the
+  value), and every spawn removes it again. Code Mode's child already
+  starts from an empty environment.
 - **Built-in command names and arguments** (`mini/prompt.shared`): `/quit
   now` quit, and `/Quit` or `/EXIT` were unknown commands. As in OpenCode,
   the UI's built-in commands ignore case and surrounding space, and those
@@ -120,11 +127,7 @@ Where the tests live:
 
 ## Differences found but not fixed
 
-These are in files other work in progress owns, so they are recorded here
-rather than changed:
-
-- Shell commands no longer see the server token, but local MCP servers and
-  language servers still inherit it.
+None: those the inventory found are fixed above.
 
 ## Ported tests
 
@@ -136,7 +139,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 
 | OpenCode file | Test | Status | CodeSmith test |
 |---|---|---|---|
-| `cli/test/env` | session environment omits server credentials | after a fix | oc_shell_commands_do_not_see_the_server_token |
+| `cli/test/env` | session environment omits server credentials | after a fix | oc_shell_commands_do_not_see_the_server_token; also local_mcp_servers_do_not_see_the_server_token (e2e), local_mcp_servers_do_not_inherit_the_server_token, language_servers_do_not_inherit_the_server_token |
 | `cli/test/flag` | parses $args (3 cases) | after a fix | oc_flag_parses_an_optional_worktree_value |
 | `cli/test/flag` | renders the value as optional in help | after a fix | oc_flag_renders_the_value_as_optional_in_help |
 | `tui/test/prompt-offset` | history navigation moves the cursor to the end of wide text | after a fix | oc_history_navigation_moves_the_cursor_to_the_end_of_wide_text (fix: cursor moves keep the history place) |

@@ -1038,7 +1038,9 @@ async fn run(cli: Cli) -> Result<()> {
             token,
             auto,
         }) => {
-            let token = token.filter(|t| !t.is_empty());
+            let token = token
+                .or_else(|| ENV_TOKEN.get().cloned())
+                .filter(|t| !t.is_empty());
             let loopback = host == "localhost"
                 || host
                     .parse::<std::net::IpAddr>()
@@ -1297,11 +1299,13 @@ fn read_secret(prompt: &str) -> Result<String> {
         eprint!("{prompt}");
         std::io::stderr().flush()?;
         let _ = std::process::Command::new("stty")
+            .env_remove(codesmith_core::SERVER_TOKEN_VAR)
             .arg("-echo")
             .stdin(std::process::Stdio::inherit())
             .status();
         let r = std::io::stdin().read_line(&mut line);
         let _ = std::process::Command::new("stty")
+            .env_remove(codesmith_core::SERVER_TOKEN_VAR)
             .arg("echo")
             .stdin(std::process::Stdio::inherit())
             .status();
@@ -1416,6 +1420,23 @@ pub(crate) fn all_commands_with(
     let mut all = mcp.commands();
     all.extend(all_commands(cwd, loaded));
     all
+}
+
+/// `$CODESMITH_SERVER_TOKEN`, taken out of the environment at startup.
+static ENV_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Move `$CODESMITH_SERVER_TOKEN` out of this process's environment, where
+/// every child would inherit it, to where only `serve` reads it. Call it
+/// before any other thread starts: changing the environment races with
+/// threads reading it.
+pub(crate) fn take_server_token() {
+    let var = codesmith_core::SERVER_TOKEN_VAR;
+    if let Some(t) = std::env::var_os(var) {
+        if let Some(t) = t.to_str() {
+            let _ = ENV_TOKEN.set(t.to_string());
+        }
+        std::env::remove_var(var);
+    }
 }
 
 fn open_store() -> Result<Store> {
@@ -1557,6 +1578,7 @@ fn print_changes(changes: &[codesmith_core::snapshot::Change], redo: bool) {
 fn chrono_like(ms: i64) -> String {
     let secs = ms / 1000;
     let out = std::process::Command::new("/bin/date")
+        .env_remove(codesmith_core::SERVER_TOKEN_VAR)
         .arg("-r")
         .arg(secs.to_string())
         .arg("+%Y-%m-%d %H:%M")

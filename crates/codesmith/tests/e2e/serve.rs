@@ -19,9 +19,13 @@ struct Server {
 
 impl Server {
     async fn start(e: &Env, extra: &[&str]) -> Server {
+        Self::start_with(e, extra, &[]).await
+    }
+
+    async fn start_with(e: &Env, extra: &[&str], env: &[(&str, &str)]) -> Server {
         let mut args = vec!["serve", "--port", "0"];
         args.extend_from_slice(extra);
-        let mut child = e.command(&args).spawn().unwrap();
+        let mut child = e.command(&args).envs(env.iter().copied()).spawn().unwrap();
         let mut err = BufReader::new(child.stderr.take().unwrap()).lines();
         let url = tokio::time::timeout(Duration::from_secs(20), async {
             while let Some(line) = err.next_line().await.unwrap() {
@@ -374,6 +378,28 @@ async fn a_bearer_token_is_required_beyond_loopback() {
     assert_eq!(code, 200);
     let (code, list) = s.get("/sessions").await;
     assert_eq!((code, list), (200, json!([])));
+}
+
+/// `$CODESMITH_SERVER_TOKEN` still sets the token though `codesmith` takes
+/// it out of its environment at startup (so no child inherits it).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_token_can_come_from_the_environment() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    let mut s = Server::start_with(
+        &e,
+        &["--host", "0.0.0.0"],
+        &[("CODESMITH_SERVER_TOKEN", "from-env")],
+    )
+    .await;
+    s.url = s.url.replace("0.0.0.0", "127.0.0.1");
+    s.token = Some("from-env".into());
+    let (code, _) = s.get("/health").await;
+    assert_eq!(code, 200);
+    let bare = reqwest::get(format!("{}/health", s.url)).await.unwrap();
+    assert_eq!(bare.status(), 401);
+    assert!(!e.data.join("codesmith").join("serve-token").exists());
 }
 
 /// Regression: the session view listed the engine's output-limit nudge as

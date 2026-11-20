@@ -30,6 +30,14 @@ TOKEN=$(cat ~/.local/share/codesmith/serve-token)
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4096/health
 ```
 
+A token given as `--token TOKEN` is part of the command line, which other
+local users and processes can read (with `ps`, for example). Prefer the
+`serve-token` file or `$CODESMITH_SERVER_TOKEN`. CodeSmith takes the
+variable out of its environment when it starts and removes it again from
+every process it runs (shell commands, MCP and language servers,
+formatters, git, Code Mode), so nothing it starts can use the token to
+drive the server.
+
 Web pages can reach loopback too, so the server also refuses:
 
 - requests whose `Host` isn't the address it listens on (`localhost`,
