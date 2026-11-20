@@ -141,7 +141,25 @@ replaced by a note.
 
 Set `"codemode": false` on a server, or at the top level of the config, to
 offer its tools as direct calls instead. That suits models that write
-JavaScript poorly.
+JavaScript poorly. An agent whose rules deny `execute` gets every MCP tool
+as a direct call too.
+
+### Built-in tools in Code Mode: `full_codemode`
+
+`"full_codemode": true` (off by default; OpenCode's `full_codemode` flag)
+moves the built-in tools as well, per model, as OpenCode places them:
+
+- `glob`, `grep` and `webfetch` are hidden for every model: programs search
+  through `shell` and fetch with the `fetch` global.
+- GPT and Claude models (by provider `anthropic`, or a model id or catalog
+  family naming `gpt` or `claude`) call `read`, `write`, `edit`, `patch`,
+  `shell` and `websearch` from inside `execute`, as `tools.read({...})` and
+  so on; they are always listed in the catalog. Each call goes through the
+  same permission checks as a direct one.
+- Every other model keeps them as direct tools.
+
+Without `execute` (an agent whose rules deny it), nothing moves and nothing
+is hidden.
 
 ## OAuth
 

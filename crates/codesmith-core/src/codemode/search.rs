@@ -28,6 +28,10 @@ pub fn expression(path: &str) -> String {
 
 /// A tool's canonical path: its namespace and name, dots splitting both.
 pub fn canonical(e: &Entry) -> String {
+    // A built-in placed in Code Mode sits at the top level (`tools.read`).
+    if e.namespace.is_empty() {
+        return e.name.clone();
+    }
     format!("{}.{}", e.namespace, e.name)
 }
 

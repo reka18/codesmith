@@ -27,6 +27,9 @@ pub struct Tool {
 
 impl Tool {
     pub fn path(&self) -> String {
+        if self.namespace.is_empty() {
+            return self.name.clone();
+        }
         format!("{}.{}", self.namespace, self.name)
     }
 }
@@ -443,7 +446,8 @@ pub fn inventory(entries: &[crate::codemode::Entry]) -> Inventory {
                 name: e.name.clone(),
                 description: e.description.clone(),
                 signature: crate::codemode::signature(e),
-                pinned: false,
+                // Built-ins placed in Code Mode are always listed.
+                pinned: e.namespace.is_empty(),
             })
             .collect(),
         descriptions: BTreeMap::new(),

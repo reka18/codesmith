@@ -99,6 +99,11 @@ pub struct Config {
     /// `false` offers every MCP tool as a direct tool call instead of
     /// through Code Mode (useful for models that write JavaScript poorly).
     pub codemode: Option<bool>,
+    /// OpenCode's `full_codemode`: glob, grep and webfetch are hidden, and
+    /// GPT and Claude models call read, write, edit, patch, shell and
+    /// websearch from inside `execute` (see
+    /// [`crate::codemode::placement`]). Off by default.
+    pub full_codemode: Option<bool>,
     /// How deep subagents may nest: 1 (the default) lets the main session
     /// start subagents but not a subagent start its own.
     pub subagent_depth: Option<u32>,

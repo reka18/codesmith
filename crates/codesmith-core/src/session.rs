@@ -1292,8 +1292,10 @@ impl Session {
                 parameters,
             }
         });
+        let (hidden, inside) = self.placement();
         self.tools
             .iter()
+            .filter(|t| !hidden.contains(t) && !inside.contains(t))
             .map(|t| match t {
                 Tool::Subagent => {
                     let (description, parameters) =
@@ -2470,6 +2472,75 @@ impl Session {
 
     fn codemode_on(&self) -> bool {
         self.loaded.config.codemode != Some(false)
+            && crate::permission::evaluate(crate::codemode::TOOL, "*", &self.agent.permissions)
+                != crate::permission::Effect::Deny
+    }
+
+    /// Where `full_codemode` puts this session's built-ins (see
+    /// [`crate::codemode::placement`]): the ones hidden, and the ones
+    /// called from inside `execute`. Both empty without it, or without
+    /// `execute`.
+    fn placement(&self) -> (Vec<Tool>, Vec<Tool>) {
+        use crate::codemode::placement;
+        if self.loaded.config.full_codemode != Some(true) || !self.codemode_on() {
+            return (vec![], vec![]);
+        }
+        let (base, _) = crate::config::split_variant(&self.model_spec);
+        let (pid, id) = base.split_once('/').unwrap_or(("", base));
+        let family = self
+            .loaded
+            .config
+            .models_dev
+            .as_ref()
+            .and_then(|c| c.catalog().model(pid, id).and_then(|m| m.family.clone()));
+        let model = placement::Model {
+            provider_id: self.model.provider_id.clone(),
+            id: id.to_string(),
+            model_id: self.model.model_id.clone(),
+            family,
+            canonical: None,
+        };
+        let placed = placement::model_tools(Some(&model), true, true);
+        let hidden = self
+            .tools
+            .iter()
+            .copied()
+            .filter(|t| placement::FULL_CODE_MODE_HIDDEN.contains(&t.name()))
+            .collect();
+        let inside = if placement::strong(Some(&model)) {
+            self.tools
+                .iter()
+                .copied()
+                .filter(|t| {
+                    placement::CODE_MODE_BUILTINS.contains(&t.name())
+                        && !placed.hidden.contains(t.name())
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        (hidden, inside)
+    }
+
+    /// A built-in run from inside `execute`, with the session's checks.
+    async fn run_builtin_in_code(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        let ctx = Ctx {
+            cwd: self.cwd.clone(),
+            root: self.root.clone(),
+            gate: &self.gate,
+            shell: self.shell.clone(),
+            session_id: self.id.clone(),
+            limits: self.limits,
+            client: self.client.clone(),
+            jobs: Some(self.jobs.clone()),
+            websearch: Some(self.loaded.config.websearch.clone()),
+            format: self.format.clone(),
+            lsp: self.lsp.clone(),
+            progress: None,
+        };
+        let r = tool::run(&ctx, name, input).await;
+        let text = crate::mcp::with_media_note(r.content, &r.media, "Code Mode returns text");
+        (text, r.is_error)
     }
 
     /// MCP tools offered as direct tool calls.
@@ -2486,6 +2557,16 @@ impl Session {
         if !self.codemode_on() {
             return vec![];
         }
+        let builtins = self.placement().1.into_iter().map(|t| {
+            let spec = t.spec(&self.shell);
+            crate::codemode::Entry {
+                tool: spec.name.clone(),
+                namespace: String::new(),
+                name: spec.name,
+                description: spec.description,
+                schema: spec.parameters,
+            }
+        });
         self.permitted_mcp()
             .into_iter()
             .filter(|t| t.codemode)
@@ -2496,6 +2577,7 @@ impl Session {
                 description: t.description.clone(),
                 schema: t.schema.clone(),
             })
+            .chain(builtins)
             .collect()
     }
 
@@ -2682,12 +2764,22 @@ impl Session {
             return ("Missing required string parameter `code`".into(), true);
         };
         let entries = self.code_entries();
+        let builtins: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.namespace.is_empty())
+            .map(|e| e.tool.as_str())
+            .collect();
+        let builtins = &builtins;
         let out = crate::codemode::execute(
             code,
             &entries,
             crate::codemode::MAX_TOOL_CALLS,
             crate::codemode::TIMEOUT,
             |tool, args| async move {
+                if builtins.contains(&tool.as_str()) {
+                    let (text, failed) = self.run_builtin_in_code(&tool, &args).await;
+                    return if failed { Err(text) } else { Ok(text) };
+                }
                 // Code Mode hands results to code as JSON, so images and
                 // PDFs are noted rather than passed on.
                 let (text, failed, media) = self.run_mcp(&tool, &args).await;
