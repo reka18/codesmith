@@ -57,16 +57,19 @@ pub fn is_engine_message(text: &str) -> bool {
 
 /// Whether a stored message is the engine's, not the user's: a system update
 /// (the compaction continue note), or user text the engine wrote
-/// ([`is_engine_message`]). It is never shown or counted as a prompt.
+/// ([`is_engine_message`]), or a provider's own state in a user message
+/// ([`Message::is_provider_state`]). It is never shown or counted as a
+/// prompt, nor offered to fork before.
 pub fn is_engine(m: &Message) -> bool {
     match m.role {
         Role::System => true,
         Role::Assistant => false,
         Role::User => {
-            !m.parts.is_empty()
-                && m.parts
-                    .iter()
-                    .all(|p| matches!(p, Part::Text(t) if is_engine_message(t)))
+            m.is_provider_state()
+                || !m.parts.is_empty()
+                    && m.parts
+                        .iter()
+                        .all(|p| matches!(p, Part::Text(t) if is_engine_message(t)))
         }
     }
 }

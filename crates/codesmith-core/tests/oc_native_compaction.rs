@@ -174,6 +174,10 @@ async fn oc_native_manual_and_automatic_endpoint_compaction_keep_the_replacement
     assert!(natives[0].get("context_management").is_none());
     assert!(natives[0].get("stream").is_none());
     assert_eq!(user_texts(&s.messages[..1]), ["endpoint retained"]);
+    // Not in OpenCode: the provider's user item is its state, not a prompt
+    // the user wrote, so it is never offered as one (to fork before).
+    assert!(s.messages[0].is_provider_state());
+    assert!(codesmith_core::runner::is_engine(&s.messages[0]));
     assert!(!format!("{:?}", s.messages).contains("Original user"));
     assert_eq!(checkpoints(&s.messages), ["encrypted_2"]);
 }

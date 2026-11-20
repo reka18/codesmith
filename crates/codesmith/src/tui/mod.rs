@@ -626,15 +626,9 @@ impl Runner {
                     id: String::new(),
                 }];
                 // Your prompts, newest first: the fork stops before the one picked.
-                let prompts = s
-                    .messages
-                    .iter()
-                    .zip(s.seqs())
-                    .filter_map(|(m, seq)| Some((m, (*seq)?)))
-                    .filter(|(m, _)| {
-                        m.role == codesmith_ai::Role::User && !codesmith_core::runner::is_engine(m)
-                    })
-                    .filter_map(|(m, seq)| Some((prompt_text(m)?, seq)));
+                let prompts = codesmith_core::fork::user_prompts(&s.messages, s.seqs())
+                    .into_iter()
+                    .filter_map(|(seq, m)| Some((prompt_text(m)?, seq)));
                 let mut prompts: Vec<_> = prompts.collect();
                 prompts.reverse();
                 items.extend(prompts.into_iter().map(|(text, seq)| PickItem {
@@ -858,8 +852,9 @@ impl Runner {
                 // As in OpenCode, the prompt forked before is back in the input to edit.
                 let text = before.and_then(|b| {
                     let s = self.session.as_ref()?;
-                    let i = s.seqs().iter().position(|q| *q == Some(b))?;
-                    prompt_text(&s.messages[i])
+                    let prompts = codesmith_core::fork::user_prompts(&s.messages, s.seqs());
+                    let (_, m) = prompts.into_iter().find(|(seq, _)| *seq == b)?;
+                    prompt_text(m)
                 });
                 if self.tabs.on() {
                     // The fork opens in a tab of its own; this one goes on.

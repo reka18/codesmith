@@ -1366,12 +1366,20 @@ pub(crate) async fn compact_endpoint(
                 parts: vec![Part::Compaction(compaction_item(item).ok_or_else(invalid)?)],
             }),
             (Some("message"), Some(role @ ("user" | "assistant"))) => {
+                // The provider's items, user ones included, are its state
+                // and not the user's words: marked so (see
+                // [`Message::is_provider_state`]).
                 let parts: Vec<Part> = item["content"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter_map(|c| c["text"].as_str())
-                    .map(Part::text)
+                    .map(|t| {
+                        Part::Text(crate::Text {
+                            text: t.to_string(),
+                            meta: Some(ReasoningMeta::of(Protocol::OpenaiResponses)),
+                        })
+                    })
                     .collect();
                 if parts.is_empty() {
                     return Err(invalid());

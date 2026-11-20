@@ -108,6 +108,27 @@ pub fn messages(entries: &[Entry]) -> Vec<(i64, &codesmith_ai::Message)> {
         .collect()
 }
 
+/// The prompts a fork can stop before, oldest first, with their sequence
+/// numbers: the stored user messages the user wrote, not the engine's
+/// (see [`crate::runner::is_engine`]: its notes, and a provider's state
+/// such as a compaction window's user items) nor tool results.
+pub fn user_prompts<'a>(
+    messages: &'a [codesmith_ai::Message],
+    seqs: &[Option<i64>],
+) -> Vec<(i64, &'a codesmith_ai::Message)> {
+    messages
+        .iter()
+        .zip(seqs)
+        .filter_map(|(m, seq)| Some(((*seq)?, m)))
+        .filter(|(_, m)| {
+            m.role == Role::User
+                && !crate::runner::is_engine(m)
+                && m.parts.iter().any(|p| matches!(p, Part::Text(_)))
+                && !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. }))
+        })
+        .collect()
+}
+
 /// The boundary for forking `entries` (of session `session`) before
 /// `before`, or through its latest message.
 pub fn boundary(session: &str, entries: &[Entry], before: Option<i64>) -> anyhow::Result<Boundary> {
@@ -215,6 +236,47 @@ mod tests {
         // Before the second: only the first message's.
         let first = copied(&entries, Boundary::Before(3));
         assert_eq!(first.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[test]
+    fn only_the_users_own_prompts_are_offered_to_fork_before() {
+        use codesmith_ai::{Message, ReasoningMeta, Text};
+        let provider = Message {
+            role: Role::User,
+            parts: vec![Part::Text(Text {
+                text: "provider-written".into(),
+                meta: Some(ReasoningMeta::default()),
+            })],
+        };
+        let result = Message {
+            role: Role::User,
+            parts: vec![Part::ToolResult {
+                id: "c".into(),
+                name: "read".into(),
+                content: "x".into(),
+                is_error: false,
+                media: vec![],
+            }],
+        };
+        let messages = vec![
+            Message::user("typed"),
+            provider.clone(),
+            Message::user(crate::fork::NOTICE),
+            result,
+            Message::user("unsaved"),
+            Message::user("typed again"),
+        ];
+        let seqs = [Some(1), Some(2), Some(3), Some(4), None, Some(6)];
+        let got: Vec<(i64, String)> = user_prompts(&messages, &seqs)
+            .into_iter()
+            .map(|(s, m)| match &m.parts[0] {
+                Part::Text(t) => (s, t.text.clone()),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(got, [(1, "typed".into()), (6, "typed again".into())]);
+        assert!(provider.is_provider_state());
+        assert!(!Message::user("typed").is_provider_state());
     }
 
     #[test]

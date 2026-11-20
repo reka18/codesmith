@@ -578,6 +578,18 @@ impl Message {
             parts: vec![Part::text(text)],
         }
     }
+
+    /// A user-role message a provider returned as its own state (the
+    /// user items of a Responses compaction window), not one the user
+    /// wrote: user text carries provider state only then.
+    pub fn is_provider_state(&self) -> bool {
+        self.role == Role::User
+            && !self.parts.is_empty()
+            && self
+                .parts
+                .iter()
+                .all(|p| matches!(p, Part::Text(t) if t.meta.is_some()))
+    }
 }
 
 /// The text of a system update: its text parts, one per line (OpenCode's
