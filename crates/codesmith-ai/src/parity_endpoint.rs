@@ -73,7 +73,7 @@ fn endpoint_and_auth() {
             assert_eq!(header(&r, "api-key"), Some("azure-key"));
             assert_eq!(header(&r, "authorization"), None);
         }),
-        ("openai-compatible-chat :: posts to the configured compatible endpoint and parses text usage (adapted: no total token count)", || {
+        ("openai-compatible-chat :: posts to the configured compatible endpoint and parses text usage", || {
             let mut p = provider(Protocol::OpenaiChat, "https://api.deepseek.test/v1/", "test-key");
             p.query = api_version("2026-01-01");
             let mut hello = hello("deepseek-chat");
@@ -104,7 +104,8 @@ fn endpoint_and_auth() {
             ])));
             assert_eq!(o.text, "Hello!");
             assert_eq!(o.usage, usage(5, 2, 0, 0));
-            assert_eq!(o.finish, "stop");
+            assert_eq!(o.full_usage.total, Some(7));
+            assert_eq!(o.reason, FinishReason::new(Reason::Stop, "stop"));
         }),
         ("openai-responses :: adds native query params to the Responses URL", || {
             let mut p = provider(Protocol::OpenaiResponses, "https://api.openai.test/v1/", "test");

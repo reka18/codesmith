@@ -36,14 +36,14 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 83 | 17 |
+| OpenAI Chat | 115 | 15 | 88 | 12 |
 | OpenAI Responses | 159 | 22 | 75 | 62 |
-| Anthropic Messages | 95 | 9 | 67 | 19 |
-| Gemini | 61 | 12 | 43 | 6 |
+| Anthropic Messages | 95 | 9 | 70 | 16 |
+| Gemini | 61 | 12 | 44 | 5 |
 | Shared | 85 | 10 | 59 | 16 |
-| **Total** | **515** | **68** | **327** | **120** |
+| **Total** | **515** | **68** | **336** | **111** |
 
-Of the gaps, 85 are missing provider features (the roadmap) and
+Of the gaps, 76 are missing provider features (the roadmap) and
 35 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -329,6 +329,34 @@ Streams (`lib.rs`, all protocols)
   request's output. A blocked prompt now fails at the end of the stream, so a
   continued request can still finish.
 
+Finish reasons and usage (`lib.rs`, all protocols)
+- A finish carries a `FinishReason` in OpenCode's algebra (`stop`, `length`,
+  `tool-calls`, `content-filter`, `error`, `unknown`) with the provider's raw
+  reason (Chat's `native_finish_reason` when given). Chat maps `end` to stop
+  (and still counts `max_tokens` / `model_length` as length); Anthropic maps
+  `pause_turn` to stop and `model_context_window_exceeded` to length, and a
+  refusal carries its `stop_details` category and explanation; Gemini's
+  safety finishes are content-filter and `STOP` with calls is tool-calls;
+  Responses maps `content_filter`. A content-filter finish names the filter
+  that fired: Copilot's `copilot_annotations`, Azure's
+  `content_filter_results`, Copilot Responses' `content_filters`. The
+  session and ACP read the typed reason, and a content-filter failure reads
+  "Provider blocked the response (category): explanation" as OpenCode's
+  does.
+- `Usage` has reasoning tokens and a total (the provider's, else the sum of
+  the counts; left out when neither input nor output was reported), and the
+  finish carries the provider's usage payload as it came (a continued Gemini
+  response sums its requests' counts). OpenCode keys that payload by a
+  provider namespace; CodeSmith has one provider per stream, so the two
+  namespace cases check the payload and the reasoning state (adapted). The
+  recorded-traffic replay now checks the fixtures' `reasoningTokens`.
+- The session pairs each streamed tool input with the call it forms by
+  order (a call follows its input's end, even when its id gained a Gemini
+  signature on the Chat endpoint) and tells the front ends: the TUI shows
+  the call's row while its arguments stream and ACP announces it `pending`
+  then, as OpenCode's ACP does; a call that is dropped (cut off by the
+  output limit) or never runs fails.
+
 Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
 `billing.rs`, `src/parity_endpoint.rs`)
 - Providers take query parameters added to every request URL (Azure's
@@ -374,8 +402,6 @@ Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
 - `openai-compatible-chat` "requires reasoning for DeepSeek …": no
   provider-name detection (CodeSmith detects from the endpoint and model id)
   and no `reasoningField` override.
-- `openai-compatible-chat` "posts to the configured compatible endpoint and
-  parses text usage": no total token count (`Usage` has none).
 - `openai-responses` "preserves standard refusal content …": text only, no
   item id/phase replay.
 - `anthropic-messages` "prepares Anthropic Messages target": a system-only
@@ -412,7 +438,6 @@ Endpoints, auth, billing, compatibility and encoding (`endpoint.rs`,
 - Responses: a reasoning item is replayed only with encrypted content and
   only when output follows it in the message (CodeSmith never stores
   responses server-side).
-- Finish reasons are raw provider strings; see "Normalized finish reasons".
 - Streams are decoded leniently; see "Strict stream validation".
 - Gemini prompt blocks without candidates are an error naming the block reason
   (raised when the stream ends without a finish).
@@ -539,24 +564,6 @@ _OpenAI Responses 2, Anthropic Messages 4, Gemini 1._
 </details>
 
 
-### Normalized finish reasons (6 tests)
-
-CodeSmith passes provider finish reasons through raw (they are informational; control flow looks only at tool calls). The common reason algebra (`end`→stop, `pause_turn`, `model_context_window_exceeded`→length, content-filter categories and refusal explanations) is not modelled.
-
-_OpenAI Chat 3, Anthropic Messages 3._
-
-<details><summary>Tests</summary>
-
-- `openai-compatible-chat` — normalizes the end finish reason to stop
-- `openai-compatible-chat` — preserves content-filter finishes in the common reason algebra
-- `openai-compatible-chat` — names the content filter that blocked a response
-- `anthropic-messages` — maps context-window truncation to length
-- `anthropic-messages` — preserves pause_turn while normalizing it to stop
-- `anthropic-messages` — carries a refusal's category and explanation on the content-filter finish
-
-</details>
-
-
 ### Signed text and signature overrides (5 tests)
 
 Anthropic thinking signatures, redacted thinking and Gemini thought signatures are stored and replayed, but plain text parts carry no provider state (Gemini signs visible text too), there is no per-model `requireSignature` override, and composed continuations and server-tool metadata are not modelled.
@@ -602,21 +609,6 @@ _OpenAI Responses 3._
 - `openai-responses` — preserves and replays assistant message phases
 - `openai-responses` — preserves final reasoning metadata when storage is enabled
 - `openai-responses` — preserves provider-issued item ids and removes malformed ids without dropping items
-
-</details>
-
-
-### Usage details (3 tests)
-
-Separate reasoning-token and total counts, raw usage in provider metadata.
-
-_OpenAI Chat 2, Gemini 1._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — uses the configured provider metadata namespace for reasoning and usage
-- `openai-chat` — falls back to the selected provider for the metadata namespace
-- `gemini` — leaves total usage undefined when component counts are missing
 
 </details>
 
