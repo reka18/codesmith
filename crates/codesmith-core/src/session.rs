@@ -298,6 +298,9 @@ pub struct Session {
     title_task: Option<tokio::task::JoinHandle<(Option<String>, Usage)>>,
     /// Whether the user was told that compaction cannot help (said once).
     compaction_skipped: bool,
+    /// Whether a tool that can change files ran since the instructions
+    /// were last observed (see [`Session::observe_instructions`]).
+    agent_changed_files: bool,
     loaded: Loaded,
     parent: Option<String>,
     depth: u32,
@@ -569,6 +572,7 @@ impl Session {
             title,
             last_prompt_tokens: 0,
             compaction_skipped: false,
+            agent_changed_files: false,
             gate,
             shell,
             limits: config.tool_output,
@@ -919,8 +923,23 @@ impl Session {
         use crate::instruction_state as is;
         let list = self.instruction_sources()?;
         let o = is::observe(&list, self.instruction.as_ref())?;
+        // Files the agent may have written since the last look (its tools
+        // ran, or its background jobs still run) are not the user's word:
+        // a change to instruction files or skills is shown to the model as
+        // attributed project content, not as a system update.
+        let agent = std::mem::take(&mut self.agent_changed_files) || self.jobs.running() > 0;
+        let (delta, files): (is::Delta, is::Delta) = o
+            .delta
+            .clone()
+            .into_iter()
+            .partition(|(k, _)| o.initial || !agent || !runner::agent_writable_source(k));
         if o.changed() {
-            let text = is::update_text(&list, &o)?;
+            let text = if o.initial {
+                is::update_text(&list, &o)?
+            } else {
+                is::render_update(&list, &o.previous, &delta)?
+            };
+            let note = is::render_update(&list, &o.previous, &files)?;
             let seq = self.record(&is::record(&o.delta, Some(text.clone()), o.initial))?;
             let at = seq.unwrap_or(0);
             match &mut self.instruction {
@@ -933,6 +952,9 @@ impl Session {
             if !text.is_empty() {
                 self.messages.push(Message::system(text));
                 self.seqs.push(seq);
+            }
+            if !note.is_empty() {
+                self.push(Message::user(runner::agent_change_note(&note)))?;
             }
         }
         let initial = self
@@ -1297,6 +1319,9 @@ impl Session {
                     continue;
                 }
                 sink.tool_start(&id, &name, &input);
+                if !runner::read_only_tool(&name) {
+                    self.agent_changed_files = true;
+                }
                 plugins.event(
                     &self.loaded.config,
                     &crate::plugin::Event::ToolStart {

@@ -706,6 +706,14 @@ edited file when that is shorter than the new text, the skills or tools that
 came or went. The system prompt stays the same, so the provider's prompt
 cache keeps working.
 
+A change to instruction files or skills that shows up after the agent ran a
+tool that can write files (anything but read, glob, grep, web fetch and
+search, todos, skills and questions), or while its background jobs run, may
+be the agent's own doing, or text it was steered into writing. CodeSmith
+does not give that change system authority: the model gets it as a
+user-role note marked as untrusted project content. Changes you make between
+turns arrive as system updates as before.
+
 - A file that cannot be read for now keeps the last value it was read with.
   On a session's first request it stops the request with an error instead,
   so the session never starts from instructions it could not read.
