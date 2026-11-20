@@ -1368,7 +1368,9 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             );
             let base = match &a.system {
                 Some(s) => s.clone(),
-                None => prompt::base(&mid, &tools),
+                None => {
+                    prompt::base_named(&mid, &prompt::model_name(&loaded.config, &model_id), &tools)
+                }
             };
             let mut parts = vec![base.as_str()];
             if !text.is_empty() {
