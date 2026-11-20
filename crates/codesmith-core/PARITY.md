@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 20 | 0 | 2 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 67 | 0 | 8 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 71 | 0 | 4 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1648** | **18** | **127** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1652** | **18** | **123** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (127 cases in 17 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (123 cases in 16 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -93,7 +93,6 @@ Missing features, by how many OpenCode test cases each would unlock (127 cases i
 | [Client-attached MCP Servers](#client-attached-mcp-servers) | 13 | MCP servers attached by a client (ACP/SDK) over the session |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
-| [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
@@ -230,15 +229,6 @@ Missing features, by how many OpenCode test cases each would unlock (127 cases i
 - `plugin/plan.test.ts`: allows external directories without asking
 - `plugin/plan.test.ts`: rewrites blocked mutation failures with the Plan directory
 - `plugin/plan.test.ts`: preserves mutation failures unrelated to permissions
-
-### Session Read State
-
-4 cases.
-
-- `session-view.test.ts`: copies the latest idle time without changing session recency
-- `session-view.test.ts`: keeps a newer completion unread when the viewed watermark is stale
-- `session-view.test.ts`: rejects an unknown session
-- `session-view.test.ts`: replays viewed state into a fresh database
 
 ### OpenCode Self-management Tool
 
@@ -1557,7 +1547,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (246 of 308)</summary>
+<details><summary>Sessions and their store (250 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1745,6 +1735,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`session-store.test.ts`**
 
 - D lists by updated time and ID with exclusive two-item pages in either direction · pages messages by durable sequence, not timestamp or ID, and scopes cursor lookup · hydrates and settles assistant messages across session_part rows and legacy inline content rows · lastAssistantAfter returns the newest completed error-free assistant after the boundary with parts hydrated · lastAssistantAfter pages past more than twenty incomplete or errored assistant messages · lastAssistantAfter returns undefined without a qualifying assistant after the boundary — storage-model: OpenCode's message paging and part-row hydration
+
+**`session-view.test.ts`**
+
+- P copies the latest idle time without changing session recency — `tests/oc_session_view.rs::oc_session_view_copies_the_latest_idle_time_without_changing_session_recency` (adapted: read state is session meta; a user abort is recorded by the local server)
+- P keeps a newer completion unread when the viewed watermark is stale — `tests/oc_session_view.rs::oc_session_view_keeps_a_newer_completion_unread_when_the_viewed_watermark_is_stale`
+- P rejects an unknown session — `tests/oc_session_view.rs::oc_session_view_rejects_an_unknown_session`
+- P replays viewed state into a fresh database — `tests/oc_session_view.rs::oc_session_view_keeps_viewed_state_when_the_store_is_reopened` (adapted: no event replay; reopening the store keeps it)
 
 **`session-wait.test.ts`**
 

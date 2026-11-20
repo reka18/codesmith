@@ -1725,6 +1725,15 @@ impl Session {
             },
         );
         let result = self.run_steps(sink).await;
+        // The session goes idle: unread until a viewer sees it.
+        if let (Some(st), true) = (&self.store, self.stored) {
+            let outcome = if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            };
+            let _ = st.set_idle(&self.id, outcome);
+        }
         // The end tree tells undo which files this turn changed.
         if let Some(snaps) = snapshots {
             if let Ok(tree) = tokio::task::block_in_place(|| snaps.capture()) {

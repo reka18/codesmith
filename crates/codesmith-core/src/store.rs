@@ -140,6 +140,33 @@ pub struct Store {
 /// Session meta key: when the session was archived (ms).
 pub const ARCHIVED_META: &str = "archived";
 
+/// Session meta keys of its read state (OpenCode's `time.idle`,
+/// `time.viewed` and `outcome`): when its last turn ended (ms), the idle
+/// time a viewer last saw, and how that turn ended.
+pub const IDLE_META: &str = "idle";
+pub const VIEWED_META: &str = "viewed";
+pub const OUTCOME_META: &str = "outcome";
+
+/// How a session's last turn ended, and whether anyone has seen it since
+/// (see [`Store::view`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ReadState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewed: Option<i64>,
+    /// `succeeded`, `failed` or `interrupted`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+}
+
+impl ReadState {
+    /// A finished turn nobody has seen.
+    pub fn unread(&self) -> bool {
+        self.idle.is_some_and(|i| self.viewed.is_none_or(|v| i > v))
+    }
+}
+
 /// No such session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotFound {
@@ -1000,6 +1027,45 @@ impl Store {
             return Err(NotFound { session: id.into() }.into());
         }
         self.set_meta(id, ARCHIVED_META, None)
+    }
+
+    /// Record that session `id`'s turn ended with `outcome` (`succeeded`,
+    /// `failed`, `interrupted`): its idle time moves forward, always past
+    /// the last one, so a viewer's watermark from before it stays behind.
+    /// The session's recency (`updated`) is left alone.
+    pub fn set_idle(&self, id: &str, outcome: &str) -> Result<i64> {
+        let last = self.read_state(id)?.idle.unwrap_or(0);
+        let at = now().max(last + 1);
+        self.set_meta(id, IDLE_META, Some(&at.to_string()))?;
+        self.set_meta(id, OUTCOME_META, Some(outcome))?;
+        Ok(at)
+    }
+
+    /// Session `id`'s read state.
+    pub fn read_state(&self, id: &str) -> Result<ReadState> {
+        let num =
+            |k: &str| -> Result<Option<i64>> { Ok(self.meta(id, k)?.and_then(|v| v.parse().ok())) };
+        Ok(ReadState {
+            idle: num(IDLE_META)?,
+            viewed: num(VIEWED_META)?,
+            outcome: self.meta(id, OUTCOME_META)?,
+        })
+    }
+
+    /// A viewer saw session `id` as of its idle time `idle` (OpenCode's
+    /// `Session.view`): the viewed watermark moves to it, never past the
+    /// session's idle time and never back, so a turn that ended after the
+    /// viewer looked stays unread. Fails with [`NotFound`].
+    pub fn view(&self, id: &str, idle: i64) -> Result<()> {
+        if self.get(id)?.is_none() {
+            return Err(NotFound { session: id.into() }.into());
+        }
+        let state = self.read_state(id)?;
+        let fits = state.idle.is_some_and(|i| idle > 0 && idle <= i);
+        if fits && state.viewed.is_none_or(|v| idle > v) {
+            self.set_meta(id, VIEWED_META, Some(&idle.to_string()))?;
+        }
+        Ok(())
     }
 
     /// When session `id` was archived, if it is.

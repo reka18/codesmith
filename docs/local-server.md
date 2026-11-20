@@ -54,11 +54,11 @@ permission and question ids are random.
 | Route | |
 |---|---|
 | `GET /health` | Version, directory, model. |
-| `GET /sessions` | List sessions, each with `archived` (when, or null); `?archived=true` or `false` lists only those that are or are not. |
+| `GET /sessions` | List sessions, each with `archived` (when, or null) and `read` (its [read state](#read-state)); `?archived=true` or `false` lists only those that are or are not. |
 | `POST /sessions {agent?, model?}` | Create a session. |
 | `GET /sessions/{id}` | Session info, `messages`, and `seqs`: each message's number. |
 | `DELETE /sessions/{id}` | Delete a session. |
-| `PATCH /sessions/{id} {archived}` | Archive the session (`true`) or bring it back (`false`) ([archiving](sessions.md#archiving)). |
+| `PATCH /sessions/{id} {archived?, viewed?}` | Archive the session (`true`) or bring it back (`false`) ([archiving](sessions.md#archiving)); `viewed` is the `read.idle` time a viewer saw ([read state](#read-state)). |
 | `POST /sessions/{id}/messages {text, attachments?}` | Run a turn. The response streams Server-Sent Events. |
 | `GET /sessions/{id}/events` | Follow the session: every turn's events from now on, as Server-Sent Events, including the turns the server starts itself ([background commands](#background-commands)). |
 | `POST /sessions/{id}/abort` | Stop the running turn, or the session's background commands when it is idle ([details](#aborting)). |
@@ -413,3 +413,14 @@ can refer to the file; inline data is not announced. An inline attachment
 may carry the `label` your prompt names it by (`"[Image 1]"`) and a
 `description`: when two or more inline images have labels, one identical to
 an earlier one (type, name, description, label and data) is sent once.
+
+## Read state
+
+Each session carries `read`: `idle`, when its last turn ended (ms);
+`outcome`, how it ended (`succeeded`, `failed`, or `interrupted` when it
+was aborted); and `viewed`, the idle time a viewer last reported with
+`PATCH /sessions/{id} {"viewed": idle}`. A session is unread while `idle`
+is newer than `viewed`. The watermark only moves forward and never past
+`idle`, so a turn that ends after a viewer looked stays unread even when
+its report arrives late; going idle does not change the session's
+`updated` time.

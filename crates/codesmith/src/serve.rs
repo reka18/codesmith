@@ -940,6 +940,7 @@ async fn list(
         let when = db.archived(&i.id)?;
         let mut v = json!(i);
         v["archived"] = json!(when);
+        v["read"] = json!(db.read_state(&i.id)?);
         out.push(v);
     }
     Ok(Json(json!(out)))
@@ -956,6 +957,19 @@ async fn update(
     if !db.get(&id)?.is_some_and(|i| st.ours(&i)) {
         return Err(not_found(&id));
     }
+    // `{viewed: idle}`: a viewer saw the session as of that idle time.
+    match &b["viewed"] {
+        Value::Null => {}
+        v => match v.as_i64() {
+            Some(idle) => db.view(&id, idle)?,
+            None => {
+                return Err(ApiError(
+                    StatusCode::BAD_REQUEST,
+                    "viewed is an idle time in milliseconds".into(),
+                ))
+            }
+        },
+    }
     match &b["archived"] {
         Value::Bool(true) => db.archive(&id)?,
         Value::Bool(false) => db.unarchive(&id)?,
@@ -967,7 +981,9 @@ async fn update(
             ))
         }
     }
-    Ok(Json(json!({"id": id, "archived": db.archived(&id)?})))
+    Ok(Json(
+        json!({"id": id, "archived": db.archived(&id)?, "read": db.read_state(&id)?}),
+    ))
 }
 
 impl Server {
@@ -1053,6 +1069,9 @@ async fn show(State(st): State<St>, UrlPath(id): UrlPath<String>) -> Result<Json
             v["todos"] = json!(s.todos);
             v["busy"] = json!(false);
             v["background"] = json!(s.background_running());
+            if let Ok(db) = st.store() {
+                v["read"] = json!(db.read_state(&id)?);
+            }
             Ok(Json(v))
         }
         None => {
@@ -1397,6 +1416,12 @@ async fn abort(
         return Ok(Json(json!({"aborted": false})));
     };
     t.abort();
+    // The user interrupted the turn: the session goes idle as interrupted.
+    if let Ok(db) = st.store() {
+        if db.get(&id).ok().flatten().is_some() {
+            let _ = db.set_idle(&id, "interrupted");
+        }
+    }
     // Unblocks a tool waiting on a prompt (it is declined), and any later
     // prompt is refused at once; the abort lands at the task's next await.
     let events = g.prompter.events.lock().unwrap().take();

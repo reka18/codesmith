@@ -17,3 +17,8 @@
 1200 :: ported :: src/session.rs::oc_session_message_preserves_provider_metadata_for_a_catalog_alias_with_a_different_api_model_id
 1231 :: ported :: src/session.rs::oc_session_message_drops_assistant_text_provider_state_across_model_changes_aborts_and_provider_failures :: adapted: an aborted step keeps nothing in CodeSmith, so only model changes and failed streams are checked
 1599 :: ported :: src/session.rs::oc_session_message_preserves_assistant_text_provider_state_for_the_same_model
+@session-view.test.ts
+37 :: ported :: tests/oc_session_view.rs::oc_session_view_copies_the_latest_idle_time_without_changing_session_recency :: adapted: read state is session meta; a user abort is recorded by the local server
+118 :: ported :: tests/oc_session_view.rs::oc_session_view_keeps_a_newer_completion_unread_when_the_viewed_watermark_is_stale
+150 :: ported :: tests/oc_session_view.rs::oc_session_view_rejects_an_unknown_session
+158 :: ported :: tests/oc_session_view.rs::oc_session_view_keeps_viewed_state_when_the_store_is_reopened :: adapted: no event replay; reopening the store keeps it
