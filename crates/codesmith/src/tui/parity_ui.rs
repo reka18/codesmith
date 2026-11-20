@@ -312,3 +312,51 @@ fn jumping_puts_the_prompt_at_the_top() {
     a.jump(true, true);
     assert!(top(&a).contains("prompt 3"), "{}", top(&a));
 }
+
+// config-v2.test.tsx: "shows the TPS default in session settings"
+// (adapted: `tui.session.tps`, on unless set false).
+#[test]
+fn oc_shows_the_tps_default_in_session_settings() {
+    use super::settings;
+    assert!(settings::Settings::default().tps);
+    let (s, errors) = settings::load(&serde_json::json!({"session": {"tps": false}}));
+    assert!(!s.tps && errors.is_empty(), "{errors:?}");
+    let (_, errors) = settings::load(&serde_json::json!({"session": {"tps": "yes"}}));
+    assert_eq!(errors, ["tui.session.tps: must be true or false"]);
+}
+
+// A turn ends with OpenCode's footer: agent, model, duration, throughput.
+#[test]
+fn a_turn_ends_with_its_footer() {
+    use super::app::{App, Entry};
+    use super::bridge::Ev;
+    let mut a = App::new();
+    a.tps = true;
+    a.header.agent = "build".into();
+    a.header.model = "fake/m".into();
+    a.start_turn();
+    a.on_event(Ev::Text("hi".into()));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    a.on_event(Ev::StepEnd(codesmith_ai::Usage {
+        output: 50,
+        ..Default::default()
+    }));
+    a.busy = false;
+    a.end_turn(false);
+    let Some(Entry::Footer(f)) = a.entries.last() else {
+        panic!("{:?}", a.entries.last());
+    };
+    assert_eq!((f.agent.as_str(), f.model.as_str()), ("build", "fake/m"));
+    assert!(f.tps.is_some_and(|t| t > 0.0), "{f:?}");
+    let text: String = super::view::transcript(&a, 80)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(text.contains("Build · fake/m · "), "{text}");
+    assert!(text.contains(" tok/s"), "{text}");
+    // A shell command with no model step leaves none.
+    let n = a.entries.len();
+    a.start_turn();
+    a.end_turn(false);
+    assert_eq!(a.entries.len(), n);
+}

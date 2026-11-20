@@ -45,6 +45,12 @@ terminal's own scrollback.
   group, then fold into its summary. **ctrl+o** opens every group (and
   shows tool output in full), and closes them again. Questions are never
   grouped.
+- **Turn footers.** After each turn, OpenCode's footer: the agent, the
+  model, how long the turn took and its throughput (`Build · openai/gpt-5
+  · 12.3s · 48.2 tok/s`). The throughput counts output and reasoning
+  tokens over the time the model spent streaming them, so tool time and
+  the wait for the first token are left out; `tui.session.tps: false`
+  hides it. Mini mode adds the throughput to its turn summary.
 - **Tabs.** The open [session tabs](#session-tabs) along the top: each
   one's title, its status, and `+ New session` for a new one.
 - **Header.** The agent, model, session id and title.

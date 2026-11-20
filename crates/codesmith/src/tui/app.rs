@@ -29,6 +29,19 @@ pub enum Entry {
     Todos(Vec<Todo>),
     /// An image (or other file) the model generated: its label.
     Media(String),
+    /// The row after a turn: its agent, model, duration and throughput.
+    Footer(Footer),
+}
+
+/// A turn's footer, as OpenCode's: `Build · model · 12.3s · 45.2 tok/s`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Footer {
+    pub agent: String,
+    pub model: String,
+    pub duration_ms: u64,
+    /// Output tokens a second, when shown (`tui.session.tps`) and known.
+    pub tps: Option<f64>,
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -398,6 +411,12 @@ pub struct App {
     pub nav_slack: usize,
     /// The entry last jumped to.
     pub nav: Option<usize>,
+    /// The running turn's steps, timed as they come in.
+    pub recorder: Option<super::turn::Recorder>,
+    /// `tui.session.tps`: show the turn's throughput.
+    pub tps: bool,
+    /// The last turn's duration (ms) and throughput.
+    pub last_turn: Option<(u64, Option<f64>)>,
 }
 
 /// How a turn ended.
@@ -674,6 +693,7 @@ impl App {
         to.expand_tools = self.expand_tools;
         to.verbosity = self.verbosity;
         to.grouping = self.grouping;
+        to.tps = self.tps;
         to.reasoning_source = self.reasoning_source;
         to.diff_prefs = self.diff_prefs;
         to.diff_source = self.diff_source;
@@ -721,6 +741,37 @@ impl App {
             }
         }
         out
+    }
+
+    /// A turn starts now.
+    pub fn start_turn(&mut self) {
+        self.busy = true;
+        self.recorder = Some(super::turn::Recorder::start());
+        self.last_turn = None;
+    }
+
+    /// The turn ended: its footer (when a model step ran), outside mini
+    /// mode, which writes its own turn summary.
+    pub fn end_turn(&mut self, interrupted: bool) {
+        let Some(r) = self.recorder.take() else {
+            return;
+        };
+        if !r.stepped() {
+            return;
+        }
+        let (ms, tps) = r.finish();
+        let tps = tps.filter(|_| self.tps);
+        self.last_turn = Some((ms, tps));
+        if self.mini.is_some() {
+            return;
+        }
+        self.entries.push(Entry::Footer(Footer {
+            agent: self.header.agent.clone(),
+            model: self.header.model.clone(),
+            duration_ms: ms,
+            tps,
+            interrupted,
+        }));
     }
 
     /// A subagent of this tab's session still runs.
@@ -809,6 +860,16 @@ impl App {
         let Some(ev) = self.child_event(ev) else {
             return;
         };
+        if let Some(r) = &mut self.recorder {
+            match &ev {
+                Ev::Text(_) | Ev::Reasoning(_) | Ev::ToolInput { .. } => r.token(),
+                Ev::ToolEnd { .. } => r.tool_ended(),
+                Ev::StepEnd(u) if self.children.is_empty() => {
+                    r.step_ended(u.output.saturating_sub(u.reasoning), u.reasoning)
+                }
+                _ => {}
+            }
+        }
         match ev {
             Ev::Diff(r) => self.diff_answer(*r),
             Ev::Text(d) => match self.entries.last_mut() {

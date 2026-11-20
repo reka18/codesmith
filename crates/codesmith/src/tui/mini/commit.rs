@@ -324,9 +324,14 @@ impl Committer {
                 if s.turn_summary {
                     let line = Line::from(Span::styled(
                         format!(
-                            "{agent} \u{b7} {} \u{b7} {}",
+                            "{agent} \u{b7} {} \u{b7} {}{}",
                             app.header.model,
-                            duration(start.elapsed().as_millis() as u64)
+                            duration(start.elapsed().as_millis() as u64),
+                            // The throughput of the turn just ended.
+                            match app.last_turn {
+                                Some((_, Some(t))) => format!(" \u{b7} {t:.1} tok/s"),
+                                _ => String::new(),
+                            }
                         ),
                         Style::default()
                             .fg(crate::tui::theme::current().muted)

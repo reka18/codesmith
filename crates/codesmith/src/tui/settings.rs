@@ -58,6 +58,8 @@ pub struct Settings {
     pub mini: super::mini::Settings,
     /// `tabs`: the session tabs.
     pub tabs: super::tabs::Settings,
+    /// `session.tps`: show a turn's throughput in its footer.
+    pub tps: bool,
     /// `terminal.title`: keep the terminal window's title on the session's.
     pub terminal_title: bool,
     /// `attention`: system notifications and sounds.
@@ -131,6 +133,7 @@ impl Default for Settings {
             mini: super::mini::Settings::default(),
             tabs: super::tabs::Settings::default(),
             terminal_title: true,
+            tps: true,
             attention: Attention::default(),
         }
     }
@@ -301,6 +304,13 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
                 }
             }
         }
+    }
+    match get(&v, &["session", "tps"]) {
+        None => {}
+        Some(b) => match b.as_bool() {
+            Some(b) => s.tps = b,
+            None => errors.push("tui.session.tps: must be true or false".into()),
+        },
     }
     match get(&v, &["terminal", "title"]) {
         None => {}

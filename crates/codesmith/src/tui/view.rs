@@ -552,6 +552,34 @@ const SUB_EXPANDED: usize = 20;
 /// Rows of a subagent's latest text shown when expanded.
 const SUB_TEXT_ROWS: usize = 12;
 
+/// A turn's footer, as OpenCode's: the agent in its color, then the
+/// model, the duration and the throughput, dropped as the width shrinks.
+fn footer_line(f: &super::app::Footer, w: usize) -> Line<'static> {
+    let p = theme::current();
+    let mut rest = String::new();
+    if w >= 28 {
+        rest.push_str(&format!(" · {}", f.model));
+    }
+    if f.duration_ms > 0 && !(28..36).contains(&w) {
+        rest.push_str(&format!(
+            " · {}",
+            super::mini::commit::duration(f.duration_ms)
+        ));
+    }
+    if let Some(t) = f.tps {
+        rest.push_str(&format!(" · {t:.1} tok/s"));
+    }
+    if f.interrupted {
+        rest.push_str(" · interrupted");
+    }
+    let agent = titlecase(&f.agent);
+    let rest = cut(&escape_controls(&rest), w.saturating_sub(agent.width() + 1));
+    Line::from(vec![
+        Span::styled(cut(&escape_controls(&agent), w), fg(p.agent)),
+        Span::styled(rest, fg(p.muted)),
+    ])
+}
+
 /// `explore` as OpenCode titles it: `Explore`.
 fn titlecase(s: &str) -> String {
     let mut c = s.chars();
@@ -1170,6 +1198,7 @@ fn entry_lines(app: &App, e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
         )),
         Entry::Notice(t) => out.extend(styled(wrap(t, w), "", fg(p.warning))),
         Entry::Media(label) => out.push(media_line(label, w)),
+        Entry::Footer(f) => out.push(footer_line(f, w)),
         Entry::Error(t) => out.extend(styled(wrap(t, w), "error: ", fg(p.error))),
         Entry::Todos(todos) => {
             for t in todos {

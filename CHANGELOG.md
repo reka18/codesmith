@@ -71,6 +71,8 @@ replays of its recorded provider traffic.
   that read progress reports show when a session works or waits; on exit
   the session and the command that continues it are printed. Mentions of
   other sessions (`ses_…`) in replies are shown with their titles.
+- **Turn footers:** each turn ends with its agent, model, duration and
+  throughput, measured as OpenCode measures them (`tui.session.tps`).
 - **Message navigation:** OpenCode's `session.message.*` commands jump
   to the next or previous prompt or answer; alt+end to the last prompt.
 - **External editor:** `<leader>e` or `/editor` edits the prompt in

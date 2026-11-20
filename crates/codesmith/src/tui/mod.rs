@@ -49,6 +49,7 @@ mod tabs;
 mod tabs_host;
 mod term;
 pub(crate) mod theme;
+mod turn;
 mod view;
 
 pub(crate) use view::display_safe;
@@ -272,7 +273,7 @@ impl Runner {
             return;
         };
         self.app.entries.push(Entry::User(shown.clone()));
-        self.app.busy = true;
+        self.app.start_turn();
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
@@ -299,7 +300,7 @@ impl Runner {
             return;
         };
         self.app.entries.push(Entry::User(shown));
-        self.app.busy = true;
+        self.app.start_turn();
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
@@ -372,7 +373,7 @@ impl Runner {
             format!("/{name} {args}")
         };
         self.app.entries.push(Entry::User(shown.clone()));
-        self.app.busy = true;
+        self.app.start_turn();
         let env = codesmith_core::review::Env::new(
             &self.loaded,
             s.cwd.clone(),
@@ -449,6 +450,7 @@ impl Runner {
         self.task = None;
         self.app.busy = false;
         self.app.ended = Some(app::TurnEnd::Interrupted);
+        self.app.end_turn(true);
         self.app.drop_forming();
         self.app.notice("interrupted");
         if let Err(e) = self.reload() {
@@ -536,7 +538,7 @@ impl Runner {
         let Some(mut s) = self.session.take() else {
             return;
         };
-        self.app.busy = true;
+        self.app.start_turn();
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
@@ -1224,6 +1226,7 @@ impl Runner {
                     Ok(()) => app::TurnEnd::Done,
                     Err(e) => app::TurnEnd::Failed(e.clone()),
                 });
+                self.app.end_turn(false);
                 if let Err(e) = result {
                     self.app.error(e);
                 }
@@ -1542,6 +1545,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     r.app.reasoning_source = tui.markdown == settings::Markdown::Source;
     r.app.verbosity = tui.verbosity;
     r.app.grouping = tui.grouping;
+    r.app.tps = tui.tps;
     r.diffs = tui.diffs;
     r.app.diff_source = tui.diffs.source;
     r.app.diff_prefs = diff_view::remembered(
