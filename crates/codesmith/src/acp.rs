@@ -131,15 +131,19 @@ fn reasoning_id(message: &str, ordinal: usize) -> String {
     format!("{message}:reasoning:{ordinal}")
 }
 
-/// A tool's own name: subagent tools arrive as "agent › tool".
+/// A tool's own name: subagent tools arrive as "agent › tool". The patch
+/// tool's former name, `apply_patch`, is `patch` (OpenCode's V1 alias).
 fn base_name(name: &str) -> &str {
-    name.rsplit(" › ").next().unwrap_or(name)
+    match name.rsplit(" › ").next().unwrap_or(name) {
+        "apply_patch" => "patch",
+        n => n,
+    }
 }
 
 pub fn tool_kind(name: &str) -> &'static str {
     match base_name(name) {
         "read" | "skill" => "read",
-        "write" | "edit" => "edit",
+        "write" | "edit" | "patch" => "edit",
         "glob" | "grep" => "search",
         "shell" => "execute",
         "webfetch" | "websearch" => "fetch",
@@ -161,6 +165,31 @@ fn file_path(input: &Value) -> Option<&str> {
     input["path"].as_str().or(input["filePath"].as_str())
 }
 
+/// The files a patch call changes, each with the file its text comes from.
+fn patch_files(cwd: &Path, input: &Value) -> Vec<(PathBuf, PathBuf)> {
+    codesmith_core::tool::apply_patch::touched(cwd, input["patchText"].as_str().unwrap_or_default())
+}
+
+/// The files a call is about to change, each with its text now, so the
+/// change can be shown when it ends.
+fn files_before(cwd: &Path, name: &str, input: &Value) -> Vec<Before> {
+    let files = match base_name(name) {
+        "edit" | "write" => file_path(input)
+            .map(|p| absolute(cwd, p))
+            .map(|p| vec![(p.clone(), p)])
+            .unwrap_or_default(),
+        "patch" => patch_files(cwd, input),
+        _ => vec![],
+    };
+    files
+        .into_iter()
+        .map(|(path, source)| {
+            let old = std::fs::read_to_string(&source).ok();
+            (path, old)
+        })
+        .collect()
+}
+
 /// OpenCode's `toLocations`.
 fn locations(cwd: &Path, name: &str, input: &Value) -> Value {
     let path = match base_name(name) {
@@ -172,6 +201,19 @@ fn locations(cwd: &Path, name: &str, input: &Value) -> Value {
                 .unwrap_or_else(|| cwd.to_path_buf()),
         ),
         "read" | "edit" | "write" => file_path(input).map(|p| absolute(cwd, p)),
+        // Every file a patch names, a move's source and destination both.
+        "patch" => {
+            let files = patch_files(cwd, input);
+            let mut paths: Vec<PathBuf> = Vec::new();
+            for (dest, source) in files {
+                for p in [source, dest] {
+                    if !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            }
+            return json!(paths.iter().map(|p| json!({"path": p})).collect::<Vec<_>>());
+        }
         "grep" | "glob" => input["path"]
             .as_str()
             .filter(|p| !p.is_empty())
@@ -261,7 +303,20 @@ fn result_update(
     }
 }
 
-/// What an edit or write would change, shown with its permission request.
+/// What an edit, write or patch would change, shown with its permission
+/// request: a diff per file (per hunk, for a patch).
+fn previews(cwd: &Path, name: &str, input: &Value) -> Vec<Value> {
+    if base_name(name) == "patch" {
+        let text = input["patchText"].as_str().unwrap_or_default();
+        return codesmith_core::tool::apply_patch::preview(cwd, text)
+            .into_iter()
+            .map(|p| diff(&p.path, p.old, p.new.unwrap_or_default()))
+            .collect();
+    }
+    preview(cwd, name, input).into_iter().collect()
+}
+
+/// What an edit or write would change.
 fn preview(cwd: &Path, name: &str, input: &Value) -> Option<Value> {
     let path = absolute(cwd, file_path(input)?);
     let old = std::fs::read_to_string(&path).ok();
@@ -291,6 +346,16 @@ fn permission_title(name: &str, input: &Value) -> Option<String> {
         "websearch" => s("query"),
         "grep" | "glob" => s("pattern"),
         "read" | "edit" | "write" => file_path(input).map(str::to_string),
+        "patch" => {
+            let files = patch_files(Path::new(""), input);
+            (!files.is_empty()).then(|| {
+                files
+                    .iter()
+                    .map(|(p, _)| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+        }
         _ => None,
     }
 }
@@ -538,8 +603,8 @@ struct AcpSink {
     /// Reasoning parts started in this message, and whether one is open.
     reasoning: usize,
     in_reasoning: bool,
-    /// Calls in flight: name, input and, for edits, the file before.
-    tools: HashMap<String, (String, Value, Option<Before>)>,
+    /// Calls in flight: name, input and, for edits, the files before.
+    tools: HashMap<String, (String, Value, Vec<Before>)>,
     /// Media of the call about to end, from `tool_media`.
     media: HashMap<String, Vec<Media>>,
     /// Calls announced `pending` while they streamed and not started yet,
@@ -707,13 +772,7 @@ impl Sink for AcpSink {
             name
         };
         let shown = self.client_id(id);
-        let before = matches!(base_name(name), "edit" | "write")
-            .then(|| file_path(input).map(|p| absolute(&self.cwd, p)))
-            .flatten()
-            .map(|p| {
-                let old = std::fs::read_to_string(&p).ok();
-                (p, old)
-            });
+        let before = files_before(&self.cwd, name, input);
         self.tools
             .insert(self.key(id), (name.into(), input.clone(), before));
         *self.current.lock().unwrap() = Some(Call {
@@ -740,15 +799,22 @@ impl Sink for AcpSink {
         let (name, input, before) = self
             .tools
             .remove(&key)
-            .unwrap_or_else(|| (base_name(name).to_string(), json!({}), None));
+            .unwrap_or_else(|| (base_name(name).to_string(), json!({}), vec![]));
         let media = self.media.remove(&key).unwrap_or_default();
         let shown = match self.child() {
             Some(_) => id.to_string(),
             None => self.aliases.remove(id).unwrap_or_else(|| id.to_string()),
         };
         let mut update = result_update(&self.cwd, &shown, &name, &input, output, is_error, &media);
-        if let (false, Some((path, old))) = (is_error, before) {
-            if let Ok(new) = std::fs::read_to_string(&path) {
+        // A patch that failed midway changed the files it wrote first.
+        if !is_error || base_name(&name) == "patch" {
+            for (path, old) in before {
+                let new = match std::fs::read_to_string(&path) {
+                    Ok(new) => new,
+                    // Deleted (or moved away) by a patch.
+                    Err(_) if old.is_some() && !path.exists() => String::new(),
+                    Err(_) => continue,
+                };
                 if old.as_deref() != Some(new.as_str()) {
                     update["content"]
                         .as_array_mut()
@@ -903,8 +969,9 @@ impl Asker for AcpAsker {
                 } else {
                     tc["title"] = json!(req.title);
                 }
-                if let Some(d) = preview(&self.cwd, name, input) {
-                    tc["content"] = json!([d]);
+                let diffs = previews(&self.cwd, name, input);
+                if !diffs.is_empty() {
+                    tc["content"] = json!(diffs);
                 }
                 if let Some(c) = child {
                     tc["sessionUpdate"] = json!("tool_call");
@@ -2021,12 +2088,20 @@ impl Agent {
                         if let Some((_, _, output, failed, media)) = result {
                             let mut update =
                                 result_update(&s.cwd, cid, name, input, output, *failed, media);
-                            // The file the call changed, as it streamed live.
-                            let change = changes
+                            // The files the call changed, as it streamed live:
+                            // the run of changes recorded for it.
+                            let first = changes
                                 .iter()
-                                .find(|(at, call, _)| Some(*at) > seq && call == cid);
-                            if let (false, Some((_, _, d))) = (*failed, change) {
-                                update["content"].as_array_mut().unwrap().push(d.clone());
+                                .position(|(at, call, _)| Some(*at) > seq && call == cid);
+                            let patch = base_name(name) == "patch";
+                            if let (true, Some(first)) = (!*failed || patch, first) {
+                                let content = update["content"].as_array_mut().unwrap();
+                                for (_, _, d) in changes[first..]
+                                    .iter()
+                                    .take_while(|(_, call, _)| call == cid)
+                                {
+                                    content.push(d.clone());
+                                }
                             }
                             self.conn.update(id, update);
                         }
@@ -4465,6 +4540,46 @@ mod tests {
 
     // config-option.test.ts: "builds effort option from variants and falls
     // back to default when current variant is invalid"
+    // tool.ts `toLocations` / permission.ts `patchPreviews`, for the patch tool.
+    #[test]
+    fn patch_calls_name_every_file_and_preview_each_hunk() {
+        let d = tempfile::tempdir().unwrap();
+        let cwd = d.path();
+        std::fs::write(cwd.join("a.txt"), "one\n").unwrap();
+        std::fs::write(cwd.join("gone.txt"), "bye\n").unwrap();
+        let input = json!({"patchText": "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-one\n+two\n*** Add File: new.txt\n+hi\n*** Delete File: gone.txt\n*** End Patch"});
+        assert_eq!(
+            locations(cwd, "patch", &input),
+            json!([
+                {"path": cwd.join("a.txt")},
+                {"path": cwd.join("b.txt")},
+                {"path": cwd.join("new.txt")},
+                {"path": cwd.join("gone.txt")},
+            ])
+        );
+        assert_eq!(
+            previews(cwd, "build › patch", &input),
+            vec![
+                diff(&cwd.join("b.txt"), Some("one\n".into()), "two\n".into()),
+                diff(&cwd.join("new.txt"), None, "hi\n".into()),
+                diff(&cwd.join("gone.txt"), Some("bye\n".into()), String::new()),
+            ]
+        );
+        assert_eq!(
+            permission_title("patch", &input).as_deref(),
+            Some("b.txt, new.txt, gone.txt")
+        );
+        let before = files_before(cwd, "patch", &input);
+        assert_eq!(
+            before,
+            vec![
+                (cwd.join("b.txt"), Some("one\n".to_string())),
+                (cwd.join("new.txt"), None),
+                (cwd.join("gone.txt"), Some("bye\n".to_string())),
+            ]
+        );
+    }
+
     #[test]
     fn oc_acp_effort_option_shape() {
         let config: config::Config = serde_json::from_value(json!({
@@ -5788,6 +5903,8 @@ mod tests {
         assert_eq!(tool_kind("edit"), "edit");
         assert_eq!(tool_kind("explore › grep"), "search");
         assert_eq!(tool_kind("github_search"), "other");
+        assert_eq!(tool_kind("patch"), "edit");
+        assert_eq!(tool_kind("apply_patch"), "edit");
         assert_eq!(stop_reason(Some(Reason::Length)), "max_tokens");
         assert_eq!(stop_reason(Some(Reason::ContentFilter)), "refusal");
         assert_eq!(stop_reason(Some(Reason::Stop)), "end_turn");

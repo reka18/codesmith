@@ -1,5 +1,5 @@
-//! Line diffs for `edit` and `write` calls, shown in the transcript and in
-//! the permission dialog. Computed from the tool input (and the file as it
+//! Line diffs for `edit`, `write` and `patch` calls, shown in the
+//! transcript and in the permission dialog. Computed from the tool input (and the file as it
 //! is before the tool runs), so no help from the tools is needed.
 
 use serde_json::Value;
@@ -13,6 +13,9 @@ pub enum Kind {
     Del,
     /// Unchanged lines left out between hunks.
     Gap,
+    /// The file the lines below belong to (a `patch` changes several):
+    /// `text` is its status (`A`, `M` or `D`) and path.
+    File,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,10 +73,41 @@ pub fn diff(old: &str, new: &str, first: usize) -> Diff {
     out
 }
 
-/// The change an `edit` or `write` call is about to make, if it can be told.
+/// What a `patch` call is about to do: each hunk's diff under its file.
+fn for_patch(text: &str, cwd: &Path) -> Option<Diff> {
+    let mut out = Diff::default();
+    for p in codesmith_core::tool::apply_patch::preview(cwd, text) {
+        let status = match (&p.old, &p.new) {
+            (None, _) => 'A',
+            (_, None) => 'D',
+            _ => 'M',
+        };
+        let shown = p.path.strip_prefix(cwd).unwrap_or(&p.path);
+        out.lines.push(DiffLine {
+            kind: Kind::File,
+            line: 0,
+            text: format!("{status} {}", shown.display()),
+        });
+        let d = diff(
+            p.old.as_deref().unwrap_or_default(),
+            p.new.as_deref().unwrap_or_default(),
+            1,
+        );
+        out.lines.extend(d.lines);
+        out.added += d.added;
+        out.removed += d.removed;
+    }
+    (!out.lines.is_empty()).then_some(out)
+}
+
+/// The change an `edit`, `write` or `patch` call is about to make, if it
+/// can be told.
 pub fn for_tool(name: &str, input: &Value, cwd: &Path) -> Option<Diff> {
     let name = name.rsplit(" › ").next().unwrap_or(name);
     let s = |k: &str| input.get(k).and_then(Value::as_str);
+    if matches!(name, "patch" | "apply_patch") {
+        return for_patch(s("patchText")?, cwd);
+    }
     let path = cwd.join(s("path")?);
     match name {
         "edit" => {
@@ -158,5 +192,33 @@ mod tests {
         .unwrap();
         assert_eq!((w.added, w.removed), (2, 0));
         assert!(for_tool("read", &json!({"path": "a.rs"}), d.path()).is_none());
+    }
+
+    #[test]
+    fn patch_inputs_show_each_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        std::fs::write(d.path().join("old.txt"), "x\n").unwrap();
+        let p = for_tool(
+            "patch",
+            &json!({"patchText": "*** Begin Patch\n*** Update File: a.rs\n@@\n-fn b() {}\n+fn b() { 1 }\n*** Add File: new.txt\n+hi\n*** Delete File: old.txt\n*** End Patch"}),
+            d.path(),
+        )
+        .unwrap();
+        assert_eq!((p.added, p.removed), (2, 2));
+        assert_eq!(
+            kinds(&p),
+            vec![
+                (Kind::File, 0, "M a.rs"),
+                (Kind::Context, 1, "fn a() {}"),
+                (Kind::Del, 2, "fn b() {}"),
+                (Kind::Add, 2, "fn b() { 1 }"),
+                (Kind::File, 0, "A new.txt"),
+                (Kind::Add, 1, "hi"),
+                (Kind::File, 0, "D old.txt"),
+                (Kind::Del, 1, "x"),
+            ]
+        );
+        assert!(for_tool("patch", &json!({"patchText": "nope"}), d.path()).is_none());
     }
 }

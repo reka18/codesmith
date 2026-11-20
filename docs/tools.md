@@ -7,8 +7,9 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 | Tool | What it does | Offered when |
 |---|---|---|
 | `read` | Read a file (numbered lines, paged), an image or PDF (sent to the model as media), or list a directory. | always |
-| `write` | Create or overwrite a file. | always |
-| `edit` | Exact find-and-replace. It tolerates typographic quotes, dashes and trailing whitespace in the search text, and keeps the file's CRLF or LF line endings. | always |
+| `write` | Create or overwrite a file. | the model is not one that edits with `patch` |
+| `edit` | Exact find-and-replace. It tolerates typographic quotes, dashes and trailing whitespace in the search text, and keeps the file's CRLF or LF line endings. | the model is not one that edits with `patch` |
+| `patch` | Add, update, move and delete files with one patch. See [below](#patch). | GPT-5 and later models, instead of `write` and `edit` |
 | `glob` | Find files by glob pattern, respecting `.gitignore`. | always |
 | `grep` | Search file contents with ripgrep's regex engine. | always |
 | `shell` | Run a command. See [below](#shell). | always |
@@ -68,9 +69,57 @@ project need `external_directory` approval first
 scratch folder (`<data>/tmp`) is always allowed, and the model is told about
 it for temporary files.
 
-After `write` or `edit`, the optional [formatter](language-servers-and-formatters.md#formatters)
+After `write`, `edit` or `patch`, the optional [formatter](language-servers-and-formatters.md#formatters)
 runs, and [language server](language-servers-and-formatters.md#language-servers)
 errors are added to the result.
+
+## `patch`
+
+GPT models from GPT-5 on edit files with `patch`, the format OpenAI's
+models are trained on, and are not offered `write` and `edit`; every other
+model gets `write` and `edit` and not `patch`. As in OpenCode, a model
+counts when its name in the config or its provider id contains `gpt-`, and
+neither contains `gpt-4` or `oss` (so `gpt-4.1`, `gpt-4o` and `gpt-oss-*`
+keep `write` and `edit`). There is no setting to swap them; `edit`
+[permission](permissions.md) rules govern all three, so denying `edit`
+hides `patch` too.
+
+A patch looks like this:
+
+```
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+```
+
+- An update's `@@` line may name a line to find first (to pick the right
+  place among similar ones); lines starting with a space are context, `-`
+  removed, `+` added. `*** End of File` after a chunk anchors it to the
+  end of the file.
+- Context and removed lines match exactly first, then ignoring trailing
+  whitespace, then surrounding whitespace, then typographic quotes, dashes
+  and spaces. A BOM is kept, and the file ends with a newline.
+- A heredoc wrapper (`cat <<'EOF'` … `EOF`) around the patch is ignored.
+- Every hunk is checked against the files first, in order (a later hunk
+  sees what earlier ones did), so a patch that does not apply changes
+  nothing. One `edit` request then covers every file, and the permission
+  dialog shows each file's diff. Paths outside the project are approved
+  one by one before anything is read.
+- The files are then written in order. If a write fails, the error names
+  the files already changed (`Completed before failure: …`); they stay
+  changed, and [undo](sessions.md) restores them with the rest of the turn.
+- An `Add File` overwrites a file that exists. A file that is not valid
+  UTF-8 can be deleted but not updated.
+- When a file the patch reads is not plainly readable (a `read` rule asks
+  or denies, as for `.env`), the `edit` request comes before the files are
+  read, so a patch that does not match cannot reveal their contents.
 
 ## `webfetch`
 

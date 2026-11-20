@@ -383,6 +383,14 @@ pub fn diff_lines(d: &Diff, max: usize, width: usize) -> Vec<Line<'static>> {
                 out.push(Line::from(Span::styled(format!("  {:>nw$}  ⋮", ""), dim())));
                 continue;
             }
+            diff::Kind::File => {
+                let text = cut(&escape_controls(&l.text), width.saturating_sub(2));
+                out.push(Line::from(Span::styled(
+                    format!("  {text}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                continue;
+            }
         };
         let text = cut(
             &escape_controls(&l.text.replace('\t', "    ")),

@@ -81,6 +81,17 @@ pub fn describe(name: &str, input: &Value) -> String {
         "skill" => s("id").to_string(),
         "todowrite" => String::new(),
         "read" | "write" | "edit" => s("path").to_string(),
+        "patch" | "apply_patch" => {
+            let files = codesmith_core::tool::apply_patch::touched(
+                std::path::Path::new(""),
+                s("patchText"),
+            );
+            files
+                .iter()
+                .map(|(p, _)| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
         "glob" | "grep" => {
             let p = s("path");
             if p.is_empty() {

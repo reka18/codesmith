@@ -1222,8 +1222,19 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             let mid = model_id
                 .split_once('/')
                 .map(|x| x.1.to_string())
-                .unwrap_or(model_id);
-            let tools: Vec<&str> = agent::tools(&a).iter().map(|t| t.name()).collect();
+                .unwrap_or(model_id.clone());
+            let mut offered = agent::tools(&a);
+            let provider_id = loaded
+                .config
+                .resolve_model(&model_id)
+                .map(|m| m.model_id)
+                .unwrap_or_else(|_| mid.clone());
+            codesmith_core::tool::apply_patch::offer_for_spec(
+                &mut offered,
+                &model_id,
+                &provider_id,
+            );
+            let tools: Vec<&str> = offered.iter().map(|t| t.name()).collect();
             let env = prompt::environment(&prompt::Environment {
                 cwd: &cwd,
                 root: &loaded.root,

@@ -594,3 +594,63 @@ async fn interrupting_a_run_stops_its_background_server() {
     assert!(stderr.contains("interrupted"), "{stderr}");
     assert!(gone, "the server {server} outlived the run:\n{stderr}");
 }
+
+/// A GPT-5 model edits with `patch` instead of `edit` and `write`: the
+/// call applies a multi-file patch, the store keeps one change per file,
+/// and undo puts every file back.
+#[tokio::test(flavor = "multi_thread")]
+async fn gpt_5_patches_files_and_undo_restores_them() {
+    need_git!();
+    let e = Env::new();
+    e.write("add.sh", BUGGY);
+    e.write("old.txt", "obsolete\n");
+    e.commit("start");
+    let patch = "*** Begin Patch\n*** Update File: add.sh\n@@\n-echo $(($1 - $2))\n+echo $(($1 + $2))\n*** Add File: notes/fix.md\n+Fixed the operator.\n*** Delete File: old.txt\n*** End Patch";
+    let go = M::tools().and(M::prompt("fix it"));
+    let m = Model::start(
+        Script::new()
+            .titled("Fix")
+            .then(
+                "patch",
+                go.clone().and(M::step(0)),
+                Reply::call("patch", json!({"patchText": patch})),
+            )
+            .then("answer", go.and(M::step(1)), Reply::text("Patched.")),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({
+            "model": "fake/gpt-5",
+            "providers": {"fake": {
+                "protocol": "openai-chat",
+                "settings": {"baseURL": m.url, "apiKey": "test-key"},
+                "models": {"gpt-5": {"limit": {"context": 100000}}}
+            }}
+        }),
+    );
+    let out = e.run(&["run", "--format", "json", "fix it"]).await;
+    out.ok();
+    let offered = model::tools(&m.steps()[0]);
+    assert!(offered.contains(&"patch".to_string()), "{offered:?}");
+    for t in ["edit", "write"] {
+        assert!(!offered.contains(&t.to_string()), "{t} not offered");
+    }
+    let results = model::results(&m.steps()[1]);
+    assert_eq!(
+        results[0],
+        "Success. Updated the following files:\nM add.sh\nA notes/fix.md\nD old.txt"
+    );
+    assert_eq!(e.read("add.sh"), FIXED);
+    assert_eq!(e.read("notes/fix.md"), "Fixed the operator.\n");
+    assert!(!e.path("old.txt").exists());
+    let sid = out.done()["session"].as_str().unwrap().to_string();
+    let kinds = e.record_kinds(&sid);
+    assert_eq!(kinds.iter().filter(|k| *k == "change").count(), 3);
+
+    let undo = e.run(&["session", "undo"]).await;
+    undo.ok();
+    assert_eq!(e.read("add.sh"), BUGGY);
+    assert_eq!(e.read("old.txt"), "obsolete\n");
+    assert!(!e.path("notes/fix.md").exists(), "{}", undo.both());
+}
