@@ -355,6 +355,14 @@ pub struct App {
     pub diff_source: Option<super::diff_source::Source>,
     /// The layout choices changed: the runner remembers them.
     pub diff_prefs_changed: bool,
+    /// Mini mode's settings, in mini mode.
+    pub mini: Option<super::mini::Settings>,
+    /// Entries before this one are in the terminal's scrollback (mini
+    /// mode) and are left as they are.
+    pub sealed: usize,
+    /// `entries` was replaced (not appended to) since the last frame; the
+    /// first this many came with the replacement.
+    pub replaced: Option<usize>,
 }
 
 /// A running subagent, as the UI tracks it.
@@ -589,6 +597,13 @@ impl App {
         self.entries.push(Entry::Notice(s.into()));
     }
 
+    /// Replace the transcript (a session loaded or cleared).
+    pub fn set_entries(&mut self, entries: Vec<Entry>) {
+        self.replaced = Some(entries.len());
+        self.sealed = 0;
+        self.entries = entries;
+    }
+
     pub fn error(&mut self, s: impl Into<String>) {
         self.entries.push(Entry::Error(s.into()));
     }
@@ -807,7 +822,13 @@ impl App {
             // Text of a subagent whose row is not shown.
             Ev::ChildText(_) => {}
             Ev::Todos(t) => {
-                self.entries.retain(|e| !matches!(e, Entry::Todos(_)));
+                // A list already in the scrollback stays there.
+                let sealed = self.sealed;
+                let mut i = 0;
+                self.entries.retain(|e| {
+                    i += 1;
+                    i <= sealed || !matches!(e, Entry::Todos(_))
+                });
                 self.entries.push(Entry::Todos(t));
             }
             Ev::Notice(n) => self.notice(n),
@@ -1050,6 +1071,7 @@ impl App {
                 return Some(Some(Action::Quit));
             }
             "terminal.suspend" => return Some(Some(Action::Run("terminal.suspend"))),
+            "app.clear" if self.mini.is_some() => return Some(Some(Action::Run("app.clear"))),
             "agent.cycle" => return Some(Some(Action::CycleAgent(1))),
             "agent.cycle.reverse" => return Some(Some(Action::CycleAgent(-1))),
             "agent.list" => return Self::slash("agent"),

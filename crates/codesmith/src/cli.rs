@@ -48,6 +48,9 @@ struct Cli {
 enum Command {
     /// Run one prompt non-interactively and print the result.
     Run(RunArgs),
+    /// Start the minimal interactive interface: the transcript goes to the
+    /// terminal's scrollback, with a small live footer for the prompt.
+    Mini(MiniArgs),
     /// List providers and their models, or ask one provider for its models.
     Models {
         /// A provider id: list the models its API reports.
@@ -158,6 +161,83 @@ enum Command {
         #[command(subcommand)]
         what: Debug,
     },
+}
+
+#[derive(clap::Args)]
+struct MiniArgs {
+    /// Continue the most recent session in this directory.
+    #[arg(short, long)]
+    r#continue: bool,
+    /// Continue the session with this id.
+    #[arg(short, long)]
+    session: Option<String>,
+    /// Model as provider/model.
+    #[arg(short, long)]
+    model: Option<String>,
+    /// Agent to start with.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Send this prompt as soon as the UI opens (piped stdin comes before it).
+    #[arg(long)]
+    prompt: Option<String>,
+    /// Approve every permission request that isn't denied.
+    #[arg(long)]
+    auto: bool,
+    /// Print the session's history on resume and after a resize (the
+    /// default; `tui.mini.replay` sets it too).
+    #[arg(long, overrides_with = "no_replay")]
+    replay: bool,
+    /// Do not print the session's history on resume or after a resize.
+    #[arg(long)]
+    no_replay: bool,
+    /// Print at most the newest N messages in a replay (default: 200).
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    replay_limit: Option<u64>,
+}
+
+/// Make the controlling terminal stdin again, once piped input is read.
+#[cfg(unix)]
+fn reopen_tty_as_stdin() -> Result<()> {
+    use std::os::fd::AsRawFd;
+    // The terminal's own device rather than `/dev/tty`, which macOS cannot
+    // wait on for input (kqueue).
+    // SAFETY: ttyname returns a static, NUL-terminated name or null.
+    let name = unsafe { libc::ttyname(1) };
+    let path = if name.is_null() {
+        std::path::PathBuf::from("/dev/tty")
+    } else {
+        // SAFETY: checked non-null above.
+        let c = unsafe { std::ffi::CStr::from_ptr(name) };
+        std::path::PathBuf::from(c.to_string_lossy().into_owned())
+    };
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .context("opening the terminal for input")?;
+    // SAFETY: dup2 onto stdin's descriptor; `tty` stays valid for the call.
+    if unsafe { libc::dup2(tty.as_raw_fd(), 0) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("reading keys from the terminal");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn reopen_tty_as_stdin() -> Result<()> {
+    Err(anyhow!("codesmith mini needs a terminal on stdin here"))
+}
+
+/// The initial prompt of `codesmith mini`: piped input, then `--prompt`,
+/// a line apart (as OpenCode's `mergeInput`).
+pub(crate) fn merge_input(piped: Option<&str>, prompt: Option<&str>) -> Option<String> {
+    let piped = piped.filter(|p| !p.is_empty());
+    let prompt = prompt.filter(|p| !p.is_empty());
+    match (piped, prompt) {
+        (None, None) => None,
+        (Some(p), None) => Some(p.to_string()),
+        (None, Some(q)) => Some(q.to_string()),
+        (Some(p), Some(q)) => Some(format!("{p}\n{q}")),
+    }
 }
 
 #[derive(clap::Args)]
@@ -832,11 +912,55 @@ async fn run(cli: Cli) -> Result<()> {
                     model: cli.model,
                     prompt: cli.prompt,
                     auto: cli.auto,
+                    mini: None,
                 },
             )
             .await
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
+        Some(Command::Mini(args)) => {
+            if !std::io::stdout().is_terminal() {
+                return Err(anyhow!("codesmith mini requires a TTY stdout"));
+            }
+            let piped = if std::io::stdin().is_terminal() {
+                None
+            } else {
+                let mut s = String::new();
+                std::io::stdin().read_to_string(&mut s)?;
+                // Keys come from the terminal, which becomes stdin.
+                reopen_tty_as_stdin()?;
+                Some(s)
+            };
+            let resume = match (args.session, args.r#continue) {
+                (Some(id), _) => Some(id),
+                (None, true) => Some(
+                    open_store()?
+                        .latest(&cwd.display().to_string())?
+                        .ok_or_else(|| anyhow!("no session to continue in {}", cwd.display()))?
+                        .id,
+                ),
+                (None, false) => None,
+            };
+            tui::run(
+                cwd,
+                tui::Opts {
+                    resume,
+                    agent: args.agent,
+                    model: args.model,
+                    prompt: merge_input(piped.as_deref(), args.prompt.as_deref()),
+                    auto: args.auto,
+                    mini: Some(tui::MiniOpts {
+                        replay: match (args.replay, args.no_replay) {
+                            (_, true) => Some(false),
+                            (true, _) => Some(true),
+                            _ => None,
+                        },
+                        replay_limit: args.replay_limit.map(|n| n as usize),
+                    }),
+                },
+            )
+            .await
+        }
         Some(Command::Mcp {
             what: McpCmd::Auth { name },
         }) => {

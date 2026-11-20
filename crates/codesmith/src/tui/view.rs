@@ -69,7 +69,7 @@ fn fg(c: Color) -> Style {
 type Rendered = HashMap<(u64, usize, u64), Vec<Line<'static>>>;
 static MARKDOWN: Mutex<Option<Rendered>> = Mutex::new(None);
 
-fn markdown_cached(text: &str, width: usize) -> Vec<Line<'static>> {
+pub(super) fn markdown_cached(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
     let key = (h.finish(), width, theme::current().epoch);
@@ -245,7 +245,7 @@ fn hard_wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// The permission dialog's keys line, with the bindings in effect.
-fn permission_keys(k: &super::keymap::Keymap) -> String {
+pub(super) fn permission_keys(k: &super::keymap::Keymap) -> String {
     let key = |id: &str| match k.hint(id) {
         h if h.is_empty() => String::new(),
         h => format!("[{h}] "),
@@ -268,7 +268,7 @@ const PERMISSION_FEEDBACK: &str =
 /// it does not fit it scrolls (`scroll` is clamped here) with a line saying
 /// how much is hidden. The diff preview takes whatever is left after that.
 #[allow(clippy::too_many_arguments)]
-fn permission_lines(
+pub(super) fn permission_lines(
     req: &codesmith_core::permission::Request,
     from: Option<&str>,
     feedback: &str,
@@ -755,7 +755,7 @@ pub fn rows(app: &App) -> Vec<Node<usize, GroupKind>> {
 /// How an entry groups (see [`group::part_path`]): its path, or `None`
 /// when it draws nothing and does not break a group (an empty answer or
 /// thought).
-fn entry_path(app: &App, e: &Entry) -> Option<&'static [GroupKind]> {
+pub(super) fn entry_path(app: &App, e: &Entry) -> Option<&'static [GroupKind]> {
     match e {
         Entry::Assistant(t) if t.trim().is_empty() => None,
         Entry::Assistant(_) => Some(group::part_path(Part::Text, app.verbosity)),
@@ -821,6 +821,33 @@ pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
     if out.len() > n {
         out.drain(..out.len() - n);
     }
+    out
+}
+
+/// The rows of the entries `ids` (in order), grouped as the transcript
+/// groups them: mini mode's scrollback commits (`completed`, every group
+/// closed) and its live footer.
+pub(super) fn entries_lines(
+    app: &App,
+    ids: &[usize],
+    w: usize,
+    completed: bool,
+) -> Vec<Line<'static>> {
+    let tree = group::group_entries(
+        ids.iter()
+            .copied()
+            .filter(|&j| entry_path(app, &app.entries[j]).is_some()),
+        |&j| entry_path(app, &app.entries[j]).unwrap_or_default(),
+    );
+    let mut out = Vec::new();
+    Rows::new(app, w).nodes(&tree, completed, &mut out);
+    out
+}
+
+/// One entry's rows on its own, outside any group.
+pub(super) fn entry_rows(app: &App, i: usize, w: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    entry_lines(app, &app.entries[i], w, &mut out);
     out
 }
 
@@ -1323,7 +1350,7 @@ fn input_hint(app: &App) -> String {
     format!(" {} ", parts.join(" · "))
 }
 
-fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+pub(super) fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let p = theme::current();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1376,7 +1403,7 @@ fn keys_line(parts: &[(String, &str)]) -> String {
         .join(" · ")
 }
 
-fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
+pub(super) fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
     let Some(pop) = &app.popup else { return };
     let p = theme::current();
     let k = &app.keymap;
@@ -1546,7 +1573,7 @@ fn picker_lines(pk: &Picker, rows: usize, k: &super::keymap::Keymap) -> Vec<Line
 
 const MODAL_WIDTH: u16 = 100;
 
-fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
+pub(super) fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
     let p = theme::current();
     // Rows inside the border of the tallest dialog that fits.
     let room = area.height.saturating_sub(4) as usize;

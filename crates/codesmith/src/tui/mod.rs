@@ -26,6 +26,7 @@ mod editor;
 mod group;
 pub(crate) mod keymap;
 mod markdown;
+pub(crate) mod mini;
 #[cfg(test)]
 mod parity;
 #[cfg(test)]
@@ -66,6 +67,21 @@ pub struct Opts {
     pub model: Option<String>,
     pub prompt: Option<String>,
     pub auto: bool,
+    /// Mini mode (`codesmith mini`), with its command-line overrides.
+    pub mini: Option<MiniOpts>,
+}
+
+/// `codesmith mini`'s flags over `tui.mini`.
+#[derive(Debug, Clone, Default)]
+pub struct MiniOpts {
+    pub replay: Option<bool>,
+    pub replay_limit: Option<usize>,
+}
+
+/// Where the UI draws: the full screen, or mini mode's scrollback and footer.
+enum Screen {
+    Full(ratatui::DefaultTerminal),
+    Mini(Box<mini::Mini<std::io::Stdout>>),
 }
 
 struct Runner {
@@ -111,6 +127,8 @@ struct Runner {
     theme_before: Option<String>,
     /// `ctrl+z` was pressed: suspend before the next frame.
     suspend: bool,
+    /// `app.clear` (mini mode): clear the screen before the next frame.
+    clear: bool,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
     diffs: settings::Diffs,
 }
@@ -174,7 +192,7 @@ impl Runner {
         self.app.usage = s.usage;
         self.app.spend = s.spend();
         if replay {
-            self.app.entries = app::replay(&s.messages);
+            self.app.set_entries(app::replay(&s.messages));
         }
         self.session_id = s.id.clone();
         self.session = Some(s);
@@ -467,7 +485,7 @@ impl Runner {
             "exit" | "quit" | "q" => self.app.quit = true,
             "help" => self.app.modal = Some(Modal::Help(0)),
             "themes" | "theme" => self.theme_command(args),
-            "clear" => self.app.entries.clear(),
+            "clear" => self.app.set_entries(Vec::new()),
             "diff" => {
                 let dir = self
                     .session
@@ -487,6 +505,24 @@ impl Runner {
                     }
                 ));
             }
+            "verbosity" if self.app.mini.is_some() && mini_verbosity(args).is_some() => {
+                let m = self.app.mini.as_mut().expect("mini mode");
+                let level = match mini_verbosity(args) {
+                    Some(Ok(l)) => Some(l),
+                    Some(Err(dir)) => m.step(dir),
+                    None => None,
+                };
+                let shown = match level {
+                    Some(l) => {
+                        *m = m.with_level(l);
+                        self.app.show_reasoning = m.thinking;
+                        "set"
+                    }
+                    None => "already",
+                };
+                let label = mini::settings::label(m.level());
+                self.app.notice(format!("mini verbosity {shown}: {label}"));
+            }
             "verbosity" => {
                 let arg = args.trim();
                 if arg.is_empty() {
@@ -504,7 +540,7 @@ impl Runner {
                 self.forget_approvals();
                 self.end_jobs();
                 let s = self.make(None)?;
-                self.app.entries.clear();
+                self.app.set_entries(Vec::new());
                 self.install(s, false);
                 self.app.notice("new session");
             }
@@ -831,6 +867,7 @@ impl Runner {
                     .notice(format!("theme mode: {} (pinned)", self.themes.mode().key()));
             }
             "terminal.suspend" => self.suspend = true,
+            "app.clear" => self.clear = true,
             _ => {}
         }
     }
@@ -1116,6 +1153,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         detected: None,
         theme_before: None,
         suspend: false,
+        clear: false,
         diffs: settings::Diffs::default(),
     };
     let keymap = keymap::Keymap::new(&tui.keybinds, tui.leader_timeout, cfg!(unix));
@@ -1153,7 +1191,8 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     }
     let first = r.make(opts.resume.clone())?;
     r.install(first, opts.resume.is_some());
-    if r.app.entries.is_empty() {
+    // Mini mode's entry banner says as much.
+    if r.app.entries.is_empty() && opts.mini.is_none() {
         r.app.notice(format!(
             "CodeSmith {} · {} · /help for commands",
             env!("CARGO_PKG_VERSION"),
@@ -1167,7 +1206,18 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         r.submit(p.clone(), p, vec![]);
     }
 
-    let mut terminal = ratatui::init();
+    let mini_opts = opts.mini.clone();
+    if let Some(m) = &mini_opts {
+        let mut s = tui.mini.clone();
+        s.replay = m.replay.unwrap_or(s.replay);
+        s.replay_limit = m.replay_limit.unwrap_or(s.replay_limit);
+        r.app.show_reasoning = s.thinking;
+        r.app.mini = Some(s);
+    }
+    let mut screen = match &mini_opts {
+        None => Screen::Full(ratatui::init()),
+        Some(_) => Screen::Mini(Box::new(mini_screen(&r.cwd)?)),
+    };
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     if let Some(c) = cursor_style(tui.cursor) {
         let _ = execute!(std::io::stdout(), c);
@@ -1184,8 +1234,25 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     let result: Result<()> = async {
         loop {
             r.watch_background();
-            terminal.draw(|f| view::draw(f, &r.app))?;
-            let Some(ev) = rx.recv().await else { break };
+            let tick = match &mut screen {
+                Screen::Full(t) => {
+                    t.draw(|f| view::draw(f, &r.app))?;
+                    None
+                }
+                Screen::Mini(m) => {
+                    m.draw(&mut r.app)?;
+                    m.tick(&r.app)
+                }
+            };
+            let ev = match tick {
+                // The spinner moves while nothing else comes in.
+                Some(d) => match tokio::time::timeout(d, rx.recv()).await {
+                    Ok(ev) => ev,
+                    Err(_) => continue,
+                },
+                None => rx.recv().await,
+            };
+            let Some(ev) = ev else { break };
             r.handle(ev).await;
             // Apply everything already queued (streamed text arrives in bursts) before redrawing.
             while let Ok(ev) = rx.try_recv() {
@@ -1196,7 +1263,15 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
                 break;
             }
             if std::mem::take(&mut r.suspend) {
-                suspend(&mut terminal, tui.cursor);
+                match &mut screen {
+                    Screen::Full(t) => suspend(t, tui.cursor),
+                    Screen::Mini(m) => m.suspend(),
+                }
+            }
+            if std::mem::take(&mut r.clear) {
+                if let Screen::Mini(m) = &mut screen {
+                    m.clear();
+                }
             }
         }
         Ok(())
@@ -1217,14 +1292,57 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         DisableBracketedPaste,
         ratatui::crossterm::cursor::SetCursorStyle::DefaultUserShape
     );
-    ratatui::restore();
-    if !r.session_id.is_empty() {
+    let banner = match screen {
+        Screen::Full(_) => {
+            ratatui::restore();
+            false
+        }
+        // The main screen stays as it is, the transcript on it.
+        Screen::Mini(mut m) => {
+            let _ = m.close(&mut r.app);
+            let _ = ratatui::crossterm::terminal::disable_raw_mode();
+            r.app.mini.as_ref().is_some_and(|s| s.splash)
+        }
+    };
+    if !r.session_id.is_empty() && !banner {
         println!(
             "Session {} — continue with: codesmith -s {}",
             r.session_id, r.session_id
         );
     }
     result
+}
+
+/// Mini mode's `/verbosity quiet|default|everything` (a preset) or
+/// `/verbosity up|down` (a step, as a slider): `Err` holds the step.
+fn mini_verbosity(args: &str) -> Option<std::result::Result<mini::settings::Level, i32>> {
+    let a = args.trim().to_ascii_lowercase();
+    match a.as_str() {
+        "up" => Some(Err(1)),
+        "down" => Some(Err(-1)),
+        _ => mini::settings::Level::parse(&a).map(Ok),
+    }
+}
+
+/// Mini mode's screen, from where the cursor is (what the shell printed
+/// stays). Asked before input is read, so the reply is not taken for keys.
+fn mini_screen(cwd: &std::path::Path) -> Result<mini::Mini<std::io::Stdout>> {
+    use ratatui::crossterm::{cursor, terminal};
+    terminal::enable_raw_mode()?;
+    let (cols, rows) = terminal::size()?;
+    // Without a terminal on stdin (a prompt piped in), the reply would not
+    // be read: start at the bottom row.
+    let asked = std::io::IsTerminal::is_terminal(&std::io::stdin())
+        .then(cursor::position)
+        .and_then(|r| r.ok());
+    let row = match asked {
+        Some((0, y)) => y,
+        Some((_, y)) => y + 1,
+        None => rows.saturating_sub(1),
+    };
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let detail = mini::splash::directory_label(cwd, home.as_deref());
+    Ok(mini::Mini::new(std::io::stdout(), cols, rows, row, detail))
 }
 
 /// The UI's own commands, and whether each takes an argument.

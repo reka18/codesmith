@@ -1507,6 +1507,7 @@ pub mod scope {
         "input.delete.line",
         "app.exit",
         "terminal.suspend",
+        "app.clear",
         "agent.cycle",
         "agent.cycle.reverse",
         "agent.list",
