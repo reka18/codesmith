@@ -86,6 +86,10 @@ pub struct Config {
     pub commands: BTreeMap<String, crate::command::Command>,
     /// When to compact and how much recent history to keep verbatim.
     pub compaction: crate::compaction::Settings,
+    /// Limits images are fitted to before they reach the model
+    /// (`media.image`: `auto_resize`, `max_width`, `max_height`,
+    /// `max_base64_bytes`).
+    pub media: crate::media::MediaConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -122,6 +126,39 @@ pub struct ModelConfig {
     pub temperature: Option<f32>,
     /// Price in dollars per million tokens, for `codesmith stats`.
     pub cost: Option<Cost>,
+    /// What the model takes and makes, as in OpenCode and models.dev:
+    /// `{"input": ["text", "image", "pdf"]}`. Unset means unknown, and
+    /// images and PDFs are sent.
+    pub modalities: Option<Modalities>,
+    /// OpenCode's older flag: `false` means text input only.
+    pub attachment: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Modalities {
+    pub input: Vec<String>,
+    pub output: Vec<String>,
+}
+
+impl ModelConfig {
+    /// The input modalities, when configured.
+    pub fn input(&self) -> Option<Vec<String>> {
+        if let Some(m) = &self.modalities {
+            return Some(m.input.clone());
+        }
+        match self.attachment {
+            Some(false) => Some(vec!["text".into()]),
+            _ => None,
+        }
+    }
+}
+
+/// Input modalities for models known to take text only, when the config
+/// says nothing: DeepSeek's chat and reasoning models.
+fn known_input(model: &str) -> Option<Vec<String>> {
+    let m = model.to_ascii_lowercase();
+    (m.contains("deepseek") && !m.contains("vl")).then(|| vec!["text".into()])
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
@@ -447,6 +484,9 @@ pub struct ModelRef {
     pub max_output: Option<u32>,
     pub context: Option<u64>,
     pub temperature: Option<f32>,
+    /// Input modalities (`text`, `image`, `pdf`, …); `None` when unknown,
+    /// in which case images and PDFs are sent.
+    pub input: Option<Vec<String>>,
 }
 
 /// Built-in providers: (id, name, protocol, base URL, key variables).
@@ -619,11 +659,13 @@ impl Config {
             })
             .or_else(|| crate::auth::key(pid));
         let m = p.models.get(mid).cloned().unwrap_or_default();
+        let model_id = m.id.clone().unwrap_or_else(|| mid.to_string());
+        let input = m.input().or_else(|| known_input(&model_id));
         let mut body = p.body.clone();
         body.extend(m.body.clone());
         Ok(ModelRef {
             provider_id: pid.to_string(),
-            model_id: m.id.clone().unwrap_or_else(|| mid.to_string()),
+            model_id,
             provider: codesmith_ai::Provider {
                 protocol,
                 base_url,
@@ -634,6 +676,7 @@ impl Config {
             max_output: m.limit.output,
             context: m.limit.context,
             temperature: m.temperature,
+            input,
         })
     }
 }

@@ -12,7 +12,7 @@ pub const MAX_BYTES: usize = 50 * 1024;
 
 pub fn spec() -> (String, Value) {
     (
-        "Read the contents of a file or directory. Supports text files. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files.".into(),
+        "Read the contents of a file or directory. Supports text files, images, and PDFs. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files.".into(),
         json!({
             "type": "object",
             "properties": {
@@ -52,7 +52,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     ctx.authorize_external(&target, is_dir)?;
     ask_read(ctx, &target)?;
     match read_target(path, &target, page) {
-        Ok(out) => return Ok(Output::bounded(out)),
+        Ok(out) => return Ok(out),
         Err(Miss::Fail(e)) => return Err(e),
         Err(Miss::NotFound) => {}
     }
@@ -64,7 +64,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         ask_read(ctx, &alt_target)?;
         let name = alt.file_name().unwrap_or_default().to_string_lossy();
         match read_target(&sibling(path, &name), &alt_target, page) {
-            Ok(out) if !alt.is_dir() => return Ok(Output::bounded(out)),
+            Ok(out) if !alt.is_dir() => return Ok(out),
             Err(Miss::Fail(e)) => return Err(e),
             _ => {}
         }
@@ -81,8 +81,9 @@ fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> {
     })
 }
 
-/// Read a file or directory; `display` names it in the heading.
-fn read_target(display: &str, target: &super::Target, page: Page) -> Result<String, Miss> {
+/// Read a file or directory; `display` names it in the heading. Images and
+/// PDFs come back as media for the model to see, named `display`.
+fn read_target(display: &str, target: &super::Target, page: Page) -> Result<Output, Miss> {
     let abs = &target.absolute;
     let resource = &target.resource;
     let meta = match std::fs::metadata(abs) {
@@ -96,7 +97,9 @@ fn read_target(display: &str, target: &super::Target, page: Page) -> Result<Stri
                 "A negative offset only works for files, and {resource} is a directory"
             )));
         }
-        return directory(display, abs, page).map_err(Miss::Fail);
+        return directory(display, abs, page)
+            .map(Output::bounded)
+            .map_err(Miss::Fail);
     }
     if !meta.is_file() {
         return Err(Miss::Fail(format!(
@@ -108,32 +111,30 @@ fn read_target(display: &str, target: &super::Target, page: Page) -> Result<Stri
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Miss::NotFound),
         Err(e) => return Err(Miss::Fail(format!("Unable to read {display}: {e}"))),
     };
-    if media(&bytes).is_some() {
-        return Err(Miss::Fail(format!(
-            "Cannot read {display}: images and PDFs are not supported yet"
-        )));
+    if let Some(mime) = media(&bytes) {
+        let max = crate::media::MAX_INGEST_BYTES;
+        if bytes.len() as u64 > max {
+            return Err(Miss::Fail(format!(
+                "Media exceeds {max} byte ingestion limit: {resource}"
+            )));
+        }
+        let text = if mime == "application/pdf" {
+            "PDF read successfully"
+        } else {
+            "Image read successfully"
+        };
+        let m = codesmith_ai::Media::base64(mime, crate::media::base64(&bytes)).named(display);
+        return Ok(Output::media(text, vec![m]));
     }
     let text = text_page(&bytes, page)
         .ok_or_else(|| Miss::Fail(format!("Cannot read binary file: {resource}")))?;
-    Ok(model_text(display, page.offset, &text))
+    Ok(Output::bounded(model_text(display, page.offset, &text)))
 }
 
 /// The media type OpenCode attaches natively, detected from the bytes
 /// (OpenCode's `Mime.detectMedia`, limited to its `MEDIA_MIMES`).
 pub fn media(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
-        Some("image/png")
-    } else if b.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if b.starts_with(b"%PDF-") {
-        Some("application/pdf")
-    } else if b.starts_with(b"RIFF") && b.len() >= 12 && &b[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else {
-        None
-    }
+    crate::media::detect(b)
 }
 
 /// NUL in the first 8 KiB means binary, as git and ripgrep decide.
@@ -745,9 +746,9 @@ mod tests {
         assert!(run(&ctx, &json!({"path": "bin"}))
             .unwrap_err()
             .starts_with("Cannot read binary file"));
-        assert!(run(&ctx, &json!({"path": "img.png"}))
-            .unwrap_err()
-            .contains("not supported yet"));
+        let img = run(&ctx, &json!({"path": "img.png"})).unwrap();
+        assert_eq!(img.content, "Image read successfully");
+        assert_eq!(img.media[0].mime, "image/png");
     }
 
     // ---------------------------------------------------------------------
@@ -755,10 +756,11 @@ mod tests {
     // One `oc_read_*` test per OpenCode case, in the same order.
     //
     // Intentional differences:
-    // - CodeSmith has no image/PDF attachments, so every media case asserts
-    //   that the file is recognised as media (by its bytes, as OpenCode does)
-    //   and refused with "images and PDFs are not supported yet". OpenCode's
-    //   Image.Service resize/transcode cases have no CodeSmith counterpart.
+    // - Media is detected by its bytes and returned as `Output.media`; the
+    //   session fits images to the limits afterwards (`media::fit_tool_media`,
+    //   OpenCode's Tool.execute step), so the image cases run both. Cases
+    //   that call Image.Service directly are in `media.rs`. There is no
+    //   structured `output` (file URI) beside the model content.
     // - No Code Mode catalog placement and no structured `output`/`metadata`:
     //   the model-facing text is asserted.
     // - No virtual `skill://` filesystem: CodeSmith skills are folders on disk,
@@ -793,14 +795,51 @@ mod tests {
         run(ctx, &json!({"path": path}))
     }
 
-    /// The file is recognised as media and refused, not read as text or binary.
-    fn assert_media_refused(bytes: &[u8], name: &str) {
+    /// The file is read as media named `name`, with the model text OpenCode sends.
+    fn assert_media(bytes: &[u8], name: &str, mime: &str) -> Output {
         let env = Env::new();
         std::fs::write(env.root().join(name), bytes).unwrap();
+        let out = read_path(&env.ctx(), name).unwrap();
+        let text = if mime == "application/pdf" {
+            "PDF read successfully"
+        } else {
+            "Image read successfully"
+        };
+        assert_eq!(out.content, text);
         assert_eq!(
-            read_path(&env.ctx(), name).unwrap_err(),
-            format!("Cannot read {name}: images and PDFs are not supported yet")
+            out.media,
+            vec![codesmith_ai::Media::base64(mime, crate::media::base64(bytes)).named(name)]
         );
+        out
+    }
+
+    /// Read `bytes` as `name`, then fit its images as the session does.
+    fn read_fitted(
+        bytes: &[u8],
+        name: &str,
+        limits: crate::media::ImageLimits,
+    ) -> (String, Vec<codesmith_ai::Media>) {
+        let env = Env::new();
+        std::fs::write(env.root().join(name), bytes).unwrap();
+        let out = read_path(&env.ctx(), name).unwrap();
+        let (media, notes) = crate::media::fit_tool_media(out.media, &limits);
+        (
+            std::iter::once(out.content)
+                .chain(notes)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            media,
+        )
+    }
+
+    /// A white 16x1 PNG (OpenCode's "wide" fixture).
+    fn wide_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(16, 1, image::Rgba([255, 255, 255, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -876,81 +915,139 @@ mod tests {
 
     #[test]
     fn oc_read_small_png_as_media() {
-        assert_media_refused(&b64(PIXEL), "pixel.png");
+        let out = assert_media(&b64(PIXEL), "pixel.png", "image/png");
+        assert!(out.bounded);
+        // Reading again gives the same media (nothing is cached or moved).
+        assert_media(&b64(PIXEL), "pixel.png", "image/png");
     }
 
     #[test]
     fn oc_read_png_above_text_limit_as_media() {
-        let mut big = b64(PIXEL);
-        big.resize(MAX_BYTES * 2, 7);
-        assert_media_refused(&big, "large.png");
+        let img = image::RgbaImage::from_fn(256, 256, |x, y| {
+            let i = (y * 256 + x) * 4;
+            let c = |ch: u32| (((i + ch) * 73 + ((i + ch) >> 3)) % 256) as u8;
+            image::Rgba([c(0), c(1), c(2), c(3)])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        assert!(crate::media::base64(&png).len() > MAX_BYTES);
+        assert_media(&png, "large.png", "image/png");
+        // Small enough PNGs pass the default limits untouched.
+        let (_, media) = read_fitted(&png, "large.png", Default::default());
+        assert_eq!(media[0].inline(), Some(crate::media::base64(&png).as_str()));
     }
 
     #[test]
     fn oc_read_original_image_when_resizer_unavailable() {
-        assert_media_refused(&b64(PIXEL), "pixel.png");
+        // CodeSmith always has its resizer; a fitting image is sent as read.
+        let (text, media) = read_fitted(&b64(PIXEL), "pixel.png", Default::default());
+        assert_eq!(text, "Image read successfully");
+        assert_eq!(media[0].inline(), Some(PIXEL));
     }
 
     #[test]
     fn oc_read_drops_undecodable_image_data() {
-        assert_media_refused(&b64("iVBORw0KGgo="), "truncated.png");
+        let (text, media) = read_fitted(&b64("iVBORw0KGgo="), "truncated.png", Default::default());
+        assert_eq!(
+            text,
+            "Image read successfully\n[1 image omitted: could not be decoded.]"
+        );
+        assert!(media.is_empty());
     }
 
     #[test]
     fn oc_read_drops_oversized_images_without_resizing() {
-        assert_media_refused(&b64(PIXEL), "wide.png");
+        let limits = crate::media::ImageLimits {
+            auto_resize: false,
+            max_width: 4,
+            ..Default::default()
+        };
+        let (text, media) = read_fitted(&wide_png(), "wide.png", limits);
+        assert_eq!(
+            text,
+            "Image read successfully\n[1 image omitted: could not be resized below the image size limit.]"
+        );
+        assert!(media.is_empty());
     }
 
     #[test]
     fn oc_read_resizes_images_to_configured_dimensions() {
-        assert_media_refused(&b64(PIXEL), "wide.png");
+        let limits = crate::media::ImageLimits {
+            max_width: 4,
+            ..Default::default()
+        };
+        let (_, media) = read_fitted(&wide_png(), "wide.png", limits);
+        let bytes = b64(media[0].inline().unwrap());
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert!(img.width() <= 4 && img.height() <= 2_000);
     }
 
     #[test]
     fn oc_read_large_opaque_png_screenshots_as_jpeg() {
-        assert_media_refused(&b64(PIXEL), "screenshot.png");
-        assert_media_refused(b"\xff\xd8\xff\xe0\0\x10JFIF", "photo.jpg");
+        // The transcode itself is `media::tests::oc_image_stores_large_opaque_png_screenshots_as_jpeg`;
+        // a JPEG photo is read as JPEG media.
+        assert_media(b"\xff\xd8\xff\xe0\0\x10JFIF", "photo.jpg", "image/jpeg");
     }
 
     #[test]
     fn oc_read_keeps_fitting_pngs() {
-        assert_media_refused(&b64(PIXEL), "image.png");
+        let (_, media) = read_fitted(&b64(PIXEL), "image.png", Default::default());
+        assert_eq!(media[0].inline(), Some(PIXEL));
     }
 
     #[test]
     fn oc_read_png_candidates_at_base64_limit() {
-        assert_media_refused(&b64(PIXEL), "wide.png");
+        // See `media::tests::oc_image_accepts_png_candidates_at_the_exact_base64_limit_…`.
+        let limits = crate::media::ImageLimits {
+            max_width: 4,
+            max_base64_bytes: 1_024,
+            ..Default::default()
+        };
+        let (_, media) = read_fitted(&wide_png(), "wide.png", limits);
+        assert_eq!(media[0].mime, "image/png");
+        assert!(media[0].inline_len() <= 1_024);
     }
 
     #[test]
     fn oc_read_drops_images_that_cannot_fit_max_bytes() {
-        assert_media_refused(&b64(PIXEL), "pixel.png");
+        let limits = crate::media::ImageLimits {
+            max_base64_bytes: 1,
+            ..Default::default()
+        };
+        let (text, media) = read_fitted(&b64(PIXEL), "pixel.png", limits);
+        assert_eq!(
+            text,
+            "Image read successfully\n[1 image omitted: could not be resized below the image size limit.]"
+        );
+        assert!(media.is_empty());
     }
 
     #[test]
     fn oc_read_image_despite_misleading_extension() {
         // Detected by content, so a PNG named .bin is media, not binary.
-        assert_media_refused(&b64(PIXEL), "pixel.bin");
-        assert_media_refused(b"GIF89a\x01\0\x01\0", "anim.dat");
-        assert_media_refused(b"RIFF\x10\0\0\0WEBPVP8 ", "pic.data");
+        assert_media(&b64(PIXEL), "pixel.bin", "image/png");
+        assert_media(b"GIF89a\x01\0\x01\0", "anim.dat", "image/gif");
+        assert_media(b"RIFF\x10\0\0\0WEBPVP8 ", "pic.data", "image/webp");
     }
 
     #[test]
     fn oc_read_pdfs_as_media() {
-        assert_media_refused(&b64("JVBERi0xLjcK"), "document.pdf");
+        assert_media(&b64("JVBERi0xLjcK"), "document.pdf", "application/pdf");
     }
 
     #[test]
     fn oc_read_real_image_and_pdf_files() {
-        assert_media_refused(&b64(PIXEL), "pixel.png");
-        assert_media_refused(b"%PDF-1.7\ncontent", "document.pdf");
+        assert_media(&b64(PIXEL), "pixel.png", "image/png");
+        assert_media(b"%PDF-1.7\ncontent", "document.pdf", "application/pdf");
         // A media extension alone does not make text media.
         let env = Env::new();
         env.write("notes.png", "plain text");
-        assert_eq!(
-            read_path(&env.ctx(), "notes.png").unwrap().content,
-            "Read file notes.png, lines 1-1\n1: plain text"
-        );
+        let out = read_path(&env.ctx(), "notes.png").unwrap();
+        assert_eq!(out.content, "Read file notes.png, lines 1-1\n1: plain text");
+        assert!(out.media.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

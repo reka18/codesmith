@@ -26,14 +26,14 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |
 |---|---:|---:|---:|---:|
-| OpenAI Chat | 115 | 15 | 28 | 72 |
-| OpenAI Responses | 159 | 20 | 23 | 116 |
-| Anthropic Messages | 95 | 9 | 15 | 71 |
-| Gemini | 61 | 12 | 15 | 34 |
+| OpenAI Chat | 115 | 15 | 40 | 60 |
+| OpenAI Responses | 159 | 20 | 34 | 105 |
+| Anthropic Messages | 95 | 9 | 19 | 67 |
+| Gemini | 61 | 12 | 22 | 27 |
 | Shared | 56 | 10 | 10 | 36 |
-| **Total** | **486** | **66** | **91** | **329** |
+| **Total** | **486** | **66** | **125** | **295** |
 
-Of the gaps, 302 are missing provider features (the roadmap) and
+Of the gaps, 268 are missing provider features (the roadmap) and
 27 are by design or not applicable.
 
 Where a ported case drops part of an OpenCode test (a feature CodeSmith lacks,
@@ -121,6 +121,29 @@ Gemini (`gemini.rs`)
   `MISSING_THOUGHT_SIGNATURE` finishes are errors; in-stream errors are
   classified by status.
 
+Media (`lib.rs` and every protocol; the 34 cases in the `*_media` tests)
+- `Part::Media` (user attachments) and `media` on `Part::ToolResult` (images
+  and files a tool returned, such as `read` on a PNG or PDF), each a MIME type
+  plus inline base64 or a URL. Both are additive in the stored JSON: results
+  without media omit the key, and sessions stored before it still load.
+- OpenAI Chat: images (and video) as `image_url`/`video_url` parts by URL or
+  data URL, PDFs as inline `file` parts (`document.pdf` by default);
+  tool-result media follows the tool messages as one user message (after the
+  Mistral `Done.` bridge). PDFs by URL and other media types are rejected.
+- Responses: `input_image`, `input_file` (inline `file_data` with a filename,
+  or `file_url`) and `input_video`, in user messages and as structured
+  `function_call_output` arrays; nothing is rejected.
+- Anthropic: `image` and `document` blocks (base64, http(s) URL, plain text
+  documents; PDF titles from the filename), inside `tool_result` content for
+  tool media. Other types are rejected.
+- Gemini: `inlineData` (and `fileData` for http(s) video) in user turns;
+  tool media nests inside `functionResponse.parts`, except on Gemini 2.5 and
+  for `fileData`, which go to a following `Attached media from tool result:`
+  user turn shared by a batch of results.
+- Rejections are a new `Error::Invalid`, raised by `check` before anything is
+  sent, so a session fails fast and never retries them.
+- `normalize_tool_history` keeps a media-only result's empty text.
+
 Shared (`lib.rs`, `schema.rs`)
 - `normalize_tool_history` runs before every request: a call without a result
   gets an error result (`Tool result missing`) before the next assistant turn,
@@ -158,7 +181,12 @@ Shared (`lib.rs`, `schema.rs`)
 - `tool-schema-projection` "declares every tool schema root as an object" and
   "selects tool schema handling from the model name …": the explicit
   `sanitizer` override cases are omitted.
-- `tool-history` cases: media and provider-executed parts are omitted.
+- `tool-history` cases: provider-executed parts are omitted.
+- Media: "continues a conversation with user media content" checks the
+  request only; the Gemini cases send `{"output": …}` (as above); "bridges
+  image tool results …" uses a Mistral model where OpenCode sets an explicit
+  compatibility flag; "forwards native video URLs …" covers generateContent,
+  not Interactions.
 
 ## Deliberate differences
 
@@ -170,59 +198,6 @@ Shared (`lib.rs`, `schema.rs`)
 - Gemini prompt blocks without candidates are an error naming the block reason.
 
 ## Roadmap: provider features CodeSmith lacks
-
-
-### Image, PDF and video parts (41 tests)
-
-`Part` has no media variant, so user attachments and image/file tool results (screenshots, `read` on an image) cannot be sent; every protocol lowers them differently (vision parts, `input_image`/`input_file`, `inlineData`, nested function-response media).
-
-_OpenAI Chat 12, OpenAI Responses 13, Anthropic Messages 8, Gemini 8._
-
-<details><summary>Tests</summary>
-
-- `openai-chat` — continues image tool results as vision input without base64 text
-- `openai-chat` — bridges image tool results before their synthetic user message when required
-- `openai-chat` — orders parallel tool responses before one aggregated vision message
-- `openai-chat` — passes encoded image media through without local validation
-- `openai-chat` — preserves HTTP and HTTPS image URLs in user content
-- `openai-chat` — preserves remote image URLs from tool results
-- `openai-chat` — rejects non-image media that cannot be lowered
-- `openai-chat` — lowers inline PDFs as file parts
-- `openai-chat` — moves PDFs from tool results into a follow-up user message
-- `openai-chat` — requires inline data for PDF files
-- `openai-chat` — prepares raw and data URL image media as vision input
-- `openai-compatible-chat` — serializes user and tool video for unknown compatible providers
-- `openai-responses` — lowers image tool-result content as structured input_image items
-- `openai-responses` — lowers single-image tool-result content as structured input_image array
-- `openai-responses` — lowers PDF tool-result content as structured input_file array
-- `openai-responses` — passes large PDF tool-result content through
-- `openai-responses` — uses standard inline file encoding for xAI PDF tool results
-- `openai-responses` — passes non-image tool-result content through as an input file
-- `openai-responses` — lowers remote tool-result media URLs without base64 wrapping
-- `openai-responses` — lowers Responses video by provider and preserves ordered tool results
-- `openai-responses` — replays assistant media parts as portable user image input
-- `openai-responses` — lowers user image and PDF content
-- `openai-responses` — uses standard inline file encoding for xAI user PDFs
-- `openai-responses` — passes non-image user media through as an input file
-- `openai-responses` — lowers remote user media URLs without base64 wrapping
-- `anthropic-messages` — lowers media tool-result content as structured blocks
-- `anthropic-messages` — lowers single-image tool-result content as a structured image block
-- `anthropic-messages` — rejects tool-result media that cannot be lowered
-- `anthropic-messages` — lowers per-part Anthropic media options from provider metadata
-- `anthropic-messages` — rejects invalid per-part Anthropic media options
-- `anthropic-messages` — serializes Messages video inputs
-- `anthropic-messages` — moves Meta tool result videos after consecutive results
-- `anthropic-messages` — continues a conversation with user media content
-- `gemini` — prepares multimodal user input and tool history
-- `gemini` — continues media tool results as inline model input without base64 text
-- `gemini` — strips matching data URLs to raw base64 inlineData
-- `gemini` — nests media inside function responses for gemini 3
-- `gemini` — forwards native video URLs in user and tool input
-- `gemini` — collects legacy tool media into one turn after merged responses
-- `gemini` — passes encoded media through without local validation
-- `gemini` — replays generated assistant media as model inline data
-
-</details>
 
 
 ### Provider options (reasoning effort, thinking, service tier, verbosity, generation options) (41 tests)
@@ -577,6 +552,28 @@ _Gemini 11._
 - `gemini` — fails a continuation without a token
 - `gemini` — does not continue a length finish
 - `gemini` — reports the first request's input with all output
+
+</details>
+
+
+### Image, PDF and video parts (7 tests)
+
+Media in user messages and tool results is supported (see "Fixes made while
+porting"). What is left: assistant-authored media (generated images replayed),
+per-part provider options (Anthropic `file_id`, citations, transformations),
+and video beyond URLs and inline parts on Chat, Responses and Gemini.
+
+_OpenAI Responses 2, Anthropic Messages 4, Gemini 1._
+
+<details><summary>Tests</summary>
+
+- `openai-responses` — lowers Responses video by provider and preserves ordered tool results
+- `openai-responses` — replays assistant media parts as portable user image input
+- `anthropic-messages` — lowers per-part Anthropic media options from provider metadata
+- `anthropic-messages` — rejects invalid per-part Anthropic media options
+- `anthropic-messages` — serializes Messages video inputs
+- `anthropic-messages` — moves Meta tool result videos after consecutive results
+- `gemini` — replays generated assistant media as model inline data
 
 </details>
 

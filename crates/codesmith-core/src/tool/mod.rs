@@ -94,6 +94,8 @@ pub struct Output {
     pub content: String,
     /// The tool already bounded its output; skip generic truncation.
     pub bounded: bool,
+    /// Images and files for the model to see beside the text.
+    pub media: Vec<codesmith_ai::Media>,
 }
 
 impl Output {
@@ -101,14 +103,32 @@ impl Output {
         Output {
             content: s.into(),
             bounded: false,
+            media: vec![],
         }
     }
     pub fn bounded(s: impl Into<String>) -> Self {
         Output {
             content: s.into(),
             bounded: true,
+            media: vec![],
         }
     }
+    /// Text with media attached (already bounded).
+    pub fn media(s: impl Into<String>, media: Vec<codesmith_ai::Media>) -> Self {
+        Output {
+            content: s.into(),
+            bounded: true,
+            media,
+        }
+    }
+}
+
+/// A finished tool call: its text, whether it failed, and any media.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Executed {
+    pub content: String,
+    pub is_error: bool,
+    pub media: Vec<codesmith_ai::Media>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,27 +246,40 @@ impl Tool {
 
 /// Run a named tool with generic input repair and output truncation.
 pub async fn execute(ctx: &Ctx<'_>, name: &str, input: &Value) -> (String, bool) {
+    let r = run(ctx, name, input).await;
+    (r.content, r.is_error)
+}
+
+/// Run a built-in tool, keeping any media it returned (`read` on an image
+/// or PDF). The caller fits images to the configured limits.
+pub async fn run(ctx: &Ctx<'_>, name: &str, input: &Value) -> Executed {
+    let fail = |content: String| Executed {
+        content,
+        is_error: true,
+        media: vec![],
+    };
     let Some(tool) = Tool::from_name(name) else {
         let known: Vec<&str> = ALL.iter().map(|t| t.name()).collect();
-        return (
-            format!(
-                "Unknown tool: {name}. Available tools: {}",
-                known.join(", ")
-            ),
-            true,
-        );
+        return fail(format!(
+            "Unknown tool: {name}. Available tools: {}",
+            known.join(", ")
+        ));
     };
     let input = repair(input);
     if let Some(raw) = input.get("__invalid_json") {
-        return (format!("The tool input was not valid JSON: {raw}"), true);
+        return fail(format!("The tool input was not valid JSON: {raw}"));
     }
     match tool.run(ctx, &input).await {
-        Ok(out) if out.bounded => (out.content, false),
-        Ok(out) => (
-            truncate(&out.content, ctx.limits, &paths::tool_output_dir()),
-            false,
-        ),
-        Err(e) => (e, true),
+        Ok(out) => Executed {
+            content: if out.bounded {
+                out.content
+            } else {
+                truncate(&out.content, ctx.limits, &paths::tool_output_dir())
+            },
+            is_error: false,
+            media: out.media,
+        },
+        Err(e) => fail(e),
     }
 }
 

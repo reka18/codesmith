@@ -179,6 +179,11 @@ pub struct App {
     dismissed: Option<String>,
     /// Ctrl+X was pressed: the next key is a leader command.
     leader: bool,
+    /// Pasted image and PDF paths, attached on submit while their
+    /// placeholder is still in the prompt.
+    pub attachments: Vec<super::attach::Pending>,
+    /// Where pasted relative paths resolve.
+    pub cwd: std::path::PathBuf,
 }
 
 pub const HELP: &str = "Enter send · Shift/Alt+Enter or Ctrl+J newline · ↑/↓ lines, then history
@@ -385,8 +390,17 @@ impl App {
             }
             Some(Modal::Help) => {}
             None => {
-                self.input
-                    .insert_str(&s.replace("\r\n", "\n").replace('\r', "\n"));
+                if let Some(files) = super::attach::pasted_files(s, &self.cwd) {
+                    for path in files {
+                        let label = super::attach::label(&self.attachments, &path);
+                        self.input.insert_str(&format!("{label} "));
+                        self.attachments
+                            .push(super::attach::Pending { label, path });
+                    }
+                } else {
+                    self.input
+                        .insert_str(&s.replace("\r\n", "\n").replace('\r', "\n"));
+                }
                 self.edited();
             }
         }
@@ -1212,6 +1226,10 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                 (Role::User, Part::Text(t)) => {
                     out.push(Entry::User(super::attach::typed(t).to_string()))
                 }
+                (Role::User, Part::Media(m)) => out.push(Entry::Notice(format!(
+                    "attached {}",
+                    codesmith_core::media::label(m)
+                ))),
                 (Role::Assistant, Part::Text(t)) => out.push(Entry::Assistant(t.clone())),
                 (Role::Assistant, Part::Reasoning(t)) => out.push(Entry::Reasoning(t.clone())),
                 (Role::Assistant, Part::ToolCall { id, name, input }) => {
@@ -1229,6 +1247,7 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                         name,
                         content,
                         is_error,
+                        ..
                     },
                 ) => {
                     if let Some(Entry::Tool(t)) = out.iter_mut().rev().find(|e| {
@@ -1280,6 +1299,7 @@ mod replay_tests {
                     name: "read".into(),
                     content: "Read file a.rs, lines 1-2".into(),
                     is_error: false,
+                    media: vec![],
                 }],
             },
             Message::user("<shell id=\"shell_1\" state=\"completed\" command=\"x\">\nok\n</shell>"),

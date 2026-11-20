@@ -5,8 +5,9 @@
 //! (`<id>~<signature>`), so stored conversations need no extra fields.
 
 use crate::{
-    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
-    Event, EventStream, Message, Part, Provider, Request, Role, Usage,
+    all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
+    stream_error, Decoder, Error, Event, EventStream, Media, MediaKind, Message, Part, Provider,
+    Request, Role, Usage,
 };
 use serde_json::{json, Map, Value};
 
@@ -38,7 +39,42 @@ pub fn omits_call_ids(model: &str) -> bool {
     major.parse::<u32>().is_ok_and(|n| n < 3)
 }
 
-fn parts(m: &Message, omit_ids: bool) -> Vec<Value> {
+/// Gemini 2.5 rejects media nested in function responses; it gets the media
+/// in a user turn after them instead.
+fn legacy_tool_media(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.match_indices("gemini-2").any(|(i, _)| {
+        let rest = &m[i + "gemini-2".len()..];
+        let mut c = rest.chars();
+        matches!(c.next(), Some('.' | '-'))
+            && c.next() == Some('5')
+            && matches!(c.next(), None | Some('.' | '-'))
+    })
+}
+
+/// An `inlineData` part, or `fileData` for http(s) video. `None` for media
+/// [`check`] rejects.
+fn media_part(m: &Media) -> Option<Value> {
+    if let Some(url) = m.remote() {
+        let http = url.starts_with("http://") || url.starts_with("https://");
+        return (http && m.kind() == MediaKind::Video)
+            .then(|| json!({"fileData": {"mimeType": m.mime, "fileUri": url}}));
+    }
+    Some(json!({"inlineData": {"mimeType": m.mime, "data": m.inline()?}}))
+}
+
+/// Media generateContent cannot carry: URLs other than http(s) video.
+pub fn check(req: &Request) -> Result<(), Error> {
+    if all_media(req).any(|m| media_part(m).is_none()) {
+        return Err(inline_required("Gemini"));
+    }
+    Ok(())
+}
+
+/// The parts of one message. Tool-result media is nested in its function
+/// response, or (legacy models, and `fileData`, which nested is accepted
+/// but not seen) added to `pending` for a user turn of its own.
+fn parts(m: &Message, omit_ids: bool, legacy: bool, pending: &mut Vec<Value>) -> Vec<Value> {
     let mut out = Vec::new();
     // A parallel batch may carry one signature, on its first call; unsigned
     // siblings after it are valid as they are.
@@ -46,6 +82,7 @@ fn parts(m: &Message, omit_ids: bool) -> Vec<Value> {
     for p in &m.parts {
         match p {
             Part::Text(t) if !t.is_empty() => out.push(json!({"text": t})),
+            Part::Media(media) => out.extend(media_part(media)),
             Part::ToolCall { id, name, input } => {
                 let (base, sig) = split_id(id);
                 let mut call = json!({"name": name, "args": if input.is_object() { input.clone() } else { json!({}) }});
@@ -68,11 +105,23 @@ fn parts(m: &Message, omit_ids: bool) -> Vec<Value> {
                 name,
                 content,
                 is_error,
+                media,
             } => {
                 let key = if *is_error { "error" } else { "output" };
                 let mut r = json!({"name": name, "response": {key: content}});
                 if !omit_ids {
                     r["id"] = json!(split_id(id).0);
+                }
+                let mut nested = Vec::new();
+                for v in media.iter().filter_map(media_part) {
+                    if legacy || v.get("fileData").is_some() {
+                        pending.push(v);
+                    } else {
+                        nested.push(v);
+                    }
+                }
+                if !nested.is_empty() {
+                    r["parts"] = json!(nested);
                 }
                 out.push(json!({ "functionResponse": r }));
             }
@@ -90,8 +139,20 @@ fn is_response_turn(c: &Value) -> bool {
 
 pub fn body(req: &Request) -> Value {
     let omit_ids = omits_call_ids(&req.model);
+    let legacy = legacy_tool_media(&req.model);
     let mut contents: Vec<Value> = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
+    let flush = |contents: &mut Vec<Value>, pending: &mut Vec<Value>| {
+        if !pending.is_empty() {
+            let mut ps = vec![json!({"text": "Attached media from tool result:"})];
+            ps.append(pending);
+            contents.push(json!({"role": "user", "parts": ps}));
+        }
+    };
     for m in &normalize_tool_history(&req.messages) {
+        if !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. })) {
+            flush(&mut contents, &mut pending);
+        }
         let role = if m.role == Role::User {
             "user"
         } else {
@@ -99,7 +160,7 @@ pub fn body(req: &Request) -> Value {
         };
         // Function responses get a user turn of their own: Gemini rejects a
         // function-response turn that carries other parts.
-        let (responses, rest): (Vec<Value>, Vec<Value>) = parts(m, omit_ids)
+        let (responses, rest): (Vec<Value>, Vec<Value>) = parts(m, omit_ids, legacy, &mut pending)
             .into_iter()
             .partition(|p| p.get("functionResponse").is_some());
         for (ps, responding) in [(responses, true), (rest, false)] {
@@ -114,6 +175,7 @@ pub fn body(req: &Request) -> Value {
             }
         }
     }
+    flush(&mut contents, &mut pending);
     let mut body = json!({"contents": contents});
     if !req.system.is_empty() {
         body["systemInstruction"] = json!({"parts": [{"text": req.system}]});
@@ -330,6 +392,7 @@ mod tests {
                     name: "read".into(),
                     content: "data".into(),
                     is_error: false,
+                    media: vec![],
                 }],
             },
             Message::user("<shell>done</shell>"),

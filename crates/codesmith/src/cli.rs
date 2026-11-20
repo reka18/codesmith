@@ -162,7 +162,8 @@ struct RunArgs {
     /// Agent to use (default: build).
     #[arg(long)]
     agent: Option<String>,
-    /// Attach a file's contents (repeatable).
+    /// Attach a file (repeatable): text is added to the message, images and
+    /// PDFs are sent for the model to see.
     #[arg(short, long = "file")]
     files: Vec<PathBuf>,
     /// Output format.
@@ -1414,7 +1415,22 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             message.push_str(piped.trim_end());
         }
     }
+    // Images and PDFs (by their bytes) are attached once the config, and so
+    // the image limits, is loaded.
+    let mut media_files = Vec::new();
     for f in &args.files {
+        let mut head = Vec::new();
+        {
+            use std::io::Read;
+            std::fs::File::open(f)
+                .with_context(|| format!("reading {}", f.display()))?
+                .take(16)
+                .read_to_end(&mut head)?;
+        }
+        if codesmith_core::media::detect(&head).is_some() {
+            media_files.push(f.clone());
+            continue;
+        }
         let text =
             std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?;
         message.push_str(&format!(
@@ -1423,7 +1439,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             text.trim_end()
         ));
     }
-    if message.trim().is_empty() {
+    if message.trim().is_empty() && media_files.is_empty() {
         return Err(anyhow!(
             "no message: pass one as an argument or pipe it on stdin"
         ));
@@ -1434,6 +1450,15 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         None => cwd,
     };
     let loaded = config::load(&cwd)?;
+    let mut media = Vec::new();
+    for f in &media_files {
+        let name = f.display().to_string();
+        match codesmith_core::media::attachment(f, &name, &loaded.config.media.image) {
+            Ok(Some(m)) => media.push(m),
+            Ok(None) => return Err(anyhow!("{name} is not an image or PDF")),
+            Err(e) => return Err(anyhow!(e)),
+        }
+    }
     let (mut agent_arg, mut model_arg) = (args.agent, args.model);
     let mut native: Option<(String, String)> = None;
     let mut mcp_prompt: Option<(command::Command, String)> = None;
@@ -1520,7 +1545,7 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
                 Err(e) => Err(e),
             }
         }
-        None => session.prompt(&message, &mut sink).await,
+        None => session.prompt_with(&message, media, &mut sink).await,
     };
     sink.done(
         &session.usage,

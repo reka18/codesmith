@@ -2,8 +2,9 @@
 
 use crate::gemini::split_id;
 use crate::{
-    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
-    Event, EventStream, Message, Part, Provider, Request, Role, Usage,
+    all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
+    stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Message,
+    Part, Provider, Request, Role, Usage,
 };
 use serde_json::{json, Value};
 
@@ -94,26 +95,33 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
     if !req.system.is_empty() {
         messages.push(json!({"role": "system", "content": req.system}));
     }
+    // Chat Completions has no media in tool messages: tool-result media is
+    // collected and sent as one user message after the tool messages.
+    let mut attachments: Vec<Value> = Vec::new();
     for m in &normalize_tool_history(&req.messages) {
-        if compat.mistral
-            && m.role == Role::User
-            && messages.last().is_some_and(|l: &Value| l["role"] == "tool")
-            && m.parts.iter().any(|p| matches!(p, Part::Text(_)))
+        if m.role == Role::Assistant {
+            flush_attachments(&mut messages, &mut attachments, compat);
+            messages.extend(convert(m, compat));
+            continue;
+        }
+        let mut rest = Vec::new();
+        for p in &m.parts {
+            match p {
+                Part::ToolResult {
+                    id, content, media, ..
+                } => {
+                    messages.push(json!({"role": "tool", "tool_call_id": compat.call_id(id), "content": content}));
+                    attachments.extend(media.iter().filter_map(lower_media));
+                }
+                other => rest.push(other.clone()),
+            }
+        }
+        if rest
+            .iter()
+            .any(|p| matches!(p, Part::Text(_) | Part::Media(_)))
         {
-            // Mistral wants an assistant turn between tool results and user text.
-            let (results, rest): (Vec<Part>, Vec<Part>) = m
-                .parts
-                .iter()
-                .cloned()
-                .partition(|p| matches!(p, Part::ToolResult { .. }));
-            messages.extend(convert(
-                &Message {
-                    role: Role::User,
-                    parts: results,
-                },
-                compat,
-            ));
-            messages.push(json!({"role": "assistant", "content": "Done."}));
+            flush_attachments(&mut messages, &mut attachments, compat);
+            bridge(&mut messages, compat);
             messages.extend(convert(
                 &Message {
                     role: Role::User,
@@ -121,10 +129,9 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
                 },
                 compat,
             ));
-            continue;
         }
-        messages.extend(convert(m, compat));
     }
+    flush_attachments(&mut messages, &mut attachments, compat);
     let mut body = json!({
         "model": req.model,
         "messages": messages,
@@ -157,24 +164,79 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
     body
 }
 
+/// Mistral wants an assistant turn between tool results and user content.
+fn bridge(messages: &mut Vec<Value>, compat: &Compat) {
+    if compat.mistral && messages.last().is_some_and(|l| l["role"] == "tool") {
+        messages.push(json!({"role": "assistant", "content": "Done."}));
+    }
+}
+
+fn flush_attachments(messages: &mut Vec<Value>, attachments: &mut Vec<Value>, compat: &Compat) {
+    if attachments.is_empty() {
+        return;
+    }
+    bridge(messages, compat);
+    messages.push(json!({"role": "user", "content": std::mem::take(attachments)}));
+}
+
+/// A media content part (after OpenCode's `lowerMedia`): PDFs as inline
+/// `file` parts, images and video by URL or data URL. `None` for media
+/// [`check`] rejects.
+fn lower_media(m: &Media) -> Option<Value> {
+    match m.kind() {
+        MediaKind::Pdf => Some(json!({"type": "file", "file": {
+            "filename": m.filename.as_deref().unwrap_or("document.pdf"),
+            "file_data": m.data_url()?,
+        }})),
+        MediaKind::Image => Some(json!({"type": "image_url", "image_url": {"url": m.location()}})),
+        MediaKind::Video => Some(json!({"type": "video_url", "video_url": {"url": m.location()}})),
+        _ => None,
+    }
+}
+
+/// Media Chat Completions cannot carry: PDFs by URL, and anything but
+/// images, video and PDFs.
+pub fn check(req: &Request) -> Result<(), Error> {
+    for m in all_media(req) {
+        match m.kind() {
+            MediaKind::Pdf if m.inline().is_none() => return Err(inline_required(ROUTE)),
+            MediaKind::Pdf | MediaKind::Image | MediaKind::Video => {}
+            _ => return Err(unsupported_media(ROUTE, m)),
+        }
+    }
+    Ok(())
+}
+
+const ROUTE: &str = "OpenAI Chat";
+
 fn convert(m: &Message, compat: &Compat) -> Vec<Value> {
     match m.role {
         Role::User => {
-            let mut out = Vec::new();
-            let mut text = Vec::new();
-            for p in &m.parts {
-                match p {
-                    Part::Text(t) => text.push(t.as_str()),
-                    Part::ToolResult { id, content, .. } => {
-                        out.push(json!({"role": "tool", "tool_call_id": compat.call_id(id), "content": content}));
-                    }
-                    _ => {}
-                }
+            let has_media = m.parts.iter().any(|p| matches!(p, Part::Media(_)));
+            if has_media {
+                let content: Vec<Value> = m
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        Part::Text(t) => Some(json!({"type": "text", "text": t})),
+                        Part::Media(media) => lower_media(media),
+                        _ => None,
+                    })
+                    .collect();
+                return vec![json!({"role": "user", "content": content})];
             }
-            if !text.is_empty() {
-                out.push(json!({"role": "user", "content": text.join("\n\n")}));
+            let text: Vec<&str> = m
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if text.is_empty() {
+                return vec![];
             }
-            out
+            vec![json!({"role": "user", "content": text.join("\n\n")})]
         }
         Role::Assistant => {
             let mut text = String::new();
@@ -530,6 +592,7 @@ mod tests {
                         name: "read".into(),
                         content: "data".into(),
                         is_error: false,
+                        media: vec![],
                     }],
                 },
             ],

@@ -67,7 +67,10 @@ session here, `-s ID` a specific one, `--prompt "..."` sends a first message):
   **↑/↓** choose, **Tab** completes, **Enter** runs the command or attaches
   the file, **Esc** closes the list. Like OpenCode, each `@path` that names a
   file is attached to the message as a Read tool result (a directory as its
-  listing), so the model sees it without a round trip.
+  listing, an image or PDF as itself), so the model sees it without a round
+  trip. Pasting the path of an image or PDF, as dragging a file into the
+  terminal does, inserts an `[Image 1]` or `[PDF 1]` placeholder; the file is
+  attached when you send the prompt (delete the placeholder to drop it).
 - **Transcript**: replies render as markdown: headings, bold/italic,
   inline code, links, lists and task lists, quotes, tables, and fenced code
   blocks with syntax highlighting. `edit` and `write` calls show a colored
@@ -102,7 +105,7 @@ codesmith run --agent plan "how should I restructure the config module?"
 |---|---|
 | `-m, --model provider/model` | Model to use (otherwise `model` from config) |
 | `--agent build\|plan\|<custom>` | `build` (default) can edit; `plan` is read-only. `general` and `explore` are subagents the model can delegate to |
-| `-f, --file PATH` | Attach a file's contents (repeatable) |
+| `-f, --file PATH` | Attach a file (repeatable): text goes into the message, images and PDFs are sent for the model to see |
 | `--format json` | One JSON object per event, for scripting |
 | `--auto` | Approve every permission request that no rule denies |
 | `--thinking` | Show the model's reasoning |
@@ -167,7 +170,7 @@ Other commands: `codesmith models`, `codesmith debug paths|config|model|agents|p
 
 | Tool | What it does |
 |---|---|
-| `read` | Read a file (numbered lines, paged) or list a directory |
+| `read` | Read a file (numbered lines, paged), an image or PDF (sent to the model as media, up to 20 MiB), or list a directory |
 | `write` | Create or overwrite a file |
 | `edit` | Exact find-and-replace, tolerant of typographic quotes, dashes and trailing whitespace; preserves CRLF/LF line endings |
 | `glob` | Find files by glob pattern, respecting `.gitignore` |
@@ -290,6 +293,38 @@ Cost needs prices, since nothing is fetched from a catalog: give a model a
 ```jsonc
 "models": { "claude-x": { "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 } } }
 ```
+
+## Images and PDFs
+
+`read` on a PNG, JPEG, GIF, WebP or PDF (recognized by its bytes, not its
+name), `@path` mentions of one, pasted paths and `run -f` send the file to the
+model natively: image and document blocks on Anthropic, `image_url` and
+`file` parts on OpenAI Chat (tool-result media follows the tool messages as a
+user message, since Chat has no images in tool results), `input_image` and
+`input_file` on Responses, `inlineData` on Gemini. Files over 20 MiB are
+refused. Images are fitted to 2000x2000 and 5 MiB of base64 before they are
+sent: larger ones are scaled down (and opaque screenshots re-encoded as JPEG
+when that is smaller); one that cannot be decoded or fitted is dropped with a
+note to the model. The limits are configurable:
+
+```jsonc
+"media": { "image": { "auto_resize": true, "max_width": 2000, "max_height": 2000, "max_base64_bytes": 5242880 } }
+```
+
+With no model catalog, CodeSmith assumes a model can see images and PDFs
+unless its config says otherwise (DeepSeek models are known to be text-only).
+For a model that cannot, give its input modalities as in OpenCode; the model
+then gets `ERROR: Cannot read "shot.png" (this model does not support image
+input). Inform the user.` in place of the file, while the session keeps the
+file, so switching to a vision model shows it again:
+
+```jsonc
+"models": { "qwen3-coder": { "modalities": { "input": ["text"], "output": ["text"] } } }
+// or ["text", "image"] for images without PDFs; "attachment": false also means text only
+```
+
+Once a conversation's images pass 25 MiB, the oldest are replaced by a note
+until 15 MiB remain.
 
 ## Worktrees
 

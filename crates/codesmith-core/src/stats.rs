@@ -793,6 +793,7 @@ mod tests {
                         name: "glob".into(),
                         content: "x".into(),
                         is_error: false,
+                        media: vec![],
                     }],
                 },
             },

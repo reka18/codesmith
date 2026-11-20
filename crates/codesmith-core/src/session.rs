@@ -473,7 +473,10 @@ impl Session {
         Request {
             model: self.model.model_id.clone(),
             system,
-            messages: runner::model_messages(&self.messages),
+            messages: crate::media::sendable(
+                &runner::model_messages(&self.messages),
+                self.model.input.as_deref(),
+            ),
             tools: self
                 .tools
                 .iter()
@@ -534,10 +537,25 @@ impl Session {
         text: &'a str,
         sink: &'a mut dyn Sink,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prompt_inner(text, sink))
+        Box::pin(self.prompt_inner(text, vec![], sink))
     }
 
-    async fn prompt_inner(&mut self, text: &str, sink: &mut dyn Sink) -> Result<()> {
+    /// A user turn with images or PDFs attached after the text.
+    pub fn prompt_with<'a>(
+        &'a mut self,
+        text: &'a str,
+        media: Vec<codesmith_ai::Media>,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.prompt_inner(text, media, sink))
+    }
+
+    async fn prompt_inner(
+        &mut self,
+        text: &str,
+        media: Vec<codesmith_ai::Media>,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
         // Subagents share the parent's turn snapshot.
         let mut snapshots = None;
         if self.parent.is_none()
@@ -564,7 +582,9 @@ impl Session {
             self.push(results)?;
         }
         self.turn.stopped = None;
-        self.push(Message::user(text))?;
+        let mut user = Message::user(text);
+        user.parts.extend(media.into_iter().map(Part::Media));
+        self.push(user)?;
         let plugins = crate::plugin::active();
         plugins.event(
             &self.loaded.config,
@@ -685,6 +705,7 @@ impl Session {
                                 name: name.clone(),
                                 content: runner::TOOLS_INTERRUPTED.into(),
                                 is_error: true,
+                                media: Vec::new(),
                             })
                             .collect(),
                     })?;
@@ -735,6 +756,7 @@ impl Session {
                         name,
                         content: runner::TOOLS_INTERRUPTED.into(),
                         is_error: true,
+                        media: Vec::new(),
                     });
                     continue;
                 }
@@ -765,6 +787,7 @@ impl Session {
                     ));
                 }
                 self.turn.declined.store(false, Ordering::SeqCst);
+                let mut media = Vec::new();
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
                     _ if final_step => (runner::TOOLS_DISABLED.into(), true),
@@ -808,7 +831,9 @@ impl Session {
                             format: self.format.clone(),
                             lsp: self.lsp.clone(),
                         };
-                        tool::execute(&ctx, &name, &input).await
+                        let r = tool::run(&ctx, &name, &input).await;
+                        media = r.media;
+                        (r.content, r.is_error)
                     }
                 };
                 let (mut content, mut is_error) = (content, is_error);
@@ -818,6 +843,12 @@ impl Session {
                     self.turn.stopped = Some("you declined a tool call");
                 }
                 plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
+                let (media, notes) =
+                    crate::media::fit_tool_media(media, &self.loaded.config.media.image);
+                for note in notes {
+                    content.push('\n');
+                    content.push_str(&note);
+                }
                 self.record(&Record::Tool {
                     name: name.clone(),
                     ms: started.elapsed().as_millis() as u64,
@@ -839,6 +870,7 @@ impl Session {
                     name,
                     content,
                     is_error,
+                    media,
                 });
             }
             self.push(Message {

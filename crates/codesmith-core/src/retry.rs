@@ -234,6 +234,8 @@ pub fn classify(e: &Error) -> Class {
         // here is a frame that could not be parsed.
         Error::Decode(body) if body.trim_start().starts_with('{') => classify_failure(None, body),
         Error::Decode(_) => Class::InvalidOutput,
+        // Rejected before sending (e.g. media the protocol cannot carry).
+        Error::Invalid(_) => Class::InvalidRequest,
         // An error a provider reported inside its stream, already judged
         // retryable or not by the protocol; its text refines the class.
         Error::Provider { message, retryable } => match classify_failure(None, message) {

@@ -203,6 +203,7 @@ pub fn model_messages(history: &[Message]) -> Vec<Message> {
                 name: name.to_string(),
                 content: interrupted(name),
                 is_error: true,
+                media: Vec::new(),
             })
             .collect();
         if missing.is_empty() {
@@ -238,6 +239,7 @@ pub fn unsettled(history: &[Message]) -> Option<Message> {
                 name: name.clone(),
                 content: interrupted(name),
                 is_error: true,
+                media: Vec::new(),
             }),
             _ => None,
         })
@@ -271,6 +273,7 @@ mod tests {
             name: "echo".into(),
             content: "ok".into(),
             is_error: false,
+            media: Vec::new(),
         }
     }
 
@@ -311,12 +314,14 @@ mod tests {
                     id: "a".into(),
                     name: "echo".into(),
                     content: "Tool execution interrupted: echo".into(),
+                    media: Vec::new(),
                     is_error: true
                 },
                 Part::ToolResult {
                     id: "b".into(),
                     name: "echo".into(),
                     content: "Tool execution interrupted: echo".into(),
+                    media: Vec::new(),
                     is_error: true
                 },
             ]

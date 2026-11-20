@@ -188,16 +188,30 @@ fn estimate_one(m: &Message) -> u64 {
         .map(|p| match p {
             Part::Text(t) | Part::Reasoning(t) => t.len(),
             Part::ToolCall { name, input, .. } => name.len() + input.to_string().len(),
-            Part::ToolResult { content, .. } => content.len(),
+            Part::ToolResult { content, media, .. } => {
+                content.len() + media.iter().map(media_chars).sum::<usize>()
+            }
+            Part::Media(m) => media_chars(m),
         })
         .sum();
     (chars as u64).div_ceil(4)
 }
 
+/// Characters a media part is counted as: an image as about 1,600 tokens
+/// (a full-size image on most providers), a PDF by its size.
+fn media_chars(m: &codesmith_ai::Media) -> usize {
+    match m.kind() {
+        codesmith_ai::MediaKind::Image => 6_400,
+        _ => (m.inline_len() / 10).max(6_400),
+    }
+}
+
 /// A user message that starts a new exchange (not a batch of tool results).
 pub fn starts_turn(m: &Message) -> bool {
     m.role == Role::User
-        && m.parts.iter().any(|p| matches!(p, Part::Text(_)))
+        && m.parts
+            .iter()
+            .any(|p| matches!(p, Part::Text(_) | Part::Media(_)))
         && !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. }))
 }
 
@@ -250,7 +264,7 @@ pub fn clip(text: &str, max: usize) -> String {
 }
 
 /// History prepared for the summary request: reasoning dropped, long tool
-/// inputs and outputs clipped.
+/// inputs and outputs clipped, media named instead of sent.
 pub fn for_summary(messages: &[Message]) -> Vec<Message> {
     messages
         .iter()
@@ -266,12 +280,18 @@ pub fn for_summary(messages: &[Message]) -> Vec<Message> {
                         name,
                         content,
                         is_error,
+                        media,
                     } => Part::ToolResult {
                         id: id.clone(),
                         name: name.clone(),
-                        content: clip(content, CLIP),
+                        content: std::iter::once(clip(content, CLIP))
+                            .chain(media.iter().map(crate::media::label))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
                         is_error: *is_error,
+                        media: vec![],
                     },
+                    Part::Media(m) => Part::Text(crate::media::label(m)),
                     Part::Text(t) => Part::Text(clip(t, CLIP * 4)),
                     other => other.clone(),
                 })
@@ -330,6 +350,7 @@ mod tests {
                 name: "read".into(),
                 content: "x".repeat(n),
                 is_error: false,
+                media: vec![],
             }],
         }
     }

@@ -4,19 +4,53 @@
 use crate::gemini::split_id;
 use crate::{
     drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
-    Event, EventStream, Part, Provider, Request, Role, Usage,
+    Event, EventStream, Media, MediaKind, Part, Provider, Request, Role, Usage,
 };
 use serde_json::{json, Value};
+
+/// An `input_image` / `input_file` / `input_video` item (after OpenCode's
+/// open-responses `lowerMedia`); every media type lowers.
+fn lower_media(m: &Media) -> Value {
+    match (m.kind(), m.remote()) {
+        (MediaKind::Image, _) => json!({"type": "input_image", "image_url": m.location()}),
+        (MediaKind::Video, _) => json!({"type": "input_video", "video_url": m.location()}),
+        (_, Some(url)) => json!({"type": "input_file", "file_url": url}),
+        (kind, None) => json!({
+            "type": "input_file",
+            "filename": m.filename.as_deref().unwrap_or(if kind == MediaKind::Pdf { "document.pdf" } else { "file" }),
+            "file_data": m.location(),
+        }),
+    }
+}
 
 pub fn body(req: &Request) -> Value {
     let mut input = Vec::new();
     for m in &normalize_tool_history(&req.messages) {
+        // A user message with attachments is one message item, in order.
+        if m.role == Role::User && m.parts.iter().any(|p| matches!(p, Part::Media(_))) {
+            let content: Vec<Value> = m
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Text(t) => Some(json!({"type": "input_text", "text": t})),
+                    Part::Media(media) => Some(lower_media(media)),
+                    _ => None,
+                })
+                .collect();
+            for p in &m.parts {
+                if let Part::ToolResult { .. } = p {
+                    input.push(tool_output(p));
+                }
+            }
+            input.push(json!({"type": "message", "role": "user", "content": content}));
+            continue;
+        }
         for p in &m.parts {
             match (&m.role, p) {
                 (Role::User, Part::Text(t)) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]})),
                 (Role::Assistant, Part::Text(t)) if !t.trim().is_empty() => input.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]})),
                 (_, Part::ToolCall { id, name, input: args }) => input.push(json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})),
-                (_, Part::ToolResult { id, content, .. }) => input.push(json!({"type": "function_call_output", "call_id": split_id(id).0, "output": content})),
+                (_, Part::ToolResult { .. }) => input.push(tool_output(p)),
                 _ => {}
             }
         }
@@ -37,6 +71,26 @@ pub fn body(req: &Request) -> Value {
     }
     merge_body(&mut body, &req.body);
     body
+}
+
+/// A `function_call_output`; with media its output is a content array.
+fn tool_output(p: &Part) -> Value {
+    let Part::ToolResult {
+        id, content, media, ..
+    } = p
+    else {
+        return Value::Null;
+    };
+    let output = if media.is_empty() {
+        json!(content)
+    } else {
+        let text = (!content.is_empty()).then(|| json!({"type": "input_text", "text": content}));
+        json!(text
+            .into_iter()
+            .chain(media.iter().map(lower_media))
+            .collect::<Vec<_>>())
+    };
+    json!({"type": "function_call_output", "call_id": split_id(id).0, "output": output})
 }
 
 /// A function call between `output_item.added` and its completion.
@@ -309,6 +363,7 @@ mod tests {
                         name: "read".into(),
                         content: "data".into(),
                         is_error: false,
+                        media: vec![],
                     }],
                 },
             ],

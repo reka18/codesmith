@@ -136,7 +136,7 @@ impl Runner {
         }));
     }
 
-    fn submit(&mut self, shown: String, text: String) {
+    fn submit(&mut self, shown: String, text: String, media: Vec<codesmith_ai::Media>) {
         if self.app.busy {
             self.app
                 .notice("A turn is still running. Press Esc to interrupt it first.");
@@ -153,7 +153,7 @@ impl Runner {
         self.task = Some(tokio::spawn(async move {
             let mut sink = ChanSink::new(tx.clone(), cwd);
             let result = s
-                .prompt(&text, &mut sink)
+                .prompt_with(&text, media, &mut sink)
                 .await
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Ev::Done {
@@ -372,7 +372,7 @@ impl Runner {
                 if c.mcp.is_some() {
                     self.submit_command(shown, c, args.to_string());
                 } else {
-                    self.submit(shown, command::expand(&c.template, args));
+                    self.submit(shown, command::expand(&c.template, args), vec![]);
                 }
             }
         }
@@ -448,12 +448,32 @@ impl Runner {
             Ev::Key(k) => {
                 let result = match self.app.on_key(k) {
                     Some(Action::Submit(t)) => {
-                        let (sent, files) = attach::expand(&t, &self.cwd);
-                        self.submit(t, sent);
-                        if !files.is_empty() {
-                            self.app.notice(format!("attached {}", files.join(", ")));
+                        let limits = self.loaded.config.media.image;
+                        let pending = std::mem::take(&mut self.app.attachments);
+                        match attach::load(&pending, &t, &limits) {
+                            Ok(pasted) => {
+                                let mut e = attach::expand(&t, &self.cwd, &limits);
+                                e.media.extend(pasted);
+                                let mut names = e.files;
+                                names.extend(
+                                    pending
+                                        .iter()
+                                        .filter(|p| t.contains(&p.label))
+                                        .map(|p| p.label.clone()),
+                                );
+                                self.submit(t, e.text, e.media);
+                                if !names.is_empty() {
+                                    self.app.notice(format!("attached {}", names.join(", ")));
+                                }
+                                Ok(())
+                            }
+                            Err(err) => {
+                                // Keep the prompt and its attachments to fix and resend.
+                                self.app.input.set(t);
+                                self.app.attachments = pending;
+                                Err(anyhow::anyhow!(err))
+                            }
                         }
-                        Ok(())
                     }
                     Some(Action::Slash { name, args }) => self.slash(&name, &args),
                     Some(Action::Interrupt) => {
@@ -604,6 +624,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         .map(|(n, c)| (n, c.description.unwrap_or_default()))
         .collect();
     r.app.set_commands(&cmds);
+    r.app.cwd = r.cwd.clone();
     {
         let (tx, root) = (tx.clone(), r.cwd.clone());
         tokio::task::spawn_blocking(move || {
@@ -623,7 +644,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         r.app.notice(f);
     }
     if let Some(p) = opts.prompt.filter(|p| !p.trim().is_empty()) {
-        r.submit(p.clone(), p);
+        r.submit(p.clone(), p, vec![]);
     }
 
     let mut terminal = ratatui::init();

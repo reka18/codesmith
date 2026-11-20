@@ -13,6 +13,7 @@ categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
 async-stream.workspace = true
+base64.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true

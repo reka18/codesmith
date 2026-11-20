@@ -1,9 +1,13 @@
-//! `@path` mentions in a prompt. Like OpenCode, each mentioned file is
-//! attached to the message as if the Read tool had been called on it
-//! (directories get a listing), so the model sees the contents without a
-//! round trip.
+//! `@path` mentions and pasted file paths in a prompt. Like OpenCode, each
+//! mentioned file is attached to the message as if the Read tool had been
+//! called on it (directories get a listing, images and PDFs are attached as
+//! media), so the model sees the contents without a round trip. Pasting the
+//! path of an image or PDF (dragging it into the terminal) inserts an
+//! `[Image 1]` placeholder whose file is attached when the prompt is sent.
 
-use std::path::Path;
+use codesmith_ai::Media;
+use codesmith_core::media::ImageLimits;
+use std::path::{Path, PathBuf};
 
 /// Lines attached per file, as the Read tool's default page.
 const MAX_LINES: usize = 2000;
@@ -83,16 +87,42 @@ fn read_text(path: &str, text: &str) -> String {
     out.join("\n")
 }
 
-/// The prompt as sent: the text followed by each mentioned file's contents.
+/// A prompt ready to send: the text with mentioned files' contents, the
+/// images and PDFs to attach, and the mentions that were found.
+#[derive(Debug, Default)]
+pub struct Expanded {
+    pub text: String,
+    pub media: Vec<Media>,
+    pub files: Vec<String>,
+}
+
+/// The prompt as sent: the text followed by each mentioned file's contents;
+/// mentioned images and PDFs are attached as media (and say so in the text).
 /// Returns the text unchanged when nothing is mentioned.
-pub fn expand(text: &str, cwd: &Path) -> (String, Vec<String>) {
+pub fn expand(text: &str, cwd: &Path, limits: &ImageLimits) -> Expanded {
     let found = mentions(text, cwd);
     let mut out = text.to_string();
+    let mut media = Vec::new();
     for m in &found {
         let abs = cwd.join(m);
         let shown = abs.display().to_string();
+        let attached = if abs.is_dir() {
+            Ok(None)
+        } else {
+            codesmith_core::media::attachment(&abs, m, limits)
+        };
         let body = if abs.is_dir() {
             listing(&abs)
+        } else if let Err(e) = attached {
+            e
+        } else if let Ok(Some(file)) = attached {
+            let note = if file.kind() == codesmith_ai::MediaKind::Pdf {
+                "PDF read successfully"
+            } else {
+                "Image read successfully"
+            };
+            media.push(file);
+            note.to_string()
         } else {
             match std::fs::read(&abs) {
                 Ok(bytes) if bytes.contains(&0) => {
@@ -107,7 +137,134 @@ pub fn expand(text: &str, cwd: &Path) -> (String, Vec<String>) {
         out.push('\n');
         out.push_str(&body);
     }
-    (out, found)
+    Expanded {
+        text: out,
+        media,
+        files: found,
+    }
+}
+
+/// A file waiting to be attached, shown in the prompt as `label`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub label: String,
+    pub path: PathBuf,
+}
+
+/// Images and PDFs, by extension, as OpenCode decides for pasted paths.
+fn is_media_path(p: &Path) -> bool {
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf"
+    )
+}
+
+/// A `file://` URL as a path (local host only).
+fn file_url(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("file://")?;
+    let path = match rest.strip_prefix("localhost") {
+        Some(p) => p,
+        None if rest.starts_with('/') => rest,
+        None => return None,
+    };
+    let mut out = Vec::new();
+    let b = path.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok()?;
+            let v = u8::from_str_radix(hex, 16).ok()?;
+            if v == b'/' || v == b'\\' {
+                return None;
+            }
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Split pasted text into paths: whitespace separates them, quotes and
+/// backslash escapes keep spaces (what terminals paste for dropped files),
+/// and `file://` URLs are decoded. `None` for unbalanced quotes or more
+/// than 32 paths.
+fn split_paths(text: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    let push = |cur: &mut String, out: &mut Vec<String>| {
+        if !cur.is_empty() {
+            out.push(file_url(cur).unwrap_or_else(|| cur.clone()));
+            cur.clear();
+        }
+    };
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') if chars.peek().is_some() => cur.push(chars.next().unwrap()),
+            (Some(_), c) => cur.push(c),
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '\\') if chars.peek().is_some() => cur.push(chars.next().unwrap()),
+            (None, c) if c.is_whitespace() => push(&mut cur, &mut out),
+            (None, c) => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    push(&mut cur, &mut out);
+    (out.len() <= 32).then_some(out)
+}
+
+/// The image and PDF files a paste names, resolved against `cwd`, when the
+/// paste is nothing but such paths; `None` means it is ordinary text.
+pub fn pasted_files(text: &str, cwd: &Path) -> Option<Vec<PathBuf>> {
+    let text = text.trim();
+    if text.is_empty() || text.starts_with("http://") || text.starts_with("https://") {
+        return None;
+    }
+    let paths = split_paths(text)?;
+    let files: Vec<PathBuf> = paths.iter().map(|p| cwd.join(p)).collect();
+    (!files.is_empty() && files.iter().all(|f| f.is_file() && is_media_path(f))).then_some(files)
+}
+
+/// The placeholder for the next attachment of `path`'s kind: `[Image N]` or
+/// `[PDF N]`, numbered after those already pending.
+pub fn label(pending: &[Pending], path: &Path) -> String {
+    let pdf = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    let kind = if pdf { "PDF" } else { "Image" };
+    let n = pending
+        .iter()
+        .filter(|p| p.label.starts_with(&format!("[{kind} ")))
+        .count();
+    format!("[{kind} {}]", n + 1)
+}
+
+/// Load the pending attachments whose placeholder is still in `text`.
+pub fn load(pending: &[Pending], text: &str, limits: &ImageLimits) -> Result<Vec<Media>, String> {
+    let mut out = Vec::new();
+    for p in pending.iter().filter(|p| text.contains(&p.label)) {
+        let name = p
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.path.display().to_string());
+        match codesmith_core::media::attachment(&p.path, &name, limits)? {
+            Some(m) => out.push(m),
+            None => return Err(format!("{name} is not an image or PDF")),
+        }
+    }
+    Ok(out)
 }
 
 /// The text the user typed, without attachments.
@@ -126,7 +283,8 @@ mod tests {
         std::fs::write(d.path().join("src/a.rs"), "fn a() {}\n").unwrap();
         let text = "explain @src/a.rs, and @src and @missing.rs";
         assert_eq!(mentions(text, d.path()), vec!["src/a.rs", "src"]);
-        let (sent, files) = expand(text, d.path());
+        let e = expand(text, d.path(), &ImageLimits::default());
+        let (sent, files) = (e.text, e.files);
         assert_eq!(files.len(), 2);
         assert!(sent.starts_with(text));
         assert!(
@@ -136,8 +294,90 @@ mod tests {
         assert!(sent.contains("\"filePath\""));
         assert!(sent.ends_with("a.rs"), "directory listing last: {sent}");
         assert_eq!(typed(&sent), text);
-        let (plain, none) = expand("no mentions", d.path());
-        assert_eq!(plain, "no mentions");
-        assert!(none.is_empty());
+        let plain = expand("no mentions", d.path(), &ImageLimits::default());
+        assert_eq!(plain.text, "no mentions");
+        assert!(plain.files.is_empty() && plain.media.is_empty());
+    }
+
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    fn pixel(path: &Path) {
+        use base64::Engine;
+        std::fs::write(
+            path,
+            base64::engine::general_purpose::STANDARD
+                .decode(PIXEL)
+                .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mentioned_images_and_pdfs_are_media() {
+        let d = tempfile::tempdir().unwrap();
+        pixel(&d.path().join("shot.png"));
+        std::fs::write(d.path().join("r.pdf"), b"%PDF-1.7\n").unwrap();
+        let e = expand(
+            "look at @shot.png and @r.pdf",
+            d.path(),
+            &ImageLimits::default(),
+        );
+        assert_eq!(e.media.len(), 2);
+        assert_eq!(e.media[0].inline(), Some(PIXEL));
+        assert_eq!(e.media[0].filename.as_deref(), Some("shot.png"));
+        assert_eq!(e.media[1].mime, "application/pdf");
+        assert!(e.text.contains("Image read successfully"));
+        assert!(e.text.contains("PDF read successfully"));
+        assert_eq!(typed(&e.text), "look at @shot.png and @r.pdf");
+    }
+
+    #[test]
+    fn pasted_paths_become_attachments() {
+        let d = tempfile::tempdir().unwrap();
+        pixel(&d.path().join("my shot.png"));
+        std::fs::write(d.path().join("r.pdf"), b"%PDF-1.7\n").unwrap();
+        std::fs::write(d.path().join("notes.txt"), "x").unwrap();
+        let abs = d.path().join("my shot.png");
+        // Terminals escape spaces, quote, or paste file URLs.
+        for paste in [
+            "my\\ shot.png".to_string(),
+            "'my shot.png'".to_string(),
+            format!("file://{}", abs.display().to_string().replace(' ', "%20")),
+        ] {
+            assert_eq!(
+                pasted_files(&paste, d.path()),
+                Some(vec![abs.clone()]),
+                "{paste}"
+            );
+        }
+        assert_eq!(
+            pasted_files("my\\ shot.png r.pdf", d.path()).unwrap().len(),
+            2
+        );
+        // Not only media files, missing files, URLs and prose stay text.
+        assert_eq!(pasted_files("notes.txt", d.path()), None);
+        assert_eq!(pasted_files("r.pdf notes.txt", d.path()), None);
+        assert_eq!(pasted_files("gone.png", d.path()), None);
+        assert_eq!(pasted_files("https://x.test/a.png", d.path()), None);
+        assert_eq!(pasted_files("fix the bug", d.path()), None);
+
+        let mut pending = Vec::new();
+        for f in ["my shot.png", "r.pdf", "my shot.png"] {
+            let path = d.path().join(f);
+            pending.push(Pending {
+                label: label(&pending, &path),
+                path,
+            });
+        }
+        let labels: Vec<&str> = pending.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["[Image 1]", "[PDF 1]", "[Image 2]"]);
+        let media = load(
+            &pending,
+            "compare [Image 1] with [PDF 1]",
+            &ImageLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(media.len(), 2, "[Image 2] was deleted from the prompt");
+        assert_eq!(media[0].filename.as_deref(), Some("my shot.png"));
     }
 }

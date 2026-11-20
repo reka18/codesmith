@@ -12,6 +12,7 @@ pub mod format;
 pub mod instructions;
 pub mod lsp;
 pub mod mcp;
+pub mod media;
 pub mod paths;
 pub mod permission;
 pub mod plugin;

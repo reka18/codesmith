@@ -14,8 +14,8 @@
 //! are decoded with each protocol's real `Decoder`.
 
 use crate::{
-    anthropic, decode_all, gemini, normalize_tool_history, openai, responses, schema, Error, Event,
-    Message, Part, Request, Role, ToolSpec, Usage,
+    anthropic, check, decode_all, gemini, normalize_tool_history, openai, responses, schema, Error,
+    Event, Media, Message, Part, Protocol, Request, Role, ToolSpec, Usage,
 };
 use serde_json::{json, Value};
 
@@ -71,6 +71,7 @@ fn result(id: &str, name: &str, content: &str) -> Part {
         name: name.into(),
         content: content.into(),
         is_error: false,
+        media: vec![],
     }
 }
 
@@ -80,7 +81,34 @@ fn error_result(id: &str, name: &str, content: &str) -> Part {
         name: name.into(),
         content: content.into(),
         is_error: true,
+        media: vec![],
     }
+}
+
+fn media_result(id: &str, name: &str, content: &str, media: Vec<Media>) -> Part {
+    Part::ToolResult {
+        id: id.into(),
+        name: name.into(),
+        content: content.into(),
+        is_error: false,
+        media,
+    }
+}
+
+/// A user message of text and media parts.
+fn attach(parts: Vec<Part>) -> Message {
+    Message {
+        role: Role::User,
+        parts,
+    }
+}
+
+fn media(m: Media) -> Part {
+    Part::Media(m)
+}
+
+fn data_url(url: &str) -> Media {
+    Media::from_data_url(url).unwrap()
 }
 
 fn req(model: &str, messages: Vec<Message>) -> Request {
@@ -2131,11 +2159,13 @@ fn tool_history() {
                 vec![calls, answered, results(vec![missing("unanswered")])]
             );
         }),
-        ("tool-history :: normalizes empty results without changing whitespace", || {
+        ("tool-history :: normalizes empty results without changing whitespace or media", || {
+            let png = Media::base64("image/png", "AQID");
             let got = normalize_tool_history(&[
-                asst(vec![call("text", "text", json!({})), call("error", "error", json!({})), call("whitespace", "whitespace", json!({}))]),
+                asst(vec![call("text", "text", json!({})), call("error", "error", json!({})), call("mixed", "mixed", json!({})), call("whitespace", "whitespace", json!({}))]),
                 results(vec![result("text", "text", "")]),
                 results(vec![error_result("error", "error", "")]),
+                results(vec![media_result("mixed", "mixed", "", vec![png.clone()])]),
                 results(vec![result("whitespace", "whitespace", "   ")]),
             ]);
             let parts: Vec<Part> = got[1..].iter().flat_map(|m| m.parts.clone()).collect();
@@ -2144,6 +2174,7 @@ fn tool_history() {
                 vec![
                     result("text", "text", "(no tool output)"),
                     error_result("error", "error", "(no tool output)"),
+                    media_result("mixed", "mixed", "", vec![png]),
                     result("whitespace", "whitespace", "   "),
                 ]
             );
@@ -2324,4 +2355,447 @@ async fn streaming_driver() {
         matches!(events.as_slice(), [Ok(Event::Finish { .. })]),
         "{events:?}"
     );
+}
+
+// ---- media ------------------------------------------------------------------
+
+fn png(data: &str) -> Media {
+    Media::base64("image/png", data)
+}
+
+fn pdf(data: &str) -> Media {
+    Media::base64("application/pdf", data)
+}
+
+fn invalid(protocol: Protocol, r: &Request) -> String {
+    match check(protocol, r) {
+        Err(Error::Invalid(m)) => m,
+        other => panic!("expected an invalid request, got {other:?}"),
+    }
+}
+
+/// The first Anthropic `tool_result` block.
+fn anthropic_tool_result(body: &Value) -> Value {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["content"].as_array().unwrap().clone())
+        .find(|b| b["type"] == "tool_result")
+        .unwrap()
+}
+
+/// The first Responses `function_call_output` item.
+fn responses_tool_output(body: &Value) -> Value {
+    body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["type"] == "function_call_output")
+        .cloned()
+        .unwrap()
+}
+
+#[test]
+fn openai_chat_media() {
+    run(&[
+        ("openai-chat :: continues image tool results as vision input without base64 text", || {
+            let r = req("gpt-4o-mini", vec![
+                asst(vec![call("call_image", "read", json!({"path": "pixel.png"}))]),
+                results(vec![media_result("call_image", "read", "Image read successfully", vec![data_url("data:image/png;base64,AAECAw==").named("pixel.png")])]),
+            ]);
+            let b = chat_at(COMPATIBLE, &r);
+            assert_eq!(b["messages"], json!([
+                {"role": "assistant", "content": null, "tool_calls": [{"id": "call_image", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"pixel.png\"}"}}]},
+                {"role": "tool", "tool_call_id": "call_image", "content": "Image read successfully"},
+                {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAECAw=="}}]},
+            ]));
+            assert!(!b["messages"].to_string().contains("\"content\":\"AAECAw==\""));
+        }),
+        ("openai-chat :: bridges image tool results before their synthetic user message when required (adapted: Mistral)", || {
+            let r = req("mistral-large-latest", vec![
+                asst(vec![call("call_image", "read", json!({}))]),
+                results(vec![media_result("call_image", "read", "", vec![png("AAECAw==").named("pixel.png")])]),
+            ]);
+            let b = chat_at(COMPATIBLE, &r);
+            let roles: Vec<&str> = b["messages"].as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
+            assert_eq!(roles, ["assistant", "tool", "assistant", "user"]);
+            assert_eq!(b["messages"][2], json!({"role": "assistant", "content": "Done."}));
+        }),
+        ("openai-chat :: orders parallel tool responses before one aggregated vision message", || {
+            let r = req("gpt-4o-mini", vec![
+                asst(vec![call("call_1", "read", json!({})), call("call_2", "read", json!({}))]),
+                results(vec![
+                    media_result("call_1", "read", "", vec![png("AAEC")]),
+                    media_result("call_2", "read", "", vec![Media::base64("image/jpeg", "/9j/")]),
+                ]),
+            ]);
+            let b = chat_at(COMPATIBLE, &r);
+            assert_eq!(b["messages"].as_array().unwrap()[1..], [
+                json!({"role": "tool", "tool_call_id": "call_1", "content": ""}),
+                json!({"role": "tool", "tool_call_id": "call_2", "content": ""}),
+                json!({"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAEC"}},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/"}},
+                ]}),
+            ]);
+        }),
+        ("openai-chat :: passes encoded image media through without local validation", || {
+            let r = req("gpt-4o-mini", vec![attach(vec![
+                media(png("not-base64")),
+                media(data_url("data:image/jpeg;base64,/9j/")),
+                media(Media::base64("image/svg+xml", "PHN2Zz4=")),
+            ])]);
+            assert!(check(Protocol::OpenaiChat, &r).is_ok());
+            assert_eq!(chat_at(COMPATIBLE, &r)["messages"], json!([{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,not-base64"}},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/"}},
+                {"type": "image_url", "image_url": {"url": "data:image/svg+xml;base64,PHN2Zz4="}},
+            ]}]));
+        }),
+        ("openai-chat :: preserves HTTP and HTTPS image URLs in user content", || {
+            let urls = ["https://example.com/image.png?size=64#preview", "http://example.com/image.jpg"];
+            let r = req("gpt-4o-mini", vec![attach(urls.iter().map(|u| media(Media::url("image/png", *u))).collect())]);
+            assert_eq!(chat_at(COMPATIBLE, &r)["messages"], json!([{"role": "user", "content": urls.iter().map(|u| json!({"type": "image_url", "image_url": {"url": u}})).collect::<Vec<_>>()}]));
+        }),
+        ("openai-chat :: preserves remote image URLs from tool results", || {
+            let url = "https://example.com/tool-image.png?version=2";
+            let r = req("gpt-4o-mini", vec![
+                user("Describe the image."),
+                asst(vec![call("call_image", "read_image", json!({}))]),
+                results(vec![media_result("call_image", "read_image", "Image attached.", vec![Media::url("image/png", url)])]),
+            ]);
+            let b = chat_at(COMPATIBLE, &r);
+            let ms = b["messages"].as_array().unwrap();
+            assert!(ms.contains(&json!({"role": "tool", "tool_call_id": "call_image", "content": "Image attached."})));
+            assert_eq!(ms.last().unwrap(), &json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}));
+        }),
+        ("openai-chat :: rejects non-image media that cannot be lowered", || {
+            let r = req("gpt-4o-mini", vec![attach(vec![media(Media::base64("audio/mpeg", "AAECAw=="))])]);
+            assert!(invalid(Protocol::OpenaiChat, &r).contains("OpenAI Chat does not support media type audio/mpeg"));
+        }),
+        ("openai-chat :: lowers inline PDFs as file parts", || {
+            let r = req("gpt-4o-mini", vec![attach(vec![
+                text("Summarize these."),
+                media(pdf("JVBERi0=").named("report.pdf")),
+                media(data_url("data:application/pdf;base64,JVBERi0=")),
+            ])]);
+            assert_eq!(chat_at(COMPATIBLE, &r)["messages"], json!([{"role": "user", "content": [
+                {"type": "text", "text": "Summarize these."},
+                {"type": "file", "file": {"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}},
+                {"type": "file", "file": {"filename": "document.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}},
+            ]}]));
+        }),
+        ("openai-chat :: moves PDFs from tool results into a follow-up user message", || {
+            let r = req("gpt-4o-mini", vec![
+                user("Read the report."),
+                asst(vec![call("call_pdf", "read", json!({}))]),
+                results(vec![media_result("call_pdf", "read", "PDF read successfully", vec![data_url("data:application/pdf;base64,JVBERi0=").named("report.pdf")])]),
+            ]);
+            let b = chat_at(COMPATIBLE, &r);
+            let ms = b["messages"].as_array().unwrap();
+            assert!(ms.contains(&json!({"role": "tool", "tool_call_id": "call_pdf", "content": "PDF read successfully"})));
+            assert_eq!(ms.last().unwrap(), &json!({"role": "user", "content": [
+                {"type": "file", "file": {"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}},
+            ]}));
+        }),
+        ("openai-chat :: requires inline data for PDF files", || {
+            let r = req("gpt-4o-mini", vec![attach(vec![media(Media::url("application/pdf", "https://example.com/report.pdf"))])]);
+            assert!(invalid(Protocol::OpenaiChat, &r).contains("OpenAI Chat requires inline media"));
+        }),
+        ("openai-compatible-chat :: serializes user and tool video for unknown compatible providers", || {
+            let inline = "data:video/mp4;base64,AAEC";
+            let url = "https://example.com/clip.mp4";
+            let r = req("video-model", vec![
+                attach(vec![media(data_url(inline)), media(Media::url("video/mp4", url))]),
+                asst(vec![call("call_video", "read", json!({}))]),
+                results(vec![media_result("call_video", "read", "", vec![Media::url("video/mp4", url)])]),
+            ]);
+            assert!(check(Protocol::OpenaiChat, &r).is_ok());
+            let b = chat_at(COMPATIBLE, &r);
+            let ms = b["messages"].as_array().unwrap();
+            assert_eq!(ms[0], json!({"role": "user", "content": [
+                {"type": "video_url", "video_url": {"url": inline}},
+                {"type": "video_url", "video_url": {"url": url}},
+            ]}));
+            assert_eq!(ms[ms.len() - 2..], [
+                json!({"role": "tool", "tool_call_id": "call_video", "content": ""}),
+                json!({"role": "user", "content": [{"type": "video_url", "video_url": {"url": url}}]}),
+            ]);
+        }),
+        ("openai-chat :: prepares raw and data URL image media as vision input", || {
+            let r = req("gpt-4o-mini", vec![attach(vec![media(png("AAECAw==")), media(data_url("data:image/jpeg;base64,/9j/"))])]);
+            assert_eq!(chat_at(COMPATIBLE, &r)["messages"], json!([{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAECAw=="}},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/"}},
+            ]}]));
+        }),
+    ]);
+}
+
+#[test]
+fn openai_responses_media() {
+    run(&[
+        ("openai-responses :: lowers image tool-result content as structured input_image items", || {
+            let b = responses::body(&req("gpt-4.1-mini", vec![
+                user("Show me the screenshot."),
+                asst(vec![call("call_1", "read", json!({"filePath": "shot.png"}))]),
+                results(vec![media_result("call_1", "read", "Image read successfully", vec![data_url("data:image/png;base64,AAECAw==")])]),
+            ]));
+            assert_eq!(responses_tool_output(&b)["output"], json!([
+                {"type": "input_text", "text": "Image read successfully"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAECAw=="},
+            ]));
+        }),
+        ("openai-responses :: lowers single-image tool-result content as structured input_image array", || {
+            let r = req("gpt-4.1-mini", vec![
+                asst(vec![call("call_1", "screenshot", json!({}))]),
+                results(vec![media_result("call_1", "screenshot", "", vec![Media::base64("image/jpeg", "/9j/AA==")])]),
+            ]);
+            assert_eq!(responses_tool_output(&responses::body(&r))["output"], json!([
+                {"type": "input_image", "image_url": "data:image/jpeg;base64,/9j/AA=="},
+            ]));
+        }),
+        ("openai-responses :: lowers PDF tool-result content as structured input_file array", || {
+            let r = req("gpt-4.1-mini", vec![
+                asst(vec![call("call_1", "read", json!({}))]),
+                results(vec![media_result("call_1", "read", "", vec![pdf("JVBERi0xLjQ=").named("report.pdf")])]),
+            ]);
+            assert_eq!(responses_tool_output(&responses::body(&r))["output"], json!([
+                {"type": "input_file", "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjQ="},
+            ]));
+        }),
+        ("openai-responses :: passes large PDF tool-result content through", || {
+            let data = "A".repeat(8_125_844);
+            let r = req("gpt-4.1-mini", vec![
+                asst(vec![call("call_1", "read", json!({}))]),
+                results(vec![media_result("call_1", "read", "", vec![pdf(&data).named("report.pdf")])]),
+            ]);
+            assert_eq!(responses_tool_output(&responses::body(&r))["output"], json!([
+                {"type": "input_file", "filename": "report.pdf", "file_data": format!("data:application/pdf;base64,{data}")},
+            ]));
+        }),
+        ("openai-responses :: uses standard inline file encoding for xAI PDF tool results", || {
+            let r = req("grok-4.5", vec![
+                asst(vec![call("call_1", "read", json!({}))]),
+                results(vec![media_result("call_1", "read", "", vec![pdf("JVBERi0xLjQ=").named("report.pdf")])]),
+            ]);
+            assert_eq!(responses_tool_output(&responses::body(&r))["output"], json!([
+                {"type": "input_file", "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjQ="},
+            ]));
+        }),
+        ("openai-responses :: passes non-image tool-result content through as an input file", || {
+            let r = req("gpt-4.1-mini", vec![
+                asst(vec![call("call_1", "fetch", json!({}))]),
+                results(vec![media_result("call_1", "fetch", "", vec![Media::base64("audio/mpeg", "AAECAw==")])]),
+            ]);
+            assert!(check(Protocol::OpenaiResponses, &r).is_ok());
+            assert_eq!(responses_tool_output(&responses::body(&r))["output"], json!([
+                {"type": "input_file", "filename": "file", "file_data": "data:audio/mpeg;base64,AAECAw=="},
+            ]));
+        }),
+        ("openai-responses :: lowers remote tool-result media URLs without base64 wrapping", || {
+            let r = req("gpt-4.1-mini", vec![
+                asst(vec![call("call_1", "fetch", json!({}))]),
+                results(vec![media_result("call_1", "fetch", "", vec![
+                    Media::url("image/png", "https://example.com/image.png"),
+                    Media::url("application/pdf", "https://example.com/report.pdf").named("report.pdf"),
+                ])]),
+            ]);
+            assert_eq!(responses_tool_output(&responses::body(&r))["output"], json!([
+                {"type": "input_image", "image_url": "https://example.com/image.png"},
+                {"type": "input_file", "file_url": "https://example.com/report.pdf"},
+            ]));
+        }),
+        ("openai-responses :: lowers user image and PDF content", || {
+            let r = req("gpt-4.1-mini", vec![attach(vec![media(png("AAECAw==")), media(pdf("JVBERi0xLjQ=").named("report.pdf"))])]);
+            assert_eq!(responses::body(&r)["input"], json!([{"type": "message", "role": "user", "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64,AAECAw=="},
+                {"type": "input_file", "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjQ="},
+            ]}]));
+        }),
+        ("openai-responses :: uses standard inline file encoding for xAI user PDFs", || {
+            let r = req("grok-4.5", vec![attach(vec![media(data_url("data:application/pdf;base64,JVBERi0xLjQ=").named("report.pdf"))])]);
+            assert_eq!(responses::body(&r)["input"], json!([{"type": "message", "role": "user", "content": [
+                {"type": "input_file", "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjQ="},
+            ]}]));
+        }),
+        ("openai-responses :: passes non-image user media through as an input file", || {
+            let r = req("gpt-4.1-mini", vec![attach(vec![media(Media::base64("application/x-tar", "AAECAw=="))])]);
+            assert_eq!(responses::body(&r)["input"], json!([{"type": "message", "role": "user", "content": [
+                {"type": "input_file", "filename": "file", "file_data": "data:application/x-tar;base64,AAECAw=="},
+            ]}]));
+        }),
+        ("openai-responses :: lowers remote user media URLs without base64 wrapping", || {
+            let r = req("gpt-4.1-mini", vec![attach(vec![
+                media(Media::url("image/png", "https://example.com/image.png")),
+                media(Media::url("application/pdf", "https://example.com/report.pdf").named("report.pdf")),
+            ])]);
+            assert_eq!(responses::body(&r)["input"], json!([{"type": "message", "role": "user", "content": [
+                {"type": "input_image", "image_url": "https://example.com/image.png"},
+                {"type": "input_file", "file_url": "https://example.com/report.pdf"},
+            ]}]));
+        }),
+    ]);
+}
+
+#[test]
+fn anthropic_messages_media() {
+    run(&[
+        ("anthropic-messages :: lowers media tool-result content as structured blocks", || {
+            let r = req("claude-sonnet-4-5", vec![
+                user("Show me the screenshot."),
+                asst(vec![call("call_1", "read", json!({"filePath": "shot.png"}))]),
+                results(vec![media_result("call_1", "read", "Image read successfully", vec![
+                    data_url("data:image/png;base64,AAECAw=="),
+                    data_url("data:application/pdf;base64,JVBERi0xLjQ="),
+                ])]),
+            ]);
+            assert_eq!(anthropic_tool_result(&anthropic::body(&r))["content"], json!([
+                {"type": "text", "text": "Image read successfully"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAECAw=="}},
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQ="}},
+            ]));
+        }),
+        ("anthropic-messages :: lowers single-image tool-result content as a structured image block", || {
+            let r = req("claude-sonnet-4-5", vec![
+                asst(vec![call("call_1", "screenshot", json!({}))]),
+                results(vec![media_result("call_1", "screenshot", "", vec![Media::base64("image/jpeg", "/9j/AA==")])]),
+            ]);
+            assert_eq!(anthropic_tool_result(&anthropic::body(&r))["content"], json!([
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/AA=="}},
+            ]));
+        }),
+        ("anthropic-messages :: rejects tool-result media that cannot be lowered", || {
+            let r = req("claude-sonnet-4-5", vec![
+                asst(vec![call("call_1", "fetch", json!({}))]),
+                results(vec![media_result("call_1", "fetch", "", vec![Media::base64("audio/mpeg", "AAECAw==")])]),
+            ]);
+            assert!(invalid(Protocol::AnthropicMessages, &r).contains("Anthropic Messages does not support media type audio/mpeg"));
+        }),
+        ("anthropic-messages :: continues a conversation with user media content (request only)", || {
+            let r = req("claude-sonnet-4-5", vec![attach(vec![
+                text("What is in this image?"),
+                media(png("AAECAw==")),
+                media(pdf("JVBERi0xLjQ=").named("report.pdf")),
+            ])]);
+            assert!(check(Protocol::AnthropicMessages, &r).is_ok());
+            assert_eq!(anthropic::body(&r)["messages"], json!([{"role": "user", "content": [
+                {"type": "text", "text": "What is in this image?"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAECAw=="}},
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQ="}, "title": "report.pdf"},
+            ]}]));
+        }),
+    ]);
+}
+
+#[test]
+fn gemini_media() {
+    run(&[
+        ("gemini :: prepares multimodal user input and tool history (adapted: output key, no tool choice)", || {
+            let got = gemini_turns("gemini-2.5-flash", vec![
+                attach(vec![text("What is in this image?"), media(png("AAECAw==")), media(pdf("JVBERi0xLjQ="))]),
+                asst(vec![call("call_1", "lookup", json!({"query": "weather"}))]),
+                results(vec![result("call_1", "lookup", "{\"forecast\":\"sunny\"}")]),
+            ]);
+            assert_eq!(got, json!([
+                {"role": "user", "parts": [
+                    {"text": "What is in this image?"},
+                    {"inlineData": {"mimeType": "image/png", "data": "AAECAw=="}},
+                    {"inlineData": {"mimeType": "application/pdf", "data": "JVBERi0xLjQ="}},
+                ]},
+                {"role": "model", "parts": [sentinel_call(None, json!({"query": "weather"}))]},
+                {"role": "user", "parts": [{"functionResponse": {"name": "lookup", "response": {"output": "{\"forecast\":\"sunny\"}"}}}]},
+            ]));
+        }),
+        ("gemini :: continues media tool results as inline model input without base64 text (adapted: output key)", || {
+            let got = gemini_turns("gemini-2.5-flash", vec![
+                asst(vec![call("call_image", "read", json!({"path": "pixel.png"}))]),
+                results(vec![media_result("call_image", "read", "Image read successfully", vec![
+                    data_url("data:image/png;base64,AAECAw==").named("pixel.png"),
+                    data_url("data:application/pdf;base64,JVBERi0xLjQ="),
+                ])]),
+            ]);
+            assert_eq!(got, json!([
+                {"role": "model", "parts": [{"functionCall": {"name": "read", "args": {"path": "pixel.png"}}, "thoughtSignature": gemini::SKIP_SIGNATURE}]},
+                {"role": "user", "parts": [{"functionResponse": {"name": "read", "response": {"output": "Image read successfully"}}}]},
+                {"role": "user", "parts": [
+                    {"text": "Attached media from tool result:"},
+                    {"inlineData": {"mimeType": "image/png", "data": "AAECAw=="}},
+                    {"inlineData": {"mimeType": "application/pdf", "data": "JVBERi0xLjQ="}},
+                ]},
+            ]));
+            assert!(!got.to_string().contains("\"output\":\"AAECAw==\""));
+        }),
+        ("gemini :: strips matching data URLs to raw base64 inlineData (adapted: call before the result)", || {
+            let got = gemini_turns("gemini-2.5-flash", vec![
+                attach(vec![media(data_url("data:image/png;base64,AAEC"))]),
+                asst(vec![call("call_image", "read", json!({}))]),
+                results(vec![media_result("call_image", "read", "", vec![data_url("data:image/jpeg;base64,/9j/")])]),
+            ]);
+            assert_eq!(got[0], json!({"role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": "AAEC"}}]}));
+            assert_eq!(got[2], json!({"role": "user", "parts": [{"functionResponse": {"name": "read", "response": {"output": ""}}}]}));
+            assert_eq!(got[3], json!({"role": "user", "parts": [
+                {"text": "Attached media from tool result:"},
+                {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}},
+            ]}));
+        }),
+        ("gemini :: nests media inside function responses for gemini 3 (adapted: output key)", || {
+            let got = gemini_turns("gemini-3-flash-preview", vec![
+                asst(vec![call("call_image~sig_1", "read", json!({"path": "pixel.png"}))]),
+                results(vec![media_result("call_image~sig_1", "read", "Image read successfully", vec![data_url("data:image/png;base64,AAECAw==").named("pixel.png")])]),
+            ]);
+            assert_eq!(got, json!([
+                {"role": "model", "parts": [{"functionCall": {"id": "call_image", "name": "read", "args": {"path": "pixel.png"}}, "thoughtSignature": "sig_1"}]},
+                {"role": "user", "parts": [{"functionResponse": {"id": "call_image", "name": "read", "response": {"output": "Image read successfully"},
+                    "parts": [{"inlineData": {"mimeType": "image/png", "data": "AAECAw=="}}]}}]},
+            ]));
+        }),
+        ("gemini :: collects legacy tool media into one turn after merged responses (adapted: output key)", || {
+            let got = gemini_turns("gemini-2.5-flash", vec![
+                asst(vec![call("call_1", "shot", json!({})), call("call_2", "shot", json!({}))]),
+                results(vec![media_result("call_1", "shot", "", vec![png("AAEC")])]),
+                results(vec![result("call_2", "shot", "no image here")]),
+            ]);
+            assert_eq!(got, json!([
+                {"role": "model", "parts": [
+                    {"functionCall": {"name": "shot", "args": {}}, "thoughtSignature": gemini::SKIP_SIGNATURE},
+                    {"functionCall": {"name": "shot", "args": {}}, "thoughtSignature": gemini::SKIP_SIGNATURE},
+                ]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {"name": "shot", "response": {"output": ""}}},
+                    {"functionResponse": {"name": "shot", "response": {"output": "no image here"}}},
+                ]},
+                {"role": "user", "parts": [{"text": "Attached media from tool result:"}, {"inlineData": {"mimeType": "image/png", "data": "AAEC"}}]},
+            ]));
+        }),
+        ("gemini :: forwards native video URLs in user and tool input (adapted: output key; generateContent only)", || {
+            let uri = "https://example.test/clip.mp4";
+            let r = req("gemini-3-flash-preview", vec![
+                attach(vec![media(Media::url("video/mp4", uri))]),
+                asst(vec![call("call_video", "read", json!({}))]),
+                results(vec![media_result("call_video", "read", "", vec![Media::url("video/mp4", uri)])]),
+            ]);
+            assert!(check(Protocol::GoogleGemini, &r).is_ok());
+            assert_eq!(gemini::body(&r)["contents"], json!([
+                {"role": "user", "parts": [{"fileData": {"mimeType": "video/mp4", "fileUri": uri}}]},
+                {"role": "model", "parts": [{"functionCall": {"id": "call_video", "name": "read", "args": {}}, "thoughtSignature": gemini::SKIP_SIGNATURE}]},
+                {"role": "user", "parts": [{"functionResponse": {"id": "call_video", "name": "read", "response": {"output": ""}}}]},
+                {"role": "user", "parts": [{"text": "Attached media from tool result:"}, {"fileData": {"mimeType": "video/mp4", "fileUri": uri}}]},
+            ]));
+        }),
+        ("gemini :: passes encoded media through without local validation", || {
+            let r = req("gemini-2.5-flash", vec![attach(vec![
+                media(png("%%%=")),
+                media(data_url("data:image/jpeg;base64,/9j/")),
+                media(Media::base64("image/svg+xml", "PHN2Zz4=")),
+            ])]);
+            assert!(check(Protocol::GoogleGemini, &r).is_ok());
+            assert_eq!(gemini::body(&r)["contents"], json!([{"role": "user", "parts": [
+                {"inlineData": {"mimeType": "image/png", "data": "%%%="}},
+                {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}},
+                {"inlineData": {"mimeType": "image/svg+xml", "data": "PHN2Zz4="}},
+            ]}]));
+        }),
+    ]);
 }

@@ -3,8 +3,9 @@
 use crate::gemini::split_id;
 use crate::openai::scrub_id;
 use crate::{
-    drive, merge_body, normalize_tool_history, post, schema, sse, stream_error, Decoder, Error,
-    Event, EventStream, Part, Provider, Request, Role, Usage,
+    all_media, drive, inline_required, merge_body, normalize_tool_history, post, schema, sse,
+    stream_error, unsupported_media, Decoder, Error, Event, EventStream, Media, MediaKind, Part,
+    Provider, Request, Role, Usage,
 };
 use serde_json::{json, Value};
 
@@ -14,6 +15,72 @@ const DEFAULT_MAX_TOKENS: u32 = 32_000;
 /// Anthropic accepts tool ids matching `[A-Za-z0-9_-]+` (any length).
 fn tool_id(id: &str) -> String {
     scrub_id(split_id(id).0)
+}
+
+const ROUTE: &str = "Anthropic Messages";
+
+/// An image or document block (after OpenCode's `lowerMedia`): http(s)
+/// images and PDFs by URL, inline PDFs and plain text as documents, inline
+/// images as images. `None` for media [`check`] rejects.
+fn lower_media(m: &Media) -> Option<Value> {
+    let mime = m.mime.to_ascii_lowercase();
+    let document = |source: Value| {
+        let mut b = json!({"type": "document", "source": source});
+        if let Some(f) = m.filename.as_deref().filter(|f| !f.is_empty()) {
+            b["title"] = json!(f);
+        }
+        b
+    };
+    if let Some(url) = m.remote().map(str::trim).filter(|u| is_http(u)) {
+        return match m.kind() {
+            MediaKind::Image => {
+                Some(json!({"type": "image", "source": {"type": "url", "url": url}}))
+            }
+            MediaKind::Pdf => Some(document(json!({"type": "url", "url": url}))),
+            _ => None,
+        };
+    }
+    let data = m.inline()?;
+    if mime == "text/plain" {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .ok()?;
+        return Some(document(
+            json!({"type": "text", "media_type": "text/plain", "data": String::from_utf8_lossy(&bytes)}),
+        ));
+    }
+    match m.kind() {
+        MediaKind::Pdf => Some(document(
+            json!({"type": "base64", "media_type": "application/pdf", "data": data}),
+        )),
+        MediaKind::Image => Some(
+            json!({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}),
+        ),
+        _ => None,
+    }
+}
+
+fn is_http(u: &str) -> bool {
+    let l = u.get(..8).unwrap_or(u).to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+/// Media Messages cannot carry: anything but images, PDFs and plain text,
+/// and remote media other than http(s) images and PDFs.
+pub fn check(req: &Request) -> Result<(), Error> {
+    for m in all_media(req) {
+        let remote_ok = m.remote().is_some_and(|u| {
+            is_http(u.trim()) && matches!(m.kind(), MediaKind::Image | MediaKind::Pdf)
+        });
+        if m.remote().is_some() && !remote_ok {
+            return Err(inline_required(ROUTE));
+        }
+        if lower_media(m).is_none() {
+            return Err(unsupported_media(ROUTE, m));
+        }
+    }
+    Ok(())
 }
 
 pub fn body(req: &Request) -> Value {
@@ -30,7 +97,15 @@ pub fn body(req: &Request) -> Value {
                 // Whitespace-only text blocks are rejected.
                 Part::Text(t) if !t.trim().is_empty() => Some(json!({"type": "text", "text": t})),
                 Part::ToolCall { id, name, input } => Some(json!({"type": "tool_use", "id": tool_id(id), "name": name, "input": input})),
-                Part::ToolResult { id, content, is_error, .. } => {
+                Part::Media(media) => lower_media(media),
+                Part::ToolResult { id, content, is_error, media, .. } => {
+                    // Media rides inside the result as image/document blocks.
+                    let content = if media.is_empty() {
+                        json!(content)
+                    } else {
+                        let text = (!content.is_empty()).then(|| json!({"type": "text", "text": content}));
+                        json!(text.into_iter().chain(media.iter().filter_map(lower_media)).collect::<Vec<_>>())
+                    };
                     let mut b = json!({"type": "tool_result", "tool_use_id": tool_id(id), "content": content});
                     if *is_error {
                         b["is_error"] = json!(true);
@@ -328,6 +403,7 @@ mod tests {
                         name: "read".into(),
                         content: "x".into(),
                         is_error: true,
+                        media: vec![],
                     }],
                 },
                 Message::user("more"),

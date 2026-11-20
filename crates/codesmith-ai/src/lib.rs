@@ -39,7 +39,151 @@ pub enum Part {
         name: String,
         content: String,
         is_error: bool,
+        /// Images and files the tool returned beside its text (`read` on an
+        /// image or PDF). Absent in sessions stored before media existed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media: Vec<Media>,
     },
+    /// An image, PDF or other file attached to a user message.
+    Media(Media),
+}
+
+/// An image, PDF or other file for the model to see.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Media {
+    /// IANA media type, e.g. `image/png` or `application/pdf`.
+    pub mime: String,
+    pub source: Source,
+    /// The file's name, shown to providers that take one (PDF titles).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+/// Where a media payload lives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// Inline bytes, base64-encoded (no `data:` prefix).
+    Base64(String),
+    /// A remote URL the provider fetches itself.
+    Url(String),
+}
+
+/// The broad kind of a media type, which decides how protocols lower it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Pdf,
+    Video,
+    Audio,
+    Other,
+}
+
+impl Media {
+    pub fn base64(mime: impl Into<String>, data: impl Into<String>) -> Self {
+        Media {
+            mime: mime.into(),
+            source: Source::Base64(data.into()),
+            filename: None,
+        }
+    }
+
+    pub fn url(mime: impl Into<String>, url: impl Into<String>) -> Self {
+        Media {
+            mime: mime.into(),
+            source: Source::Url(url.into()),
+            filename: None,
+        }
+    }
+
+    /// A `data:<mime>;base64,<data>` URL as inline media.
+    pub fn from_data_url(url: &str) -> Option<Self> {
+        let rest = url.strip_prefix("data:")?;
+        let (meta, data) = rest.split_once(',')?;
+        let mime = meta.strip_suffix(";base64")?;
+        let mime = if mime.is_empty() {
+            "application/octet-stream"
+        } else {
+            mime
+        };
+        Some(Media::base64(mime, data))
+    }
+
+    pub fn named(mut self, filename: impl Into<String>) -> Self {
+        self.filename = Some(filename.into());
+        self
+    }
+
+    /// The base64 payload of inline media.
+    pub fn inline(&self) -> Option<&str> {
+        match &self.source {
+            Source::Base64(d) => Some(d),
+            Source::Url(_) => None,
+        }
+    }
+
+    /// The URL of remote media.
+    pub fn remote(&self) -> Option<&str> {
+        match &self.source {
+            Source::Url(u) => Some(u),
+            Source::Base64(_) => None,
+        }
+    }
+
+    /// Inline media as a `data:` URL.
+    pub fn data_url(&self) -> Option<String> {
+        self.inline()
+            .map(|d| format!("data:{};base64,{d}", self.mime))
+    }
+
+    /// Inline media as a data URL, or the remote URL.
+    pub fn location(&self) -> String {
+        self.data_url()
+            .unwrap_or_else(|| self.remote().unwrap_or_default().to_string())
+    }
+
+    /// Bytes of inline payload (base64 characters); remote media has none.
+    pub fn inline_len(&self) -> usize {
+        self.inline().map_or(0, str::len)
+    }
+
+    pub fn kind(&self) -> MediaKind {
+        let m = self.mime.to_ascii_lowercase();
+        if m == "application/pdf" {
+            MediaKind::Pdf
+        } else if m.starts_with("image/") {
+            MediaKind::Image
+        } else if m.starts_with("video/") {
+            MediaKind::Video
+        } else if m.starts_with("audio/") {
+            MediaKind::Audio
+        } else {
+            MediaKind::Other
+        }
+    }
+}
+
+/// Every media part of a request: user attachments and tool-result media.
+pub(crate) fn all_media(req: &Request) -> impl Iterator<Item = &Media> {
+    req.messages.iter().flat_map(|m| {
+        m.parts.iter().flat_map(|p| match p {
+            Part::Media(media) => std::slice::from_ref(media),
+            Part::ToolResult { media, .. } => media.as_slice(),
+            _ => &[],
+        })
+    })
+}
+
+/// The error for media a protocol needs inline but got as a URL.
+pub(crate) fn inline_required(route: &str) -> Error {
+    Error::Invalid(format!(
+        "{route} requires inline media (bytes or base64); url sources must be materialized first"
+    ))
+}
+
+/// The error for media a protocol cannot lower.
+pub(crate) fn unsupported_media(route: &str, m: &Media) -> Error {
+    Error::Invalid(format!("{route} does not support media type {}", m.mime))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -125,6 +269,10 @@ pub enum Error {
     /// `response.failed`, a failing finish reason).
     #[error("{message}")]
     Provider { message: String, retryable: bool },
+    /// A request the protocol cannot express (media it does not accept),
+    /// found before anything is sent.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 impl Error {
@@ -135,7 +283,7 @@ impl Error {
                 *status == 408 || *status == 409 || *status == 429 || *status >= 500
             }
             Error::Transport(_) => true,
-            Error::Decode(_) => false,
+            Error::Decode(_) | Error::Invalid(_) => false,
             Error::Provider { retryable, .. } => *retryable,
         }
     }
@@ -164,12 +312,23 @@ impl Provider {
         client: &reqwest::Client,
         req: &Request,
     ) -> Result<EventStream, Error> {
+        check(self.protocol, req)?;
         match self.protocol {
             Protocol::OpenaiChat => openai::stream(self, client, req).await,
             Protocol::AnthropicMessages => anthropic::stream(self, client, req).await,
             Protocol::OpenaiResponses => responses::stream(self, client, req).await,
             Protocol::GoogleGemini => gemini::stream(self, client, req).await,
         }
+    }
+}
+
+/// Reject a request with media `protocol` cannot carry, before sending it.
+pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
+    match protocol {
+        Protocol::OpenaiChat => openai::check(req),
+        Protocol::AnthropicMessages => anthropic::check(req),
+        Protocol::OpenaiResponses => Ok(()),
+        Protocol::GoogleGemini => gemini::check(req),
     }
 }
 
@@ -370,6 +529,7 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
                         name,
                         content: MISSING_RESULT.into(),
                         is_error: true,
+                        media: vec![],
                     })
                     .collect(),
             ));
@@ -403,17 +563,20 @@ pub fn normalize_tool_history(messages: &[Message]) -> Vec<Message> {
                     name,
                     content,
                     is_error,
+                    media,
                 } => {
                     pending.retain(|(pid, _)| pid != id);
                     results.push(Part::ToolResult {
                         id: id.clone(),
                         name: names.get(id).cloned().unwrap_or_else(|| name.clone()),
-                        content: if content.is_empty() {
+                        // A result that is only media is not empty.
+                        content: if content.is_empty() && media.is_empty() {
                             EMPTY_RESULT.into()
                         } else {
                             content.clone()
                         },
                         is_error: *is_error,
+                        media: media.clone(),
                     });
                 }
                 other => rest.push(other.clone()),
@@ -605,6 +768,7 @@ mod serde_tests {
                     name: "read".into(),
                     content: "x".into(),
                     is_error: false,
+                    media: vec![],
                 },
             ],
         };
@@ -613,5 +777,53 @@ mod serde_tests {
         assert_eq!(v["parts"][1], json!({"type": "text", "data": "t"}));
         assert_eq!(v["parts"][2]["data"]["name"], "read");
         assert_eq!(serde_json::from_value::<Message>(v).unwrap(), m);
+        // No `media` key when there is none, so older readers still parse it.
+        assert!(v_has_no_media(&m));
+    }
+
+    fn v_has_no_media(m: &Message) -> bool {
+        let v = serde_json::to_value(m).unwrap();
+        v["parts"][3]["data"].get("media").is_none()
+    }
+
+    #[test]
+    fn results_stored_before_media_still_load() {
+        let old = json!({"role": "user", "parts": [{"type": "tool_result", "data": {"id": "c", "name": "read", "content": "x", "is_error": false}}]});
+        let m: Message = serde_json::from_value(old).unwrap();
+        assert!(matches!(&m.parts[0], Part::ToolResult { media, .. } if media.is_empty()));
+    }
+
+    #[test]
+    fn media_round_trips() {
+        let m = Message {
+            role: Role::User,
+            parts: vec![
+                Part::Text("see".into()),
+                Part::Media(Media::base64("image/png", "AAEC").named("a.png")),
+                Part::ToolResult {
+                    id: "c".into(),
+                    name: "read".into(),
+                    content: "Image read successfully".into(),
+                    is_error: false,
+                    media: vec![Media::url("image/png", "https://x.test/a.png")],
+                },
+            ],
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v["parts"][1],
+            json!({"type": "media", "data": {"mime": "image/png", "source": {"base64": "AAEC"}, "filename": "a.png"}})
+        );
+        assert_eq!(serde_json::from_value::<Message>(v).unwrap(), m);
+    }
+
+    #[test]
+    fn data_urls() {
+        let m = Media::from_data_url("data:image/jpeg;base64,/9j/").unwrap();
+        assert_eq!((m.mime.as_str(), m.inline()), ("image/jpeg", Some("/9j/")));
+        assert_eq!(m.data_url().unwrap(), "data:image/jpeg;base64,/9j/");
+        assert!(Media::from_data_url("data:text/plain,hi").is_none());
+        assert_eq!(m.kind(), MediaKind::Image);
+        assert_eq!(Media::base64("application/pdf", "").kind(), MediaKind::Pdf);
     }
 }
