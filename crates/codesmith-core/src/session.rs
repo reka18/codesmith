@@ -1934,6 +1934,8 @@ impl Session {
                 self.turn.declined.store(false, Ordering::SeqCst);
                 // What the call reports it is about to change, once allowed.
                 let mut before: Vec<tool::Before> = Vec::new();
+                // Changes already settled per inner call (`execute`'s).
+                let mut settled: Vec<tool::Before> = Vec::new();
                 let mut media = Vec::new();
                 let (content, is_error) = match Tool::from_name(&name).filter(|t| t.session_level())
                 {
@@ -1950,9 +1952,9 @@ impl Session {
                     _ if name == crate::codemode::TOOL && !self.code_entries().is_empty() => {
                         // The program's call rows, as the call's progress.
                         let (tx, mut rows) = tokio::sync::mpsc::unbounded_channel();
-                        let run = self.run_code(&input, tx);
+                        let run = self.run_code(&id, &input, tx);
                         tokio::pin!(run);
-                        let r = loop {
+                        let (text, failed, changed) = loop {
                             tokio::select! {
                                 r = &mut run => break r,
                                 Some(m) = rows.recv() => sink.tool_progress(&id, &m),
@@ -1961,7 +1963,10 @@ impl Session {
                         while let Ok(m) = rows.try_recv() {
                             sink.tool_progress(&id, &m);
                         }
-                        r
+                        // Each inner call's changes stand whether or not
+                        // the program as a whole failed.
+                        settled = changed;
+                        (text, failed)
                     }
                     _ if name == crate::automation::TOOL && self.store.is_some() => {
                         self.run_automation(&input).await
@@ -2056,15 +2061,17 @@ impl Session {
                     failure = Some(e);
                 }
                 // A patch that failed midway changed the files it wrote first.
-                if !is_error || name == Tool::Patch.name() {
-                    for b in before {
-                        sink.tool_change(&id, &b.path, b.text.as_deref());
-                        if self.store.is_none() {
-                            continue;
-                        }
-                        if let Err(e) = self.record_change(&id, b.path, b.text) {
-                            failure = Some(e);
-                        }
+                if is_error && name != Tool::Patch.name() {
+                    before.clear();
+                }
+                before.extend(settled);
+                for b in before {
+                    sink.tool_change(&id, &b.path, b.text.as_deref());
+                    if self.store.is_none() {
+                        continue;
+                    }
+                    if let Err(e) = self.record_change(&id, b.path, b.text) {
+                        failure = Some(e);
                     }
                 }
                 if !media.is_empty() {
@@ -2666,8 +2673,32 @@ impl Session {
         (hidden, inside)
     }
 
-    /// A built-in run from inside `execute`, with the session's checks.
-    async fn run_builtin_in_code(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+    /// A built-in run from inside `execute` (inner call `n` of call
+    /// `outer`), with the session's checks and plugins' per-call hooks, as a
+    /// direct call: a `tool_before` veto refuses it, `tool_after` sees (and
+    /// may redact) its output. Returns the files it changed, as a direct
+    /// call's progress reports them, when it succeeded (or was a patch,
+    /// which may fail midway after writing).
+    async fn run_builtin_in_code(
+        &self,
+        outer: &str,
+        n: usize,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> (String, bool, Vec<tool::Before>) {
+        let plugins = crate::plugin::active();
+        let mut call = crate::plugin::ToolCall {
+            session_id: self.id.clone(),
+            id: format!("{outer}/{n}"),
+            name: name.to_string(),
+            input: input.clone(),
+        };
+        if let Err(refused) = plugins.tool_before(&self.loaded.config, &mut call) {
+            let (mut content, mut is_error) = (refused, true);
+            plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
+            return (content, true, Vec::new());
+        }
+        let (progress, mut updates) = tokio::sync::mpsc::unbounded_channel();
         let ctx = Ctx {
             cwd: self.cwd.clone(),
             root: self.root.clone(),
@@ -2680,11 +2711,34 @@ impl Session {
             websearch: Some(self.loaded.config.websearch.clone()),
             format: self.format.clone(),
             lsp: self.lsp.clone(),
-            progress: None,
+            progress: Some(progress),
         };
-        let r = tool::run(&ctx, name, input).await;
-        let text = crate::mcp::with_media_note(r.content, &r.media, "Code Mode returns text");
-        (text, r.is_error)
+        let mut before = Vec::new();
+        let r = {
+            let run = tool::run(&ctx, name, &call.input);
+            tokio::pin!(run);
+            let r = loop {
+                tokio::select! {
+                    r = &mut run => break r,
+                    Some(p) = updates.recv() => if let tool::Progress::Change(b) = p {
+                        before.push(b);
+                    },
+                }
+            };
+            while let Ok(p) = updates.try_recv() {
+                if let tool::Progress::Change(b) = p {
+                    before.push(b);
+                }
+            }
+            r
+        };
+        let mut text = crate::mcp::with_media_note(r.content, &r.media, "Code Mode returns text");
+        let mut is_error = r.is_error;
+        plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
+        if r.is_error && name != Tool::Patch.name() {
+            before.clear();
+        }
+        (text, is_error, before)
     }
 
     /// MCP tools offered as direct tool calls.
@@ -2941,15 +2995,26 @@ impl Session {
         }
     }
 
+    /// Run an `execute` call (`id`): its text, whether it failed, and the
+    /// files its built-in calls changed.
     async fn run_code(
         &self,
+        id: &str,
         input: &serde_json::Value,
         rows: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
-    ) -> (String, bool) {
+    ) -> (String, bool, Vec<tool::Before>) {
         let input = tool::repair(input);
         let Some(code) = input["code"].as_str().filter(|c| !c.trim().is_empty()) else {
-            return ("Missing required string parameter `code`".into(), true);
+            return (
+                "Missing required string parameter `code`".into(),
+                true,
+                vec![],
+            );
         };
+        let changed: std::sync::Mutex<Vec<tool::Before>> = Default::default();
+        let changed = &changed;
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let calls = &calls;
         let progress = crate::codemode::progress::Progress::new(move |m| {
             let _ = rows.send(m);
         });
@@ -2969,7 +3034,14 @@ impl Session {
             |tool, args| async move {
                 let row = progress.start(&tool, Some(&args));
                 let (text, failed) = if builtins.contains(&tool.as_str()) {
-                    self.run_builtin_in_code(&tool, &args).await
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    let (text, failed, before) =
+                        self.run_builtin_in_code(id, n, &tool, &args).await;
+                    changed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend(before);
+                    (text, failed)
                 } else {
                     // Code Mode hands results to code as JSON, so images
                     // and PDFs are noted rather than passed on.
@@ -2988,9 +3060,11 @@ impl Session {
         .await;
         progress.finish(out.result.is_ok());
         let (text, is_error) = out.render();
+        let changed = std::mem::take(&mut *changed.lock().unwrap_or_else(|e| e.into_inner()));
         (
             tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
             is_error,
+            changed,
         )
     }
 
