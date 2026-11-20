@@ -206,11 +206,13 @@ pub fn tool_name(server: &str, tool: &str) -> String {
 }
 
 impl McpTool {
-    /// The name [`tool_name`] gives it, which it was offered under unless it
-    /// collided with another tool's and got a suffix. Rules for that name
-    /// still deny it: a session checks both names, and a deny on either wins.
+    /// `<server>_<tool>`, sanitized but never cut or suffixed: the name
+    /// rules are written for. It is the name the tool is offered under
+    /// unless that was too long (and was cut and hashed) or collided with
+    /// another tool's (and got a suffix). Rules for it still deny the tool:
+    /// a session checks both names, and a deny on either wins.
     pub fn shared_name(&self) -> String {
-        tool_name(&self.server, &self.remote)
+        sanitize(&format!("{}_{}", self.server, self.remote))
     }
 }
 

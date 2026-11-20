@@ -293,3 +293,70 @@ async fn local_mcp_servers_do_not_inherit_the_server_token() {
         format!("[][{home}]")
     );
 }
+
+/// Fixed: a tool whose `<server>_<tool>` name is over 64 characters is
+/// offered cut and hashed, and escaped a rule denying its whole name. A deny
+/// on the whole name now wins too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deny_on_a_long_name_still_denies_the_cut_tool() {
+    let Some(py) = python() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let base = model(log.clone()).await;
+    let fixture = format!("{}/tests/fixtures/mcp_stdio.py", env!("CARGO_MANIFEST_DIR"));
+    let server = format!("long-{}", "s".repeat(60));
+    let config: Config = serde_json::from_value(json!({
+        "model": "fake/m", "snapshots": false, "codemode": false,
+        "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
+        "mcp": {"servers": {server.clone(): {"type": "local", "command": [py, fixture]}}},
+        "permissions": [{"action": format!("{server}_echo"), "resource": "*", "effect": "deny"}]
+    }))
+    .unwrap();
+    let loaded = Loaded {
+        config,
+        files: vec![],
+        root: dir.path().to_path_buf(),
+    };
+    let mcp: Arc<Mcp> = Mcp::connect(&loaded.config.mcp, &loaded.root).await;
+    let echo = mcp
+        .tools()
+        .into_iter()
+        .find(|t| t.remote == "echo")
+        .unwrap()
+        .name;
+    assert!(
+        echo.len() <= codesmith_core::mcp::MAX_TOOL_NAME && echo != format!("{server}_echo"),
+        "{echo}"
+    );
+    let mut s = Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("t".into()),
+            parent: None,
+            questioner: None,
+            mcp: Some(mcp.clone()),
+        },
+        Arc::new(Fixed(Reply::Once)),
+        None,
+    )
+    .unwrap();
+    let mut out = Collect(String::new());
+    s.prompt(&format!("call {echo} {{\"text\": \"hi\"}}"), &mut out)
+        .await
+        .unwrap();
+    assert!(!out.0.contains("echo: hi"), "{echo} ran: {}", out.0);
+    let req = log.lock().unwrap()[0].clone();
+    let offered: Vec<&str> = req["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(!offered.contains(&echo.as_str()), "{offered:?}");
+    let others = offered.iter().filter(|n| n.starts_with("long-")).count();
+    assert_eq!(others, 1, "the server's other tool stays: {offered:?}");
+}
