@@ -274,7 +274,9 @@ impl std::error::Error for Denied {}
 /// the store (after an interrupt, undo or agent switch) keeps them.
 pub type Approvals = Arc<Mutex<Vec<Rule>>>;
 
-/// The rules in force for a session plus approvals saved during it.
+/// The rules in force for a session plus approvals saved during it. A
+/// clone shares the saved approvals and the asker.
+#[derive(Clone)]
 pub struct Gate {
     rules: Vec<Rule>,
     saved: Approvals,

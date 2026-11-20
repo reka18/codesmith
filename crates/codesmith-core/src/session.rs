@@ -333,6 +333,9 @@ pub struct Session {
     lsp: Option<Arc<crate::lsp::Lsp>>,
     turn: Turn,
     shared: Shared,
+    /// Whether the image and video generation tools are offered: a model
+    /// of that type is reachable and config leaves the tool on.
+    media_tools: [bool; 2],
 }
 
 /// What keeps a session consistent with other processes using the same
@@ -676,6 +679,7 @@ impl Session {
                 holder: format!("{}-{}", std::process::id(), new_id()),
                 wait: true,
             },
+            media_tools: [tool::image_generate::offered(config), false],
         })
     }
 
@@ -1287,6 +1291,25 @@ impl Session {
                     parameters,
                 }
             });
+        let media = [(
+            tool::image_generate::NAME,
+            tool::image_generate::spec as fn() -> _,
+        )]
+        .into_iter()
+        .zip(self.media_tools)
+        .filter(|((name, _), on)| {
+            *on && crate::permission::evaluate(name, "*", &self.agent.permissions)
+                != crate::permission::Effect::Deny
+        })
+        .map(|((name, spec), _)| {
+            let (description, parameters) = spec();
+            codesmith_ai::ToolSpec {
+                name: name.into(),
+                description,
+                parameters,
+            }
+        })
+        .collect::<Vec<_>>();
         let execute = (!code.is_empty()).then(|| {
             let (description, parameters) = crate::codemode::spec();
             codesmith_ai::ToolSpec {
@@ -1340,6 +1363,7 @@ impl Session {
             )
             .chain(execute)
             .chain(automation)
+            .chain(media)
             .collect()
     }
 
@@ -1843,6 +1867,9 @@ impl Session {
                     }
                     _ if name == crate::automation::TOOL && self.store.is_some() => {
                         self.run_automation(&input).await
+                    }
+                    _ if name == tool::image_generate::NAME && self.media_tools[0] => {
+                        self.run_media_generate(&name, &input).await
                     }
                     _ if self.mcp_tools().iter().any(|t| t.name == name) => {
                         let (content, is_error, m) = self.run_mcp(&name, &input).await;
@@ -2595,6 +2622,41 @@ impl Session {
             })
             .chain(builtins)
             .collect()
+    }
+
+    /// An image or video generation call: it starts a background job.
+    async fn run_media_generate(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        let input = tool::repair(input);
+        let ctx = Ctx {
+            cwd: self.cwd.clone(),
+            root: self.root.clone(),
+            gate: &self.gate,
+            shell: self.shell.clone(),
+            session_id: self.id.clone(),
+            limits: self.limits,
+            client: self.client.clone(),
+            jobs: Some(self.jobs.clone()),
+            websearch: None,
+            format: None,
+            lsp: None,
+            progress: None,
+        };
+        let env = tool::image_generate::Env {
+            config: &self.loaded.config,
+            provider: Some(self.model.provider_id.as_str()),
+            store: self.store.as_ref().and_then(|s| s.path()),
+            gate: self.gate.clone(),
+            jobs: self.jobs.clone(),
+            retry: crate::generate::Options {
+                retry_scale: self.turn.retry_scale,
+            },
+        };
+        let _ = name;
+        let r = tool::image_generate::run(&ctx, env, &input).await;
+        match r {
+            Ok(text) => (text, false),
+            Err(e) => (e, true),
+        }
     }
 
     async fn run_automation(&self, input: &serde_json::Value) -> (String, bool) {

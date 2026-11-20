@@ -24,6 +24,7 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 | `execute` | Run a Code Mode program over MCP tools. | MCP tools are in Code Mode ([MCP](mcp.md#code-mode)) |
 | `<server>_<tool>` | An MCP tool, as a direct call. | `codemode` is off for that server |
 | `list_mcp_resources`, `read_mcp_resource` | Browse and read MCP resources. | a connected server has resources ([MCP](mcp.md#resources)) |
+| `experimental_image_generate` | Make or edit an image with an image model, in the background. See [below](#generating-images-and-videos). | an image model is reachable and `experimental.image_generate` is not `false` |
 
 [Plugins](plugins.md) can add tools of their own.
 
@@ -193,3 +194,31 @@ Video is different: it goes only to a model whose input modalities list
 embedding, image, live and TTS ones) are known to take it; for any other
 model that does, add `"video"` to its `modalities.input`. Other models get
 a note in place of the video saying it can't be read.
+
+## Generating images and videos
+
+`experimental_image_generate` makes an image, or edits the images it is
+given, with an image model from the
+[model catalog](configuration.md#the-model-catalog-modelsdev) (`type:
+image`) of a provider CodeSmith has a key for. OpenAI and OpenAI-compatible
+image APIs, OpenRouter, xAI and Google's Gemini image models are supported.
+The model is, in order: the one the call names
+(`provider/model#variant`), `experimental.image_generate.model` in config,
+the newest image model of the session's provider, then the newest one
+anywhere; with input images, only models that take images count. A
+configured model that can't serve a call is skipped, and the result says so.
+
+```jsonc
+"experimental": { "image_generate": { "model": "openai/gpt-image-1" } }  // or false to turn it off
+```
+
+A call asks for `experimental_image_generate` permission (on the model),
+`edit` on the path it saves to, `read` on input files and `webfetch` on
+input URLs, then starts a background job and returns. Input images are PNG,
+JPEG, WebP or GIF, at most 20 MiB each. When the image is ready it is saved
+with the extension of its real format (to `path`, or the session's temp
+folder) and the session is told, like a [background
+command](sessions.md#background-commands); `codesmith run` waits for it.
+Generated images are at most 20 MiB and are kept in the session's [blob
+store](configuration.md#media-limits) too. Cancelling the job (as a
+background command is cancelled) stops it.

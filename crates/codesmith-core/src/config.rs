@@ -122,6 +122,10 @@ pub struct Config {
     /// Prompt-cache warming: `true`, or `{"prompt", "interval",
     /// "duration"}` (see [`crate::warming`]). Off when unset.
     pub warming: Option<Value>,
+    /// Experimental features (OpenCode's `experimental`): `image_generate`
+    /// and `video_generate`, each `false` to turn the tool off or
+    /// `{"model": "provider/model"}` to prefer a model.
+    pub experimental: Experimental,
     /// Limits images are fitted to before they reach the model
     /// (`media.image`: `auto_resize`, `max_width`, `max_height`,
     /// `max_base64_bytes`).
@@ -147,6 +151,18 @@ pub struct Config {
     /// Git repository CodeSmith keeps a checkout of (see
     /// [`crate::reference`]). Those with a description are listed to the model.
     pub references: BTreeMap<String, crate::reference::Entry>,
+}
+
+/// The `experimental` key.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Experimental {
+    /// `false` turns `experimental_image_generate` off; `{"model": …}`
+    /// names the image model it prefers.
+    pub image_generate: Option<Value>,
+    /// `false` turns `experimental_video_generate` off; `{"model": …}`
+    /// names the video model it prefers.
+    pub video_generate: Option<Value>,
 }
 
 /// The `catalog` key.

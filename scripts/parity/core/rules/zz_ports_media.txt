@@ -24,3 +24,25 @@
 681 :: ported :: tests/oc_media_blob.rs::oc_blob_records_refs_on_import_only_for_the_blobs_it_took_out_of_its_own_inline_media :: adapted: a carried-in ref reads as unavailable
 714 :: ported :: tests/oc_media_blob.rs::oc_blob_media_blob_is_on_by_default :: adapted: CodeSmith has no release channels; on by default everywhere
 747 :: ported :: tests/oc_media_blob.rs::oc_blob_imports_media_into_blobs_only_where_enabled :: adapted: the store's setting, not the location's
+@generate.test.ts
+454 :: ported :: tests/oc_image_generate.rs::oc_generate_generates_images_through_the_models_image_entrypoint_with_the_provider_key
+473 :: ported :: tests/oc_image_generate.rs::oc_generate_keeps_credential_metadata_out_of_image_requests :: adapted: a catalog provider's key, no Console token
+486 :: ported :: tests/oc_image_generate.rs::oc_generate_downloads_url_images_and_detects_their_type_from_the_bytes
+@tool-image-generate.test.ts
+173 :: ported :: tests/oc_image_generate.rs::oc_image_tool_is_registered_only_while_an_image_model_is_available :: adapted: decided when the session starts
+185 :: ported :: tests/oc_image_generate.rs::oc_image_tool_is_on_by_default_and_off_with_experimental_image_generate_false
+202 :: ported :: tests/oc_image_generate.rs::oc_image_tool_uses_the_configured_model_unless_the_agent_picks_one_and_falls_back_with_a_note
+232 :: ported :: tests/oc_image_generate.rs::oc_image_tool_reads_input_images_asks_permission_and_saves_the_result_overwriting_an_existing_file :: adapted: against a scripted images endpoint, which gets the edit as multipart
+285 :: ported :: tests/oc_image_generate.rs::oc_image_tool_saves_with_the_extension_of_the_images_real_format
+324 :: ported :: tests/oc_image_generate.rs::oc_image_tool_reports_a_failed_generation_in_the_completion_notice
+341 :: ported :: tests/oc_image_generate.rs::oc_image_tool_cancels_a_running_generation_through_its_job
+358 :: ported :: tests/oc_image_generate.rs::oc_image_tool_starts_no_job_when_a_permission_is_denied
+370 :: ported :: tests/oc_image_generate.rs::oc_image_tool_validates_an_explicit_model_and_its_support_for_input_images :: adapted: no `models` tool to point to
+398 :: ported :: tests/oc_image_generate.rs::oc_image_tool_passes_a_model_variant_through_from_the_input_or_from_config
+449 :: ported :: tests/oc_image_generate.rs::oc_image_tool_asks_webfetch_permission_before_downloading_an_image_url
+466 :: ported :: tests/oc_image_generate.rs::oc_image_tool_rejects_input_files_that_are_not_images
+479 :: feature :: OpenCode Self-management Tool :: the `opencode` tool's `models` listing by type
+524 :: ported :: tests/oc_image_generate.rs::oc_image_default_model_prefers_the_sessions_provider_then_the_newest
+538 :: ported :: tests/oc_image_generate.rs::oc_image_default_model_only_considers_models_that_accept_input_images_when_images_are_passed
+@tool-media-target-environment.test.ts
+131,162,191 :: design :: client-server :: target environments

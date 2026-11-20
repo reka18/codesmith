@@ -288,6 +288,9 @@ pub struct Job {
     pub notified: bool,
     /// Stopped by [`Jobs::cancel`] rather than ending on its own.
     pub cancelled: bool,
+    /// For a background task that is not a command ([`Jobs::spawn_task`]:
+    /// an image or video job), the notice the session gets when it ends.
+    pub notice: Option<String>,
 }
 
 /// A foreground command while its call waits on it.
@@ -596,6 +599,56 @@ impl Jobs {
             .collect()
     }
 
+    /// Run `task` in the background as job `id` (OpenCode's background
+    /// `Job.start`): it counts and is reported like a background command,
+    /// with the text it returns as its notice. [`Jobs::cancel`] stops it,
+    /// running `cancelled` for the notice instead (it may ask a provider to
+    /// stop the work too).
+    pub fn spawn_task(
+        &self,
+        id: &str,
+        title: &str,
+        task: impl std::future::Future<Output = String> + Send + 'static,
+        cancelled: impl std::future::Future<Output = String> + Send + 'static,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        self.shared
+            .controls
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), tx);
+        self.add(Job {
+            id: id.to_string(),
+            command: title.to_string(),
+            file: PathBuf::new(),
+            pid: None,
+            timeout_ms: 0,
+            ending: None,
+            notified: false,
+            cancelled: false,
+            notice: None,
+        });
+        let shared = self.shared.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            tokio::pin!(task);
+            let (notice, was_cancelled) = loop {
+                tokio::select! {
+                    text = &mut task => break (text, false),
+                    c = rx.recv() => match c {
+                        Some(Control::Cancel) => break (cancelled.await, true),
+                        Some(_) => {}
+                        None => break ((&mut task).await, false),
+                    },
+                }
+            };
+            if let Some(j) = shared.jobs.lock().unwrap().iter_mut().find(|j| j.id == id) {
+                j.notice = Some(notice);
+            }
+            shared.finish(&id, Ending::Exited(0), was_cancelled);
+        });
+    }
+
     /// Wait until a job finishes (returns at once if one already has, or if none are running).
     pub async fn wait_any(&self) {
         self.shared.wait_any().await;
@@ -854,6 +907,7 @@ impl Jobs {
                 ending: None,
                 notified: false,
                 cancelled: false,
+                notice: None,
             };
             self.add(job);
             taken += 1;
@@ -1202,6 +1256,9 @@ fn terminate_groups(groups: Vec<u32>) {
 /// `<shell` / `</shell` tag in it is escaped. The command is an attribute
 /// value and is escaped as one.
 pub fn notification(job: &Job, limits: ToolOutputConfig) -> String {
+    if let Some(n) = &job.notice {
+        return n.clone();
+    }
     let (state, text) = if job.cancelled {
         ("cancelled", "Cancelled".to_string())
     } else {
@@ -1616,6 +1673,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         ending: None,
         notified: false,
         cancelled: false,
+        notice: None,
     };
     let control = tokio::sync::mpsc::unbounded_channel();
     if let Some(p) = &ctx.progress {

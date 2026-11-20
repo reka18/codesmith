@@ -11,6 +11,7 @@ mod compaction_tests;
 pub mod copilot;
 mod endpoint;
 mod gemini;
+pub mod generation;
 pub mod google;
 mod hosted;
 mod openai;

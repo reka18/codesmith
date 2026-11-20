@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 95 | 7 | 34 | 190 | 67 | 0 |
+| Session runner | 393 | 98 | 7 | 31 | 190 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -34,7 +34,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
 | Tool registry, schemas, placement | 100 | 28 | 0 | 0 | 53 | 19 | 0 |
-| Media tools | 39 | 0 | 0 | 24 | 9 | 6 | 0 |
+| Media tools | 39 | 14 | 0 | 7 | 12 | 6 | 0 |
 | Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
 | Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1511** | **16** | **299** | **2367** | **1395** | **0** |
+| **Total** | **5588** | **1528** | **16** | **279** | **2370** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -79,13 +79,12 @@ None open: every bug porting found is fixed above.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (299 cases in 27 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (279 cases in 26 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Claude Agent SDK Provider](#claude-agent-sdk-provider) | 82 | Claude Code (Agent SDK) as a provider, with its sessions, tools and sync |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
-| [Image Generation](#image-generation) | 21 | image entrypoint; image_generate tool; … |
 | [Workspaces](#workspaces) | 21 | OpenCode workspaces (remote/sandboxed environments) |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
@@ -99,8 +98,8 @@ Missing features, by how many OpenCode test cases each would unlock (299 cases i
 | [Mid-session Effort Switch](#mid-session-effort-switch) | 4 | recording an effort change as a model-visible update; effort switch recorded as a cache-preserving update |
 | [Provider State Across Model Switches](#provider-state-across-model-switches) | 4 | provider metadata kept for the same model, dropped after a switch/abort/failure |
 | [Session Read State](#session-read-state) | 4 | viewed/unread watermarks |
+| [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
-| [OpenCode Self-management Tool](#opencode-self-management-tool) | 3 | the `opencode` tool (models, worktrees, session moves) |
 | [Video Generation](#video-generation) | 3 | video_generate tool; video jobs |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
@@ -229,32 +228,6 @@ Missing features, by how many OpenCode test cases each would unlock (299 cases i
 - `plugin/provider-openai.test.ts`: reloads providers on a switch only when the ChatGPT login changes
 - `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
 - `session-error.test.ts`: types the ChatGPT workspace usage limit
-
-### Image Generation
-
-21 cases.
-
-- `generate.test.ts`: generates images through the model's image entrypoint with the provider key
-- `generate.test.ts`: keeps credential metadata out of image requests
-- `generate.test.ts`: downloads URL images and detects their type from the bytes
-- `tool-image-generate.test.ts`: is registered only while an image model is available
-- `tool-image-generate.test.ts`: is on by default and off with experimental.image_generate: false
-- `tool-image-generate.test.ts`: uses the configured model unless the agent picks one, and falls back with a note
-- `tool-image-generate.test.ts`: reads input images, asks permission, and saves the result, overwriting an existing file
-- `tool-image-generate.test.ts`: saves with the extension of the image's real format
-- `tool-image-generate.test.ts`: reports a failed generation in the completion notice
-- `tool-image-generate.test.ts`: cancels a running generation through its job
-- `tool-image-generate.test.ts`: starts no job when a permission is denied
-- `tool-image-generate.test.ts`: validates an explicit model and its support for input images
-- `tool-image-generate.test.ts`: passes a model variant through, from the input or from config
-- `tool-image-generate.test.ts`: asks webfetch permission before downloading an image URL
-- `tool-image-generate.test.ts`: rejects input files that are not images
-- `tool-image-generate.test.ts`: lists image models through the models tool type filter
-- `tool-image-generate.test.ts`: prefers the session's provider, then the newest
-- `tool-image-generate.test.ts`: only considers models that accept input images when images are passed
-- `tool-media-target-environment.test.ts`: reads its input and saves its output in the resolved target's environment, not the session's
-- `tool-media-target-environment.test.ts`: asks only the deny rules before replacing the file its real extension renames
-- `tool-media-target-environment.test.ts`: reads its input and saves its output in the resolved target's environment, not the session's
 
 ### Workspaces
 
@@ -454,6 +427,15 @@ Missing features, by how many OpenCode test cases each would unlock (299 cases i
 - `session-view.test.ts`: rejects an unknown session
 - `session-view.test.ts`: replays viewed state into a fresh database
 
+### OpenCode Self-management Tool
+
+4 cases.
+
+- `tool-image-generate.test.ts`: lists image models through the models tool type filter
+- `tool-opencode.test.ts`: groups available models by provider with paging
+- `tool-opencode.test.ts`: creates, lists, and removes worktrees for the plugin's project
+- `tool-opencode.test.ts`: adapts the worktree session_move hint to execute, direct tools, or neither
+
 ### Browser Attachment
 
 3 cases.
@@ -461,14 +443,6 @@ Missing features, by how many OpenCode test cases each would unlock (299 cases i
 - `browser-attach.test.ts`: a replaced attachment's revoke never removes its replacement's grant
 - `browser-attach.test.ts`: disposing the plugin revokes the browser rules before the location finishes closing
 - `browser-idle.test.ts`: idle eviction ends the browser attachment and permits a fresh attachment
-
-### OpenCode Self-management Tool
-
-3 cases.
-
-- `tool-opencode.test.ts`: groups available models by provider with paging
-- `tool-opencode.test.ts`: creates, lists, and removes worktrees for the plugin's project
-- `tool-opencode.test.ts`: adapts the worktree session_move hint to execute, direct tools, or neither
 
 ### Video Generation
 
@@ -1385,7 +1359,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 551 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 335 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 229 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 232 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 94 |
 
@@ -1393,12 +1367,15 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (292 of 393)</summary>
+<details><summary>Session runner (295 of 393)</summary>
 
 
 **`generate.test.ts`**
 
 - D loads dynamic AI SDK models · resolves dynamic models with their catalog metadata — platform: dynamic AI SDK models
+- P generates images through the model's image entrypoint with the provider key — `tests/oc_image_generate.rs::oc_generate_generates_images_through_the_models_image_entrypoint_with_the_provider_key`
+- P keeps credential metadata out of image requests — `tests/oc_image_generate.rs::oc_generate_keeps_credential_metadata_out_of_image_requests` (adapted: a catalog provider's key, no Console token)
+- P downloads URL images and detects their type from the bytes — `tests/oc_image_generate.rs::oc_generate_downloads_url_images_and_detects_their_type_from_the_bytes`
 
 **`session-error.test.ts`**
 
@@ -2349,12 +2326,33 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Media tools (9 of 39)</summary>
+<details><summary>Media tools (26 of 39)</summary>
 
 
 **`image-photon.test.ts`**
 
 - D resizes in a worker to the same bytes as before · shares one resizer across the process · falls back to resizing in-process when the worker cannot start, warning once · queues concurrent calls on one worker · fails only the request a crash interrupts, then runs the queue on a fresh worker · terminates a worker when interrupted between acquiring it and sending the request · terminates the worker once it has been idle · an idle worker does not keep the process alive · terminates a worker whose startup is interrupted — platform: Photon WASM worker pool (CodeSmith resizes in-process with the image crate)
+
+**`tool-image-generate.test.ts`**
+
+- P is registered only while an image model is available — `tests/oc_image_generate.rs::oc_image_tool_is_registered_only_while_an_image_model_is_available` (adapted: decided when the session starts)
+- P is on by default and off with experimental.image_generate: false — `tests/oc_image_generate.rs::oc_image_tool_is_on_by_default_and_off_with_experimental_image_generate_false`
+- P uses the configured model unless the agent picks one, and falls back with a note — `tests/oc_image_generate.rs::oc_image_tool_uses_the_configured_model_unless_the_agent_picks_one_and_falls_back_with_a_note`
+- P reads input images, asks permission, and saves the result, overwriting an existing file — `tests/oc_image_generate.rs::oc_image_tool_reads_input_images_asks_permission_and_saves_the_result_overwriting_an_existing_file` (adapted: against a scripted images endpoint, which gets the edit as multipart)
+- P saves with the extension of the image's real format — `tests/oc_image_generate.rs::oc_image_tool_saves_with_the_extension_of_the_images_real_format`
+- P reports a failed generation in the completion notice — `tests/oc_image_generate.rs::oc_image_tool_reports_a_failed_generation_in_the_completion_notice`
+- P cancels a running generation through its job — `tests/oc_image_generate.rs::oc_image_tool_cancels_a_running_generation_through_its_job`
+- P starts no job when a permission is denied — `tests/oc_image_generate.rs::oc_image_tool_starts_no_job_when_a_permission_is_denied`
+- P validates an explicit model and its support for input images — `tests/oc_image_generate.rs::oc_image_tool_validates_an_explicit_model_and_its_support_for_input_images` (adapted: no `models` tool to point to)
+- P passes a model variant through, from the input or from config — `tests/oc_image_generate.rs::oc_image_tool_passes_a_model_variant_through_from_the_input_or_from_config`
+- P asks webfetch permission before downloading an image URL — `tests/oc_image_generate.rs::oc_image_tool_asks_webfetch_permission_before_downloading_an_image_url`
+- P rejects input files that are not images — `tests/oc_image_generate.rs::oc_image_tool_rejects_input_files_that_are_not_images`
+- P prefers the session's provider, then the newest — `tests/oc_image_generate.rs::oc_image_default_model_prefers_the_sessions_provider_then_the_newest`
+- P only considers models that accept input images when images are passed — `tests/oc_image_generate.rs::oc_image_default_model_only_considers_models_that_accept_input_images_when_images_are_passed`
+
+**`tool-media-target-environment.test.ts`**
+
+- D reads its input and saves its output in the resolved target's environment, not the session's · asks only the deny rules before replacing the file its real extension renames · reads its input and saves its output in the resolved target's environment, not the session's — client-server: target environments
 
 </details>
 

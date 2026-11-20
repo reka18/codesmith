@@ -18,6 +18,7 @@ pub mod daemon;
 pub mod fork;
 pub mod form;
 pub mod format;
+pub mod generate;
 pub mod instruction_state;
 pub mod instructions;
 pub mod lsp;
