@@ -1057,6 +1057,9 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             println!("model:    {base} (sent as {})", m.model_id);
             println!("protocol: {:?}", m.provider.protocol);
             println!("url:      {}", m.provider.base_url);
+            if let Some(route) = m.websocket {
+                println!("transport: websocket ({})", route.name());
+            }
             if !m.provider.query.is_empty() {
                 let q: Vec<String> = m
                     .provider

@@ -158,6 +158,11 @@ pub struct ProviderSettings {
     /// Azure: `<base>/deployments/<model>` URLs instead of the v1 API.
     #[serde(alias = "useDeploymentBasedUrls")]
     pub use_deployment_based_urls: bool,
+    /// How session steps reach an OpenAI Responses provider: `websocket`
+    /// (one socket per session, continuing each response incrementally) or
+    /// `http`. OpenAI, xAI and v1 Azure endpoints default to `websocket`,
+    /// every other provider to `http`.
+    pub transport: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -594,6 +599,9 @@ pub struct ModelRef {
     pub input: Option<Vec<String>>,
     /// Prompt caching for this model's requests.
     pub cache: codesmith_ai::Cache,
+    /// The WebSocket route session steps take (`settings.transport`), or
+    /// `None` for HTTP.
+    pub websocket: Option<codesmith_ai::ws::Route>,
 }
 
 /// Built-in providers: (id, name, protocol, base URL, key variables).
@@ -867,6 +875,7 @@ impl Config {
         }
         // The cache belongs to the model, not to a request option.
         options.remove("cache");
+        let websocket = websocket_route(pid, protocol, &p.settings, &base_url)?;
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id,
@@ -889,8 +898,49 @@ impl Config {
             temperature: m.temperature,
             input,
             cache,
+            websocket,
         })
     }
+}
+
+/// The WebSocket route of a provider's session steps: its `transport`
+/// setting, else (as in OpenCode) `websocket` for OpenAI, xAI and Azure v1
+/// endpoints on the Responses protocol.
+fn websocket_route(
+    pid: &str,
+    protocol: Protocol,
+    settings: &ProviderSettings,
+    base_url: &str,
+) -> Result<Option<codesmith_ai::ws::Route>> {
+    if protocol != Protocol::OpenaiResponses {
+        return Ok(None);
+    }
+    let on = match settings.transport.as_deref() {
+        Some("websocket") => true,
+        Some("http") => false,
+        Some(t) => {
+            return Err(anyhow!(
+                "provider {pid:?} has an invalid transport {t:?}; use websocket or http"
+            ))
+        }
+        None => match pid {
+            "openai" | "xai" => true,
+            "azure" => {
+                !settings.use_deployment_based_urls
+                    && settings.api_version.as_deref().is_none_or(|v| v == "v1")
+                    && settings.base_url.as_deref().is_none_or(|u| {
+                        reqwest::Url::parse(u).is_ok_and(|u| {
+                            u.scheme() == "https"
+                                && u.host_str().is_some_and(|h| {
+                                    h.to_ascii_lowercase().ends_with(".openai.azure.com")
+                                })
+                        })
+                    })
+            }
+            _ => false,
+        },
+    };
+    Ok(on.then(|| codesmith_ai::ws::Route::for_provider(pid, base_url)))
 }
 
 /// The model's `cache` setting: the model's own (field, then options), then

@@ -139,6 +139,8 @@ pub struct Session {
     shell: String,
     limits: crate::config::ToolOutputConfig,
     client: reqwest::Client,
+    /// The Responses WebSocket session steps reuse (see `ModelRef::websocket`).
+    ws: Arc<codesmith_ai::ws::SessionTransport>,
     store: Option<Store>,
     stored: bool,
     title_task: Option<tokio::task::JoinHandle<(Option<String>, Usage)>>,
@@ -359,6 +361,7 @@ impl Session {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(30))
                 .build()?,
+            ws: Arc::default(),
             store,
             stored,
             title_task: None,
@@ -2089,15 +2092,18 @@ impl Session {
         req: &Request,
         sink: &mut dyn Sink,
     ) -> Result<(Vec<Part>, FinishReason, Usage), codesmith_ai::Failure> {
-        let stream = self
-            .model
-            .provider
-            .stream(&self.client, req)
-            .await
-            .map_err(|error| codesmith_ai::Failure {
-                error,
-                partial: None,
-            })?;
+        let stream = match self.model.websocket {
+            Some(route) => {
+                self.ws
+                    .stream(&self.model.provider, &self.client, req, route)
+                    .await
+            }
+            None => self.model.provider.stream(&self.client, req).await,
+        };
+        let stream = stream.map_err(|error| codesmith_ai::Failure {
+            error,
+            partial: None,
+        })?;
         // Parts in stream order, reasoning with its provider signature. A
         // stream that ends without finishing was cut off, and is retried.
         let mut inputs = InputPairs::default();

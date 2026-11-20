@@ -181,6 +181,7 @@ Provider fields:
 | `settings.queryParams` | Query parameters added to every request URL, e.g. `{"api-version": "2026-01-01"}`. |
 | `settings.apiKeyHeader` | Send the key as-is in this header instead of the protocol's own (`Authorization: Bearer`, `x-api-key`, `x-goog-api-key`). A configured `Authorization` header is then not sent. |
 | `settings.encoding` | Compress request bodies: `gzip`, `zstd` or `none` (the default). Only for servers that accept a compressed body. |
+| `settings.transport` | `websocket` or `http`: how an `openai-responses` provider carries a session's steps. See [Responses over WebSocket](#responses-over-websocket). |
 | `compatibility` | [Compatibility overrides](#compatibility-overrides) for every model of this provider. |
 | `body` | Extra request-body fields for every model of this provider, merged into each request. |
 | `cache` | [Prompt caching](#prompt-caching) for every model of this provider (`settings.cache` also works). |
@@ -230,6 +231,48 @@ given, with only `queryParams`. With `"protocol": "anthropic-messages"`, the
 resource's Claude endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1`)
 is used with the key in `x-api-key`. Set `"protocol": "openai-chat"` for Chat
 Completions.
+
+### Responses over WebSocket
+
+As in OpenCode, an `openai-responses` provider can carry a session's steps
+over the Responses WebSocket API instead of one HTTP request each. The
+session opens one socket on its first step and reuses it for the steps that
+follow; once a response completes, the next step sends only its new input
+items (the tool results, a new user message) with `previous_response_id`,
+which saves resending the whole conversation every step. A step that changes
+anything else (the model, the tools, `tool_choice`, options) or rewrites
+earlier history is sent in full on the same socket. Nothing is stored
+server-side: requests still go with `store: false`.
+
+`settings.transport` chooses it per provider:
+
+```jsonc
+"providers": { "openai": { "settings": { "transport": "http" } } }
+```
+
+Like OpenCode, the built-in `openai` provider, `xai` with
+`"protocol": "openai-responses"`, and `azure` on its v1 API (a
+`resourceName`, or a `*.openai.azure.com` base URL, with no other
+`apiVersion` and no deployment URLs) default to `websocket`; every other
+provider defaults to `http` and can opt in with `"transport": "websocket"`.
+Only session steps use the socket; titles, compaction summaries and other
+side requests stay on HTTP. `codesmith debug model` shows `transport: websocket` when
+it applies.
+
+The handshake carries the same URL (as `wss://`), query parameters and
+headers as the HTTP request, plus `OpenAI-Beta: responses_websockets=2026-02-06`
+for OpenAI unless the provider sets its own `OpenAI-Beta` header. A
+connection is replaced after 55 minutes (24 for xAI) or when the URL or
+headers change. A step falls back to HTTP when the socket cannot carry it:
+a failed connect (the session then stays on HTTP), a send that never left,
+or a request the provider closes as too large (code 1009, also for the rest
+of the session). A socket that drops mid-response fails the step, which is
+retried; after five such failures in a row the session stays on HTTP. When
+the provider no longer has the previous response (`previous_response_not_found`,
+a plain invalid request against an incremental send, or a connection limit),
+the step is resent in full on a new socket. xAI continues only stored
+responses, so with `store: false` its steps are always sent in full over the
+reused socket.
 
 ### Compatibility overrides
 
