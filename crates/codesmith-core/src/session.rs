@@ -178,7 +178,6 @@ pub const MAX_RETRIES: u32 = retry::MAX_RETRIES;
 /// Steps for an agent without a `steps` setting; the last one is forced to
 /// answer in text.
 pub const DEFAULT_MAX_STEPS: u32 = 200;
-const TITLE_MAX_TOKENS: u32 = 256;
 
 /// Variant names that are reasoning efforts (OpenCode's `ReasoningEfforts`).
 const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -312,7 +311,10 @@ pub struct Session {
     ws: Arc<codesmith_ai::ws::SessionTransport>,
     store: Option<Store>,
     stored: bool,
-    title_task: Option<tokio::task::JoinHandle<(Option<String>, Usage)>>,
+    title_task: Option<TitleTask>,
+    /// A title waiting for the turn's first response: its first message
+    /// and how it is made (see [`TitlePlan::defer`]).
+    title_pending: Option<(String, TitlePlan)>,
     /// Whether the user was told that compaction cannot help (said once).
     compaction_skipped: bool,
     /// Whether a tool that can change files ran since the instructions
@@ -625,6 +627,7 @@ impl Session {
             store,
             stored,
             title_task: None,
+            title_pending: None,
             loaded: loaded.clone(),
             parent: opts.parent,
             depth: 0,
@@ -1455,8 +1458,13 @@ impl Session {
                 self.title = t.title;
             }
         }
-        if self.title.is_none() && self.title_task.is_none() {
-            self.title_task = Some(self.spawn_title(text));
+        if self.title.is_none() && self.title_task.is_none() && self.title_pending.is_none() {
+            // On a local server the title waits for the turn's first
+            // response rather than compete with it.
+            match self.title_plan() {
+                Some(plan) if plan.defer => self.title_pending = Some((text.to_string(), plan)),
+                plan => self.title_task = Some(self.spawn_title(text, plan)),
+            }
         }
         // A stopped turn can leave calls without results; providers reject those.
         if let Some(results) = runner::unsettled(&self.messages) {
@@ -1521,7 +1529,9 @@ impl Session {
                 error: err.as_deref(),
             },
         );
-        // The title call's tokens count too, so finish it before saving usage.
+        // The title call's tokens count too, so finish it before saving
+        // usage (a deferred one starts now if no response came).
+        self.start_pending_title();
         self.finish_title().await;
         if let Some(s) = &self.store {
             if self.stored {
@@ -1544,6 +1554,8 @@ impl Session {
         // Responses in a row cut off by the output token limit.
         let mut truncated = 0u32;
         loop {
+            // A deferred title finishes before this session's next request.
+            self.settle_title().await;
             self.report_finished_jobs()?;
             if !compacted_this_step {
                 compacted_this_step = self.run_admitted_compaction(sink, false).await?;
@@ -1573,6 +1585,8 @@ impl Session {
             let before = self.messages.len();
             let stepped = self.step(sink, final_step).await;
             self.warm_end();
+            // The turn's first response is in: a deferred title may run.
+            self.start_pending_title();
             let (parts, reason, usage) = match stepped {
                 Ok(r) => r,
                 // A context overflow is recovered by compacting once, unless
@@ -1800,7 +1814,11 @@ impl Session {
                         self.run_plugin_tool(&plugins, &name, &input).await
                     }
                     Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
-                    Some(Tool::Subagent) => self.run_subagent(&input, sink).await,
+                    Some(Tool::Subagent) => {
+                        // A subagent's requests may reach the same server.
+                        self.settle_title().await;
+                        self.run_subagent(&input, sink).await
+                    }
                     Some(Tool::Skill) => self.run_skill(&input),
                     Some(Tool::Question) => self.run_question(&input),
                     _ => {
@@ -3098,28 +3116,126 @@ impl Session {
     /// its tokens go into the session usage, and a step record lets
     /// `codesmith stats` count them for the model that made the call.
     fn count_side_call(&mut self, usage: Usage) -> Result<()> {
+        self.count_side_call_for(self.model_spec.clone(), usage)
+    }
+
+    /// [`Session::count_side_call`] for a call another model made.
+    fn count_side_call_for(&mut self, model: String, usage: Usage) -> Result<()> {
         if usage == Usage::default() {
             return Ok(());
         }
         self.count_usage(&usage);
-        self.record(&Record::Step {
-            model: self.model_spec.clone(),
-            usage,
-        })?;
+        self.record(&Record::Step { model, usage })?;
         Ok(())
     }
 
-    fn spawn_title(&self, first: &str) -> tokio::task::JoinHandle<(Option<String>, Usage)> {
-        let client = self.client.clone();
-        let model = self
-            .model_for(crate::plugin::RequestKind::Title)
-            .into_owned();
-        let prompt = title::request(first);
-        let msg = vec![Message::user(prompt.clone())];
+    /// How this session's title is made: by which model, and whether it
+    /// waits for the turn. `None` when titles are turned off. A title model
+    /// that does not resolve falls back to the session's.
+    fn title_plan(&self) -> Option<TitlePlan> {
+        let spec = title::model_spec(&self.loaded.config, &self.model_spec)?;
+        let kind = crate::plugin::RequestKind::Title;
+        let own = || TitlePlan {
+            spec: self.model_spec.clone(),
+            model: self.model_for(kind).into_owned(),
+            defer: false,
+            explicit_variant: false,
+        };
+        let mut plan = if spec == self.model_spec {
+            own()
+        } else {
+            match self.loaded.config.resolve_model(&spec) {
+                Ok(mut model) => {
+                    let scope = crate::plugin::RequestScope {
+                        session_id: self.id.clone(),
+                        agent: self.agent.id.clone(),
+                        model: spec.clone(),
+                        kind,
+                    };
+                    if let Some(h) = crate::plugin::active().http_hooks(&self.loaded.config, scope)
+                    {
+                        model.provider.hooks = Some(h);
+                    }
+                    TitlePlan {
+                        explicit_variant: crate::config::split_variant(&spec).1.is_some(),
+                        spec,
+                        model,
+                        defer: false,
+                    }
+                }
+                Err(_) => own(),
+            }
+        };
+        plan.defer = plan.model.local && same_server(&plan.model, &self.model);
+        Some(plan)
+    }
+
+    /// Start the title that waited for the turn's first response.
+    fn start_pending_title(&mut self) {
+        if let Some((first, plan)) = self.title_pending.take() {
+            if self.title.is_none() && self.title_task.is_none() {
+                self.title_task = Some(self.spawn_title(&first, Some(plan)));
+            }
+        }
+    }
+
+    /// Finish a deferred title still running, so it never overlaps this
+    /// session's next request to the same server.
+    async fn settle_title(&mut self) {
+        if self.title_task.as_ref().is_some_and(|t| t.deferred) {
+            self.finish_title().await;
+        }
+    }
+
+    fn spawn_title(&self, first: &str, plan: Option<TitlePlan>) -> TitleTask {
         let fallback = title::fallback(first);
+        let Some(plan) = plan else {
+            // Titles are off: the first line names the session.
+            return TitleTask {
+                spec: self.model_spec.clone(),
+                deferred: false,
+                handle: tokio::spawn(async move { (Some(fallback), Usage::default()) }),
+            };
+        };
+        let client = self.client.clone();
+        let prompt = title::request(first);
         let session_id = self.id.to_string();
         let tag = self.tag();
-        tokio::spawn(async move {
+        let TitlePlan {
+            spec,
+            model,
+            defer,
+            explicit_variant,
+        } = plan;
+        // A local server gets a short, thinking-free request; elsewhere the
+        // reasoning options are left out (a capped request has no room).
+        let max_tokens = if model.local {
+            title::LOCAL_MAX_TOKENS
+        } else {
+            title::MAX_TOKENS
+        };
+        let (options, body) = if explicit_variant {
+            (model.options.clone(), model.body.clone())
+        } else if model.local {
+            title::thinking_off(&model)
+        } else {
+            (Default::default(), model.body.clone())
+        };
+        let req = Request {
+            model: model.model_id.clone(),
+            system: title::SYSTEM.to_string(),
+            messages: vec![Message::user(prompt.clone())],
+            max_tokens: Some(max_tokens),
+            temperature: model.temperature,
+            options,
+            body,
+            cache: model.cache.clone(),
+            interaction: codesmith_ai::Interaction::Background,
+            prompt_cache_key: (!tag.cache_key.is_empty()).then(|| tag.cache_key.clone()),
+            headers: tag.headers.clone(),
+            ..Default::default()
+        };
+        let handle = tokio::spawn(async move {
             // GitHub Copilot names sessions with its free utility model;
             // when that fails the usual title request runs.
             if let Some(utility) = (model.provider_id == crate::providers::copilot::ID)
@@ -3133,37 +3249,40 @@ impl Session {
                     &session_id,
                     title::SYSTEM,
                     &[("user", &prompt)],
-                    Some(TITLE_MAX_TOKENS),
+                    Some(title::MAX_TOKENS),
                 )
                 .await;
                 if let Some(t) = named.ok().and_then(|t| title::clean(&t)) {
                     return (Some(t), Usage::default());
                 }
             }
-            let policy = retry::Policy::one_shot();
-            let reply = complete_with(
+            let reply = stream_text(
                 &client,
                 &model,
-                &tag,
-                title::SYSTEM,
-                &msg,
-                Some(TITLE_MAX_TOKENS),
-                policy,
+                &req,
+                retry::Policy::one_shot(),
+                &mut |_| {},
             )
             .await
             .ok();
             let usage = reply.as_ref().map(|r| r.1).unwrap_or_default();
             let title = reply.and_then(|r| title::clean(&r.0)).unwrap_or(fallback);
             (Some(title), usage)
-        })
+        });
+        TitleTask {
+            spec,
+            deferred: defer,
+            handle,
+        }
     }
 
     async fn finish_title(&mut self) {
         let Some(task) = self.title_task.take() else {
             return;
         };
-        if let Ok(Ok((title, usage))) = tokio::time::timeout(Duration::from_secs(20), task).await {
-            let _ = self.count_side_call(usage);
+        let timeout = tokio::time::timeout(Duration::from_secs(20), task.handle).await;
+        if let Ok(Ok((title, usage))) = timeout {
+            let _ = self.count_side_call_for(task.spec, usage);
             let Some(t) = title else {
                 return;
             };
@@ -3474,6 +3593,37 @@ impl crate::plugin::Generate for SideGenerator<'_> {
             }
         })
     }
+}
+
+/// A running title request and the model it went to.
+struct TitleTask {
+    spec: String,
+    /// It waited for the turn (see [`TitlePlan::defer`]).
+    deferred: bool,
+    handle: tokio::task::JoinHandle<(Option<String>, Usage)>,
+}
+
+/// How a session's title is made.
+struct TitlePlan {
+    spec: String,
+    model: ModelRef,
+    /// The title model is a local server the turn's model also runs on,
+    /// which serves one request at a time: the title waits for the turn's
+    /// first response and never runs beside this session's requests.
+    defer: bool,
+    /// The title spec chose a variant, whose options are kept.
+    explicit_variant: bool,
+}
+
+/// Whether two models are served from one place: the same provider, or the
+/// same host and port.
+fn same_server(a: &ModelRef, b: &ModelRef) -> bool {
+    let at = |m: &ModelRef| {
+        url::Url::parse(&m.provider.base_url)
+            .ok()
+            .map(|u| (u.host_str().map(str::to_string), u.port_or_known_default()))
+    };
+    a.provider_id == b.provider_id || (at(a).is_some() && at(a) == at(b))
 }
 
 /// The headers and prompt cache key that tie a session's model requests

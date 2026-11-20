@@ -133,11 +133,17 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
         kinds[..2],
         ["instructions".to_string(), "snapshot".to_string()]
     );
-    // The turn ends, then the title call (which ran beside it) is counted.
+    // The fake model is on loopback, a local server: the title call waits
+    // for the first step's response and is counted (after that step's tool
+    // ran) just before the second step, never beside a step.
+    assert_eq!(kinds.last().map(String::as_str), Some("turn_end"));
+    let steps_at: Vec<usize> = (0..kinds.len()).filter(|&i| kinds[i] == "step").collect();
     assert_eq!(
-        kinds[kinds.len() - 2..],
-        ["turn_end".to_string(), "step".to_string()]
+        kinds[steps_at[0]..steps_at[1]],
+        ["step", "message", "tool", "message"].map(String::from),
+        "{kinds:?}"
     );
+    assert_eq!(kinds[steps_at[1] + 1], "step", "{kinds:?}");
 
     // diff → undo → redo.
     let diff = e.run(&["session", "diff"]).await;
