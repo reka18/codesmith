@@ -81,6 +81,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   runs as `curl`) and `\cX` escapes are refused too. A group's descriptor
   duplication (`(make) 2>&1`) no longer asks about `2>&1`, and
   `> # comment` is refused as the shell refuses it.
+- A prompt of attachments alone no longer carries an empty text part
+  (sent to the Responses API as an empty `input_text`).
 - Undo survives a snapshot capture that was killed: a stale `index.lock`
   or a corrupt index no longer breaks every later capture and undo, and a
   restore that cannot remove one file still restores the others.

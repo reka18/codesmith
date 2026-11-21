@@ -1971,14 +1971,12 @@ impl Session {
         }
         // Plan mode is announced before the prompt (see `plugin::plan`).
         self.reconcile_plan()?;
-        // Mentioned skills' content comes before the prompt's text.
+        // Mentioned skills' content comes before the prompt's text; an empty
+        // text before attachments is left out (providers reject empty text).
+        let typed = (!text.is_empty() || attached.is_empty()).then(|| Part::text(text));
         let mut user = Message {
             role: Role::User,
-            parts: skills
-                .into_iter()
-                .map(Part::text)
-                .chain([Part::text(text)])
-                .collect(),
+            parts: skills.into_iter().map(Part::text).chain(typed).collect(),
         };
         user.parts.extend(attached);
         self.push(user)?;

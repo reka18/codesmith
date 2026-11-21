@@ -42,3 +42,34 @@
 45 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_fails_closed_when_valid_commands_are_mutated_with_malformed_syntax
 62 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_retains_generated_dynamic_command_heads_without_resolving_them
 77 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_wrappers_and_shell_evaluators_at_their_delegated_boundary
+
+# --- Sessions and their store (tests/oc_sessions_backlog2.rs) ---
+@session-create.test.ts
+582 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_list_filters_direct_child_sessions_by_parent :: adapted: the list with children, filtered by parent as the session tree is
+@session-instructions.test.ts
+340 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_instructions_load_directly_without_a_read :: adapted: the files read and rendered as the instruction source renders them
+@session-prompt.test.ts
+371 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_commits_an_undo_before_admitting_a_new_prompt :: adapted: an undo hides its turn at once and can be redone until the next prompt, which commits it
+404 :: design :: deliberate :: an undo applies at once and there is no inbox of synthetic input to hold behind it
+433 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_resolves_attachment_mime :: adapted: a data URL taken as media
+462 :: design :: client-server :: a text file is read into the prompt by the front end (the TUI's `@file#L1-L2` mentions read a line range), not attached as content
+493 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_materializes_directories_as_directory_attachments :: adapted: `Session::attach_local`, as the front ends attach a path
+518 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_materializes_local_image_content :: adapted: `Session::attach_local`
+550 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_admits_captured_image_bytes_after_the_source_disappears
+795 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_normalizes_large_image_content :: adapted: the oversized image is re-encoded below the byte limit (OpenCode's photon gives an empty one)
+824 :: design :: deliberate :: media is detected from its bytes and HEIC or AVIF is not taken as media (see `media::detect`), so there is no undecodable image to pass through
+841 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_prompt_sniffs_content_instead_of_trusting_its_declared_mime :: adapted: `media::detect` on the bytes
+870,893 :: design :: client-server :: a data URL is decoded by the front end that receives it (ACP refuses bad base64 as an invalid prompt), so none reaches the session; a local file over 20 MiB is refused by `media::attachment`
+1467 :: ported :: tests/oc_sessions_backlog2.rs::oc_session_fails_for_an_unknown_session :: adapted: resuming a session the store does not have fails
+@session-runner-message.test.ts
+272,434 :: design :: client-server :: a text file's content is put in the prompt by the front end that read it (the TUI's `@file` mentions), so the session has no text attachments to lower
+369 :: ported :: tests/oc_sessions_backlog2.rs::oc_runner_message_restores_openai_encrypted_reasoning_metadata :: adapted: a Responses reasoning item, after a reload
+470 :: ported :: tests/oc_sessions_backlog2.rs::oc_runner_message_preserves_attachment_order_after_the_prompt :: adapted: a directory and an image
+498 :: fixed :: tests/oc_sessions_backlog2.rs::oc_runner_message_omits_empty_prompt_text_before_an_attachment :: an attachment-only prompt stored an empty text part before its attachments, sent as an empty `input_text` to the Responses API or a leading blank line to Chat Completions; it is left out now
+719 :: ported :: tests/oc_sessions_backlog2.rs::oc_runner_message_uses_materialized_image_and_pdf_data_as_provider_media
+869 :: ported :: tests/oc_sessions_backlog2.rs::oc_runner_message_replays_durable_tool_media_without_structured_base64 :: adapted: after a reload, the image goes back once, as media
+@session-runner-tool-events.test.ts
+88 :: ported :: tests/oc_sessions_backlog2.rs::oc_tool_success_stores_media_base64_once :: adapted: the stored records hold the image once
+@session-stats.test.ts
+49 :: ported :: tests/oc_sessions_backlog2.rs::oc_stats_aggregates_activity_and_tool_reliability_over_a_range :: adapted: CodeSmith's step and tool records; no unfinished calls are stored, and a fork's copied history is its own
+

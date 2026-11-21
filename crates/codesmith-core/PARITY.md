@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 7 | 2 | 0 | 5 | 1 | 0 |
-| Sessions and their store | 308 | 91 | 2 | 0 | 191 | 24 | 0 |
+| Sessions and their store | 308 | 107 | 3 | 0 | 198 | 0 | 0 |
 | Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2573** | **50** | **40** | **2512** | **413** | **0** |
+| **Total** | **5588** | **2589** | **51** | **40** | **2519** | **389** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -64,6 +64,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
 - `session-create.test.ts`: "stores a trailing-slash directory in the same session list" (1 case): a session started in `dir/` was stored under `dir/`, so the list for `dir` did not show it. Pinned by `tests/oc_sessions_backlog.rs::oc_session_create_stores_a_trailing_slash_directory_in_the_same_list`.
+- `session-runner-message.test.ts`: "uses materialized image and PDF data as provider media" (1 case): an attachment-only prompt stored an empty text part before its attachments, sent as an empty `input_text` to the Responses API or a leading blank line to Chat Completions; it is left out now. Pinned by `tests/oc_sessions_backlog2.rs::oc_runner_message_omits_empty_prompt_text_before_an_attachment`.
 - `session-runner-retry.test.ts`: "names the network when the provider's host can't be reached" (1 case): an unreachable host failed the turn with reqwest's text; the error now names the host and the network (a refused connection keeps its own text). Pinned by `src/retry.rs::oc_session_runner_retry_names_the_network_when_the_providers_host_cant_be_reached`.
 - `session-runner.test.ts`: "uses the selected model family prompt when the agent system override is empty" (1 case): an agent's empty `system` replaced the model's prompt with nothing; it now keeps the default. Pinned by `tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_when_the_agent_override_is_empty`.
 - `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
@@ -178,7 +179,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (413 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (389 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -247,46 +248,6 @@ Tests for behaviour CodeSmith already has but no test pins (413 cases), by area,
 
 - diff of the busy period containing a user message (M) — `snapshot::Snapshots::diff`
   - `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
-
-### Sessions and their store (24)
-
-- root sessions filtered before the page limit; direct children by parent (S) — `store::Store::list`
-  - `session-create.test.ts`: filters direct child sessions by parent ID
-- instructions load without any read (S) — `instructions::load`
-  - `session-instructions.test.ts`: loads instructions directly without a read
-- a new prompt after undo drops the undone turns (M) — `tests/runner_parity.rs`
-  - `session-prompt.test.ts`: commits a staged revert before admitting a new prompt
-  - `session-prompt.test.ts`: holds synthetic input behind a staged revert and discards it when committed
-- attachment MIME, file content and images materialized at admission (M) — `session prompt with attachments`
-  - `session-prompt.test.ts`: resolves attachment MIME before admission
-  - `session-prompt.test.ts`: materializes selected source file content
-  - `session-prompt.test.ts`: materializes directories as directory attachments
-  - `session-prompt.test.ts`: materializes local image content before admission
-  - `session-prompt.test.ts`: admits captured image bytes with their source path after the source disappears
-- large images normalized; undecodable images passed through; data URL content sniffed (S) — `media::prepare_image`
-  - `session-prompt.test.ts`: normalizes large image content before validating persisted Base64
-  - `session-prompt.test.ts`: passes images the resizer cannot decode through unchanged
-  - `session-prompt.test.ts`: sniffs data URL content instead of trusting its declared MIME
-- malformed or oversized inline attachments rejected without echoing bytes (S) — `media`
-  - `session-prompt.test.ts`: rejects malformed base64 data URLs
-  - `session-prompt.test.ts`: rejects oversized inline attachments without echoing their bytes
-- prompting an unknown session fails (S) — `session`
-  - `session-prompt.test.ts`: fails for an unknown session
-- text attachments follow the prompt in one user message, order kept, empty prompt text omitted (S) — `session prompt with attachments`
-  - `session-runner-message.test.ts`: lowers text attachments after the prompt in one user message
-  - `session-runner-message.test.ts`: preserves attachment order after the prompt
-  - `session-runner-message.test.ts`: omits empty prompt text before an attachment
-- inline text attachment content is decoded (S) — `session prompt with attachments`
-  - `session-runner-message.test.ts`: decodes inline text attachment content
-- image/PDF attachments and tool media sent as provider media, not base64 text (M) — `tests/media_session.rs`
-  - `session-runner-message.test.ts`: uses materialized image and PDF data as provider media
-  - `session-runner-message.test.ts`: replays durable tool media into canonical tool messages without structured base64
-- OpenAI encrypted reasoning metadata replayed on the next request (M) — `runner history`
-  - `session-runner-message.test.ts`: restores OpenAI encrypted reasoning metadata
-- tool media serialized once (S) — `tests/media_session.rs`
-  - `session-runner-tool-events.test.ts`: local tool success serializes media base64 once through canonical content
-- activity and tool reliability aggregated over a range (M) — `stats`
-  - `session-stats.test.ts`: aggregates activity and tool reliability without reading message payloads outside the range
 
 ### Tool: write (6)
 
@@ -743,10 +704,10 @@ Tests for behaviour CodeSmith already has but no test pins (413 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 640 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 642 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 96 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
@@ -1200,7 +1161,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (284 of 308)</summary>
+<details><summary>Sessions and their store (308 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1250,6 +1211,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D rejects child creation when the parent does not exist — client-server: child sessions are created only by the subagent tool of a running parent, so there is no create call naming a missing parent
 - P filters root sessions before applying the page limit — `tests/oc_sessions_backlog.rs::oc_session_list_filters_root_sessions_before_the_newest` (adapted: the list has no page limit; roots are filtered in the query)
 - P orders sessions by their latest prompt — `tests/oc_sessions_backlog.rs::oc_session_list_orders_sessions_by_their_latest_prompt`
+- P filters direct child sessions by parent ID — `tests/oc_sessions_backlog2.rs::oc_session_list_filters_direct_child_sessions_by_parent` (adapted: the list with children, filtered by parent as the session tree is)
 - P filters project sessions by subpath — `tests/oc_session_list.rs::oc_session_filters_project_sessions_by_subpath` (adapted: the subpath is the folder under the project root a session started in)
 - P forks a session by replaying a durable fork event into copied projected rows — `tests/oc_session_fork.rs::oc_session_forks_a_session_into_copied_history` (adapted: records copied, not an event replayed)
 - P queues a fork notice after copied history and before the first prompt — `tests/oc_session_fork.rs::oc_session_queues_a_fork_notice_before_the_first_prompt`
@@ -1286,6 +1248,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P discovers AGENTS.md on a directory listing, including the listed directory's own, and dedups with a later file read — `tests/oc_session_nearby.rs::oc_session_discovers_agents_files_on_a_directory_listing`
 - P re-injects nested instructions dropped from history by compaction — `tests/oc_session_nearby.rs::oc_session_reinjects_nested_instructions_dropped_by_compaction`
 - P listing the Location root directory injects no instructions — `tests/oc_session_nearby.rs::oc_session_listing_the_working_directory_injects_nothing`
+- P loads instructions directly without a read — `tests/oc_sessions_backlog2.rs::oc_session_instructions_load_directly_without_a_read` (adapted: the files read and rendered as the instruction source renders them)
 - D toLLMMessages does not forward synthetic metadata to the provider — storage-model: synthetic metadata stripping
 
 **`session-list.test.ts`**
@@ -1330,6 +1293,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D exposes the execution registry · delegates execution continuation through SessionExecution · delegates process-local interruption through SessionExecution · forwards interrupt continuation policy · delegates interruption without requiring a recorded Session — effect-internal: execution delegation
 - D durably admits one user message before transcript promotion — storage-model: inbox admission before promotion
+- P commits a staged revert before admitting a new prompt — `tests/oc_sessions_backlog2.rs::oc_session_prompt_commits_an_undo_before_admitting_a_new_prompt` (adapted: an undo hides its turn at once and can be redone until the next prompt, which commits it)
+- D holds synthetic input behind a staged revert and discards it when committed — deliberate: an undo applies at once and there is no inbox of synthetic input to hold behind it
+- P resolves attachment MIME before admission — `tests/oc_sessions_backlog2.rs::oc_session_prompt_resolves_attachment_mime` (adapted: a data URL taken as media)
+- D materializes selected source file content — client-server: a text file is read into the prompt by the front end (the TUI's `@file#L1-L2` mentions read a line range), not attached as content
+- P materializes directories as directory attachments — `tests/oc_sessions_backlog2.rs::oc_session_prompt_materializes_directories_as_directory_attachments` (adapted: `Session::attach_local`, as the front ends attach a path)
+- P materializes local image content before admission — `tests/oc_sessions_backlog2.rs::oc_session_prompt_materializes_local_image_content` (adapted: `Session::attach_local`)
+- P admits captured image bytes with their source path after the source disappears — `tests/oc_sessions_backlog2.rs::oc_session_prompt_admits_captured_image_bytes_after_the_source_disappears`
 - P stores media refs at admission when the session's config enables media_blob — `tests/oc_media_blob.rs::oc_blob_stores_media_refs_at_admission_when_config_enables_media_blob`
 - P forks a session's inline media into blobs when its location enables media_blob — `tests/oc_media_blob.rs::oc_blob_stores_a_forks_copies_of_inline_parent_media_as_blobs_and_leaves_the_parent_inline` (adapted: the store's setting, not the location's)
 - D forks inline media inline when the parent's location doesn't enable media_blob, whatever the caller's — client-server: per-Location media_blob settings; CodeSmith's store has one setting
@@ -1337,12 +1307,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P records refs on import only for the blobs it took out of its own inline media — `tests/oc_media_blob.rs::oc_blob_records_refs_on_import_only_for_the_blobs_it_took_out_of_its_own_inline_media` (adapted: a carried-in ref reads as unavailable)
 - P admits and imports media into blobs by default on a dev-channel server with no config — `tests/oc_media_blob.rs::oc_blob_media_blob_is_on_by_default` (adapted: CodeSmith has no release channels; on by default everywhere)
 - P imports media into blobs only where the location enables media_blob — `tests/oc_media_blob.rs::oc_blob_imports_media_into_blobs_only_where_enabled` (adapted: the store's setting, not the location's)
+- P normalizes large image content before validating persisted Base64 — `tests/oc_sessions_backlog2.rs::oc_session_prompt_normalizes_large_image_content` (adapted: the oversized image is re-encoded below the byte limit (OpenCode's photon gives an empty one))
+- D passes images the resizer cannot decode through unchanged — deliberate: media is detected from its bytes and HEIC or AVIF is not taken as media (see `media::detect`), so there is no undecodable image to pass through
+- P sniffs data URL content instead of trusting its declared MIME — `tests/oc_sessions_backlog2.rs::oc_session_prompt_sniffs_content_instead_of_trusting_its_declared_mime` (adapted: `media::detect` on the bytes)
+- D rejects malformed base64 data URLs · rejects oversized inline attachments without echoing their bytes — client-server: a data URL is decoded by the front end that receives it (ACP refuses bad base64 as an invalid prompt), so none reaches the session; a local file over 20 MiB is refused by `media::attachment`
 - D streams durable Session events after an aggregate sequence · resumes through a recorded message without appending another prompt · records distinct messages when the ID is omitted · returns the original recorded message when the ID is retried · reconciles an exact retry from the promoted message without admission history · ignores delivery when retrying a promoted message · wakes execution when an exact prompt retry recovers a committed message · keeps the first admission when one ID is reused with a different prompt · keeps the first admission's delivery mode when one ID is reused with another · returns one recorded message to concurrent exact retries · promotes one message once under concurrent promotion attempts · reprojects pending inbox input without scheduling execution · rejects reuse of one globally unique message ID across sessions · rejects a prompt ID already used by visible Session history — storage-model: idempotent prompt admission and event streams
 - D starts execution by default after recording the prompt · starts execution when resume is explicitly true · only records the prompt when resume is false — client-server: resume flag on the prompt API
 - D keeps the first admission's metadata when one ID is reused with other metadata — storage-model: idempotent prompt admission and event streams
 - D durably admits synthetic input before transcript promotion — storage-model: inbox admission before promotion
 - D reconciles synthetic retries from the promoted message regardless of payload — storage-model: idempotent prompt admission and event streams
-- D keeps queued input pending until the idle boundary · promotes prompt and synthetic steers in admission order · lists admitted work in admission order until promotion · lists an unhandled compaction until it is cancelled · cancels pending input and allows its ID to be admitted again · moves pending input between steer and queue delivery — deliberate: session.rs: no steers or queues
+- D keeps queued input pending until the idle boundary · promotes prompt and synthetic steers in admission order — deliberate: session.rs: no steers or queues
+- P fails for an unknown session — `tests/oc_sessions_backlog2.rs::oc_session_fails_for_an_unknown_session` (adapted: resuming a session the store does not have fails)
+- D lists admitted work in admission order until promotion · lists an unhandled compaction until it is cancelled · cancels pending input and allows its ID to be admitted again · moves pending input between steer and queue delivery — deliberate: session.rs: no steers or queues
 
 **`session-remove.test.ts`**
 
@@ -1359,14 +1335,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P records a same-model effort switch as an effort update — `tests/oc_effort_switch.rs::oc_session_records_a_same_model_effort_switch_as_a_cache_preserving_effort_update` (adapted: through a session's stored update, not the lowering function)
 - P maps the default variant and no variant to the model default effort — `tests/oc_effort_switch.rs::oc_session_maps_the_default_variant_and_no_variant_to_the_model_default_effort`
 - P ignores switches that are not effort changes on the requested model — `tests/oc_effort_switch.rs::oc_session_ignores_switches_that_are_not_effort_changes_on_the_requested_model`
+- D lowers text attachments after the prompt in one user message — client-server: a text file's content is put in the prompt by the front end that read it (the TUI's `@file` mentions), so the session has no text attachments to lower
 - P lowers each prepared skill once before the prompt — `tests/oc_session_skill_mention.rs::oc_session_lowers_each_mentioned_skill_once_before_the_prompt`
 - P does not inject skill content for reference-only attachments — `tests/oc_session_skill_mention.rs::oc_session_does_not_inject_skill_content_for_mere_references` (adapted: a reference is an @word that is not a mention)
+- P decodes inline text attachment content — `tests/oc_sessions_backlog2.rs::oc_runner_message_restores_openai_encrypted_reasoning_metadata` (adapted: a Responses reasoning item, after a reload)
 - P exposes admitted reference directory source paths in model context — `tests/oc_attachments.rs::oc_runner_message_exposes_admitted_reference_directory_source_paths_in_model_context` (adapted: the path and listing are their own text part)
+- D preserves attachment order after the prompt — client-server: a text file's content is put in the prompt by the front end that read it (the TUI's `@file` mentions), so the session has no text attachments to lower
+- P omits empty prompt text before an attachment — `tests/oc_sessions_backlog2.rs::oc_runner_message_preserves_attachment_order_after_the_prompt` (adapted: a directory and an image)
+- F uses materialized image and PDF data as provider media — `tests/oc_sessions_backlog2.rs::oc_runner_message_omits_empty_prompt_text_before_an_attachment` (an attachment-only prompt stored an empty text part before its attachments, sent as an empty `input_text` to the Responses API or a leading blank line to Chat Completions; it is left out now)
 - P exposes admitted local image source paths before provider media — `tests/oc_attachments.rs::oc_runner_message_exposes_admitted_local_image_source_paths_before_provider_media` (adapted: the announcement is part of the stored user message (`Session::prompt_attached`; the server's path attachments))
 - P falls back to attachment names for invalid local source paths — `tests/oc_attachments.rs::oc_runner_message_falls_back_to_attachment_names_for_invalid_local_source_paths` (adapted: the media part keeps its name; directory attachments are a separate group)
 - P does not add attachment location text for non-local provider media — `tests/oc_attachments.rs::oc_runner_message_does_not_add_attachment_location_text_for_non_local_provider_media`
 - P deduplicates provider media while preserving durable attachment references — `tests/oc_attachments.rs::oc_runner_message_deduplicates_provider_media_while_preserving_durable_attachment_references` (adapted: the duplicate is left out of the stored user message)
 - P preserves provider media with distinct labels or URI sources — `tests/oc_attachments.rs::oc_runner_message_preserves_provider_media_with_distinct_labels_or_uri_sources`
+- P replays durable tool media into canonical tool messages without structured base64 — `tests/oc_sessions_backlog2.rs::oc_runner_message_uses_materialized_image_and_pdf_data_as_provider_media`
+- P restores OpenAI encrypted reasoning metadata — `tests/oc_sessions_backlog2.rs::oc_runner_message_replays_durable_tool_media_without_structured_base64` (adapted: after a reload, the image goes back once, as media)
 - D replays flat state under an OpenCode hosted model's route key — cloud: OpenCode hosted model route key
 - D retries a failed stream from its last local call that ran — deliberate: runner.rs: tools run after the stream ends, a failed stream is retried from the prompt
 - P omits unfinished reasoning from an interrupted assistant message — `src/runner.rs::oc_session_message_omits_reasoning_only_assistant_turns`
@@ -1392,6 +1375,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-runner-tool-events.test.ts`**
 
+- P local tool success serializes media base64 once through canonical content — `tests/oc_sessions_backlog2.rs::oc_tool_success_stores_media_base64_once` (adapted: the stored records hold the image once)
 - D provider-executed success derives content and retains provider result state · commits a hosted tool result when cancellation races with the aggregate lock — storage-model: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
 - D interrupted progress metadata remains in the terminal failure snapshot — storage-model: progress/failure snapshots of OpenCode's tool parts
 - D interrupted subagent failures expose their existing child session to the model · interrupted non-subagent failures do not expose their progress session IDs — deliberate: subagents run to completion inside the tool call and an interrupt drops the turn, so no interrupted subagent result is recorded
@@ -1410,6 +1394,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-stats.test.ts`**
 
+- P aggregates activity and tool reliability without reading message payloads outside the range — `tests/oc_sessions_backlog2.rs::oc_stats_aggregates_activity_and_tool_reliability_over_a_range` (adapted: CodeSmith's step and tool records; no unfinished calls are stored, and a fork's copied history is its own)
 - D counts tool calls in both session_part rows and inline content an older build left on one message · aggregates compaction usage across more than 100 sessions under the 100-parameter limit — storage-model: OpenCode's part-row layouts and parameter limits
 
 **`session-store.test.ts`**
