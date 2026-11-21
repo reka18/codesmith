@@ -100,7 +100,8 @@ git diff | codesmith run "review this change"
   dimensions for the codebase, and `/review` runs parallel reviewers with
   independent verification.
 - **[MCP](docs/mcp.md)**: local and remote servers, OAuth, Code Mode in a
-  sandboxed JavaScript engine, resources, prompts and events.
+  sandboxed JavaScript engine (with `fetch` and OpenAPI tools), resources,
+  prompts, elicitation and events.
 - **[Automations](docs/automations.md)**: prompts or programs on a schedule
   or on MCP events, with unattended runs locked down by default.
 - **[Language servers and formatters](docs/language-servers-and-formatters.md)**:
@@ -108,8 +109,9 @@ git diff | codesmith run "review this change"
 - **[Editors (ACP)](docs/editors-acp.md)** and a
   **[local HTTP server](docs/local-server.md)** that requires a token.
 - **[Plugins](docs/plugins.md)**: native Rust plugins compiled into your own
-  build, and a built-in `/goal` that keeps a session working until a
-  reviewer finds the objective met.
+  build. Built in: `/goal`, which keeps a session working until a reviewer
+  finds the objective met, Plan mode for the `plan` agent, and the
+  `codesmith` tool for model search and worktrees.
 
 The full guide is in [docs/](docs/README.md), with
 [configuration](docs/configuration.md), [CLI](docs/cli.md) and
