@@ -132,7 +132,7 @@ dropped, and the UI takes the terminal back however the editor ended.
 | **alt+↓** / **alt+↑**, **ctrl+tab** / **ctrl+shift+tab** | Next or previous [session tab](#session-tabs). |
 | **alt+shift+↓** / **alt+shift+↑** | Next or previous tab that is unread or waiting for you. |
 | **ctrl+shift+t**, **ctrl+x shift+t** | Reopen the last closed tab (the second is CodeSmith's: most terminals send ctrl+shift+t as ctrl+t). |
-| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
+| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), CodeSmith's **o** [open menu](#projects-worktrees-and-other-folders), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
 
 Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
 `/thinking` shows or hides it. Nor have the verbosity and grouping
@@ -341,6 +341,8 @@ and `opencode` is used.
 |---|---|
 | `/new` | Start a new session, in a tab of its own. |
 | `/sessions` | Pick a session in this folder to continue; it opens in a tab (or its tab is shown). |
+| `/open` (`/projects`) | Open a recent session or project from any folder, or one of a project's worktrees. See [projects, worktrees and other folders](#projects-worktrees-and-other-folders). |
+| `/worktrees` | Open, make or remove one of the project's worktrees, or move the session to one. |
 | `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input (after anything typed there). The fork opens in a tab of its own. See [sessions](sessions.md#forking). |
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
 | `/agent [id]` | Switch agent, or pick one. As in OpenCode, an agent takes the model (and variant) it last had in this session, else its configured model, else the session's. |
@@ -532,6 +534,46 @@ under its title, when the terminal is at least 106 columns wide and the
 diff viewer is closed; narrower, they are the strip. `tui.tabs.mode: "off"`
 turns tabs off (see [configuration](configuration.md#session-tabs-tuitabs));
 they are on by default except inside the herdr multiplexer. With no mouse, there are no clicks, drags or tab menus.
+
+## Projects, worktrees and other folders
+
+As OpenCode's open menu does, `/open` (**ctrl+x o**, `open.menu`) lists
+the recent sessions from every folder, then the projects they belong to:
+a project is a Git repository's main checkout, and the UI's own folder is
+always one (marked `●`). Each session shows its project (with the
+worktree or subfolder it is in, `OpenCode · dashboard`) and how long ago
+it was used. Sessions waiting for you come first, marked `?` (a question)
+or `!` (a permission request); `⋯` marks one with a turn running and `▪`
+one open in a tab. Up to eight recent sessions show with nothing typed;
+typing filters sessions and projects, and a whole session ID finds that
+session however old it is. The list shows at once what it listed last
+time while it is read again.
+
+**alt+↑/↓** jump between the sessions and the projects. **→** on a Git
+project (marked `→`) lists its worktrees, its main one first and the UI's
+next; **ctrl+n** there makes a new one (a name is optional; blank picks a
+random one) and opens it, and **←** or **esc** goes back to the projects.
+**enter** opens what is highlighted: a session is continued, a project or
+worktree gets a new session.
+
+`/worktrees` (`session.move`, no key by default) lists the project's
+worktrees, the UI's first. **enter** opens one with a new session;
+**ctrl+m** (or **ctrl+g**, for terminals that send ctrl+m as enter) moves
+the session there and continues it; **ctrl+a** makes a new worktree;
+**ctrl+d**, pressed twice, removes the one highlighted (not the main one,
+nor the one the UI is in; one with uncommitted changes is refused); and
+**ctrl+r** reads the list again, keeping the filter. A session whose
+folder is gone opens this dialog with `Session location unavailable`,
+and the folder chosen (or a worktree made) becomes the session's.
+
+The UI works in one folder at a time, with that folder's configuration,
+tabs and files. A session or folder elsewhere closes it and starts it
+again there, once no turn is running (interrupt it first). `/new` then
+goes back to the folder CodeSmith was started in, as OpenCode's
+`session.new_location: "launch"` does; with `tui.session.new_location:
+"inherit"` it stays in the folder opened last (see
+[configuration](configuration.md#the-terminal-ui-tui)). Sessions are listed
+from the store, so the menu works without Git; worktrees need it.
 
 ## The terminal title, notifications and exit
 

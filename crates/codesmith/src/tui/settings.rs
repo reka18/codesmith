@@ -60,6 +60,10 @@ pub struct Settings {
     pub turn_tokens: bool,
     /// `session.tps`: show a turn's throughput in its footer.
     pub tps: bool,
+    /// `session.new_location: "inherit"`: a new session starts in the
+    /// folder the UI was opened in last (from the open menu) rather than
+    /// the one it was launched in (`"launch"`, the default).
+    pub new_inherit: bool,
     /// `terminal.title`: keep the terminal window's title on the session's.
     pub terminal_title: bool,
     /// `attention`: system notifications and sounds.
@@ -136,6 +140,7 @@ impl Default for Settings {
             tabs: super::tabs::Settings::default(),
             terminal_title: true,
             tps: true,
+            new_inherit: false,
             turn_tokens: false,
             attention: Attention::default(),
             paste_full: false,
@@ -322,6 +327,14 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
             Some(b) => s.tps = b,
             None => errors.push("tui.session.tps: must be true or false".into()),
         },
+    }
+    match get(&v, &["session", "new_location"]) {
+        None => {}
+        Some(Value::String(p)) if p == "launch" => s.new_inherit = false,
+        Some(Value::String(p)) if p == "inherit" => s.new_inherit = true,
+        Some(_) => {
+            errors.push("tui.session.new_location: must be \"launch\" or \"inherit\"".into())
+        }
     }
     match get(&v, &["prompt", "paste"]) {
         None => {}

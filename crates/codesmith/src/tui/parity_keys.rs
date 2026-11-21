@@ -132,7 +132,10 @@ fn oc_uses_command_ids_as_keybind_keys() {
 fn oc_preserves_current_navigation_defaults() {
     let b = resolve(Value::Null, true);
     for (id, want) in [
-        ("open.menu", "ctrl+o"),
+        // (adapted) Ctrl+O is CodeSmith's tool output key (OpenCode
+        // expands output with a click; CodeSmith has no mouse), so the open
+        // menu is Ctrl+X o.
+        ("open.menu", "<leader>o"),
         ("session.tab.next", "ctrl+tab,alt+down"),
         ("session.tab.previous", "ctrl+shift+tab,alt+up"),
         ("session.tab.next_unread", "alt+shift+down"),

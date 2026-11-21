@@ -1417,6 +1417,7 @@ theme):
 | `session.verbosity` | `low` | How much tool activity the transcript shows: `low` sums up each run of tool calls and thoughts on one row, `medium` shows calls on their own rows with reads and searches grouped, `high` also opens those groups. See [verbosity](interactive-ui.md#verbosity). |
 | `prompt.paste` | `compact` | `full` pastes long text in whole rather than as a `[Pasted ~N lines]` chip. |
 | `session.tps` | `true` | Show a turn's throughput (output tokens a second) in its footer. |
+| `session.new_location` | `launch` | Where `/new` starts a session after the [open menu](interactive-ui.md#projects-worktrees-and-other-folders) moved the UI to another folder: `launch`, the folder CodeSmith was started in, or `inherit`, the folder it is in now. |
 | `debug.turn_tokens` | `false` | `true` (or OpenCode's `"verbose"`) adds a token usage row after each turn, with likely cache busts flagged. |
 | `session.grouping` | `auto` | `none` draws reads and searches one by one rather than as one `Explored` row. |
 | `diffs.source` | `branch` | What the [diff viewer](interactive-ui.md#the-diff-viewer-and-review-panel) opens on: `branch` (the branch's commits and local changes against its base), `committed`, `working` (uncommitted changes) or `turn` (the session's last turn). |

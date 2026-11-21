@@ -62,6 +62,9 @@ Where the tests live:
   tabs of `app-lifecycle` and the tab settings of `config-v2`);
   `tests/e2e/tui.rs` runs tabs in a pty (`oc_keeps_each_visited_session_open`,
   background tabs and their permission requests).
+- `src/tui/parity_browser.rs`: the open menu and the worktrees dialog
+  (`cli/tui/dialog-open`, `cli/tui/prompt-move`, `cli/tui/dialog-session-list`
+  and the session location setting of `config-v2`).
 - `src/tui/parity_ui.rs`: the UI's smaller features (reasoning titles,
   `cli/tui/thinking`, and the groups listed with their tests below);
   `src/tui/mention.rs`: session mentions (`util/src/session-mention`).
@@ -107,14 +110,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
-| tui: main UI | 1247 | 15 | 460 | 84 | 675 | 13 | 0 |
+| tui: main UI | 1247 | 15 | 502 | 41 | 676 | 13 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **759** | **750** | **86** | **2355** | **259** | **428** |
+| **Total** | **4637** | **759** | **792** | **43** | **2356** | **259** | **428** |
 
 ## Fixes made while porting
 
@@ -467,7 +470,39 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/theme/v2/component` | provides reactive properties, states, surfaces, and color operations | after a fix | oc_provides_reactive_properties_states_surfaces_and_color_operations (adapted: no signals) |
 | `tui/test/config-v2` | resolves nested config and keybind defaults | after a fix | oc_resolves_nested_config_and_keybind_defaults (adapted: the scroll, diffs, debug and session halves are dropped) |
 | `tui/test/config-v2` | uses command IDs as keybind keys | after a fix | oc_uses_command_ids_as_keybind_keys |
-| `tui/test/config-v2` | preserves current navigation defaults | after a fix | oc_preserves_current_navigation_defaults (adapted: ctrl+x shift+t reopens a tab too) |
+| `tui/test/config-v2` | preserves current navigation defaults | after a fix | oc_preserves_current_navigation_defaults (adapted: ctrl+x shift+t reopens a tab too; the open menu is ctrl+x o, as ctrl+o is CodeSmith's tool output key) |
+| `tui/test/cli/tui/dialog-open` | selecting an unhydrated session preserves its location | after a fix | oc_selecting_an_unhydrated_session_preserves_its_location (adapted: a session elsewhere restarts the UI in its folder) |
+| `tui/test/cli/tui/dialog-open` | finds and opens an exact child session ID outside the recent list | after a fix | oc_finds_and_opens_an_exact_child_session_id_outside_the_recent_list |
+| `tui/test/cli/tui/dialog-open` | shows the current project and opens its root | after a fix | oc_shows_the_current_project_and_opens_its_root |
+| `tui/test/cli/tui/dialog-open` | shows only canonical projects while retaining sessions from other directories | after a fix | oc_shows_only_canonical_projects_while_retaining_sessions_from_other_directories |
+| `tui/test/cli/tui/dialog-open` | keeps nested Git session directories out of projects and in their session footer | after a fix | oc_keeps_nested_git_session_directories_out_of_projects_and_in_their_session_footer |
+| `tui/test/cli/tui/dialog-open` | loads Git worktrees only when drilling into the canonical project | after a fix | oc_loads_git_worktrees_only_when_drilling_into_the_canonical_project |
+| `tui/test/cli/tui/dialog-open` | does not show or trigger worktree navigation for non-Git and global directories | after a fix | oc_does_not_show_or_trigger_worktree_navigation_for_non_git_and_global_directories |
+| `tui/test/cli/tui/dialog-open` | does not show the previous project's worktrees while loading another project | after a fix | oc_does_not_show_the_previous_projects_worktrees_while_loading_another_project (adapted: projects come from the sessions, so alt+down passes the project's session first) |
+| `tui/test/cli/tui/dialog-open` | creates a worktree named '%s' by project and opens its local directory (2 cases) | after a fix | oc_creates_a_worktree_named_by_project_and_opens_its_local_directory (adapted: the mouse selection half is dropped) |
+| `tui/test/cli/tui/dialog-open` | shows projects while sessions refresh and preserves the selected project | after a fix | oc_shows_projects_while_sessions_refresh_and_preserves_the_selected_project (adapted: the projects are the last list's while it refreshes) |
+| `tui/test/cli/tui/dialog-open` | keeps a filtered selection visible after refresh with query reset %s (2 cases) | after a fix | oc_keeps_a_filtered_selection_visible_after_refresh_with_query_reset (adapted: after the reset, the top row is the first project's session) |
+| `tui/test/cli/tui/dialog-open` | sessions remain selectable while projects are still loading | after a fix | oc_sessions_remain_selectable_while_projects_are_still_loading (adapted: one read brings both) |
+| `tui/test/cli/tui/dialog-open` | shows hydrated sessions immediately without waiting for either read | after a fix | oc_shows_hydrated_sessions_immediately_without_waiting_for_either_read |
+| `tui/test/cli/tui/dialog-open` | keeps the previous recent list usable when reopening fails to refresh | after a fix | oc_keeps_the_previous_recent_list_usable_when_reopening_fails_to_refresh |
+| `tui/test/cli/tui/dialog-open` | shows an initial loading shell instead of reporting an empty list | after a fix | oc_shows_an_initial_loading_shell_instead_of_reporting_an_empty_list |
+| `tui/test/cli/tui/dialog-open` | reports both refresh failures while keeping hydrated sessions usable | after a fix | oc_reports_both_refresh_failures_while_keeping_hydrated_sessions_usable |
+| `tui/test/cli/tui/dialog-open` | option arrows jump between sections | after a fix | oc_option_arrows_jump_between_sections |
+| `tui/test/cli/tui/dialog-open` | option arrows stay in the only visible section | after a fix | oc_option_arrows_stay_in_the_only_visible_section |
+| `tui/test/cli/tui/dialog-open` | surfaces sessions awaiting permissions or questions at the top with attention icons | after a fix | oc_surfaces_sessions_awaiting_permissions_or_questions_at_the_top_with_attention_icons (adapted: the parent session is the one asking) |
+| `tui/test/cli/tui/prompt-move` | passes the current project and uses server worktree defaults for $name (5 cases) | after a fix | oc_passes_the_current_project_and_uses_server_worktree_defaults (adapted: the project is found on disk from the folder) |
+| `tui/test/cli/tui/prompt-move` | uses Home's selected location instead of launch in $name (2 cases) | after a fix | oc_uses_homes_selected_location_instead_of_launch (adapted: the launch folder is never read) |
+| `tui/test/cli/tui/prompt-move` | selecting a workspace opens Home without moving a session (home=%s) (2 cases) | after a fix | oc_selecting_a_workspace_opens_home_without_moving_a_session |
+| `tui/test/cli/tui/prompt-move` | removal sends project ownership and the destination without a configuration location | after a fix | oc_removal_sends_project_ownership_and_the_destination_without_a_configuration_location |
+| `tui/test/cli/tui/prompt-move` | refresh explicitly scans the project and preserves the worktree filter | after a fix | oc_refresh_explicitly_scans_the_project_and_preserves_the_worktree_filter |
+| `tui/test/cli/tui/prompt-move` | Ctrl+M moves only an existing session (home=%s) (2 cases) | after a fix | oc_ctrl_m_moves_only_an_existing_session |
+| `tui/test/cli/tui/prompt-move` | choosing a directory recovers the session when its location is unavailable | after a fix | oc_choosing_a_directory_recovers_the_session_when_its_location_is_unavailable |
+| `tui/test/cli/tui/prompt-move` | creating a worktree recovers the session without reading its removed location | after a fix | oc_creating_a_worktree_recovers_the_session_without_reading_its_removed_location |
+| `tui/test/cli/tui/prompt-move` | failed recovery does not navigate away from the session | after a fix | oc_failed_recovery_does_not_navigate_away_from_the_session (adapted: the store move fails and the session stays) |
+| `tui/test/cli/tui/prompt-move` | does not create from another clone when $name lookup fails (2 cases) | after a fix | oc_does_not_create_from_another_clone_when_lookup_fails (adapted: Git fails to make the worktree) |
+| `tui/test/cli/tui/prompt-move` | does not open creation when the selected Home location lookup fails | after a fix | oc_does_not_open_creation_when_the_selected_home_location_lookup_fails |
+| `tui/test/cli/tui/dialog-session-list` | scopes sessions to the active session location | after a fix | oc_scopes_sessions_to_the_active_session_location |
+| `tui/test/config-v2` | shows the new session location default in settings | after a fix | oc_shows_the_new_session_location_default_in_settings |
 | `tui/test/config-v2` | preserves migrated v1 keybind defaults | after a fix | oc_preserves_migrated_v1_keybind_defaults |
 | `tui/test/config-v2` | accepts every v2-only named command ID | after a fix | oc_accepts_every_v2_only_named_command_id |
 | `tui/test/config-v2` | centralizes named command defaults and resolves explicit none | after a fix | oc_centralizes_named_command_defaults_and_resolves_explicit_none |
@@ -974,13 +1009,6 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
-### tui: project, worktree and session browser (43)
-
-- `tui/test/cli/tui/dialog-open` (22): e.g. "selecting an unhydrated session preserves its location"; "finds and opens an exact child session ID outside the recent list"
-- `tui/test/cli/tui/prompt-move` (19): e.g. "passes the current project and uses server worktree defaul"; "uses Home's selected location instead of launch in $name"
-- `tui/test/cli/tui/dialog-session-list` (1): e.g. "scopes sessions to the active session location"
-- `tui/test/config-v2` (1): e.g. "shows the new session location default in settings"
-
 ### tui: mouse selection and copy (32)
 
 - `tui/test/util/selection` (8): e.g. "copy writes selected text without clearing the highlight"; "copy-on-select ignores a later non-drag release"
@@ -1037,7 +1065,7 @@ its remaining work is tracked in
 | tui: hosted catalog | by design | 54 | 11 | hosted plans and usage limits; integration accounts; integrations, favourites and the hosted model catalog; release highlights, hosted plans or onboarding |
 | cli: client/server frontends | by design | 48 | 7 | run and the UI drive the session in-process, not through a server; run reads the session in-process, not by reconciling server events; sessions are resolved locally, no server locations; subagents run inside the turn |
 | codemode: Boa departures | by design | 39 | 15 | Boa 0.22 departs from the specification here |
-| tui: client/server state | by design | 38 | 10 | the UI runs the session in-process |
+| tui: client/server state | by design | 39 | 11 | the UI runs the session in-process (and no event stream moves a session the open menu has not read yet) |
 | codemode: OpenCode restrictions and result conversion | by design | 28 | 10 | opaque references, cycles, typed arrays, errors as {name,message}, awaited result promises, UTC dates |
 | server: auth and transport | by design | 28 | 7 | a bearer token instead of Basic auth, pairing and CORS; browsers are refused |
 | codemode: error wording | by design | 25 | 5 | Boa's messages; OpenCode's error kinds, locations and suggestions |

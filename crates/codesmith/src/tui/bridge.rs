@@ -19,6 +19,8 @@ pub enum Ev {
     Key(KeyEvent),
     /// A diff viewer load finished.
     Diff(Box<super::diff_view::Response>),
+    /// An answer for the open menu.
+    Browse(Box<super::browser::Response>),
     Paste(String),
     Resize,
     /// The terminal gained (`true`) or lost the focus.

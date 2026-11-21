@@ -792,7 +792,10 @@ pub const DEFINITIONS: &[Def] = &[
 /// Tab and Shift+Tab cycle agents both ways, Ctrl+X h opens the help, Ctrl+X
 /// b backgrounds commands, Ctrl+End follows the transcript, Tab moves
 /// down a picker, and Ctrl+X Shift+T reopens a tab (terminals without the
-/// kitty keyboard protocol send Ctrl+Shift+T as Ctrl+T).
+/// kitty keyboard protocol send Ctrl+Shift+T as Ctrl+T). Ctrl+O stays the
+/// tool output key, so the open menu is Ctrl+X o; and since those terminals
+/// send Ctrl+M as Enter, the worktrees dialog also moves the session with
+/// Ctrl+G.
 pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
     ("session.tab.reopen", "ctrl+shift+t,<leader>shift+t"),
     ("agent.cycle", "tab"),
@@ -801,6 +804,8 @@ pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
     ("session.background", "ctrl+b,<leader>b"),
     ("session.last", "ctrl+alt+g,end,kpend,ctrl+end"),
     ("dialog.select.next", "down,ctrl+n,tab"),
+    ("open.menu", "<leader>o"),
+    ("dialog.move_session.move", "ctrl+m,ctrl+g"),
 ];
 
 /// OpenCode's first-format names (`CommandMap`).
@@ -1550,6 +1555,8 @@ pub mod scope {
         "model.list",
         "variant.cycle",
         "session.list",
+        "open.menu",
+        "session.move",
         "session.new",
         "session.tab.next",
         "session.tab.previous",
@@ -1647,6 +1654,20 @@ pub mod scope {
         "composer.shell.kill",
         "dialog.mcp.toggle",
     ];
+    /// The worktrees dialog (`session.move`).
+    pub const WORKTREES: &[&str] = &[
+        "dialog.select.prev",
+        "dialog.select.next",
+        "dialog.select.page_up",
+        "dialog.select.page_down",
+        "dialog.select.home",
+        "dialog.select.end",
+        "dialog.select.submit",
+        "dialog.move_session.new",
+        "dialog.move_session.move",
+        "dialog.move_session.delete",
+        "dialog.move_session.refresh",
+    ];
     pub const ALL: &[&[&str]] = &[
         AUTOCOMPLETE,
         PROMPT,
@@ -1655,6 +1676,7 @@ pub mod scope {
         QUESTION,
         PERMISSION,
         PANEL,
+        WORKTREES,
     ];
 }
 

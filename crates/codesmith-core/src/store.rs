@@ -808,6 +808,19 @@ impl Store {
         Ok(())
     }
 
+    /// Move session `id` (and its child sessions) to `directory`, where it
+    /// is resumed from now on. False when there is no such session.
+    pub fn set_directory(&self, id: &str, directory: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "WITH RECURSIVE family(id) AS (
+                SELECT ?1 UNION SELECT s.id FROM session s JOIN family f ON s.parent_id = f.id
+            ) UPDATE session SET directory = ?2 WHERE id IN family",
+            params![id, directory],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Record a switch of agent and model, so a reopened session keeps them.
     pub fn set_selection(&self, id: &str, agent: &str, model: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -1565,6 +1578,21 @@ mod tests {
         let second = Store::open(&path).unwrap();
         second.create(&info("a", "/d", 1)).unwrap();
         assert_eq!(first.get("a").unwrap().unwrap().id, "a");
+    }
+
+    #[test]
+    fn set_directory_moves_a_session_and_its_children() {
+        let db = Store::memory().unwrap();
+        db.create(&info("p", "/a", 1)).unwrap();
+        let mut child = info("c", "/a", 2);
+        child.parent_id = Some("p".into());
+        db.create(&child).unwrap();
+        db.create(&info("other", "/a", 3)).unwrap();
+        assert!(db.set_directory("p", "/b").unwrap());
+        assert_eq!(db.get("p").unwrap().unwrap().directory, "/b");
+        assert_eq!(db.get("c").unwrap().unwrap().directory, "/b");
+        assert_eq!(db.get("other").unwrap().unwrap().directory, "/a");
+        assert!(!db.set_directory("missing", "/b").unwrap());
     }
 
     fn info(id: &str, dir: &str, updated: i64) -> Info {

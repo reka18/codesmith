@@ -17,6 +17,8 @@ mod attention;
 #[cfg(test)]
 mod bench;
 mod bridge;
+mod browse_host;
+mod browser;
 mod complete;
 mod diff;
 mod diff_draw;
@@ -39,6 +41,8 @@ mod outside;
 mod panel;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod parity_browser;
 #[cfg(test)]
 mod parity_diff;
 #[cfg(test)]
@@ -162,6 +166,15 @@ struct Runner {
     shell_command: Option<String>,
     /// Goals written (`/goal`), for the status line.
     goals: tokio::sync::broadcast::Receiver<codesmith_core::plugin::goal::Change>,
+    /// The open menu chose a session or folder elsewhere: the UI closes
+    /// and starts again there.
+    relaunch: Option<browse_host::Relaunch>,
+    /// The folder the process was launched in, where `/new` goes back to
+    /// (unless `tui.session.new_location` is `inherit`).
+    launch: PathBuf,
+    new_inherit: bool,
+    /// The next `/new` starts here (the open menu chose this folder).
+    new_here: bool,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -623,6 +636,15 @@ impl Runner {
                 self.app
                     .notice(format!("verbosity: {}", self.app.verbosity.key()));
             }
+            // As OpenCode's `session.new_location: "launch"`: a new session
+            // starts where the UI was launched.
+            "new"
+                if !self.new_inherit
+                    && !std::mem::take(&mut self.new_here)
+                    && !browse_host::same_dir(&self.launch, &self.cwd) =>
+            {
+                self.relaunch(self.launch.clone(), None)
+            }
             "new" if self.tabs.on() => self.new_tab(),
             "new" if self.idle_or_say() => {
                 self.forget_approvals();
@@ -633,11 +655,8 @@ impl Runner {
                 self.app.notice("new session");
             }
             "sessions" if self.tabs.on() || self.idle_or_say() => {
-                // Archived sessions stay out, as in OpenCode's session list.
                 let list = open_store()
-                    .map(|db| {
-                        db.list_archived(Some(&self.cwd.display().to_string()), false, Some(false))
-                    })
+                    .map(|db| folder_sessions(&db, &self.cwd))
                     .transpose()?
                     .unwrap_or_default();
                 let items = list
@@ -651,6 +670,8 @@ impl Runner {
                     .collect();
                 self.app.modal = Some(Modal::Picker(Picker::new(Pick::Session, "Sessions", items)));
             }
+            "open" | "projects" | "project" => self.open_browser(),
+            "worktrees" => self.open_worktrees(),
             "fork" if self.idle_or_say() => {
                 let Some(s) = &self.session else {
                     return Ok(());
@@ -1438,6 +1459,11 @@ impl Runner {
                         self.run_command(id);
                         Ok(())
                     }
+                    Some(Action::Open(t)) => self.open_target(t),
+                    Some(Action::MoveSession { session, dir }) => {
+                        self.move_session(session, dir);
+                        Ok(())
+                    }
                     Some(Action::CycleAgent(d)) => self.cycle_agent(d),
                     Some(Action::Favorite(id)) => {
                         self.toggle_favorite(&id);
@@ -1497,6 +1523,19 @@ impl Runner {
                 self.app.diff_turn_done();
             }
             Ev::Diff(r) => self.app.diff_answer(*r),
+            Ev::Browse(r) => {
+                let result = match self.app.browse_answer(*r) {
+                    Some(Action::Open(t)) => self.open_target(t),
+                    Some(Action::MoveSession { session, dir }) => {
+                        self.move_session(session, dir);
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                };
+                if let Err(e) = result {
+                    self.app.error(format!("{e:#}"));
+                }
+            }
             other => self.app.on_event(other),
         }
     }
@@ -1651,8 +1690,22 @@ fn pause_input(pause: bool) {
     }
 }
 
+/// Where the input thread sends: the running UI's channel (the thread
+/// outlives a UI that starts again in another folder).
+static INPUT_TX: std::sync::Mutex<Option<UnboundedSender<Ev>>> = std::sync::Mutex::new(None);
+static INPUT_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the input thread runs (a UI ran before in this process).
+fn input_started() -> bool {
+    INPUT_STARTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 fn spawn_input(tx: UnboundedSender<Ev>) {
     use std::sync::atomic::Ordering;
+    *INPUT_TX.lock().unwrap() = Some(tx);
+    if INPUT_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(move || loop {
         if INPUT_PAUSED.load(Ordering::SeqCst) {
             INPUT_IDLE.store(true, Ordering::SeqCst);
@@ -1678,8 +1731,10 @@ fn spawn_input(tx: UnboundedSender<Ev>) {
             Ok(_) => continue,
             Err(_) => break,
         };
-        if tx.send(ev).is_err() {
-            break;
+        let tx = INPUT_TX.lock().unwrap().clone();
+        // Between two UIs (or after the last) a key goes nowhere.
+        if let Some(tx) = tx {
+            let _ = tx.send(ev);
         }
     });
 }
@@ -1726,6 +1781,35 @@ fn suspend(terminal: &mut ratatui::DefaultTerminal, cursor: settings::Cursor) {
 fn suspend(_: &mut ratatui::DefaultTerminal, _: settings::Cursor) {}
 
 pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
+    let launch = cwd.clone();
+    let (mut cwd, mut opts) = (cwd, opts);
+    loop {
+        let Some(next) = run_in(cwd, &launch, &opts).await? else {
+            return Ok(());
+        };
+        // The open menu chose a session or folder elsewhere: start again
+        // there, as if launched in it.
+        std::env::set_current_dir(&next.cwd)?;
+        cwd = next.cwd;
+        opts.resume = next.resume;
+        opts.prompt = None;
+    }
+}
+
+/// Run the UI in `cwd` until it closes; where to start it again, when the
+/// open menu chose another folder.
+async fn run_in(
+    cwd: PathBuf,
+    launch: &std::path::Path,
+    opts: &Opts,
+) -> Result<Option<browse_host::Relaunch>> {
+    let opts = Opts {
+        resume: opts.resume.clone(),
+        agent: opts.agent.clone(),
+        model: opts.model.clone(),
+        prompt: opts.prompt.clone(),
+        auto: opts.auto,
+    };
     let loaded = config::load(&cwd)?;
     let (tui, tui_warnings) = settings::load(&loaded.config.tui);
     let (custom, theme_errors) = theme::discover(&theme::theme_dirs(
@@ -1744,7 +1828,14 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     let mut tabs = tabs_host::Host::new(tx.clone(), opts.auto, cwd.clone(), tui.tabs);
     // Each tab's session talks on a channel of its own.
     let (first_tab, parts) = tabs.parts();
-    codesmith_core::automation::spawn_scheduler(&loaded);
+    {
+        // Once per process: the scheduler is the store's, not the folder's.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SCHEDULED: AtomicBool = AtomicBool::new(false);
+        if !SCHEDULED.swap(true, Ordering::SeqCst) {
+            codesmith_core::automation::spawn_scheduler(&loaded);
+        }
+    }
     let mcp = crate::connect_mcp(&loaded, false).await;
     let mcp_failures: Vec<String> = mcp
         .statuses()
@@ -1792,6 +1883,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         selections: Default::default(),
         shell_command: None,
         goals: codesmith_core::plugin::goal::shared().subscribe(),
+        relaunch: None,
+        launch: launch.to_path_buf(),
+        new_inherit: tui.new_inherit,
+        new_here: false,
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),
@@ -1871,7 +1966,15 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     // The terminal's colors give the mode (unless one is pinned) and the
     // `system` theme. Asked before input is read, so the reply is not
     // taken for keys.
-    if let Some(colors) = theme::system::query(Duration::from_millis(200)) {
+    let reading = input_started();
+    if reading {
+        pause_input(true);
+    }
+    let colors = theme::system::query(Duration::from_millis(200));
+    if reading {
+        pause_input(false);
+    }
+    if let Some(colors) = colors {
         r.detected = theme::system::terminal_mode(&colors);
         r.themes.set_palette(colors);
     }
@@ -1911,6 +2014,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
                 r.dispatch(ev).await;
             }
             r.pump_diff();
+            r.pump_browser();
             if r.app.quit {
                 break;
             }
@@ -1944,6 +2048,10 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
         ratatui::crossterm::cursor::SetCursorStyle::DefaultUserShape
     );
     ratatui::restore();
+    if let Some(next) = r.relaunch.take() {
+        result?;
+        return Ok(Some(next));
+    }
     // What continues the session, once it is in the store.
     let stored = (!r.session_id.is_empty())
         .then(open_store)
@@ -1957,7 +2065,14 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
             println!("{text}");
         }
     }
-    result
+    result.map(|()| None)
+}
+
+/// The sessions `/sessions` lists: the top-level ones of the UI's folder,
+/// which is the active session's (one elsewhere restarts the UI there).
+/// Archived sessions stay out, as in OpenCode's session list.
+fn folder_sessions(db: &Store, cwd: &std::path::Path) -> Result<Vec<store::Info>> {
+    db.list_archived(Some(&cwd.display().to_string()), false, Some(false))
 }
 
 /// The command of a `!command` prompt (OpenCode's shell mode).
@@ -1993,6 +2108,10 @@ const BUILTINS: &[(&str, bool)] = &[
     ("theme", true),
     ("new", false),
     ("sessions", false),
+    ("open", false),
+    ("projects", false),
+    ("project", false),
+    ("worktrees", false),
     ("fork", false),
     ("undo", false),
     ("redo", false),

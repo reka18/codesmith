@@ -827,6 +827,28 @@ impl Runner {
         }
     }
 
+    /// Each open tab's session, what it waits for and whether a turn runs
+    /// in it (the shown one's from the runner).
+    pub(super) fn tab_states(&self) -> Vec<(String, Option<Attention>, bool)> {
+        self.tabs
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let (at, busy) = if i == self.tabs.shown {
+                    (attention(&self.app), self.app.busy || self.stopping)
+                } else {
+                    match &e.state {
+                        State::Live(s) => (attention(&s.app), s.app.busy || s.stopping),
+                        _ => (None, false),
+                    }
+                };
+                (e.tab.session.clone(), at, busy)
+            })
+            .filter(|(id, ..)| !id.is_empty())
+            .collect()
+    }
+
     /// The UI is closing: remember the open tabs and stop the turns
     /// running in the background ones (the shown one's is the caller's).
     pub(super) async fn close_tabs(&mut self) {

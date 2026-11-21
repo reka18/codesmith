@@ -353,6 +353,14 @@ pub enum Action {
     KillShell(String),
     /// Open the URL in the browser (a form's external link).
     OpenUrl(String),
+    /// Open a session or a folder from the open menu (the UI restarts
+    /// there when it is not its folder).
+    Open(super::browser::Target),
+    /// Move the session to the folder and open it there.
+    MoveSession {
+        session: String,
+        dir: std::path::PathBuf,
+    },
     /// A command the runner carries out: `theme.switch_mode`,
     /// `theme.mode.lock`, `terminal.suspend`.
     Run(&'static str),
@@ -495,6 +503,11 @@ pub struct App {
     pub frecency: super::stash::Frecency,
     /// The session's goal (`/goal`), shown in the status line.
     pub goal: Option<codesmith_core::plugin::goal::Status>,
+    /// The open menu or the worktrees dialog, while open. A permission or
+    /// question that comes meanwhile is drawn over it and takes the keys.
+    pub browser: Option<Box<super::browser::Browser>>,
+    /// The sessions the open menu last listed, shown at once next time.
+    pub browser_known: Vec<super::browser::SessionRow>,
 }
 
 /// How a turn ended.
@@ -564,6 +577,8 @@ fn palette_command(id: &str) -> bool {
 /// The slash commands the help lists.
 const HELP_COMMANDS: &str = "/new            start a new session
 /sessions       pick a session to continue
+/open           open a recent session or project (→ its worktrees); /projects too
+/worktrees      open, make or remove a worktree, or move the session to one
 /fork           fork the session (all of it, or before a prompt you pick)
 /undo, /redo    undo or redo the latest turn's file changes
 /agent [id]     switch agent (build, plan, …)
@@ -624,6 +639,8 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("model.cycle_recent", "next recently used model"),
     ("model.cycle_recent_reverse", "previous recently used model"),
     ("session.list", "pick a session"),
+    ("open.menu", "open a recent session or project"),
+    ("session.move", "the project's worktrees"),
     ("session.new", "new session"),
     ("session.tab.next", "next session tab"),
     ("session.tab.previous", "previous session tab"),
@@ -702,6 +719,11 @@ pub fn help_text(k: &Keymap) -> String {
 pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "start a new session"),
     ("sessions", "pick a session to continue"),
+    ("open", "open a recent session or project, or a worktree"),
+    (
+        "worktrees",
+        "open, make, remove or move the session to a worktree",
+    ),
     ("fork", "fork the session, all of it or before a prompt"),
     ("undo", "undo the latest turn's file changes"),
     ("redo", "redo the latest undone turn"),
@@ -1004,6 +1026,9 @@ impl App {
         }
         match ev {
             Ev::Diff(r) => self.diff_answer(*r),
+            Ev::Browse(r) => {
+                self.browse_answer(*r);
+            }
             Ev::Text(d) => match self.entries.last_mut() {
                 Some(Entry::Assistant(t)) => t.push_str(&d),
                 _ => self.entries.push(Entry::Assistant(d)),
@@ -1315,6 +1340,12 @@ impl App {
     }
 
     pub fn on_paste(&mut self, s: &str) {
+        if self.modal.is_none() {
+            if let Some(b) = self.browser.as_mut() {
+                b.paste(s);
+                return;
+            }
+        }
         if self.diff_focused() && !matches!(self.modal, Some(Modal::Picker(_))) {
             return;
         }
@@ -1615,6 +1646,8 @@ impl App {
             "model.list" => return Self::slash("model"),
             "variant.cycle" => return Self::slash("variant"),
             "session.list" => return Self::slash("sessions"),
+            "open.menu" => return Self::slash("open"),
+            "session.move" => return Self::slash("worktrees"),
             "session.new" => return Self::slash("new"),
             "session.compact" => return Self::slash("compact"),
             "session.undo" => return Self::slash("undo"),
@@ -1782,6 +1815,15 @@ impl App {
         );
         if self.modal.is_some() && !(diff && asking) {
             return self.modal_key(k, ctrl);
+        }
+        if let Some(b) = self.browser.as_mut() {
+            let km = self.keymap.clone();
+            let out = if ctrl && k.code == KeyCode::Char('c') {
+                b.interrupt()
+            } else {
+                b.key(&k, &km)
+            };
+            return self.browsed(out);
         }
         if diff {
             return self.diff_key(k);
@@ -2406,6 +2448,54 @@ impl App {
             },
         }
         None
+    }
+
+    /// What the open menu's key or answer asks for.
+    fn browsed(&mut self, out: super::browser::Outcome) -> Option<Action> {
+        use super::browser::Outcome;
+        match out {
+            Outcome::Nothing => None,
+            Outcome::Close => {
+                self.close_browser();
+                None
+            }
+            Outcome::Open(t) => {
+                self.close_browser();
+                Some(Action::Open(t))
+            }
+            Outcome::Move { session, dir } => {
+                self.close_browser();
+                Some(Action::MoveSession { session, dir })
+            }
+            Outcome::Failed(title, message) => {
+                let mut t = super::toast::Toast::new(super::toast::Variant::Error, message);
+                t.title = Some(title);
+                self.toast(t);
+                None
+            }
+        }
+    }
+
+    /// Close the open menu, keeping its list for the next time.
+    fn close_browser(&mut self) {
+        if let Some(b) = self.browser.take() {
+            self.browser_known = b.known();
+        }
+    }
+
+    /// An answer for the open menu (dropped when it closed).
+    pub fn browse_answer(&mut self, r: super::browser::Response) -> Option<Action> {
+        let b = self.browser.as_mut()?;
+        let out = b.answer(r);
+        self.browsed(out)
+    }
+
+    /// What the open menu needs loaded.
+    pub fn take_browse_requests(&mut self) -> Vec<super::browser::Request> {
+        self.browser
+            .as_mut()
+            .map(|b| b.take_requests())
+            .unwrap_or_default()
     }
 
     /// The theme picker previews the theme it is on, when that changed.

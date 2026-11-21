@@ -147,7 +147,7 @@ fn take(s: &str, n: usize) -> String {
 
 /// Characters that draw nothing (or reorder text) but could change what a
 /// reader thinks a command says: zero-width and bidi controls, tags, etc.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(
         c as u32,
         0x00AD
@@ -1324,6 +1324,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     let Some(v) = &app.diff else {
         let main = tab_strip(f, app, full);
         draw_main(f, app, main);
+        if draw_browser(f, main, app) {
+            // A permission or question that came meanwhile stays on top.
+            if let Some(m) = &app.modal {
+                draw_modal(f, main, m, app);
+            }
+        }
         super::toast::draw(f.buffer_mut(), full, &app.toasts);
         return;
     };
@@ -1335,6 +1341,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_main(f, app, main);
     }
     super::diff_draw::draw(f.buffer_mut(), full, v, &app.diff_memory, &app.keymap);
+    draw_browser(f, full, app);
     match &app.modal {
         Some(m @ (Modal::Picker(_) | Modal::DiffHelp(_) | Modal::Help(_))) => {
             draw_modal(f, full, m, app)
@@ -1799,6 +1806,42 @@ fn picker_lines(pk: &Picker, rows: usize, k: &super::keymap::Keymap) -> Vec<Line
 }
 
 const MODAL_WIDTH: u16 = 100;
+
+/// The open menu or the worktrees dialog, when open. Whether it was drawn.
+fn draw_browser(f: &mut Frame, area: Rect, app: &App) -> bool {
+    let Some(b) = &app.browser else {
+        return false;
+    };
+    let p = theme::current();
+    let room = area.height.saturating_sub(4) as usize;
+    let width = MODAL_WIDTH
+        .min(area.width.saturating_sub(2))
+        .saturating_sub(2);
+    // The list's rows: what is left of a dialog at most 30 rows tall.
+    let rows = room.min(28).saturating_sub(7).max(1);
+    let body = b.lines(
+        width as usize,
+        rows,
+        &app.keymap,
+        codesmith_core::store::now(),
+    );
+    let height = (body.len() as u16 + 2).max(5).min(area.height);
+    let r = centered(area, MODAL_WIDTH, height);
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(body)
+            .style(Style::default().fg(p.dialog_text).bg(p.dialog_bg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", b.title()))
+                    .border_style(fg(p.primary))
+                    .style(Style::default().bg(p.dialog_bg)),
+            ),
+        r,
+    );
+    true
+}
 
 fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
     let p = theme::current();

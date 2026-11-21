@@ -362,3 +362,72 @@ fn bench_diff_viewer() {
     });
     report("diff docked beside 2k entries", t, "both panes");
 }
+
+/// The open menu over a short session: 50 recent sessions in 10 projects,
+/// with and without a filter typed, and the worktrees of one.
+#[test]
+#[ignore]
+fn bench_open_menu() {
+    use super::browser::{Browser, Context, Response, SessionRow};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut a = long_session(40);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let t = time(200, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame, no menu (40 entries)", t, "");
+    let now = codesmith_core::store::now();
+    let sessions: Vec<SessionRow> = (0..50)
+        .map(|i| {
+            let root = PathBuf::from(format!("/work/project-{}", i % 10));
+            SessionRow {
+                id: format!("ses_{i:017x}"),
+                title: Some(format!("Fix the failing test in module {i}")),
+                dir: root.join(format!("packages/pkg{i}")),
+                root: Some(root),
+                updated: now - i * 60_000,
+                parent: None,
+            }
+        })
+        .collect();
+    let ctx = Context {
+        cwd: PathBuf::from("/work/project-0"),
+        project: Some(PathBuf::from("/work/project-0")),
+        ..Default::default()
+    };
+    let mut b = Browser::open(ctx, Vec::new());
+    b.answer(Response::Recent(Ok(sessions)));
+    a.browser = Some(Box::new(b));
+    let t = time(200, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame, open menu", t, "50 sessions, 10 projects");
+    let km = a.keymap.clone();
+    if let Some(b) = a.browser.as_mut() {
+        for c in "module 4".chars() {
+            b.key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &km);
+        }
+    }
+    let t = time(200, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame, open menu filtered", t, "\"module 4\"");
+    let root = PathBuf::from("/work/project-0");
+    let worktrees: Vec<PathBuf> = std::iter::once(root.clone())
+        .chain((0..20).map(|i| PathBuf::from(format!("/work/project-0-wt{i}"))))
+        .collect();
+    let ctx = Context {
+        cwd: root.clone(),
+        project: Some(root.clone()),
+        session: Some("ses_1".into()),
+        ..Default::default()
+    };
+    let mut b = Browser::worktrees(ctx).unwrap();
+    b.answer(Response::Worktrees(root, Ok(worktrees)));
+    a.browser = Some(Box::new(b));
+    let t = time(200, || {
+        term.draw(|f| view::draw(f, &a)).unwrap();
+    });
+    report("tui frame, worktrees dialog", t, "21 worktrees");
+}

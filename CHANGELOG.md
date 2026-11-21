@@ -47,6 +47,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 - ACP: an editor-supplied HTTP MCP server no longer uses CodeSmith's saved
   MCP OAuth logins. The headers the editor sends are its credentials, as
   in OpenCode.
+- The open menu (`/open`, **ctrl+x o**) opens recent sessions and
+  projects from any folder and a project's worktrees, where new ones can be
+  made; `/worktrees` opens, makes and removes worktrees and moves the
+  session to one. A session or folder elsewhere restarts the UI there;
+  `tui.session.new_location` chooses where `/new` goes back to.
 
 ## 0.1.0
 
