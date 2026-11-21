@@ -34,43 +34,62 @@ pub fn open(
         editor.ok_or_else(|| anyhow!("Set $VISUAL or $EDITOR to open an external editor"))?;
     let mut parts = editor.split_whitespace();
     let program = parts.next().ok_or_else(|| anyhow!("$EDITOR is empty"))?;
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file = std::env::temp_dir().join(format!(
-        "codesmith-prompt-{}-{}-{n}.md",
-        std::process::id(),
-        codesmith_core::store::now()
-    ));
-    codesmith_core::paths::write_private(&file, value.as_bytes())
+    // In a new owner-only folder with a random name: a fixed name in the
+    // shared temporary directory could be created or linked first by
+    // another local user.
+    let dir = codesmith_core::paths::new_private_temp_dir("codesmith-prompt-")
+        .context("creating a folder for the prompt")?;
+    let result = edit(
+        value,
+        program,
+        parts,
+        &dir.join("prompt.md"),
+        cwd,
+        suspend,
+        resume,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = result?;
+    if text.len() as u64 >= READ_LIMIT {
+        bail!("the edited prompt is over {} KiB", READ_LIMIT / 1024);
+    }
+    Ok((!text.is_empty()).then_some(text))
+}
+
+/// Write `value` to `file`, run the editor on it, and read it back.
+fn edit<'a>(
+    value: &str,
+    program: &str,
+    parts: impl Iterator<Item = &'a str>,
+    file: &Path,
+    cwd: &Path,
+    suspend: &mut dyn FnMut(),
+    resume: &mut dyn FnMut(),
+) -> Result<String> {
+    codesmith_core::paths::write_private(file, value.as_bytes())
         .with_context(|| format!("writing {}", file.display()))?;
     suspend();
     let status = std::process::Command::new(program)
         .args(parts)
-        .arg(&file)
+        .arg(file)
         .current_dir(if cwd.is_dir() { cwd } else { Path::new(".") })
         .status();
     resume();
     let read = || -> Result<String> {
         let mut text = String::new();
-        std::fs::File::open(&file)?
+        std::fs::File::open(file)?
             .take(READ_LIMIT)
             .read_to_string(&mut text)?;
         Ok(text)
     };
-    let result = match status {
+    match status {
         Err(e) => Err(anyhow!("could not start the editor {program}: {e}")),
         Ok(s) if !s.success() => match s.code() {
             Some(c) => Err(anyhow!("Editor exited with code {c}")),
             None => Err(anyhow!("Editor exited with a signal")),
         },
         Ok(_) => read(),
-    };
-    let _ = std::fs::remove_file(&file);
-    let text = result?;
-    if text.len() as u64 >= READ_LIMIT {
-        bail!("the edited prompt is over {} KiB", READ_LIMIT / 1024);
     }
-    Ok((!text.is_empty()).then_some(text))
 }
 
 /// The editor's text as a prompt: the one trailing newline editors add
@@ -126,6 +145,54 @@ mod tests {
         .unwrap();
         assert_eq!(got.as_deref(), Some("original edited"));
         assert_eq!(*events.borrow(), ["suspend", "resume"]);
+    }
+
+    /// The prompt file is in a new owner-only folder with a random name,
+    /// removed afterwards, not at a predictable name in the shared
+    /// temporary directory.
+    #[cfg(unix)]
+    #[test]
+    fn the_prompt_file_is_in_a_private_folder_of_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("record");
+        let script = dir.path().join("editor.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$1\" \"$(ls -ld \"$(dirname \"$1\")\" | cut -c1-10)\" > '{}'\n",
+                record.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            open(
+                "x",
+                Some(script.to_str().unwrap()),
+                dir.path(),
+                &mut || {},
+                &mut || {},
+            )
+            .unwrap();
+            let text = std::fs::read_to_string(&record).unwrap();
+            let (file, mode) = text.trim_end().split_once('\n').unwrap();
+            let file = std::path::PathBuf::from(file);
+            let folder = file.parent().unwrap();
+            assert!(
+                folder.starts_with(std::env::temp_dir()),
+                "{}",
+                file.display()
+            );
+            let name = folder.file_name().unwrap().to_string_lossy().to_string();
+            assert!(name.starts_with("codesmith-prompt-"), "{name}");
+            assert_ne!(name, format!("codesmith-prompt-{}", std::process::id()));
+            assert_eq!(mode, "drwx------");
+            assert!(!folder.exists(), "the folder is removed");
+            seen.push(name);
+        }
+        assert_ne!(seen[0], seen[1]);
     }
 
     // editor.test.ts: "says which variable to set when no external editor is configured"

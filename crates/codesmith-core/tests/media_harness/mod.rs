@@ -191,9 +191,16 @@ pub fn provider(id: &str, _package: &str, models: Vec<Value>) -> (String, Value)
 /// Point home, config and data at a scratch folder for the whole test
 /// binary, so generated files and saved keys never touch the user's.
 pub fn isolate() -> std::path::PathBuf {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    let base = std::env::temp_dir().join(format!("codesmith-media-{}", std::process::id()));
-    ONCE.call_once(|| {
+    // A new folder with a random name, created exclusively (0700): a
+    // name made from the pid in the shared temporary directory could be
+    // created or linked first by another local user.
+    static BASE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let base = tempfile::Builder::new()
+            .prefix("codesmith-media-")
+            .tempdir()
+            .unwrap()
+            .keep();
         for d in ["home", "config", "data"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
         }
@@ -201,8 +208,9 @@ pub fn isolate() -> std::path::PathBuf {
         std::env::set_var("CODESMITH_CONFIG_DIR", base.join("config"));
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
         std::env::set_var("CODESMITH_DISABLE_CLAUDE_CODE", "1");
-    });
-    base
+        base
+    })
+    .clone()
 }
 
 /// A config over `providers` (the catalog), with keys for `keyed`.

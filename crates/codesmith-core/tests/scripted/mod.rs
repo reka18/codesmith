@@ -10,7 +10,7 @@ use codesmith_core::session::{Options, Session, Sink};
 use codesmith_core::store::Store;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -240,9 +240,16 @@ impl Sink for Rec {
 
 /// Keep the user's own config, data and skills out of the tests.
 pub fn isolate() -> std::path::PathBuf {
-    static ONCE: Once = Once::new();
-    let base = std::env::temp_dir().join(format!("codesmith-oc-backlog-{}", std::process::id()));
-    ONCE.call_once(|| {
+    // A new folder with a random name, created exclusively (0700): a
+    // name made from the pid in the shared temporary directory could be
+    // created or linked first by another local user.
+    static BASE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let base = tempfile::Builder::new()
+            .prefix("codesmith-oc-backlog-")
+            .tempdir()
+            .unwrap()
+            .keep();
         for d in ["home", "config", "data", "xdg-config"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
         }
@@ -250,8 +257,9 @@ pub fn isolate() -> std::path::PathBuf {
         std::env::set_var("CODESMITH_CONFIG_DIR", base.join("config"));
         std::env::set_var("XDG_CONFIG_HOME", base.join("xdg-config"));
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
-    });
-    base
+        base
+    })
+    .clone()
 }
 
 pub struct T {

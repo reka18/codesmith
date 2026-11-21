@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- jdtls's workspace data moved from a fixed folder in the shared temporary
+  directory to `~/.cache/codesmith/jdtls/`, created owner-only (a symlink
+  or another user's folder there is refused), and the external editor's
+  prompt file is in a new owner-only folder with a random name: another
+  local user could create or link the old paths first.
 - A Code Mode automation's MCP tool calls are held to the creating
   session's own permission rules, as its prompt runs are: a deny set in
   that session was not applied to the program's calls.

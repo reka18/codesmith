@@ -133,6 +133,57 @@ pub fn private_dir(dir: &Path) -> std::io::Result<()> {
     tighten(dir)
 }
 
+/// [`private_dir`], then make sure `dir` is a real directory (not a
+/// symlink) owned by this user, so a path another local user could have
+/// created or linked first is refused rather than used.
+pub fn owned_private_dir(dir: &Path) -> std::io::Result<()> {
+    private_dir(dir)?;
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.file_type().is_dir() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions.
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return Err(std::io::Error::other(format!(
+                "{} belongs to another user",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A new directory under the system temporary directory, named `prefix`
+/// and a random token, created exclusively with mode 0700: nothing else
+/// can have made it, or a symlink at its name, first. The caller removes
+/// it.
+pub fn new_private_temp_dir(prefix: &str) -> std::io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for _ in 0..16 {
+        let dir = base.join(format!("{prefix}{}", random_token(8)));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        match b.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(
+        "could not create a temporary directory",
+    ))
+}
+
 /// Remove group and other permission bits from an existing file or
 /// directory (Unix; a no-op elsewhere or when it does not exist).
 pub fn tighten(path: &Path) -> std::io::Result<()> {
@@ -306,6 +357,35 @@ mod tests {
         let c = dir.join("c.log");
         drop(create_private(&c).unwrap());
         assert_eq!(mode(&c), 0o600);
+    }
+
+    /// A directory that is a symlink is refused, even one to a directory
+    /// of this user's; a fresh one is created 0700; temporary directories
+    /// get new, private names.
+    #[cfg(unix)]
+    #[test]
+    fn owned_and_temporary_private_dirs() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        owned_private_dir(&real).unwrap();
+        assert_eq!(mode(&real), 0o700);
+        owned_private_dir(&real).unwrap();
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(owned_private_dir(&link).is_err());
+        let file = d.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(owned_private_dir(&file).is_err());
+
+        let (a, b) = (
+            new_private_temp_dir("codesmith-test-").unwrap(),
+            new_private_temp_dir("codesmith-test-").unwrap(),
+        );
+        assert_ne!(a, b);
+        assert!(a.starts_with(std::env::temp_dir()));
+        assert_eq!(mode(&a), 0o700);
+        std::fs::remove_dir(&a).unwrap();
+        std::fs::remove_dir(&b).unwrap();
     }
 
     #[test]

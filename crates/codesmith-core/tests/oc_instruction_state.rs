@@ -22,7 +22,7 @@ use codesmith_core::store::{Record, Store};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // --- Sources, as `test/lib/instructions.ts` drives them ---
@@ -1204,12 +1204,16 @@ fn oc_codemode_instructions_store_a_canonical_sorted_snapshot() {
 
 /// Keep the real home, config and data folders out of it.
 fn isolate() -> PathBuf {
-    static ONCE: Once = Once::new();
-    let base = std::env::temp_dir().join(format!(
-        "codesmith-instruction-state-{}",
-        std::process::id()
-    ));
-    ONCE.call_once(|| {
+    // A new folder with a random name, created exclusively (0700): a
+    // name made from the pid in the shared temporary directory could be
+    // created or linked first by another local user.
+    static BASE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let base = tempfile::Builder::new()
+            .prefix("codesmith-instruction-state-")
+            .tempdir()
+            .unwrap()
+            .keep();
         for d in ["home", "config", "data"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
         }
@@ -1217,8 +1221,9 @@ fn isolate() -> PathBuf {
         std::env::set_var("CODESMITH_CONFIG_DIR", base.join("config"));
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
         std::env::set_var("CODESMITH_DISABLE_CLAUDE_CODE", "1");
-    });
-    base
+        base
+    })
+    .clone()
 }
 
 fn python() -> Option<&'static str> {

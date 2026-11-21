@@ -556,19 +556,54 @@ fn sourcekit(_: &Path, _: &Path) -> Option<Launch> {
 
 /// jdtls keeps per-workspace data; give each root its own folder.
 fn jdtls(root: &Path, _: &Path) -> Option<Launch> {
-    use sha2::Digest;
     let bin = which("jdtls")?;
-    let hash = sha2::Sha256::digest(root.display().to_string().as_bytes());
-    let id: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let data = std::env::temp_dir().join("codesmith-jdtls").join(id);
+    let data = jdtls_data(root).ok()?;
     let mut l = launch(bin, &["-data"]);
     l.command.push(data.display().to_string());
     Some(l)
 }
 
+/// jdtls's data folder for `root`, in this user's cache
+/// (`<cache>/jdtls/<hash of root>`), created owner-only. Not a fixed name
+/// in the shared temporary directory, which another local user could
+/// create or link first to read or plant the workspace's index. A folder
+/// that is a symlink or someone else's is refused.
+fn jdtls_data(root: &Path) -> std::io::Result<PathBuf> {
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(root.display().to_string().as_bytes());
+    let id: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let base = crate::paths::cache_dir().join("jdtls");
+    crate::paths::owned_private_dir(&base)?;
+    let data = base.join(id);
+    crate::paths::owned_private_dir(&data)?;
+    Ok(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jdtls_data_is_private_and_per_root() {
+        let a = jdtls_data(Path::new("/some/project")).unwrap();
+        assert_eq!(a, jdtls_data(Path::new("/some/project")).unwrap());
+        assert_ne!(a, jdtls_data(Path::new("/other/project")).unwrap());
+        assert!(a.starts_with(crate::paths::cache_dir()), "{}", a.display());
+        assert!(!a.starts_with(std::env::temp_dir().join("codesmith-jdtls")));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+            // A symlink planted in its place is refused.
+            let planted = jdtls_data(Path::new("/planted")).unwrap();
+            std::fs::remove_dir(&planted).unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(elsewhere.path(), &planted).unwrap();
+            assert!(jdtls_data(Path::new("/planted")).is_err());
+            std::fs::remove_file(&planted).unwrap();
+        }
+    }
 
     #[test]
     fn ids_are_unique_and_match_opencode() {

@@ -178,9 +178,13 @@ impl Sink for Rec {
 fn isolate() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let dir =
-            std::env::temp_dir().join(format!("codesmith-runner-parity-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // A new folder with a random name, created exclusively (0700),
+        // not a predictable one another local user could create first.
+        let dir = tempfile::Builder::new()
+            .prefix("codesmith-runner-parity-")
+            .tempdir()
+            .unwrap()
+            .keep();
         std::env::set_var("XDG_DATA_HOME", dir);
     });
 }

@@ -9,22 +9,30 @@ use codesmith_core::session::{Options, Session, Sink};
 use codesmith_core::store::Store;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Keep the user's own config, data and skills out of the tests.
 pub fn isolate() -> PathBuf {
-    static ONCE: Once = Once::new();
-    let base = std::env::temp_dir().join(format!("codesmith-session-feat-{}", std::process::id()));
-    ONCE.call_once(|| {
+    // A new folder with a random name, created exclusively (0700): a
+    // name made from the pid in the shared temporary directory could be
+    // created or linked first by another local user.
+    static BASE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let base = tempfile::Builder::new()
+            .prefix("codesmith-session-feat-")
+            .tempdir()
+            .unwrap()
+            .keep();
         for d in ["home", "config", "data"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
         }
         std::env::set_var("HOME", base.join("home"));
         std::env::set_var("CODESMITH_CONFIG_DIR", base.join("config"));
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
-    });
-    base
+        base
+    })
+    .clone()
 }
 
 /// The response chunk for a request body (`None`: the default behaviour).
