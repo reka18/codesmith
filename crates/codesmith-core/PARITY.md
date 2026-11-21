@@ -21,7 +21,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Subagents | 46 | 11 | 0 | 0 | 35 | 0 | 0 |
 | Compaction | 51 | 43 | 0 | 0 | 8 | 0 | 0 |
 | Titles | 26 | 9 | 2 | 0 | 15 | 0 | 0 |
-| Model requests and transport | 68 | 27 | 0 | 0 | 40 | 1 | 0 |
+| Model requests and transport | 68 | 28 | 0 | 0 | 40 | 0 | 0 |
 | Snapshots and undo | 15 | 7 | 2 | 0 | 5 | 1 | 0 |
 | Sessions and their store | 308 | 107 | 3 | 0 | 198 | 0 | 0 |
 | Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2705** | **68** | **41** | **2543** | **231** | **0** |
+| **Total** | **5588** | **2706** | **68** | **41** | **2543** | **230** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -197,12 +197,7 @@ Missing features, by how many OpenCode test cases each would unlock (41 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (231 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### Model requests and transport (1)
-
-- native instruction epochs after durable replay and provider switches — `store::history_for`
-  - `session-native.test.ts`: advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches
+Tests for behaviour CodeSmith already has but no test pins (230 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Snapshots and undo (1)
 
@@ -878,7 +873,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (67 of 68)</summary>
+<details><summary>Model requests and transport (68 of 68)</summary>
 
 
 **`session-checkpoint-transport.test.ts`**
@@ -930,6 +925,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D reads pre-2.0.15 checkpoint media without rewriting the stored payload · reads mixed legacy and current media without overriding an existing asset · loads and replays a pre-v2.1 providerContext checkpoint with pre-2.0.15 media — storage-model: legacy checkpoint and media formats (CodeSmith's native windows are new)
 - P a native window round-trips tools, opaque checkpoints and binary media through JSON — `../codesmith-ai/src/compaction_tests.rs::oc_native_window_round_trips_tools_checkpoints_and_media_through_json` (adapted: serde of the window's messages)
+- P advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches — `tests/oc_native_backlog3.rs::oc_native_advances_the_instruction_epoch_and_omits_superseded_updates` (adapted: instructions are the project's AGENTS.md; the replay is a resume from the store, the switch one to another model)
 - P falls back to an earlier compatible native or local checkpoint — `tests/oc_native_compaction.rs::oc_native_falls_back_to_an_earlier_compatible_checkpoint` (adapted: on resume with another model)
 - D skips a malformed native window and replays the history before it — storage-model: records are typed: a window that does not decode is not a native record
 

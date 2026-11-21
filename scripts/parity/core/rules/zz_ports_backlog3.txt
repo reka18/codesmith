@@ -28,3 +28,7 @@
 1294 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_detached_worktrees_have_no_review_metadata_and_need_an_explicit_base :: adapted: the worktrees come from `worktree::create`
 1355 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_rejects_a_branch_creation_anchor_removed_by_rebase
 1376 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_does_not_infer_beyond_the_bounded_creation_reflog_window
+
+# --- Model requests and transport (tests/oc_native_backlog3.rs) ---
+@session-native.test.ts
+224 :: ported :: tests/oc_native_backlog3.rs::oc_native_advances_the_instruction_epoch_and_omits_superseded_updates :: adapted: instructions are the project's AGENTS.md; the replay is a resume from the store, the switch one to another model

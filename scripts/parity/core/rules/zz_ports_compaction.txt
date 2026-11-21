@@ -68,7 +68,6 @@
 @session-native.test.ts
 64,85,153 :: design :: storage-model :: legacy checkpoint and media formats (CodeSmith's native windows are new)
 199 :: ported :: ../codesmith-ai/src/compaction_tests.rs::oc_native_window_round_trips_tools_checkpoints_and_media_through_json :: adapted: serde of the window's messages
-224 :: portable :: store::history_for :: native instruction epochs after durable replay and provider switches
 312 :: ported :: tests/oc_native_compaction.rs::oc_native_falls_back_to_an_earlier_compatible_checkpoint :: adapted: on resume with another model
 345 :: design :: storage-model :: records are typed: a window that does not decode is not a native record
 @session-runner.test.ts
