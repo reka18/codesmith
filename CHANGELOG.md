@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- Plugins' `tool_before` and `tool_after` hooks run for each `fetch` (as
+  `webfetch`) and OpenAPI call (as `openapi`) inside `execute`, as they do
+  for built-ins: a veto refuses the call and `tool_after` can redact it.
 - With `builtin_skills` on, `gh issue create` and `gh issue comment` always
   ask, through built-in rules a configured allow cannot lift, so the
   `report` skill's confirmation no longer rests on the model.

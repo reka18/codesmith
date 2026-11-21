@@ -344,6 +344,40 @@ async fn send(
     }))
 }
 
+/// A response as plugins' `tool_after` hook sees it: the JSON of
+/// [`run`]'s value, with a UTF-8 body as text (`"bodyText"`) instead of
+/// base64, so a hook can find and redact what the response says.
+pub fn hook_text(v: &Value) -> String {
+    let mut v = v.clone();
+    let text = v["body"]
+        .as_str()
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+        .and_then(|b| String::from_utf8(b).ok());
+    if let (Some(text), Some(o)) = (text, v.as_object_mut()) {
+        o.remove("body");
+        o.insert("bodyText".into(), Value::String(text));
+    }
+    v.to_string()
+}
+
+/// [`run`]'s value back from what `tool_after` left of [`hook_text`].
+pub fn from_hook_text(text: &str) -> Result<Value, String> {
+    let mut v: Value = serde_json::from_str(text)
+        .map_err(|_| "fetch: a plugin left the response unreadable.".to_string())?;
+    if let Some(o) = v.as_object_mut() {
+        if let Some(Value::String(t)) = o.remove("bodyText") {
+            o.insert(
+                "body".into(),
+                Value::String(base64::engine::general_purpose::STANDARD.encode(t)),
+            );
+        }
+    }
+    if !v["body"].is_string() || !v["status"].is_u64() {
+        return Err("fetch: a plugin left the response unreadable.".into());
+    }
+    Ok(v)
+}
+
 /// A call's value as Code Mode's tool text.
 pub fn result_text(v: &Value) -> String {
     format!("{}{v}", super::JSON_RESULT)

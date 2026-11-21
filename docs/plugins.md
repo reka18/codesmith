@@ -39,6 +39,14 @@ The hooks follow OpenCode's plugin API:
 | `interrupted` | The turn was stopped before it finished (the user interrupted it). |
 | `wants` | Whether a hook has anything to do for a session. CodeSmith builds a hook's input (a copy of the history for `context`, the HTTP bridge, the idle hook's state) only when some plugin wants it, so a build whose plugins use none of these pays nothing for them. The default is yes. |
 
+`tool_before` and `tool_after` also run for each call a Code Mode program
+makes inside `execute`: a built-in under its own name, a `fetch` under
+`webfetch` (the input is `url`, `method`, `headers` and a base64 `body`; the
+output `tool_after` sees is the response as JSON, with a UTF-8 body as
+`bodyText`), and an OpenAPI call under `openapi` (the input is
+`{"tool": <name>, "input": <input>}`; changing `tool` has no effect). A veto
+refuses that call, and the program's promise rejects with its message.
+
 The hooks follow OpenCode's names where it has them: `context` is its session
 `context` hook, `http_*` its `http.request`/`http.response`, `ws_*` its
 `experimental.ws.*`, `session_idle` its `experimental.idle`.

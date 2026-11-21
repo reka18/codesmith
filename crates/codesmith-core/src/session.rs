@@ -3035,6 +3035,86 @@ impl Session {
         (text, is_error, before)
     }
 
+    /// A `fetch` from inside `execute` (inner call `n` of call `outer`),
+    /// with plugins' per-call hooks under the `webfetch` tool name, as
+    /// built-ins get them ([`Self::run_builtin_in_code`]): `tool_before`
+    /// sees (and may change) the request (`url`, `method`, `headers`,
+    /// `body` in base64) and its veto refuses it; `tool_after` sees the
+    /// response with a UTF-8 body as text ([`fetch::hook_text`]), so it can
+    /// redact it.
+    ///
+    /// [`fetch::hook_text`]: crate::codemode::fetch::hook_text
+    async fn run_fetch_in_code(
+        &self,
+        outer: &str,
+        n: usize,
+        input: &serde_json::Value,
+    ) -> (String, bool) {
+        use crate::codemode::fetch;
+        let plugins = crate::plugin::active();
+        let mut call = crate::plugin::ToolCall {
+            session_id: self.id.clone(),
+            id: format!("{outer}/{n}"),
+            name: Tool::Webfetch.name().to_string(),
+            agent: self.agent.id.clone(),
+            input: input.clone(),
+        };
+        if let Err(refused) = plugins.tool_before(&self.loaded.config, &mut call) {
+            let (mut content, mut is_error) = (refused, true);
+            plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
+            return (content, true);
+        }
+        match fetch::run(&self.gate, &call.input).await {
+            Ok(v) => {
+                let (mut text, mut is_error) = (fetch::hook_text(&v), false);
+                plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
+                if is_error {
+                    return (text, true);
+                }
+                match fetch::from_hook_text(&text) {
+                    Ok(v) => (fetch::result_text(&v), false),
+                    Err(e) => (e, true),
+                }
+            }
+            Err(e) => {
+                let (mut text, mut is_error) = (e, true);
+                plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
+                (text, true)
+            }
+        }
+    }
+
+    /// An OpenAPI call from inside `execute` (inner call `n` of call
+    /// `outer`), with plugins' per-call hooks under the `openapi` tool
+    /// name. The hooks see `{"tool": <name>, "input": <input>}`;
+    /// `tool_before` may change the input (not the tool) and its veto
+    /// refuses the call, and `tool_after` sees (and may redact) the result.
+    async fn run_openapi_in_code(
+        &self,
+        outer: &str,
+        n: usize,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> (String, bool) {
+        let plugins = crate::plugin::active();
+        let mut call = crate::plugin::ToolCall {
+            session_id: self.id.clone(),
+            id: format!("{outer}/{n}"),
+            name: crate::codemode::openapi::ACTION.to_string(),
+            agent: self.agent.id.clone(),
+            input: serde_json::json!({"tool": name, "input": input}),
+        };
+        if let Err(refused) = plugins.tool_before(&self.loaded.config, &mut call) {
+            let (mut content, mut is_error) = (refused, true);
+            plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
+            return (content, true);
+        }
+        let input = call.input["input"].clone();
+        let (mut text, mut is_error) = self.run_openapi(name, &input).await;
+        plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
+        (text, is_error)
+    }
+
     /// MCP tools offered as direct tool calls.
     fn mcp_tools(&self) -> Vec<crate::mcp::McpTool> {
         let on = self.codemode_on();
@@ -3370,10 +3450,8 @@ impl Session {
                     progress.start(&tool, Some(&args))
                 };
                 let (text, failed) = if tool == crate::codemode::fetch::TOOL {
-                    match crate::codemode::fetch::run(&self.gate, &args).await {
-                        Ok(v) => (crate::codemode::fetch::result_text(&v), false),
-                        Err(e) => (e, true),
-                    }
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    self.run_fetch_in_code(id, n, &args).await
                 } else if builtins.contains(&tool.as_str()) {
                     let n = calls.fetch_add(1, Ordering::SeqCst);
                     let (text, failed, before) =
@@ -3384,7 +3462,8 @@ impl Session {
                         .extend(before);
                     (text, failed)
                 } else if crate::codemode::openapi::is_tool(&tool) {
-                    self.run_openapi(&tool, &args).await
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    self.run_openapi_in_code(id, n, &tool, &args).await
                 } else {
                     // Code Mode hands results to code as JSON, so images
                     // and PDFs are noted rather than passed on.

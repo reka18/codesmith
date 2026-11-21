@@ -648,3 +648,23 @@ async fn a_same_origin_redirect_is_not_asked() {
     assert!(asked.asked.lock().unwrap().is_empty());
     assert_eq!(hits.lock().unwrap().len(), 2);
 }
+
+/// Plugins' `tool_after` sees a UTF-8 body as text, and what it leaves
+/// goes back to the program; a result it breaks is an error.
+#[test]
+fn hook_text_shows_a_text_body_and_round_trips() {
+    let v = json!({"status": 200, "statusText": "OK", "url": "http://x/", "redirected": false,
+        "headers": [], "body": base64::engine::general_purpose::STANDARD.encode("the SECRET")});
+    let text = hook_text(&v);
+    assert!(text.contains("the SECRET"), "{text}");
+    let back = from_hook_text(&text.replace("SECRET", "[redacted]")).unwrap();
+    assert_eq!(
+        back["body"],
+        json!(base64::engine::general_purpose::STANDARD.encode("the [redacted]"))
+    );
+    assert_eq!(from_hook_text(&hook_text(&v)).unwrap(), v);
+    // A binary body stays base64.
+    let bin = json!({"status": 200, "body": base64::engine::general_purpose::STANDARD.encode([0xff, 0xfe])});
+    assert_eq!(from_hook_text(&hook_text(&bin)).unwrap(), bin);
+    assert!(from_hook_text("[redacted]").is_err());
+}
