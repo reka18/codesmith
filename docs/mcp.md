@@ -10,6 +10,8 @@ available to the agent. The config shape follows OpenCode's.
 - [OAuth](#oauth)
 - [Resources](#resources)
 - [Prompts](#prompts)
+- [Elicitation](#elicitation)
+- [Servers a client attaches](#servers-a-client-attaches)
 - [Instructions, notifications and events](#instructions-notifications-and-events)
 
 ## Configuring servers
