@@ -702,10 +702,18 @@ enum SessionCmd {
         /// Session id (default: the latest in this directory).
         id: Option<String>,
     },
-    /// Show the file changes made since the latest turn began.
+    /// Show the file changes made since the latest turn began, or by the
+    /// turns from one prompt through another (`--from`, `--to`).
     Diff {
         /// Session id (default: the latest in this directory).
         id: Option<String>,
+        /// The turn of this prompt (see `session messages`): its start
+        /// snapshot against the range's last recorded end snapshot.
+        #[arg(long)]
+        from: Option<i64>,
+        /// Through the turn of this later prompt (default: `--from`'s).
+        #[arg(long, requires = "from")]
+        to: Option<i64>,
     },
     /// Move media kept inline in session records (sessions from before the
     /// blob store, or with `media.blob` off) into the blob store.
@@ -2602,7 +2610,19 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
                 ),
             }
         }
-        SessionCmd::Diff { id } => {
+        SessionCmd::Diff {
+            id,
+            from: Some(from),
+            to,
+        } => {
+            let (info, snaps) = snapshot_target(&db, &cwd, id)?;
+            match session::diff::unified(&db, &info.id, &snaps, Some(from), to)? {
+                Some(d) if d.trim().is_empty() => println!("No file changes in those turns."),
+                Some(d) => print!("{d}"),
+                None => println!("No snapshots recorded for those turns of {}.", info.id),
+            }
+        }
+        SessionCmd::Diff { id, .. } => {
             let (info, snaps) = snapshot_target(&db, &cwd, id)?;
             match session::turn_diff(&db, &info.id, &snaps)? {
                 Some(d) if d.trim().is_empty() => {

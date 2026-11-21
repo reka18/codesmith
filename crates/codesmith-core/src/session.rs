@@ -23,6 +23,7 @@
 //!   resumed later. Dropping a session stops the commands it still runs.
 
 mod compact;
+pub mod diff;
 
 use crate::agent::{self, Agent};
 use crate::compaction;

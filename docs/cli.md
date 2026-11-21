@@ -113,7 +113,7 @@ codesmith session import session.json     # or - for stdin
 codesmith session delete ID               # also deletes its subagent sessions
 codesmith session messages [ID]           # its messages, numbered
 codesmith session fork  [ID] [--before N] # a copy through the latest message, or up to message N
-codesmith session diff  [ID]              # file changes since the latest turn began
+codesmith session diff  [ID] [--from N [--to M]]  # file changes since the latest turn began, or by the turns of prompts N through M
 codesmith session undo  [ID]              # restore the files and hide the latest turn
 codesmith session redo  [ID]              # bring it back
 codesmith session migrate-media [ID]      # move inline media into the blob store (default: every session)

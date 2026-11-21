@@ -40,7 +40,13 @@ respects `.gitignore`.
 - `/redo` (**Ctrl+X r**), or `codesmith session redo [ID]`, brings the turn
   and its changes back, until you send a new message.
 - `codesmith session diff [ID]` shows the file changes since the latest turn
-  began.
+  began. `--from N` shows what the turn of prompt `N` changed (the numbers
+  `codesmith session messages` lists), and `--to M` extends it through the
+  turn of a later prompt `M`, as OpenCode's session diff does: the first
+  turn's start snapshot against the last end snapshot recorded in the range,
+  so edits you made between those turns are in it too. A turn stopped before
+  its end snapshot falls back to an earlier one. A number that is not a
+  prompt, a `--to` before `--from`, or a prompt an undo hid is refused.
 
 Set `"snapshots": false` to turn snapshots off; undo then has nothing to
 restore. Snapshots are never taken when the project root is your home folder

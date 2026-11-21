@@ -32,6 +32,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **Session diff ranges:** `codesmith session diff --from N [--to M]` shows
+  what the turns of prompts `N` through `M` changed (start snapshot of the
+  first against the last recorded end), as OpenCode's session diff does by
+  busy period. `codesmith_core::session::diff` has the range for other
+  callers; a turn still running can be compared against the working copy.
 - **Code Mode rejection warnings:** a promise a Code Mode program rejects
   and never awaits or handles is reported in the result under `Warnings:`
   (`Unhandled rejection from an un-awaited promise: Error: boom`), as

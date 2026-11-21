@@ -153,6 +153,41 @@ async fn a_fix_from_read_to_answer_then_undo_redo_continue_export_and_stats() {
         "{}",
         diff.both()
     );
+    // The same turn by its prompt (`session messages` lists it), and a
+    // range that names something other than a prompt is refused.
+    let listed = e.run(&["session", "messages"]).await;
+    listed.ok();
+    let seq_of = |role: &str| -> String {
+        listed
+            .stdout
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some(role))
+            .and_then(|l| l.split_whitespace().next())
+            .unwrap()
+            .to_string()
+    };
+    let (prompt, reply) = (seq_of("user"), seq_of("assistant"));
+    let ranged = e.run(&["session", "diff", "--from", &prompt]).await;
+    ranged.ok();
+    assert!(
+        ranged.stdout.contains("+echo $(($1 + $2))"),
+        "{}",
+        ranged.both()
+    );
+    let refused = e.run(&["session", "diff", "--from", &reply]).await;
+    assert_ne!(refused.code, Some(0), "{}", refused.both());
+    assert!(
+        refused.both().contains("is not a prompt"),
+        "{}",
+        refused.both()
+    );
+    let unknown = e.run(&["session", "diff", "--from", "999999"]).await;
+    assert_ne!(unknown.code, Some(0), "{}", unknown.both());
+    assert!(
+        unknown.both().contains("no message 999999"),
+        "{}",
+        unknown.both()
+    );
     let undo = e.run(&["session", "undo"]).await;
     undo.ok();
     assert!(
