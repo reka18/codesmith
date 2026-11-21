@@ -223,16 +223,9 @@ pub fn is_url(s: &str) -> bool {
 /// the URL, "always" saving only its origin, and each redirect checked
 /// against the rules. Bounded in time and size.
 pub async fn download(ctx: &Ctx<'_>, url: &str, max: usize) -> Result<Vec<u8>, String> {
-    // Rules match the URL as written; the fragment is never sent.
-    let url = url.split('#').next().unwrap_or(url);
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL {url:?}: {e}"))?;
-    super::webfetch::check_url(&parsed)?;
-    ctx.ask(Request {
-        action: "webfetch".into(),
-        resources: vec![url.to_string()],
-        save: super::webfetch::save_patterns(url),
-        title: format!("Fetch {url}"),
-    })?;
+    // Rules match the URL as requested; the fragment is never sent.
+    let parsed = super::webfetch::authorize(ctx, url)?;
+    let url = parsed.as_str();
     let fetch =
         async {
             let mut resp = super::webfetch::get_following(ctx, url, |rb| rb).await?;
@@ -603,6 +596,29 @@ mod url_tests {
             .unwrap_err();
         assert!(err.contains("denied") || err.contains("Denied"), "{err}");
         assert!(denied_seen.lock().unwrap().is_empty());
+    }
+
+    /// An input URL is matched as it is requested: a deny rule holds
+    /// however it is spelled, and nothing is fetched.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn input_urls_match_the_rules_as_requested() {
+        let (base, seen) = serve(|_| (200, String::new(), png())).await;
+        let mut env = Env::new();
+        env.gate = Gate::new(
+            vec![
+                Rule::new("webfetch", "*", Effect::Allow),
+                Rule::new("webfetch", &format!("{base}/secret*"), Effect::Deny),
+            ],
+            Arc::new(Fixed(Reply::Once)),
+        );
+        for url in [
+            base.replace("http://", "HTTP://") + "/secret.png",
+            format!("{base}/%73ecret.png"),
+        ] {
+            let err = read_image(&env.ctx(), &url).await.unwrap_err();
+            assert!(err.starts_with("Permission denied"), "{url}: {err}");
+        }
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

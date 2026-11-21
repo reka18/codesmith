@@ -2,9 +2,12 @@
 //! provides it: programs make HTTP requests with the same checks as the
 //! `webfetch` tool.
 //!
-//! - The URL as written, without its fragment, must be `http(s)` with no
-//!   credentials in it, and is asked as the `webfetch` permission; an
-//!   "always" answer covers its origin (OpenCode saves `*`, any URL).
+//! - The URL, parsed and without its fragment, must be `http(s)` with no
+//!   credentials in it, and is asked as the `webfetch` permission in the
+//!   form it is requested in (see
+//!   [`webfetch::normalize`](crate::tool::webfetch::normalize); OpenCode
+//!   matches it as written); an "always" answer covers its origin
+//!   (OpenCode saves `*`, any URL).
 //! - Redirects are followed by hand: each target must pass the same URL
 //!   checks and no rule may deny fetching it. A redirect to another origin
 //!   drops the `authorization`, `cookie` and `proxy-authorization`
@@ -163,10 +166,10 @@ fn parse_input(input: &Value) -> Result<(String, Req), String> {
 /// `body` as base64), or the error the program's promise rejects with.
 pub async fn run(gate: &Gate, input: &Value) -> Result<Value, String> {
     let (raw, req) = parse_input(input)?;
-    // Rules match the URL as written. The fragment is never sent, and
-    // would keep a rule for the exact URL from matching.
-    let url = raw.split('#').next().unwrap_or(&raw).to_string();
-    let parsed = url::Url::parse(&url).map_err(|_| format!("Invalid URL: {url}"))?;
+    // Rules match the URL as requested (parsed, without the fragment,
+    // which is never sent); every form of it must pass the deny rules.
+    let written = raw.split('#').next().unwrap_or(&raw);
+    let parsed = webfetch::normalize(&raw).map_err(|_| format!("Invalid URL: {written}"))?;
     if parsed.scheme() == "file" {
         return Err("fetch cannot be used for filesystem access.".into());
     }
@@ -179,6 +182,9 @@ pub async fn run(gate: &Gate, input: &Value) -> Result<Value, String> {
             parsed.scheme()
         ));
     }
+    let url = parsed.to_string();
+    gate.assert_not_denied(ACTION, &webfetch::deny_forms(Some(&raw), &parsed))
+        .map_err(|e| e.to_string())?;
     let title = if req.method.eq_ignore_ascii_case("GET") {
         format!("Fetch {url}")
     } else {
@@ -187,7 +193,7 @@ pub async fn run(gate: &Gate, input: &Value) -> Result<Value, String> {
     let asked = Request {
         action: ACTION.into(),
         resources: vec![url.clone()],
-        save: webfetch::save_patterns(&url),
+        save: webfetch::save_patterns(&parsed),
         title,
     };
     tokio::task::block_in_place(|| gate.assert(&asked)).map_err(|e| match e {
@@ -248,7 +254,7 @@ async fn send(gate: &Gate, mut current: url::Url, mut req: Req) -> Result<Value,
             return Err("fetch cannot follow a redirect with credentials in the URL.".into());
         }
         next.set_fragment(None);
-        gate.assert_not_denied(ACTION, &[next.to_string()])
+        gate.assert_not_denied(ACTION, &webfetch::deny_forms(None, &next))
             .map_err(|e| e.to_string())?;
         req = redirected(req, status, &current, &next);
         current = next;

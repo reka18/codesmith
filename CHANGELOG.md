@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- URL permission rules (`webfetch`, Code Mode `fetch`, `openapi`, image
+  and video input URLs) match the URL as it is requested, not as written:
+  `HTTPS://Internal.Corp:443/x`, a tab in the host or a `%XX` escape no
+  longer gets past a deny rule or policy. Write URL rules with a lowercase
+  host and no default port.
 - `scripts/ci-linux.sh` runs local CI (fmt, clippy, tests, shellcheck) in a
   Linux container, arm64 or `--amd64`; the pre-push hook adds it with
   `CODESMITH_CI_LINUX=1`.

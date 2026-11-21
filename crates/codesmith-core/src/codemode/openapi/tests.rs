@@ -1502,6 +1502,33 @@ async fn redirect_targets_are_checked() {
     assert_eq!(seen, ["GET /test", "POST /test"]);
 }
 
+/// A deny rule holds for a percent-encoded spelling of the URL it names.
+#[tokio::test(flavor = "multi_thread")]
+async fn deny_rules_match_percent_decoded_urls() {
+    let (base, log) = serve(|s| match s.path() {
+        "/test" => Answer::redirect(302, "/%62locked"),
+        _ => Answer::json(json!({})),
+    })
+    .await;
+    let api = api_at(&secured(json!([]), json!({})), &base, None);
+    let rules = vec![
+        Rule::new(ACTION, "*", Effect::Allow),
+        Rule::new(ACTION, &format!("GET {base}/blocked*"), Effect::Deny),
+    ];
+    let (g, _) = gate(rules, Reply::Once);
+    let e = call(&api, tool(&api.generated, "test"), &json!({}), &g)
+        .await
+        .unwrap_err();
+    assert!(e.contains("Permission denied"), "{e}");
+    let seen: Vec<String> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.target.clone())
+        .collect();
+    assert_eq!(seen, ["/test"]);
+}
+
 /// An error body that echoes a credential does not show it.
 #[tokio::test(flavor = "multi_thread")]
 async fn errors_never_show_credentials() {

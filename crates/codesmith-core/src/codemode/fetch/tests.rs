@@ -488,3 +488,64 @@ fn bad_input_fails_before_anything_is_asked() {
     .unwrap();
     assert_eq!(r.headers, vec![("x".to_string(), "1".to_string())]);
 }
+
+/// A deny rule holds however the URL is spelled: the rules see it as it
+/// is requested, and its written and percent-decoded forms are checked
+/// too. (Security review 7: an uppercase scheme got past the deny.)
+#[tokio::test(flavor = "multi_thread")]
+async fn deny_rules_match_the_url_as_requested() {
+    let (base, hits) = serve(|_| Answer::new(200, "text/plain", "secret")).await;
+    let port = base.rsplit(':').next().unwrap().to_string();
+    let mut rules = allow_all();
+    rules.push(Rule::new(
+        "webfetch",
+        &format!("{base}/secret*"),
+        Effect::Deny,
+    ));
+    let (g, asked) = gate(rules, Reply::Reject(None));
+    for url in [
+        base.replace("http://", "HTTP://") + "/secret",
+        format!("http://127.0.0.\t1:{port}/secret"),
+        format!("{base}/%73ecret"),
+        format!("{base}/a/../secret"),
+    ] {
+        let out = program(
+            &g,
+            &format!(
+                r#"try {{ return await (await fetch({})).text() }} catch (e) {{ return e.message }}"#,
+                json!(url)
+            ),
+        )
+        .await;
+        let msg = out.result.unwrap();
+        assert!(
+            msg.as_str().unwrap().starts_with("Permission denied"),
+            "{url}: {msg}"
+        );
+    }
+    assert!(hits.lock().unwrap().is_empty());
+    assert!(asked.asked.lock().unwrap().is_empty());
+}
+
+/// What is asked is the URL as requested.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_url_is_asked_as_requested() {
+    let (base, _) = serve(|_| Answer::new(200, "text/plain", "ok")).await;
+    let (g, asked) = gate(vec![], Reply::Once);
+    let written = base.replace("http://127.0.0.1", "HTTP://LOCALHOST");
+    let out = program(
+        &g,
+        &format!(r#"return (await fetch("{written}/A/./b#x")).url"#),
+    )
+    .await;
+    let requested = format!("{}/A/b", base.replace("127.0.0.1", "localhost"));
+    assert_eq!(out.result, Ok(json!(requested)));
+    let resources: Vec<String> = asked
+        .asked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.resources[0].clone())
+        .collect();
+    assert_eq!(resources, vec![requested]);
+}

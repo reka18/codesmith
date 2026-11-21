@@ -73,6 +73,17 @@ A path rule is checked against every name the path goes by: the path as
 written, and its real path with symlinks resolved and the on-disk spelling.
 A rule written in either form matches.
 
+A URL (`webfetch`, `fetch`, `openapi`, and the input URLs of image and
+video generation) is matched as it is requested: parsed, without its
+fragment, with the scheme and host lowercased, a default port dropped,
+tabs and newlines removed and `.`/`..` segments resolved. So
+`HTTPS://Internal.Corp:443/x` is `https://internal.corp/x` to the rules.
+Write URL rules in that form (`https://internal.corp/*`, not
+`https://Internal.Corp/*`). Deny rules and policies are also checked
+against the URL as written and with its `%XX` escapes decoded, so
+`/%73ecret` does not get past a deny for `/secret*`. OpenCode matches the
+URL as written.
+
 A tool is hidden from the model only when its action is denied for every
 resource. `{"action": "webfetch", "resource": "*", "effect": "deny"}` removes
 `webfetch` entirely. A rule like `{"action": "edit", "resource": "docs/*",

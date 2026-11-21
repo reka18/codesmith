@@ -160,15 +160,9 @@ async fn read_media(ctx: &Ctx<'_>, value: &str, kinds: &[&str]) -> Result<Media,
     let m = if image::is_url(value) {
         // The provider fetches it, so its redirects are out of reach; the
         // URL itself gets webfetch's checks, and "always" saves its origin.
-        let parsed =
-            reqwest::Url::parse(value).map_err(|e| format!("Invalid URL {value:?}: {e}"))?;
-        super::webfetch::check_url(&parsed)?;
-        ctx.ask(Request {
-            action: "webfetch".into(),
-            resources: vec![value.to_string()],
-            save: super::webfetch::save_patterns(value),
-            title: format!("Fetch {value}"),
-        })?;
+        // The provider is sent the URL as the rules saw it.
+        let parsed = super::webfetch::authorize(ctx, value)?;
+        let value = parsed.as_str();
         Media::url(url_type(value).unwrap_or("application/octet-stream"), value)
     } else {
         let path = super::read::authorize(ctx, value)?;
@@ -450,6 +444,36 @@ mod url_tests {
                 "https://example.test".to_string(),
                 "https://example.test/*".to_string()
             ]
+        );
+    }
+
+    /// Rules see an input URL as it is requested, and the provider is sent
+    /// that URL: case, a default port, tabs or percent-encoding do not get
+    /// a URL past a deny rule.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn input_urls_match_the_rules_as_requested() {
+        use crate::permission::{Effect, Rule};
+        let rules = vec![
+            Rule::new("webfetch", "*", Effect::Allow),
+            Rule::new("webfetch", "https://internal.test/secret*", Effect::Deny),
+        ];
+        let (env, _) = Env::recording(rules);
+        for url in [
+            "HTTPS://INTERNAL.TEST/secret.png",
+            "https://internal.test:443/secret.png",
+            "https://inter\tnal.te\nst/secret.png",
+            "https://internal.test/%73ecret.png",
+            "https://internal.test/a/../secret.png",
+        ] {
+            let err = read_media(&env.ctx(), url, &["image"]).await.unwrap_err();
+            assert!(err.starts_with("Permission denied"), "{url}: {err}");
+        }
+        let m = read_media(&env.ctx(), "HTTPS://Internal.Test:443/ok.png#x", &["image"])
+            .await
+            .unwrap();
+        assert_eq!(
+            m.source,
+            codesmith_ai::Source::Url("https://internal.test/ok.png".into())
         );
     }
 }

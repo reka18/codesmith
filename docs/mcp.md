@@ -163,7 +163,8 @@ return res.ok ? await res.json() : res.status;
 
 - The URL, without its fragment, must be `http(s)://` with no user name or
   password in it, and asks the `webfetch` permission (a rule for
-  `webfetch` covers `fetch` too). "Always" saves the URL's origin, not every
+  `webfetch` covers `fetch` too) for the URL as it is requested (see
+  [URL rules](permissions.md#actions-and-resources)). "Always" saves the URL's origin, not every
   URL as OpenCode does.
 - Redirects are followed one hop at a time, at most 10; each target must
   be `http(s)` without credentials, and is checked against `webfetch` deny

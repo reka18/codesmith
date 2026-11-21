@@ -288,6 +288,19 @@ fn resource(method: &str, url: &url::Url, hidden: &[&str]) -> String {
     format!("{method} {u}")
 }
 
+/// The forms of a call's resource checked against the deny rules and
+/// policies: [`resource`], and percent-decoded (a server reads `/%61dmin`
+/// as `/admin`). Allowing goes by [`resource`] alone.
+fn deny_forms(method: &str, url: &url::Url, hidden: &[&str]) -> Vec<String> {
+    let shown = resource(method, url, hidden);
+    let decoded = crate::tool::webfetch::percent_decoded(&shown);
+    if decoded == shown {
+        vec![shown]
+    } else {
+        vec![shown, decoded]
+    }
+}
+
 /// A representative resource for an operation (its URL template), to hide
 /// operations the rules deny outright.
 pub fn template_resource(t: &Tool) -> String {
@@ -335,6 +348,8 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
     }
     let shown = resource(&prepared.method, &prepared.url, &[]);
     let origin = prepared.url.origin().ascii_serialization();
+    gate.assert_not_denied(ACTION, &deny_forms(&prepared.method, &prepared.url, &[]))
+        .map_err(|e| e.to_string())?;
     ask(
         gate,
         &Request {
@@ -412,7 +427,7 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
                 prepared.method = "GET".into();
                 prepared.body = None;
             }
-            gate.assert_not_denied(ACTION, &[resource(&prepared.method, &next, &hidden)])
+            gate.assert_not_denied(ACTION, &deny_forms(&prepared.method, &next, &hidden))
                 .map_err(|e| e.to_string())?;
             prepared.url = next;
             hops += 1;

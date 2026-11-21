@@ -1,7 +1,8 @@
 //! `webfetch`: fetch a URL as markdown, text or HTML. Ported from OpenCode's
-//! webfetch tool: the URL as written (without its fragment) is checked
-//! against the rules; redirects are followed by hand so every hop is checked
-//! against the deny rules; responses are size-capped and must be textual.
+//! webfetch tool: the URL is checked against the rules as it is requested
+//! (parsed and serialized, without its fragment; see [`normalize`]);
+//! redirects are followed by hand so every hop is checked against the deny
+//! rules; responses are size-capped and must be textual.
 
 use super::{opt_str, opt_u64, str_arg, Ctx, Outcome, Output};
 use crate::permission::Request;
@@ -97,13 +98,77 @@ pub(crate) fn check_url(url: &reqwest::Url) -> Result<(), String> {
     Ok(())
 }
 
-/// The rules "always allow" saves for `url` (as written): its origin, with
-/// or without a path. Narrower than OpenCode's `*` (any URL).
-pub(crate) fn save_patterns(url: &str) -> Vec<String> {
-    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
-    let authority = rest.split(['/', '?']).next().unwrap_or("");
-    let origin = format!("{scheme}://{authority}");
+/// `raw` parsed, without its fragment: the URL a request goes to, and (as
+/// a string) the resource the rules match. Rules see the URL as it is
+/// requested, not as written: the parser lowercases the scheme and host,
+/// drops a default port, strips tabs and newlines and resolves `.`
+/// segments, so `HTTPS://Internal.Corp:443/x` is `https://internal.corp/x`
+/// to the rules as to the server. OpenCode matches the URL as written.
+pub(crate) fn normalize(raw: &str) -> Result<reqwest::Url, url::ParseError> {
+    let mut url = reqwest::Url::parse(raw)?;
+    url.set_fragment(None);
+    Ok(url)
+}
+
+/// The forms of a URL checked against the deny rules and policies before
+/// it is asked or requested: as requested ([`normalize`]), percent-decoded
+/// (a server reads `/%73ecret` as `/secret`) and, when given, as written
+/// without its fragment. Allowing goes by the requested form alone.
+pub(crate) fn deny_forms(written: Option<&str>, url: &reqwest::Url) -> Vec<String> {
+    let requested = url.to_string();
+    let mut out = vec![requested.clone()];
+    let decoded = percent_decoded(&requested);
+    let written = written.map(|w| w.split('#').next().unwrap_or(w).to_string());
+    for form in [Some(decoded), written].into_iter().flatten() {
+        if !out.contains(&form) {
+            out.push(form);
+        }
+    }
+    out
+}
+
+/// `s` with each `%XX` escape decoded (invalid UTF-8 is replaced).
+pub(crate) fn percent_decoded(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The rules "always allow" saves for `url`: its origin, with or without a
+/// path. Narrower than OpenCode's `*` (any URL).
+pub(crate) fn save_patterns(url: &reqwest::Url) -> Vec<String> {
+    let origin = url.origin().ascii_serialization();
     vec![origin.clone(), format!("{origin}/*")]
+}
+
+/// Check `raw` for a `webfetch` request and ask the permission for it:
+/// every form of it must pass the deny rules ([`deny_forms`]) and the
+/// requested form is asked. The URL to request.
+pub(crate) fn authorize(ctx: &Ctx<'_>, raw: &str) -> Result<reqwest::Url, String> {
+    let shown = raw.split('#').next().unwrap_or(raw);
+    let url = normalize(raw).map_err(|e| format!("Invalid URL {shown:?}: {e}"))?;
+    check_url(&url)?;
+    ctx.check_not_denied("webfetch", &deny_forms(Some(raw), &url))?;
+    ctx.ask(Request {
+        action: "webfetch".into(),
+        resources: vec![url.to_string()],
+        save: save_patterns(&url),
+        title: format!("Fetch {url}"),
+    })?;
+    Ok(url)
 }
 
 /// The client webfetch uses. It never follows redirects itself: each hop is
@@ -223,7 +288,7 @@ pub(crate) async fn get_following(
             .map_err(|e| format!("Invalid redirect location {location:?}: {e}"))?;
         check_url(&next)?;
         next.set_fragment(None);
-        ctx.check_not_denied("webfetch", &[next.to_string()])?;
+        ctx.check_not_denied("webfetch", &deny_forms(None, &next))?;
         current = next;
         redirects += 1;
     }
@@ -247,17 +312,8 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             "Timeout must be between 0 and {MAX_TIMEOUT_SECS} seconds"
         ));
     }
-    // Rules match the URL as written. The fragment is never sent, and would
-    // keep a rule for the exact URL from matching.
-    let url = raw.split('#').next().unwrap_or(raw);
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL {url:?}: {e}"))?;
-    check_url(&parsed)?;
-    ctx.ask(Request {
-        action: "webfetch".into(),
-        resources: vec![url.to_string()],
-        save: save_patterns(url),
-        title: format!("Fetch {url}"),
-    })?;
+    let parsed = authorize(ctx, raw)?;
+    let url = parsed.as_str();
     let fetched = tokio::time::timeout(Duration::from_secs_f64(timeout), async {
         match fetch(ctx, url, format, USER_AGENT).await? {
             Fetched::Challenge => fetch(ctx, url, format, RETRY_USER_AGENT).await,
@@ -328,10 +384,37 @@ mod tests {
             check_url(&url("https://a:b@example.com/")).unwrap_err(),
             "URL must not include credentials"
         );
+        let saves = |s: &str| save_patterns(&normalize(s).unwrap());
         assert_eq!(
-            save_patterns("https://Example.com:8443/a?b"),
-            ["https://Example.com:8443", "https://Example.com:8443/*"]
+            saves("https://Example.com:8443/a?b"),
+            ["https://example.com:8443", "https://example.com:8443/*"]
         );
+        assert_eq!(
+            saves("HTTPS://Example.COM:443/a"),
+            ["https://example.com", "https://example.com/*"]
+        );
+    }
+
+    /// The rules see the URL as it is requested, whatever the spelling.
+    #[test]
+    fn urls_are_matched_as_requested() {
+        let n = |s: &str| normalize(s).unwrap().to_string();
+        assert_eq!(n("HTTPS://INTERNAL.CORP/x#top"), "https://internal.corp/x");
+        assert_eq!(n("https://internal.corp:443/x"), "https://internal.corp/x");
+        assert_eq!(n("http://internal.corp:80/x"), "http://internal.corp/x");
+        assert_eq!(n("https://inter\tnal.co\nrp/x"), "https://internal.corp/x");
+        assert_eq!(n("https://internal.corp/a/../x"), "https://internal.corp/x");
+        assert_eq!(n("https://internal.corp"), "https://internal.corp/");
+        let url = normalize("https://internal.corp/%73ecret#f").unwrap();
+        assert_eq!(
+            deny_forms(Some("HTTPS://internal.corp/%73ecret#f"), &url),
+            [
+                "https://internal.corp/%73ecret",
+                "https://internal.corp/secret",
+                "HTTPS://internal.corp/%73ecret",
+            ]
+        );
+        assert_eq!(percent_decoded("a%2fb%zz%4"), "a/b%zz%4");
     }
 
     // ---------------------------------------------------------------------
@@ -344,6 +427,9 @@ mod tests {
     // Intentional differences:
     // - "Always" saves the URL's origin (`https://host` and `https://host/*`)
     //   instead of `*` (every URL).
+    // - The rules match the URL as requested (parsed and serialized), not
+    //   as written; its written and percent-decoded forms must also pass
+    //   the deny rules.
     // - The User-Agent names CodeSmith; the Cloudflare retry sends
     //   `codesmith`.
     // - A non-2xx answer reads "Unable to fetch <url>: HTTP <status>", and
@@ -584,7 +670,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn oc_webfetch_matches_the_url_as_written_and_rejects_credentials() {
+    async fn oc_webfetch_matches_the_url_as_requested_and_rejects_credentials() {
         let (base, _) = serve(hello()).await;
         let (env, rec) = Env::recording(vec![]);
         let written = base.replace("127.0.0.1", "LocalHost");
@@ -594,7 +680,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(rec.requests(), [("webfetch".to_string(), vec![written])]);
+        let requested = format!("{}/", base.replace("127.0.0.1", "localhost"));
+        assert_eq!(rec.requests(), [("webfetch".to_string(), vec![requested])]);
         let (env, rec) = Env::recording(vec![]);
         assert_eq!(
             fetch_url(
@@ -606,6 +693,41 @@ mod tests {
             "URL must not include credentials"
         );
         assert!(rec.requests().is_empty());
+    }
+
+    /// A deny rule or policy for a URL holds however the URL is spelled:
+    /// case, tabs in the host, percent-encoding or dot segments.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deny_rules_and_policies_match_the_url_as_requested() {
+        use crate::permission::{Policy, PolicyEffect};
+        let (base, log) = serve(hello()).await;
+        let port = base.rsplit(':').next().unwrap().to_string();
+        let spellings = [
+            base.replace("http://", "HTTP://") + "/secret",
+            format!("http://127.0.\t0.1:{port}/secret"),
+            format!("{base}/%73ecret"),
+            format!("{base}/x/../secret"),
+        ];
+        let policy = Policy::tool(PolicyEffect::Deny, &format!("webfetch:{base}/secret*"))
+            .rule()
+            .unwrap();
+        for rules in [
+            vec![
+                Rule::new("webfetch", "*", Effect::Allow),
+                Rule::new("webfetch", &format!("{base}/secret*"), Effect::Deny),
+            ],
+            vec![Rule::new("webfetch", "*", Effect::Allow), policy],
+        ] {
+            for url in &spellings {
+                let (env, rec) = Env::recording(rules.clone());
+                let err = fetch_url(&env, json!({"url": url, "format": "text"}))
+                    .await
+                    .unwrap_err();
+                assert!(err.starts_with("Permission denied"), "{url}: {err}");
+                assert!(rec.requests().is_empty());
+            }
+        }
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
