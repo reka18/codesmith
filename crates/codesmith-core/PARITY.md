@@ -24,7 +24,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
 | Sessions and their store | 308 | 91 | 2 | 0 | 191 | 24 | 0 |
-| Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
+| Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
 | Tool: apply_patch | 90 | 90 | 0 | 0 | 0 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1774** | **31** | **45** | **2435** | **1300** | **3** |
+| **Total** | **5588** | **1789** | **31** | **45** | **2436** | **1284** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -187,7 +187,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1300 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1284 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -308,26 +308,6 @@ Tests for behaviour CodeSmith already has but no test pins (1300 cases), by area
   - `session-runner-tool-events.test.ts`: local tool success serializes media base64 once through canonical content
 - activity and tool reliability aggregated over a range (M) — `stats`
   - `session-stats.test.ts`: aggregates activity and tool reliability without reading message payloads outside the range
-
-### Tool: read (16)
-
-- paging, past-end and negative offsets, long lines, byte budgets, NUL detection, lossy UTF-8, symlinks, directory listings (S) — `tool::read`
-  - `tool-read-filesystem.test.ts`: applies the default line limit to small files at physical line boundaries
-  - `tool-read-filesystem.test.ts`: applies the byte limit to the returned content of small files
-  - `tool-read-filesystem.test.ts`: reads extensionless and renamed GIFs as images
-  - `tool-read-filesystem.test.ts`: returns a listing when read reports a directory
-  - `tool-read-filesystem.test.ts`: lists unresolved symlinks, including broken and escaping links
-  - `tool-read-filesystem.test.ts`: reads a symlinked directory as a listing
-  - `tool-read-filesystem.test.ts`: rejects a negative offset for a directory
-  - `tool-read-filesystem.test.ts`: enforces line and byte budgets with continuation offsets
-  - `tool-read-filesystem.test.ts`: sorts and pages directory entries
-  - `tool-read-filesystem.test.ts`: stops checking for null bytes after the requested page
-  - `tool-read-filesystem.test.ts`: ignores a NUL after a chunked page but rejects it for a past-end offset
-  - `tool-read-filesystem.test.ts`: keeps a split byte order mark in a past-end tail and strips it at a negative offset
-  - `tool-read-filesystem.test.ts`: checks skipped lines for null bytes
-  - `tool-read-filesystem.test.ts`: reads page two after fetching more than the first 256KB range
-  - `tool-read-filesystem.test.ts`: reads after a newline at the first chunk boundary
-  - `tool-read-filesystem.test.ts`: preserves the media ingestion limit message
 
 ### Tool: write (6)
 
@@ -905,7 +885,7 @@ Tests for behaviour CodeSmith already has but no test pins (1300 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 687 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 569 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 570 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -1589,22 +1569,38 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool: read (66 of 82)</summary>
+<details><summary>Tool: read (82 of 82)</summary>
 
 
 **`tool-read-filesystem.test.ts`**
 
 - P {input.name} ×15 — `tests/oc_tools.rs::oc_read_text_serialization`
+- P applies the default line limit to small files at physical line boundaries — `src/tool/read.rs::oc_read_applies_the_default_line_limit_at_physical_line_boundaries`
+- P applies the byte limit to the returned content of small files — `src/tool/read.rs::oc_read_applies_the_byte_limit_to_the_returned_content`
+- P reads extensionless and renamed GIFs as images — `src/tool/read.rs::oc_read_reads_extensionless_and_renamed_gifs_as_images`
 - D preserves the environment not-found error — client-server: Environment not-found error
+- P returns a listing when read reports a directory — `src/tool/read.rs::oc_read_returns_a_listing_for_a_directory`
 - P reads malformed UTF-8 lossily and still rejects null-byte binary content — `tests/oc_tools.rs::oc_read_reads_malformed_utf8_lossily_and_rejects_binary`
 - P reads text despite a binary-associated extension — `tests/oc_tools.rs::oc_read_reads_text_despite_a_binary_extension`
+- P lists unresolved symlinks, including broken and escaping links — `src/tool/read.rs::oc_read_lists_unresolved_symlinks_including_broken_and_escaping_links`
+- P reads a symlinked directory as a listing — `src/tool/read.rs::oc_read_reads_a_symlinked_directory_as_a_listing`
 - P returns the last lines when the offset is past the end — `tests/oc_tools.rs::oc_read_returns_the_last_lines_when_the_offset_is_past_the_end`
 - P returns the last lines of a file larger than the first chunk when the offset is past the end — `tests/oc_tools.rs::oc_read_returns_the_last_lines_of_a_large_file_past_the_end`
 - P starts a negative offset that many lines before the end — `tests/oc_tools.rs::oc_read_starts_a_negative_offset_that_many_lines_before_the_end`
 - P starts a negative offset from the end of a file larger than the first chunk — `tests/oc_tools.rs::oc_read_starts_a_negative_offset_from_the_end_of_a_large_file` (without the 300 KB last-line case)
 - P reads the end of a file many chunks long — `tests/oc_tools.rs::oc_read_reads_the_end_of_a_file_many_chunks_long`
+- P rejects a negative offset for a directory — `src/tool/read.rs::oc_read_negative_directory_offset_error`
 - P pages text with one-based offsets — `tests/oc_tools.rs::oc_read_pages_text_with_one_based_offsets`
 - P truncates long lines — `tests/oc_tools.rs::oc_read_truncates_long_lines`
+- P enforces line and byte budgets with continuation offsets — `src/tool/read.rs::oc_read_enforces_line_and_byte_budgets_with_continuation_offsets` (adapted: the file is read whole, so there are no read ranges to count)
+- P sorts and pages directory entries — `src/tool/read.rs::oc_read_sorts_and_pages_directory_entries`
+- P stops checking for null bytes after the requested page — `src/tool/read.rs::oc_read_stops_checking_for_null_bytes_after_the_requested_page`
+- P ignores a NUL after a chunked page but rejects it for a past-end offset — `src/tool/read.rs::oc_read_ignores_a_nul_after_a_page_but_rejects_it_for_a_past_end_offset`
+- D keeps a split byte order mark in a past-end tail and strips it at a negative offset — deliberate: only a file's leading byte order mark is dropped; one starting a later line is text at any offset (OpenCode's chunked decoder also drops it where a chunk starts). Pinned by src/tool/read.rs::oc_read_keeps_a_byte_order_mark_that_is_not_at_the_start_of_the_file
+- P checks skipped lines for null bytes — `src/tool/read.rs::oc_read_checks_skipped_lines_for_null_bytes`
+- P reads page two after fetching more than the first 256KB range — `src/tool/read.rs::oc_read_reads_page_two_after_a_long_first_line` (adapted: the file is read whole, so a chunk boundary is any long first line)
+- P reads after a newline at the first chunk boundary — `src/tool/read.rs::oc_read_reads_page_two_after_a_long_first_line` (adapted: the file is read whole, so a chunk boundary is any long first line)
+- P preserves the media ingestion limit message — `src/tool/read.rs::oc_read_preserves_the_media_ingestion_limit_message`
 - P reads PDFs as bounded media — `src/tool/read.rs::oc_read_pdfs_as_media`
 
 **`tool-read.test.ts`**

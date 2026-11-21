@@ -105,3 +105,20 @@
 389,436,494 :: feature :: Tool Input Validation :: validating a tool's input against its JSON Schema before running it (CodeSmith repairs the input, then the tool or MCP server reports what is wrong)
 518 :: design :: other :: CodeSmith does not validate tool input against its schema, so every input passes through (after repair)
 
+# --- Tool: read (src/tool/read.rs) ---
+@tool-read-filesystem.test.ts
+157 :: ported :: src/tool/read.rs::oc_read_applies_the_default_line_limit_at_physical_line_boundaries
+180 :: ported :: src/tool/read.rs::oc_read_applies_the_byte_limit_to_the_returned_content
+200 :: ported :: src/tool/read.rs::oc_read_reads_extensionless_and_renamed_gifs_as_images
+238 :: ported :: src/tool/read.rs::oc_read_returns_a_listing_for_a_directory
+279 :: ported :: src/tool/read.rs::oc_read_lists_unresolved_symlinks_including_broken_and_escaping_links
+295 :: ported :: src/tool/read.rs::oc_read_reads_a_symlinked_directory_as_a_listing
+538 :: ported :: src/tool/read.rs::oc_read_negative_directory_offset_error
+583 :: ported :: src/tool/read.rs::oc_read_enforces_line_and_byte_budgets_with_continuation_offsets :: adapted: the file is read whole, so there are no read ranges to count
+610 :: ported :: src/tool/read.rs::oc_read_sorts_and_pages_directory_entries
+626 :: ported :: src/tool/read.rs::oc_read_stops_checking_for_null_bytes_after_the_requested_page
+638 :: ported :: src/tool/read.rs::oc_read_ignores_a_nul_after_a_page_but_rejects_it_for_a_past_end_offset
+652 :: design :: deliberate :: only a file's leading byte order mark is dropped; one starting a later line is text at any offset (OpenCode's chunked decoder also drops it where a chunk starts). Pinned by src/tool/read.rs::oc_read_keeps_a_byte_order_mark_that_is_not_at_the_start_of_the_file
+665 :: ported :: src/tool/read.rs::oc_read_checks_skipped_lines_for_null_bytes
+680,695 :: ported :: src/tool/read.rs::oc_read_reads_page_two_after_a_long_first_line :: adapted: the file is read whole, so a chunk boundary is any long first line
+710 :: ported :: src/tool/read.rs::oc_read_preserves_the_media_ingestion_limit_message

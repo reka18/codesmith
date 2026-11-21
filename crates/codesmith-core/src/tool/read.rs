@@ -1508,4 +1508,209 @@ mod tests {
         assert_eq!(t.lines.len(), 51);
         assert_eq!(t.next, Some(52));
     }
+
+    // --- Ports of tool-read-filesystem.test.ts from PARITY.md's backlog ---
+
+    fn page(bytes: &[u8], offset: Option<i64>, limit: Option<usize>) -> Option<Text> {
+        text_page(bytes, Page { offset, limit })
+    }
+
+    fn read_text(env: &Env, name: &str, input: Value) -> String {
+        let mut input = input;
+        input["path"] = json!(name);
+        run(&env.ctx(), &input).unwrap().content
+    }
+
+    #[test]
+    fn oc_read_applies_the_default_line_limit_at_physical_line_boundaries() {
+        let prefix = "x\r\n".repeat(1_999);
+        for ending in ["last", "last\n", "last\r\n", "\n"] {
+            let t = page(format!("{prefix}{ending}").as_bytes(), None, None).unwrap();
+            assert_eq!(
+                (t.offset, t.lines.len(), t.next),
+                (1, 2_000, None),
+                "{ending:?}"
+            );
+            assert!(t.lines[..1_999].iter().all(|l| l == "x"));
+        }
+        let bytes = format!("{prefix}\r\nlast");
+        let t = page(bytes.as_bytes(), None, None).unwrap();
+        assert_eq!((t.lines.len(), t.next), (2_000, Some(2_001)));
+        assert!(model_text("dense.txt", None, &t)
+            .ends_with("2000: \n[Output truncated. Continue reading with offset: 2001]"));
+        let t = page(bytes.as_bytes(), Some(2_001), None).unwrap();
+        assert_eq!(
+            (t.offset, t.lines.as_slice(), t.next),
+            (2_001, &["last".to_string()][..], None)
+        );
+    }
+
+    #[test]
+    fn oc_read_applies_the_byte_limit_to_the_returned_content() {
+        let exact = format!("{}x\n", "é".repeat(799)).repeat(32);
+        assert_eq!(exact.len(), MAX_BYTES);
+        let t = page(exact.as_bytes(), None, None).unwrap();
+        assert_eq!((t.lines.len(), t.next), (32, None));
+        // Each truncation marker takes more bytes than the character it replaces.
+        let long = format!("{}\n", "x".repeat(2_001)).repeat(25) + &"é".repeat(500);
+        let t = page(long.as_bytes(), None, None).unwrap();
+        assert_eq!((t.offset, t.lines.len(), t.next), (1, 25, Some(26)));
+        assert!(t.lines.join("\n").len() <= MAX_BYTES);
+    }
+
+    #[test]
+    fn oc_read_reads_extensionless_and_renamed_gifs_as_images() {
+        for (version, name) in [("GIF87a", "pixel"), ("GIF89a", "pixel.txt")] {
+            let mut bytes = version.as_bytes().to_vec();
+            bytes.extend(
+                [
+                    0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
+                    0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44,
+                    0x01, 0x00, 0x3b,
+                ]
+                .iter(),
+            );
+            assert_media(&bytes, name, "image/gif");
+        }
+    }
+
+    #[test]
+    fn oc_read_returns_a_listing_for_a_directory() {
+        let env = Env::new();
+        std::fs::create_dir(env.root().join("folder")).unwrap();
+        env.write("file.txt", "hello");
+        assert_eq!(
+            read_text(&env, ".", json!({})),
+            "Read directory ., entries 1-2\nfolder/\nfile.txt"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oc_read_lists_unresolved_symlinks_including_broken_and_escaping_links() {
+        let env = Env::new();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(env.root().join("folder")).unwrap();
+        env.write("file.txt", "hello");
+        std::os::unix::fs::symlink(outside.path().join("target.txt"), env.root().join("escape"))
+            .unwrap();
+        std::os::unix::fs::symlink(env.root().join("missing.txt"), env.root().join("broken"))
+            .unwrap();
+        assert_eq!(
+            read_text(&env, ".", json!({})),
+            "Read directory ., entries 1-4\nfolder/\nbroken\nescape\nfile.txt"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oc_read_reads_a_symlinked_directory_as_a_listing() {
+        let env = Env::new();
+        env.write("target/file.txt", "hello");
+        std::os::unix::fs::symlink(env.root().join("target"), env.root().join("link")).unwrap();
+        assert_eq!(
+            read_text(&env, "link", json!({})),
+            "Read directory link, entries 1-1\nfile.txt"
+        );
+    }
+
+    #[test]
+    fn oc_read_enforces_line_and_byte_budgets_with_continuation_offsets() {
+        let lines: Vec<String> = (0..2_001).map(|i| i.to_string()).collect();
+        let t = page(lines.join("\n").as_bytes(), None, Some(2_000)).unwrap();
+        assert_eq!((t.lines.len(), t.next), (2_000, Some(2_001)));
+        let bytes = vec!["a".repeat(2_000); 200].join("\n");
+        let t = page(bytes.as_bytes(), None, None).unwrap();
+        assert_eq!((t.lines.len(), t.next), (25, Some(26)));
+        assert!(t.lines.join("\n").len() <= MAX_BYTES);
+    }
+
+    #[test]
+    fn oc_read_sorts_and_pages_directory_entries() {
+        let env = Env::new();
+        std::fs::create_dir_all(env.root().join("d/z")).unwrap();
+        std::fs::create_dir_all(env.root().join("d/a")).unwrap();
+        env.write("d/b.txt", "");
+        assert_eq!(
+            read_text(&env, "d", json!({"offset": 2, "limit": 1})),
+            "Read directory d, entries 2-2\nz/\n[Output truncated. Continue reading with offset: 3]"
+        );
+    }
+
+    #[test]
+    fn oc_read_stops_checking_for_null_bytes_after_the_requested_page() {
+        let t = page(b"one\n\0", None, Some(1)).unwrap();
+        assert_eq!(
+            (t.lines, t.offset, t.next),
+            (vec!["one".to_string()], 1, Some(2))
+        );
+    }
+
+    #[test]
+    fn oc_read_ignores_a_nul_after_a_page_but_rejects_it_for_a_past_end_offset() {
+        let bytes = format!("{}\nselected\n\0\ntail", "x".repeat(256 * 1024));
+        for offset in [2, -3] {
+            let t = page(bytes.as_bytes(), Some(offset), Some(1)).unwrap();
+            assert_eq!(
+                (t.lines, t.offset, t.next),
+                (vec!["selected".to_string()], 2, Some(3)),
+                "{offset}"
+            );
+        }
+        assert!(page(bytes.as_bytes(), Some(5), Some(1)).is_none());
+    }
+
+    /// Adapted: only a file's leading byte order mark is dropped; one at
+    /// the start of a later line is text, at any offset (OpenCode's chunked
+    /// decoder also drops it where a chunk starts).
+    #[test]
+    fn oc_read_keeps_a_byte_order_mark_that_is_not_at_the_start_of_the_file() {
+        let bytes = format!("{}\n\u{feff}selected", "x".repeat(256 * 1024 - 2));
+        for offset in [3, -1] {
+            let t = page(bytes.as_bytes(), Some(offset), Some(1)).unwrap();
+            assert_eq!(
+                (t.lines, t.offset),
+                (vec!["\u{feff}selected".to_string()], 2),
+                "{offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn oc_read_checks_skipped_lines_for_null_bytes() {
+        assert!(page(b"one\0\ntwo\n", Some(2), Some(1)).is_none());
+    }
+
+    #[test]
+    fn oc_read_reads_page_two_after_a_long_first_line() {
+        for first in [300 * 1024, 256 * 1024 - 1] {
+            let bytes = format!("{}\nsecond\n", "a".repeat(first));
+            let t = page(bytes.as_bytes(), Some(2), Some(1)).unwrap();
+            assert_eq!(
+                (t.lines, t.offset, t.next),
+                (vec!["second".to_string()], 2, None),
+                "{first}"
+            );
+        }
+    }
+
+    #[test]
+    fn oc_read_preserves_the_media_ingestion_limit_message() {
+        let env = Env::new();
+        let path = env.root().join("oversized.png");
+        std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(crate::media::MAX_INGEST_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            read_path(&env.ctx(), "oversized.png").unwrap_err(),
+            format!(
+                "Media exceeds {} byte ingestion limit: oversized.png",
+                crate::media::MAX_INGEST_BYTES
+            )
+        );
+    }
 }
