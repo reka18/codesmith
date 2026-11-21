@@ -17,6 +17,10 @@
 //! }
 //! ```
 
+// The example's `fn main` is the point: it is the plugin binary's main.
+// clippy 1.91 (the workspace rust-version) calls it needless.
+#![allow(clippy::needless_doctest_main)]
+
 mod acp;
 mod cli;
 mod render;
