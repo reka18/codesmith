@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **`codesmith upgrade` never downgrades unasked:** with no version named,
+  it refuses when the latest release is older than the running copy, and
+  the update notice stays quiet. Name the version to roll back.
 - **Bidi and zero-width characters are stripped** from swap progress
   lines, swap errors and exported Markdown transcripts, along with the
   other Unicode format characters, so text can't read backwards or hide

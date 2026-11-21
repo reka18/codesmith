@@ -188,6 +188,65 @@ fn same_release(a: &Release, b: &Release) -> bool {
         })
 }
 
+/// Whether release `a` comes before release `b` in semver order: the
+/// numbers first, then a prerelease before its release, prerelease
+/// identifiers compared in turn (numbers numerically and before words,
+/// words in ASCII order), a shorter list first when the rest agree. Equal
+/// releases ([`same_release`]) are not older.
+fn older(a: &Release, b: &Release) -> bool {
+    use std::cmp::Ordering;
+    if same_release(a, b) {
+        return false;
+    }
+    // The numbers fit JavaScript's safe integers (parse_release_version).
+    let nums = |r: &Release| -> Vec<u64> {
+        r.core
+            .split('.')
+            .map(|p| p.parse().unwrap_or(u64::MAX))
+            .collect()
+    };
+    match nums(a).cmp(&nums(b)) {
+        Ordering::Less => return true,
+        Ordering::Greater => return false,
+        Ordering::Equal => {}
+    }
+    match (a.prerelease.is_empty(), b.prerelease.is_empty()) {
+        (true, true) => return false,
+        (true, false) => return false,
+        (false, true) => return true,
+        (false, false) => {}
+    }
+    for (x, y) in a.prerelease.iter().zip(&b.prerelease) {
+        let o = match (numeric(x), numeric(y)) {
+            (true, true) => {
+                let (fx, fy) = (
+                    x.parse::<f64>().unwrap_or(f64::MAX),
+                    y.parse::<f64>().unwrap_or(f64::MAX),
+                );
+                fx.partial_cmp(&fy).unwrap_or(Ordering::Equal)
+            }
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => x.as_bytes().cmp(y.as_bytes()),
+        };
+        if o != Ordering::Equal {
+            return o == Ordering::Less;
+        }
+    }
+    a.prerelease.len() < b.prerelease.len()
+}
+
+/// Whether `version` is an older release than `current` (both valid).
+pub fn is_older(version: &str, current: &str) -> bool {
+    match (
+        parse_release_version(version),
+        parse_release_version(current),
+    ) {
+        (Some(v), Some(c)) => older(&v, &c),
+        _ => false,
+    }
+}
+
 fn bare(version: &str) -> &str {
     let v = version.trim();
     v.strip_prefix('v').unwrap_or(v)
@@ -439,11 +498,27 @@ pub(crate) async fn command(
             bail!(message);
         }
     }
+    let named = target.is_some();
     let target = match target {
         Some(t) => t.to_string(),
         None => updater.latest().await.context("Update check failed")?,
     };
     let version = bare(&target);
+    // The latest release older than this one (a release pulled, or a
+    // releases page that lies) is never moved to unasked: only a version
+    // named on the command line can go back.
+    if !named && is_older(version, current) {
+        if check {
+            writeln!(
+                out,
+                "CodeSmith {current} is newer than the latest release ({version}); nothing to upgrade"
+            )?;
+            return Ok(());
+        }
+        bail!(
+            "the latest release, {version}, is older than this copy ({current}); not downgrading. To go back to it, name it: codesmith upgrade {version}"
+        );
+    }
     if action(current, version, Policy::Notify) == Action::None {
         writeln!(
             out,
@@ -949,7 +1024,9 @@ impl Check {
             }
             None => self.cached,
         }?;
-        if action(&self.current, &latest, Policy::Notify) == Action::None {
+        if action(&self.current, &latest, Policy::Notify) == Action::None
+            || is_older(&latest, &self.current)
+        {
             return None;
         }
         let how = match self.method {

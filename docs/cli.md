@@ -300,9 +300,11 @@ codesmith upgrade [VERSION] [-m, --method binary|brew|cargo] [--check]
 
 Also `codesmith update`. Without `VERSION` it upgrades to the latest
 published release of [reka18/codesmith](https://github.com/reka18/codesmith/releases)
-(drafts and prereleases are never "latest"); `VERSION` may have a leading
-`v`, and may be older than the running one (a rollback). `--check` only says
-whether another release is out.
+(drafts and prereleases are never "latest"), but never to one older than
+the running copy: then it refuses (and `--check` says this copy is newer).
+`VERSION` may have a leading `v`, and may be older than the running one: a
+rollback has to be named. `--check` only says whether another release is
+out.
 
 How it upgrades depends on where this copy lives:
 
@@ -367,7 +369,8 @@ With `notify`, the interactive UI checks at most once a day in
 the background, keeps the answer in the cache folder (`update-check.json`),
 and after the UI exits prints a line such as
 `CodeSmith 0.3.0 is available (this is 0.2.0). Run: codesmith upgrade` (or
-the `brew`/`cargo` command for those installs). It never waits for the
+the `brew`/`cargo` command for those installs), and nothing when the latest
+release is older than this copy. It never waits for the
 network. `"auto"` is accepted, but CodeSmith never replaces itself unattended:
 it behaves as `notify`. `$CODESMITH_DISABLE_AUTOUPDATE=1` turns checks off
 whatever the config says.

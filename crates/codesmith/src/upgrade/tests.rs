@@ -161,6 +161,8 @@ struct Fake {
     detected: Detected,
     latest_error: bool,
     install_error: bool,
+    /// What `latest` returns, when not the default.
+    latest: Option<String>,
 }
 
 impl Fake {
@@ -170,6 +172,7 @@ impl Fake {
             detected: Detected::Method(Method::Binary),
             latest_error: false,
             install_error: false,
+            latest: None,
         }
     }
 }
@@ -184,7 +187,11 @@ impl Updater for Fake {
         if self.latest_error {
             bail!("the releases page returned HTTP 503")
         }
-        Ok("0.0.0-beta-new".into())
+        // Newer than the running "0.0.0-beta-old" in semver order.
+        Ok(self
+            .latest
+            .clone()
+            .unwrap_or_else(|| "0.0.1-beta-new".into()))
     }
     async fn upgrade(&mut self, version: &str) -> Result<()> {
         self.events.push(format!("upgrade {version}"));
@@ -235,7 +242,7 @@ async fn oc_upgrade_detects_the_installation_method_and_resolves_the_latest_vers
     let mut fake = Fake::new();
     let (out, ok) = cli(&mut fake, &[]).await;
     assert!(ok, "{out}");
-    assert_eq!(fake.events, ["method", "latest", "upgrade 0.0.0-beta-new"]);
+    assert_eq!(fake.events, ["method", "latest", "upgrade 0.0.1-beta-new"]);
     assert!(out.contains("Upgrade complete"), "{out}");
 }
 
@@ -245,7 +252,7 @@ async fn oc_upgrade_resolves_the_latest_version_for_an_explicit_method_without_d
     fake.detected = Detected::Unknown;
     let (out, ok) = cli(&mut fake, &["--method", "binary"]).await;
     assert!(ok, "{out}");
-    assert_eq!(fake.events, ["latest", "upgrade 0.0.0-beta-new"]);
+    assert_eq!(fake.events, ["latest", "upgrade 0.0.1-beta-new"]);
 }
 
 #[tokio::test]
@@ -272,6 +279,113 @@ async fn oc_upgrade_skips_the_already_installed_version() {
     assert!(ok, "{out}");
     assert_eq!(fake.events, ["method"]);
     assert!(out.contains("already installed"), "{out}");
+}
+
+/// Security review 8, finding 8: with no version named, `codesmith
+/// upgrade` moved to whatever the releases page called latest, an older
+/// release included. It now refuses to go back unless the version is named.
+#[tokio::test]
+async fn upgrade_never_moves_to_an_older_latest_unasked() {
+    for older in [
+        "0.0.0-alpha",
+        "0.0.0-beta-ol",
+        "0.0.0-beta",
+        "0.0.0-1",
+        "v0.0.0-beta-nld",
+    ] {
+        let mut fake = Fake::new();
+        fake.latest = Some(older.into());
+        let (out, ok) = cli(&mut fake, &[]).await;
+        assert!(!ok, "{older}: {out}");
+        assert_eq!(fake.events, ["method", "latest"], "{older}");
+        assert!(out.contains("not downgrading"), "{older}: {out}");
+        assert!(out.contains("codesmith upgrade "), "{out}");
+        // --check only says so.
+        let mut fake = Fake::new();
+        fake.latest = Some(older.into());
+        let (out, ok) = cli(&mut fake, &["--check"]).await;
+        assert!(ok, "{older}: {out}");
+        assert!(out.contains("newer than the latest release"), "{out}");
+        assert!(!fake.events.iter().any(|e| e.starts_with("upgrade")));
+    }
+    // Named explicitly, an older version is a rollback the user asked for.
+    let mut fake = Fake::new();
+    let (out, ok) = cli(&mut fake, &["0.0.0-alpha", "-m", "binary"]).await;
+    assert!(ok, "{out}");
+    assert_eq!(fake.events, ["upgrade 0.0.0-alpha"]);
+    // The same version is still skipped; a newer one still installs.
+    for (latest, installs) in [
+        ("0.0.0-beta-old", false),
+        ("v0.0.0-beta-old+build", false),
+        ("0.0.0-beta-old.1", true),
+        ("0.0.0", true),
+    ] {
+        let mut fake = Fake::new();
+        fake.latest = Some(latest.into());
+        let (out, ok) = cli(&mut fake, &[]).await;
+        assert!(ok, "{latest}: {out}");
+        assert_eq!(
+            fake.events.iter().any(|e| e.starts_with("upgrade")),
+            installs,
+            "{latest}: {out}"
+        );
+    }
+}
+
+#[test]
+fn releases_order_as_semver_does() {
+    let ordered = [
+        "0.9.9",
+        "1.0.0-0",
+        "1.0.0-1",
+        "1.0.0-10",
+        "1.0.0-alpha",
+        "1.0.0-alpha.1",
+        "1.0.0-alpha.beta",
+        "1.0.0-beta",
+        "1.0.0-beta.2",
+        "1.0.0-beta.11",
+        "1.0.0-rc.1",
+        "1.0.0",
+        "1.0.1",
+        "1.1.0",
+        "1.10.0",
+        "2.0.0",
+        "9007199254740991.0.0",
+    ];
+    for (i, a) in ordered.iter().enumerate() {
+        for (j, b) in ordered.iter().enumerate() {
+            assert_eq!(is_older(a, b), i < j, "{a} < {b}");
+        }
+    }
+    // Build metadata and a leading `v` do not count; invalid versions are
+    // never older.
+    assert!(!is_older("v1.0.0+x", "1.0.0"));
+    assert!(!is_older("1.0.0", "v1.0.0+y"));
+    assert!(!is_older("junk", "1.0.0"));
+    assert!(!is_older("1.0.0", "junk"));
+    assert!(
+        !is_older("１.0.0", "2.0.0"),
+        "full-width digits are not a version"
+    );
+}
+
+#[tokio::test]
+async fn the_update_notice_never_offers_an_older_release() {
+    let check = |latest: &str| Check {
+        current: "1.2.0".into(),
+        method: Method::Binary,
+        cached: Some(latest.into()),
+        task: None,
+    };
+    assert_eq!(check("1.1.9").notice().await, None);
+    assert_eq!(check("1.2.0-rc.1").notice().await, None);
+    assert_eq!(check("1.2.0").notice().await, None);
+    assert!(check("1.2.1")
+        .notice()
+        .await
+        .unwrap()
+        .contains("1.2.1 is available"));
 }
 
 #[tokio::test]
@@ -330,7 +444,7 @@ async fn package_manager_installs_name_their_command_and_check_only_reports() {
         let (out, ok) = cli(&mut fake, &["--check"]).await;
         assert!(ok, "{out}");
         assert_eq!(fake.events, ["method", "latest"]);
-        assert!(out.contains("0.0.0-beta-new is available"), "{out}");
+        assert!(out.contains("0.0.1-beta-new is available"), "{out}");
         assert!(out.contains(command), "{out}");
     }
     let mut fake = Fake::new();
