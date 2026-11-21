@@ -145,3 +145,26 @@
 347 :: fixed :: tests/oc_snapshot_backlog.rs::oc_snapshot_restores_the_other_files_when_removing_one_fails :: the first added file that could not be removed stopped the restore, so the files after it kept the turn's changes; the others are now restored and the failure reported after
 401 :: design :: deliberate :: CodeSmith keeps its own snapshot repository for any project root, Git or not, so undo works outside Git too
 414 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_isolates_linked_worktrees :: adapted: each session root has its own repository
+
+# --- Shell scan and parse (tests/oc_shell_scan_backlog.rs) ---
+# CodeSmith's scanner reads one POSIX grammar, so a row OpenCode runs for
+# Bash and for Zsh is one check here, counted for both.
+@shell-scan/bash-syntax.test.ts
+80:62 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
+80:8 :: design :: deliberate :: valid syntax the scanner refuses as unanalyzable (an unparenthesized case or a heredoc inside a quoted substitution, a delimiter split by a line continuation, `time` before `[[`/`!`), so it is asked about rather than guessed at, and an arithmetic command or subscript assignment kept as a command of its own; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
+94 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_fixtures_are_accepted_by_bash_and_zsh
+@shell-scan/compound-parity.test.ts
+28 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_accepts_compound_function_bodies_as_braced_ones
+@shell-scan/adversarial.test.ts
+5 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_scans_visible_bash_command_positions
+@shell-scan/closure.test.ts
+21 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_keeps_an_unterminated_quote_opaque_in_every_context
+28 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_single_quotes_suppress_active_syntax
+38 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_keeps_parameter_expansions_in_command_position_in_every_context
+@shell-parse-compatibility.test.ts
+248:25 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_extracts_resources_saved_prefixes_and_directories :: POSIX rows
+248:3 :: design :: deliberate :: a bare `cd` is the home directory (unknown, so asked, when the script changes HOME), not a `cd *` command, and a quoted `~` is checked both as written and expanded; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_resources_saved_prefixes_and_directories
+248:10 :: design :: platform :: PowerShell rows
+@shell-parse-parity.test.ts
+24:22 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_scans_the_native_parity_commands :: POSIX rows
+24:5 :: design :: platform :: PowerShell rows

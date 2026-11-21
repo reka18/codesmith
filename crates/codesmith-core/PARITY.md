@@ -37,7 +37,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
-| Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
+| Shell scan and parse | 1465 | 640 | 0 | 0 | 455 | 370 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1798** | **33** | **45** | **2448** | **1261** | **3** |
+| **Total** | **5588** | **2264** | **33** | **45** | **2459** | **784** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -189,7 +189,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (784 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -372,10 +372,8 @@ Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
 
-### Shell scan and parse (847)
+### Shell scan and parse (370)
 
-- resources, saved prefixes and directories table (POSIX rows) (M) — `shell_scan::scan`
-  - `shell-parse-compatibility.test.ts`: extracts resources, saved prefixes, and directories: %s %s %j (28 cases)
 - prefix for long argument lists (S) — `shell_scan::scan`
   - `shell-parse-compatibility.test.ts`: derives the prefix for long argument lists
 - former tree-sitter gaps table (S) — `shell_scan::scan`
@@ -384,8 +382,6 @@ Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area
   - `shell-parse-compatibility.test.ts`: retains the shared directory command set: %s (3 cases)
 - generated supported syntax has valid saved prefixes (M) — `shell_scan::scan`
   - `shell-parse-parity.test.ts`: scans generated supported syntax with valid saved prefixes and no fallback
-- resources/prefixes/directories in bash and zsh (M) — `shell_scan::scan`
-  - `shell-parse-parity.test.ts`: extracts resources, saved prefixes, and directories in %s: %s (22 cases)
 - commandless redirects keep matching saved prefixes (S) — `shell_scan::scan`
   - `shell-parse-parity.test.ts`: retains commandless redirects with matching saved prefixes: %s (2 cases)
 - bash/zsh ordinary syntax table extracts commands (M) — `shell_scan::scan`
@@ -397,8 +393,6 @@ Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area
   - `shell-parse-syntax.test.ts`: scans Zsh glob qualifiers, indirect parameter flags, and disown operators while rejecting code qualifiers
 - variable sinks with substitution-built subscripts rejected (S) — `shell_scan::scan`
   - `shell-parse-syntax.test.ts`: %s rejects variable sinks when a substitution can build the subscript: %s (5 cases)
-- visible Bash command positions table (M) — `shell_scan::scan`
-  - `shell-scan/adversarial.test.ts`: scans visible Bash command positions: %s (32 cases)
 - repeated zsh q flags in bounded time (S) — `shell_scan::scan`
   - `shell-scan/adversarial.test.ts`: scans repeated zsh q flags in bounded time
 - arithmetic tables: kept unevaluated, explicit commands found, malformed rejected, bounded (M) — `shell_scan::scan`
@@ -426,8 +420,10 @@ Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area
   - `shell-scan/bash-safety.test.ts`: does not lose commands through delimiter or quote confusion: %s (4 cases)
   - `shell-scan/bash-safety.test.ts`: ${shell}: %s (3 cases)
   - `shell-scan/bash-safety.test.ts`: ${shell} preserves commands around redirect-only syntax: %s (12 cases)
+- the fixtures run in real bash/zsh (add them to the differential corpus) (M) — `tests/shell_differential.rs`
+  - `shell-scan/bash-syntax.test.ts`: ${shell} runs only the explicitly found probes: %s (22 cases)
+  - `shell-scan/bash-syntax.test.ts`: real Bash agrees with delimiter quoting: %s (8 cases)
 - Bash/Zsh syntax tables: command nodes, ANSI-C quoting, heredoc delimiters, dialect differences (M) — `shell_scan::scan`
-  - `shell-scan/bash-syntax.test.ts`: extracts actual command nodes: %s (70 cases)
   - `shell-scan/bash-syntax.test.ts`: rejects incomplete syntax: %s (7 cases)
   - `shell-scan/bash-syntax.test.ts`: scans a Zsh brace group closed after a redirect
   - `shell-scan/bash-syntax.test.ts`: preserves raw lexical spelling of ANSI-C and locale quoted words
@@ -443,16 +439,7 @@ Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area
   - `shell-scan/bash-syntax.test.ts`: reads a reserved word after a redirect as a Zsh keyword
   - `shell-scan/bash-syntax.test.ts`: scans safe Zsh parameter flags, Zsh repeat loops, and Bash extglob arguments
   - `shell-scan/bash-syntax.test.ts`: derives the dialect from the shell executable: %s (5 cases)
-- the fixtures run in real bash/zsh (add them to the differential corpus) (M) — `tests/shell_differential.rs`
-  - `shell-scan/bash-syntax.test.ts`: ${shell} accepts the source grammar: ${source} (140 cases)
-  - `shell-scan/bash-syntax.test.ts`: ${shell} runs only the explicitly found probes: %s (22 cases)
-  - `shell-scan/bash-syntax.test.ts`: real Bash agrees with delimiter quoting: %s (8 cases)
-- single quotes suppress active syntax (S) — `shell_scan::scan`
-  - `shell-scan/closure.test.ts`: {source} (8 cases)
-  - `shell-scan/closure.test.ts`: single quotes suppress active syntax: %s
-  - `shell-scan/closure.test.ts`: {source} (16 cases)
 - function bodies and shorthand loops in every context (M) — `shell_scan::scan`
-  - `shell-scan/compound-parity.test.ts`: ${shell}: ${source} (160 cases)
   - `shell-scan/compound-parity.test.ts`: keeps compound function bodies inside command substitutions: %s (4 cases)
   - `shell-scan/compound-parity.test.ts`: {source} (5 cases)
   - `shell-scan/compound-parity.test.ts`: retains commands in nested shorthand loops: %s (7 cases)
@@ -859,7 +846,7 @@ Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 688 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 581 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 592 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -2255,16 +2242,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell scan and parse (618 of 1465)</summary>
+<details><summary>Shell scan and parse (1095 of 1465)</summary>
 
 
 **`shell-parse-compatibility.test.ts`**
 
+- P extracts resources, saved prefixes, and directories: %s %s %j ×25 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_resources_saved_prefixes_and_directories` (POSIX rows)
+- D extracts resources, saved prefixes, and directories: %s %s %j ×3 — deliberate: a bare `cd` is the home directory (unknown, so asked, when the script changes HOME), not a `cd *` command, and a quoted `~` is checked both as written and expanded; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_resources_saved_prefixes_and_directories
 - D extracts resources, saved prefixes, and directories: %s %s %j ×10 — platform: PowerShell rows
 - D extracts inline PowerShell directory flags with case-insensitive names and quoted values · retains statement-head ForEach-Object cmdlet calls when non-scriptblock parameters are present — platform: PowerShell
 
 **`shell-parse-parity.test.ts`**
 
+- P extracts resources, saved prefixes, and directories in %s: %s ×22 — `tests/oc_shell_scan_backlog.rs::oc_scan_scans_the_native_parity_commands` (POSIX rows)
 - D extracts resources, saved prefixes, and directories in %s: %s ×5 — platform: PowerShell rows
 - P returns an explicit empty result for pure variable assignments without redirects — `src/tool/shell_scan.rs::oc_scan_assignment_only_input_has_no_command`
 - P fails explicitly for malformed %s syntax: %s ×6 — `src/tool/shell_scan.rs::oc_scan_malformed_structure_is_opaque` (POSIX rows)
@@ -2292,6 +2282,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`shell-scan/adversarial.test.ts`**
 
+- P scans visible Bash command positions: %s ×32 — `tests/oc_shell_scan_backlog.rs::oc_scan_scans_visible_bash_command_positions`
 - P scans subscript-shaped text outside shell sinks: %s ×9 — `src/tool/shell_scan.rs::oc_scan_adversarial_subscript_text_outside_sinks`
 - P keeps structurally uncertain Bash input opaque: %s ×4 — `src/tool/shell_scan.rs::oc_scan_adversarial_uncertain_input_is_opaque`
 - P scans adversarial Bash input in bounded time: %s ×6 — `src/tool/shell_scan.rs::oc_scan_adversarial_input_in_bounded_time`
@@ -2301,6 +2292,22 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - P rejects malformed command positions: %s ×7 — `src/tool/shell_scan.rs::oc_scan_adversarial_command_positions`
 - P keeps unsupported group positions and empty command names opaque: %s ×6 — `src/tool/shell_scan.rs::oc_scan_keeps_dynamic_command_names`
+
+**`shell-scan/bash-syntax.test.ts`**
+
+- P extracts actual command nodes: %s ×62 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes`
+- D extracts actual command nodes: %s ×8 — deliberate: valid syntax the scanner refuses as unanalyzable (an unparenthesized case or a heredoc inside a quoted substitution, a delimiter split by a line continuation, `time` before `[[`/`!`), so it is asked about rather than guessed at, and an arithmetic command or subscript assignment kept as a command of its own; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
+- P ${shell} accepts the source grammar: ${source} ×140 — `tests/oc_shell_scan_backlog.rs::oc_scan_fixtures_are_accepted_by_bash_and_zsh`
+
+**`shell-scan/closure.test.ts`**
+
+- P {source} ×8 — `tests/oc_shell_scan_backlog.rs::oc_scan_keeps_an_unterminated_quote_opaque_in_every_context`
+- P single quotes suppress active syntax: %s — `tests/oc_shell_scan_backlog.rs::oc_scan_single_quotes_suppress_active_syntax`
+- P {source} ×16 — `tests/oc_shell_scan_backlog.rs::oc_scan_keeps_parameter_expansions_in_command_position_in_every_context`
+
+**`shell-scan/compound-parity.test.ts`**
+
+- P ${shell}: ${source} ×160 — `tests/oc_shell_scan_backlog.rs::oc_scan_accepts_compound_function_bodies_as_braced_ones`
 
 **`shell-scan/generated.test.ts`**
 
