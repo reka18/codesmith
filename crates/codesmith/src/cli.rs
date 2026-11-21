@@ -188,6 +188,29 @@ enum Command {
         #[command(subcommand)]
         what: Option<PermissionsCmd>,
     },
+    /// Trust a project's config to use what it asks for ({env:} and
+    /// {file:} values, provider and MCP URLs and headers, programs), or
+    /// list and revoke the answers kept.
+    Trust {
+        /// The project folder (default: the current one), or with
+        /// `--revoke` a remembered answer's id.
+        target: Option<String>,
+        /// List the remembered answers.
+        #[arg(long, conflicts_with_all = ["revoke", "distrust", "show"])]
+        list: bool,
+        /// Forget the answer for the project (or with this id).
+        #[arg(long, conflicts_with_all = ["distrust", "show"])]
+        revoke: bool,
+        /// Remember not to trust it.
+        #[arg(long, conflicts_with = "show")]
+        distrust: bool,
+        /// Only show what the project's config asks for and the answer kept.
+        #[arg(long)]
+        show: bool,
+        /// Print JSON (with --list or --show).
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect configuration and internals.
     Debug {
         #[command(subcommand)]
@@ -990,6 +1013,16 @@ pub async fn entry() -> i32 {
 
 async fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?.canonicalize()?;
+    // A project whose config asks for host secrets, URLs or programs is
+    // asked about once, at a terminal; elsewhere (no terminal, `acp`,
+    // `serve`, automations) an unanswered project is not trusted.
+    if asks_trust(&cli.command) {
+        trust_prompt(&cwd)?;
+    }
+    // The interactive UI shows the notice of an untrusted project itself.
+    if cli.command.is_none() {
+        codesmith_core::trust::set_announce(false);
+    }
     // Sessions refresh the models.dev catalog in the background (never
     // waiting for it) when fetching is turned on; it is off by default.
     if matches!(
@@ -1440,6 +1473,14 @@ async fn run(cli: Cli) -> Result<()> {
                 json: false,
             }),
         ),
+        Some(Command::Trust {
+            target,
+            list,
+            revoke,
+            distrust,
+            show,
+            json,
+        }) => trust_cmd(&cwd, target, list, revoke, distrust, show, json),
         Some(Command::Debug { what }) => debug(cwd, what),
         Some(Command::Upgrade {
             target,
@@ -2476,6 +2517,146 @@ async fn generate_cmd(
 fn open_store() -> Result<Store> {
     let path = store::default_path();
     Store::open(&path).with_context(|| format!("session store {}", path.display()))
+}
+
+/// Whether `command` may ask about trusting the project's config: the
+/// interactive UI and the commands that run sessions or reach providers
+/// and MCP servers. Servers, editors and automations never ask.
+fn asks_trust(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        None | Some(Command::Run(_))
+            | Some(Command::Review { .. })
+            | Some(Command::Calibrate { .. })
+            | Some(Command::Generate { .. })
+            | Some(Command::Models { .. })
+            | Some(Command::Mcp { .. })
+            | Some(Command::Commands)
+            | Some(Command::Worktree { .. })
+    )
+}
+
+/// Ask about trusting `cwd`'s project config when it needs an answer and
+/// stdin and stderr are a terminal.
+pub(crate) fn trust_prompt(cwd: &std::path::Path) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(());
+    }
+    codesmith_core::trust::ensure(
+        cwd,
+        &config::Sources::from_env(),
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr(),
+    )?;
+    Ok(())
+}
+
+fn trust_cmd(
+    cwd: &std::path::Path,
+    target: Option<String>,
+    list: bool,
+    revoke: bool,
+    distrust: bool,
+    show: bool,
+    json: bool,
+) -> Result<()> {
+    use codesmith_core::trust::{self, safe, State, Store};
+    let store = Store::default_store();
+    if list || (target.is_none() && json && !show) {
+        let all = store.list();
+        if json {
+            println!("{}", serde_json::to_string_pretty(&all)?);
+            return Ok(());
+        }
+        if all.is_empty() {
+            eprintln!("No trust answers are kept.");
+        }
+        for r in all {
+            println!(
+                "{}  {}  {}  ({} capabilities)",
+                r.id,
+                if r.trusted {
+                    "trusted    "
+                } else {
+                    "not trusted"
+                },
+                safe(&r.root),
+                r.capabilities.len()
+            );
+        }
+        return Ok(());
+    }
+    if revoke {
+        if let Some(t) = target.as_deref().filter(|t| t.starts_with("trust_")) {
+            if !store.revoke(t)? {
+                return Err(anyhow!("no trust answer {t}"));
+            }
+            eprintln!("Revoked {t}.");
+            return Ok(());
+        }
+    }
+    let dir = match &target {
+        Some(t) => std::path::Path::new(t)
+            .canonicalize()
+            .with_context(|| format!("no folder {t}"))?,
+        None => cwd.to_path_buf(),
+    };
+    let root = config::project_root(&dir);
+    let project = trust::project_key(&root);
+    if revoke {
+        if !store.revoke(&project)? {
+            return Err(anyhow!(
+                "no trust answer for {}",
+                safe(&root.display().to_string())
+            ));
+        }
+        eprintln!(
+            "Revoked the trust answer for {}.",
+            safe(&root.display().to_string())
+        );
+        return Ok(());
+    }
+    let req = config::trust_request(&dir, &config::Sources::from_env())?;
+    let state = store.state(&project, &req);
+    if show {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "root": req.root,
+                    "project": project,
+                    "files": req.files,
+                    "capabilities": req.capabilities,
+                    "state": format!("{state:?}").to_lowercase(),
+                }))?
+            );
+        } else if req.is_empty() {
+            println!("This project's config asks for nothing that needs trust.");
+        } else {
+            print!("{}", req.summary());
+            println!(
+                "Answer kept: {}",
+                match state {
+                    State::Trusted => "trusted",
+                    State::Distrusted => "not trusted",
+                    _ => "none (it is not trusted until you answer)",
+                }
+            );
+        }
+        return Ok(());
+    }
+    if req.is_empty() {
+        eprintln!("This project's config asks for nothing that needs trust.");
+        return Ok(());
+    }
+    eprint!("{}", req.summary());
+    let r = store.remember(&project, &req, !distrust)?;
+    eprintln!(
+        "{} ({}). `codesmith trust --revoke` forgets this.",
+        if distrust { "Not trusted" } else { "Trusted" },
+        r.id
+    );
+    Ok(())
 }
 
 fn permissions_cmd(cwd: &std::path::Path, what: PermissionsCmd) -> Result<()> {

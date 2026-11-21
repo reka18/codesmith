@@ -69,10 +69,12 @@ any other.
 
 `codesmith mcp list` connects to each server and shows its status and tools.
 
-Because a project's `codesmith.json` can add MCP servers, and local servers
-are programs that run on your machine, read a repository's config before you
-use CodeSmith in it. See
-[project config is trusted](configuration.md#files-and-precedence).
+A project's `codesmith.json` can add MCP servers, and local servers are
+programs that run on your machine, so a project server's `url`, `headers`,
+`oauth`, `command` and `environment` wait until you
+[trust the project](configuration.md#trusting-a-projects-config). Until
+then a server only the project defines is left out, and one your global
+config also defines keeps your settings.
 
 ## Permissions
 

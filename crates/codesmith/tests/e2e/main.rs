@@ -35,6 +35,8 @@
 //! - `catalog`: the models.dev catalog: listing, resolution, background
 //!   refresh.
 //! - `swap`: `codesmith models swap` and a provider's `swap` setting.
+//! - `trust`: project config trust: the prompt, `codesmith trust`, and an
+//!   untrusted project reaching no URL of its own (a loopback recorder).
 //! - `oc_cli`: OpenCode's CLI tests that need the binary (see PARITY.md).
 
 mod harness;
@@ -51,5 +53,6 @@ mod pty;
 mod run_cli;
 mod serve;
 mod swap;
+mod trust;
 mod tui;
 mod worktree;

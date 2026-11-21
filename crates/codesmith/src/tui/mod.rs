@@ -1954,8 +1954,11 @@ async fn run_in(
         prompt: opts.prompt.clone(),
         auto: opts.auto,
     };
+    // Started again in another folder: its project may need an answer.
+    crate::cli::trust_prompt(&cwd)?;
     let loaded = config::load(&cwd)?;
-    let (tui, tui_warnings) = settings::load(&loaded.config.tui);
+    let (tui, mut tui_warnings) = settings::load(&loaded.config.tui);
+    tui_warnings.extend(loaded.config.trust.notice());
     let (custom, theme_errors) = theme::discover(&theme::theme_dirs(
         &codesmith_core::paths::config_dir(),
         &cwd,

@@ -92,6 +92,21 @@ All notable changes to CodeSmith are listed here. Versions follow
   turned off. Inherited `GIT_DIR`, `GIT_INDEX_FILE` and the other
   repository variables are cleared. A test fails on any new raw
   `git` call.
+- **Project config trust:** a project's `codesmith.json[c]` or
+  `.codesmith/codesmith.json[c]` that uses `{env:}` or `{file:}`, sets a
+  provider URL, header, credential or host setting, an MCP server's URL,
+  headers or command, an OpenAPI API, a web search or catalog URL, a
+  program (`shell` path, `worktree.start`, a language server's or
+  formatter's `command`), or reads files outside the project is asked
+  about once per project, at a terminal. The answer is kept per project
+  with what it covered (owner-only `trust.json` beside the session
+  database) and asked again only when the config asks for more. Until a
+  project is trusted (and always without a terminal, in `acp`, `serve`
+  and automations) its `{env:}` and `{file:}` are empty and the rest is
+  ignored in favour of the global config, with a one-line notice. A project
+  that only picks models, agents or rules is never asked. `codesmith trust`
+  trusts, distrusts, shows, lists and revokes. OpenCode trusts project
+  config as written.
 - **MCP Code Mode defaults for known servers:** without `codemode` set,
   Executor's tools are offered directly (it is a Code Mode server itself),
   and PostHog is asked for its plain tools (`x-posthog-mcp-mode: tools`,

@@ -322,6 +322,17 @@ saved approvals at every request, so a change applies at once. To make an
 approval part of the project's config instead, add the rule to
 `codesmith.json`.
 
+### Project trust
+
+Beside the saved approvals, `trust.json` keeps your answers on
+[trusting a project's config](configuration.md#trusting-a-projects-config):
+whether its `{env:}` and `{file:}` values, provider and MCP URLs and
+headers, and programs are used. They are kept per project like saved
+approvals, with the capabilities each answer covered, owner-only (0600).
+`codesmith trust --list` lists them and `codesmith trust --revoke [DIR |
+ID]` removes one. Trust is not a permission: trusting a project grants no
+tool call, and not trusting it leaves its rules in force.
+
 ## Where rules come from
 
 An agent's rules are assembled in this order, and the last match wins:
@@ -351,9 +362,10 @@ Consequences:
   under `agents.plan.permissions`, not at the top level.
 - A project's `codesmith.json` comes after your global config, so **its rules
   override yours**. This is the main reason to read a repository's config
-  before you run CodeSmith in it (see the warning in
-  [configuration](configuration.md#files-and-precedence)), or to set
-  `CODESMITH_DISABLE_PROJECT_CONFIG=1`.
+  before you run CodeSmith in it, or to set
+  `CODESMITH_DISABLE_PROJECT_CONFIG=1`. [Project
+  trust](#project-trust) does not change this: a project's rules and
+  policies apply whether or not it is trusted.
 
 ### Session rules
 

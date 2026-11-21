@@ -183,6 +183,12 @@ pub struct Config {
     /// `shell.env`.
     #[serde(skip)]
     pub shell_env: ShellEnv,
+
+    /// What [`load_from`] did about the project's config: what it asks
+    /// for, whether it is trusted, and what was ignored (see
+    /// [`crate::trust`]).
+    #[serde(skip)]
+    pub trust: crate::trust::Outcome,
 }
 
 /// `shell.env` in codesmith.json (see [`crate::child_env`]).
@@ -986,6 +992,9 @@ pub struct Sources {
     pub content: Option<String>,
     /// Whether to look for project files (`$CODESMITH_DISABLE_PROJECT_CONFIG` turns it off).
     pub project: bool,
+    /// Where the answers on trusting project config are (see
+    /// [`crate::trust`]).
+    pub trust: crate::trust::Mode,
 }
 
 impl Sources {
@@ -995,6 +1004,7 @@ impl Sources {
             file: std::env::var_os("CODESMITH_CONFIG").map(PathBuf::from),
             content: std::env::var("CODESMITH_CONFIG_CONTENT").ok(),
             project: std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_none(),
+            trust: crate::trust::Mode::Store(crate::trust::store_path()),
         }
     }
 }
@@ -1054,6 +1064,12 @@ pub fn global_source(dir: &Path, global_dir: &Path, home: &Path) -> bool {
 /// file, every folder's `codesmith.json[c]`, then each folder's
 /// `.codesmith/codesmith.json[c]` followed by its `.codesmith/` folder.
 pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
+    split_layers(cwd, root, sources).0
+}
+
+/// [`layers`], and the index of the first project layer: those before it
+/// (the global config and `$CODESMITH_CONFIG`) are the person's own.
+fn split_layers(cwd: &Path, root: &Path, sources: &Sources) -> (Vec<Layer>, usize) {
     let global = !global_disabled();
     let mut out: Vec<Layer> = Vec::new();
     if global {
@@ -1071,6 +1087,7 @@ pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
     if let Some(p) = &sources.file {
         out.push(Layer::File(p.clone()));
     }
+    let project_start = out.len();
     if sources.project {
         let mut dirs: Vec<&Path> = cwd
             .ancestors()
@@ -1090,7 +1107,7 @@ pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
             out.push(Layer::Dir(d.join(".codesmith")));
         }
     }
-    out
+    (out, project_start)
 }
 
 /// Load the config for `cwd`, with the process-wide models.dev catalog
@@ -1102,6 +1119,7 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
     loaded.config.models_dev = Some(crate::catalog::ModelsDev::global(options));
     // What programs CodeSmith starts may see of its environment.
     crate::child_env::install(&loaded.config);
+    crate::trust::announce(&loaded.config.trust);
     Ok(loaded)
 }
 
@@ -1119,11 +1137,83 @@ pub fn strip_swap(v: &mut Value, source: &str, ignored: &mut Vec<String>) {
     }
 }
 
+/// One config source [`load_from`] reads, in order.
+enum Entry {
+    /// A config folder whose agent and command files are read.
+    Dir(PathBuf),
+    /// A config file: its path, real path, text, and whether it is a
+    /// project file (rather than the global config or `$CODESMITH_CONFIG`).
+    File {
+        path: PathBuf,
+        canonical: PathBuf,
+        text: String,
+        project: bool,
+    },
+}
+
+/// The sources [`load_from`] reads for `cwd`, each read once.
+fn gather(cwd: &Path, root: &Path, sources: &Sources) -> Result<Vec<Entry>> {
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut out = Vec::new();
+    let (layers, project_start) = split_layers(cwd, root, sources);
+    for (i, layer) in layers.into_iter().enumerate() {
+        let path = match layer {
+            Layer::File(p) if p.is_file() => p,
+            Layer::Dir(d) if d.is_dir() => {
+                let canonical = d.canonicalize().unwrap_or_else(|_| d.clone());
+                if seen.contains(&canonical) {
+                    continue;
+                }
+                seen.push(canonical);
+                out.push(Entry::Dir(d));
+                continue;
+            }
+            _ => continue,
+        };
+        // A file reached twice (the project walk passing through the global
+        // folder, or `$CODESMITH_CONFIG` naming a project file) loads once,
+        // as the first source that reached it.
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.contains(&canonical) {
+            continue;
+        }
+        seen.push(canonical.clone());
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        out.push(Entry::File {
+            path,
+            canonical,
+            text,
+            project: i >= project_start,
+        });
+    }
+    Ok(out)
+}
+
+/// What `cwd`'s project config files ask for that needs trust (see
+/// [`crate::trust`]).
+pub fn trust_request(cwd: &Path, sources: &Sources) -> Result<crate::trust::Request> {
+    let root = project_root(cwd);
+    let files: Vec<(PathBuf, String)> = gather(cwd, &root, sources)?
+        .into_iter()
+        .filter_map(|e| match e {
+            Entry::File {
+                path,
+                text,
+                project: true,
+                ..
+            } => Some((path, text)),
+            _ => None,
+        })
+        .collect();
+    Ok(crate::trust::detect(&root, &files))
+}
+
 pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
+    use crate::trust::{Mode, State};
     let root = project_root(cwd);
     let mut merged = Value::Object(Map::new());
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut seen: Vec<PathBuf> = Vec::new();
     let mut swap_ignored: Vec<String> = Vec::new();
     let mut shell_env = ShellEnv::default();
     // Only the global config file may set a provider's `swap`.
@@ -1133,35 +1223,73 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
             .canonicalize()
             .unwrap_or_else(|_| sources.global_dir.clone())
     });
-    for layer in layers(cwd, &root, sources) {
-        let path = match layer {
-            Layer::File(p) if p.is_file() => p,
-            Layer::Dir(d) if d.is_dir() => {
-                let canonical = d.canonicalize().unwrap_or_else(|_| d.clone());
-                if seen.contains(&canonical) {
-                    continue;
-                }
-                seen.push(canonical);
+    let entries = gather(cwd, &root, sources)?;
+    // What the project's files ask for, and whether the person trusts the
+    // project for it.
+    let project_files: Vec<(PathBuf, String)> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::File {
+                path,
+                text,
+                project: true,
+                ..
+            } => Some((path.clone(), text.clone())),
+            _ => None,
+        })
+        .collect();
+    let request = crate::trust::detect(&root, &project_files);
+    let state = match &sources.trust {
+        _ if request.is_empty() => State::NotNeeded,
+        Mode::All => State::Trusted,
+        Mode::Store(p) => {
+            crate::trust::Store::new(p.clone()).state(&crate::trust::project_key(&root), &request)
+        }
+    };
+    // A project file's substitutions are filled in only when it is trusted
+    // for them; otherwise they are empty (so no host file is even read).
+    let fill = if state == State::Trusted {
+        Fill::Real
+    } else {
+        Fill::Empty
+    };
+    let untrusted = matches!(state, State::Distrusted | State::Undecided);
+    let mut skipped: Vec<String> = Vec::new();
+    for entry in entries {
+        let (path, canonical, text, project) = match entry {
+            Entry::Dir(d) => {
                 merge_layer(&mut merged, crate::agent::documents(&d));
                 merge_layer(&mut merged, crate::command::documents(&d));
                 continue;
             }
-            _ => continue,
+            Entry::File {
+                path,
+                canonical,
+                text,
+                project,
+            } => (path, canonical, text, project),
         };
-        // A file reached twice (the project walk passing through the global
-        // folder, or `$CODESMITH_CONFIG` naming a project file) loads once.
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if seen.contains(&canonical) {
-            continue;
+        let base = path.parent().unwrap_or(Path::new("."));
+        let mut v = if project {
+            parse_as(&text, base, fill).with_context(|| {
+                if untrusted {
+                    format!(
+                        "in {} (its {{env:}} and {{file:}} are empty because the project is not trusted)",
+                        path.display()
+                    )
+                } else {
+                    format!("in {}", path.display())
+                }
+            })?
+        } else {
+            parse(&text, base).with_context(|| format!("in {}", path.display()))?
+        };
+        if project && untrusted {
+            crate::trust::strip(&mut v, &merged, &root, &mut skipped);
         }
-        seen.push(canonical);
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let mut v = parse(&text, path.parent().unwrap_or(Path::new(".")))
-            .with_context(|| format!("in {}", path.display()))?;
         let global_file = global_dir
             .as_deref()
-            .is_some_and(|g| seen.last().and_then(|c| c.parent()) == Some(g));
+            .is_some_and(|g| canonical.parent() == Some(g));
         if !global_file {
             strip_swap(&mut v, &path.display().to_string(), &mut swap_ignored);
         }
@@ -1189,6 +1317,11 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     let mut config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
     config.swap_ignored = swap_ignored;
     config.shell_env = shell_env;
+    config.trust = crate::trust::Outcome {
+        request,
+        state,
+        skipped,
+    };
     crate::plugin::active().transform(&mut config);
     Ok(Loaded {
         config,
@@ -1199,7 +1332,35 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
 
 /// Parse JSONC text after `{env:VAR}` / `{file:path}` substitution.
 pub fn parse(text: &str, base: &Path) -> Result<Value> {
-    let substituted = substitute(text, base);
+    parse_as(text, base, Fill::Real)
+}
+
+/// What `{env:}` and `{file:}` become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    /// The variable's value and the file's contents.
+    Real,
+    /// Nothing (an untrusted project's config): no file is read.
+    Empty,
+    /// Left as written (to see a file's shape without its secrets).
+    Literal,
+    /// The variable's value, but no file is read.
+    Env,
+}
+
+/// [`parse`] with substitutions filled in as `fill` says.
+pub fn parse_as(text: &str, base: &Path, fill: Fill) -> Result<Value> {
+    let env = |name: &str| match fill {
+        Fill::Real | Fill::Env => std::env::var(name).unwrap_or_default(),
+        Fill::Empty => String::new(),
+        Fill::Literal => format!("{{env:{name}}}"),
+    };
+    let file = |raw: &str, p: &Path| match fill {
+        Fill::Real => std::fs::read_to_string(p).unwrap_or_default(),
+        Fill::Empty | Fill::Env => String::new(),
+        Fill::Literal => format!("{{file:{raw}}}"),
+    };
+    let substituted = substitute_using(text, base, &env, &file);
     let clean = strip_jsonc(&substituted);
     serde_json::from_str(&clean).map_err(|e| anyhow!("{e}"))
 }
@@ -1212,11 +1373,27 @@ pub fn parse(text: &str, base: &Path) -> Result<Value> {
 /// (a Windows path, a value with quotes). File contents are always escaped.
 /// A `{file:}` on a `//` comment line is left alone.
 pub fn substitute(text: &str, base: &Path) -> String {
-    let raw = substitute_with(text, base, false);
+    substitute_using(
+        text,
+        base,
+        &|name| std::env::var(name).unwrap_or_default(),
+        &|_, p| std::fs::read_to_string(p).unwrap_or_default(),
+    )
+}
+
+/// [`substitute`] with `env` giving a variable's value and `file` a file's
+/// contents (from the path as written and resolved).
+pub fn substitute_using(
+    text: &str,
+    base: &Path,
+    env: &dyn Fn(&str) -> String,
+    file: &dyn Fn(&str, &Path) -> String,
+) -> String {
+    let raw = substitute_with(text, base, false, env, file);
     if !text.contains("{env:") || serde_json::from_str::<Value>(&strip_jsonc(&raw)).is_ok() {
         return raw;
     }
-    substitute_with(text, base, true)
+    substitute_with(text, base, true, env, file)
 }
 
 fn escaped(value: &str) -> String {
@@ -1224,10 +1401,16 @@ fn escaped(value: &str) -> String {
     quoted[1..quoted.len() - 1].to_string()
 }
 
-fn substitute_with(text: &str, base: &Path, escape_env: bool) -> String {
+fn substitute_with(
+    text: &str,
+    base: &Path,
+    escape_env: bool,
+    env_value: &dyn Fn(&str) -> String,
+    file_value: &dyn Fn(&str, &Path) -> String,
+) -> String {
     let env = regex::Regex::new(r"\{env:([^}]+)\}").unwrap();
     let text = env.replace_all(text, |c: &regex::Captures| {
-        let value = std::env::var(&c[1]).unwrap_or_default();
+        let value = env_value(&c[1]);
         if escape_env {
             escaped(&value)
         } else {
@@ -1251,7 +1434,7 @@ fn substitute_with(text: &str, base: &Path, escape_env: bool) -> String {
             Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
             None => base.join(raw),
         };
-        let content = std::fs::read_to_string(p).unwrap_or_default();
+        let content = file_value(raw, &p);
         out.push_str(&escaped(content.trim()));
     }
     out.push_str(&text[cursor..]);
@@ -2774,6 +2957,7 @@ mod tests {
             file: None,
             content: None,
             project: true,
+            trust: crate::trust::Mode::All,
         }
     }
 

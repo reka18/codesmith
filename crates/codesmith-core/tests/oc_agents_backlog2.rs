@@ -145,6 +145,7 @@ fn oc_config_treats_unreadable_discovery_roots_as_absent() {
             file: None,
             content: None,
             project: true,
+            trust: codesmith_core::trust::Mode::All,
         },
     );
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();

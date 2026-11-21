@@ -3872,6 +3872,7 @@ mod tests {
             file: None,
             content: Some(r#"{"shell": {"env": {"pass": ["ANTHROPIC_API_KEY"]}}}"#.into()),
             project: true,
+            trust: crate::trust::Mode::All,
         };
         let l = crate::config::load_from(&project, &sources).unwrap();
         assert_eq!(l.config.shell.as_deref(), Some("/bin/sh"));

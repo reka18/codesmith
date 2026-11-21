@@ -9,6 +9,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`generate`](#codesmith-generate) | One model call outside any session's history: text or an image. |
 | [`session`](#codesmith-session) | List, archive, export, import, delete, fork, undo, redo, diff sessions; migrate their media. |
 | [`permissions`](#codesmith-permissions) | List, edit or remove saved approvals. |
+| [`trust`](#codesmith-trust) | Trust a project's config, or list and revoke the answers. |
 | [`models`](#codesmith-models) | List providers and models. |
 | [`auth`](#codesmith-auth) | Save, list or remove API keys. |
 | [`commands`](#codesmith-commands) | List commands. |
@@ -133,6 +134,22 @@ codesmith permissions remove ID [ID...]
 What "always" answers saved for the project (see
 [saved approvals](permissions.md#saved-approvals)). An edit or removal
 applies to running sessions at their next request.
+
+## `codesmith trust`
+
+```sh
+codesmith trust [DIR]                 # show what DIR's config asks for, and trust it
+codesmith trust --distrust [DIR]      # remember not to trust it
+codesmith trust --show [DIR] [--json] # what it asks for and the answer kept
+codesmith trust --list [--json]       # every answer kept
+codesmith trust --revoke [DIR | ID]   # forget an answer
+```
+
+DIR defaults to the current folder. The interactive UI and commands run at
+a terminal ask on their own the first time a project's config needs an
+answer; this answers ahead, for scripts, CI, `acp`, `serve` and
+automations, which never ask. See
+[trusting a project's config](configuration.md#trusting-a-projects-config).
 
 ## `codesmith models`
 

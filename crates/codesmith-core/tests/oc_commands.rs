@@ -131,6 +131,7 @@ async fn project(extra: Value, files: &[(&str, &str)]) -> Project {
         file: None,
         content: Some(cfg.to_string()),
         project: true,
+        trust: codesmith_core::trust::Mode::All,
     };
     let loaded = config::load_from(&root, &sources).unwrap();
     Project {

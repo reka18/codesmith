@@ -33,6 +33,7 @@ fn layered(first: Value, second: Value) -> Config {
         file: None,
         content: None,
         project: true,
+        trust: codesmith_core::trust::Mode::All,
     };
     load_from(&project, &sources).unwrap().config
 }

@@ -34,6 +34,7 @@ fn load_dir(dir: &Path) -> Config {
         file: None,
         content: None,
         project: false,
+        trust: codesmith_core::trust::Mode::All,
     };
     config::load_from(dir, &sources).unwrap().config
 }
@@ -338,6 +339,7 @@ fn oc_agent_maps_configured_agent_fields_and_merges_request_maps() {
         file: None,
         content: None,
         project: true,
+        trust: codesmith_core::trust::Mode::All,
     };
     let c = config::load_from(&project, &sources).unwrap().config;
     let r = agent::resolve(&c, "reviewer").unwrap();

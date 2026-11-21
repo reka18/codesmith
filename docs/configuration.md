@@ -5,6 +5,7 @@ a key from the environment, but most setups want at least a default `model`.
 This page covers where config lives, how files combine, and every key.
 
 - [Files and precedence](#files-and-precedence)
+- [Trusting a project's config](#trusting-a-projects-config)
 - [Substitution: `{env:}` and `{file:}`](#substitution-env-and-file)
 - [Key reference](#key-reference)
 - [Providers and models](#providers-and-models)
@@ -50,19 +51,102 @@ drop a `deny` rule.
 
 `codesmith debug config` prints the merged config and the files it came from.
 
-> **Project config is trusted.** As in OpenCode, a `codesmith.json` or
-> `.codesmith/` folder inside a repository is applied as if you had written
-> it. It can start MCP servers (which run programs), choose the shell, turn on
-> the repository's own formatters and language servers, point a provider at
-> any URL and send it values from `{env:}` or `{file:}`, and add permission
-> rules that come after your global ones and so override them. Before you run
-> CodeSmith in a repository you don't trust, read its `codesmith.json[c]` and
-> `.codesmith/` first, or run with `CODESMITH_DISABLE_PROJECT_CONFIG=1`.
->
-> One setting is the exception: a provider's [`swap`](#swapping-the-servers-model-swap)
-> commands are read only from the global config file. Project files,
-> `.codesmith/`, `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT` cannot
-> set or change them; `codesmith models swap` names any it ignored.
+Project config is not applied blindly: anything in it that could send
+your secrets somewhere or run programs waits until you trust the project.
+See [Trusting a project's config](#trusting-a-projects-config).
+
+One setting is stricter still: a provider's [`swap`](#swapping-the-servers-model-swap)
+commands are read only from the global config file. Project files,
+`.codesmith/`, `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT` cannot
+set or change them; `codesmith models swap` names any it ignored.
+
+## Trusting a project's config
+
+A repository's `codesmith.json[c]` or `.codesmith/codesmith.json[c]` can
+ask for things that reach beyond the repository: an `{env:}` or `{file:}`
+value, a provider URL or header, an MCP server, a program to run. Together
+they could send your `ANTHROPIC_API_KEY` or `~/.aws/credentials` to any URL
+the repository names. So the first time a project's config asks for any of
+these, CodeSmith asks you, once per project:
+
+```text
+This project's config (/home/me/src/app) wants to:
+  read environment variables: OPENAI_API_KEY
+  read files: ~/.config/app/token
+  send requests to: https://llm.internal.example/v1 (provider internal), https://mcp.example/mcp (MCP server docs)
+  set request headers: Authorization (MCP server docs)
+  run programs: npx docs-mcp (MCP server local-docs)
+  (from ./codesmith.json)
+
+Trusting lets it use these. Not trusting ignores them: {env:} and {file:} become empty,
+and your global config's providers, MCP servers and programs are used instead.
+[t] Trust   [n] Don't trust (default) >
+```
+
+What asks:
+
+| In a project file | Counts as |
+|---|---|
+| `{env:NAME}`, `{file:path}` anywhere outside comments (a `{file:}` built from `{env:}` is resolved first) | reading that variable or file |
+| a provider's `env` list | reading those variables |
+| a provider's `baseURL` (any spelling, also in `options`, models and variants), `settings.endpoint`, `headers`, `apiKey` or another credential (`token`, `accessToken`, `serviceKey`) | sending requests, headers or credentials |
+| any other provider `settings` key except `cache`, `encoding`, `transport`, `discovery`, `headerTimeout`, `chunkTimeout`, `apiVersion`, `useDeploymentBasedUrls`, `apiKeyHeader` and `queryParams` (so `region`, `profile`, `resourceName`, `account`, `accountId`, `project`, …, which decide the host) | changing settings |
+| an MCP server's `url`, `headers`, `oauth`, `command`, `environment` or `cwd` | sending requests, or running a program |
+| an `openapi` API's `spec` (a URL, a file, or the servers of an inline one), `base_url`, `headers` or `auth` | sending requests |
+| `websearch.url`, `catalog.url` | sending requests |
+| `shell` (or `shell.path`) naming a path (not a bare name such as `zsh`), `worktree.start`, an `lsp` or `formatter` entry's `command` or environment | running a program |
+| `instructions` and `skills` outside the project (`~/`, absolute, `..`, or a symlink that leads out) or from a URL, `references` to a folder outside the project | reading files, or sending requests |
+
+A project that only picks models and agents, adds rules, permissions,
+commands, instructions inside the repository, or turns on the built-in
+formatters and language servers (`true`) is never asked about.
+
+The answer is kept per project (the project id saved approvals use, so
+clones and worktrees share it) with what it covered, in `trust.json` beside
+the session database (owner-only, 0600; a file others can write is
+ignored). A project whose config later asks for more (another variable,
+file, URL, header or program) is asked about again; one that asks for the
+same or less is not. "Don't trust" is remembered the same way.
+
+When a project is not trusted, because you said no or because no one could
+be asked:
+
+- every `{env:}` and `{file:}` in its files is empty (no file is read);
+- its provider URLs, headers, credentials and host settings, its MCP
+  servers' URLs, headers and commands, its OpenAPI APIs, web search and
+  catalog URLs, programs, and files outside the project are ignored, so
+  your global config's (or the built-in) values are used. An MCP server
+  or OpenAPI API only the project defines is left out;
+- everything else in it (model, agents, rules, permissions, policies,
+  commands) still applies;
+- a one-line notice names what was skipped and the command that trusts it.
+
+Only the interactive UI and commands run at a terminal (`run`, `review`,
+`models`, `mcp`, …) ask. Without a terminal (`codesmith run` in a script
+or CI), and in `acp`, `serve` and automations, an unanswered project is not
+trusted: the run goes on with your global config and prints the notice.
+Answer ahead with `codesmith trust`:
+
+```sh
+codesmith trust [DIR]          # show what DIR's config asks for, and trust it
+codesmith trust --distrust     # remember not to trust it
+codesmith trust --show [--json]
+codesmith trust --list [--json]
+codesmith trust --revoke [DIR | trust_ID]
+```
+
+Your own config is never asked about: the global config, the file named by
+`$CODESMITH_CONFIG` (even one inside the project) and
+`$CODESMITH_CONFIG_CONTENT`. `$CODESMITH_DISABLE_PROJECT_CONFIG` still
+turns project files off altogether. Trust never loosens permissions:
+project `permissions` and `policies` apply whether or not it is trusted,
+and trusting it grants nothing the rules do not.
+
+An `{env:}` written without quotes (`"snapshots": {env:FLAG}`) becomes
+nothing when the project is not trusted, which may leave the file invalid;
+the error then says so.
+
+OpenCode applies project config as trusted. This prompt is CodeSmith's own.
 
 ## Substitution: `{env:}` and `{file:}`
 
@@ -76,6 +160,9 @@ is parsed:
 - `{file:path}` becomes the file's trimmed contents, always escaped as string
   content. A relative path is relative to the config file's folder, and `~/`
   is your home folder. A `{file:}` on a `//` comment line is left alone.
+
+In a project's files both are empty until you
+[trust the project](#trusting-a-projects-config).
 
 ```jsonc
 { "providers": { "anthropic": { "settings": { "apiKey": "{file:~/.secrets/anthropic}" } } } }

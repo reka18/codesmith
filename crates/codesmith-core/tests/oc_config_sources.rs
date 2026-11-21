@@ -28,6 +28,7 @@ fn sources(global: &Path) -> Sources {
         file: None,
         content: None,
         project: true,
+        trust: codesmith_core::trust::Mode::All,
     }
 }
 

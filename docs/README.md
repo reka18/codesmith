@@ -19,7 +19,7 @@ New here? Start with [Getting started](getting-started.md).
   providers and models (options and variants), instructions, environment
   variables.
 - [Permissions](permissions.md): the rule model, shell checks, paths outside
-  the project, defaults per agent, and why project config is trusted.
+  the project, defaults per agent, saved approvals and project trust.
 - [Agents and subagents](agents-and-subagents.md): built-in agents, your own
   agents, delegation.
 - [Skills and commands](skills-and-commands.md): reusable instructions and

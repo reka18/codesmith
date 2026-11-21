@@ -6,8 +6,10 @@ installed.
 
 Because a project's config can turn these on, and they run programs from the
 project (`node_modules/.bin`, for example), read a repository's config before
-you use CodeSmith in it. See
-[project config is trusted](configuration.md#files-and-precedence).
+you use CodeSmith in it. A project's own `command` (or environment) for a
+server or formatter waits until you
+[trust the project](configuration.md#trusting-a-projects-config); turning
+the built-ins on with `true` does not ask.
 
 ## Formatters
 
