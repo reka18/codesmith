@@ -36,7 +36,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool registry, schemas, placement | 100 | 38 | 0 | 2 | 60 | 0 | 0 |
 | Media tools | 39 | 23 | 0 | 3 | 13 | 0 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
-| Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
+| Shell tool and runtime | 207 | 129 | 2 | 0 | 76 | 0 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
 | Permission | 177 | 118 | 2 | 0 | 55 | 2 | 0 |
 | Agents | 65 | 48 | 1 | 1 | 15 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2710** | **68** | **44** | **2546** | **220** | **0** |
+| **Total** | **5588** | **2712** | **68** | **44** | **2546** | **218** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -212,14 +212,7 @@ Missing features, by how many OpenCode test cases each would unlock (44 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (220 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### Shell tool and runtime (2)
-
-- parallel shells from one Code Mode program (M) — `codemode + tool::shell`
-  - `tool-shell.test.ts`: runs parallel Code Mode shells with the long default and notifies after a shorter timeout
-- an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
-  - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
+Tests for behaviour CodeSmith already has but no test pins (218 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Permission (2)
 
@@ -1779,7 +1772,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell tool and runtime (205 of 207)</summary>
+<details><summary>Shell tool and runtime (207 of 207)</summary>
 
 
 **`persistent-pty-daemon.test.ts`**
@@ -1910,6 +1903,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P ${shell}: a loop body deny prevents execution ×2 — `src/tool/shell.rs::oc_shell_loop_body_deny_prevents_execution`
 - D PowerShell: ordinary syntax reuses approvals: ${command} ×8 · PowerShell: always allow covers repeat execution and preserves exact deny: ${command} ×3 — platform: PowerShell
 - P returns both parallel CodeMode shell results — `tests/oc_tools_backlog.rs::oc_shell_returns_both_parallel_code_mode_shell_results`
+- P runs parallel Code Mode shells with the long default and notifies after a shorter timeout — `tests/oc_shell_backlog3.rs::oc_shell_runs_parallel_code_mode_shells_and_notifies_after_a_shorter_timeout` (adapted: results are text, and the default inside Code Mode stays the shell's two minutes, under the program's three-minute limit)
 - P registers and returns real successful output from the active Location — `src/tool/shell.rs::oc_shell_registers_and_returns_real_output`
 - P uses the session environment instead of the server environment — `src/tool/shell.rs::oc_shell_uses_the_session_environment_instead_of_the_process_one`
 - P identifies agent shell commands without inheriting a stale session ID — `src/tool/shell.rs::oc_shell_identifies_agent_commands, src/tool/shell.rs::oc_shell_identifies_agent_commands_without_a_stale_session_id`
@@ -1955,6 +1949,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D stops a command the user stopped after its Location reloaded — client-server: Location reload / daemon hand-off
 - D ${handoff ? "leaves a command running" : "stops a command"} when an interrupt ${handoff ? "during a handoff " : ""}cuts its call off while it ${starting ? "starts" : "runs"} ×4 — deliberate: tool/shell.rs: commands never outlive the session (no daemon hand-off)
 - D records which call waits on a daemon command, and keeps no timeout for a restart — client-server: Location reload / daemon hand-off
+- P lets an execute.after hook replace a stopped call's failure — `tests/oc_shell_backlog3.rs::oc_shell_lets_an_after_hook_replace_a_stopped_calls_failure` (adapted: the hook sees the failure's text)
 - D stops a command whose call an interrupt cut off, with no handoff to take it over — deliberate: a user's stop drops the running call, whose guard stops the command's process group (SIGTERM, then SIGKILL); a stopped foreground call fails with "Command cancelled" (see src/tool/shell.rs's a_dropped_foreground_call_stops_its_process_group)
 
 </details>

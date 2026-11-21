@@ -46,3 +46,8 @@
 1311 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_registry_hooks_see_one_id_per_call_inside_a_code_mode_program
 @tool-schema.test.ts
 559 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_schema_missing_external_input_schemas_fall_back_to_an_empty_schema :: adapted: an MCP tool listed without a schema is offered with an empty object schema
+
+# --- Shell tool and runtime (tests/oc_shell_backlog3.rs) ---
+@tool-shell.test.ts
+898 :: ported :: tests/oc_shell_backlog3.rs::oc_shell_runs_parallel_code_mode_shells_and_notifies_after_a_shorter_timeout :: adapted: results are text, and the default inside Code Mode stays the shell's two minutes, under the program's three-minute limit
+2535 :: ported :: tests/oc_shell_backlog3.rs::oc_shell_lets_an_after_hook_replace_a_stopped_calls_failure :: adapted: the hook sees the failure's text
