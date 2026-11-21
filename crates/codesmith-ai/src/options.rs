@@ -208,20 +208,38 @@ pub(crate) fn number(n: f64) -> Value {
 
 /// The options a provider applies under the request's own (OpenCode's route
 /// and model defaults): OpenAI's Responses API is stateless here, so it asks
-/// for encrypted reasoning to replay, and GPT-5 reasoning models get a medium
-/// effort with reasoning summaries.
+/// for encrypted reasoning to replay, GPT-5 reasoning models get a medium
+/// effort with reasoning summaries, and the models known to take a text
+/// verbosity get a low one ([`verbosity_default`]). A configured option of
+/// the same name (`null` included) wins over each.
 pub fn defaults(protocol: Protocol, base_url: &str, model: &str) -> Options {
     let mut o = Options::default();
     if protocol != Protocol::OpenaiResponses {
         return o;
     }
     let url = base_url.to_ascii_lowercase();
+    let mantle = url.contains("bedrock-mantle.");
     let openai = url.contains("api.openai.com")
         || url.contains(".openai.azure.com")
         || url.contains(".cognitiveservices.azure.com")
         || url.contains(".services.ai.azure.com")
         // Bedrock Mantle's Responses route asks for the same.
-        || url.contains("bedrock-mantle.");
+        || mantle;
+    let id = model.to_ascii_lowercase();
+    // Cloudflare AI Gateway passes `openai/…` models through to OpenAI's
+    // Responses API (the model id sent without the prefix).
+    let cloudflare_openai =
+        url.contains("gateway.ai.cloudflare.com") && url.trim_end_matches('/').ends_with("/openai");
+    let verbosity_id = if mantle {
+        id.strip_prefix("openai.")
+    } else if openai || cloudflare_openai {
+        Some(id.as_str())
+    } else {
+        None
+    };
+    if verbosity_id.is_some_and(verbosity_default) {
+        o.set("textVerbosity", "low".into());
+    }
     if !openai {
         return o;
     }
@@ -229,12 +247,37 @@ pub fn defaults(protocol: Protocol, base_url: &str, model: &str) -> Options {
         "include",
         serde_json::json!(["reasoning.encrypted_content"]),
     );
-    let id = model.to_ascii_lowercase();
     if id.contains("gpt-5") && !id.contains("gpt-5-chat") && !id.contains("gpt-5-pro") {
         o.set("reasoningEffort", "medium".into());
         o.set("reasoningSummary", "auto".into());
     }
     o
+}
+
+/// Whether OpenAI model `id` (lowercase, without a route's prefix) gets a
+/// low text verbosity by default, as OpenCode's verbosity plugin decides:
+/// GPT-6, and GPT-5, 5.1 to 5.6, mini and nano, but no `-chat` or `-image`
+/// model. Newer GPT-5 minor versions stay unset until their support is
+/// known.
+pub fn verbosity_default(id: &str) -> bool {
+    if id.contains("gpt-6") {
+        return true;
+    }
+    if id.contains("-chat") || id.contains("-image") {
+        return false;
+    }
+    let ends = |s: &str| s.is_empty() || s.starts_with(['.', ':', '-']);
+    id.match_indices("gpt-5").any(|(i, _)| {
+        let bounded = i == 0 || matches!(id.as_bytes()[i - 1], b'/' | b'.');
+        let rest = &id[i + "gpt-5".len()..];
+        let minor = rest
+            .strip_prefix('.')
+            .is_some_and(|r| r.starts_with(['1', '2', '3', '4', '5', '6']) && ends(&r[1..]));
+        let small = ["-mini", "-nano"]
+            .iter()
+            .any(|v| rest.strip_prefix(v).is_some_and(ends));
+        bounded && (rest.is_empty() || minor || small)
+    })
 }
 
 /// Request options under a model variant: the variant's options, body

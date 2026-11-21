@@ -40,7 +40,9 @@ pub use endpoint::{
     Interceptor,
 };
 pub use hosted::{Hosted, HostedResult};
-pub use options::{builtin_variants, defaults, variant_from_config, Options, Variant};
+pub use options::{
+    builtin_variants, defaults, variant_from_config, verbosity_default, Options, Variant,
+};
 pub use reqwest;
 
 use futures_util::stream::BoxStream;

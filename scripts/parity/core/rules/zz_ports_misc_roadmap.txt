@@ -19,3 +19,8 @@
 # --- Session Diff Ranges (tests/oc_session_diff.rs) ---
 @session-diff.test.ts
 46 :: ported :: tests/oc_session_diff.rs::oc_diffs_the_turn_containing_a_prompt_and_ranges_across_later_turns :: adapted: no steers, so every prompt is its own busy period; prompts are named by record number; no fork or location-switch half
+
+# --- OpenAI Verbosity Defaults (codesmith-ai's parity_options.rs and
+# tests/oc_verbosity.rs) ---
+@plugin/verbosity.test.ts
+32 :: ported :: ../codesmith-ai/src/parity_options.rs::oc_sets_known_openai_responses_verbosity_defaults_without_overriding_configured_or_unknown_models :: adapted: a Responses route default by URL and the model id sent; configured layering in tests/oc_verbosity.rs; no Vercel gateway

@@ -1315,3 +1315,162 @@ fn effort_updates() {
         }),
     ]);
 }
+
+/// The text verbosity a request goes out with, as `Provider::stream`
+/// layers the defaults under the request's own options.
+fn verbosity(protocol: Protocol, url: &str, model: &str, options: Value) -> Option<String> {
+    let mut r = Request {
+        model: model.into(),
+        ..Default::default()
+    };
+    r.options = opts(options);
+    let r = defaulted(protocol, url, r);
+    r.options.str("textVerbosity").map(str::to_string)
+}
+
+// plugin/verbosity.test.ts: "sets known OpenAI Responses defaults without
+// overriding configured or unknown models" (adapted: the default is the
+// Responses route's, by its URL and the model id it sends; OpenCode's
+// Vercel gateway has no CodeSmith counterpart)
+#[test]
+fn oc_sets_known_openai_responses_verbosity_defaults_without_overriding_configured_or_unknown_models(
+) {
+    const OPENAI: &str = "https://api.openai.com/v1";
+    const AZURE: &str = "https://res.openai.azure.com/openai/v1";
+    const MANTLE: &str = "https://bedrock-mantle.us-east-1.api.aws/v1";
+    const CLOUDFLARE: &str = "https://gateway.ai.cloudflare.com/v1/acct/gw/openai";
+    let responses = Protocol::OpenaiResponses;
+    let low = Some("low".to_string());
+    for id in [
+        "gpt-5.5",
+        "gpt-5.6-luna-fast",
+        "gpt-5.2-codex",
+        "gpt-5-mini-fast",
+        "gpt-6-astra-pro",
+        "gpt-5",
+        "gpt-5-nano",
+        "GPT-5.1",
+    ] {
+        assert_eq!(verbosity(responses, OPENAI, id, json!({})), low, "{id}");
+    }
+    for id in [
+        "gpt-4o",
+        "gpt-7",
+        "gpt-5.7",
+        "gpt-5.10",
+        "gpt-5.5-chat",
+        "gpt-5.4-image-2",
+        "my-gpt-5.5",
+        "",
+        "gpt-5é",
+    ] {
+        assert_eq!(verbosity(responses, OPENAI, id, json!({})), None, "{id}");
+    }
+    // OpenAI's Chat route, and other providers, get no default.
+    assert_eq!(
+        verbosity(Protocol::OpenaiChat, OPENAI, "gpt-5.5", json!({})),
+        None
+    );
+    assert_eq!(
+        verbosity(
+            responses,
+            "https://openrouter.ai/api/v1",
+            "gpt-5.5",
+            json!({})
+        ),
+        None
+    );
+    // Azure, Bedrock Mantle (`openai.` models only) and Cloudflare's OpenAI
+    // passthrough do.
+    assert_eq!(verbosity(responses, AZURE, "gpt-5.5", json!({})), low);
+    assert_eq!(
+        verbosity(responses, MANTLE, "openai.gpt-6-sol", json!({})),
+        low
+    );
+    assert_eq!(verbosity(responses, MANTLE, "gpt-6-sol", json!({})), None);
+    assert_eq!(
+        verbosity(responses, CLOUDFLARE, "gpt-5.6-sol", json!({})),
+        low
+    );
+    assert_eq!(
+        verbosity(
+            responses,
+            "https://gateway.ai.cloudflare.com/v1/acct/gw/compat",
+            "gpt-5.5",
+            json!({})
+        ),
+        None
+    );
+    // A configured verbosity wins, and a configured null turns it off.
+    assert_eq!(
+        verbosity(
+            responses,
+            OPENAI,
+            "gpt-5.5",
+            json!({"textVerbosity": "high"})
+        ),
+        Some("high".into())
+    );
+    assert_eq!(
+        verbosity(
+            responses,
+            OPENAI,
+            "gpt-5.5",
+            json!({"text_verbosity": "medium"})
+        ),
+        Some("medium".into())
+    );
+    assert_eq!(
+        verbosity(
+            responses,
+            OPENAI,
+            "gpt-6-astra",
+            json!({"textVerbosity": null})
+        ),
+        None
+    );
+}
+
+/// The wire body carries the default as `text.verbosity`, and nothing when
+/// it is off.
+#[test]
+fn the_verbosity_default_reaches_the_responses_body() {
+    let url = "https://api.openai.com/v1";
+    let mut r = Request {
+        model: "gpt-5.5".into(),
+        ..Default::default()
+    };
+    let body = crate::responses::body(&defaulted(Protocol::OpenaiResponses, url, r.clone()));
+    assert_eq!(body["text"]["verbosity"], "low", "{body}");
+    r.options = opts(json!({"textVerbosity": null}));
+    let body = crate::responses::body(&defaulted(Protocol::OpenaiResponses, url, r));
+    assert!(body["text"].get("verbosity").is_none(), "{body}");
+}
+
+#[test]
+fn verbosity_default_matches_openai_model_ids_only_on_their_boundaries() {
+    for id in [
+        "gpt-5",
+        "x/gpt-5.5",
+        "openai.gpt-5-mini",
+        "gpt-5.3:latest",
+        "gpt-5.4.1",
+        "gpt-6",
+    ] {
+        assert!(crate::verbosity_default(id), "{id}");
+    }
+    for id in [
+        "agpt-5",
+        "gpt-50",
+        "gpt-5.0",
+        "gpt-5.",
+        "gpt-5-pro",
+        "gpt-5-minix",
+        "gpt-5.5-image",
+        "\u{0}gpt-5",
+        "ガpt-5",
+        &"x".repeat(100_000),
+    ] {
+        assert!(!crate::verbosity_default(id), "{id:?}");
+    }
+}

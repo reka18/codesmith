@@ -32,6 +32,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **OpenAI verbosity defaults:** known OpenAI Responses models (GPT-5,
+  5.1 to 5.6, mini, nano and GPT-6, on OpenAI, Azure, Bedrock Mantle and
+  Cloudflare's OpenAI passthrough) are sent `text.verbosity: "low"` unless a
+  `textVerbosity` is configured (`null` sends none), as OpenCode's
+  verbosity plugin does.
 - **Session diff ranges:** `codesmith session diff --from N [--to M]` shows
   what the turns of prompts `N` through `M` changed (start snapshot of the
   first against the last recorded end), as OpenCode's session diff does by

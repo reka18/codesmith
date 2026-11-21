@@ -1180,6 +1180,13 @@ Reasoning effort and other provider options go in a provider's or a model's
 (Gemini), `reasoning` (OpenRouter) and more. Each protocol sends the ones it
 knows and ignores the rest.
 
+As in OpenCode, OpenAI models known to take a text verbosity (GPT-5, 5.1 to
+5.6, mini and nano, and GPT-6, but no `-chat` or `-image` model) get
+`textVerbosity: "low"` on OpenAI's Responses API, Azure, Bedrock Mantle
+(`openai.` models) and Cloudflare AI Gateway's OpenAI passthrough, for every
+request a session makes. A `textVerbosity` set on the provider, the model or
+the chosen variant wins; set it to `null` to send none.
+
 Named `variants` bundle options under a name, picked with
 `provider/model#name` anywhere a model is chosen: config, `-m`, `/model` in
 the UI, or ACP model selection. `/variant` cycles through a model's variants
