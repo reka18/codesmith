@@ -71,3 +71,9 @@ codesmith-core = { path = "crates/codesmith-core", version = "0.1.0" }
 lto = true
 strip = true
 codegen-units = 1
+
+# Dependencies are built without debug info in dev and test builds: it roughly
+# halves each target folder (several worktrees build at once) while CodeSmith's
+# own crates keep full debug info for backtraces and debuggers.
+[profile.dev.package."*"]
+debug = false
