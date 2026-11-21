@@ -165,7 +165,11 @@ async fn oc_automation_event_a_broken_stream_opens_on_the_replacement_connection
     else {
         return;
     };
-    f.until("two runs", |f| f.automation().runs == 2).await;
+    // Counted when claimed; settled once their turns end.
+    f.until("two settled runs", |f| {
+        f.automation().runs == 2 && au::pending(&f.db, &f.id).unwrap().is_empty()
+    })
+    .await;
     assert_eq!(f.cursors(), [Value::Null, json!("c1")]);
     let a = f.automation();
     assert_eq!(a.status, "active");
@@ -195,7 +199,10 @@ async fn oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_
     else {
         return;
     };
-    f.until("five runs", |f| f.automation().runs == 5).await;
+    f.until("five settled runs", |f| {
+        f.automation().runs == 5 && au::pending(&f.db, &f.id).unwrap().is_empty()
+    })
+    .await;
     assert_eq!(
         f.cursors(),
         [
