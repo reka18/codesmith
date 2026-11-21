@@ -6,7 +6,6 @@
 //! protocols, its `modelID` is a model's `id`, and its `settings` (on a
 //! variant) are `options`.
 
-#[allow(dead_code)]
 mod scripted;
 
 use codesmith_ai::{Auth, Protocol};

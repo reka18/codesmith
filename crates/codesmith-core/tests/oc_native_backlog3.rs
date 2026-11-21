@@ -4,7 +4,6 @@
 //! `oc_native_compaction.rs` (with the user's config kept out).
 
 mod compaction_harness;
-#[allow(dead_code)]
 mod scripted;
 
 use codesmith_core::permission::{Fixed, Reply};

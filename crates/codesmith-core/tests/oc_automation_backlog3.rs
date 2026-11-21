@@ -257,7 +257,7 @@ fn oc_automation_creates_lists_pauses_resumes_and_deletes() {
             .iter()
             .map(|a| a.id.clone())
             .collect::<Vec<_>>(),
-        [a.id.clone()]
+        std::slice::from_ref(&a.id)
     );
     assert!(au::list(&e.db, Some("/elsewhere")).unwrap().is_empty());
     assert_eq!(
