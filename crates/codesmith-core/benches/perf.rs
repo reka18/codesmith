@@ -7,8 +7,11 @@
 //! the minimum and median of its runs.
 
 use codesmith_ai::{Message, Part, Role, Usage};
+use codesmith_core::approvals::Book;
 use codesmith_core::config::ToolOutputConfig;
-use codesmith_core::permission::{base_rules, Effect, Fixed, Gate, Reply, Rule};
+use codesmith_core::permission::{
+    base_rules, Effect, Fixed, Gate, Policy, PolicyEffect, Reply, Rule,
+};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::{Info, Record, Store};
 use codesmith_core::tool::{self, Ctx};
@@ -190,6 +193,26 @@ fn bench_tools(root: &Path, rt: &tokio::runtime::Runtime, filter: &str) {
             report(&name, t, "");
         }
     }
+    // As a session runs it: "always" answers kept in the store beside it.
+    let name = "grep tree (saved approvals)";
+    if name.contains(filter) {
+        let book = tempfile::tempdir().unwrap();
+        let mut g = gate(rich_rules());
+        g.set_durable(
+            Arc::new(Book::open(&book.path().join("sessions.db")).unwrap()),
+            "bench".into(),
+        );
+        let c = ctx(root, &g);
+        let (t, out) = time(5, || {
+            run_tool(
+                rt,
+                &c,
+                "grep",
+                json!({"pattern": "needle_marker", "limit": 100000}),
+            )
+        });
+        report(name, t, out.lines().next().unwrap_or(""));
+    }
     let files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
         .build()
         .flatten()
@@ -311,10 +334,9 @@ fn info(id: &str, t: i64) -> Info {
 }
 
 /// Append a session of about `records` records: prompts, tool exchanges,
-/// steps and tool timings.
+/// steps and tool timings. (Each append is its own transaction.)
 fn fill_session(db: &Store, id: &str, records: usize, t0: i64) {
     db.create(&info(id, t0)).unwrap();
-    db.with_conn(|c| Ok(c.execute_batch("BEGIN")?)).unwrap();
     let mut n = 0;
     let mut i = 0;
     while n < records {
@@ -362,7 +384,6 @@ fn fill_session(db: &Store, id: &str, records: usize, t0: i64) {
         n += 4;
         i += 1;
     }
-    db.with_conn(|c| Ok(c.execute_batch("COMMIT")?)).unwrap();
 }
 
 fn bench_store(dir: &Path, filter: &str) {
@@ -447,7 +468,190 @@ fn main() {
         bench_watch(&root, &rt, &filter);
     }
     bench_store(scratch.path(), &filter);
+    bench_calls(scratch.path(), &rt, &filter);
+    if "turn".contains(filter.as_str()) || filter.contains("turn") {
+        bench_turn(&rt);
+    }
 }
+
+/// Runs of `f` taking at least about 50 ms, to time calls of microseconds.
+fn per_call(runs: usize, mut f: impl FnMut()) -> Vec<Duration> {
+    let t = Instant::now();
+    f();
+    let one = t.elapsed().max(Duration::from_nanos(50));
+    let n = (Duration::from_millis(50).as_nanos() / one.as_nanos()).clamp(1, 100_000) as u32;
+    time(runs, || {
+        for _ in 0..n {
+            f();
+        }
+    })
+    .0
+    .into_iter()
+    .map(|t| t / n)
+    .collect()
+}
+
+/// Like [`report`], in microseconds per call.
+fn report_us(name: &str, mut times: Vec<Duration>, note: &str) {
+    times.sort();
+    println!(
+        "{name:<34} min {:>10.2} us   median {:>10.2} us   ({} runs){}",
+        times[0].as_secs_f64() * 1e6,
+        times[times.len() / 2].as_secs_f64() * 1e6,
+        times.len(),
+        if note.is_empty() {
+            String::new()
+        } else {
+            format!("   {note}")
+        }
+    );
+}
+
+/// What each tool call pays before it runs: the shell scan, the input
+/// schema check, permission rules and webfetch's URL checks.
+fn bench_calls(dir: &Path, rt: &tokio::runtime::Runtime, filter: &str) {
+    use codesmith_core::tool::input_schema::Cache;
+    use codesmith_core::tool::shell_scan;
+    let want = |name: &str| name.contains(filter) || filter.contains("call");
+    let cwd = Path::new("/project");
+    let typical = "git status && cargo test -p codesmith-core -- --nocapture 2>&1 | tail -n 50";
+    if want("shell scan (typical)") {
+        let t = per_call(10, || {
+            std::hint::black_box(shell_scan::analyze(typical, cwd).unwrap());
+        });
+        report_us("shell scan (typical)", t, "");
+    }
+    // Twenty stages with precommands, printf formats, arithmetic,
+    // substitutions and redirects.
+    let long: String = (0..20)
+        .map(|i| match i % 5 {
+            0 => format!("env FOO={i} sudo -u nobody grep -rn \"pat{i}\" src/m{i}"),
+            1 => format!("printf '%s:%d\\n' \"$(basename f{i})\" $((i + {i}))"),
+            2 => format!("awk '{{print $1, $2}}' > out{i}.txt"),
+            3 => format!("sed -e 's/a{i}/b/g' -e \"s/$X/y/\" 2>/dev/null"),
+            _ => "xargs -n1 command time nice -n 5 wc -l".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if want("shell scan (20-stage pipeline)") {
+        shell_scan::analyze(&long, cwd).unwrap();
+        let t = per_call(10, || {
+            std::hint::black_box(shell_scan::analyze(&long, cwd).unwrap());
+        });
+        report_us(
+            "shell scan (20-stage pipeline)",
+            t,
+            &format!("{} bytes", long.len()),
+        );
+    }
+    let edit = codesmith_core::tool::Tool::Edit.spec("/bin/sh").parameters;
+    let input = json!({
+        "path": "/project/src/lib.rs",
+        "oldString": "fn main() {\n    println!(\"hello\");\n}\n",
+        "newString": "fn main() {\n    println!(\"hello, world\");\n}\n",
+        "replaceAll": false
+    });
+    if want("schema check (cached)") {
+        let cache = Cache::default();
+        let t = per_call(10, || {
+            std::hint::black_box(cache.check("edit", &edit, &input).unwrap());
+        });
+        report_us("schema check (cached)", t, "edit's schema");
+    }
+    if want("schema check (cold)") {
+        let t = per_call(10, || {
+            let cache = Cache::default();
+            std::hint::black_box(cache.check("edit", &edit, &input).unwrap());
+        });
+        report_us("schema check (cold)", t, "compiles it too");
+    }
+    // A configured session: base and project rules, rules the session
+    // was given, saved approvals and policy statements.
+    let mut rules = rich_rules();
+    for i in 0..10 {
+        rules.push(Rule::new(
+            "shell",
+            &format!("npm run task{i} *"),
+            Effect::Allow,
+        ));
+    }
+    rules.push(Rule::new("shell", "git *", Effect::Allow));
+    rules.push(Rule::new("shell", "rm -rf *", Effect::Deny));
+    for (e, r) in [
+        (PolicyEffect::Deny, "shell:curl *"),
+        (PolicyEffect::Deny, "webfetch:https://internal.example/*"),
+        (PolicyEffect::Allow, "shell:curl https://ok.example/*"),
+        (PolicyEffect::Deny, "edit:*.env"),
+    ] {
+        rules.extend(Policy::tool(e, r).rule());
+    }
+    let book = Arc::new(Book::open(&dir.join("approvals.db")).unwrap());
+    book.add("bench", "shell", &["make *".into(), "cargo build *".into()])
+        .unwrap();
+    for (label, durable) in [("", false), (", saved approvals", true)] {
+        let mut g = gate(rules.clone());
+        if durable {
+            g.set_durable(book.clone(), "bench".into());
+        }
+        let name = format!("permission check{label}");
+        if want(&name) {
+            let shell = vec!["git status".to_string(), "cargo test -p x".to_string()];
+            let t = per_call(10, || {
+                std::hint::black_box(g.allows("shell", &shell));
+            });
+            report_us(&name, t, "2 commands, 40 rules + 4 policies");
+        }
+    }
+    if want("webfetch authorize") {
+        let g = gate(rules.clone());
+        let c = ctx(dir, &g);
+        let t = rt.block_on(async {
+            per_call(10, || {
+                std::hint::black_box(
+                    tool::webfetch_authorize(
+                        &c,
+                        "HTTPS://Docs.Example.com:443/guide/%7Euser/a%20b?q=1#frag",
+                    )
+                    .unwrap(),
+                );
+            })
+        });
+        report_us("webfetch authorize", t, "normalize, deny forms, ask");
+    }
+}
+
+/// One full turn through the scripted model on loopback: a prompt, a
+/// `read` call and the answer after it, with the store on.
+fn bench_turn(rt: &tokio::runtime::Runtime) {
+    rt.block_on(async {
+        let mut t = scripted::start(scripted::Setup {
+            store: true,
+            ..Default::default()
+        })
+        .await;
+        std::fs::write(t.path("a.txt"), "hello\n".repeat(200)).unwrap();
+        let p = t.path("a.txt").display().to_string();
+        let mut times = Vec::new();
+        for i in 0..20 {
+            t.push([
+                scripted::call(&format!("c{i}"), "read", json!({"filePath": p})),
+                scripted::text("Read it."),
+            ]);
+            let start = Instant::now();
+            t.prompt("Read a.txt").await.unwrap();
+            times.push(start.elapsed());
+        }
+        report(
+            "turn: prompt, read, answer",
+            times,
+            &format!("{} messages at the end", t.s.messages.len()),
+        );
+    });
+}
+
+#[path = "../tests/scripted/mod.rs"]
+#[allow(unused_imports)]
+mod scripted;
 
 /// CPU time used by this process so far.
 #[cfg(unix)]

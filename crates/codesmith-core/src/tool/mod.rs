@@ -406,6 +406,13 @@ pub async fn run(ctx: &Ctx<'_>, name: &str, input: &Value) -> Executed {
     }
 }
 
+/// Webfetch's URL checks before it fetches (normalizing, the deny forms,
+/// the permission request), for the benchmarks.
+#[doc(hidden)]
+pub fn webfetch_authorize(ctx: &Ctx<'_>, raw: &str) -> Result<String, String> {
+    webfetch::authorize(ctx, raw).map(String::from)
+}
+
 /// Fix common model mistakes in tool input: a JSON object sent as a string,
 /// or numbers/booleans sent as strings.
 pub fn repair(input: &Value) -> Value {
