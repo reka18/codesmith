@@ -10,7 +10,7 @@ to. **Subagents** are the ones the model delegates to, through the
 | Agent | Mode | What it is |
 |---|---|---|
 | `build` | primary | The default. Uses every tool your rules allow. |
-| `plan` | primary | Read-only planning: investigates and proposes changes without editing the project. It may write plan files only in the Plan directory (`~/.local/share/codesmith/plan`); `edit`, `write` and `patch` are denied everywhere else, and so are shell redirects that write files. See [the plan plugin](plugins.md#the-plan-plugin). |
+| `plan` | primary | Read-only planning: investigates and proposes changes without editing the project. It may write plan files only in the Plan directory (`~/.local/share/codesmith/plan`); `edit`, `write` and `patch` are denied everywhere else, and so are shell redirects that write files. As in OpenCode, it reaches folders outside the project without an `external_directory` prompt, to read code it plans around; a configured `external_directory` deny or ask still applies. See [the plan plugin](plugins.md#the-plan-plugin). |
 | `general` | subagent | General-purpose work in parallel. Can't ask questions or start subagents. |
 | `explore` | subagent | Fast, read-only codebase search: `read`, `grep`, `glob`, web tools and read-only shell commands. |
 | `review` | subagent | The read-only reviewer used by [`/review` and `/calibrate`](code-review.md). |

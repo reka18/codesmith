@@ -2345,7 +2345,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P treats reminder text quoted inside a larger message as not live — `src/plugin/plan.rs::oc_plan_treats_a_quoted_reminder_as_not_live`
 - P does not create the Plan directory during activation — `src/plugin/plan.rs::oc_plan_does_not_create_the_plan_directory_during_activation`
 - P allows edits only inside the Plan directory — `src/plugin/plan.rs::oc_plan_allows_edits_only_inside_the_plan_directory` (also through the write tool (tests/oc_plan_session.rs::oc_plan_session_writes_only_plan_files))
-- P allows external directories without asking — `src/plugin/plan.rs::oc_plan_allows_the_plan_directory_without_asking` (adapted: the Plan directory needs no prompt; other directories outside the project still ask, as for every CodeSmith agent but explore)
+- P allows external directories without asking — `src/plugin/plan.rs::oc_plan_allows_external_directories_without_asking` (also through the read tool, with a configured deny still winning (tests/oc_plan_session.rs::oc_plan_session_reads_outside_the_project_without_asking))
 - P rewrites blocked mutation failures with the Plan directory — `src/plugin/plan.rs::oc_plan_rewrites_blocked_mutation_failures_with_the_plan_directory` (adapted: a rule's block is recognized by its permission error)
 - P preserves mutation failures unrelated to permissions — `src/plugin/plan.rs::oc_plan_preserves_mutation_failures_unrelated_to_permissions`
 

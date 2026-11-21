@@ -604,7 +604,12 @@ async fn aborting_before_anything_is_stored_keeps_the_session_id() {
         Reply::text("hi"),
     ))
     .await;
-    e.config(&m.url, json!({}));
+    // The plan agent reaches outside folders without asking; config makes
+    // it ask here, so the attachment's prompt comes first.
+    e.config(
+        &m.url,
+        json!({"permissions": [{"action": "external_directory", "resource": "*", "effect": "ask"}]}),
+    );
     let s = Server::start(&e, &[]).await;
     let (_, created) = s.post("/sessions", json!({"agent": "plan"})).await;
     let sid = created["id"].as_str().unwrap().to_string();

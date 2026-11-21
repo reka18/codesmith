@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Plan agent outside the project:** the `plan` agent reaches folders
+  outside the project (reads, searches, listings) without an
+  `external_directory` prompt, as OpenCode's plan agent does. It still
+  writes only plan files in the Plan directory. A configured
+  `external_directory` deny or ask, and policies, still win.
 - The check that keeps a public host from redirecting `webfetch`, Code
   Mode `fetch`, OpenAPI calls and image input downloads to a local or
   private address now covers the connection itself: the target's name was

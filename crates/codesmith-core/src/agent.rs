@@ -310,8 +310,8 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
     };
     let own = std::mem::take(&mut agent.permissions);
     agent.permissions = base_rules();
-    // The plan agent reaches its Plan directory without asking, unless
-    // config says otherwise.
+    // The plan agent reaches outside folders without asking, as in
+    // OpenCode, unless config says otherwise.
     if id == crate::plugin::plan::AGENT {
         agent
             .permissions

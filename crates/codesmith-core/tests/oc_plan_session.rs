@@ -31,7 +31,18 @@ fn session(
     resume: Option<String>,
     reply: Reply,
 ) -> Session {
-    let l = loaded(dir, base, json!({}));
+    session_with(dir, base, agent, resume, reply, json!({}))
+}
+
+fn session_with(
+    dir: &std::path::Path,
+    base: &str,
+    agent: &str,
+    resume: Option<String>,
+    reply: Reply,
+    extra: serde_json::Value,
+) -> Session {
+    let l = loaded(dir, base, extra);
     let mut o = options();
     o.agent = Some(agent.into());
     o.resume = resume;
@@ -166,6 +177,59 @@ async fn writes_only_plan_files(inside: bool) {
         "# Plan",
         "inside: {inside}"
     );
+}
+
+// plan.test.ts: "allows external directories without asking", through the
+// tools: the plan agent reads a file outside the project with every prompt
+// declined, still cannot write there, and a configured
+// `external_directory` deny still blocks the read.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_plan_session_reads_outside_the_project_without_asking() {
+    for denied in [false, true] {
+        reads_outside(denied).await;
+    }
+}
+
+async fn reads_outside(denied: bool) {
+    let _g = serial();
+    let dir = setup();
+    let project = dir.path().join("project");
+    let outside = dir.path().join("elsewhere");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = outside.join("lib.rs");
+    std::fs::write(&file, "fn outside_marker() {}").unwrap();
+    let read = file.display().to_string();
+    let written = outside.join("new.rs");
+    let write = written.display().to_string();
+    let m = serve(
+        move |r| match r.body["messages"].as_array().unwrap().len() {
+            3 => tool("c1", "read", json!({"path": read})),
+            5 => tool("c2", "write", json!({"path": write, "content": "x"})),
+            _ => text("done"),
+        },
+    )
+    .await;
+    let extra = if denied {
+        json!({"permissions": [{"action": "external_directory", "resource": "*", "effect": "deny"}]})
+    } else {
+        json!({})
+    };
+    let mut s = session_with(&project, &m.base, "plan", None, Reply::Reject(None), extra);
+    s.prompt("look around", &mut Collect::default())
+        .await
+        .unwrap();
+    let reqs = m.requests();
+    let after_read = reqs[1].body.to_string();
+    assert_eq!(
+        after_read.contains("outside_marker"),
+        !denied,
+        "denied: {denied}: {after_read}"
+    );
+    if denied {
+        assert!(after_read.contains("Permission denied"), "{after_read}");
+    }
+    assert!(!written.exists(), "the plan agent wrote outside");
 }
 
 // Turning the plan plugin off drops its reminders.

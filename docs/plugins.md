@@ -114,6 +114,8 @@ The `plan` agent may write plan files only in the Plan directory,
 `~/.local/share/codesmith/plan` (`$XDG_DATA_HOME/codesmith/plan`). Nothing
 creates it until a plan file is written. A write anywhere else fails with
 "Cannot use write to modify files outside the Plan directory: ...".
+Reading outside the project needs no prompt for the `plan` agent (see
+[permissions](permissions.md#defaults)).
 
 Turn the plugin off with `"plugins": {"plan": false}`: no reminders, and a
 blocked write reports the plain permission error. The `plan` agent's rules

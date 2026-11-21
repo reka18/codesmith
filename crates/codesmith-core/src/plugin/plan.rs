@@ -3,8 +3,11 @@
 //!
 //! The `plan` agent may write plan files only in the Plan directory
 //! ([`directory`], `plan` under the data folder), and nowhere else: its
-//! rules ([`rules`]) deny `edit` everywhere but there, and let it into that
-//! directory without an `external_directory` prompt. Nothing creates the
+//! rules ([`rules`]) deny `edit` everywhere but there, and, as in OpenCode,
+//! let it reach folders outside the project (the Plan directory among them)
+//! without an `external_directory` prompt, so it can read code it plans
+//! around. Config rules come later and still win, so a configured
+//! `external_directory` deny or ask still applies. Nothing creates the
 //! directory until a plan file is written.
 //!
 //! Plan mode is announced in the conversation, not the system prompt, so
@@ -80,24 +83,19 @@ fn names(dir: &Path) -> Vec<String> {
 }
 
 /// The plan agent's rules for Plan directory `dir`: `base` goes right after
-/// the base defaults (reaching the directory without asking, which config
-/// can still deny), and `own` among the agent's built-in rules (no edits
-/// but plan files; built-in, so they only restrict).
+/// the base defaults (reaching outside folders without asking, as
+/// OpenCode's plan agent does, which config can still deny or make ask),
+/// and `own` among the agent's built-in rules (no edits but plan files;
+/// built-in, so they only restrict).
 pub struct Rules {
     pub base: Vec<Rule>,
     pub own: Vec<Rule>,
 }
 
 pub fn rules(dir: &Path) -> Rules {
-    let mut base = Vec::new();
+    let base = vec![Rule::new("external_directory", "*", Effect::Allow)];
     let mut own = vec![Rule::new("edit", "*", Effect::Deny)];
     for d in names(dir) {
-        base.push(Rule::new("external_directory", &d, Effect::Allow));
-        base.push(Rule::new(
-            "external_directory",
-            &format!("{d}/*"),
-            Effect::Allow,
-        ));
         own.push(Rule::new("edit", &format!("{d}/*"), Effect::Allow));
     }
     Rules { base, own }
@@ -383,13 +381,42 @@ mod tests {
 
     // plan.test.ts: "allows external directories without asking"
     #[test]
-    fn oc_plan_allows_the_plan_directory_without_asking() {
+    fn oc_plan_allows_external_directories_without_asking() {
         let rules = plan_rules();
         let glob = format!("{}/*", dir().display());
         assert_eq!(evaluate("external_directory", &glob, &rules), Effect::Allow);
-        // Adapted: other directories still ask, as for every CodeSmith agent.
         assert_eq!(
             evaluate("external_directory", "/outside/*", &rules),
+            Effect::Allow
+        );
+        // Reaching a folder is not writing to it: edits there stay denied.
+        assert_eq!(evaluate("edit", "/outside/x.rs", &rules), Effect::Deny);
+    }
+
+    #[test]
+    fn a_configured_external_directory_rule_still_wins_for_the_plan_agent() {
+        for (effect, want) in [(Effect::Deny, Effect::Deny), (Effect::Ask, Effect::Ask)] {
+            let mut rules = crate::permission::base_rules();
+            let r = super::rules(&dir());
+            rules.extend(r.base);
+            rules.push(Rule::new("external_directory", "/outside/*", effect));
+            rules.extend(r.own.into_iter().map(Rule::into_builtin));
+            assert_eq!(evaluate("external_directory", "/outside/*", &rules), want);
+            assert_eq!(
+                evaluate("external_directory", "/elsewhere/*", &rules),
+                Effect::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn other_agents_still_ask_before_leaving_the_project() {
+        assert_eq!(
+            evaluate(
+                "external_directory",
+                "/outside/*",
+                &crate::permission::base_rules()
+            ),
             Effect::Ask
         );
     }

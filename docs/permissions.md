@@ -128,7 +128,7 @@ agent then adds its own rules on top:
 | Agent | Adds |
 |---|---|
 | `build` | `question` allowed. |
-| `plan` | `question` allowed, `edit` denied (no `write`, `edit`, `patch`, or redirect writes) except in the Plan directory (`~/.local/share/codesmith/plan`), which it reaches without an `external_directory` prompt. A configured deny still covers the Plan directory. |
+| `plan` | `question` allowed, `edit` denied (no `write`, `edit`, `patch`, or redirect writes) except in the Plan directory (`~/.local/share/codesmith/plan`), and `external_directory` allowed, as in OpenCode: it reads, searches and lists folders outside the project without a prompt, but still writes only plan files. A configured `external_directory` rule (deny or ask) still wins, and a configured deny still covers the Plan directory. |
 | `general` | `question` and `subagent` denied. |
 | `explore` | Everything denied, then `read`, `grep`, `glob`, `webfetch`, `websearch` allowed (`.env` asks), files outside the project allowed, and a list of read-only shell commands (`git diff/show/log/status/...`, `ls`, `cat`, `grep`, `rg`, `find`, ...) allowed, with options that run programs or write files (`find -exec`, `git --output`, `rg --pre`, `sort -o`, and others) denied. |
 | `review` | Everything denied, then `read` (`.env` denied), `grep`, `glob` and read-only git commands allowed, and files outside the project denied. |
@@ -208,7 +208,8 @@ broad to count: the working directory is the project's boundary instead, so
 started in `/` or in your home folder itself has no boundary at all: every
 path outside CodeSmith's scratch folder needs `external_directory` approval.
 
-`external_directory` asks by default. To allow a folder permanently:
+`external_directory` asks by default (the `plan` and `explore` agents allow
+it, and `review` denies it). To allow a folder permanently:
 
 ```jsonc
 { "permissions": [{ "action": "external_directory", "resource": "/Users/me/src/shared-lib/*", "effect": "allow" }] }
