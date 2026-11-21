@@ -24,15 +24,19 @@
 //! - Only a person starts a swap: the model picker and `codesmith models
 //!   swap`. It is not a tool, and neither automations nor `run`, `serve` or
 //!   ACP sessions reach it. [`guard`] refuses inside a CodeSmith shell tool.
-//! - Output lines have control characters and escape sequences removed.
-//!   `timeout` (default 600 s) bounds `use`; `list` gets at most 60 s.
+//! - Output lines have control characters, escape sequences and Unicode
+//!   format characters removed, and are read in bounded chunks: a line is
+//!   kept up to [`LINE_MAX`] characters (the rest, up to its newline, is
+//!   dropped), each stream up to 8 MiB, and `list`'s stdout is parsed whole
+//!   up to 1 MiB. `timeout` (default 600 s) bounds `use`; `list` gets at
+//!   most 60 s.
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// A provider's `swap` setting.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -53,6 +57,18 @@ pub const DEFAULT_TIMEOUT: u64 = 600;
 pub const LIST_TIMEOUT: u64 = 60;
 /// Longest output line kept, in characters.
 const LINE_MAX: usize = 2000;
+/// Longest output line held while reading, in bytes (`LINE_MAX` characters
+/// of up to 4 bytes): the rest of a longer line is read and dropped, up to
+/// its newline, so a line with no end never grows in memory.
+const LINE_BYTES: usize = LINE_MAX * 4;
+/// Most bytes of lines passed on from one stream; the rest is read and
+/// dropped, so the command never blocks on a full pipe.
+const OUTPUT_MAX: usize = 8 << 20;
+/// Most of `list`'s stdout kept whole for parsing (a JSON listing on one
+/// long line included). More is an error.
+const STDOUT_MAX: usize = 1 << 20;
+/// How much a stream is read at a time.
+const CHUNK: usize = 8 << 10;
 
 impl SwapConfig {
     pub fn timeout(&self) -> Duration {
@@ -248,7 +264,88 @@ struct Ran {
     json: Option<Value>,
     /// The last few non-empty lines, for errors.
     tail: Vec<String>,
+    /// All of stdout, when kept, up to [`STDOUT_MAX`].
     stdout: String,
+    /// Stdout was longer than [`STDOUT_MAX`].
+    stdout_over: bool,
+}
+
+/// What [`pump`] read from one stream.
+#[derive(Debug, Default)]
+struct Pumped {
+    /// Bytes read in all.
+    read: u64,
+    /// The most bytes of a line it held at once.
+    held_max: usize,
+    /// The stream's first [`STDOUT_MAX`] bytes, when asked for.
+    raw: Vec<u8>,
+    /// The stream was longer than that.
+    raw_over: bool,
+}
+
+/// Read `r` to its end in [`CHUNK`]s, sending each line (without its
+/// newline, cut to [`LINE_BYTES`], the rest of it dropped) to `tx` with
+/// `out`, until [`OUTPUT_MAX`] bytes have gone; then it keeps reading and
+/// drops what it reads. With `keep_raw`, the first [`STDOUT_MAX`] bytes are
+/// kept whole too.
+async fn pump(
+    mut r: impl AsyncRead + Unpin,
+    out: bool,
+    keep_raw: bool,
+    tx: tokio::sync::mpsc::Sender<(bool, String)>,
+) -> Pumped {
+    let mut p = Pumped::default();
+    let mut buf = vec![0u8; CHUNK];
+    let mut line: Vec<u8> = Vec::with_capacity(256);
+    let mut sent = 0usize;
+    let mut open = true;
+    let emit = |line: &mut Vec<u8>, sent: &mut usize| {
+        let text = (*sent < OUTPUT_MAX).then(|| {
+            *sent += line.len() + 1;
+            String::from_utf8_lossy(line)
+                .chars()
+                .take(LINE_MAX)
+                .collect::<String>()
+        });
+        line.clear();
+        text
+    };
+    loop {
+        let n = match r.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        p.read += n as u64;
+        if keep_raw && !p.raw_over {
+            let room = STDOUT_MAX - p.raw.len();
+            p.raw.extend_from_slice(&buf[..n.min(room)]);
+            p.raw_over = n > room;
+        }
+        for piece in buf[..n].split_inclusive(|b| *b == b'\n') {
+            let (body, ends) = match piece.strip_suffix(b"\n") {
+                Some(b) => (b, true),
+                None => (piece, false),
+            };
+            let room = LINE_BYTES.saturating_sub(line.len());
+            line.extend_from_slice(&body[..body.len().min(room)]);
+            p.held_max = p.held_max.max(line.capacity());
+            if ends {
+                if let Some(t) = emit(&mut line, &mut sent) {
+                    if open && tx.send((out, t)).await.is_err() {
+                        open = false;
+                    }
+                }
+            }
+        }
+    }
+    if !line.is_empty() {
+        if let Some(t) = emit(&mut line, &mut sent) {
+            if open {
+                let _ = tx.send((out, t)).await;
+            }
+        }
+    }
+    p
 }
 
 async fn run(
@@ -270,40 +367,21 @@ async fn run(
         .spawn()
         .map_err(|e| anyhow!("cannot run {}: {e}", argv[0]))?;
     let pid = child.id();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
-    fn pump(
-        r: impl AsyncRead + Unpin + Send + 'static,
-        out: bool,
-        tx: tokio::sync::mpsc::UnboundedSender<(bool, String)>,
-    ) {
-        tokio::spawn(async move {
-            let mut r = BufReader::new(r);
-            let mut buf = Vec::new();
-            loop {
-                buf.clear();
-                match r.read_until(b'\n', &mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        let line: String = String::from_utf8_lossy(&buf)
-                            .chars()
-                            .take(LINE_MAX)
-                            .collect();
-                        if tx.send((out, line)).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-    }
-    pump(child.stdout.take().unwrap(), true, tx.clone());
-    pump(child.stderr.take().unwrap(), false, tx);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(bool, String)>(64);
+    let stdout = tokio::spawn(pump(
+        child.stdout.take().unwrap(),
+        true,
+        keep_stdout,
+        tx.clone(),
+    ));
+    let stderr = tokio::spawn(pump(child.stderr.take().unwrap(), false, false, tx));
     let mut ran = Ran {
         ok: false,
         code: None,
         json: None,
         tail: vec![],
         stdout: String::new(),
+        stdout_over: false,
     };
     let work = async {
         while let Some((is_out, raw)) = rx.recv().await {
@@ -315,10 +393,6 @@ async fn run(
                         ran.json = Some(v);
                     }
                 }
-                if keep_stdout && ran.stdout.len() < 1 << 20 {
-                    ran.stdout.push_str(&line);
-                    ran.stdout.push('\n');
-                }
             }
             if !line.trim().is_empty() {
                 on_line(&line);
@@ -328,7 +402,13 @@ async fn run(
                 }
             }
         }
-        child.wait().await
+        let status = child.wait().await;
+        if let Ok(p) = stdout.await {
+            ran.stdout = String::from_utf8_lossy(&p.raw).into_owned();
+            ran.stdout_over = p.raw_over;
+        }
+        let _ = stderr.await;
+        status
     };
     match tokio::time::timeout(timeout, work).await {
         Ok(Ok(status)) => {
@@ -361,6 +441,13 @@ pub async fn list(s: &SwapConfig) -> Result<Vec<SwapModel>> {
     }
     let timeout = s.timeout().min(Duration::from_secs(LIST_TIMEOUT));
     let ran = run(&s.list, timeout, true, &mut |_| {}).await?;
+    if ran.stdout_over {
+        bail!(
+            "{} printed more than {} MiB; a listing must be smaller",
+            s.list[0],
+            STDOUT_MAX >> 20
+        );
+    }
     if !ran.ok {
         bail!(
             "{} failed{}: {}",
@@ -702,6 +789,155 @@ mod tests {
             .to_string();
         assert!(e.contains("did not finish within 1 s"), "{e}");
         assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    /// `n` bytes of `fill`, read in whatever sizes the reader asks for,
+    /// never all held.
+    struct Endless {
+        left: u64,
+        fill: &'static [u8],
+        at: usize,
+    }
+
+    impl AsyncRead for Endless {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let n = (buf.remaining() as u64).min(self.left) as usize;
+            let mut put = 0;
+            while put < n {
+                let from = self.at % self.fill.len();
+                let take = (self.fill.len() - from).min(n - put);
+                buf.put_slice(&self.fill[from..from + take]);
+                self.at += take;
+                put += take;
+            }
+            self.left -= n as u64;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn endless(left: u64, fill: &'static [u8]) -> Endless {
+        Endless { left, fill, at: 0 }
+    }
+
+    async fn pumped(r: Endless, keep_raw: bool) -> (Pumped, Vec<String>) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let got = tokio::spawn(async move {
+            let mut v = Vec::new();
+            while let Some((_, l)) = rx.recv().await {
+                v.push(l);
+            }
+            v
+        });
+        let p = pump(r, true, keep_raw, tx).await;
+        (p, got.await.unwrap())
+    }
+
+    /// Security review 8, finding 4: 300 MB with no newline used to be
+    /// held whole as one line. Now at most one cut line is held.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_line_with_no_end_stays_bounded() {
+        static A: [u8; 4096] = [b'a'; 4096];
+        let (p, lines) = pumped(endless(300_000_000, &A), true).await;
+        assert_eq!(p.read, 300_000_000, "read to the end");
+        assert!(p.held_max <= 2 * LINE_BYTES, "held {}", p.held_max);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), LINE_MAX);
+        assert_eq!(p.raw.len(), STDOUT_MAX);
+        assert!(p.raw_over);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_rest_of_a_long_line_is_dropped_up_to_its_newline() {
+        static TEXT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        let text = TEXT.get_or_init(|| {
+            let mut t = vec![b'x'; 50_000];
+            t.extend_from_slice(b"\nnext line\n");
+            // Three-byte characters, cut inside one at the byte limit.
+            t.extend_from_slice("ホ".repeat(4000).as_bytes());
+            t.extend_from_slice("\n\u{1F600}end".as_bytes());
+            t
+        });
+        let (p, lines) = pumped(endless(text.len() as u64, text), false).await;
+        assert_eq!(p.read, text.len() as u64);
+        assert!(p.raw.is_empty() && !p.raw_over, "raw only when asked");
+        assert_eq!(
+            lines.len(),
+            4,
+            "{:?}",
+            lines.iter().map(|l| l.len()).collect::<Vec<_>>()
+        );
+        assert_eq!(lines[0], "x".repeat(LINE_MAX));
+        assert_eq!(lines[1], "next line");
+        assert_eq!(lines[2], "ホ".repeat(LINE_MAX));
+        assert_eq!(lines[3], "\u{1F600}end", "a last line without a newline");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lines_past_the_output_cap_are_read_and_dropped() {
+        static LINE: [u8; 1000] = {
+            let mut l = [b'y'; 1000];
+            l[999] = b'\n';
+            l
+        };
+        let total = 3 * OUTPUT_MAX as u64;
+        let (p, lines) = pumped(endless(total, &LINE), false).await;
+        assert_eq!(p.read, total);
+        let passed: usize = lines.iter().map(|l| l.len() + 1).sum();
+        assert!(passed <= OUTPUT_MAX + 1000, "{passed}");
+        assert!(passed >= OUTPUT_MAX - 1000, "{passed}");
+    }
+
+    fn list_of(script: &str) -> SwapConfig {
+        SwapConfig {
+            list: vec!["/bin/sh".into(), "-c".into(), script.into()],
+            use_: vec!["/bin/echo".into(), PLACEHOLDER.into()],
+            timeout: Some(30),
+        }
+    }
+
+    /// The side bug: a JSON listing longer than a line's limit was cut and
+    /// then read as model names. It is parsed from the whole stdout now.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_long_json_listing_parses() {
+        let names: Vec<String> = (0..1500).map(|i| format!("org/model-{i:04}-ünï")).collect();
+        let ascii: Vec<String> = (0..1500).map(|i| format!("org/model-{i:04}")).collect();
+        let json = serde_json::to_string(&json!({
+            "models": ascii.iter().map(|n| json!({"name": n, "live": n.ends_with("0007")})).collect::<Vec<_>>(),
+            "configured": "org/model-0003",
+            "note": names,
+        }))
+        .unwrap();
+        assert!(json.len() > 4 * LINE_BYTES);
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("list.json");
+        std::fs::write(&f, format!("Warning: banner\n{json}\n")).unwrap();
+        let models = list(&list_of(&format!("cat '{}'", f.display())))
+            .await
+            .unwrap();
+        assert_eq!(models.len(), 1500);
+        assert_eq!(models[5].name, "org/model-0005");
+        assert!(models[7].live && !models[6].live);
+        assert!(models[3].configured);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_listing_over_a_mebibyte_is_refused() {
+        let e = list(&list_of("head -c 2000000 /dev/zero | tr '\\0' a"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("more than 1 MiB"), "{e}");
+        // Just under the limit, as names, still lists.
+        let ok = list(&list_of(
+            "i=0; while [ $i -lt 3000 ]; do echo model-$i; i=$((i+1)); done",
+        ))
+        .await
+        .unwrap();
+        assert_eq!(ok.len(), 3000);
     }
 
     #[tokio::test]

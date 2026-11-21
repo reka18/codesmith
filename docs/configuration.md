@@ -529,9 +529,13 @@ How CodeSmith runs them:
   could any command; [permission rules](permissions.md) for `shell` govern
   that.
 - **Output** lines are shown with escape sequences and control characters
-  removed.
+  removed. Output is read in bounded chunks: a line is kept up to 2000
+  characters (the rest of it, up to its newline, is dropped), each stream
+  up to 8 MiB (later output is read and dropped), and a `list` printing
+  more than 1 MiB is refused.
 
-`list` may print JSON, the last JSON line counting: an array of names, an
+`list` may print JSON, the last JSON line counting (however long the
+line, within the 1 MiB): an array of names, an
 array of `{"name" (or "id"), "live", "configured", "size_bytes"}` objects,
 or an object with such a `models` array and optional `live` and
 `configured` names (what `tblink models --json` prints). Anything else is

@@ -5,6 +5,12 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Model swap output is bounded:** `swap` commands' output is read in
+  chunks; a line is kept up to 2000 characters (the rest, up to its
+  newline, is dropped), each stream up to 8 MiB, and a `list` that prints
+  more than 1 MiB is refused instead of filling memory. A JSON listing on
+  one long line now parses: it is read from the whole output, not from a
+  cut line.
 - **`CODESMITH_DISABLE_PROJECT_CONFIG` covers nested instructions:** with
   project config off, reading a file no longer brings in the `AGENTS.md`
   or `CLAUDE.md` files of the folders around it.
