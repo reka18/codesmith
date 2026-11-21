@@ -322,6 +322,9 @@ impl std::fmt::Display for Denied {
 
 impl std::error::Error for Denied {}
 
+/// A project's saved approvals read once (see [`Gate::durable_now`]).
+pub struct DurableNow(Vec<Rule>);
+
 /// Approvals saved by "always" answers. Shared, so a session rebuilt from
 /// the store (after an interrupt, undo or agent switch) keeps them.
 pub type Approvals = Arc<Mutex<Vec<Rule>>>;
@@ -431,6 +434,19 @@ impl Gate {
     /// Allowed by rules alone, without asking. A configured deny wins over
     /// a saved approval, as in [`Gate::assert`].
     pub fn allows(&self, action: &str, resources: &[String]) -> bool {
+        self.allows_given(action, resources, &self.durable_now())
+    }
+
+    /// The project's saved approvals as they are now, to judge many
+    /// resources of one request (a search's files) with
+    /// [`Gate::allows_given`] without reading them again for each.
+    pub fn durable_now(&self) -> DurableNow {
+        DurableNow(self.durable_rules())
+    }
+
+    /// [`Gate::allows`] with the project's saved approvals read before
+    /// ([`Gate::durable_now`]).
+    pub fn allows_given(&self, action: &str, resources: &[String], durable: &DurableNow) -> bool {
         if policy_denial(action, resources, &self.rules).is_some() {
             return false;
         }
@@ -440,9 +456,8 @@ impl Gate {
         {
             return false;
         }
-        let durable = self.durable_rules();
         let saved = self.saved.lock().unwrap();
-        evaluate_all_layers(action, resources, &[&self.rules, &saved, &durable]) == Effect::Allow
+        evaluate_all_layers(action, resources, &[&self.rules, &saved, &durable.0]) == Effect::Allow
     }
 
     /// Refuse only when a configured rule denies the request; never asks.
@@ -708,6 +723,128 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    /// The judgment `Gate::allows` made before saved approvals could be
+    /// read once per search: every layer concatenated, read afresh.
+    fn allows_naive(g: &Gate, action: &str, resources: &[String]) -> bool {
+        policy_denial(action, resources, g.configured()).is_none()
+            && !resources
+                .iter()
+                .any(|r| evaluate(action, r, g.configured()) == Effect::Deny)
+            && evaluate_all(action, resources, &g.rules()) == Effect::Allow
+    }
+
+    fn book() -> (tempfile::TempDir, Arc<crate::approvals::Book>) {
+        let d = tempfile::tempdir().unwrap();
+        let b = crate::approvals::Book::open(&d.path().join("sessions.db")).unwrap();
+        (d, Arc::new(b))
+    }
+
+    /// Saved approvals read once (`durable_now`) judge exactly as reading
+    /// them for each check does, on seeded random rules, policies, saved
+    /// approvals and requests.
+    #[test]
+    fn durable_snapshot_judges_as_reading_each_time() {
+        let (_d, book) = book();
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let actions = ["read", "edit", "shell"];
+        let patterns = [
+            "*",
+            "src/*",
+            "src/**",
+            "*.rs",
+            "*.env",
+            "/p/secrets/*",
+            "docs/a.md",
+            "~/notes/*",
+            "git *",
+            "rm *",
+        ];
+        let resources = [
+            "src/a.rs",
+            "src/x/b.ts",
+            "docs/a.md",
+            ".env",
+            "/p/secrets/k",
+            "git status",
+            "rm -rf x",
+            "README.md",
+        ];
+        let effects = [Effect::Allow, Effect::Ask, Effect::Deny];
+        let mut seen = [0usize; 2];
+        for round in 0..300 {
+            let project = format!("p{round}");
+            let mut rules = Vec::new();
+            for _ in 0..rnd(8) {
+                let r = Rule::new(
+                    actions[rnd(3)],
+                    patterns[rnd(patterns.len())],
+                    effects[rnd(3)],
+                );
+                rules.push(if rnd(4) == 0 { r.into_builtin() } else { r });
+            }
+            if rnd(3) == 0 {
+                let e = [PolicyEffect::Allow, PolicyEffect::Deny][rnd(2)];
+                let res = format!("{}:{}", actions[rnd(3)], patterns[rnd(patterns.len())]);
+                rules.extend(Policy::tool(e, &res).rule());
+            }
+            for _ in 0..rnd(3) {
+                let saves: Vec<String> = (0..1 + rnd(3))
+                    .map(|_| patterns[rnd(patterns.len())].to_string())
+                    .collect();
+                book.add(&project, actions[rnd(3)], &saves).unwrap();
+            }
+            let mut g = Gate::new(rules, Arc::new(Fixed(Reply::Once)));
+            g.set_durable(book.clone(), project);
+            let now = g.durable_now();
+            for _ in 0..10 {
+                let action = actions[rnd(3)];
+                let res: Vec<String> = (0..1 + rnd(3))
+                    .map(|_| resources[rnd(resources.len())].to_string())
+                    .collect();
+                let want = allows_naive(&g, action, &res);
+                seen[want as usize] += 1;
+                assert_eq!(g.allows(action, &res), want, "{action} {res:?}");
+                assert_eq!(g.allows_given(action, &res, &now), want, "{action} {res:?}");
+            }
+        }
+        // Both answers came up often enough to mean something.
+        assert!(seen[0] > 100 && seen[1] > 100, "{seen:?}");
+    }
+
+    /// A snapshot keeps the approvals as they were when it was taken; a
+    /// plain check, or a new snapshot, sees an approval added or removed
+    /// since.
+    #[test]
+    fn durable_snapshot_is_taken_once_and_checks_read_afresh() {
+        let (_d, book) = book();
+        let mut g = Gate::new(
+            vec![Rule::new("read", "*", Effect::Ask)],
+            Arc::new(Fixed(Reply::Once)),
+        );
+        g.set_durable(book.clone(), "p".into());
+        let res = vec!["src/a.rs".to_string()];
+        let before = g.durable_now();
+        assert!(!g.allows("read", &res));
+        let saved = book.add("p", "read", &["*.rs".into()]).unwrap();
+        assert!(g.allows("read", &res));
+        assert!(!g.allows_given("read", &res, &before));
+        let after = g.durable_now();
+        assert!(g.allows_given("read", &res, &after));
+        // Another project's approvals never count.
+        book.add("q", "read", &["*".into()]).unwrap();
+        assert!(!g.allows("read", &["b.ts".to_string()]));
+        book.remove(&saved[0].id).unwrap();
+        assert!(!g.allows("read", &res));
+        assert!(g.allows_given("read", &res, &after));
+        assert!(!g.allows_given("read", &res, &g.durable_now()));
+    }
 
     fn req(action: &str, res: &[&str]) -> Request {
         Request {

@@ -750,9 +750,19 @@ impl Ctx<'_> {
     /// configured deny denies, otherwise configured and saved rules allow
     /// or leave it to ask.
     pub fn read_effect(&self, resources: &[String]) -> Effect {
+        self.read_effect_given(resources, &self.gate.durable_now())
+    }
+
+    /// [`Ctx::read_effect`] with the project's saved approvals read before,
+    /// for the many files of one search.
+    pub fn read_effect_given(
+        &self,
+        resources: &[String],
+        durable: &crate::permission::DurableNow,
+    ) -> Effect {
         if self.check_not_denied("read", resources).is_err() {
             Effect::Deny
-        } else if self.gate.allows("read", resources) {
+        } else if self.gate.allows_given("read", resources, durable) {
             Effect::Allow
         } else {
             Effect::Ask

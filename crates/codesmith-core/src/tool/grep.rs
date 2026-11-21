@@ -223,10 +223,12 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     // would ask about, which are named so the model can grep them by path.
     let skipped = std::cell::RefCell::new(Vec::new());
     let roots = ctx.roots();
+    // The project's saved approvals, read once for the whole search.
+    let durable = ctx.gate.durable_now();
     // `search` offers only regular files its walk found, never symlinks.
     let searchable = |p: &Path| {
         let t = ctx.resolve_walked(&roots, &target, p, false);
-        match ctx.read_effect(&t.resources) {
+        match ctx.read_effect_given(&t.resources, &durable) {
             Effect::Allow => true,
             Effect::Ask => {
                 skipped.borrow_mut().push(t.resource);
@@ -267,6 +269,40 @@ mod tests {
         env.write("src/b.ts", "const foo = 2;\n");
         env.write("bin.dat", "foo\0bar");
         env
+    }
+
+    /// A search reads the project's saved approvals once: files they
+    /// allow are searched, and an approval saved (or removed) between two
+    /// searches applies to the next one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saved_approvals_apply_to_the_next_search() {
+        use crate::permission::{base_rules, Effect, Fixed, Gate, Reply, Rule};
+        let mut env = setup();
+        env.write("notes/n.txt", "foo in a note\n");
+        let data = tempfile::tempdir().unwrap();
+        let book = std::sync::Arc::new(
+            crate::approvals::Book::open(&data.path().join("sessions.db")).unwrap(),
+        );
+        let mut rules = base_rules();
+        rules.push(Rule::new("read", "*.txt", Effect::Ask));
+        env.gate = Gate::new(rules, std::sync::Arc::new(Fixed(Reply::Once)));
+        env.gate.set_durable(book.clone(), "p".into());
+        let search = |env: &Env| run(&env.ctx(), &json!({"pattern": "foo"})).unwrap().content;
+        let first = search(&env);
+        assert!(
+            first.starts_with("Found 1 matches") && first.contains("needs approval: notes/n.txt"),
+            "{first}"
+        );
+        let saved = book.add("p", "read", &["*.txt".into()]).unwrap();
+        let out = search(&env);
+        assert!(
+            out.starts_with("Found 2 matches")
+                && out.contains("Line 1: foo in a note")
+                && !out.contains("needs approval"),
+            "{out}"
+        );
+        book.remove(&saved[0].id).unwrap();
+        assert_eq!(search(&env), first);
     }
 
     #[tokio::test(flavor = "multi_thread")]
