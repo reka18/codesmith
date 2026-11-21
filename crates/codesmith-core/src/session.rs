@@ -1559,7 +1559,12 @@ impl Session {
                 parameters,
             }
         });
-        let (hidden, inside) = self.placement();
+        let (mut hidden, inside) = self.placement();
+        // `webfetch` gives way to the `fetch` global only where there is
+        // an `execute` to call it from.
+        if execute.is_none() {
+            hidden.retain(|t| *t != Tool::Webfetch);
+        }
         self.tools
             .iter()
             .filter(|t| !hidden.contains(t) && !inside.contains(t))
@@ -3233,8 +3238,17 @@ impl Session {
             crate::codemode::MAX_TOOL_CALLS,
             crate::codemode::TIMEOUT,
             |tool, args| async move {
-                let row = progress.start(&tool, Some(&args));
-                let (text, failed) = if builtins.contains(&tool.as_str()) {
+                let row = if tool == crate::codemode::fetch::TOOL {
+                    progress.start("fetch", Some(&crate::codemode::fetch::display(&args)))
+                } else {
+                    progress.start(&tool, Some(&args))
+                };
+                let (text, failed) = if tool == crate::codemode::fetch::TOOL {
+                    match crate::codemode::fetch::run(&self.gate, &args).await {
+                        Ok(v) => (crate::codemode::fetch::result_text(&v), false),
+                        Err(e) => (e, true),
+                    }
+                } else if builtins.contains(&tool.as_str()) {
                     let n = calls.fetch_add(1, Ordering::SeqCst);
                     let (text, failed, before) =
                         self.run_builtin_in_code(id, n, &tool, &args).await;

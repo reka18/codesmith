@@ -54,7 +54,7 @@ Patterns:
 | `edit` | the file path | Covers both `write` and `edit`, and files that shell redirects write to. |
 | `glob`, `grep` | the pattern | `grep` with a `path` also checks `read` on it. |
 | `shell` | each command | See [Shell commands](#shell-commands). |
-| `webfetch` | the URL | Redirect targets are checked against `deny` rules too. |
+| `webfetch` | the URL | Redirect targets are checked against `deny` rules too. Code Mode's `fetch` asks the same. |
 | `openapi` | `<METHOD> <url>` | A call to an [OpenAPI tool](mcp.md#openapi-tools) in Code Mode. Credentials in the query are left out of the URL. |
 | `websearch` | the query | |
 | `subagent` | the subagent id | |

@@ -257,15 +257,19 @@ async fn oc_select_places_tools_per_model_under_full_codemode() {
         "{system}"
     );
     assert!(!system.contains("tools.patch("), "{system}");
-    // Any other model keeps them direct; only glob, grep and webfetch go.
+    // Any other model keeps them direct; only glob and grep go.
+    // Adapted: OpenCode hides webfetch too and offers an `execute` with an
+    // empty catalog (whose instructions say not to call it). CodeSmith
+    // offers no `execute` then, so webfetch stays: with no `execute` there
+    // is no `fetch` global to replace it.
     let (names, _) = session("deepseek-reasoner", full.clone())
         .await
         .offered()
         .await;
-    for name in ["edit", "read", "shell", "write"] {
+    for name in ["edit", "read", "shell", "write", "webfetch"] {
         assert!(names.contains(&name.to_string()), "{name}: {names:?}");
     }
-    for name in ["glob", "grep", "webfetch", "execute"] {
+    for name in ["glob", "grep", "execute"] {
         assert!(!names.contains(&name.to_string()), "{name}: {names:?}");
     }
     // Without `execute`, the search and fetch tools stay direct.
@@ -324,6 +328,35 @@ fn execute_call(code: &str) -> String {
     json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
         "function": {"name": "execute", "arguments": json!({"code": code}).to_string()}}]}, "finish_reason": "tool_calls"}]})
     .to_string()
+}
+
+/// Under `full_codemode` webfetch is hidden, and a program fetches pages
+/// with the `fetch` global instead, through the webfetch permission.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_fetches_with_the_fetch_global_under_full_codemode() {
+    let (base, seen) = page(r#"{"title": "from the page"}"#).await;
+    let rules = json!([
+        {"action": "webfetch", "resource": format!("{base}/denied"), "effect": "deny"}
+    ]);
+    let mut r = session(
+        "gpt-5",
+        json!({"full_codemode": true, "permissions": rules}),
+    )
+    .await;
+    let (names, _) = r.offered().await;
+    assert!(!names.contains(&"webfetch".to_string()), "{names:?}");
+    let code = format!(
+        "const r = await fetch('{base}/page'); const j = await r.json(); \
+         const d = await fetch('{base}/denied').then(() => 'fetched', e => e.message); \
+         return [r.status, j.title, d]"
+    );
+    r.log.lock().unwrap().0.push_back(execute_call(&code));
+    r.s.prompt("fetch it", &mut Quiet).await.unwrap();
+    let l = r.log.lock().unwrap();
+    let sent = l.1.last().unwrap()["messages"].to_string();
+    assert!(sent.contains("from the page"), "{sent}");
+    assert!(sent.contains("Permission denied"), "{sent}");
+    assert_eq!(*seen.lock().unwrap(), ["GET /page HTTP/1.1"]);
 }
 
 /// An OpenAPI spec in config becomes `tools.<name>.<operation>` in Code

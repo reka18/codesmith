@@ -24,6 +24,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod fetch;
 #[cfg(test)]
 pub(crate) mod fixture;
 pub mod openapi;
@@ -56,6 +57,8 @@ pub const TOOL: &str = "execute";
 /// parsed only when they are a JSON object or array.
 pub const JSON_RESULT: &str = "\u{1}codesmith-json\u{1}";
 pub const MAX_TOOL_CALLS: usize = 50;
+/// The `fetch` and `Response` globals (see [`fetch`]).
+const FETCH: &str = include_str!("codemode/fetch.js");
 pub const TIMEOUT: Duration = Duration::from_secs(180);
 const LOOP_LIMIT: u64 = 5_000_000;
 const RECURSION_LIMIT: usize = 400;
@@ -217,8 +220,9 @@ pub fn instructions(entries: &[Entry]) -> String {
 
 pub fn spec() -> (String, Value) {
     let description = [
-        "Run JavaScript in a confined Code Mode runtime to script tool calls and compose their results.",
-        "Write plain JavaScript in `code`: no code fence. Imports, direct filesystem or network access, and timers are unavailable; all external access goes through `tools`.",
+        "Run JavaScript in a confined Code Mode runtime to script tool calls and HTTP requests and compose their results.",
+        "Write plain JavaScript in `code`: no code fence.",
+        "`fetch` is available for HTTP requests. Imports, direct filesystem access, and timers are unavailable: there is no `setTimeout` or sleep. All other external access goes through `tools`.",
         "Inside `execute`, the only callable tools are those listed in the Code Mode catalog. Call them through `tools` using the exact paths shown, preserving bracket notation such as `tools.<namespace>[\"tool-name\"](input)`.",
         "Prefer an explicit `return`; if omitted, the final top-level expression becomes the result. `console.log` output is returned too.",
         "Await every call whose result matters. Tool results are parsed as JSON when they are JSON, otherwise they are strings. A failed tool call throws an Error.",
@@ -440,6 +444,9 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
         return fail(format!("prelude: {e}"), &count);
     }
     if let Err(e) = web::install(&mut ctx) {
+        return fail(format!("prelude: {e}"), &count);
+    }
+    if let Err(e) = ctx.eval(Source::from_bytes(FETCH.as_bytes())) {
         return fail(format!("prelude: {e}"), &count);
     }
     // Strict mode, as OpenCode's interpreter applies its checks (writes to
@@ -1082,6 +1089,10 @@ mod tests {
                                 .to_string(),
                         ),
                         "gh_get-issue" if input["n"] == 404 => Err("not found".into()),
+                        t if t == fetch::TOOL => Ok(fetch::result_text(&json!({
+                            "status": 200, "statusText": "OK", "url": input["url"], "redirected": false,
+                            "headers": [["content-type", "text/plain"]], "body": "aGk=",
+                        }))),
                         _ => Ok(format!("issue {}", input["n"])),
                     }
                 }
@@ -1173,7 +1184,6 @@ mod tests {
         for code in [
             "require('fs')",
             "process.exit(1)",
-            "fetch('http://x')",
             "setTimeout(() => 1, 10)",
         ] {
             let (out, seen) = run(code).await;
@@ -1183,6 +1193,21 @@ mod tests {
                 out.result
             );
         }
+        // `fetch` reaches the host as its own call, with the request encoded.
+        let (out, seen) = run("const r = await fetch('http://x/a#top', {method: 'post', body: 'hi'})\nreturn [r.status, r.ok, r.headers.get('content-type'), await r.text()]").await;
+        assert_eq!(out.result, Ok(json!([200, true, "text/plain", "hi"])));
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, fetch::TOOL);
+        assert_eq!(seen[0].1["method"], "POST");
+        assert_eq!(seen[0].1["url"], "http://x/a#top");
+        assert_eq!(seen[0].1["body"], "aGk=");
+        assert_eq!(
+            seen[0].1["headers"],
+            json!([["content-type", "text/plain;charset=UTF-8"]])
+        );
+        let (out, seen) = run("await fetch('http://x', {body: 'no'})").await;
+        assert!(out.result.unwrap_err().contains("GET/HEAD"));
+        assert!(seen.is_empty());
         let (out, _) = run("let x = (").await;
         assert!(out.result.unwrap_err().contains("SyntaxError"));
         let (out, _) = run("const r = await Promise.allSettled([tools.gh.issues({repo: 'a'}), tools.gh['get-issue']({n: 404})])\nr.map(x => x.status)").await;

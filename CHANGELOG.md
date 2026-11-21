@@ -23,6 +23,11 @@ All notable changes to CodeSmith are listed here. Versions follow
   `execute`. Each call asks the `openapi` permission ("always" covers the
   method on that origin); credentials come from config or `{env:}` and go
   only to `base_url`'s origin, and are dropped once a redirect leaves it.
+- **`fetch` in Code Mode:** programs have OpenCode's `fetch` global, with
+  the webfetch tool's checks (permission, redirect deny checks, no
+  credentials, a 5 MiB cap). Under `full_codemode`, which hides `webfetch`,
+  programs could not fetch at all before; a model offered no `execute`
+  now keeps `webfetch`.
 
 ## 0.1.0
 

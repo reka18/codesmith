@@ -120,8 +120,9 @@ tools, changed signatures), and the system prompt stays as it was; see
 [instructions that change](configuration.md#when-instructions-change).
 
 Programs run in [Boa](https://boajs.dev), a JavaScript engine written in
-Rust. They have no filesystem, network, process or timer access of their
-own: the only way out is the listed tools. Limits:
+Rust. They have no filesystem, process or timer access of their own: the
+only ways out are the listed tools and the [`fetch`](#fetch) global, which
+goes through the same checks as the `webfetch` tool. Limits:
 
 - at most 50 tool calls and three minutes per program, with bounded loops and
   recursion;
@@ -147,6 +148,34 @@ Set `"codemode": false` on a server, or at the top level of the config, to
 offer its tools as direct calls instead. That suits models that write
 JavaScript poorly. An agent whose rules deny `execute` gets every MCP tool
 as a direct call too.
+
+### `fetch`
+
+As in OpenCode, programs have a `fetch` global for HTTP requests, with the
+`webfetch` tool's checks:
+
+```js
+const res = await fetch("https://api.example.com/status", { headers: { accept: "application/json" } });
+return res.ok ? await res.json() : res.status;
+```
+
+- The URL, without its fragment, must be `http(s)://` with no user name or
+  password in it, and asks the `webfetch` permission (a rule for
+  `webfetch` covers `fetch` too). "Always" saves the URL's origin, not every
+  URL as OpenCode does.
+- Redirects are followed one hop at a time, at most 10; each target must
+  be `http(s)` without credentials, and is checked against `webfetch` deny
+  rules. A redirect to another origin drops the `Authorization`, `Cookie`
+  and `Proxy-Authorization` headers; a 303, or a 301 or 302 after a POST,
+  becomes a GET without a body.
+- CodeSmith adds no credentials and keeps no cookies. Its own User-Agent is
+  `codesmith`.
+- A response is read whole, at most 5 MiB, within 30 seconds; `fetch`
+  resolves to a `Response` with `status`, `ok`, `headers`, `url`,
+  `redirected`, `text()`, `json()`, `bytes()`, `arrayBuffer()` and a
+  one-chunk `body` reader. Bodies are strings, bytes, `URLSearchParams` or
+  `ArrayBuffer`s.
+- Each request counts as one of the program's 50 calls.
 
 ### OpenAPI tools
 
@@ -202,7 +231,9 @@ const invoice = await tools.billing.invoices.get({ invoiceId: "inv_42" });
 moves the built-in tools as well, per model, as OpenCode places them:
 
 - `glob`, `grep` and `webfetch` are hidden for every model: programs search
-  through `shell` and fetch with the `fetch` global.
+  through `shell` and fetch with the [`fetch`](#fetch) global. A model
+  offered no `execute` (no Code Mode tools at all) keeps `webfetch`, since
+  it has nowhere to call `fetch` from (OpenCode hides it anyway).
 - GPT and Claude models (by provider `anthropic`, or a model id or catalog
   family naming `gpt` or `claude`) call `read`, `write`, `edit`, `patch`,
   `shell` and `websearch` from inside `execute`, as `tools.read({...})` and

@@ -44,7 +44,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
 | MCP | 212 | 17 | 0 | 13 | 61 | 121 | 0 |
-| Code Mode | 67 | 28 | 0 | 1 | 19 | 19 | 0 |
+| Code Mode | 67 | 28 | 8 | 1 | 17 | 13 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1658** | **18** | **117** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1658** | **26** | **117** | **2398** | **1389** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -73,6 +73,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `tool-search.test.ts`: "${name} distinguishes a malformed filename glob from an empty search" (2 cases): the glob error read "Invalid glob in pattern error parsing glob ...". Pinned by `tests/oc_tools.rs::oc_search_distinguishes_a_malformed_glob_from_an_empty_search`.
 - `tool-search.test.ts`: "${name} reports a missing search path" (2 cases): glob said "not a directory", grep "Unable to grep for ...". Pinned by `tests/oc_tools.rs::oc_search_reports_a_missing_search_path`.
 - `tool-write.test.ts`: "preserves exactly one BOM when overwriting existing files" (1 case): overwriting a file dropped its byte order mark. Pinned by `tests/oc_tools.rs::oc_write_preserves_exactly_one_bom`.
+- `tool-execute.test.ts`: the `fetch` tests (8 cases): Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page. It now has one, with the webfetch tool's checks. Pinned by `src/codemode/fetch/tests.rs` (`oc_*`).
 
 ## Found bugs and differences
 
@@ -258,7 +259,7 @@ Missing features, by how many OpenCode test cases each would unlock (117 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1389 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -919,27 +920,21 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
   - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
   - `tool-mcp-events.test.ts`: fails for a server that sends no events
 
-### Code Mode (19)
+### Code Mode (13)
 
 - a nested call's stop does not replace the execute result (S) — `codemode::execute`
   - `codemode.test.ts`: never hands a stop to a nested call, so its error cannot replace the execute call's result
-- Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, fetch through webfetch rules, namespaces, nested call IDs (M) — `codemode::execute`
+- Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, interrupting a pending fetch, namespaces, nested call IDs (M) — `codemode::execute`
   - `tool-execute.test.ts`: execute describes invariant Code Mode behavior
   - `tool-execute.test.ts`: canonical execution distinguishes declared, model-only, and raw schema outputs
   - `tool-execute.test.ts`: declared outputs cannot bypass validation and raw outputs stay JSON-compatible
   - `tool-execute.test.ts`: foreign typed failures settle as Tool.Error at the untrusted boundary
-  - `tool-execute.test.ts`: execute rejects filesystem fetches
   - `tool-execute.test.ts`: a denied permission reaches the program and changes nothing
   - `tool-execute.test.ts`: a program that only logs shows just its logs
   - `tool-execute.test.ts`: a program that only warns shows just its warnings
   - `tool-execute.test.ts`: a null result with nothing else still shows null
   - `tool-execute.test.ts`: a returned value keeps its line before the logs
   - `tool-execute.test.ts`: interrupting execute aborts a pending request
-  - `tool-execute.test.ts`: fetch asks the webfetch permission for its URL as the execute call
-  - `tool-execute.test.ts`: a redirect to a URL denied for webfetch is never requested
-  - `tool-execute.test.ts`: fetch matches rules without the fragment and rejects credentials in the URL
-  - `tool-execute.test.ts`: a rejection with feedback reaches the program as the error message
-  - `tool-execute.test.ts`: a URL denied for webfetch is never requested and rejects like a failed fetch
   - `tool-execute.test.ts`: execute supports callable namespace tools
   - `tool-execute.test.ts`: each call in a program gets its own ID and is marked as nested in execute
 
@@ -2128,7 +2123,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P needs no demotion when fullCodeMode is off while still applying patch and websearch rules — `src/tool/apply_patch_tests.rs::oc_model_policy_needs_no_demotion_when_full_code_mode_is_off_while_still_applying_patch_rules`
 - P keeps non-strong and absent models direct when fullCodeMode is on, hiding websearch when unavailable — `tests/oc_tool_placement.rs::oc_model_tools_keeps_non_strong_and_absent_models_direct_when_full_code_mode_is_on_hiding_websearch_when_unavailable`
 - P keeps strong-model tools direct when full_codemode is off — `tests/oc_tool_placement.rs::oc_select_keeps_strong_model_tools_direct_when_full_codemode_is_off`
-- P places tools per model, propagates Code Mode to MCP instructions, and uses configured ref fallback — `tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode` (adapted: `full_codemode` in config; MCP instruction wording and an unavailable model's ref fallback are not covered)
+- P places tools per model, propagates Code Mode to MCP instructions, and uses configured ref fallback — `tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode` (adapted: `full_codemode` in config; MCP instruction wording and an unavailable model's ref fallback are not covered; webfetch stays direct for a model offered no `execute`, since then no `fetch` global replaces it)
 
 **`tool-registry.test.ts`**
 
@@ -2892,7 +2887,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (47 of 67)</summary>
+<details><summary>Code Mode (55 of 67)</summary>
 
 
 **`codemode.test.ts`**
@@ -2935,8 +2930,16 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`tool-execute.test.ts`**
 
-- D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access · without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 · whole-body methods share consumption and expose Bun's empty body · discards a redirect body before reading the destination — platform: Bun/Node globals and fetch body internals (CodeSmith's Code Mode runs in Boa without them)
+- D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access · without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
 - D executions share the prepared runtime of an inventory while keeping per-call state — effect-internal: shared prepared runtime
+- F execute rejects filesystem fetches — `src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches` (there was no `fetch` global)
+- F fetch asks the webfetch permission for its URL as the execute call — `src/codemode/fetch/tests.rs::oc_fetch_asks_the_webfetch_permission_for_its_url_as_the_execute_call` (adapted: "always" saves the origin, not `*`)
+- F a redirect to a URL denied for webfetch is never requested — `src/codemode/fetch/tests.rs::oc_a_redirect_to_a_url_denied_for_webfetch_is_never_requested`
+- F fetch matches rules without the fragment and rejects credentials in the URL — `src/codemode/fetch/tests.rs::oc_fetch_matches_rules_without_the_fragment_and_rejects_credentials_in_the_url`
+- F a rejection with feedback reaches the program as the error message — `src/codemode/fetch/tests.rs::oc_a_rejection_with_feedback_reaches_the_program_as_the_error_message`
+- F a URL denied for webfetch is never requested and rejects like a failed fetch — `src/codemode/fetch/tests.rs::oc_a_url_denied_for_webfetch_is_never_requested_and_rejects_like_a_failed_fetch`
+- F whole-body methods share consumption and expose Bun's empty body — `src/codemode/fetch/tests.rs::oc_whole_body_methods_share_consumption_and_expose_an_empty_body` (adapted: the server's content type)
+- F discards a redirect body before reading the destination — `src/codemode/fetch/tests.rs::oc_discards_a_redirect_body_before_reading_the_destination` (adapted: the body arrives whole)
 - P execute sends at most one progress update per 100 ms with the latest rows — `tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows` (adapted: the row throttle driven directly; the session sends the rows as `tool_progress`)
 - P interrupted execute sends its latest progress rows before it settles — `tests/oc_codemode_progress.rs::oc_execute_interrupted_sends_its_latest_progress_rows_before_it_settles` (adapted: a stopped turn drops the program; the rows go out from the drop)
 
