@@ -424,6 +424,20 @@ pub fn output_limit(window: Option<u64>, max_output: Option<u32>, input: Estimat
     requested.min((OUTPUT_TOKEN_MIN as i64).max(room) as u64)
 }
 
+/// Share of the window a turn's request leaves unused when its output limit
+/// is fitted to the room left: providers count a few tokens more than the
+/// estimate (chat template, tool schemas), and strict ones reject input
+/// plus output past the window (OpenCode's `WINDOW_HEADROOM`). Summaries
+/// size against their own reserve instead.
+pub const WINDOW_HEADROOM: f64 = 0.01;
+
+/// The output limit of a turn's request of `input` tokens: the model's
+/// limit fitted to the room left in the window less [`WINDOW_HEADROOM`].
+pub fn turn_output_limit(window: u64, max_output: u32, input: Estimate) -> u64 {
+    let usable = (window as f64 * (1.0 - WINDOW_HEADROOM)).floor() as u64;
+    output_limit(Some(usable), Some(max_output), input)
+}
+
 /// The output limit for a summary request of `size` that was prepared for
 /// `current`: lowered to the room the request leaves, but the summary still
 /// gets up to [`SUMMARY_OUTPUT_FLOOR`] of the room left without the margin.

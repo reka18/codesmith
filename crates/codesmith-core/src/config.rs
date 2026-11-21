@@ -1642,8 +1642,9 @@ impl Config {
                     .and_then(|c| c.model(&model_id))
                     .and_then(|m| m.context_window)
             });
-        // As in OpenCode, no reply asks for more than 256k tokens.
-        let max_output = m.limit.output.or(cm
+        // As in OpenCode, no reply asks for more than 256k tokens, however
+        // much the model (configured or in the catalog) allows.
+        let max_output = m.limit.output.map(|o| o.min(256_000)).or(cm
             .map(|cm| cm.limit.output.min(256_000) as u32)
             .filter(|o| *o > 0));
         let mut body = p.body.clone();

@@ -17,13 +17,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 124 | 9 | 0 | 193 | 67 | 0 |
+| Session runner | 393 | 151 | 12 | 2 | 204 | 21 | 3 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 75 | 0 | 0 | 179 | 54 | 0 |
+| Sessions and their store | 308 | 78 | 0 | 0 | 179 | 51 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -44,7 +44,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
-| Code Mode | 67 | 29 | 0 | 0 | 19 | 19 | 0 |
+| Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1729** | **18** | **40** | **2409** | **1392** | **0** |
+| **Total** | **5588** | **1759** | **29** | **42** | **2418** | **1337** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -62,14 +62,25 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
+- `session-runner.test.ts`: "uses the selected model family prompt when the agent system override is empty" (1 case): an agent's empty `system` replaced the model's prompt with nothing; it now keeps the default. Pinned by `tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_when_the_agent_override_is_empty`.
 - `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
 - `session-runner.test.ts`: "rejects compaction ${response} without retrying or committing its draft" (2 cases): the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history. Pinned by `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it`.
+- `session-runner.test.ts`: "fits the output limit to the prompt size" (1 case): a turn's request asked for the model's whole output limit however full the window was; it is now fitted to the room left, less 1% of the window. Pinned by `tests/oc_runner_backlog.rs::oc_session_fits_the_output_limit_to_the_prompt_size`.
+- `session-runner.test.ts`: "caps the output limit a large model advertises" (1 case): the 256k output cap applied to catalog limits only, not configured ones. Pinned by `tests/oc_runner_backlog.rs::oc_session_caps_the_output_limit_a_large_model_advertises`.
 - `session-runner.test.ts`: "publishes the original overflow when recovery summarization fails" (1 case): the failed summary's error was reported instead of the overflow. Pinned by `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails`.
 - `session-runner.test.ts`: "does not recover context overflow after durable assistant output" (1 case): an overflow after partial output was compacted and retried; it now fails the turn. Pinned by `tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output`.
 - `session-runner.test.ts`: "retries an unknown finish before output" (1 case): an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output`.
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
 - `shell.test.ts`: "builds command args per shell family" (1 case): POSIX families; Zsh now gets `+o nomatch`. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `shell.test.ts`: "passes an unmatched zsh glob through to the command" (1 case): an unmatched glob failed the whole Zsh line. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
+- `tool-execute.test.ts`: "execute rejects filesystem fetches" (1 case): Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page; it now has one, with the webfetch tool's checks. Pinned by `src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches`.
+- `tool-execute.test.ts`: "whole-body methods share consumption and expose Bun's empty body" (1 case): as above (adapted: the server's content type). Pinned by `src/codemode/fetch/tests.rs::oc_whole_body_methods_share_consumption_and_expose_an_empty_body`.
+- `tool-execute.test.ts`: "discards a redirect body before reading the destination" (1 case): as above (adapted: the body arrives whole). Pinned by `src/codemode/fetch/tests.rs::oc_discards_a_redirect_body_before_reading_the_destination`.
+- `tool-execute.test.ts`: "fetch asks the webfetch permission for its URL as the execute call" (1 case): as above (adapted: "always" saves the origin, not `*`). Pinned by `src/codemode/fetch/tests.rs::oc_fetch_asks_the_webfetch_permission_for_its_url_as_the_execute_call`.
+- `tool-execute.test.ts`: "a redirect to a URL denied for webfetch is never requested" (1 case): as above. Pinned by `src/codemode/fetch/tests.rs::oc_a_redirect_to_a_url_denied_for_webfetch_is_never_requested`.
+- `tool-execute.test.ts`: "fetch matches rules without the fragment and rejects credentials in the URL" (1 case): as above. Pinned by `src/codemode/fetch/tests.rs::oc_fetch_matches_rules_without_the_fragment_and_rejects_credentials_in_the_url`.
+- `tool-execute.test.ts`: "a rejection with feedback reaches the program as the error message" (1 case): as above. Pinned by `src/codemode/fetch/tests.rs::oc_a_rejection_with_feedback_reaches_the_program_as_the_error_message`.
+- `tool-execute.test.ts`: "a URL denied for webfetch is never requested and rejects like a failed fetch" (1 case): as above. Pinned by `src/codemode/fetch/tests.rs::oc_a_url_denied_for_webfetch_is_never_requested_and_rejects_like_a_failed_fetch`.
 - `tool-search.test.ts`: "${name} distinguishes a malformed filename glob from an empty search" (2 cases): the glob error read "Invalid glob in pattern error parsing glob ...". Pinned by `tests/oc_tools.rs::oc_search_distinguishes_a_malformed_glob_from_an_empty_search`.
 - `tool-search.test.ts`: "${name} reports a missing search path" (2 cases): glob said "not a directory", grep "Unable to grep for ...". Pinned by `tests/oc_tools.rs::oc_search_reports_a_missing_search_path`.
 - `tool-write.test.ts`: "preserves exactly one BOM when overwriting existing files" (1 case): overwriting a file dropped its byte order mark. Pinned by `tests/oc_tools.rs::oc_write_preserves_exactly_one_bom`.
@@ -78,12 +89,13 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 
 Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.
 
+- **Bug** (`tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted`), `session-runner.test.ts` "durably closes partial ${kind} when the provider stream is interrupted" (3): an interrupt (the turn's future dropped, as the TUI's Esc does) loses the text and reasoning streamed so far, which a failed stream keeps; OpenCode keeps both.
 - **Difference to decide**, `session-generate.test.ts` "runs generate hooks instead of context hooks" (1): one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook.
 - **Difference to decide**, `session-runner.test.ts` "records malformed provider-executed input as executed" (1): a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (40 cases in 5 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (42 cases in 6 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -92,6 +104,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
+| [Context-Tier Pricing](#context-tier-pricing) | 2 | pricing a step at the catalog tier its context size reaches (CodeSmith prices every step at the base price, and a model with only tiered prices at none) |
 
 ### Provider Plugins
 
@@ -154,37 +167,24 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
 
+### Context-Tier Pricing
+
+2 cases.
+
+- `session-runner.test.ts`: calculates step cost using the matching context tier
+- `session-runner.test.ts`: does not apply an ineligible tier without base pricing
+
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1337 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
-### Session runner (67)
+### Session runner (21)
 
-- accepted transport reads retry, accepted writes and rejected requests do not (S) — `retry::classify`
-  - `session-error.test.ts`: retries accepted transport reads but not accepted writes or rejected requests
-- running tool progress reaches the front end until the call settles (S) — `tool::Progress via Sink`
-  - `session-live-tool-metadata.test.ts`: adds progress to running tool parts until the call settles
-- step cost from the matching context tier; malformed cost fields ignored; no tier without base price (S) — `stats / usage cost`
-  - `session-runner.test.ts`: calculates step cost using the matching context tier
-  - `session-runner.test.ts`: ignores malformed model cost fields
-  - `session-runner.test.ts`: does not apply an ineligible tier without base pricing
-- the title is generated while the first step runs, once per session (M) — `tests/parity.rs`
-  - `session-runner.test.ts`: generates the title while the first model step is still running
-  - `session-runner.test.ts`: coalesces title generation while a request is active
-- an existing title is not replaced (S) — `tests/parity.rs`
-  - `session-runner.test.ts`: does not automatically replace an existing session title
 - the idle hook can admit input and runs once the session would go idle (M) — `plugin::Plugin::idle`
   - `session-runner.test.ts`: continues instead of going idle when a session idle hook admits input (resume: ${resume}) (2 cases)
   - `session-runner.test.ts`: runs the session idle hook only once the session would go idle
   - `session-runner.test.ts`: passes background work of the session and its descendants to the idle hook
   - `session-runner.test.ts`: runs the idle hook again when a background notice wakes the session
-- the model-family prompt is used when the agent has no (or an empty) prompt override (S) — `prompt::system`
-  - `session-runner.test.ts`: uses the selected model family prompt when the agent does not override it
-  - `session-runner.test.ts`: uses the selected model family prompt when the agent system override is empty
-- the selected/default agent's system prompt comes before durable context (S) — `prompt::system`
-  - `session-runner.test.ts`: includes the effective default agent system before durable context
-  - `session-runner.test.ts`: uses the configured default agent system for omitted-agent sessions
-  - `session-runner.test.ts`: uses an explicitly selected non-build agent system
 - skills listed for the newly selected agent after an agent switch (M) — `tests/runner_parity.rs`
   - `session-runner.test.ts`: updates selected-agent skill instructions after an agent switch
 - compaction stops after the one template reminder fails (S) — `tests/parity.rs`
@@ -196,63 +196,18 @@ Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area
   - `session-runner.test.ts`: records cancelled manual compaction without surfacing an internal failure
   - `session-runner.test.ts`: settles an admitted manual compaction when pre-start resolution throws
   - `session-runner.test.ts`: records manual compaction model resolution failures without calling the model
-- the advertised output limit alone does not trigger compaction (S) — `compaction::should_compact`
-  - `session-runner.test.ts`: does not compact immediately when the advertised output limit fills the context
 - a required automatic compaction that fails stops the turn (S) — `tests/parity.rs`
   - `session-runner.test.ts`: stops after required automatic compaction fails
 - overflow recovery without a configured limit, before an undersized limit, once only, from a raw overflow (M) — `tests/parity.rs`
   - `session-runner.test.ts`: compacts before requesting an undersized configured context limit
 - output limit fitted to the prompt / capped / summary keeps its room (S) — `compaction`
-  - `session-runner.test.ts`: fits the output limit to the prompt size
-  - `session-runner.test.ts`: caps the output limit a large model advertises
   - `session-runner.test.ts`: gives the summary its full output limit when the conversation overshot the threshold
   - `session-runner.test.ts`: keeps the summary its room on a small window
 - the original overflow is reported when recovery fails; interrupting recovery (M) — `tests/parity.rs`
   - `session-runner.test.ts`: interrupts overflow recovery while the summary provider is running
-- continue after settling a local tool; full stream consumed before tools settle (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: continues with reloaded history after durably settling one local tool call
-  - `session-runner.test.ts`: reloads a model switch before a tool-driven continuation step
-  - `session-runner.test.ts`: consumes the full provider stream before recording its boundary and settling local tools
-  - `session-runner.test.ts`: starts recorded local tools eagerly and awaits settlement before continuing
-- reasoning/text provider metadata replayed in the next request (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: restores durable reasoning provider metadata in the next request
-  - `session-runner.test.ts`: keeps one durable reasoning part when reasoning closes after text
-  - `session-runner.test.ts`: restores durable text provider metadata in the next request
-- repeated tool-call IDs settle against their own assistant message (M) — `runner history`
-  - `session-runner.test.ts`: settles repeated provider-local tool call IDs against their owning assistant messages
-- hosted tools / pending tool input left by a prior process are failed before continuing (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: durably fails hosted tools left running by a prior process before continuing inline
-  - `session-runner.test.ts`: durably fails pending tool input left by a prior process before continuing
-- tool defects and policy blocks returned to the model, which continues (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: returns tool-wrapped policy blocks to the model and continues
-- provider errors (before or after step start, raw stream failures) end the step as a visible failure (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: persists raw finish reasons and provider state
-  - `session-runner.test.ts`: projects raw provider stream failures as terminal assistant step failures
-- no new attempt after interruption during backoff (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: does not start another physical attempt after interruption during retry backoff
-- unknown finishes, incomplete streams and mid-stream failures retried cleanly from the prompt (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: retries cleanly after ${failure.name} during reasoning (2 cases)
-- retries share one retry allowance and one assistant identity (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: shares retry accounting and assistant identity across transparent retries and retries after output
-- malformed streamed tool input settles before the provider failure (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: settles malformed streamed tool input before the provider failure
-- a valid sibling call runs before malformed input is recovered (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: settles a valid sibling before recovering malformed tool input
-  - `session-runner.test.ts`: does not recover malformed input after sibling execution is interrupted
-- provider failure after malformed input or a local tool call is recorded, no automatic continuation (S) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: records a provider failure after malformed input
 - a tool defect / output persistence failure is kept alongside the provider failure (M) — `tests/runner_parity.rs`
   - `session-runner.test.ts`: preserves a tool defect before provider failure settlement
   - `session-runner.test.ts`: preserves the provider failure when tool output persistence also fails
-- partial text/reasoning/tool input closed when the stream is interrupted (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: durably closes partial ${kind} when the provider stream is interrupted (3 cases)
-- background shells run alongside the model and finish on their own (M) — `tool::shell::Jobs`
-  - `session-shell.test.ts`: runs shells concurrently with an active model and waits for each shell's own completion
-  - `session-shell.test.ts`: does not suppress a normal prompt wake while a shell is running or wake again when it completes
-- each finish reason settles with the requested tool choice (S) — `tests/runner_parity.rs`
-  - `session-step.test.ts`: settles ${fixture.finish} with tool choice ${fixture.toolChoice ?? "default"} (3 cases)
-- the endpoint-reported cost wins over the catalog price (S) — `stats`
-  - `session-step.test.ts`: records the cost the endpoint reports instead of the catalog price
 
 ### Subagents (1)
 
@@ -303,7 +258,7 @@ Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area
   - `snapshot.test.ts`: restores and diffs a selection too long for one command line
   - `snapshot.test.ts`: isolates snapshot indexes by canonical Git worktree
 
-### Sessions and their store (54)
+### Sessions and their store (51)
 
 - a missing title stays unset until generated or supplied (S) — `store::Store`
   - `session-create.test.ts`: persists a missing title until one is generated or supplied
@@ -383,10 +338,6 @@ Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area
   - `session-stats.test.ts`: aggregates activity and tool reliability without reading message payloads outside the range
 - renders the default system prompt (S) — `prompt::system`
   - `session-system-prompt.test.ts`: renders the default system prompt instructions
-- catalog price when the endpoint reports none; reported cost wins; reported zero kept (S) — `stats / usage cost`
-  - `session-usage.test.ts`: prices the tokens from the catalog when the endpoint reports no cost
-  - `session-usage.test.ts`: records the cost the endpoint reports instead of the catalog price
-  - `session-usage.test.ts`: keeps a reported zero cost, as for a request a subscription covered
 
 ### Tool: read (16)
 
@@ -815,27 +766,21 @@ Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area
   - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
   - `tool-mcp-events.test.ts`: fails for a server that sends no events
 
-### Code Mode (19)
+### Code Mode (13)
 
 - a nested call's stop does not replace the execute result (S) — `codemode::execute`
   - `codemode.test.ts`: never hands a stop to a nested call, so its error cannot replace the execute call's result
-- Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, fetch through webfetch rules, namespaces, nested call IDs (M) — `codemode::execute`
+- Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, interrupting a pending fetch, namespaces, nested call IDs (M) — `codemode::execute`
   - `tool-execute.test.ts`: execute describes invariant Code Mode behavior
   - `tool-execute.test.ts`: canonical execution distinguishes declared, model-only, and raw schema outputs
   - `tool-execute.test.ts`: declared outputs cannot bypass validation and raw outputs stay JSON-compatible
   - `tool-execute.test.ts`: foreign typed failures settle as Tool.Error at the untrusted boundary
-  - `tool-execute.test.ts`: execute rejects filesystem fetches
   - `tool-execute.test.ts`: a denied permission reaches the program and changes nothing
   - `tool-execute.test.ts`: a program that only logs shows just its logs
   - `tool-execute.test.ts`: a program that only warns shows just its warnings
   - `tool-execute.test.ts`: a null result with nothing else still shows null
   - `tool-execute.test.ts`: a returned value keeps its line before the logs
   - `tool-execute.test.ts`: interrupting execute aborts a pending request
-  - `tool-execute.test.ts`: fetch asks the webfetch permission for its URL as the execute call
-  - `tool-execute.test.ts`: a redirect to a URL denied for webfetch is never requested
-  - `tool-execute.test.ts`: fetch matches rules without the fragment and rejects credentials in the URL
-  - `tool-execute.test.ts`: a rejection with feedback reaches the program as the error message
-  - `tool-execute.test.ts`: a URL denied for webfetch is never requested and rejects like a failed fetch
   - `tool-execute.test.ts`: execute supports callable namespace tools
   - `tool-execute.test.ts`: each call in a program gets its own ID and is marked as nested in execute
 
@@ -1000,20 +945,20 @@ Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 686 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 561 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 340 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 566 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 344 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 94 |
+| Other (each says why) | 96 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (326 of 393)</summary>
+<details><summary>Session runner (370 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1046,6 +991,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P types the ChatGPT workspace usage limit — `src/providers/chatgpt.rs::oc_chatgpt_types_the_workspace_usage_limit`
 - D preserves the permission rejection type without exposing internal fields · preserves provider HTTP status without exposing runtime diagnostics · preserves provider response body without HTTP status · maps token-sharing failures while preserving HTTP and stream bodies · preserves unresolved provider endpoint errors · preserves provider configuration and initialization errors — client-server: which error fields OpenCode's API exposes
 - P retries rate limits, provider-internal, transport, and unrecognized failures — `src/retry.rs::oc_session_error_retries_rate_limits_provider_internal_transport_and_unrecognized_failures`
+- D retries accepted transport reads but not accepted writes or rejected requests — other: transport failures carry no delivery phase (accepted, rejected, ambiguous); any transport failure before output is retried
 - D honors provider retry header overrides — deliberate: retry.rs: retry-after / x-should-retry headers are not kept, so not honoured
 
 **`session-execution.test.ts`**
@@ -1061,12 +1007,20 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P regenerates a failed partial answer without mutating Session history — `tests/oc_generate.rs::oc_session_regenerates_a_failed_partial_answer_without_mutating_history`
 - P blocks unavailable initial instructions before generation — `tests/oc_generate.rs::oc_session_generate_blocks_unavailable_initial_instructions_before_generation`
 
+**`session-live-tool-metadata.test.ts`**
+
+- P adds progress to running tool parts until the call settles — `tests/oc_runner_backlog.rs::oc_session_reports_tool_progress_until_the_call_settles` (adapted: the front end's tool_output and tool_progress events)
+
 **`session-run-coordinator.test.ts`**
 
 - D joins concurrent resumes for one key · joins a wake-started execution without forcing a successor · starts execution when woken while idle · snapshots only active executions · cleans active executions after failure and defect · preserves settlement hook defects while releasing ownership · cleans active executions when its scope closes · coalesces wakes received during active execution · runs again when woken during the follow-up · does nothing when interrupted while idle · does not attach a late interrupt reason after terminal settlement starts · a settlement-window wake starts a fresh execution with its own scope · interrupts active execution and clears its pending wake · tells why an execution is being stopped while it cleans up · runs a wake registered during interruption cleanup · coalesces drain scopes with input taking precedence · does not carry a completed input scope into a steer drain · a cleanup-era wake starts a successor with its own scope · starts a resume registered during interruption cleanup · starts one follow-up when a wake races with failure · does not cancel execution when a joined waiter is interrupted · runs different keys concurrently · settles once per execution across coalesced drains · settles interrupted executions before waiters resolve · acknowledges interruption before cleanup settles · an interrupt during terminal settlement claims the recorded wake · trampolines synchronous self-waking execution — effect-internal: execution coordinator (wake/join/interrupt fibers)
 
 **`session-runner.test.ts`**
 
+- D ignores malformed model cost fields — other: prices are typed numbers once decoded; a catalog model with a malformed price is dropped at decoding, so no step is priced from it
+- P generates the title while the first model step is still running — `tests/oc_runner_backlog.rs::oc_session_requests_the_title_while_the_first_step_is_still_running` (adapted: the title request goes out while the step runs; the session takes the title when the turn ends)
+- P does not automatically replace an existing session title — `tests/oc_runner_backlog.rs::oc_session_does_not_replace_an_existing_title`
+- P coalesces title generation while a request is active — `tests/parity.rs::oc_title_generates_from_the_first_user_message_only_once` (adapted: one title request across prompts; the title settles before the first turn ends, so it cannot outlive it)
 - D retries title generation from the first prompt after title and execution failures — deliberate: title.rs: a failed title falls back to the first line instead of retrying
 - D advertises and executes a location registered tool — client-server: Location tool registry / registry reload
 - P executes a tool renamed by a session context hook — `tests/oc_context_hooks.rs::oc_executes_a_tool_renamed_by_a_session_context_hook` (adapted: `Plugin::context` renames a `ContextTool` by its `name`)
@@ -1087,6 +1041,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P keeps the system prompt stable across a committed revert — `tests/oc_instruction_state.rs::oc_session_keeps_the_system_prompt_across_an_undo` (adapted: undo of the newest turn)
 - P resyncs the instruction state when a committed revert removes an update — `tests/oc_instruction_state.rs::oc_session_resyncs_when_an_undo_removes_an_update` (adapted: two undos)
 - P hides an update a revert left behind once the source is removed — `tests/oc_instruction_state.rs::oc_session_hides_an_update_an_undo_left_behind_once_the_source_is_gone` (adapted: two undos)
+- P uses the selected model family prompt when the agent does not override it — `tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_without_an_agent_override`
+- F uses the selected model family prompt when the agent system override is empty — `tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_when_the_agent_override_is_empty` (an agent's empty `system` replaced the model's prompt with nothing; it now keeps the default)
+- P includes the effective default agent system before durable context — `tests/oc_runner_backlog.rs::oc_session_puts_the_default_agents_system_before_durable_context`
+- P uses the configured default agent system for omitted-agent sessions — `tests/oc_runner_backlog.rs::oc_session_uses_the_configured_default_agents_system`
+- P uses an explicitly selected non-build agent system — `tests/oc_runner_backlog.rs::oc_session_uses_an_explicitly_selected_agents_system`
 - P fails before the model request when the selected agent is unavailable — `tests/oc_runner.rs::oc_session_fails_before_the_model_request_when_the_agent_is_unavailable`
 - D keeps the sampled agent when selection changes during observation · keeps the sampled model when selection changes during model resolution — effect-internal: selection sampled once during observation
 - P admits removed context as a chronological System message — `tests/oc_instruction_state.rs::oc_session_admits_removed_context_as_a_system_message`
@@ -1113,22 +1072,34 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P automatically compacts into a completed summary and retained recent turn — `tests/parity.rs::oc_compaction_auto_compacts_past_the_buffered_ceiling`
 - P automatically persists native windows, retains earlier users, and waits for fresh usage — `tests/oc_native_compaction.rs::oc_native_automatically_persists_windows_retains_users_and_waits_for_fresh_usage` (adapted: one compaction, then none until measured)
 - P recovers an overflowing native window with another native compaction — `tests/oc_native_compaction.rs::oc_native_recovers_an_overflowing_native_window_with_another_native_compaction`
+- P does not compact immediately when the advertised output limit fills the context — `tests/oc_runner_backlog.rs::oc_session_does_not_compact_when_the_advertised_output_limit_fills_the_context`
 - P forces one compaction and retries after provider context overflow — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries`
 - D refreshes preparation after overflow compaction without promoting new input — deliberate: session.rs: no queued input to promote
 - P does not recover provider context overflow when automatic compaction is disabled — `tests/parity.rs::oc_compaction_overflow_is_left_to_the_user_when_auto_is_disabled`
 - P recovers from provider context overflow without a configured context limit — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
 - P persists a second context overflow after one recovery — `tests/oc_compaction.rs::oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn`
 - P recovers once from a raw context overflow failure — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
+- F fits the output limit to the prompt size — `tests/oc_runner_backlog.rs::oc_session_fits_the_output_limit_to_the_prompt_size` (a turn's request asked for the model's whole output limit however full the window was; it is now fitted to the room left, less 1% of the window)
+- F caps the output limit a large model advertises — `tests/oc_runner_backlog.rs::oc_session_caps_the_output_limit_a_large_model_advertises` (the 256k output cap applied to catalog limits only, not configured ones)
 - F publishes the original overflow when recovery summarization fails — `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails` (the failed summary's error was reported instead of the overflow)
 - P uses epoch values after compaction while a source is unavailable — `tests/oc_instruction_state.rs::oc_session_uses_the_epoch_values_after_compaction_while_unreadable`
 - D projects reasoning and tool events without executing or continuing tools — storage-model: projection-only replay of events
+- P continues with reloaded history after durably settling one local tool call — `tests/oc_runner_backlog.rs::oc_session_continues_with_reloaded_history_after_settling_a_local_tool`
+- D reloads a model switch before a tool-driven continuation step — deliberate: a model or agent switch takes effect at the next prompt; a running turn keeps its model
+- P consumes the full provider stream before recording its boundary and settling local tools — `tests/oc_runner_backlog.rs::oc_session_consumes_the_whole_stream_before_running_local_tools` (adapted: what follows the call in the stream arrives before the tool starts)
+- P restores durable reasoning provider metadata in the next request — `tests/oc_runner_backlog.rs::oc_session_restores_durable_reasoning_metadata_in_the_next_request` (adapted: signed Chat Completions reasoning details, after a reload)
+- P keeps one durable reasoning part when reasoning closes after text — `tests/oc_runner_backlog.rs::oc_session_keeps_one_reasoning_part_when_reasoning_closes_after_text`
+- P restores durable text provider metadata in the next request — `tests/oc_runner_backlog.rs::oc_session_restores_durable_text_metadata_in_the_next_request` (adapted: a Responses message item's phase, after a reload)
 - P replays durable provider-executed tool results inline in the next request — `tests/oc_hosted_session.rs::oc_hosted_replays_durable_provider_executed_tool_results_inline_in_the_next_request` (adapted: over Anthropic, whose calls and results come as separate blocks)
+- D starts recorded local tools eagerly and awaits settlement before continuing — deliberate: tools run after the model's stream ends, not while it streams (runner.rs), so a failed stream never leaves a half-run tool
+- P settles repeated provider-local tool call IDs against their owning assistant messages — `tests/oc_runner_backlog.rs::oc_session_settles_repeated_tool_call_ids_against_their_own_messages`
 - D joins concurrent resume calls into one active provider run — effect-internal: concurrent resume joining / run fan-out
 - D steers an active step with newly recorded prompts · promotes queued input after continuation ends · keeps queued input parked when a steer is cancelled during preparation · dispatches a queued move when a steer is cancelled during preparation · preserves durable queued input for a later wake after interruption · preserves durable steering input for a later resume after interruption · promotes queued inputs one at a time in FIFO order · stops a steer-scoped drain before queued input · a steer-scoped drain runs a queued manual compaction next in line · a steer-scoped drain leaves a compaction parked behind a queued prompt · promotes queued input after steering continuation ends · promotes steers before the next queued input · coalesces multiple active steering prompts into one continuation step · runs steering input accepted while the active step fails — deliberate: session.rs: no steers, queues or inbox
 - D settles abandoned compactions before continuing after a process crash · settles an abandoned compaction before delivering another manual compaction — deliberate: session.rs: no restart recovery of compactions
 - P durably fails local tools left running by a prior process before continuing — `tests/runner_parity.rs::oc_session_durably_fails_local_tools_left_running_by_a_prior_process_before_continuing`
 - D preserves a stale subagent child session in its model-visible failure — deliberate: session.rs: subagents run inside the tool call
 - D settles only unfinished tools after the latest compaction after a process crash — deliberate: session.rs: no restart recovery of compactions
+- D durably fails hosted tools left running by a prior process before continuing inline · durably fails pending tool input left by a prior process before continuing — storage-model: a step is recorded whole once its stream ends, so no process leaves a hosted tool running or tool input pending in the store
 - D promotes the first queued input when woken while idle · retries inbox input after prompt projection rolls back · does not strand a committed promotion when a post-commit listener defects — deliberate: session.rs: no steers, queues or inbox
 - P adds session correlation headers to model requests — `tests/oc_request_headers.rs::oc_adds_session_correlation_headers_to_model_requests` (adapted: `x-codesmith-*` names for OpenCode's `x-opencode-*`, and no project header (CodeSmith has no project ids))
 - P uses parent cache affinity for child model requests — `tests/oc_request_headers.rs::oc_uses_parent_cache_affinity_for_child_model_requests` (adapted: `x-codesmith-*` names)
@@ -1138,6 +1109,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P durably settles local tool failures before continuing — `tests/runner_parity.rs::oc_session_durably_settles_local_tool_failures_before_continuing`
 - P returns unexpected local tool defects to the model and continues — `tests/oc_runner.rs::oc_session_returns_tool_failures_to_the_model_and_continues` (adapted: a failing tool call stands in for a tool defect)
 - D preserves each parallel Promise hook failure — effect-internal: Promise hook failures
+- P returns tool-wrapped policy blocks to the model and continues — `tests/oc_runner_backlog.rs::oc_session_returns_policy_blocks_to_the_model_and_continues` (adapted: a configured policy blocks the call)
 - P interrupts runner continuation on a decline after settling an ordinary tool error — `tests/runner_parity.rs::oc_session_interrupts_runner_continuation_on_a_decline_after_settling_an_ordinary_tool_error`
 - P returns permission corrections to the model and continues — `tests/runner_parity.rs::oc_session_returns_permission_corrections_to_the_model_and_continues`
 - P returns configured permission denials to the model and continues — `tests/runner_parity.rs::oc_session_returns_configured_permission_denials_to_the_model_and_continues`
@@ -1147,10 +1119,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D resets the configured step allowance when steering input promotes — deliberate: session.rs: no steers, queues or inbox
 - P projects provider errors as terminal assistant step failures — `tests/oc_runner.rs::oc_session_projects_provider_errors_as_terminal_failures` (adapted: the prompt stays in history for the next turn)
 - P projects provider errors emitted before assistant step start — `tests/oc_runner.rs::oc_session_projects_provider_errors_as_terminal_failures` (adapted: the prompt stays in history for the next turn)
+- D persists raw finish reasons and provider state — storage-model: an assistant message keeps no raw finish reason or response-level provider state
 - P projects content-filter finishes as visible terminal failures — `tests/runner_parity.rs::oc_session_projects_content_filter_finishes_as_visible_terminal_failures`
 - P settles a local tool before one content-filter step failure — `tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure`
 - F does not recover context overflow after durable assistant output — `tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output` (an overflow after partial output was compacted and retried; it now fails the turn)
+- P projects raw provider stream failures as terminal assistant step failures — `tests/oc_runner_backlog.rs::oc_session_records_a_raw_stream_failure_and_keeps_the_prompt` (adapted: the failed step leaves no assistant message; the prompt stays, also after a reload)
 - P bounds jittered exponential backoff before output for ${failure.name} ×2 — `src/retry.rs::oc_session_retry_keeps_the_general_allowance_for_other_transient_failures` (backoff schedule bounds)
+- P does not start another physical attempt after interruption during retry backoff — `tests/oc_runner_backlog.rs::oc_session_makes_no_new_attempt_after_an_interrupt_during_backoff` (adapted: an interrupt drops the turn's future)
 - D immediately rebuilds once after explicit continuation rejection · bounds repeated continuation rejection to one immediate recovery — other: explicit continuation rejection is a Responses-WebSocket transport detail (tests/websocket_session.rs covers the transport)
 - P retries an incomplete stream before output — `tests/runner_parity.rs::oc_session_retries_an_incomplete_stream_before_output`
 - D marks only the retried attempt span with its attempt number ${failed.name} ×2 — effect-internal: tracing span attributes
@@ -1164,15 +1139,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D retries after a mid-stream rate limit honoring retry-after without partial text — deliberate: retry.rs: retry-after not honoured
 - P retries after an unrecognized mid-stream provider failure when no tool ran — `tests/oc_runner.rs::oc_session_retries_after_an_unrecognized_mid_stream_failure`
 - P drops interrupted reasoning and retries cleanly without continuation prompt — `tests/oc_runner.rs::oc_session_drops_interrupted_reasoning_and_retries_cleanly`
+- P retries cleanly after ${failure.name} during reasoning ×2 — `tests/oc_runner_backlog.rs::oc_session_retries_cleanly_after_a_failure_during_reasoning` (adapted: a failure frame and a dropped connection)
 - D retries an incomplete stream from a settled local tool · retries an incomplete stream from a settled local tool defect — deliberate: runner.rs: a failed stream is retried from the prompt, never resumed from a tool
+- P shares retry accounting and assistant identity across transparent retries and retries after output — `tests/oc_runner_backlog.rs::oc_session_shares_one_retry_allowance_across_both_kinds_of_retry` (adapted: a retry after output drops the partial step, so there is no assistant identity to share)
 - P stops incomplete stream retries once the retry allowance is spent — `tests/oc_runner.rs::oc_session_stops_incomplete_stream_retries_once_the_allowance_is_spent`
 - P stops once the retry allowance is spent — `tests/runner_parity.rs::oc_session_stops_once_the_retry_allowance_is_spent`
 - P retries a model call without consuming the logical agent step — `tests/runner_parity.rs::oc_session_retries_a_model_call_without_consuming_the_logical_agent_step`
 - P does not retry non-eligible provider failures — `tests/runner_parity.rs::oc_session_does_not_retry_non_eligible_provider_failures`
 - P records OpenCode Console's Go usage limit 429 as a typed step failure without retrying — `tests/runner_parity.rs::oc_session_records_a_usage_limit_429_without_retrying` (adapted: a provider usage limit, not OpenCode Console's)
+- D settles malformed streamed tool input before the provider failure — storage-model: an incomplete tool call is not kept when the stream fails (see tests/runner_parity.rs::oc_session_durably_closes_partial_tool_input_when_the_provider_stream_fails)
 - P settles unfinished tool input after an output limit — `tests/runner_parity.rs::oc_session_settles_unfinished_tool_input_after_an_output_limit`
 - P continues malformed local tool input with a bounded excerpt (${finish}) ×2 — `src/runner.rs::oc_session_invalid_tool_input_explains_and_quotes_the_input` (the excerpt text; tests/runner_parity.rs covers the continuation)
+- P settles a valid sibling before recovering malformed tool input — `tests/oc_runner_backlog.rs::oc_session_settles_a_valid_sibling_before_recovering_malformed_input`
+- D does not recover malformed input after sibling execution is interrupted — deliberate: tools run after the stream ends and an interrupt drops the turn, so there is no running sibling to interrupt beside a malformed call
 - D records malformed provider-executed input as executed — differs: a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record
+- P records a provider failure after malformed input — `tests/oc_runner_backlog.rs::oc_session_records_a_provider_failure_after_malformed_input`
 - P continues after repeated malformed tool input — `tests/runner_parity.rs::oc_session_continues_after_repeated_malformed_tool_input`
 - P does not continue malformed tool input past the agent step limit — `tests/runner_parity.rs::oc_session_does_not_continue_malformed_tool_input_past_the_agent_step_limit`
 - P does not continue automatically after a provider error follows a local tool call — `tests/oc_runner.rs::oc_session_does_not_continue_after_a_provider_error_follows_a_tool_call`
@@ -1183,11 +1164,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P durably fails a hosted tool left unresolved by a raw provider stream failure — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_by_a_provider_failure`
 - D rejects a second text start before the open fragment ends · projects sequential text fragments as separate content parts · broadcasts pending text while the provider stream is paused — storage-model: streamed part ordering in OpenCode's event model
 - P durably closes partial ${kind} when the provider stream fails ×3 — `tests/runner_parity.rs::oc_session_durably_closes_partial_text_when_the_provider_stream_fails` (text, reasoning and tool input cases)
+- X durably closes partial ${kind} when the provider stream is interrupted ×3 — an interrupt (the turn's future dropped, as the TUI's Esc does) loses the text and reasoning streamed so far, which a failed stream keeps; OpenCode keeps both
 - D rejects duplicate streamed text starts · transitions streamed raw tool input to parsed called input · rejects malformed streamed tool input ordering — storage-model: streamed part ordering in OpenCode's event model
 
 **`session-shell.test.ts`**
 
+- D runs shells concurrently with an active model and waits for each shell's own completion — deliberate: a user's `!command` (`Session::shell`) runs between turns, holding the session, not beside a running model
 - D routes shell completion to the moved Session while retaining output from its original Location — deliberate: session.rs: no session moves
+- D does not suppress a normal prompt wake while a shell is running or wake again when it completes — deliberate: a user's `!command` (`Session::shell`) runs between turns, holding the session, not beside a running model
 - P records output and admits one completion without waking the model after exit ${exit} ×2 — `tests/oc_session_shell.rs::oc_session_shell_records_output_and_one_completion_without_waking_the_model`
 - P records a ${outcome.status} shell and admits its completion without waking the model ×2 — `tests/oc_session_shell.rs::oc_session_shell_records_a_cancelled_or_timed_out_command`
 - D names the session, a truncated command and the exit on shell spans outside any turn — effect-internal: tracing spans
@@ -1203,6 +1187,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-step.test.ts`**
 
+- P settles ${fixture.finish} with tool choice ${fixture.toolChoice ?? "default"} — `tests/oc_runner_backlog.rs::oc_step_settles_a_tool_call_in_a_stopped_response_and_continues` (the stop case)
+- P settles ${fixture.finish} with tool choice ${fixture.toolChoice ?? "default"} — `tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure` (the content-filter case)
+- P settles ${fixture.finish} with tool choice ${fixture.toolChoice ?? "default"} — `tests/runner_parity.rs::oc_session_forces_a_text_response_on_an_agents_configured_final_step` (the tool-choice none case (the final step))
+- P records the cost the endpoint reports instead of the catalog price — `tests/oc_runner_backlog.rs::oc_session_records_the_cost_the_endpoint_reports_over_the_catalog_price`
 - D lets a tool the user stopped fail with its own error and interrupts the others at once${locationClosed ? ", after a Location reload" : ""} ×2 · classifies what a tool raises while the user's stop settles it: a decline · classifies what a tool raises while the user's stop settles it: a defect · settles every call as interrupted on ${reason === "shutdown" ? "a server shutdown" : "an unexplained interrupt"} without a handoff ×2 · leaves an interrupted step as a crash would while the server hands its daemon over — deliberate: runner.rs: tools run after the stream; stop/shutdown hand-off semantics of OpenCode's daemon
 
 **`session-tool-progress.test.ts`**
@@ -1401,7 +1389,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (254 of 308)</summary>
+<details><summary>Sessions and their store (257 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1594,6 +1582,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D lists by updated time and ID with exclusive two-item pages in either direction — storage-model: OpenCode's message paging and part-row hydration
 - P searches titles case-insensitively beyond ASCII and keeps LIKE wildcard semantics — `tests/oc_session_list.rs::oc_session_searches_titles_case_insensitively_beyond_ascii_and_keeps_like_wildcard_semantics`
 - D pages messages by durable sequence, not timestamp or ID, and scopes cursor lookup · hydrates and settles assistant messages across session_part rows and legacy inline content rows · lastAssistantAfter returns the newest completed error-free assistant after the boundary with parts hydrated · lastAssistantAfter pages past more than twenty incomplete or errored assistant messages · lastAssistantAfter returns undefined without a qualifying assistant after the boundary — storage-model: OpenCode's message paging and part-row hydration
+
+**`session-usage.test.ts`**
+
+- P prices the tokens from the catalog when the endpoint reports no cost — `tests/oc_runner_backlog.rs::oc_session_prices_the_tokens_when_the_endpoint_reports_no_cost`
+- P records the cost the endpoint reports instead of the catalog price — `tests/oc_runner_backlog.rs::oc_session_records_the_cost_the_endpoint_reports_over_the_catalog_price`
+- P keeps a reported zero cost, as for a request a subscription covered — `tests/oc_runner_backlog.rs::oc_session_keeps_a_reported_zero_cost`
 
 **`session-view.test.ts`**
 
@@ -2825,7 +2819,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (48 of 67)</summary>
+<details><summary>Code Mode (54 of 67)</summary>
 
 
 **`codemode.test.ts`**
@@ -2869,7 +2863,16 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`tool-execute.test.ts`**
 
 - P execute takes raw code as freeform text, and Code Mode calls freeform tools with a string — `tests/oc_freeform.rs::oc_tool_execute_takes_raw_code_as_freeform_text_and_code_mode_calls_freeform_tools_with_a_string` (adapted: results are Promise<unknown> (no output schemas); execute's own freeform format is pinned by the session test)
-- D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access · without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 · whole-body methods share consumption and expose Bun's empty body · discards a redirect body before reading the destination — platform: Bun/Node globals and fetch body internals (CodeSmith's Code Mode runs in Boa without them)
+- D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+- F execute rejects filesystem fetches — `src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches` (Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page; it now has one, with the webfetch tool's checks)
+- D without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+- F whole-body methods share consumption and expose Bun's empty body — `src/codemode/fetch/tests.rs::oc_whole_body_methods_share_consumption_and_expose_an_empty_body` (as above (adapted: the server's content type))
+- F discards a redirect body before reading the destination — `src/codemode/fetch/tests.rs::oc_discards_a_redirect_body_before_reading_the_destination` (as above (adapted: the body arrives whole))
+- F fetch asks the webfetch permission for its URL as the execute call — `src/codemode/fetch/tests.rs::oc_fetch_asks_the_webfetch_permission_for_its_url_as_the_execute_call` (as above (adapted: "always" saves the origin, not `*`))
+- F a redirect to a URL denied for webfetch is never requested — `src/codemode/fetch/tests.rs::oc_a_redirect_to_a_url_denied_for_webfetch_is_never_requested` (as above)
+- F fetch matches rules without the fragment and rejects credentials in the URL — `src/codemode/fetch/tests.rs::oc_fetch_matches_rules_without_the_fragment_and_rejects_credentials_in_the_url` (as above)
+- F a rejection with feedback reaches the program as the error message — `src/codemode/fetch/tests.rs::oc_a_rejection_with_feedback_reaches_the_program_as_the_error_message` (as above)
+- F a URL denied for webfetch is never requested and rejects like a failed fetch — `src/codemode/fetch/tests.rs::oc_a_url_denied_for_webfetch_is_never_requested_and_rejects_like_a_failed_fetch` (as above)
 - D executions share the prepared runtime of an inventory while keeping per-call state — effect-internal: shared prepared runtime
 - P execute sends at most one progress update per 100 ms with the latest rows — `tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows` (adapted: the row throttle driven directly; the session sends the rows as `tool_progress`)
 - P interrupted execute sends its latest progress rows before it settles — `tests/oc_codemode_progress.rs::oc_execute_interrupted_sends_its_latest_progress_rows_before_it_settles` (adapted: a stopped turn drops the program; the rows go out from the drop)

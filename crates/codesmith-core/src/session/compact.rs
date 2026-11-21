@@ -258,7 +258,7 @@ impl Session {
     /// The provider's count for the latest response plus an estimate of
     /// what came after it, while the model and agent that were measured
     /// still match.
-    fn measured_prompt(&self) -> Option<Estimate> {
+    pub(super) fn measured_prompt(&self) -> Option<Estimate> {
         let a = self.compact.anchor.as_ref()?;
         if a.index >= self.messages.len()
             || a.model != self.model_spec

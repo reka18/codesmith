@@ -4097,6 +4097,17 @@ impl Session {
         self.mcp.refresh().await;
         self.auto_route = self.route_auto().await;
         let (mut req, renamed) = self.request();
+        // As in OpenCode, the output limit leaves the prompt its room in the
+        // window, so a long conversation is not rejected for asking for
+        // more than is left.
+        if let (Some(window), Some(max)) = (self.model.context.filter(|w| *w > 0), req.max_tokens) {
+            let size = self.measured_prompt().unwrap_or(compaction::Estimate {
+                measured: 0,
+                estimated: compaction::estimate_request(&req),
+            });
+            let fitted = compaction::turn_output_limit(window, max, size);
+            req.max_tokens = Some(fitted.min(max as u64) as u32);
+        }
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
         self.turn.schemas = req
             .tools

@@ -328,7 +328,12 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
         if let Some(m) = &c.mode {
             agent.mode = m.clone();
         }
-        agent.system = c.system.clone().or(agent.system);
+        // An empty prompt keeps the default (the model's own, for build).
+        agent.system = c
+            .system
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or(agent.system);
         agent.model = c.model.clone().or(agent.model);
         agent.steps = c.steps.or(agent.steps);
         agent.hidden = c.hidden.unwrap_or(agent.hidden);

@@ -1,0 +1,68 @@
+# Ports from PARITY.md's porting backlog (tests/oc_*_backlog.rs), and the
+# backlog cases they showed to be by design or missing features.
+
+# Code Mode's fetch global (src/codemode/fetch/tests.rs), ported with the fetch commit.
+@tool-execute.test.ts
+75,176,180,188,195,217,227,252,286,311,403 :: design :: platform :: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+161 :: fixed :: src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches :: Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page; it now has one, with the webfetch tool's checks
+517 :: fixed :: src/codemode/fetch/tests.rs::oc_fetch_asks_the_webfetch_permission_for_its_url_as_the_execute_call :: as above (adapted: "always" saves the origin, not `*`)
+543 :: fixed :: src/codemode/fetch/tests.rs::oc_a_redirect_to_a_url_denied_for_webfetch_is_never_requested :: as above
+561 :: fixed :: src/codemode/fetch/tests.rs::oc_fetch_matches_rules_without_the_fragment_and_rejects_credentials_in_the_url :: as above
+581 :: fixed :: src/codemode/fetch/tests.rs::oc_a_rejection_with_feedback_reaches_the_program_as_the_error_message :: as above
+598 :: fixed :: src/codemode/fetch/tests.rs::oc_a_url_denied_for_webfetch_is_never_requested_and_rejects_like_a_failed_fetch :: as above
+442 :: fixed :: src/codemode/fetch/tests.rs::oc_whole_body_methods_share_consumption_and_expose_an_empty_body :: as above (adapted: the server's content type)
+473 :: fixed :: src/codemode/fetch/tests.rs::oc_discards_a_redirect_body_before_reading_the_destination :: as above (adapted: the body arrives whole)
+61,83,121,145,342,368,372,378,382,424,617,653 :: portable :: codemode::execute :: Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, interrupting a pending fetch, namespaces, nested call IDs (M)
+@tool-model-policy.test.ts
+248 :: ported :: tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode :: adapted: `full_codemode` in config; MCP instruction wording and an unavailable model's ref fallback are not covered; webfetch stays direct for a model offered no `execute`, since then no `fetch` global replaces it
+
+# --- Session runner (tests/oc_runner_backlog.rs) ---
+@session-error.test.ts
+353 :: design :: other :: transport failures carry no delivery phase (accepted, rejected, ambiguous); any transport failure before output is retried
+@session-live-tool-metadata.test.ts
+33 :: ported :: tests/oc_runner_backlog.rs::oc_session_reports_tool_progress_until_the_call_settles :: adapted: the front end's tool_output and tool_progress events
+@session-runner.test.ts
+159,209 :: feature :: Context-Tier Pricing :: pricing a step at the catalog tier its context size reaches (CodeSmith prices every step at the base price, and a model with only tiered prices at none)
+186 :: design :: other :: prices are typed numbers once decoded; a catalog model with a malformed price is dropped at decoding, so no step is priced from it
+1036 :: ported :: tests/oc_runner_backlog.rs::oc_session_requests_the_title_while_the_first_step_is_still_running :: adapted: the title request goes out while the step runs; the session takes the title when the turn ends
+1050 :: ported :: tests/oc_runner_backlog.rs::oc_session_does_not_replace_an_existing_title
+1062 :: ported :: tests/parity.rs::oc_title_generates_from_the_first_user_message_only_once :: adapted: one title request across prompts; the title settles before the first turn ends, so it cannot outlive it
+2099 :: ported :: tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_without_an_agent_override
+2113 :: fixed :: tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_when_the_agent_override_is_empty :: an agent's empty `system` replaced the model's prompt with nothing; it now keeps the default
+2134 :: ported :: tests/oc_runner_backlog.rs::oc_session_puts_the_default_agents_system_before_durable_context
+2154 :: ported :: tests/oc_runner_backlog.rs::oc_session_uses_the_configured_default_agents_system
+2180 :: ported :: tests/oc_runner_backlog.rs::oc_session_uses_an_explicitly_selected_agents_system
+3780 :: ported :: tests/oc_runner_backlog.rs::oc_session_does_not_compact_when_the_advertised_output_limit_fills_the_context
+4014 :: fixed :: tests/oc_runner_backlog.rs::oc_session_fits_the_output_limit_to_the_prompt_size :: a turn's request asked for the model's whole output limit however full the window was; it is now fitted to the room left, less 1% of the window
+4027 :: fixed :: tests/oc_runner_backlog.rs::oc_session_caps_the_output_limit_a_large_model_advertises :: the 256k output cap applied to catalog limits only, not configured ones
+4230 :: ported :: tests/oc_runner_backlog.rs::oc_session_continues_with_reloaded_history_after_settling_a_local_tool
+4261 :: design :: deliberate :: a model or agent switch takes effect at the next prompt; a running turn keeps its model
+4284 :: ported :: tests/oc_runner_backlog.rs::oc_session_consumes_the_whole_stream_before_running_local_tools :: adapted: what follows the call in the stream arrives before the tool starts
+4353 :: ported :: tests/oc_runner_backlog.rs::oc_session_restores_durable_reasoning_metadata_in_the_next_request :: adapted: signed Chat Completions reasoning details, after a reload
+4418 :: ported :: tests/oc_runner_backlog.rs::oc_session_keeps_one_reasoning_part_when_reasoning_closes_after_text
+4466 :: ported :: tests/oc_runner_backlog.rs::oc_session_restores_durable_text_metadata_in_the_next_request :: adapted: a Responses message item's phase, after a reload
+4558 :: design :: deliberate :: tools run after the model's stream ends, not while it streams (runner.rs), so a failed stream never leaves a half-run tool
+4606 :: ported :: tests/oc_runner_backlog.rs::oc_session_settles_repeated_tool_call_ids_against_their_own_messages
+5256,5304 :: design :: storage-model :: a step is recorded whole once its stream ends, so no process leaves a hosted tool running or tool input pending in the store
+5574 :: ported :: tests/oc_runner_backlog.rs::oc_session_returns_policy_blocks_to_the_model_and_continues :: adapted: a configured policy blocks the call
+6087 :: design :: storage-model :: an assistant message keeps no raw finish reason or response-level provider state
+6203 :: ported :: tests/oc_runner_backlog.rs::oc_session_records_a_raw_stream_failure_and_keeps_the_prompt :: adapted: the failed step leaves no assistant message; the prompt stays, also after a reload
+6251 :: ported :: tests/oc_runner_backlog.rs::oc_session_makes_no_new_attempt_after_an_interrupt_during_backoff :: adapted: an interrupt drops the turn's future
+6673 :: ported :: tests/oc_runner_backlog.rs::oc_session_retries_cleanly_after_a_failure_during_reasoning :: adapted: a failure frame and a dropped connection
+6771 :: ported :: tests/oc_runner_backlog.rs::oc_session_shares_one_retry_allowance_across_both_kinds_of_retry :: adapted: a retry after output drops the partial step, so there is no assistant identity to share
+6970 :: design :: storage-model :: an incomplete tool call is not kept when the stream fails (see tests/runner_parity.rs::oc_session_durably_closes_partial_tool_input_when_the_provider_stream_fails)
+7156 :: ported :: tests/oc_runner_backlog.rs::oc_session_settles_a_valid_sibling_before_recovering_malformed_input
+7189 :: design :: deliberate :: tools run after the stream ends and an interrupt drops the turn, so there is no running sibling to interrupt beside a malformed call
+7248 :: ported :: tests/oc_runner_backlog.rs::oc_session_records_a_provider_failure_after_malformed_input
+7605 :: bug :: tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted :: an interrupt (the turn's future dropped, as the TUI's Esc does) loses the text and reasoning streamed so far, which a failed stream keeps; OpenCode keeps both
+@session-shell.test.ts
+127,216 :: design :: deliberate :: a user's `!command` (`Session::shell`) runs between turns, holding the session, not beside a running model
+@session-step.test.ts
+43:1 :: ported :: tests/oc_runner_backlog.rs::oc_step_settles_a_tool_call_in_a_stopped_response_and_continues :: the stop case
+43:1 :: ported :: tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure :: the content-filter case
+43:1 :: ported :: tests/runner_parity.rs::oc_session_forces_a_text_response_on_an_agents_configured_final_step :: the tool-choice none case (the final step)
+164 :: ported :: tests/oc_runner_backlog.rs::oc_session_records_the_cost_the_endpoint_reports_over_the_catalog_price
+@session-usage.test.ts
+15 :: ported :: tests/oc_runner_backlog.rs::oc_session_prices_the_tokens_when_the_endpoint_reports_no_cost
+19 :: ported :: tests/oc_runner_backlog.rs::oc_session_records_the_cost_the_endpoint_reports_over_the_catalog_price
+25 :: ported :: tests/oc_runner_backlog.rs::oc_session_keeps_a_reported_zero_cost
