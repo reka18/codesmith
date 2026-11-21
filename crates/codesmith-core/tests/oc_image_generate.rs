@@ -63,27 +63,51 @@ fn painter(id: &str, base: &str, input: &[&str]) -> Value {
 }
 
 struct Setup {
-    dir: tempfile::TempDir,
+    /// `None` only once dropped (see `Drop`).
+    dir: Option<tempfile::TempDir>,
     gate: Gate,
     rec: Arc<Recorder>,
     jobs: Jobs,
     config: Config,
+    /// Notices of finished jobs not returned yet: `take_finished` hands
+    /// over every finished job at once.
+    pending: std::sync::Mutex<std::collections::VecDeque<String>>,
+}
+
+/// Image jobs run on in the background after a test's last check, and one
+/// may still be writing the session store in the temporary folder. Deleting
+/// the folder under SQLite's mapped WAL index crashes the test process
+/// (SIGBUS), so wait for running jobs first, and keep the folder if one is
+/// still going.
+impl Drop for Setup {
+    fn drop(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while self.jobs.running() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if self.jobs.running() > 0 {
+            if let Some(dir) = self.dir.take() {
+                let _ = dir.keep();
+            }
+        }
+    }
 }
 
 impl Setup {
     fn new(config: Config) -> Setup {
         let rec = Arc::new(Recorder::default());
         Setup {
-            dir: tempfile::tempdir().unwrap(),
+            dir: Some(tempfile::tempdir().unwrap()),
             gate: Gate::new(vec![], rec.clone()),
             rec,
             jobs: Jobs::default(),
             config,
+            pending: Default::default(),
         }
     }
 
     fn root(&self) -> std::path::PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        self.dir.as_ref().unwrap().path().canonicalize().unwrap()
     }
 
     fn ctx(&self) -> Ctx<'_> {
@@ -124,13 +148,26 @@ impl Setup {
 
     /// The notice of the next job to finish.
     async fn notice(&self) -> String {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            if let Some(j) = self.jobs.take_finished().into_iter().next() {
-                return j.notice.unwrap();
+            {
+                let mut pending = self.pending.lock().unwrap();
+                pending.extend(
+                    self.jobs
+                        .take_finished()
+                        .into_iter()
+                        .map(|j| j.notice.unwrap()),
+                );
+                if let Some(n) = pending.pop_front() {
+                    return n;
+                }
             }
-            tokio::time::timeout(std::time::Duration::from_secs(10), self.jobs.wait_any())
+            // `wait_any` returns at once when nothing runs, so bound the loop
+            // as a whole rather than each wait.
+            tokio::time::timeout_at(deadline, self.jobs.wait_any())
                 .await
                 .expect("a job finishes");
+            tokio::task::yield_now().await;
         }
     }
 }
