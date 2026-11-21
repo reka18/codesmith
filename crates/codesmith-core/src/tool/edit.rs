@@ -5,7 +5,9 @@
 
 use super::{opt_bool, str_arg, Ctx, Outcome, Output};
 use crate::permission::Request;
+use regex::Regex;
 use serde_json::{json, Value};
+use std::sync::LazyLock;
 
 pub fn spec() -> (String, Value) {
     (
@@ -215,9 +217,13 @@ fn line_key(l: &str) -> String {
     norm_str(l.trim_end())
 }
 
+// Compiled once: every edit's replacement is joined with them.
+static LINE_BREAK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\r?\n").unwrap());
+static WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+
 /// Join the replacement's lines with endings taken from the matched region.
 fn with_region_endings(region: &str, replacement: &str, fallback: &str) -> String {
-    let re = regex::Regex::new(r"\r?\n").unwrap();
+    let re = &*LINE_BREAK;
     let before: Vec<String> = re.split(region).map(line_key).collect();
     let endings: Vec<&str> = re.find_iter(region).map(|m| m.as_str()).collect();
     let after: Vec<&str> = replacement.split('\n').collect();
@@ -342,7 +348,7 @@ pub fn miss_hint(source: &str, old: &str, new: &str) -> Option<String> {
             "newString is already in the file, so this edit may already be applied.".into(),
         );
     }
-    let ws = regex::Regex::new(r"\s+").unwrap();
+    let ws = &*WHITESPACE;
     let key = |l: &str| ws.replace_all(&norm_str(l), " ").trim().to_string();
     let distinct = |l: &str| l.chars().any(char::is_alphanumeric);
     let lines: Vec<&str> = view.split('\n').collect();
@@ -527,6 +533,72 @@ mod tests {
     fn ok(src: &str, old: &str, new: &str) -> String {
         apply_edit(src, old, new, false).unwrap().0
     }
+
+    /// FNV-1a, to pin many outputs in one number.
+    fn fnv(h: &mut u64, s: &str) {
+        for b in s.bytes().chain([0xff]) {
+            *h ^= b as u64;
+            *h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    /// On 5,000 seeded random files with mixed line endings, edits (single
+    /// and replace-all, exact, typographic and trailing-space matches)
+    /// give exactly what they gave before the line-break and whitespace
+    /// regexes were compiled once, misses' hints included.
+    #[test]
+    fn random_edits_apply_as_before() {
+        const LINES: [&str; 10] = [
+            "fn a() {",
+            "    x = 1;",
+            "}",
+            "",
+            "  \u{201c}q\u{201d}  ",
+            "let y = 2;   ",
+            "\t",
+            "x = 1;",
+            "// note",
+            "fn a() {}",
+        ];
+        const ENDS: [&str; 3] = ["\n", "\r\n", "\n"];
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut applied = 0;
+        for _ in 0..5000 {
+            let mut src = String::new();
+            for _ in 0..1 + rnd(12) {
+                src.push_str(LINES[rnd(LINES.len())]);
+                src.push_str(ENDS[rnd(3)]);
+            }
+            let pick = |rnd: &mut dyn FnMut(usize) -> usize, n: usize| -> String {
+                let lines: Vec<&str> = (0..n).map(|_| LINES[rnd(LINES.len())]).collect();
+                lines.join(["\n", "\r\n"][rnd(2)])
+            };
+            let n = 1 + rnd(3);
+            let old = pick(&mut rnd, n);
+            let n = 1 + rnd(3);
+            let new = pick(&mut rnd, n);
+            let all = rnd(3) == 0;
+            match apply_edit(&src, &old, &new, all) {
+                Ok((out, n)) => {
+                    applied += 1;
+                    fnv(&mut h, &format!("{n}:{out}"));
+                }
+                Err(e) => fnv(&mut h, &format!("{e:?}")),
+            }
+            fnv(&mut h, &miss_hint(&src, &old, &new).unwrap_or_default());
+        }
+        assert!(applied > 500, "{applied}");
+        assert_eq!(h, PINNED_EDITS, "{h:#x}");
+    }
+
+    const PINNED_EDITS: u64 = 0xe111_5fd1_47a8_279e;
 
     #[test]
     fn exact_unique_match() {

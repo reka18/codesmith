@@ -13,6 +13,9 @@
 //! (all numeric ones are), and `<![CDATA[`/processing instructions are
 //! skipped like comments.
 
+use regex::Regex;
+use std::sync::LazyLock;
+
 pub const MAX_MARKDOWN_BYTES: usize = 5 * 1024 * 1024;
 const CONTENT_BYTES: usize = MAX_MARKDOWN_BYTES - 64 * 1024;
 const MAX_DEPTH: usize = 10_000;
@@ -1007,9 +1010,9 @@ impl Converter {
         let output = std::mem::take(&mut self.output);
         let mut normalized = String::new();
         let mut pending = String::new();
-        let spaces = regex::Regex::new(r"[ \t]+\n").unwrap();
-        let blanks = regex::Regex::new(r"\n{3,}").unwrap();
-        let quote_re = regex::Regex::new(r"^(?:> )+").unwrap();
+        let spaces = &*TRAILING_SPACES;
+        let blanks = &*BLANK_RUNS;
+        let quote_re = &*QUOTE_MARKS;
         let flush = |pending: &mut String, normalized: &mut String| {
             if pending.is_empty() {
                 return;
@@ -1113,8 +1116,8 @@ impl Handler for Converter {
                 }
                 if name == "code" {
                     if let Some(class) = attr(attrs, "class") {
-                        let re = regex::Regex::new(r"(?:language-|lang-)(\S+)").unwrap();
-                        self.codes[c].language = re.captures(class).map(|m| m[1].to_string());
+                        self.codes[c].language =
+                            CODE_LANGUAGE.captures(class).map(|m| m[1].to_string());
                     }
                 }
                 return;
@@ -1702,6 +1705,14 @@ pub fn to_text(html: &str) -> String {
         .join("\n")
 }
 
+// Compiled once: a page converts many code blocks, and every conversion
+// normalizes its output.
+static TRAILING_SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t]+\n").unwrap());
+static BLANK_RUNS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
+static QUOTE_MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:> )+").unwrap());
+static CODE_LANGUAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:language-|lang-)(\S+)").unwrap());
+
 #[cfg(test)]
 mod tests {
     // ---------------------------------------------------------------------
@@ -1718,6 +1729,67 @@ mod tests {
     fn md(html: &str) -> String {
         to_markdown(html)
     }
+
+    /// FNV-1a, to pin many outputs in one number.
+    fn fnv(h: &mut u64, s: &str) {
+        for b in s.bytes().chain([0xff]) {
+            *h ^= b as u64;
+            *h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    /// The markdown and text of 3,000 seeded random pages (code blocks
+    /// with and without a language class, quotes nested to different
+    /// depths, trailing spaces, runs of blank lines) are exactly what they
+    /// were before the converter's regexes were compiled once.
+    #[test]
+    fn random_pages_convert_as_before() {
+        const PIECES: [&str; 24] = [
+            "<p>",
+            "</p>",
+            "<pre><code class=\"language-rust\">",
+            "<pre><code class='lang-py x'>",
+            "<pre><code>",
+            "<code class=\"language-\">",
+            "</code></pre>",
+            "</code>",
+            "<blockquote>",
+            "</blockquote>",
+            "<br>",
+            "<ul><li>",
+            "</li></ul>",
+            "text",
+            "a  ",
+            " \t",
+            "  \n",
+            "\n\n\n\n",
+            "&gt; ",
+            "&amp;",
+            "<h2>",
+            "</h2>",
+            "<b>b</b>",
+            "x\ny",
+        ];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for _ in 0..3000 {
+            let mut page = String::from("<html><body>");
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            for _ in 0..(5 + seed % 40) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                page.push_str(PIECES[(seed % PIECES.len() as u64) as usize]);
+            }
+            fnv(&mut h, &to_markdown(&page));
+            fnv(&mut h, &to_text(&page));
+        }
+        assert_eq!(h, PINNED_PAGES, "{h:#x}");
+    }
+
+    const PINNED_PAGES: u64 = 0xaa6a_47a8_e2c6_d669;
 
     #[test]
     fn oc_webfetch_ports_text_and_markdown_without_active_content() {
