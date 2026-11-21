@@ -2081,14 +2081,18 @@ impl Runner {
         };
         let run = p.run;
         let watch = matches!(a.trigger, Trigger::Event { .. });
+        // An event's run inside its watch's loop leaves the pause to the
+        // loop, which pauses once it has stopped: pausing here as well
+        // would let the loop's pause land after a resume that came in
+        // between, pausing the watch again. A resumed run has no loop.
+        let in_loop = watch && !resumed;
         let Err(e) = self.drive(&db, a, p, event, resumed).await else {
             return Ok(());
         };
         let message = format!("{e:#}");
         let fatal = |db: &Store, reason: &str| {
             let _ = fail_run(db, &a.id, run, reason, None);
-            // A watch pauses through its loop too; a resumed run has none.
-            if watch {
+            if watch && !in_loop {
                 let _ = pause_with(db, &a.id, reason);
             }
             Err(RunError {
@@ -2124,9 +2128,11 @@ impl Runner {
         }
         if e.downcast_ref::<CreatorGone>().is_some() {
             let _ = fail_run(&db, &a.id, run, &message, None);
-            let _ = set_status(&db, &a.id, "paused");
-            if watch {
-                let _ = pause_with(&db, &a.id, &message);
+            if !in_loop {
+                let _ = set_status(&db, &a.id, "paused");
+                if watch {
+                    let _ = pause_with(&db, &a.id, &message);
+                }
             }
             return Err(RunError {
                 message,
@@ -2135,7 +2141,9 @@ impl Runner {
         }
         if let Some(Invalid(reason)) = e.downcast_ref::<Invalid>() {
             let _ = fail_run(&db, &a.id, run, reason, None);
-            let _ = pause_with(&db, &a.id, reason);
+            if !in_loop {
+                let _ = pause_with(&db, &a.id, reason);
+            }
             return Err(RunError {
                 message: reason.clone(),
                 fatal: true,

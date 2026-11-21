@@ -366,6 +366,50 @@ async fn a_refused_event_handoff_keeps_the_cursor_and_a_replayed_event_runs_once
     runner.tick().await.unwrap();
 }
 
+// Regression: a watch whose run failed was paused twice, by the run and
+// again by its loop once the stream had closed, so a resume that came in
+// between was undone (under load, the replay test then waited out its
+// deadline). The loop alone pauses it now, once it has stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_right_after_a_watch_pauses_is_not_undone() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let id = watch_plan(
+        &w,
+        Some(&creator),
+        json!([{"events": [["e1", "c1", "one"]]}, {"events": []}]),
+        Action::Prompt {
+            prompt: "triage".into(),
+            to: Target::Session {
+                session: creator.clone(),
+            },
+        },
+    );
+    refuse_writes(&w, &creator);
+    let runner = w.runner();
+    runner.tick().await.unwrap();
+    // Resume the moment it pauses, with no tick in between to stop the
+    // watch, then let the watch finish.
+    let end = Instant::now() + DEADLINE;
+    while w.get(&id).status != "paused" {
+        assert!(Instant::now() < end, "timed out waiting for the pause");
+        tokio::task::yield_now().await;
+    }
+    w.sql("DROP TRIGGER refuse", []);
+    au::set_status(&w.db, &id, "active").unwrap();
+    until("the first watch to stop", || runner.watching() == 0).await;
+    assert_eq!(w.get(&id).status, "active", "the resume stands");
+    tick_until(&runner, "the watch to reopen", || {
+        stream_cursors(&w).len() == 2
+    })
+    .await;
+    assert_eq!(w.get(&id).status, "active");
+    au::remove(&w.db, &id).unwrap();
+    runner.tick().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resumed_turn_still_rejects_asks() {
     // Unattended runs deny shell; this opts back in to asking, so the
@@ -586,7 +630,7 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
         match (second, rng.next() % 3) {
             (Some(s), 0) => {
                 first.kill(&w.db).await;
-                tokio::time::timeout(Duration::from_secs(60), s.join(&w.db))
+                tokio::time::timeout(DEADLINE, s.join(&w.db))
                     .await
                     .expect("the surviving runner finishes");
             }
@@ -596,7 +640,7 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
             }
             (Some(s), _) => {
                 s.kill(&w.db).await;
-                tokio::time::timeout(Duration::from_secs(60), first.join(&w.db))
+                tokio::time::timeout(DEADLINE, first.join(&w.db))
                     .await
                     .expect("the surviving runner finishes");
             }

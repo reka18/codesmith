@@ -13,8 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// How long any wait in these tests may take, over the whole wait.
-pub const DEADLINE: Duration = Duration::from_secs(90);
+/// How long any wait in these tests may take, over the whole wait: far
+/// more than any of them needs (well under a second alone), so a loaded
+/// machine running the whole suite does not fail them. The one place to
+/// change it.
+pub const DEADLINE: Duration = Duration::from_secs(180);
 
 /// A model on a local port. Its answer depends on the last message: `call
 /// <tool> <json>` calls the tool, `use shell` calls the shell, `fail this

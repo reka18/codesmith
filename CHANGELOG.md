@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Fixed:** an event watch whose run failed was paused twice, by the run
+  and again by the watch once its stream closed, so resuming it in between
+  could be undone. It is paused once, after the watch has stopped.
 - **Automation expiry:** `codesmith automation add --expires "in 8 hours"`
   (and the tool's `expires`) stops an automation at a time, as in OpenCode.
   No slot after it runs, including one that only comes up after downtime,
