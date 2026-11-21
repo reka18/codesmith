@@ -28,6 +28,7 @@ mod diff_view;
 mod dirs;
 mod editor;
 mod external;
+mod fit;
 mod form;
 mod group;
 mod history;

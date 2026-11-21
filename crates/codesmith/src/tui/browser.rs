@@ -276,28 +276,6 @@ pub fn abbreviate(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
-/// `s` cut from the left to `width` columns (`…/end`).
-fn truncate_left(s: &str, width: usize) -> String {
-    if s.width() <= width {
-        return s.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut out: Vec<char> = Vec::new();
-    let mut w = 1;
-    for c in s.chars().rev() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-        if w + cw > width {
-            break;
-        }
-        w += cw;
-        out.push(c);
-    }
-    out.push('…');
-    out.into_iter().rev().collect()
-}
-
 /// `s` cut to `width` columns (`start…`).
 fn truncate(s: &str, width: usize) -> String {
     if s.width() <= width {
@@ -692,7 +670,7 @@ impl Browser {
                     search: format!("{path} {title}"),
                     footer: format!(
                         "{}{}",
-                        truncate_left(&path, room),
+                        super::fit::truncate_file_path(&path, room),
                         if git { " →" } else { "" }
                     ),
                     gutter: if root == self.current {
@@ -753,7 +731,7 @@ impl Browser {
                     Row {
                         section: if here { "Current" } else { "Other" },
                         search: title.clone(),
-                        title: truncate_left(&title, width.saturating_sub(4)),
+                        title: super::fit::truncate_file_path(&title, width.saturating_sub(4)),
                         footer: String::new(),
                         gutter: Gutter::None,
                         target: Target::Directory(d),
@@ -779,7 +757,7 @@ impl Browser {
                 Row {
                     section: "",
                     search: format!("{title} {path}"),
-                    footer: truncate_left(&path, width.saturating_sub(widest + 6)),
+                    footer: super::fit::truncate_file_path(&path, width.saturating_sub(widest + 6)),
                     gutter: if self.ctx.cwd == d {
                         Gutter::Current
                     } else {
@@ -1172,7 +1150,7 @@ impl Browser {
                 fg(p.warning).add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(Span::styled(
-                truncate_left(
+                super::fit::truncate_file_path(
                     &clean(&abbreviate(dir, self.ctx.home.as_deref())),
                     width.saturating_sub(1),
                 ),

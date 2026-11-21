@@ -1681,7 +1681,13 @@ fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
             } else {
                 fg(p.dialog_text)
             };
-            let label = format!("{sigil}{:<lw$}", it.label);
+            // Paths longer than the column keep both ends, as OpenCode's
+            // directory completions do (`Locale.truncateMiddle`).
+            let label = match pop.kind {
+                Kind::Slash => it.label.clone(),
+                Kind::File | Kind::Dir => super::fit::truncate_middle(&it.label, lw - 1),
+            };
+            let label = format!("{sigil}{label:<lw$}");
             Line::from(vec![
                 Span::styled(label, base.add_modifier(Modifier::BOLD)),
                 Span::styled(

@@ -195,32 +195,14 @@ fn cut(s: &str, max: usize) -> String {
     out
 }
 
-/// A path cut from the left to `max` columns, keeping its file name: the
-/// folder part and the name.
+/// A path cut to `max` columns as OpenCode's `FilePath` shows it
+/// (`truncateFilePath`): the folder part and the name.
 fn path_parts(path: &str, max: usize) -> (String, String) {
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((d, n)) => (format!("{d}/"), n.to_string()),
-        None => (String::new(), path.to_string()),
-    };
-    if dir.width() + name.width() <= max {
-        return (dir, name);
+    let fitted = super::fit::truncate_file_path(path, max);
+    match fitted.rfind(['/', '\\']) {
+        Some(i) => (fitted[..i + 1].to_string(), fitted[i + 1..].to_string()),
+        None => (String::new(), fitted),
     }
-    if name.width() + 1 >= max {
-        return (String::new(), cut(&name, max));
-    }
-    let room = max - name.width() - 1;
-    let mut tail: Vec<char> = Vec::new();
-    let mut w = 0;
-    for c in dir.chars().rev() {
-        let cw = c.width().unwrap_or(0);
-        if w + cw > room {
-            break;
-        }
-        w += cw;
-        tail.push(c);
-    }
-    tail.reverse();
-    (format!("…{}", tail.into_iter().collect::<String>()), name)
 }
 
 /// A folder chain cut to `max` columns by whole leading segments

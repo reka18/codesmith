@@ -102,6 +102,8 @@ Where the tests live:
   (`tui/test/prompt-paste`, `prompt/attachment`), `@` mentions of skills
   and subagents, keyboard selection and copy (`util/selection-keys`,
   `clipboard`) and the prompt groups after them.
+- `src/tui/fit.rs`: paths and labels cut to a width (`tui/test/ui/file-path`,
+  the middle truncation of `util/locale`).
 - `src/tui/parity_panel.rs`: the subagent and shell panel and the output
   viewer (`cli/tui/composer-keymap`, `util/session`,
   `session-subagent-navigation`, `component/dialog-shell-output`).
@@ -112,14 +114,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
-| tui: main UI | 1247 | 15 | 508 | 6 | 705 | 13 | 0 |
+| tui: main UI | 1247 | 15 | 519 | 6 | 706 | 1 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **765** | **802** | **8** | **2385** | **249** | **428** |
+| **Total** | **4637** | **765** | **813** | **8** | **2386** | **237** | **428** |
 
 ## Fixes made while porting
 
@@ -340,6 +342,14 @@ Where the tests live:
   `activityCalendar` (now `stats::activity_calendar`), the shade ranks a
   day's count among the range's distinct counts in four levels, and the
   calendar keeps at most the latest 53 weeks.
+- **File paths cut to width** (`tui/test/ui/file-path`, `util/locale`):
+  the open menu, the worktrees dialog and the diff viewer cut long paths
+  from the left by characters (`…ory:main`), losing the root and splitting
+  folder names anywhere. They now cut as OpenCode's `truncateFilePath`
+  (`tui/fit.rs`): the root and separator kept, then `…` and the nearest
+  folders that fit, the last one shortened, and a file name shortened
+  before its extension. `@` and directory completions longer than their
+  column keep both ends (`Locale.truncateMiddle`) instead of overflowing.
 - **`mcp auth` without a name** (`cli/test/mcp-auth-choices`): the name
   was required. It is now optional: in a terminal CodeSmith lists the
   remote servers that take an OAuth sign-in and asks for one; without a
@@ -417,6 +427,17 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt/local-attachment` | parses multi-file drops from POSIX, URI-list, and Windows terminals | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
 | `tui/test/prompt/local-attachment` | resolves a single image path before splitting spaces | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
 | `tui/test/prompt/local-attachment` | resolves quoted paths and URI lists as ordered attachments | after a fix | oc_multi_file_drops_..., oc_a_single_image_path_..., oc_quoted_paths_... |
+| `tui/test/ui/file-path` | keeps the full path when it fits | after a fix | oc_keeps_the_full_path_when_it_fits (`tui/fit.rs`) |
+| `tui/test/ui/file-path` | adds nearest parent segments from right to left | after a fix | oc_adds_nearest_parent_segments_from_right_to_left |
+| `tui/test/ui/file-path` | preserves the working directory and branch suffix | after a fix | oc_preserves_the_working_directory_and_branch_suffix |
+| `tui/test/ui/file-path` | uses remaining width for part of a long parent segment | after a fix | oc_uses_remaining_width_for_part_of_a_long_parent_segment |
+| `tui/test/ui/file-path` | preserves the extension when the basename must shrink | after a fix | oc_preserves_the_extension_when_the_basename_must_shrink |
+| `tui/test/ui/file-path` | preserves the input separator | after a fix | oc_preserves_the_input_separator |
+| `tui/test/ui/file-path` | does not treat a backslash in a POSIX filename as a separator | after a fix | oc_does_not_treat_a_backslash_in_a_posix_filename_as_a_separator |
+| `tui/test/ui/file-path` | preserves absolute roots | after a fix | oc_preserves_absolute_roots |
+| `tui/test/ui/file-path` | measures terminal columns without splitting graphemes | after a fix | oc_measures_terminal_columns_without_splitting_graphemes |
+| `tui/test/ui/file-path` | never exceeds the requested width | after a fix | oc_never_exceeds_the_requested_width |
+| `tui/test/util/locale` | truncates text in the middle without overflowing small widths | after a fix | oc_truncates_text_in_the_middle_without_overflowing_small_widths (`tui/fit.rs`) |
 | `tui/test/util/locale` | truncates text from the right by terminal width | after a fix | oc_cut_truncates_from_the_right_by_terminal_width |
 | `tui/test/util/locale` | takes whole graphemes within terminal width | after a fix | oc_take_keeps_whole_graphemes_within_terminal_width (adapted) |
 | `tui/test/util/locale` | rolls the compact form over at the rounding boundary | after a fix | oc_token_counts_roll_over_at_the_rounding_boundary (adapted: `1M` for `1.0M`) |
@@ -1108,6 +1129,7 @@ its remaining work is tracked in
 | acp: patch tool | by design | 1 | 1 | CodeSmith has no patch tool |
 | tui: keys | by design | 1 | 1 | Tab and Shift+Tab both cycle agents (documented) |
 | tui: permission dialog | by design | 1 | 1 | the dialog shows the request title itself |
+| tui: path display | by design | 1 | 1 | tool and permission paths are named by the core (relative inside the project, absolute outside it, as the tool resolved them); the UI does not reformat them with `~` or read Windows paths on a POSIX base |
 | tui: interrupt | by design | 1 | 1 | Esc interrupts at once; no armed state |
 | tui: slash commands | by design | 2 | 2 | commands complete only at the start of the prompt; one parser for both UIs, where any whitespace (`\r` too) ends a command's name |
 | tui: OpenTUI internals | n/a | 272 | 41 | OpenTUI cell offsets; Solid config and keymap contexts, command object identity and keymap modes, developer tools; Solid batching and renderer internals; layout, virtualization, reactive data or event-stream internals; renderer lifecycle, caching and server sync; select widget layout and reconciliation; widgets, animation and layout helpers |
@@ -1208,23 +1230,6 @@ behaviour exists; no test cites it not cited by a test oc_acp_elicitation_mappin
 - `cli/test/acp/translate`: settles a shell that exits before its call's result arrives
 - `cli/test/acp/translate`: leaves a user's shell command, whose notice waits for the next prompt, out of pending work
 - `cli/test/acp/turn`: cancels unsupported session forms so execution can continue
-
-### tui: text truncation (12)
-
-file paths and middle truncation, which view.rs does not do as OpenCode does
-
-- `tui/test/ui/file-path`: keeps the full path when it fits
-- `tui/test/ui/file-path`: adds nearest parent segments from right to left
-- `tui/test/ui/file-path`: preserves the working directory and branch suffix
-- `tui/test/ui/file-path`: uses remaining width for part of a long parent segment
-- `tui/test/ui/file-path`: preserves the extension when the basename must shrink
-- `tui/test/ui/file-path`: preserves the input separator
-- `tui/test/ui/file-path`: does not treat a backslash in a POSIX filename as a separator
-- `tui/test/ui/file-path`: preserves absolute roots
-- `tui/test/ui/file-path`: measures terminal columns without splitting graphemes
-- `tui/test/ui/file-path`: never exceeds the requested width
-- `tui/test/util/locale`: truncates text in the middle without overflowing small widths
-- `tui/test/util/path-format`: formats relative, home, and foreign paths
 
 ### tui: tool output (1)
 

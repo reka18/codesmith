@@ -132,6 +132,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `codesmith stats`: the calendar shades each day by how its count ranks
   among the range's distinct counts, as OpenCode does, rather than by its
   share of the busiest day, and shows at most the latest 53 weeks.
+- Long paths in the open menu, the worktrees dialog and the diff viewer are
+  cut as OpenCode cuts them (`…/src/ui/dialog-se….tsx`), keeping the root,
+  the nearest folders and the extension; long `@` and directory
+  completions keep both ends.
 
 ## 0.1.0
 
