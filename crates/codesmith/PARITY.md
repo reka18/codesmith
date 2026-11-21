@@ -110,14 +110,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
-| tui: main UI | 1247 | 15 | 502 | 41 | 676 | 13 | 0 |
+| tui: main UI | 1247 | 15 | 505 | 38 | 676 | 13 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **759** | **792** | **43** | **2356** | **259** | **428** |
+| **Total** | **4637** | **759** | **795** | **40** | **2356** | **259** | **428** |
 
 ## Fixes made while porting
 
@@ -856,6 +856,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt-paste` | a pasted image that reuses a wide label gets a chip as wide as the label | after a fix | oc_a_pasted_image_that_reuses_a_label_keeps_it (adapted: no OpenTUI cell widths; the label is reused) |
 | `tui/test/prompt-paste` | %s grows the prompt in the first frame that shows it (2 cases) | after a fix | oc_text_grows_the_prompt_in_the_first_frame_that_shows_it (adapted: no server route appends to the prompt; a restored prompt) |
 | `tui/test/prompt-paste` | undo submits the restored %s chip with its attachment (files) | after a fix | oc_undo_submits_the_restored_file_chip_with_its_attachment |
+| `tui/test/prompt-paste` | undo submits the restored %s chip with its attachment (agents, skills: 2 cases) | after a fix | oc_undo_submits_the_restored_agent_and_skill_chips_with_their_attachments (adapted: the mention in the text sent is the attachment) |
+| `tui/test/prompt-offset` | an agent mention after a tab replaces only the mention | after a fix | oc_an_agent_mention_after_a_tab_replaces_only_the_mention (adapted: a byte range, not an extmark) |
 | `tui/test/prompt/attachment` | deduplicates identical inline images while preserving other attachments | after a fix | oc_deduplicates_identical_inline_images_while_preserving_other_attachments (adapted: pasted paths) |
 | `tui/test/prompt/attachment` | reuses labels for identical image data | after a fix | oc_reuses_labels_for_identical_image_data (adapted: the same path) |
 | `tui/test/prompt/attachment` | does not reuse a label when attachment metadata differs | after a fix | oc_does_not_reuse_a_label_when_attachment_metadata_differs (adapted: another name) |
@@ -1033,11 +1035,6 @@ its remaining work is tracked in
 ### sessions: fork (1)
 
 - `tui/test/session-fork-pending`: choosing a row in /fork shows the pending view until the fork finishes
-
-### tui: @agent and skill mentions (3)
-
-- `tui/test/prompt-offset`: an agent mention after a tab replaces only the mention
-- `tui/test/prompt-paste`: undo submits the restored %s chip with its attachment (agents, skills: 2 cases)
 
 ### tui: export dialog (1)
 

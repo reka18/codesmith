@@ -52,6 +52,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   made; `/worktrees` opens, makes and removes worktrees and moves the
   session to one. A session or folder elsewhere restarts the UI there;
   `tui.session.new_location` chooses where `/new` goes back to.
+- Typing `@` offers the skills and subagents before the files, as
+  OpenCode does.
 
 ## 0.1.0
 

@@ -1685,6 +1685,10 @@ fn draw_popup(f: &mut Frame, app: &App, body: Rect, input: Rect) {
             " commands · {} ",
             keys_line(&[(select, "run"), (complete, "complete"), (hide, "close")])
         ),
+        Kind::File if pop.named > 0 => format!(
+            " mentions · {} ",
+            keys_line(&[(select, "insert"), (complete, "insert"), (hide, "close")])
+        ),
         Kind::File => format!(
             " files · {} ",
             keys_line(&[(select, "attach"), (complete, "attach"), (hide, "close")])

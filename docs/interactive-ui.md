@@ -422,11 +422,17 @@ and send.
 ## Autocomplete and `@` mentions
 
 Typing `/` lists commands: built-in, custom, and MCP prompts. Typing `@`
-lists project files, matched fuzzily and respecting `.gitignore`. Before
-anything is typed after `@`, the files mentioned most and most lately come
-first (OpenCode's frecency, kept in `frecency.jsonl`). **↑/↓**
-choose, **Tab** completes, **Enter** runs the command or inserts the file,
-and **Esc** closes the list.
+lists the [skills](skills-and-commands.md) and subagents first, as
+OpenCode does (at most ten once something is typed), then the project
+files, matched fuzzily and respecting `.gitignore`. Before anything is
+typed after `@`, the files mentioned most and most lately come first
+(OpenCode's frecency, kept in `frecency.jsonl`). **↑/↓** choose, **Tab**
+completes, **Enter** runs the command or inserts the name or file, and
+**Esc** closes the list.
+
+A skill's `@id` in a message loads the skill with it. A subagent's `@name`
+stays in the message for the model, which can hand the work to that
+subagent.
 
 Each `@path` in a message that names a file is attached to the message as a
 `read` result, as in OpenCode, so the model sees it without a round trip. A

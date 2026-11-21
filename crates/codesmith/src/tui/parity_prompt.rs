@@ -126,7 +126,7 @@ fn oc_text_grows_the_prompt_in_the_first_frame_that_shows_it() {
 }
 
 // prompt-paste.test.tsx: "undo submits the restored %s chip with its
-// attachment" (files; the agent and skill cases wait for @agent mentions).
+// attachment" (files; the agent and skill cases are below).
 #[test]
 fn oc_undo_submits_the_restored_file_chip_with_its_attachment() {
     let dir = tempfile::tempdir().unwrap();
@@ -142,6 +142,93 @@ fn oc_undo_submits_the_restored_file_chip_with_its_attachment() {
         panic!("not sent")
     };
     assert_eq!(attach::mentions(&t, dir.path()), ["a.ts"]);
+}
+
+fn skill(id: &str) -> codesmith_core::skill::Skill {
+    codesmith_core::skill::Skill {
+        id: id.into(),
+        name: id.into(),
+        description: format!("The {id} skill"),
+        path: format!("/skills/{id}/SKILL.md").into(),
+        content: String::new(),
+    }
+}
+
+// prompt-paste.test.tsx: "undo submits the restored %s chip with its
+// attachment" (agents, skills: 2 cases; adapted: CodeSmith's prompt is its
+// text, so the mention in the text sent is the attachment: core loads a
+// mentioned skill from it, and the model reads a subagent's name in it).
+#[test]
+fn oc_undo_submits_the_restored_agent_and_skill_chips_with_their_attachments() {
+    let dir = tempfile::tempdir().unwrap();
+    for (kind, name) in [("agents", "explore"), ("skills", "review")] {
+        let mut a = App::new();
+        a.cwd = dir.path().to_path_buf();
+        a.set_mentions(
+            &[("explore".into(), "Explores the code".into())],
+            &[("review".into(), "Reviews a change".into())],
+        );
+        let text = format!("see @{name} ");
+        a.input.set(text.clone());
+        a.on_key(with('u', KeyModifiers::CONTROL));
+        assert_eq!(a.input.text(), "");
+        a.on_key(with('z', KeyModifiers::SUPER));
+        assert_eq!(a.input.text(), text);
+        let Some(Action::Submit(t)) = a.on_key(key(KeyCode::Enter)) else {
+            panic!("{kind}: not sent")
+        };
+        assert_eq!(t, text.trim_end(), "{kind}");
+        // Not a file of the folder.
+        assert!(attach::mentions(&t, dir.path()).is_empty(), "{kind}");
+        let found: Vec<String> =
+            codesmith_core::skill_mention::mentions(&t, &[skill("review")], dir.path())
+                .into_iter()
+                .map(|m| m.skill)
+                .collect();
+        let want: &[&str] = if kind == "skills" { &["review"] } else { &[] };
+        assert_eq!(found, want, "{kind}");
+    }
+}
+
+// prompt-offset.test.ts: "an agent mention after a tab replaces only the
+// mention" (adapted: the mention's range is the text's, in bytes, rather
+// than an OpenTUI extmark in cells).
+#[test]
+fn oc_an_agent_mention_after_a_tab_replaces_only_the_mention() {
+    let mut a = App::new();
+    a.set_mentions(&[("助手".into(), String::new())], &[]);
+    let prefix = "\u{c}👨‍👩‍👧நி\t";
+    a.on_paste(&format!("{prefix}@助"));
+    // A wide character's second cell draws as a blank in the test buffer.
+    let f = frame(&a, 60, 20).replace("助 手", "助手");
+    assert!(f.contains("@助手") && f.contains("agent"), "{f}");
+    assert_eq!(a.on_key(key(KeyCode::Enter)), None);
+    assert_eq!(a.input.text(), format!("{prefix}@助手 "));
+    assert_eq!(a.input.text().find("@助手"), Some(prefix.len()));
+}
+
+// (not in OpenCode's tests) Subagents and skills come before files; once
+// something is typed, at most ten of them; their descriptions lose control
+// characters.
+#[test]
+fn mentions_list_skills_and_subagents_before_files() {
+    let mut a = App::new();
+    a.files = vec!["explorer.rs".into(), "src/".into()];
+    a.set_mentions(
+        &[("explore".into(), "Looks\u{1b}[2J around".into())],
+        &[("review".into(), String::new())],
+    );
+    a.on_paste("@");
+    let p = a.popup.as_ref().unwrap();
+    let labels: Vec<&str> = p.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, ["review", "explore", "explorer.rs", "src/"]);
+    assert_eq!(p.named, 2);
+    assert_eq!(p.items[0].detail, "skill");
+    assert_eq!(p.items[1].detail, "agent · Looks[2J around");
+    a.on_paste("expl");
+    let p = a.popup.as_ref().unwrap();
+    assert_eq!(p.items[0].label, "explore");
+    assert!(frame(&a, 60, 20).contains("mentions"));
 }
 
 // (not in OpenCode's test) Redo undoes the undo; typing a word is one step.

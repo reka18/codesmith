@@ -1920,6 +1920,12 @@ async fn run_in(
         .map(|(n, c)| (n, c.description.unwrap_or_default()))
         .collect();
     r.app.set_commands(&cmds);
+    let skills: Vec<(String, String)> = codesmith_core::skill::for_folder(&r.cwd, &r.loaded)
+        .into_iter()
+        .map(|s| (s.id, s.description))
+        .collect();
+    r.app
+        .set_mentions(&agent::subagents(&r.loaded.config), &skills);
     r.app.cwd = r.cwd.clone();
     r.history = history::Store::load(history::file());
     r.app.stash = stash::Stash::load(stash::Stash::file());

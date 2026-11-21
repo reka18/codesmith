@@ -414,6 +414,8 @@ pub struct App {
     pub commands: Vec<complete::Item>,
     /// Project files offered for `@` mentions.
     pub files: Vec<String>,
+    /// Subagents and skills offered for `@` mentions, before the files.
+    pub mentions: Vec<complete::Item>,
     pub popup: Option<Popup>,
     /// The input text when the popup was dismissed with Esc (it stays closed
     /// until the text changes).
@@ -820,6 +822,25 @@ impl App {
         self.commands = cmds;
     }
 
+    /// Set the `@` names: the subagents (id, description) and the skills
+    /// (id, description), as OpenCode lists them, skills first. Their
+    /// text comes from configuration and skill files, so it is shown
+    /// without control characters.
+    pub fn set_mentions(&mut self, agents: &[(String, String)], skills: &[(String, String)]) {
+        let item = |(id, desc): &(String, String), kind: &str| complete::Item {
+            label: super::browser::clean(id),
+            detail: match super::browser::clean(desc).trim() {
+                "" => kind.to_string(),
+                d => format!("{kind} · {d}"),
+            },
+        };
+        self.mentions = skills
+            .iter()
+            .map(|s| item(s, "skill"))
+            .chain(agents.iter().map(|a| item(a, "agent")))
+            .collect();
+    }
+
     /// Hand what all session tabs share (key bindings, completions, the
     /// prompt history, display settings, the diff viewer's memory) to
     /// `to`, the tab about to be shown. Done in pairs, so the shared state
@@ -827,6 +848,7 @@ impl App {
     pub fn hand_over(&mut self, to: &mut App) {
         to.keymap = self.keymap.clone();
         std::mem::swap(&mut self.commands, &mut to.commands);
+        std::mem::swap(&mut self.mentions, &mut to.mentions);
         std::mem::swap(&mut self.files, &mut to.files);
         std::mem::swap(&mut self.history, &mut to.history);
         std::mem::swap(&mut self.history_files, &mut to.history_files);
@@ -1430,6 +1452,7 @@ impl App {
                 start,
                 items,
                 sel: 0,
+                named: 0,
             });
             return;
         }
@@ -1437,6 +1460,7 @@ impl App {
             self.input.text(),
             self.input.cursor(),
             &self.commands,
+            &self.mentions,
             &self.files,
         );
         // Before anything is typed, the files mentioned most and lately
@@ -1444,9 +1468,10 @@ impl App {
         if let Some(p) = self.popup.as_mut() {
             let typed = &self.input.text()[p.start..self.input.cursor()];
             if p.kind == Kind::File && typed == "@" {
-                let mut labels: Vec<String> = p.items.iter().map(|i| i.label.clone()).collect();
+                let files = &mut p.items[p.named..];
+                let mut labels: Vec<String> = files.iter().map(|i| i.label.clone()).collect();
                 super::stash::rank(&mut labels, &self.cwd, &self.frecency.data);
-                for (item, label) in p.items.iter_mut().zip(labels) {
+                for (item, label) in files.iter_mut().zip(labels) {
                     item.label = label;
                 }
             }
@@ -1468,6 +1493,11 @@ impl App {
             }
             Kind::Dir => {
                 self.input.replace_before_cursor(p.start, &item.label);
+            }
+            // A subagent or skill: its name, and a space.
+            Kind::File if p.sel < p.named => {
+                self.input
+                    .replace_before_cursor(p.start, &format!("@{} ", item.label));
             }
             Kind::File => {
                 let abs = self.cwd.join(item.label.trim_end_matches('/'));

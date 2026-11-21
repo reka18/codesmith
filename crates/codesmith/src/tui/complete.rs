@@ -1,5 +1,6 @@
-//! Autocomplete for the prompt (`/command` and `@file`), fuzzy filtering
-//! shared with the pickers, and the project file list.
+//! Autocomplete for the prompt (`/command`, and `@` for files, subagents
+//! and skills), fuzzy filtering shared with the pickers, and the project
+//! file list.
 
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -27,6 +28,9 @@ pub struct Popup {
     pub start: usize,
     pub items: Vec<Item>,
     pub sel: usize,
+    /// How many of the first items are subagents and skills (`@` names,
+    /// not files).
+    pub named: usize,
 }
 
 /// Most entries a popup holds.
@@ -91,21 +95,51 @@ where
     scored.into_iter().take(limit).map(|(_, i)| i).collect()
 }
 
-/// Build the popup for the current input, if any.
-pub fn popup(text: &str, cursor: usize, commands: &[Item], files: &[String]) -> Option<Popup> {
+/// Most subagents and skills an `@` popup offers once something is typed
+/// (OpenCode's).
+const MAX_NAMED: usize = 10;
+
+/// Build the popup for the current input, if any. An `@` popup offers the
+/// subagents and skills in `named` first, as OpenCode's does, then the
+/// files.
+pub fn popup(
+    text: &str,
+    cursor: usize,
+    commands: &[Item],
+    named: &[Item],
+    files: &[String],
+) -> Option<Popup> {
     let (kind, start, query) = trigger(text, cursor)?;
+    let mut names: Vec<Item> = Vec::new();
+    if kind == Kind::File {
+        let limit = if query.is_empty() {
+            MAX_ITEMS
+        } else {
+            MAX_NAMED
+        };
+        names = filter(named, query, |n| n.label.as_str(), false, limit)
+            .into_iter()
+            .map(|i| named[i].clone())
+            .collect();
+    }
+    let room = MAX_ITEMS.saturating_sub(names.len());
     let items: Vec<Item> = match kind {
         Kind::Slash => filter(commands, query, |c| c.label.as_str(), false, MAX_ITEMS)
             .into_iter()
             .map(|i| commands[i].clone())
             .collect(),
         Kind::Dir => return None,
-        Kind::File => filter(files, query, |f| f.as_str(), true, MAX_ITEMS)
-            .into_iter()
-            .map(|i| Item {
-                label: files[i].clone(),
-                detail: String::new(),
-            })
+        Kind::File => names
+            .iter()
+            .cloned()
+            .chain(
+                filter(files, query, |f| f.as_str(), true, room)
+                    .into_iter()
+                    .map(|i| Item {
+                        label: files[i].clone(),
+                        detail: String::new(),
+                    }),
+            )
             .collect(),
     };
     if items.is_empty() {
@@ -120,6 +154,7 @@ pub fn popup(text: &str, cursor: usize, commands: &[Item], files: &[String]) -> 
         start,
         items,
         sel: 0,
+        named: names.len(),
     })
 }
 
@@ -201,16 +236,16 @@ mod tests {
     #[test]
     fn popups() {
         let cmds = items(&["new", "review", "redo", "sessions"]);
-        let p = popup("/re", 3, &cmds, &[]).unwrap();
+        let p = popup("/re", 3, &cmds, &[], &[]).unwrap();
         assert_eq!(p.kind, Kind::Slash);
         assert!(p.items.iter().all(|i| i.label.starts_with('r')));
         assert!(
-            popup("/review", 7, &cmds, &[]).is_none(),
+            popup("/review", 7, &cmds, &[], &[]).is_none(),
             "exact match: done"
         );
-        assert!(popup("hello", 5, &cmds, &[]).is_none());
+        assert!(popup("hello", 5, &cmds, &[], &[]).is_none());
         let files = vec!["a.rs".to_string(), "b/c.rs".to_string()];
-        let p = popup("@c", 2, &cmds, &files).unwrap();
+        let p = popup("@c", 2, &cmds, &[], &files).unwrap();
         assert_eq!(p.items[0].label, "b/c.rs");
         assert_eq!(p.start, 0);
     }

@@ -252,7 +252,7 @@ fn bench_completion() {
     for q in ["m", "pkg1", "sub0f3rs", "zzzz"] {
         let text = format!("look at @{q}");
         let t = time(20, || {
-            std::hint::black_box(complete::popup(&text, text.len(), &cmds, &files));
+            std::hint::black_box(complete::popup(&text, text.len(), &cmds, &[], &files));
         });
         report(&format!("@ query {q:?}"), t, "");
     }

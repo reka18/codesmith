@@ -139,6 +139,25 @@ fn claude_compat() -> bool {
         && std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none()
 }
 
+/// The skills a session in `cwd` has: those under [`roots`] (from the
+/// folder, its project, the config folder and home), and the built-in ones
+/// when `builtin_skills` is on.
+pub fn for_folder(cwd: &Path, loaded: &crate::config::Loaded) -> Vec<Skill> {
+    let config = &loaded.config;
+    let home = dirs::home_dir().unwrap_or_default();
+    let skills = discover(&roots(
+        cwd,
+        &loaded.root,
+        &crate::paths::config_dir(),
+        &home,
+        &config.skills,
+    ));
+    if config.builtin_skills {
+        return with_builtin(skills, env!("CARGO_PKG_VERSION"));
+    }
+    skills
+}
+
 /// Folders that may contain `<id>/SKILL.md`, lowest precedence first.
 pub fn roots(
     cwd: &Path,
