@@ -39,10 +39,10 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
 | Permission | 177 | 119 | 2 | 0 | 54 | 2 | 0 |
-| Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
+| Agents | 65 | 48 | 1 | 1 | 15 | 0 | 0 |
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
-| Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
-| Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
+| Instructions and references | 78 | 64 | 0 | 0 | 13 | 1 | 0 |
+| Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
 | Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
@@ -52,13 +52,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2663** | **66** | **40** | **2535** | **284** | **0** |
+| **Total** | **5588** | **2670** | **67** | **41** | **2536** | **274** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
 - `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
+- `config/agent.test.ts`: "matches POSIX paths against home-relative permissions" (1 case): a path rule written from the home folder (`~/p/**`) never matched, as paths are checked absolute, so a deny such as `read ~/.ssh/*` did nothing; it matches the absolute paths now (a shell rule's `~` and `$HOME` stay literal). Pinned by `tests/oc_agents_backlog2.rs::oc_agent_matches_paths_against_home_relative_permissions`.
 - `config/skill.test.ts`: "maps config entry types to skill directories" (1 case): a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories`.
 - `file-access-path.test.ts`: "does not treat a filesystem-root project sentinel as an internal boundary" (1 case): a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary). Pinned by `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary`.
 - `file-access-path.test.ts`: "expands a leading tilde against the home directory" (1 case): a bare `~` was a file named `~` in the working folder; it is the home folder now. Pinned by `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`.
@@ -115,7 +116,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (40 cases in 5 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (41 cases in 6 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -124,6 +125,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
+| [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
 
 ### Provider Plugins
 
@@ -186,9 +188,15 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
 
+### OpenAI Verbosity Defaults
+
+1 cases.
+
+- `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
+
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (284 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (274 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Model requests and transport (1)
 
@@ -226,35 +234,10 @@ Tests for behaviour CodeSmith already has but no test pins (284 cases), by area,
 - omitted agent uses build's rules; no default agent denies (S) — `permission + agent`
   - `permission.test.ts`: denies omitted-agent permissions when no primary default agent exists
 
-### Agents (5)
+### Instructions and references (1)
 
-- no custom agents / runtime defaults for created agents (S) — `agent::resolve`
-  - `agent.test.ts`: starts without agents
-  - `agent.test.ts`: creates agents with runtime defaults and supports direct removal
-- the selected default agent is listed first (S) — `agent::list`
-  - `agent.test.ts`: lists the selected default agent first
-- home-relative permission paths; global permissions before agent-specific (S) — `agent::resolve`
-  - `config/agent.test.ts`: matches POSIX paths against home-relative permissions
-- OpenAI Responses verbosity defaults (S) — `codesmith_ai options`
-  - `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
-
-### Instructions and references (2)
-
-- one failing source does not fail the rest (S) — `instructions::load`
-  - `instruction-discovery.test.ts`: isolates source failure without failing activation
 - canonical boundaries and project opt-out (S) — `instructions::load`
   - `instruction-discovery.test.ts`: canonicalizes boundaries and honors project opt-out
-
-### Config (4)
-
-- .claude directories skipped when Claude Code compatibility is off (S) — `config::load`
-  - `config/config.test.ts`: excludes claude directories when claude is disabled
-- unreadable discovery roots treated as absent (S) — `config::load`
-  - `config/config.test.ts`: treats unreadable discovery roots as absent
-- global ecosystem directories found twice load once (S) — `config::load`
-  - `config/config.test.ts`: deduplicates global ecosystem directories found during upward discovery
-- malformed selections and reserved fragments rejected (S) — `config::split_variant`
-  - `config/model.test.ts`: rejects malformed selections and reserved fragments
 
 ### MCP (121)
 
@@ -544,7 +527,7 @@ Tests for behaviour CodeSmith already has but no test pins (284 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 656 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 657 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -2331,12 +2314,17 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Agents (60 of 65)</summary>
+<details><summary>Agents (64 of 65)</summary>
 
 
 **`agent.test.ts`**
 
-- D publishes an updated event after agent changes · materializes replayable agent transforms · rebuilds state when a transform is replaced · removes a transform when its scope closes · applies direct agent updates — effect-internal: agent service events and replayable transforms
+- D publishes an updated event after agent changes — effect-internal: agent service events and replayable transforms
+- D starts without agents — deliberate: the built-in agents (build, plan, explore, general...) always exist; there is no empty agent service to start from
+- D materializes replayable agent transforms — effect-internal: agent service events and replayable transforms
+- P lists the selected default agent first — `tests/oc_agents_backlog2.rs::oc_agent_creates_agents_with_runtime_defaults` (adapted: an agent defined in config, and one disabled there)
+- D rebuilds state when a transform is replaced · removes a transform when its scope closes · applies direct agent updates — effect-internal: agent service events and replayable transforms
+- P creates agents with runtime defaults and supports direct removal — `tests/oc_agents_backlog2.rs::oc_agent_selects_the_configured_default` (adapted: the configured default is the one a session starts with; the list keeps built-ins first)
 - P allows external directories without opting built-in agents into bash — `tests/oc_config.rs::oc_agent_explore_is_read_only_and_asks_for_env_files` (the explore rules; CodeSmith has no compaction/summary/title agents)
 - P denies the subagent tool for built-in subagents — `tests/oc_config.rs::oc_agent_built_in_subagents_deny_the_subagent_tool`
 
@@ -2347,6 +2335,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P loads Markdown ${item.name}${native ? " with native request and permissions" : ""} ×16 — `tests/oc_agents.rs::oc_agent_loads_markdown_model_selections_with_and_without_native_fields` (adapted: model references are provider/model#variant specs; no request settings)
 - P keeps Markdown legacy permission precedence in source order — `tests/oc_agents.rs::oc_agent_keeps_markdown_legacy_permission_precedence_in_source_order`
 - P loads Markdown legacy temperature ${variant ? "with" : "without"} a separate variant ×2 — `tests/oc_agents.rs::oc_agent_loads_markdown_legacy_temperature_with_and_without_a_variant`
+- F matches POSIX paths against home-relative permissions — `tests/oc_agents_backlog2.rs::oc_agent_matches_paths_against_home_relative_permissions` (a path rule written from the home folder (`~/p/**`) never matched, as paths are checked absolute, so a deny such as `read ~/.ssh/*` did nothing; it matches the absolute paths now (a shell rule's `~` and `$HOME` stay literal))
 - D matches Windows paths against home-relative permissions — platform: Windows paths
 - D applies remote permission defaults before explicit global and build rules — cloud: remote (well-known) permission defaults
 - P applies all global permissions before agent-specific permissions — `tests/oc_config.rs::oc_agent_global_permissions_come_before_agent_specific_ones` (without the later-document removal and model fields)
@@ -2458,7 +2447,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Instructions and references (76 of 78)</summary>
+<details><summary>Instructions and references (77 of 78)</summary>
 
 
 **`instruction-discovery.test.ts`**
@@ -2474,6 +2463,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P discovers a newly created instruction file above the project root — `src/instructions.rs::oc_instructions_finds_a_file_above_the_project_root_inside_home`
 - P stops instruction candidates at the project root outside home — `src/instructions.rs::oc_instructions_stop_at_the_project_root_outside_home`
 - D stops at the project root when the location drive letter differs in case — platform: Windows drive letters
+- P isolates source failure without failing activation — `tests/oc_agents_backlog2.rs::oc_instructions_isolate_a_source_failure` (adapted: an unreadable discovered file leaves the source unavailable, so its stored value stands)
 - P marks a discovered file that disappears before read as unavailable — `tests/oc_instruction_state.rs::oc_instruction_files_that_vanish_before_the_read_are_unavailable`
 - D skips discovered files a sandbox denies and keeps the rest available — client-server: sandbox-denied files
 
@@ -2552,13 +2542,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Config (160 of 164)</summary>
+<details><summary>Config (164 of 164)</summary>
 
 
 **`config/config.test.ts`**
 
 - P excludes home-level claude and agents directories when global is disabled — `tests/oc_config_sources.rs::oc_config_excludes_home_level_claude_and_agents_directories_when_global_is_disabled` (adapted: `$CODESMITH_DISABLE_GLOBAL_CONFIG`; skills, commands and instructions (CodeSmith watches no config folders))
+- P excludes claude directories when claude is disabled — `tests/oc_config_env.rs::oc_config_excludes_claude_directories_when_claude_is_disabled` (adapted: the skill roots, with `CODESMITH_DISABLE_CLAUDE_CODE`)
 - P excludes global config reached through the project walk when global is disabled — `tests/oc_config_sources.rs::oc_config_excludes_global_config_reached_through_the_project_walk_when_global_is_disabled`
+- P treats unreadable discovery roots as absent — `tests/oc_agents_backlog2.rs::oc_config_treats_unreadable_discovery_roots_as_absent`
 - P discovers the global config directory once when the project walk reaches it — `src/config.rs::oc_config_loads_the_global_config_once_when_the_project_walk_reaches_it`
 - D loads system configuration at highest priority · resolves the system configuration directory per platform · resolves macOS managed preferences with user-specific profiles first · strips MDM payload metadata from managed preferences — deliberate: config.rs: no system, MDM, well-known or integration config
 - P loads explicit file and content overrides in priority order — `src/config.rs::oc_config_loads_explicit_file_and_content_overrides_in_priority_order`
@@ -2574,6 +2566,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D decodes configuration maps in source order — deliberate: config.rs: named maps ordered by key, not source order
 - D decodes v1 permissions in source order at every level · migrates the v1 experimental subagent depth · migrates the v1 update policy · normalizes the native auto update policy · migrates v1 provider lists to policies · migrates v1 provider setup options into AISDK settings · renames old provider IDs while migrating v1 configuration · preserves the generated base URL for v1 Azure OpenAI-compatible providers · ignores old provider IDs when the current provider ID is configured · preserves the built-in package for v1 Vertex Anthropic custom models · migrates v1 interleaved fields to compatibility · migrates v1 command configuration with subtask: ${subtask} ×2 · normalizes renamed permission actions when migrating v1 permissions — deliberate: config.rs: no v1 format migration
 - P returns an empty configuration when directory files do not exist — `src/config.rs::oc_config_returns_an_empty_configuration_when_no_files_exist`
+- P deduplicates global ecosystem directories found during upward discovery — `tests/oc_agents_backlog2.rs::oc_config_lists_the_home_ecosystem_folders_once` (adapted: the skill roots)
 - D does not recursively watch ecosystem config roots — deliberate: config.rs: no live reload or file watching
 - P loads opencode JSON and JSONC files from lowest to highest priority — `src/config.rs::oc_config_loads_json_and_jsonc_files_from_lowest_to_highest_priority`
 - P substitutes environment variables and relative file contents — `src/config.rs::oc_config_substitutes_environment_variables_and_relative_file_contents`
@@ -2600,6 +2593,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`config/model.test.ts`**
 
 - P normalizes short and explicit model selections — `src/config.rs::oc_config_normalizes_short_model_selections`
+- P rejects malformed selections and reserved fragments — `tests/oc_agents_backlog2.rs::oc_config_rejects_a_model_without_its_provider` (adapted: an empty `#` is read as no variant rather than refused)
 
 **`config/normalization.test.ts`**
 

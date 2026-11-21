@@ -85,6 +85,9 @@ All notable changes to CodeSmith are listed here. Versions follow
   that only mentions `## Objective` is not a summary, and a second reply
   without the template fails the compaction instead of replacing the
   history. The skill list leaves out the skills the agent's rules deny.
+- **Permission fix:** a path rule written from the home folder
+  (`"read": "~/.ssh/*"`) never matched, since paths are checked as
+  absolute paths, so such a deny did nothing; it matches now.
 - A tool path of a bare `~` is the home folder (it was a file named `~`
   in the working folder).
 - A title written over OpenAI Responses leaves out the model's

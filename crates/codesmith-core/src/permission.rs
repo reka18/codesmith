@@ -193,10 +193,26 @@ pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
 /// `evaluate` over `layers` concatenated in order, without copying them.
 fn evaluate_layers(action: &str, resource: &str, layers: &[&[Rule]]) -> Effect {
     let ic = ignores_case(action);
+    // A path rule written from the home folder (`~/notes/**`) matches the
+    // absolute paths it names, as in OpenCode; other actions (a shell
+    // command's text) match `~` as written.
+    let home = PATH_ACTIONS
+        .contains(&action)
+        .then(dirs::home_dir)
+        .flatten()
+        .map(|h| h.display().to_string());
+    let from_home = |pattern: &str| -> Option<String> {
+        let home = home.as_deref()?;
+        match pattern.strip_prefix("~/") {
+            Some(rest) => Some(format!("{}/{rest}", home.trim_end_matches('/'))),
+            None => (pattern == "~").then(|| home.to_string()),
+        }
+    };
     let hit = |r: &&Rule| {
         r.policy.is_none()
             && wildcard::matches(action, &r.action, false)
-            && wildcard::matches(resource, &r.resource, ic)
+            && (wildcard::matches(resource, &r.resource, ic)
+                || from_home(&r.resource).is_some_and(|p| wildcard::matches(resource, &p, ic)))
     };
     let newest_first = || layers.iter().rev().flat_map(|l| l.iter().rev());
     let all = newest_first()

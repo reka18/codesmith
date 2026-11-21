@@ -177,3 +177,21 @@
 218 :: ported :: tests/oc_permission_backlog2.rs::oc_permission_uses_build_permissions_when_the_agent_is_omitted
 403 :: ported :: tests/oc_permission_backlog2.rs::oc_permission_rejecting_a_call_stops_its_sibling :: adapted: a rejection stops the turn, so the step's other calls are not run or asked about
 487 :: design :: deliberate :: a session asks one permission request at a time, so there are no pending requests for an "always" to auto-approve
+
+# --- Agents, instructions, config (tests/oc_agents_backlog2.rs, tests/oc_config_env.rs) ---
+@agent.test.ts
+45 :: design :: deliberate :: the built-in agents (build, plan, explore, general...) always exist; there is no empty agent service to start from
+70 :: ported :: tests/oc_agents_backlog2.rs::oc_agent_creates_agents_with_runtime_defaults :: adapted: an agent defined in config, and one disabled there
+139 :: ported :: tests/oc_agents_backlog2.rs::oc_agent_selects_the_configured_default :: adapted: the configured default is the one a session starts with; the list keeps built-ins first
+@config/agent.test.ts
+145 :: fixed :: tests/oc_agents_backlog2.rs::oc_agent_matches_paths_against_home_relative_permissions :: a path rule written from the home folder (`~/p/**`) never matched, as paths are checked absolute, so a deny such as `read ~/.ssh/*` did nothing; it matches the absolute paths now (a shell rule's `~` and `$HOME` stay literal)
+@plugin/verbosity.test.ts
+32 :: feature :: OpenAI Verbosity Defaults :: default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured)
+@instruction-discovery.test.ts
+646 :: ported :: tests/oc_agents_backlog2.rs::oc_instructions_isolate_a_source_failure :: adapted: an unreadable discovered file leaves the source unavailable, so its stored value stands
+@config/config.test.ts
+141 :: ported :: tests/oc_config_env.rs::oc_config_excludes_claude_directories_when_claude_is_disabled :: adapted: the skill roots, with `CODESMITH_DISABLE_CLAUDE_CODE`
+221 :: ported :: tests/oc_agents_backlog2.rs::oc_config_treats_unreadable_discovery_roots_as_absent
+1664 :: ported :: tests/oc_agents_backlog2.rs::oc_config_lists_the_home_ecosystem_folders_once :: adapted: the skill roots
+@config/model.test.ts
+23 :: ported :: tests/oc_agents_backlog2.rs::oc_config_rejects_a_model_without_its_provider :: adapted: an empty `#` is read as no variant rather than refused
