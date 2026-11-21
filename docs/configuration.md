@@ -100,6 +100,7 @@ is parsed:
 | `tool_output` | `{"max_lines": 2000, "max_bytes": 51200}` | How much tool output goes to the model before it is truncated. See [Tool output](#tool-output). |
 | `compaction` | auto | When to summarize old history. See [Compaction](#compaction). |
 | `warming` | off | Keep-alive requests that keep an idle session's prompt cache warm. See [Prompt-cache warming](#prompt-cache-warming). |
+| `experimental` | `{}` | `image_generate` and `video_generate`: `false` turns that tool off, `{"model": "provider/model"}` names the model it prefers. Video generation is off unless set. See [generating images and videos](tools.md#generating-images-and-videos). |
 | `media` | see below | Limits that images are fitted to, and whether media goes to the blob store. See [Media limits](#media-limits). |
 | `formatter` | off | `true`, or an object of overrides. See [formatters](language-servers-and-formatters.md#formatters). |
 | `lsp` | off | `true`, or an object of overrides. See [language servers](language-servers-and-formatters.md#language-servers). |
