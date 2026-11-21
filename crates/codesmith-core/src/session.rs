@@ -1255,6 +1255,7 @@ impl Session {
                     name: t.name,
                     description: t.description,
                     parameters: t.parameters,
+                    freeform: None,
                 });
             }
         }
@@ -1530,6 +1531,7 @@ impl Session {
                     name: crate::automation::TOOL.into(),
                     description,
                     parameters,
+                    freeform: None,
                 }
             });
         let media = [(
@@ -1548,6 +1550,7 @@ impl Session {
                 name: name.into(),
                 description,
                 parameters,
+                freeform: None,
             }
         })
         .collect::<Vec<_>>();
@@ -1557,6 +1560,8 @@ impl Session {
                 name: crate::codemode::TOOL.into(),
                 description,
                 parameters,
+                // The program as raw text, for models that take it.
+                freeform: Some(codesmith_ai::Freeform::Text),
             }
         });
         let (mut hidden, inside) = self.placement();
@@ -1576,6 +1581,7 @@ impl Session {
                         name: t.name().into(),
                         description,
                         parameters,
+                        freeform: None,
                     }
                 }
                 Tool::Skill => {
@@ -1584,6 +1590,7 @@ impl Session {
                         name: t.name().into(),
                         description,
                         parameters,
+                        freeform: None,
                     }
                 }
                 t => t.spec(&self.shell),
@@ -1595,6 +1602,7 @@ impl Session {
                         name: t.name,
                         description: t.description,
                         parameters: t.schema,
+                        freeform: None,
                     }),
             )
             .chain(self.resource_tools())
@@ -1605,12 +1613,30 @@ impl Session {
                         name: t.name().to_string(),
                         description: t.description().to_string(),
                         parameters: t.parameters(),
+                        freeform: None,
                     }),
             )
             .chain(execute)
             .chain(automation)
             .chain(media)
+            .map(|t| self.supported_freeform(t))
             .collect()
+    }
+
+    /// `t` advertising its freeform format only when the model accepts it
+    /// (OpenCode's `capabilities.freeform`); otherwise the normal JSON
+    /// tool. The tool itself stays offered either way.
+    fn supported_freeform(&self, mut t: codesmith_ai::ToolSpec) -> codesmith_ai::ToolSpec {
+        let supported = |f: &codesmith_ai::Freeform| {
+            self.model
+                .freeform
+                .as_ref()
+                .is_some_and(|kinds| kinds.iter().any(|k| k == f.kind()))
+        };
+        if !t.freeform.as_ref().is_some_and(supported) {
+            t.freeform = None;
+        }
+        t
     }
 
     /// One user turn: runs steps until the model answers without tool calls.
@@ -2648,6 +2674,7 @@ impl Session {
                 name: name.into(),
                 description,
                 parameters,
+                freeform: None,
             })
             .collect()
     }
@@ -2934,6 +2961,7 @@ impl Session {
                 description: spec.description,
                 schema: spec.parameters,
                 output: None,
+                freeform: spec.freeform.is_some(),
             }
         });
         let mut entries: Vec<_> = self
@@ -2947,6 +2975,7 @@ impl Session {
                 description: t.description.clone(),
                 schema: t.schema.clone(),
                 output: None,
+                freeform: false,
             })
             .chain(builtins)
             .collect();

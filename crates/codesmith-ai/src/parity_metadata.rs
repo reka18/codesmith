@@ -211,7 +211,7 @@ fn signed_text_and_signature_overrides() {
             r.tools = vec![ToolSpec {
                 name: "get_weather".into(),
                 description: "Get current weather for a city.".into(),
-                parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"], "additionalProperties": false}),
+                parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"], "additionalProperties": false}), freeform: None, 
             }];
             r.max_tokens = Some(80);
             r.temperature = Some(0.0);
@@ -365,6 +365,7 @@ fn leaf(name: &str, description: &str) -> ToolSpec {
         name: name.into(),
         description: description.into(),
         parameters: json!({}),
+        freeform: None,
     }
 }
 

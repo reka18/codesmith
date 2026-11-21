@@ -19,6 +19,8 @@ mod hosted;
 mod openai;
 mod options;
 #[cfg(test)]
+mod parity_freeform;
+#[cfg(test)]
 mod parity_tests;
 #[cfg(test)]
 mod parity_ws;
@@ -665,6 +667,105 @@ pub struct ToolSpec {
     pub description: String,
     /// JSON Schema for the tool's input object.
     pub parameters: Value,
+    /// Raw-text wire encoding (OpenCode's `freeform`), for a tool whose
+    /// input is one required string parameter ([`freeform_field`]): models
+    /// that accept the format write that parameter's value directly
+    /// instead of JSON arguments. OpenAI Responses and Chat Completions
+    /// send such a tool as a custom tool; the other protocols send the
+    /// normal JSON tool. Calls, results and history always use the
+    /// `{field: text}` object. Set it only for models that accept the
+    /// format: nothing checks this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform: Option<Freeform>,
+}
+
+/// A freeform tool's format: unconstrained text, or text matching a regex
+/// or a Lark grammar.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Freeform {
+    Text,
+    Regex { pattern: String },
+    Lark { grammar: String },
+}
+
+impl Freeform {
+    /// The format's name, as models list it (`text`, `regex`, `lark`).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Freeform::Text => "text",
+            Freeform::Regex { .. } => "regex",
+            Freeform::Lark { .. } => "lark",
+        }
+    }
+
+    /// The grammar as OpenAI's custom tool format declares it:
+    /// `(syntax, definition)`, or `None` for unconstrained text.
+    pub fn grammar(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Freeform::Text => None,
+            Freeform::Regex { pattern } => Some(("regex", pattern)),
+            Freeform::Lark { grammar } => Some(("lark", grammar)),
+        }
+    }
+}
+
+/// The parameter a freeform call fills: the input schema's only property,
+/// when it is a required string.
+pub fn freeform_field(schema: &Value) -> Option<String> {
+    let props = schema["properties"].as_object()?;
+    if props.len() != 1 {
+        return None;
+    }
+    let (name, prop) = props.iter().next()?;
+    if prop["type"] != "string" {
+        return None;
+    }
+    schema["required"]
+        .as_array()?
+        .iter()
+        .any(|r| r == name.as_str())
+        .then(|| name.clone())
+}
+
+impl ToolSpec {
+    /// The field and format this tool goes out with as a custom tool, when
+    /// it declares a freeform format and has one required string field.
+    pub fn custom(&self) -> Option<(String, &Freeform)> {
+        let format = self.freeform.as_ref()?;
+        Some((freeform_field(&self.parameters)?, format))
+    }
+}
+
+/// The custom (freeform) tools of `req`, by name: the field each one's raw
+/// text fills. Namespaced tools are always JSON tools.
+pub(crate) fn custom_tools(req: &Request) -> std::collections::HashMap<String, String> {
+    req.tools
+        .iter()
+        .filter_map(|t| Some((t.name.clone(), t.custom()?.0)))
+        .collect()
+}
+
+/// A raw custom call's input object: `{field: raw}` (`input` when the tool
+/// is not declared custom in this request).
+pub(crate) fn custom_input(field: Option<&str>, raw: &str) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert(
+        field.unwrap_or("input").to_string(),
+        Value::String(raw.into()),
+    );
+    Value::Object(m)
+}
+
+/// The raw text a past call replays as when its tool now goes out as a
+/// custom tool: its field, or the whole input as JSON when that is not a
+/// string.
+pub(crate) fn custom_raw(field: &str, input: &Value) -> String {
+    match input.get(field) {
+        Some(Value::String(s)) => s.clone(),
+        _ if input.is_null() => "{}".into(),
+        _ => input.to_string(),
+    }
 }
 
 /// A group of tools (OpenCode's `ToolNamespace`). OpenAI Responses declares

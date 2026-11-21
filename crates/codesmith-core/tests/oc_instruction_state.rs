@@ -1097,6 +1097,7 @@ fn the_catalog_source_matches_the_code_mode_catalog() {
         description: d.into(),
         schema: json!({"type": "object", "properties": {"q": {"type": "string", "description": "Query"}}, "required": ["q"]}),
         output: None,
+        freeform: false,
     };
     let few = vec![
         e("gh", "issues", "List issues"),

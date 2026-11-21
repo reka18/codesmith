@@ -203,6 +203,7 @@ fn tool(name: &str, parameters: Value) -> ToolSpec {
         name: name.into(),
         description: "Lookup data".into(),
         parameters,
+        freeform: None,
     }
 }
 
@@ -1011,7 +1012,7 @@ fn openai_responses_requests() {
                     "limit": {"type": "integer", "maximum": 51200}}, "required": ["resource"]}
             ]});
             let mut r = hello("gpt-4.1-mini");
-            r.tools = vec![ToolSpec { name: "read".into(), description: "Read a path or resource.".into(), parameters: schema.clone() }];
+            r.tools = vec![ToolSpec { name: "read".into(), description: "Read a path or resource.".into(), parameters: schema.clone(), freeform: None,  }];
             assert_eq!(
                 responses::body(&r)["tools"],
                 json!([{"type": "function", "name": "read", "description": "Read a path or resource.", "strict": false, "parameters": schema}])

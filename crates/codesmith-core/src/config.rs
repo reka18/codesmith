@@ -346,6 +346,9 @@ pub struct ModelConfig {
 #[serde(default)]
 pub struct CapabilitiesConfig {
     pub tools: Option<bool>,
+    /// The freeform tool formats the model accepts (`text`, `regex`,
+    /// `lark`), in place of the catalog's.
+    pub freeform: Option<Vec<String>>,
     pub input: Option<Vec<String>>,
     pub output: Option<Vec<String>>,
     pub temperature: Option<bool>,
@@ -1209,6 +1212,10 @@ pub struct ModelRef {
     /// Input modalities (`text`, `image`, `pdf`, …); `None` when unknown,
     /// in which case images and PDFs are sent.
     pub input: Option<Vec<String>>,
+    /// The freeform tool formats the model accepts (`text`, `regex`,
+    /// `lark`): a tool declaring one of them goes out as a raw-text custom
+    /// tool. `None` when it accepts none (or nobody says).
+    pub freeform: Option<Vec<String>>,
     /// Prompt caching for this model's requests.
     pub cache: codesmith_ai::Cache,
     /// The WebSocket route session steps take (`settings.transport`), or
@@ -1722,6 +1729,13 @@ impl Config {
             _ => websocket_route(pid, protocol, &p.settings, &base_url)?,
         };
         let native_compaction = native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
+        // The configured formats, else the catalog's (OpenCode's
+        // `mergeCapabilities`).
+        let freeform = m
+            .capabilities
+            .as_ref()
+            .and_then(|c| c.freeform.clone())
+            .or_else(|| cm.and_then(|cm| cm.capabilities.freeform.clone()));
         Ok(ModelRef {
             provider_id: pid.to_string(),
             model_id: wire_model,
@@ -1746,6 +1760,7 @@ impl Config {
             context,
             temperature: m.temperature,
             input,
+            freeform,
             cache,
             websocket,
             native_compaction,

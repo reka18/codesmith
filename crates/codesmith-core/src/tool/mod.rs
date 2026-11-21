@@ -330,10 +330,16 @@ impl Tool {
             Tool::Question => crate::question::spec(),
             Tool::Lsp => lsp::spec(),
         };
+        // The patch as raw text matching OpenCode's patch grammar, for
+        // models that take Lark-constrained custom tools.
+        let freeform = (self == Tool::Patch).then(|| codesmith_ai::Freeform::Lark {
+            grammar: apply_patch::GRAMMAR.into(),
+        });
         ToolSpec {
             name: self.name().to_string(),
             description,
             parameters,
+            freeform,
         }
     }
 

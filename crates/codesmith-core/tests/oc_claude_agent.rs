@@ -700,6 +700,7 @@ fn tool(name: &str, description: &str, parameters: Value) -> ToolSpec {
         name: name.into(),
         description: description.into(),
         parameters,
+        freeform: None,
     }
 }
 

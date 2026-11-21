@@ -38,6 +38,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   (`Mcp::add`, `Mcp::remove`, `Mcp::restart`).
 - The TUI MCP dialog connects a server as soon as you sign in to it,
   without a restart.
+- **Freeform tools:** for models that accept them (`capabilities.freeform`),
+  `execute` takes its program and `patch` its patch as raw text, sent as
+  custom tools on OpenAI Responses and Chat Completions (with OpenCode's
+  patch grammar for `patch`). Calls and history keep the same input object,
+  and past calls replay the way each tool is declared now. Inside Code Mode
+  a freeform tool takes its string directly.
 - ACP: an editor-supplied HTTP MCP server no longer uses CodeSmith's saved
   MCP OAuth logins. The headers the editor sends are its credentials, as
   in OpenCode.

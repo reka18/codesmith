@@ -924,6 +924,7 @@ mod tests {
                 name: "read".into(),
                 description: "Read".into(),
                 parameters: json!({"$schema": "x", "type": "object", "additionalProperties": false, "properties": {"path": {"type": ["string", "null"], "description": "p"}, "n": {"type": "integer", "enum": [1, 2]}}, "required": ["path"]}),
+                freeform: None,
             }],
             max_tokens: Some(100),
             temperature: None,

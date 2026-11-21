@@ -27,53 +27,6 @@ const EXPECTATIONS: &str = concat!(
 /// `cassette` is the path under the fixtures dir without `.json`; a trailing
 /// `*` matches a prefix. `check` is one of the check names used below.
 const GAPS: &[(&str, &str, &str)] = &[
-    // CodeSmith only declares JSON-schema function tools, never freeform
-    // (`custom`) tools, so `custom_tool_call` items cannot occur for it.
-    (
-        "digitalocean-responses/calls-a-freeform-text-tool",
-        "tools",
-        FREEFORM,
-    ),
-    (
-        "digitalocean-responses/calls-a-freeform-text-tool",
-        "finish",
-        FREEFORM,
-    ),
-    (
-        "openrouter-responses/calls-a-freeform-text-tool",
-        "tools",
-        FREEFORM,
-    ),
-    (
-        "openrouter-responses/calls-a-freeform-text-tool",
-        "finish",
-        FREEFORM,
-    ),
-    (
-        "venice-responses/calls-a-freeform-text-tool",
-        "tools",
-        FREEFORM,
-    ),
-    (
-        "venice-responses/calls-a-freeform-text-tool",
-        "finish",
-        FREEFORM,
-    ),
-    (
-        "digitalocean-responses/calls-a-freeform-text-tool",
-        "expect",
-        FREEFORM,
-    ),
-    (
-        "openrouter-responses/calls-a-freeform-text-tool",
-        "expect",
-        FREEFORM,
-    ),
-    (
-        "venice-responses/calls-a-freeform-text-tool",
-        "expect",
-        FREEFORM,
-    ),
     // Provider-executed (hosted) tools: CodeSmith never enables them and does
     // not surface their calls/results as events; only the text is replayed.
     (
@@ -107,8 +60,6 @@ const GAPS: &[(&str, &str, &str)] = &[
 ];
 
 const HOSTED: &str = "hosted (provider-executed) tool calls are not surfaced as events";
-
-const FREEFORM: &str = "freeform custom_tool_call items: CodeSmith declares no freeform tools";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Proto {
@@ -176,8 +127,33 @@ fn frames(body: &str) -> Vec<sse::Frame> {
     out
 }
 
+/// The recorded request's custom (freeform) tools, declared as the
+/// recorded tests declare them: one required string field, `code`.
+fn custom_request(request: &Value) -> crate::Request {
+    let body: Value = request["body"]
+        .as_str()
+        .and_then(|b| serde_json::from_str(b).ok())
+        .unwrap_or(Value::Null);
+    let tools = body["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["type"] == "custom")
+        .map(|t| crate::ToolSpec {
+            name: t["name"].as_str().unwrap_or("").into(),
+            description: String::new(),
+            parameters: json!({"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}),
+            freeform: Some(crate::Freeform::Text),
+        })
+        .collect();
+    crate::Request {
+        tools,
+        ..Default::default()
+    }
+}
+
 /// Runs a body through the protocol's real decoder, frame by frame.
-fn run(proto: Proto, body: &str) -> Result<Vec<Event>, Error> {
+fn run(proto: Proto, body: &str, request: &Value) -> Result<Vec<Event>, Error> {
     fn go<D: Decoder>(mut d: D, frames: &[sse::Frame]) -> Result<Vec<Event>, Error> {
         let mut out = Vec::new();
         for f in frames {
@@ -191,9 +167,15 @@ fn run(proto: Proto, body: &str) -> Result<Vec<Event>, Error> {
     }
     let frames = frames(body);
     match proto {
-        Proto::Chat => go(openai::Decode::default(), &frames),
+        Proto::Chat => go(
+            openai::Decode::for_request(&Default::default(), &custom_request(request)),
+            &frames,
+        ),
         Proto::Anthropic => go(anthropic::Decode::default(), &frames),
-        Proto::Responses => go(responses::Decode::default(), &frames),
+        Proto::Responses => go(
+            responses::Decode::for_request(&custom_request(request)),
+            &frames,
+        ),
         Proto::Gemini => go(gemini::Decode::default(), &frames),
     }
 }
@@ -472,9 +454,10 @@ fn oracle(proto: Proto, body: &str) -> Summary {
                         it["name"].as_str().unwrap_or("").into(),
                         args(it["arguments"].as_str().unwrap_or("")),
                     )),
+                    // The raw text fills the tool's one field.
                     "custom_tool_call" => s.tools.push((
                         it["name"].as_str().unwrap_or("").into(),
-                        json!(it["input"].as_str().unwrap_or("")),
+                        json!({"code": it["input"].as_str().unwrap_or("")}),
                     )),
                     _ => {}
                 }
@@ -819,7 +802,7 @@ fn expected(spec: &Value, s: &Summary) -> Result<(), String> {
             return Err(format!("tool calls {got:?}, want {names:?}"));
         }
         for (w, (_, input)) in want.iter().zip(&s.tools) {
-            if !w["input"].is_null() && &w["input"] != input {
+            if !w["input"].is_null() && !input_matches(&w["input"], input) {
                 return Err(format!("tool input {input} != {}", w["input"]));
             }
         }
@@ -833,6 +816,27 @@ fn expected(spec: &Value, s: &Summary) -> Result<(), String> {
         expected_usage(&spec["usage"], s)?;
     }
     Ok(())
+}
+
+/// An expected tool input against the one decoded: equal, where a
+/// `<stringContaining 'x'>` marker (OpenCode's `expect.stringContaining`)
+/// matches any string containing `x`.
+fn input_matches(want: &Value, got: &Value) -> bool {
+    match (want, got) {
+        (Value::String(w), Value::String(g)) => match w
+            .strip_prefix("<stringContaining '")
+            .and_then(|w| w.strip_suffix("'>"))
+        {
+            Some(part) => g.contains(part),
+            None => w == g,
+        },
+        (Value::Object(w), Value::Object(g)) => {
+            w.len() == g.len()
+                && w.iter()
+                    .all(|(k, v)| g.get(k).is_some_and(|x| input_matches(v, x)))
+        }
+        _ => want == got,
+    }
 }
 
 #[test]
@@ -876,7 +880,7 @@ fn opencode_recordings_replay() {
                 );
                 continue;
             }
-            let events = match run(proto, &body) {
+            let events = match run(proto, &body, &it["request"]) {
                 Ok(ev) => ev,
                 Err(e) => {
                     report.check(name, i, "parse", false, e.to_string());

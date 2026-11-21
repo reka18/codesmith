@@ -249,6 +249,7 @@ impl Api {
                 description: t.description.clone(),
                 schema: t.input.clone(),
                 output: t.output.clone(),
+                freeform: false,
             })
             .collect()
     }

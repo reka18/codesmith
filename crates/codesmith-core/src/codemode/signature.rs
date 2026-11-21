@@ -707,6 +707,28 @@ pub fn parameters(schema: &Value) -> String {
     format!("({})", typescript(schema, true))
 }
 
+/// The parameter list of a freeform tool whose input is one required
+/// string field: that string, taken directly (`(patchText: string)`, with
+/// the field's JSDoc inline), as in OpenCode's `stringParameter`. `None`
+/// when the input is not such a field.
+pub fn string_parameter(schema: &Value) -> Option<String> {
+    let name = codesmith_ai::freeform_field(schema)?;
+    let field = &schema["properties"][&name];
+    let identifier = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+    let label = if identifier { name.as_str() } else { "input" };
+    let doc = jsdoc(field, "");
+    let doc = doc
+        .strip_suffix('\n')
+        .map_or(doc.clone(), |d| format!("{d} "));
+    Some(format!("({doc}{label}: {})", typescript(field, false)))
+}
+
 /// `tools.ns.name(...): Promise<...>`, as OpenCode's catalog and search
 /// show a tool. `output` is the tool's output schema, when it has one.
 pub fn signature(path: &str, input: &Value, output: Option<&Value>) -> String {

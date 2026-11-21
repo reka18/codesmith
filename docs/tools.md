@@ -47,6 +47,20 @@ allows none. MCP tools called from Code Mode are repaired the same way. A
 call to `bash` when no tool has that name runs as `shell`, and its result
 tells the model to call `shell` next time.
 
+### Freeform tools
+
+As in OpenCode, `execute` and `patch` can take their one input as raw text
+instead of JSON arguments: `execute` its program as plain text, `patch` its
+patch constrained by the patch format's Lark grammar. This is offered only to
+models that list the format among their capabilities (`text`, `regex` or
+`lark`, from the models.dev catalog or `capabilities.freeform` in the model's
+config; see [configuration](configuration.md)), and only on OpenAI Responses
+and Chat Completions, which send such a tool as a custom tool. Every other
+model and protocol gets the normal JSON tool. Either way the call runs with
+the same input object (`{"code": ...}`, `{"patchText": ...}`) and the same
+permission checks. Inside Code Mode, a freeform tool can be called with its
+string directly: `tools.patch("*** Begin Patch\n...")`.
+
 Each agent has a step limit, 200 by default (`agents.<id>.steps`). On the
 last step, the model has to answer in text.
 

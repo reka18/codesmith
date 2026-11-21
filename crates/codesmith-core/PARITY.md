@@ -21,7 +21,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
-| Model requests and transport | 68 | 21 | 0 | 1 | 40 | 6 | 0 |
+| Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
 | Sessions and their store | 308 | 75 | 0 | 0 | 179 | 54 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
@@ -44,7 +44,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
-| Code Mode | 67 | 28 | 0 | 1 | 19 | 19 | 0 |
+| Code Mode | 67 | 29 | 0 | 0 | 19 | 19 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1671** | **18** | **104** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1673** | **18** | **102** | **2400** | **1395** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (104 cases in 9 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (102 cases in 8 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -95,7 +95,6 @@ Missing features, by how many OpenCode test cases each would unlock (104 cases i
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Freeform Tool Formats](#freeform-tool-formats) | 2 | custom/freeform tool definitions; execute taking raw code as freeform text |
 
 ### ChatGPT Subscription Login
 
@@ -229,13 +228,6 @@ Missing features, by how many OpenCode test cases each would unlock (104 cases i
 - `voice.test.ts`: uses the first key or env connection Integration lists and never a ChatGPT sign-in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
-
-### Freeform Tool Formats
-
-2 cases.
-
-- `session-model-request-hooks.test.ts`: advertises only supported freeform formats without removing tools or changing the shared definitions
-- `tool-execute.test.ts`: execute takes raw code as freeform text, and Code Mode calls freeform tools with a string
 
 ## Porting backlog
 
@@ -1423,7 +1415,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (61 of 68)</summary>
+<details><summary>Model requests and transport (62 of 68)</summary>
 
 
 **`session-checkpoint-transport.test.ts`**
@@ -1438,6 +1430,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-model-request-hooks.test.ts`**
 
+- P advertises only supported freeform formats without removing tools or changing the shared definitions — `tests/oc_freeform.rs::oc_session_model_request_advertises_only_supported_freeform_formats` (adapted: CodeSmith's freeform tools are execute (text) and patch (lark), offered to a GPT model; the formats come from the model's capabilities.freeform)
 - P tags every Session request kind on http.request and http.response — `tests/oc_http_hooks.rs::oc_tags_every_session_request_kind_on_http_request_and_http_response` (adapted: `Plugin::http_request`/`http_response` with a `RequestScope`)
 - P sends a kept request's original body and a replaced request's new body — `tests/oc_http_hooks.rs::oc_sends_a_kept_requests_original_body_and_a_replaced_requests_new_body` (adapted: the hook gets the `reqwest::Request`)
 - P keeps hook edits to a tool schema out of later requests — `tests/oc_context_hooks.rs::oc_keeps_hook_edits_to_a_tool_schema_out_of_later_requests`
@@ -2889,7 +2882,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (47 of 67)</summary>
+<details><summary>Code Mode (48 of 67)</summary>
 
 
 **`codemode.test.ts`**
@@ -2932,6 +2925,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`tool-execute.test.ts`**
 
+- P execute takes raw code as freeform text, and Code Mode calls freeform tools with a string — `tests/oc_freeform.rs::oc_tool_execute_takes_raw_code_as_freeform_text_and_code_mode_calls_freeform_tools_with_a_string` (adapted: results are Promise<unknown> (no output schemas); execute's own freeform format is pinned by the session test)
 - D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access · without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 · whole-body methods share consumption and expose Bun's empty body · discards a redirect body before reading the destination — platform: Bun/Node globals and fetch body internals (CodeSmith's Code Mode runs in Boa without them)
 - D executions share the prepared runtime of an inventory while keeping per-call state — effect-internal: shared prepared runtime
 - P execute sends at most one progress update per 100 ms with the latest rows — `tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows` (adapted: the row throttle driven directly; the session sends the rows as `tool_progress`)

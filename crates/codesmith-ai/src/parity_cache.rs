@@ -63,6 +63,7 @@ fn lookup() -> ToolSpec {
         name: "lookup".into(),
         description: "Look up a value".into(),
         parameters: json!({"type": "object", "properties": {}}),
+        freeform: None,
     }
 }
 
@@ -528,7 +529,7 @@ fn tool_choice() {
             r.tools = vec![ToolSpec {
                 name: "lookup".into(),
                 description: "Look things up".into(),
-                parameters: json!({"type": "object", "properties": {}}),
+                parameters: json!({"type": "object", "properties": {}}), freeform: None, 
             }];
             r.tool_choice = Some(ToolChoice::None);
             let b = anthropic::body(&r);

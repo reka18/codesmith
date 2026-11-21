@@ -1352,6 +1352,7 @@ impl Runner {
                         description: t.description,
                         schema: t.schema,
                         output: None,
+                        freeform: false,
                     })
                     .collect();
                 let mut input = json!({"state": a.state, "now": crate::store::now(), "runs": a.runs, "args": args});

@@ -1643,6 +1643,7 @@ fn entries_do_not_shadow_other_tools() {
         description: String::new(),
         schema: json!({"type": "object"}),
         output: None,
+        freeform: false,
     };
     let api = api_at(&happy_path(), BASE, None);
     let mut entries = vec![entry("api", "users.get"), entry("", "read")];

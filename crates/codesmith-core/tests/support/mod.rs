@@ -146,7 +146,11 @@ impl H {
                                    "models": {"m": {}}}},
         });
         for (k, val) in extra.as_object().unwrap() {
-            v[k] = val.clone();
+            match k.as_str() {
+                // The fake model's own config.
+                "fakeModel" => v["providers"]["fake"]["models"]["m"] = val.clone(),
+                _ => v[k] = val.clone(),
+            }
         }
         let config: Config = serde_json::from_value(v).unwrap();
         let loaded = Loaded {

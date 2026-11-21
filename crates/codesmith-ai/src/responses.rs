@@ -114,14 +114,38 @@ fn item_id(meta: Option<&ReasoningMeta>) -> Option<&str> {
     (sep > 0 && sep < id.len() - 1).then_some(id)
 }
 
-/// A `function_call` item, with its item id when it has a valid one.
-fn function_call(id: &str, name: &str, args: &Value, meta: &Option<ReasoningMeta>) -> Value {
-    let mut item = json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()});
+/// A `function_call` item, with its item id when it has a valid one; a
+/// `custom_tool_call` when its tool goes out as a custom tool in this
+/// request (`custom` names those tools' fields). A call replays as the
+/// type its tool is declared with now, and keeps its item id only when
+/// that is the type it arrived as, since OpenAI item ids name their type
+/// (`fc_`, `ctc_`).
+fn function_call(
+    id: &str,
+    name: &str,
+    args: &Value,
+    meta: &Option<ReasoningMeta>,
+    custom: &Custom,
+) -> Value {
+    let field = custom.get(name);
+    let mut item = match field {
+        Some(f) => {
+            json!({"type": "custom_tool_call", "call_id": split_id(id).0, "name": name, "input": crate::custom_raw(f, args)})
+        }
+        None => {
+            json!({"type": "function_call", "call_id": split_id(id).0, "name": name, "arguments": args.to_string()})
+        }
+    };
     if let Some(i) = item_id(meta_for(meta, Protocol::OpenaiResponses)) {
-        item["id"] = json!(i);
+        if i.starts_with("ctc_") == field.is_some() {
+            item["id"] = json!(i);
+        }
     }
     item
 }
+
+/// Custom (freeform) tools by name: the field each one's raw text fills.
+type Custom = std::collections::HashMap<String, String>;
 
 /// One assistant message's input items (after OpenCode's `lowerMessages`).
 /// Consecutive text of one message item (same item id and phase) is one
@@ -132,7 +156,7 @@ fn function_call(id: &str, name: &str, args: &Value, meta: &Option<ReasoningMeta
 /// rejects a reasoning item without its following item). Reasoning parts of
 /// one item merge. Media the model generated (Responses has no assistant
 /// image item) replays as user input.
-fn assistant_items(m: &Message, input: &mut Vec<Value>, video: VideoAs) {
+fn assistant_items(m: &Message, input: &mut Vec<Value>, video: VideoAs, custom: &Custom) {
     let has_output = |from: usize| {
         m.parts[from..].iter().any(|p| match p {
             Part::Text(t) => !t.trim().is_empty(),
@@ -179,7 +203,7 @@ fn assistant_items(m: &Message, input: &mut Vec<Value>, video: VideoAs) {
                 name,
                 input: args,
                 meta,
-            } => input.push(function_call(id, name, args, meta)),
+            } => input.push(function_call(id, name, args, meta, custom)),
             Part::Media(media) => input.push(
                 json!({"type": "message", "role": "user", "content": [lower_media(media, video)]}),
             ),
@@ -327,6 +351,20 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
     } else {
         (false, req.options.reasoning_effort().map(str::to_string))
     };
+    let custom = crate::custom_tools(req);
+    // The calls whose results go back as custom tool call outputs.
+    let custom_calls: std::collections::HashSet<String> = req
+        .messages
+        .iter()
+        .flat_map(|m| &m.parts)
+        .filter_map(|p| match p {
+            Part::ToolCall { id, name, .. } if custom.contains_key(name) => {
+                Some(split_id(id).0.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    let tool_output = |p: &Part, video| tool_output(p, video, &custom_calls);
     let mut input = Vec::new();
     for m in &normalize_tool_history(&req.messages) {
         if let Some((e, _)) = effort_update(m) {
@@ -362,7 +400,7 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
             continue;
         }
         if m.role == Role::Assistant {
-            assistant_items(m, &mut input, video);
+            assistant_items(m, &mut input, video, &custom);
             continue;
         }
         // A system update is a developer message in place (after OpenCode).
@@ -373,7 +411,7 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
         for p in &m.parts {
             match p {
                 Part::Text(t) => input.push(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t.as_str()}]})),
-                Part::ToolCall { id, name, input: args, meta } => input.push(function_call(id, name, args, meta)),
+                Part::ToolCall { id, name, input: args, meta } => input.push(function_call(id, name, args, meta, &custom)),
                 Part::ToolResult { .. } => input.push(tool_output(p, video)),
                 _ => {}
             }
@@ -397,7 +435,20 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
     if !req.tools.is_empty() || !req.namespaces.is_empty() || !hosted.is_empty() {
         let sanitizer = schema::for_model(&req.model);
         let function = |t: &crate::ToolSpec| json!({"type": "function", "name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer), "strict": false});
-        let mut tools: Vec<Value> = req.tools.iter().map(function).collect();
+        // A freeform tool goes out as a custom tool.
+        let lower = |t: &crate::ToolSpec| match t.custom() {
+            Some((_, format)) => {
+                let format = match format.grammar() {
+                    Some((syntax, definition)) => {
+                        json!({"type": "grammar", "syntax": syntax, "definition": definition})
+                    }
+                    None => json!({"type": "text"}),
+                };
+                json!({"type": "custom", "name": t.name, "description": t.description, "format": format})
+            }
+            None => function(t),
+        };
+        let mut tools: Vec<Value> = req.tools.iter().map(lower).collect();
         // Namespaces natively (OpenCode's), their leaves under their own
         // names; OpenAI requires a description.
         tools.extend(req.namespaces.iter().map(|n| {
@@ -416,6 +467,9 @@ pub fn body_for(req: &Request, base_url: &str) -> Value {
                 ToolChoice::Auto => json!("auto"),
                 ToolChoice::None => json!("none"),
                 ToolChoice::Required => json!("required"),
+                ToolChoice::Tool(name) if custom.contains_key(name) => {
+                    json!({"type": "custom", "name": name})
+                }
                 ToolChoice::Tool(name) => crate::hosted::responses_choice(req, &hosted)
                     .unwrap_or_else(|| json!({"type": "function", "name": name})),
             };
@@ -460,8 +514,9 @@ pub fn check(req: &Request) -> Result<(), Error> {
     crate::hosted::declared(req, Protocol::OpenaiResponses).map(drop)
 }
 
-/// A `function_call_output`; with media its output is a content array.
-fn tool_output(p: &Part, video: VideoAs) -> Value {
+/// A `function_call_output` (a `custom_tool_call_output` for a call in
+/// `custom`); with media its output is a content array.
+fn tool_output(p: &Part, video: VideoAs, custom: &std::collections::HashSet<String>) -> Value {
     let Part::ToolResult {
         id, content, media, ..
     } = p
@@ -477,7 +532,13 @@ fn tool_output(p: &Part, video: VideoAs) -> Value {
             .chain(media.iter().map(|m| lower_media(m, video)))
             .collect::<Vec<_>>())
     };
-    json!({"type": "function_call_output", "call_id": split_id(id).0, "output": output})
+    let call = split_id(id).0;
+    let kind = if custom.contains(call) {
+        "custom_tool_call_output"
+    } else {
+        "function_call_output"
+    };
+    json!({"type": kind, "call_id": call, "output": output})
 }
 
 /// Meta cannot see video in tool results: each batch of consecutive
@@ -493,7 +554,7 @@ fn hoist_videos(input: &mut Vec<Value>) {
         }
     };
     for mut item in input.drain(..) {
-        if item["type"] != "function_call_output" {
+        if item["type"] != "function_call_output" && item["type"] != "custom_tool_call_output" {
             flush(&mut out, &mut videos);
             out.push(item);
             continue;
@@ -525,6 +586,9 @@ struct Pending {
     args: String,
     /// The id its input streams under.
     stream_id: String,
+    /// A custom tool call: its raw input so far (its JSON arguments
+    /// stream as `{"<field>":"<escaped raw>` and close at its end).
+    custom: Option<String>,
 }
 
 /// A reasoning output item between `output_item.added` and its completion.
@@ -569,6 +633,8 @@ pub struct State {
     /// index names its item (GitHub Copilot sends a different id on every
     /// event of an item).
     outputs: std::collections::HashMap<u64, String>,
+    /// The request's custom tools: the field each one's raw text fills.
+    custom: Custom,
     pub done: bool,
 }
 
@@ -1017,6 +1083,7 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 name: call_name(it),
                 args: item_str(it, "arguments").into(),
                 stream_id: call_id(item_str(it, "call_id"), item_id),
+                custom: None,
             };
             out.push(Event::ToolInputStart {
                 id: p.stream_id.clone(),
@@ -1029,6 +1096,93 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 });
             }
             state.pending.push(p);
+        }
+        // A custom (freeform) tool call streams raw text, re-encoded as
+        // JSON argument fragments so its input events match a JSON tool's.
+        "response.output_item.added" if v["item"]["type"] == "custom_tool_call" => {
+            let it = &v["item"];
+            let item_id = item_str(it, "id");
+            if !item_id.is_empty() && state.pending.iter().any(|p| p.item_id == item_id) {
+                return Ok(out);
+            }
+            let name = call_name(it);
+            let raw = item_str(it, "input").to_string();
+            let p = Pending {
+                output_index: v["output_index"].as_u64(),
+                item_id: item_id.into(),
+                call_id: item_str(it, "call_id").into(),
+                args: custom_start(state.custom.get(&name), &raw),
+                name,
+                stream_id: call_id(item_str(it, "call_id"), item_id),
+                custom: Some(raw),
+            };
+            out.push(Event::ToolInputStart {
+                id: p.stream_id.clone(),
+                name: p.name.clone(),
+            });
+            out.push(Event::ToolInputDelta {
+                id: p.stream_id.clone(),
+                text: p.args.clone(),
+            });
+            state.pending.push(p);
+        }
+        "response.custom_tool_call_input.delta" => {
+            if let Some(p) = state.find(v).filter(|p| p.custom.is_some()) {
+                let d = v["delta"].as_str().unwrap_or("");
+                if !d.is_empty() {
+                    let text = custom_delta(d);
+                    p.args.push_str(&text);
+                    p.custom.get_or_insert_default().push_str(d);
+                    out.push(Event::ToolInputDelta {
+                        id: p.stream_id.clone(),
+                        text,
+                    });
+                }
+            }
+        }
+        "response.custom_tool_call_input.done" => {
+            if let (Some(p), Some(i)) = (state.find(v), v["input"].as_str()) {
+                if p.custom.is_some() {
+                    p.custom = Some(i.to_string());
+                }
+            }
+        }
+        // The completed item is authoritative.
+        "response.output_item.done" if v["item"]["type"] == "custom_tool_call" => {
+            let it = &v["item"];
+            let item_id = item_str(it, "id");
+            let name = call_name(it);
+            let raw = item_str(it, "input");
+            let at = state
+                .pending
+                .iter()
+                .position(|p| p.item_id == item_id && !item_id.is_empty());
+            let field = state.custom.get(&name).cloned();
+            let stream_id = match at {
+                Some(i) => {
+                    let p = state.pending.remove(i);
+                    // The streamed fragments close when they spell the
+                    // final input.
+                    if p.custom.as_deref() == Some(raw) {
+                        out.push(Event::ToolInputDelta {
+                            id: p.stream_id.clone(),
+                            text: CUSTOM_END.into(),
+                        });
+                    }
+                    p.stream_id
+                }
+                None => {
+                    let id = call_id(item_str(it, "call_id"), item_id);
+                    out.push(Event::ToolInputStart {
+                        id: id.clone(),
+                        name: name.clone(),
+                    });
+                    id
+                }
+            };
+            out.push(Event::ToolInputEnd { id: stream_id });
+            let input = crate::custom_input(field.as_deref(), raw).to_string();
+            state.call(item_str(it, "call_id"), item_id, &name, &input, &mut out);
         }
         "response.function_call_arguments.delta" => {
             if let Some(p) = state.find(v) {
@@ -1104,11 +1258,27 @@ pub fn handle(state: &mut State, kind: &str, v: &Value) -> Result<Vec<Event>, Er
                 if !complete {
                     continue;
                 }
+                let kind = if p.custom.is_some() {
+                    "custom_tool_call"
+                } else {
+                    "function_call"
+                };
                 let done = r["output"].as_array().into_iter().flatten().find(|o| {
-                    o["type"] == "function_call"
+                    o["type"] == kind
                         && ((!p.item_id.is_empty() && o["id"] == p.item_id.as_str())
                             || (!p.call_id.is_empty() && o["call_id"] == p.call_id.as_str()))
                 });
+                if let Some(raw) = &p.custom {
+                    let raw = done.and_then(|o| o["input"].as_str()).unwrap_or(raw);
+                    let name = done
+                        .filter(|o| o["name"].is_string())
+                        .map(call_name)
+                        .unwrap_or_else(|| p.name.clone());
+                    let field = state.custom.get(&name).cloned();
+                    let input = crate::custom_input(field.as_deref(), raw).to_string();
+                    state.call(&p.stream_id, &p.item_id, &name, &input, &mut out);
+                    continue;
+                }
                 let args = done
                     .and_then(|o| o["arguments"].as_str())
                     .unwrap_or(&p.args);
@@ -1209,6 +1379,34 @@ pub struct Decode {
     state: State,
 }
 
+impl Decode {
+    /// A decoder for `req`'s response: its custom tools' calls fill the
+    /// fields they declare.
+    pub fn for_request(req: &Request) -> Self {
+        Decode {
+            state: State {
+                custom: crate::custom_tools(req),
+                ..State::default()
+            },
+        }
+    }
+}
+
+/// A custom call's opening JSON fragment, `{"<field>":"`, then the escaped
+/// first text (the field is `input` for a tool not declared custom).
+fn custom_start(field: Option<&String>, raw: &str) -> String {
+    let field = Value::String(field.map_or("input", |f| f.as_str()).into());
+    format!("{{{field}:\"{}", custom_delta(raw))
+}
+
+/// Raw text escaped as the inside of a JSON string.
+fn custom_delta(raw: &str) -> String {
+    let s = Value::String(raw.into()).to_string();
+    s[1..s.len() - 1].to_string()
+}
+
+const CUSTOM_END: &str = "\"}";
+
 impl Decoder for Decode {
     fn frame(&mut self, f: &sse::Frame) -> Result<Vec<Event>, Error> {
         if f.data.trim() == "[DONE]" {
@@ -1243,7 +1441,7 @@ pub async fn stream(
     req: &Request,
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(p, request(p, client, req)).await?;
-    Ok(drive(resp, Decode::default()))
+    Ok(drive(resp, Decode::for_request(req)))
 }
 
 /// A `compaction` output item as a checkpoint.
@@ -1301,7 +1499,7 @@ pub(crate) async fn stream_trigger(
     }
     let rb = p.json_post(client, "responses", crate::openai::headers(p, req), &body);
     let resp = crate::endpoint::send(p, rb).await?;
-    Ok(drive(resp, Decode::default()))
+    Ok(drive(resp, Decode::for_request(req)))
 }
 
 /// A trigger's response as the window it installs: exactly one checkpoint
@@ -1475,6 +1673,7 @@ mod tests {
                 name: "read".into(),
                 description: "Read".into(),
                 parameters: json!({"type": "object"}),
+                freeform: None,
             }],
             max_tokens: Some(64),
             temperature: None,

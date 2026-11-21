@@ -487,6 +487,7 @@ mod tests {
             description: description.into(),
             schema: json!({"type": "object", "properties": {}}),
             output: None,
+            freeform: false,
         }
     }
 

@@ -1,0 +1,5 @@
+# Freeform Tool Formats, ported in tests/oc_freeform.rs.
+@session-model-request-hooks.test.ts
+44 :: ported :: tests/oc_freeform.rs::oc_session_model_request_advertises_only_supported_freeform_formats :: adapted: CodeSmith's freeform tools are execute (text) and patch (lark), offered to a GPT model; the formats come from the model's capabilities.freeform
+@tool-execute.test.ts
+35 :: ported :: tests/oc_freeform.rs::oc_tool_execute_takes_raw_code_as_freeform_text_and_code_mode_calls_freeform_tools_with_a_string :: adapted: results are Promise<unknown> (no output schemas); execute's own freeform format is pinned by the session test

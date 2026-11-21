@@ -21,6 +21,10 @@ use serde_json::{json, Value};
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The patch format's Lark grammar (OpenCode's `patch-grammar.txt`, MIT),
+/// which constrains the patch a model writes as raw text.
+pub const GRAMMAR: &str = include_str!("patch_grammar.lark");
+
 pub fn spec() -> (String, Value) {
     (
         include_str!("patch.txt").trim_end().to_string(),

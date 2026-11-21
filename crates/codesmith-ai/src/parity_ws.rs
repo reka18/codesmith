@@ -1001,6 +1001,7 @@ fn prepares_the_composed_native_continuation_request() {
             name: "get_weather".into(),
             description: "Weather".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            freeform: None,
         }],
         ..Default::default()
     };

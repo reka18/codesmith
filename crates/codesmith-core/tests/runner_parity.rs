@@ -1820,6 +1820,7 @@ async fn the_prompt_estimate_counts_every_offered_tool() {
         name: codesmith_core::automation::TOOL.into(),
         description,
         parameters,
+        freeform: None,
     };
     let extra = serde_json::to_string(&spec).unwrap().len() as u64 / 4;
     let diff = stored.s.estimate_prompt() - plain.s.estimate_prompt();

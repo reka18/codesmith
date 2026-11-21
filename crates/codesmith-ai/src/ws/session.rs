@@ -214,7 +214,8 @@ impl SessionTransport {
                 return Err(e);
             }
         };
-        Ok(self.frames(exchange, channel, driver, create, fallback))
+        let decode = Decode::for_request(&req);
+        Ok(self.frames(exchange, channel, driver, create, fallback, decode))
     }
 
     /// Select (or open) the connection and send the request on it.
@@ -304,6 +305,7 @@ impl SessionTransport {
         fallback: impl Fn() -> futures_util::future::BoxFuture<'static, Result<EventStream, Error>>
             + Send
             + 'static,
+        mut decode: Decode,
     ) -> EventStream {
         let idle = self.idle_timeout;
         let this = SessionTransport {
@@ -313,7 +315,6 @@ impl SessionTransport {
             connect_timeout: self.connect_timeout,
         };
         async_stream::stream! {
-            let mut decode = Decode::default();
             let mut yielded = false;
             let mut retried = false;
             'exchange: loop {

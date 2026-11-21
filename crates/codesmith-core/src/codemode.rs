@@ -48,6 +48,11 @@ pub struct Entry {
     /// do); the catalog shows `Promise<unknown>` without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
+    /// A freeform tool (OpenCode's `freeform`): when its input is one
+    /// required string field, programs may pass that string directly
+    /// (`tools.apply_patch("*** Begin Patch...")`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub freeform: bool,
 }
 
 pub const TOOL: &str = "execute";
@@ -104,11 +109,24 @@ pub fn signature(e: &Entry) -> String {
     if let Some(o) = &e.output {
         o.to_string().hash(&mut h);
     }
+    e.freeform.hash(&mut h);
     let key = h.finish();
     if let Some(s) = MEMO.lock().ok().and_then(|m| m.get(&key).cloned()) {
         return s;
     }
-    let s = signature::signature(&path, &e.schema, e.output.as_ref());
+    let s = match e
+        .freeform
+        .then(|| signature::string_parameter(&e.schema))
+        .flatten()
+    {
+        Some(params) => format!(
+            "{path}{params}: Promise<{}>",
+            e.output
+                .as_ref()
+                .map_or_else(|| "unknown".to_string(), |o| signature::typescript(o, true))
+        ),
+        None => signature::signature(&path, &e.schema, e.output.as_ref()),
+    };
     if let Ok(mut m) = MEMO.lock() {
         if m.len() >= KEEP {
             m.clear();
@@ -944,6 +962,21 @@ where
     F: FnMut(String, Value) -> Fut,
     Fut: std::future::Future<Output = Result<String, String>>,
 {
+    // A freeform tool called with a string gets it as its one field.
+    let fields: std::collections::HashMap<String, String> = entries
+        .iter()
+        .filter(|e| e.freeform)
+        .filter_map(|e| Some((e.tool.clone(), codesmith_ai::freeform_field(&e.schema)?)))
+        .collect();
+    let mut exec = |tool: String, input: Value| {
+        let input = match (input, fields.get(&tool)) {
+            (Value::String(s), Some(f)) => {
+                Value::Object(serde_json::Map::from_iter([(f.clone(), Value::String(s))]))
+            }
+            (input, _) => input,
+        };
+        exec(tool, input)
+    };
     match helper {
         Some(h) => execute_in_child(h, code, entries, max_calls, timeout, &mut exec).await,
         None => execute_in_thread(code, entries, max_calls, timeout, &mut exec).await,
@@ -963,6 +996,7 @@ mod tests {
                 description: "List issues\nmore".into(),
                 schema: json!({"type": "object", "properties": {"repo": {"type": "string"}, "state": {"enum": ["open", "closed"]}}, "required": ["repo"]}),
                 output: None,
+                freeform: false,
             },
             Entry {
                 tool: "gh_get-issue".into(),
@@ -971,6 +1005,7 @@ mod tests {
                 description: String::new(),
                 schema: json!({"type": "object", "properties": {"n": {"type": "integer"}}}),
                 output: None,
+                freeform: false,
             },
         ]
     }
@@ -998,6 +1033,7 @@ mod tests {
                 description: "Does a thing with a fairly long description".into(),
                 schema: json!({"type": "object", "properties": {"q": {"type": "string", "description": "What to look for"}}}),
                 output: None,
+                freeform: false,
             })
             .collect();
         let s = instructions(&many);

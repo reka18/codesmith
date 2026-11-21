@@ -68,6 +68,7 @@ fn weather() -> ToolSpec {
         name: "get_weather".into(),
         description: "Get current weather for a city.".into(),
         parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"], "additionalProperties": false}),
+        freeform: None,
     }
 }
 

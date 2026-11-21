@@ -287,6 +287,23 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
         }
     }
     flush_attachments(&mut messages, &mut attachments, compat);
+    // A call replays as the type its tool is declared with in this request.
+    let custom = crate::custom_tools(req);
+    if !custom.is_empty() {
+        for call in messages
+            .iter_mut()
+            .filter_map(|m| m["tool_calls"].as_array_mut())
+            .flatten()
+        {
+            let name = call["function"]["name"].as_str().unwrap_or("");
+            let Some(field) = custom.get(name) else {
+                continue;
+            };
+            let args = call["function"]["arguments"].as_str().unwrap_or("{}");
+            let input: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+            *call = json!({"id": call["id"], "type": "custom", "custom": {"name": name, "input": crate::custom_raw(field, &input)}});
+        }
+    }
     let mut body = json!({
         "model": req.model,
         "messages": messages,
@@ -304,13 +321,26 @@ pub fn body_for(req: &Request, compat: &Compat) -> Value {
         body["tools"] = req
             .tools
             .iter()
-            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer)}}))
+            .map(|t| match t.custom() {
+                // A freeform tool goes out as a custom tool.
+                Some((_, format)) => {
+                    let format = match format.grammar() {
+                        Some((syntax, definition)) => json!({"type": "grammar", "grammar": {"syntax": syntax, "definition": definition}}),
+                        None => json!({"type": "text"}),
+                    };
+                    json!({"type": "custom", "custom": {"name": t.name, "description": t.description, "format": format}})
+                }
+                None => json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": schema::project(&t.parameters, sanitizer)}}),
+            })
             .collect();
         if let Some(c) = &req.tool_choice {
             body["tool_choice"] = match c {
                 ToolChoice::Auto => json!("auto"),
                 ToolChoice::None => json!("none"),
                 ToolChoice::Required => json!("required"),
+                ToolChoice::Tool(name) if custom.contains_key(name) => {
+                    json!({"type": "custom", "custom": {"name": name}})
+                }
                 ToolChoice::Tool(name) => json!({"type": "function", "function": {"name": name}}),
             };
         }
@@ -671,6 +701,9 @@ struct Call {
     signature: Option<String>,
     /// The id its input streams under, once its name is known.
     streaming: Option<String>,
+    /// A custom tool call's raw input so far; its `args` are the JSON
+    /// fragment `{"<field>":"<escaped raw>`, closed when it ends.
+    raw: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -693,6 +726,8 @@ pub struct State {
     reasoning: bool,
     /// The stream may end without a finish reason ([`Compat::optional_finish`]).
     pub optional_finish: bool,
+    /// The request's custom tools: the field each one's raw text fills.
+    custom: std::collections::HashMap<String, String>,
 }
 
 /// A `reasoning_details` entry in a dialect CodeSmith knows: OpenRouter's
@@ -900,7 +935,11 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
     let delta = &choice["delta"];
     let changes_call = |c: &Value| {
         let set = |x: &Value| x.as_str().is_some_and(|s| !s.is_empty());
-        set(&c["id"]) || set(&c["function"]["name"]) || set(&c["function"]["arguments"])
+        set(&c["id"])
+            || set(&c["function"]["name"])
+            || set(&c["function"]["arguments"])
+            || set(&c["custom"]["name"])
+            || set(&c["custom"]["input"])
     };
     let calls = delta["tool_calls"]
         .as_array()
@@ -982,6 +1021,7 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
             _ => {}
         }
     }
+    let custom = std::mem::take(&mut state.custom);
     for c in delta["tool_calls"].as_array().into_iter().flatten() {
         let slot = state.slot(c);
         // Later deltas may repeat or blank the identity; the first one wins.
@@ -990,7 +1030,11 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
                 slot.id = id.to_string();
             }
         }
-        if let Some(n) = c["function"]["name"].as_str().filter(|s| !s.is_empty()) {
+        let name = c["function"]["name"]
+            .as_str()
+            .or(c["custom"]["name"].as_str())
+            .filter(|s| !s.is_empty());
+        if let Some(n) = name {
             if slot.name.is_empty() {
                 slot.name = n.to_string();
             }
@@ -998,6 +1042,13 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
         let before = slot.args.len();
         if let Some(a) = c["function"]["arguments"].as_str() {
             slot.args.push_str(a);
+        }
+        // A custom call's raw text, re-encoded as JSON argument fragments
+        // so its input events match a JSON tool's.
+        if c["type"] == "custom" || c["custom"].is_object() {
+            let raw = slot.raw.get_or_insert_default();
+            raw.push_str(c["custom"]["input"].as_str().unwrap_or(""));
+            slot.args = custom_fragment(custom.get(&slot.name), raw);
         }
         if let Some(sig) = c["extra_content"]["google"]["thought_signature"].as_str() {
             slot.signature = Some(sig.to_string());
@@ -1029,6 +1080,7 @@ pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
             }
         }
     }
+    state.custom = custom;
     // The first finish reason stands; some servers send late chunks after it.
     if let Some(f) = choice["finish_reason"].as_str().filter(|f| !f.is_empty()) {
         if state.finish.is_none() {
@@ -1161,10 +1213,18 @@ pub fn finish(state: &mut State) -> Result<Vec<Event>, Error> {
     let keep = !reason.is_length() && !reason.is_content_filter();
     for c in calls {
         if let Some(id) = &c.streaming {
+            if c.raw.is_some() {
+                out.push(Event::ToolInputDelta {
+                    id: id.clone(),
+                    text: "\"}".into(),
+                });
+            }
             out.push(Event::ToolInputEnd { id: id.clone() });
         }
         if keep && !c.name.is_empty() {
-            let input = if c.args.trim().is_empty() {
+            let input = if let Some(raw) = &c.raw {
+                crate::custom_input(state.custom.get(&c.name).map(String::as_str), raw)
+            } else if c.args.trim().is_empty() {
                 json!({})
             } else {
                 serde_json::from_str(&c.args).unwrap_or_else(|_| json!({"__invalid_json": c.args}))
@@ -1227,6 +1287,22 @@ impl Decode {
             done: false,
         }
     }
+
+    /// [`Decode::new`] for `req`'s response: its custom tools' calls fill
+    /// the fields they declare.
+    pub fn for_request(compat: &Compat, req: &Request) -> Self {
+        let mut d = Decode::new(compat);
+        d.state.custom = crate::custom_tools(req);
+        d
+    }
+}
+
+/// A custom call's JSON arguments so far: `{"<field>":"` and its escaped
+/// raw text (the field is `input` for a tool not declared custom).
+fn custom_fragment(field: Option<&String>, raw: &str) -> String {
+    let field = Value::String(field.map_or("input", |f| f.as_str()).into());
+    let raw = Value::String(raw.into()).to_string();
+    format!("{{{field}:{}", &raw[..raw.len() - 1])
 }
 
 impl Decoder for Decode {
@@ -1257,7 +1333,7 @@ pub async fn stream(
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(p, request(p, client, req)).await?;
     let compat = Compat::for_provider(p, &req.model);
-    Ok(drive(resp, Decode::new(&compat)))
+    Ok(drive(resp, Decode::for_request(&compat, req)))
 }
 
 /// Compatibility overrides Chat cannot honour: a declared reasoning field
@@ -1354,6 +1430,7 @@ mod tests {
                 name: "read".into(),
                 description: "d".into(),
                 parameters: json!({"type": "object"}),
+                freeform: None,
             }],
             max_tokens: Some(100),
             ..Default::default()

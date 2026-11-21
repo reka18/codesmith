@@ -37,6 +37,13 @@ Shared, `provider/empty-tool-choice`, `provider/conversation-lowering`,
 `tool-schema-projection`, `tool-history`, `request-encoding`, `partial-json`,
 `sanitize`, `error-partial`, `cache-policy`. Parametrized tests count once per generated case.
 
+Freeform tools (custom tools on OpenAI Responses and Chat Completions) are
+ported outside the matrix, in [`src/parity_freeform.rs`](src/parity_freeform.rs):
+all 9 cases of `provider/freeform-tools` (the "rejects" case adapted: a tool
+without exactly one required string field goes out as a JSON tool instead of
+failing) and `openai-freeform`'s raw text conversions. The recorded
+`*-responses/calls-a-freeform-text-tool` replays now pass without gaps.
+
 ## Summary
 
 | Protocol | Tests examined | Ported (already passing) | Ported after a fix | Gaps |

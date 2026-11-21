@@ -343,7 +343,7 @@ Model fields:
 | `cache` | [Prompt caching](#prompt-caching) for this model, over the provider's (`options.cache` also works). |
 | `compaction` | `{"type": "native"}`: [the provider compacts](#native-compaction) this model's sessions. Overrides the provider's. |
 | `compatibility` | [Compatibility overrides](#compatibility-overrides) for this model, over the provider's. |
-| `capabilities` | OpenCode's capabilities, merged field by field over the catalog's: `input` and `output` modalities, `tools`, `temperature`, and `reasoning` (`{"supported": true, "effort": ["low", "high"]}`, `"toggle": true`, `"budget": {"min": 1024}`), which regenerates the reasoning variants. |
+| `capabilities` | OpenCode's capabilities, merged field by field over the catalog's: `input` and `output` modalities, `tools`, `temperature`, the `freeform` tool formats the model accepts (`["text", "lark"]`; see [freeform tools](tools.md#freeform-tools)), and `reasoning` (`{"supported": true, "effort": ["low", "high"]}`, `"toggle": true`, `"budget": {"min": 1024}`), which regenerates the reasoning variants. |
 | `type` | `chat` (the default), or `image`, `video` or `decision`; only chat models are offered for sessions. Unset keeps the catalog's. |
 | `interleaved` | OpenCode's older spelling of `compatibility.reasoningField`: the field name, or `{"field": name}`. |
 
