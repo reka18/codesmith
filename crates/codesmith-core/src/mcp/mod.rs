@@ -1080,6 +1080,9 @@ impl Client {
         if let Some(s) = session.lock().unwrap().clone() {
             rb = rb.header("Mcp-Session-Id", s);
         }
+        if let Some(name) = events::header_name(msg) {
+            rb = rb.header(events::NAME_HEADER, name);
+        }
         rb.json(msg)
     }
 

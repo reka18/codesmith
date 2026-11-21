@@ -16,6 +16,43 @@ pub(super) const SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId
 /// Forbidden and Unsupported.
 pub(super) const REJECTED: [i64; 5] = [-32601, -32602, -32023, -32024, -32026];
 
+/// The header naming the event an events request is about, so an HTTP
+/// server (or a proxy in front of it) can route it without reading the
+/// body, as OpenCode's patched MCP SDK sends it.
+pub const NAME_HEADER: &str = "Mcp-Name";
+
+/// The requests that name an event in `params.name`.
+const NAMED: [&str; 4] = [
+    "events/poll",
+    "events/stream",
+    "events/subscribe",
+    "events/unsubscribe",
+];
+
+/// The [`NAME_HEADER`] value for request `msg`, if it names an event: the
+/// name as it is when it is printable ASCII without surrounding spaces,
+/// else base64 as `=?base64?…?=`, so nothing in a name can break the header.
+pub fn header_name(msg: &Value) -> Option<String> {
+    let method = msg["method"].as_str()?;
+    if !NAMED.contains(&method) {
+        return None;
+    }
+    let name = msg["params"]["name"].as_str().filter(|n| !n.is_empty())?;
+    let plain = name.bytes().all(|b| (0x20..0x7f).contains(&b))
+        && !name.starts_with(' ')
+        && !name.ends_with(' ')
+        && !name.starts_with("=?");
+    Some(if plain {
+        name.to_string()
+    } else {
+        use base64::Engine;
+        format!(
+            "=?base64?{}?=",
+            base64::engine::general_purpose::STANDARD.encode(name)
+        )
+    })
+}
+
 /// One event type from `events/list`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventType {

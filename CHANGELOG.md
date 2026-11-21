@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP events over HTTP:** an `events/stream` request (and the other
+  events requests) to a Streamable HTTP server names its event in an
+  `Mcp-Name` header, base64-encoded when it is not plain ASCII.
 - **MCP resource blobs:** binary content in MCP tool results and resource
   reads that is not an image or PDF is no longer only noted: text blobs are
   decoded, and other blobs (and audio) are saved to an owner-only file in

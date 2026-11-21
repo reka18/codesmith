@@ -818,3 +818,155 @@ async fn mcp_blobs_are_saved_for_code_mode_too() {
     let dir = codesmith_core::paths::session_output_dir(&h.s.id);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }
+
+// === MCP Events over HTTP ===
+
+fn events_caps() -> Value {
+    json!({"tools": {}, "extensions": {"io.modelcontextprotocol/events": {}}})
+}
+
+/// A server with events that answers `events/stream` with one `active`
+/// notification and then the result, on an event stream.
+fn event_server() -> Handler {
+    Arc::new(|g: &Got| match g.method() {
+        "initialize" => Http::Result(init_result(events_caps())),
+        "events/list" => Http::Result(json!({"events": [
+            {"name": "job.finished", "description": "A job ended", "delivery": ["push"],
+             "inputSchema": {"type": "object", "properties": {"job": {"type": "string"}}}, "payloadSchema": {"type": "object"}},
+            {"name": "job.polled", "delivery": ["poll"]}
+        ]})),
+        "events/stream" => {
+            let meta = json!({"io.modelcontextprotocol/subscriptionId": g.msg["id"]});
+            Http::Sse(vec![
+                json!({"method": "notifications/events/active",
+                       "params": {"cursor": "c1", "truncated": false, "_meta": meta}}),
+                json!({"id": null, "result": {"resultType": "complete", "_meta": meta}}),
+            ])
+        }
+        _ => answer(g, &json!([])),
+    })
+}
+
+async fn collect(mut s: mcp::EventStream) -> Vec<Result<mcp::EventMessage, mcp::StreamError>> {
+    let mut out = vec![];
+    tokio::time::timeout(DEADLINE, async {
+        while let Some(m) = s.next().await {
+            let end = m.is_err();
+            out.push(m);
+            if end {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the stream ended in time");
+    out
+}
+
+// mcp.test.ts: "streams a server's events over Streamable HTTP, naming the
+// event in Mcp-Name"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_mcp_streams_events_over_streamable_http_naming_the_event_in_mcp_name() {
+    let server = remote(event_server()).await;
+    let m = connect(&server.url, json!({})).await;
+    let c = m.client("srv").unwrap();
+    assert!(c.has_events());
+    let got = collect(c.stream_events("job.finished", Some(&json!({"job": "j1"})), None)).await;
+    assert_eq!(
+        got[0],
+        Ok(mcp::EventMessage::Active {
+            cursor: Some("c1".into()),
+            truncated: false
+        })
+    );
+    assert!(
+        matches!(got[1], Err(mcp::StreamError::Disconnected(_))),
+        "{got:?}"
+    );
+    let streams = server.calls("events/stream");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].header("mcp-name"), Some("job.finished"));
+    assert_eq!(streams[0].msg["params"]["name"], "job.finished");
+    assert_eq!(streams[0].msg["params"]["arguments"], json!({"job": "j1"}));
+    // Only events requests name an event.
+    for g in server.got() {
+        if g.method() != "events/stream" {
+            assert_eq!(g.header("mcp-name"), None, "{}", g.method());
+        }
+    }
+}
+
+// A name that is not plain printable ASCII goes base64-encoded, so no
+// character in it (CR, LF, unicode) can break or add a header.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_name_header_encodes_names_that_are_not_plain_ascii() {
+    use base64::Engine;
+    let server = remote(event_server()).await;
+    let m = connect(&server.url, json!({})).await;
+    let c = m.client("srv").unwrap();
+    let names = [
+        "jöb.fïnished",
+        "evil\r\nX-Injected: 1",
+        " padded ",
+        "=?base64?eA==?=",
+    ];
+    for n in names {
+        collect(c.stream_events(n, None, None)).await;
+    }
+    let sent: Vec<String> = server
+        .calls("events/stream")
+        .iter()
+        .map(|g| g.header("mcp-name").unwrap().to_string())
+        .collect();
+    let expected: Vec<String> = names
+        .iter()
+        .map(|n| {
+            format!(
+                "=?base64?{}?=",
+                base64::engine::general_purpose::STANDARD.encode(n)
+            )
+        })
+        .collect();
+    assert_eq!(sent, expected);
+    assert!(server
+        .got()
+        .iter()
+        .all(|g| g.header("x-injected").is_none()));
+}
+
+#[test]
+fn mcp_name_header_values() {
+    let req = |method: &str, name: Value| json!({"method": method, "params": {"name": name}});
+    assert_eq!(
+        mcp::events::header_name(&req("events/stream", json!("a.b"))).as_deref(),
+        Some("a.b")
+    );
+    assert_eq!(
+        mcp::events::header_name(&req("events/poll", json!("x y"))).as_deref(),
+        Some("x y")
+    );
+    for m in ["events/subscribe", "events/unsubscribe"] {
+        assert!(mcp::events::header_name(&req(m, json!("n"))).is_some());
+    }
+    assert_eq!(
+        mcp::events::header_name(&req("tools/call", json!("n"))),
+        None
+    );
+    assert_eq!(
+        mcp::events::header_name(&req("events/stream", json!(""))),
+        None
+    );
+    assert_eq!(
+        mcp::events::header_name(&req("events/stream", json!(7))),
+        None
+    );
+    assert_eq!(
+        mcp::events::header_name(&json!({"id": 1, "result": {}})),
+        None
+    );
+    let long = "e".repeat(10_000);
+    assert_eq!(
+        mcp::events::header_name(&req("events/stream", json!(long))).map(|v| v.len()),
+        Some(10_000)
+    );
+}

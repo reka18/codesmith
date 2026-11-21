@@ -450,4 +450,8 @@ reconnects a server after its sign-in.
 - Servers that offer **MCP Events** (the draft
   `io.modelcontextprotocol/events` extension) can trigger
   [automations](automations.md#mcp-events): `--event server:event` runs once
-  for each event the server pushes.
+  for each event the server pushes. Over Streamable HTTP, an events request
+  (`events/stream`, and `events/poll`, `events/subscribe`,
+  `events/unsubscribe`) names its event in an `Mcp-Name` header too, so a
+  server or proxy can route it without reading the body; a name that is not
+  plain printable ASCII is sent as `=?base64?<name in base64>?=`.

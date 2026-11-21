@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 122 | 6 | 4 | 80 | 0 | 0 |
+| MCP | 212 | 123 | 6 | 3 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2893** | **79** | **35** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2894** | **79** | **34** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,7 +131,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (35 cases in 10 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (34 cases in 9 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -142,7 +142,6 @@ Missing features, by how many OpenCode test cases each would unlock (35 cases in
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
-| [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
 | [MCP Code Mode Defaults](#mcp-code-mode-defaults) | 1 | Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
 
@@ -212,12 +211,6 @@ Missing features, by how many OpenCode test cases each would unlock (35 cases in
 1 cases.
 
 - `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
-
-### MCP Events over HTTP
-
-1 cases.
-
-- `mcp.test.ts`: streams a server's events over Streamable HTTP, naming the event in Mcp-Name
 
 ### MCP Code Mode Defaults
 
@@ -2383,7 +2376,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (208 of 212)</summary>
+<details><summary>MCP (209 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2546,6 +2539,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P returns permission feedback instead of calling MCP — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`
 - D integration policy denies MCP startup (${modern ? "modern" : "legacy"}) ×2 · revokes and restores a connected MCP through ${source} policy ×2 — cloud: integration/organization policy
 - D shares one connection and one tool list between Locations · keeps connections apart when the configs differ · keys connections on everything that changes them, and on no secret or name · keeps a server that negotiates legacy private to each Location · connects on its own when a server refuses the pooled handshake · keeps pooling a server that ${what} when first tried ×3 · decides a legacy server is private right after the handshake, before listing its tools · fails a pooled server that can't be spawned after one attempt · connects each Location on its own without pool · closes the shared connection when its last Location lets go · connects with the credential its key was made from, even when a sign-in lands mid-start · registers a server's prompt commands again after reconnecting${shared ? " to a connection another Location holds" : ""} ×2 · routes an elicitation to the Location whose call caused it · asks every holder about an elicitation no request claims, and takes the first answer · fans tool list changes out to every Location · answers no roots on a shared connection · shares a local server across directories only when its cwd is fixed · shares one local process, fails every holder when it dies, and closes it after the last · keeps nothing of a Location that let go of a shared connection — client-server: MCP connections pooled across Locations
+- P streams a server's events over Streamable HTTP, naming the event in Mcp-Name — `tests/oc_mcp_roadmap.rs::oc_mcp_streams_events_over_streamable_http_naming_the_event_in_mcp_name` (adapted: a name that is not plain ASCII is sent base64-encoded)
 - D publishes a subscription's events on the bus and follows its status — storage-model: subscriptions published on OpenCode's bus
 - P backs off failed opens, resets after active, and resumes with a replay gap once — `tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor, tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output` (adapted: a replay gap pauses the watch rather than resuming once)
 - P ends a subscription the server terminates or rejects, without reopening it — `tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake, tests/automation.rs::event_triggered_runs` (adapted: a terminated or refused stream ends the watch, paused with the reason)
