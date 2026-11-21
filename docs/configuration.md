@@ -543,8 +543,10 @@ read as one name per line. A model marked `live` is already loaded, so the
 picker offers it as an ordinary choice.
 
 `use` succeeds when it exits 0 and its last JSON line, if any, does not
-say `"ok": false`. Its `model_id`, when given, is the model selected
-afterwards (as `provider/model_id`); otherwise the name chosen is. On
+say `"ok": false`. Its `model_id`, when given and either the name chosen
+or one `list` printed, is the model selected afterwards (as
+`provider/model_id`); otherwise the name chosen is, and CodeSmith warns
+that the swap reported another model. On
 failure CodeSmith shows the JSON's `error`, its `shortfall_bytes` and
 whether the server `rolled_back`, or the command's last line, and keeps
 the current model.

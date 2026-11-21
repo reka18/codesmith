@@ -21,6 +21,9 @@
 //!   the provider) and of letters, digits and `. _ + - : @ /`, so it is safe
 //!   even when the command is `ssh`, which hands its arguments to a shell on
 //!   the other machine.
+//! - The model selected afterwards is the requested one, or the
+//!   `model_id` `use` reports when it is one `list` offered; another
+//!   reported id is ignored, with a warning.
 //! - Only a person starts a swap: the model picker and `codesmith models
 //!   swap`. It is not a tool, and neither automations nor `run`, `serve` or
 //!   ACP sessions reach it. [`guard`] refuses inside a CodeSmith shell tool.
@@ -486,21 +489,35 @@ fn code(c: Option<i32>) -> String {
         .unwrap_or_else(|| " (killed)".into())
 }
 
-/// How a `use` ended: the model id to select, or why it failed.
+/// How a `use` ended: the model id to select, with a warning when the
+/// command reported another one that was not taken, or why it failed.
+///
+/// A reported `model_id` is taken only when it is the requested name or
+/// one of `known` (the names `list` offered): `use` output is not trusted,
+/// and must not pick a model the user never chose from.
 pub fn outcome(
     ok: bool,
     exit: Option<i32>,
     json: Option<&Value>,
     tail: &[String],
     requested: &str,
-) -> Result<String> {
+    known: &[String],
+) -> Result<(String, Option<String>)> {
     let reported_fail = json.is_some_and(|j| j["ok"] == Value::Bool(false));
     if ok && !reported_fail {
-        let id = json
-            .and_then(|j| j["model_id"].as_str())
-            .filter(|m| valid_name(m))
-            .unwrap_or(requested);
-        return Ok(id.to_string());
+        let reported = json.and_then(|j| j["model_id"].as_str());
+        return Ok(match reported {
+            Some(id) if id == requested => (id.to_string(), None),
+            Some(id) if valid_name(id) && known.iter().any(|k| k == id) => (id.to_string(), None),
+            Some(id) => (
+                requested.to_string(),
+                Some(format!(
+                    "warning: the swap reported model {:?}, which the server did not list; selecting {requested}",
+                    strip_controls(id).chars().take(200).collect::<String>()
+                )),
+            ),
+            None => (requested.to_string(), None),
+        });
     }
     let mut why = json
         .and_then(|j| j["error"].as_str())
@@ -535,7 +552,11 @@ pub async fn swap(
         bail!("{model} is not one of the models the server lists");
     }
     let ran = run(&argv(&s.use_, model), s.timeout(), false, on_line).await?;
-    outcome(ran.ok, ran.code, ran.json.as_ref(), &ran.tail, model)
+    let (id, warning) = outcome(ran.ok, ran.code, ran.json.as_ref(), &ran.tail, model, known)?;
+    if let Some(w) = warning {
+        on_line(&w);
+    }
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -671,30 +692,23 @@ mod tests {
 
     #[test]
     fn outcomes() {
-        assert_eq!(outcome(true, Some(0), None, &[], "m").unwrap(), "m");
+        let known = ["m".to_string(), "org/m".to_string()];
+        let ok = |json: Option<serde_json::Value>| {
+            outcome(true, Some(0), json.as_ref(), &[], "m", &known).unwrap()
+        };
+        assert_eq!(ok(None), ("m".into(), None));
         assert_eq!(
-            outcome(
-                true,
-                Some(0),
-                Some(&json!({"ok": true, "model_id": "org/m"})),
-                &[],
-                "m"
-            )
-            .unwrap(),
-            "org/m"
+            ok(Some(json!({"ok": true, "model_id": "org/m"}))),
+            ("org/m".into(), None)
         );
         assert_eq!(
-            outcome(
-                true,
-                Some(0),
-                Some(&json!({"ok": true, "model_id": "bad id"})),
-                &[],
-                "m"
-            )
-            .unwrap(),
-            "m"
+            ok(Some(json!({"ok": true, "model_id": "m"}))),
+            ("m".into(), None)
         );
-        let e = outcome(false, Some(1), Some(&json!({"ok": false, "error": "m does not fit", "shortfall_bytes": 3_460_000_000u64, "rolled_back": true})), &[], "m")
+        let (id, warn) = ok(Some(json!({"ok": true, "model_id": "bad id"})));
+        assert_eq!(id, "m");
+        assert!(warn.unwrap().contains("did not list"));
+        let e = outcome(false, Some(1), Some(&json!({"ok": false, "error": "m does not fit", "shortfall_bytes": 3_460_000_000u64, "rolled_back": true})), &[], "m", &known)
             .unwrap_err()
             .to_string();
         assert_eq!(e, "m does not fit; 3460000000 bytes (3.46 GB) short; the server kept its previous model (exit code 1)");
@@ -704,17 +718,77 @@ mod tests {
                 Some(0),
                 Some(&json!({"ok": false, "error": "x"})),
                 &[],
-                "m"
+                "m",
+                &known
             )
             .is_err(),
             "the report wins"
         );
         assert_eq!(
-            outcome(false, Some(2), None, &["boom".into()], "m")
+            outcome(false, Some(2), None, &["boom".into()], "m", &known)
                 .unwrap_err()
                 .to_string(),
             "boom (exit code 2)"
         );
+    }
+
+    /// Security review 8, finding 5: `use` reporting a model `list` never
+    /// offered no longer selects it; the requested one is kept, with a
+    /// warning. The probe's case first.
+    #[test]
+    fn use_cannot_choose_a_model_list_never_offered() {
+        let (id, warn) = outcome(
+            true,
+            Some(0),
+            Some(&json!({"model_id": "other-model"})),
+            &[],
+            "big",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(id, "big");
+        let warn = warn.unwrap();
+        assert!(
+            warn.contains("\"other-model\"") && warn.contains("selecting big"),
+            "{warn}"
+        );
+        let known = ["big".to_string(), "small".to_string()];
+        for (reported, want, warned) in [
+            ("small", "small", false),
+            ("big", "big", false),
+            ("other-model", "big", true),
+            ("Small", "big", true),
+            ("smäll", "big", true),
+            ("small\u{202e}", "big", true),
+            ("", "big", true),
+        ] {
+            let (id, warn) = outcome(
+                true,
+                Some(0),
+                Some(&json!({"model_id": reported})),
+                &[],
+                "big",
+                &known,
+            )
+            .unwrap();
+            assert_eq!(id, want, "{reported:?}");
+            assert_eq!(warn.is_some(), warned, "{reported:?}");
+            // The warning never carries control or format characters.
+            if let Some(w) = warn {
+                assert!(!w.contains('\u{202e}'), "{w:?}");
+            }
+        }
+        // A model id that is not a string is no report at all.
+        let (id, warn) = outcome(
+            true,
+            Some(0),
+            Some(&json!({"model_id": 7})),
+            &[],
+            "big",
+            &known,
+        )
+        .unwrap();
+        assert_eq!((id.as_str(), warn), ("big", None));
     }
 
     #[test]
@@ -938,6 +1012,33 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ok.len(), 3000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_swap_reporting_an_unlisted_model_keeps_the_requested_one() {
+        let s = SwapConfig {
+            list: vec![],
+            use_: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                r#"echo "loading $1"; echo '{"ok":true,"model_id":"evil/model"}'"#.into(),
+                "sh".into(),
+                PLACEHOLDER.into(),
+            ],
+            timeout: Some(30),
+        };
+        let mut lines = Vec::new();
+        let known = vec!["big".to_string(), "small".to_string()];
+        let id = swap(&s, "big", &known, &mut |l| lines.push(l.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(id, "big");
+        assert!(lines.iter().any(|l| l == "loading big"), "{lines:?}");
+        assert!(
+            lines.last().unwrap().starts_with("warning:")
+                && lines.last().unwrap().contains("evil/model"),
+            "{lines:?}"
+        );
     }
 
     #[tokio::test]

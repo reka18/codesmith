@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **A swap selects only a listed model:** when a swap's `use` command
+  reports a `model_id` that is neither the requested model nor one `list`
+  offered, CodeSmith keeps the requested model and shows a warning.
 - **Model swap output is bounded:** `swap` commands' output is read in
   chunks; a line is kept up to 2000 characters (the rest, up to its
   newline, is dropped), each stream up to 8 MiB, and a `list` that prints
