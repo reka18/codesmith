@@ -114,13 +114,16 @@ codesmith -m claude-agent/sonnet
 
 See [Claude Agent](configuration.md#claude-agent-your-claude-code-login).
 
-Browser logins for Poe, DigitalOcean and GitLab run as an OAuth
-application you register yourself (CodeSmith ships none); each section of
+Browser logins for Poe, DigitalOcean, GitLab and ChatGPT, and xAI's device
+login, run as an OAuth application you register yourself (CodeSmith ships
+none); each section of
 [the configuration guide](configuration.md#providers-and-models) says how:
 [Cloudflare](configuration.md#cloudflare-ai-gateway-and-workers-ai),
 [Azure](configuration.md#azure-openai), [Poe](configuration.md#poe),
 [DigitalOcean](configuration.md#digitalocean),
 [GitLab](configuration.md#gitlab-sign-in),
+[ChatGPT](configuration.md#sign-in-with-chatgpt),
+[xAI](configuration.md#xai-supergrok-login),
 [Snowflake Cortex](configuration.md#snowflake-cortex),
 [SAP AI Core](configuration.md#sap-ai-core) and
 [Modal](configuration.md#live-model-lists-modal-github-copilot-azure).
@@ -178,8 +181,8 @@ first. To be asked before shell commands too, add a rule (see
 { "permissions": [{ "action": "shell", "resource": "*", "effect": "ask" }] }
 ```
 
-When a request opens a dialog: **y** allows once, **a** always allows for
-this session, and **n**, **Esc** or **Enter** reject.
+When a request opens a dialog: **y** allows once, **a** always allows (saved
+for the project), and **n**, **Esc** or **Enter** reject.
 
 A few things to try:
 
