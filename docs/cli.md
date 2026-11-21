@@ -7,7 +7,8 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`codesmith`](#codesmith) | The interactive UI. |
 | [`run`](#codesmith-run) | Run one prompt and print the result. |
 | [`generate`](#codesmith-generate) | One model call outside any session's history: text or an image. |
-| [`session`](#codesmith-session) | List, export, import, delete, undo, redo, diff sessions; migrate their media. |
+| [`session`](#codesmith-session) | List, archive, export, import, delete, fork, undo, redo, diff sessions; migrate their media. |
+| [`permissions`](#codesmith-permissions) | List, edit or remove saved approvals. |
 | [`models`](#codesmith-models) | List providers and models. |
 | [`auth`](#codesmith-auth) | Save, list or remove API keys. |
 | [`commands`](#codesmith-commands) | List commands. |
@@ -55,7 +56,7 @@ codesmith run --format json "list the TODOs" | jq .
 | Flag | Meaning |
 |---|---|
 | `-m, --model provider/model` | Model to use. |
-| `--agent ID` | Agent to use (default `build`). `plan` is read-only. |
+| `--agent ID` | Agent to use (otherwise `default_agent`, else `build`). `plan` is read-only. |
 | `-f, --file PATH` | Attach a file (repeatable). Text goes into the message, and images, PDFs and videos are sent for the model to see. |
 | `--format default\|json` | `json` prints one JSON object per event, for scripts. |
 | `--auto` | Approve every permission request that no rule denies. |
@@ -137,7 +138,9 @@ applies to running sessions at their next request.
 
 `codesmith models` lists the built-in and configured providers with their
 configured models. `codesmith models PROVIDER` asks that provider's API which
-models it offers.
+models it offers. `--refresh` first fetches the
+[model catalog](configuration.md#the-model-catalog-modelsdev) into the cache,
+even when background fetching is off.
 
 ## `codesmith auth`
 
@@ -146,6 +149,16 @@ codesmith auth login PROVIDER    # prompts without echo, or reads stdin
 codesmith auth list              # where each provider's key comes from
 codesmith auth logout PROVIDER
 ```
+
+| `auth login` flag | Meaning |
+|---|---|
+| `--oauth` | Sign in through the provider's OAuth instead of pasting a key: `openai` ([Sign in with ChatGPT](configuration.md#sign-in-with-chatgpt)), `xai` ([SuperGrok](configuration.md#xai-supergrok-login)), [`poe`](configuration.md#poe), [`gitlab`](configuration.md#gitlab-sign-in), [`digitalocean`](configuration.md#digitalocean), [`snowflake-cortex`](configuration.md#snowflake-cortex). |
+| `--client-id ID` | Your OAuth app's client id, for `github-copilot` (device flow) or with `--oauth`. |
+| `--enterprise HOST` | `github-copilot`: a GitHub Enterprise host (`company.ghe.com`). |
+| `--profile NAME` | `amazon-bedrock`: sign with this AWS profile instead of saving a key. |
+| `--cli` | `azure`: use Azure CLI (`az login`) tokens instead of a key. |
+| `--project ID`, `--location L` | `google-vertex`: Application Default Credentials in this project (location default `global`). |
+| `--field KEY=VALUE` | Another answer the login asks for, such as `accountId=…` for Cloudflare (asked in the terminal otherwise). |
 
 Keys are saved in the data folder's `auth.json`, readable only by you.
 Config and environment variables take precedence over saved keys. See
@@ -190,8 +203,8 @@ streak.
 In a terminal narrower than 68 columns the model and tool tables put each
 row on two lines (the name, then its numbers), so nothing is cut off.
 
-Cost needs prices, since nothing is fetched from a catalog: give each model a
-[`cost`](configuration.md#adding-or-overriding-a-provider).
+Cost needs prices: the [model catalog](configuration.md#the-model-catalog-modelsdev)'s,
+or a model's own [`cost`](configuration.md#adding-or-overriding-a-provider).
 
 ## `codesmith worktree`
 
