@@ -11,6 +11,7 @@
 //! hooks around tool calls, shell commands, model requests, compactions,
 //! permission prompts, session events and going idle.
 
+pub mod codesmith;
 mod context;
 pub mod goal;
 pub mod host;
@@ -46,6 +47,10 @@ pub struct ToolContext {
     pub cwd: PathBuf,
     pub root: PathBuf,
     pub session_id: String,
+    /// The session's model spec (`provider/model`).
+    pub model: String,
+    /// The session's configuration.
+    pub config: Arc<Config>,
 }
 
 /// A tool contributed by a plugin. Calls go through permissions with the
@@ -352,11 +357,15 @@ pub fn set_host(host: Arc<Host>) {
     *HOST.write().unwrap() = Some(host);
 }
 
-/// The plugins every CodeSmith build has: the goal plugin (`/goal`) and
-/// the plan plugin (Plan mode). `codesmith::main` installs them before a
+/// The plugins every CodeSmith build has: the goal plugin (`/goal`), the
+/// plan plugin (Plan mode) and the `codesmith` tool. `codesmith::main` installs them before a
 /// build's own.
 pub fn builtin() -> Vec<Arc<dyn Plugin>> {
-    vec![Arc::new(goal::shared().clone()), Arc::new(plan::PlanPlugin)]
+    vec![
+        Arc::new(goal::shared().clone()),
+        Arc::new(plan::PlanPlugin),
+        Arc::new(codesmith::CodesmithPlugin),
+    ]
 }
 
 /// Install the plugins for this process (called once at startup).

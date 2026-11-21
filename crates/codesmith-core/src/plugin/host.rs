@@ -480,6 +480,13 @@ impl Host {
     /// waits for the answer (on a blocking thread, so any runtime will do).
     /// A plugin tool returns the error's text as its failure.
     pub async fn assert_permission(&self, input: AssertPermission) -> Result<(), PermissionError> {
+        assert_live(input).await
+    }
+}
+
+/// [`Host::assert_permission`], for the built-in plugins, which need no host.
+pub(crate) async fn assert_live(input: AssertPermission) -> Result<(), PermissionError> {
+    {
         let gate = GATES
             .lock()
             .unwrap()

@@ -2664,6 +2664,8 @@ impl Session {
             cwd: self.cwd.clone(),
             root: self.root.clone(),
             session_id: self.id.clone(),
+            model: self.model_spec.clone(),
+            config: Arc::new(self.loaded.config.clone()),
         };
         match t.execute(ctx, tool::repair(input)).await {
             Ok(text) => (

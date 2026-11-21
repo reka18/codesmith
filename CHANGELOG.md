@@ -64,6 +64,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   leave reminders saved in the conversation, reconciled with the history
   before each request, instead of in the system prompt. A new built-in
   `plan` plugin; `"plugins": {"plan": false}` turns it off.
+- **The `codesmith` tool:** the model can search the chat, image and video
+  models it can use (grouped by provider, own provider first, newest of
+  each family, in pages) and list, create and remove the project's git
+  worktrees. Creating or removing a worktree asks the same `edit` approval
+  writing there does. It never changes configuration; `"plugins":
+  {"codesmith": false}` turns it off.
 
 ## 0.1.0
 

@@ -34,8 +34,8 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
 | Tool registry, schemas, placement | 100 | 28 | 0 | 0 | 53 | 19 | 0 |
-| Media tools | 39 | 17 | 0 | 4 | 12 | 6 | 0 |
-| Tool target environments | 7 | 0 | 0 | 3 | 4 | 0 | 0 |
+| Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
+| Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1685** | **18** | **91** | **2400** | **1394** | **0** |
+| **Total** | **5588** | **1688** | **18** | **87** | **2401** | **1394** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (91 cases in 7 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (87 cases in 6 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -91,7 +91,6 @@ Missing features, by how many OpenCode test cases each would unlock (91 cases in
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
-| [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 
@@ -186,15 +185,6 @@ Missing features, by how many OpenCode test cases each would unlock (91 cases in
 - `automation.test.ts`: bad targets and session or agent policy never deliver or commit the rest of the result
 - `automation.test.ts`: retries failed admission without committing state or done, then settles the handoff once
 - `automation.test.ts`: pauses on a missing handoff directory without rerunning the check
-
-### OpenCode Self-management Tool
-
-4 cases.
-
-- `tool-image-generate.test.ts`: lists image models through the models tool type filter
-- `tool-opencode.test.ts`: groups available models by provider with paging
-- `tool-opencode.test.ts`: creates, lists, and removes worktrees for the plugin's project
-- `tool-opencode.test.ts`: adapts the worktree session_move hint to execute, direct tools, or neither
 
 ### Browser Attachment
 
@@ -1063,7 +1053,7 @@ Tests for behaviour CodeSmith already has but no test pins (1394 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 686 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 553 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 554 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 339 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
@@ -2097,7 +2087,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Media tools (29 of 39)</summary>
+<details><summary>Media tools (30 of 39)</summary>
 
 
 **`image-photon.test.ts`**
@@ -2118,6 +2108,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P passes a model variant through, from the input or from config — `tests/oc_image_generate.rs::oc_image_tool_passes_a_model_variant_through_from_the_input_or_from_config`
 - P asks webfetch permission before downloading an image URL — `tests/oc_image_generate.rs::oc_image_tool_asks_webfetch_permission_before_downloading_an_image_url`
 - P rejects input files that are not images — `tests/oc_image_generate.rs::oc_image_tool_rejects_input_files_that_are_not_images`
+- P lists image models through the models tool type filter — `tests/oc_codesmith_tool.rs::oc_codesmith_lists_image_models_through_the_models_type_filter` (the `codesmith` tool's `models` action (see zz_ports_groups.txt))
 - P prefers the session's provider, then the newest — `tests/oc_image_generate.rs::oc_image_default_model_prefers_the_sessions_provider_then_the_newest`
 - P only considers models that accept input images when images are passed — `tests/oc_image_generate.rs::oc_image_default_model_only_considers_models_that_accept_input_images_when_images_are_passed`
 
@@ -2136,8 +2127,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool target environments (4 of 7)</summary>
+<details><summary>Tool target environments (7 of 7)</summary>
 
+
+**`tool-opencode.test.ts`**
+
+- P groups available models by provider with paging — `src/plugin/codesmith.rs::oc_codesmith_groups_available_models_by_provider_with_paging` (adapted: the `codesmith` tool's `models` action, called directly rather than through Code Mode)
+- P creates, lists, and removes worktrees for the plugin's project — `tests/oc_codesmith_tool.rs::oc_codesmith_creates_lists_and_removes_worktrees` (adapted: `worktree_*` actions of the `codesmith` tool over git worktrees; creating one asks the same `edit` approval removing one does)
+- D adapts the worktree session_move hint to execute, direct tools, or neither — deliberate: CodeSmith sessions keep their directory: there is no session_move, so no hint for it
 
 **`tool-search-target-environment.test.ts`**
 

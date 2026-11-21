@@ -76,8 +76,9 @@ Tests and embedders with their own store install a host with
 
 ## The goal plugin
 
-Every build has two built-in plugins, `goal` and `plan` (OpenCode's goal
-and plan plugins). `/goal
+Every build has three built-in plugins: `goal`, `plan` and `codesmith`
+(OpenCode's goal and plan plugins and its `opencode` tools; the
+[`codesmith` tool](tools.md#codesmith) is described with the tools). `/goal
 <objective>` keeps the session working until the objective is met: when the
 session would go idle, a reviewer (a side request with the session's
 context) answers with a verdict, and the session continues with the
@@ -121,8 +122,8 @@ options:
 { "plugins": { "example": false } }                        // off
 ```
 
-`codesmith debug plugins` lists the plugins compiled in (the built-in `goal`
-and `plan` among them), and whether config turns them off.
+`codesmith debug plugins` lists the plugins compiled in (the built-in `goal`,
+`plan` and `codesmith` among them), and whether config turns them off.
 
 ## Example
 

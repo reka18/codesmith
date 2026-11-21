@@ -41,7 +41,7 @@
 398 :: ported :: tests/oc_image_generate.rs::oc_image_tool_passes_a_model_variant_through_from_the_input_or_from_config
 449 :: ported :: tests/oc_image_generate.rs::oc_image_tool_asks_webfetch_permission_before_downloading_an_image_url
 466 :: ported :: tests/oc_image_generate.rs::oc_image_tool_rejects_input_files_that_are_not_images
-479 :: feature :: OpenCode Self-management Tool :: the `opencode` tool's `models` listing by type
+479 :: ported :: tests/oc_codesmith_tool.rs::oc_codesmith_lists_image_models_through_the_models_type_filter :: the `codesmith` tool's `models` action (see zz_ports_groups.txt)
 524 :: ported :: tests/oc_image_generate.rs::oc_image_default_model_prefers_the_sessions_provider_then_the_newest
 538 :: ported :: tests/oc_image_generate.rs::oc_image_default_model_only_considers_models_that_accept_input_images_when_images_are_passed
 @tool-media-target-environment.test.ts

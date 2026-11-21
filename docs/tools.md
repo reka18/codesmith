@@ -24,6 +24,7 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 | `execute` | Run a Code Mode program over MCP tools. | MCP tools are in Code Mode ([MCP](mcp.md#code-mode)) |
 | `<server>_<tool>` | An MCP tool, as a direct call. | `codemode` is off for that server |
 | `list_mcp_resources`, `read_mcp_resource` | Browse and read MCP resources. | a connected server has resources ([MCP](mcp.md#resources)) |
+| `codesmith` | Manage CodeSmith itself: search the available chat, image and video models (`models`), and list, create or remove the project's git worktrees. See [below](#codesmith). | the `codesmith` plugin is on (the default) |
 | `experimental_image_generate` | Make or edit an image with an image model, in the background. See [below](#generating-images-and-videos). | an image model is reachable and `experimental.image_generate` is not `false` |
 | `experimental_video_generate` | Make a video with a video model, in the background. See [below](#generating-images-and-videos). | a video model is reachable, the session is stored, and `experimental.video_generate` is `true` or `{"model": …}` (off by default) |
 
@@ -259,3 +260,29 @@ store](configuration.md#media-limits). The job is kept in the session
 database, so it survives a restart; it is forgotten, with its stored videos,
 a day after it finishes. Each video is copied to `path` (the first) and next
 to it with `-1`, `-2`, … (the others), and the session is told.
+
+## `codesmith`
+
+The `codesmith` tool (OpenCode's `opencode` tools) lets the model look
+CodeSmith up and manage worktrees. `action` picks what it does:
+
+- `models` searches the models the session can use: chat models by default,
+  or `type: "image"` or `"video"`. They're grouped by provider, the
+  session's own provider first, newest first, and only the newest of each
+  model family unless `all` is set. `query` keeps models whose reference or
+  name contains every word, `provider` filters by provider id or name, and
+  `limit` (1 to 100, default 20) and `offset` page through them. Each model
+  has its `provider/model` reference, name, release date, variants, prices
+  and status.
+- `worktree_list` lists the project's git worktrees.
+- `worktree_create` creates a named worktree under `worktree.directory`
+  (default `<data>/worktree/<project>`) and returns its directory.
+- `worktree_remove` removes a linked worktree (a path relative to the
+  working directory, or absolute). A worktree with modified or untracked
+  files is kept unless `force` is set; the main checkout is never removed.
+
+Listing never asks. Creating or removing a worktree needs the approval
+editing files there needs: an `edit` request on the worktree's directory
+("always" saves `*`), so the `plan` agent can't. The tool never changes
+configuration. Its rules action is `codesmith`, and `"plugins":
+{"codesmith": false}` turns it off.

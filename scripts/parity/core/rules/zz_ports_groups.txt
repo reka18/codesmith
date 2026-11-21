@@ -14,3 +14,9 @@
 261 :: ported :: src/plugin/plan.rs::oc_plan_allows_the_plan_directory_without_asking :: adapted: the Plan directory needs no prompt; other directories outside the project still ask, as for every CodeSmith agent but explore
 271 :: ported :: src/plugin/plan.rs::oc_plan_rewrites_blocked_mutation_failures_with_the_plan_directory :: adapted: a rule's block is recognized by its permission error
 293 :: ported :: src/plugin/plan.rs::oc_plan_preserves_mutation_failures_unrelated_to_permissions
+@tool-opencode.test.ts
+41 :: ported :: src/plugin/codesmith.rs::oc_codesmith_groups_available_models_by_provider_with_paging :: adapted: the `codesmith` tool's `models` action, called directly rather than through Code Mode
+164 :: ported :: tests/oc_codesmith_tool.rs::oc_codesmith_creates_lists_and_removes_worktrees :: adapted: `worktree_*` actions of the `codesmith` tool over git worktrees; creating one asks the same `edit` approval removing one does
+266 :: design :: deliberate :: CodeSmith sessions keep their directory: there is no session_move, so no hint for it
+@tool-image-generate.test.ts
+479 :: ported :: tests/oc_codesmith_tool.rs::oc_codesmith_lists_image_models_through_the_models_type_filter
