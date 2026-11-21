@@ -22,7 +22,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Compaction | 51 | 43 | 0 | 0 | 8 | 0 | 0 |
 | Titles | 26 | 9 | 2 | 0 | 15 | 0 | 0 |
 | Model requests and transport | 68 | 28 | 0 | 0 | 40 | 0 | 0 |
-| Snapshots and undo | 15 | 7 | 2 | 1 | 5 | 0 | 0 |
+| Snapshots and undo | 15 | 8 | 2 | 0 | 5 | 0 | 0 |
 | Sessions and their store | 308 | 107 | 3 | 0 | 198 | 0 | 0 |
 | Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
@@ -33,26 +33,26 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool: websearch | 55 | 4 | 0 | 0 | 51 | 0 | 0 |
 | Tools: question, todo, skill | 9 | 7 | 0 | 0 | 2 | 0 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
-| Tool registry, schemas, placement | 100 | 38 | 0 | 2 | 60 | 0 | 0 |
+| Tool registry, schemas, placement | 100 | 40 | 0 | 0 | 60 | 0 | 0 |
 | Media tools | 39 | 23 | 0 | 3 | 13 | 0 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 129 | 2 | 0 | 76 | 0 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
 | Permission | 177 | 119 | 2 | 0 | 56 | 0 | 0 |
-| Agents | 65 | 48 | 1 | 1 | 15 | 0 | 0 |
+| Agents | 65 | 49 | 1 | 0 | 15 | 0 | 0 |
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 105 | 6 | 21 | 80 | 0 | 0 |
-| Code Mode | 67 | 38 | 8 | 1 | 20 | 0 | 0 |
+| Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
-| Providers, models and credentials | 796 | 411 | 0 | 24 | 361 | 0 | 0 |
+| Providers, models and credentials | 796 | 419 | 0 | 16 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2863** | **79** | **65** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2876** | **79** | **52** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,30 +131,24 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (65 cases in 20 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (52 cases in 14 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [MCP OAuth Login Options](#mcp-oauth-login-options) | 13 | completing a login from a pasted redirect URL; the callback page reporting a token exchange the server rejected (CodeSmith's page reports the redirect, the terminal the exchange); … |
-| [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Default Model Fallback](#default-model-fallback) | 2 | the newest available model when none is configured, skipping disabled providers (CodeSmith asks for a model) |
 | [MCP Output Schemas](#mcp-output-schemas) | 2 | keeping MCP tools' output schemas and showing them in the Code Mode catalog |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
-| [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
 | [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
 | [MCP Session Recovery](#mcp-session-recovery) | 1 | initializing again and retrying a call when an HTTP server has forgotten the session |
 | [MCP Resource Blobs](#mcp-resource-blobs) | 1 | decoding text blobs and saving binary blobs to files (CodeSmith notes them) |
 | [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
 | [MCP Code Mode Defaults](#mcp-code-mode-defaults) | 1 | Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog |
-| [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
-| [Session Diff Ranges](#session-diff-ranges) | 1 | a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only) |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
-| [Code Mode Rejection Warnings](#code-mode-rejection-warnings) | 1 | a warning for a promise rejected and never awaited (CodeSmith drops it) |
 
 ### Provider Plugins
 
@@ -195,16 +189,6 @@ Missing features, by how many OpenCode test cases each would unlock (65 cases in
 - `mcp-oauth.test.ts`: refreshes through configured authorization server metadata
 - `mcp-oauth.test.ts`: reports needs_auth when the server asks for more scope
 
-### ChatGPT Subscription Login
-
-6 cases.
-
-- `plugin/provider-chatgpt.test.ts`: omits the default output limit from OpenAI steps and compaction
-- `plugin/provider-chatgpt.test.ts`: ${connection} sends mid-session reasoning effort switches in a form its backend accepts (2 cases)
-- `plugin/provider-chatgpt.test.ts`: selects WebSocket only from explicit policy
-- `plugin/provider-openai.test.ts`: omits the default output limit from OpenAI steps and compaction
-- `plugin/provider-openai.test.ts`: selects WebSocket only from explicit policy
-
 ### Automation Tool Extraction
 
 4 cases.
@@ -238,13 +222,6 @@ Missing features, by how many OpenCode test cases each would unlock (65 cases in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
 
-### Default Model Fallback
-
-2 cases.
-
-- `catalog.test.ts`: falls back to newest available model when no default is configured
-- `catalog.test.ts`: ignores a configured default on a disabled provider
-
 ### MCP Output Schemas
 
 2 cases.
@@ -258,13 +235,6 @@ Missing features, by how many OpenCode test cases each would unlock (65 cases in
 
 - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
 - `tool-mcp-events.test.ts`: fails for a server that sends no events
-
-### Plugin Tool Renaming
-
-2 cases.
-
-- `tool-registry.test.ts`: a hook can rename a call inside a Code Mode program to another of its tools
-- `tool-registry.test.ts`: a call renamed inside a Code Mode program returns the renamed tool's structured output
 
 ### Automation Failure Handling
 
@@ -296,29 +266,11 @@ Missing features, by how many OpenCode test cases each would unlock (65 cases in
 
 - `plugin/mcp-codemode-defaults.test.ts`: applies Code Mode defaults for known MCP servers unless codemode is configured
 
-### OpenAI Verbosity Defaults
-
-1 cases.
-
-- `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
-
-### Session Diff Ranges
-
-1 cases.
-
-- `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
-
 ### Automation Command
 
 1 cases.
 
 - `tool-automation.test.ts`: /automation hands the request to the model with the automation instructions
-
-### Code Mode Rejection Warnings
-
-1 cases.
-
-- `tool-execute.test.ts`: a program that only warns shows just its warnings
 
 ## Porting backlog
 
@@ -787,8 +739,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Snapshots and undo (14 of 15)</summary>
+<details><summary>Snapshots and undo (15 of 15)</summary>
 
+
+**`session-diff.test.ts`**
+
+- P diffs the busy period containing a user message and ranges across later turns — `tests/oc_session_diff.rs::oc_diffs_the_turn_containing_a_prompt_and_ranges_across_later_turns` (adapted: no steers, so every prompt is its own busy period; prompts are named by record number; no fork or location-switch half)
 
 **`session-revert.test.ts`**
 
@@ -1495,7 +1451,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool registry, schemas, placement (98 of 100)</summary>
+<details><summary>Tool registry, schemas, placement (100 of 100)</summary>
 
 
 **`plugin/tool-input-repair-integration.test.ts`**
@@ -1546,6 +1502,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D keeps permission options isolated between registrations · removes a scoped registration · preserves an interrupted registration until its scope closes · returns model errors without swallowing interruption or defects · exposes execution only through a snapshot · passes complete call identity to tool execution · lists registered tools by effective name — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
 - P normalizes ${input.name} after the final tool hook — `tests/oc_tools_backlog3.rs::oc_tool_registry_normalizes_output_after_the_final_tool_hook` (the string row; adapted: a hook replaces the result's text)
 - D normalizes ${input.name} after the final tool hook ×3 — deliberate: a tool result is text, so there is no structured output for missing or empty content to fall back to, and an empty result is sent as "(no tool output)", which every provider accepts; pinned by tests/oc_tools_backlog3.rs::oc_tool_registry_normalizes_output_after_the_final_tool_hook
+- P a hook can rename a call inside a Code Mode program to another of its tools — `tests/oc_plugin_rename.rs::oc_a_hook_can_rename_a_call_inside_a_code_mode_program_to_another_of_its_tools` (adapted: the program's tools are the built-ins a strong model calls from inside execute; there is no automation check)
+- P a call renamed inside a Code Mode program returns the renamed tool's structured output — `tests/oc_plugin_rename.rs::oc_a_call_renamed_inside_a_code_mode_program_returns_the_renamed_tools_output` (adapted: results are text; a built-in renamed to an MCP tool)
 - P hooks see one ID per call inside a Code Mode program — `tests/oc_tools_backlog3.rs::oc_tool_registry_hooks_see_one_id_per_call_inside_a_code_mode_program`
 - P normalizes image tool output once and drops unresizable images — `src/tool/read.rs::oc_read_drops_undecodable_image_data` (image normalization through read)
 - D publishes progress metadata unchanged · enforces transformed codecs at execution and projection boundaries · registers, advertises, and executes a Zod tool · executes the tool advertised in a model request · reveals the previous registration after an overlay closes · executes and reports progress for codemode tools advertised in a model request — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
@@ -2126,7 +2084,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Agents (64 of 65)</summary>
+<details><summary>Agents (65 of 65)</summary>
 
 
 **`agent.test.ts`**
@@ -2183,6 +2141,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P allows external directories without asking — `src/plugin/plan.rs::oc_plan_allows_external_directories_without_asking` (also through the read tool, with a configured deny still winning (tests/oc_plan_session.rs::oc_plan_session_reads_outside_the_project_without_asking))
 - P rewrites blocked mutation failures with the Plan directory — `src/plugin/plan.rs::oc_plan_rewrites_blocked_mutation_failures_with_the_plan_directory` (adapted: a rule's block is recognized by its permission error)
 - P preserves mutation failures unrelated to permissions — `src/plugin/plan.rs::oc_plan_preserves_mutation_failures_unrelated_to_permissions`
+
+**`plugin/verbosity.test.ts`**
+
+- P sets known OpenAI Responses defaults without overriding configured or unknown models — `../codesmith-ai/src/parity_options.rs::oc_sets_known_openai_responses_verbosity_defaults_without_overriding_configured_or_unknown_models` (adapted: a Responses route default by URL and the model id sent; configured layering in tests/oc_verbosity.rs; no Vercel gateway)
 
 </details>
 
@@ -2620,7 +2582,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (66 of 67)</summary>
+<details><summary>Code Mode (67 of 67)</summary>
 
 
 **`codemode.test.ts`**
@@ -2673,6 +2635,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
 - P a denied permission reaches the program and changes nothing — `tests/oc_codemode_backlog3.rs::oc_execute_a_denied_permission_reaches_the_program_and_changes_nothing` (adapted: the built-ins called inside execute, not Bun's file APIs)
 - P a program that only logs shows just its logs — `tests/oc_codemode_backlog3.rs::oc_execute_a_program_that_only_logs_shows_its_logs` (adapted: checked as the outcome's result and logs)
+- P a program that only warns shows just its warnings — `tests/oc_codemode_warnings.rs::oc_execute_a_program_that_only_warns_shows_its_warnings` (adapted: CodeSmith's result also shows its value (null), and the warning has no diagnostic kind)
 - P a null result with nothing else still shows null — `tests/oc_codemode_backlog3.rs::oc_execute_a_null_result_with_nothing_else_still_shows_null`
 - P a returned value keeps its line before the logs — `tests/oc_codemode_backlog3.rs::oc_execute_a_returned_value_keeps_its_line_before_the_logs`
 - D reads the first chunk before EOF: %s ×3 — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
@@ -2885,7 +2848,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (772 of 796)</summary>
+<details><summary>Providers, models and credentials (780 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -2899,8 +2862,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`catalog.test.ts`**
 
 - D keeps nested model values editable after ${path} model resolution ×4 · publishes an updated event after provider changes · preserves provider identity when updating new and existing providers · derives availability from active credentials without changing provider state · reuses the model catalog across credential switches · persists direct edits to models returned by list and get · gives foreign definitions the registering provider's identity · keeps materialized models when another provider becomes available · derives availability from a provider's integration · makes an explicitly enabled provider available without a connection · projects environment connections without a catalog plugin · stores provider package settings · uses model package settings over provider settings · resolves default model package settings from the provider · rewrites AI SDK packages and their options on write · keeps settings scoped while resolving request overlay merges — storage-model: OpenCode's editable provider/model store, its events and credential-derived availability (CodeSmith resolves config over the catalog at each model resolution; see tests/oc_catalog.rs)
+- P falls back to newest available model when no default is configured — `tests/oc_default_model.rs::oc_falls_back_to_the_newest_available_model_when_no_default_is_configured` (adapted: the catalog drops video and speech models, so a configured audio-only model stands in as the newest non-text one)
 - D defaults to big-pickle when only free OpenCode models are available · keeps the newest default when a paid model is available — cloud: OpenCode free models
 - D uses a transform-provided default model until that transform is replaced — storage-model: OpenCode's editable provider/model store, its events and credential-derived availability (CodeSmith resolves config over the catalog at each model resolution; see tests/oc_catalog.rs)
+- P ignores a configured default on a disabled provider — `tests/oc_default_model.rs::oc_ignores_a_configured_default_on_a_disabled_provider` (adapted: disabled by OpenCode's disabled_providers config)
 - D small model uses the newest release in the first matching family · small model returns undefined without a matching family — deliberate: title.rs: no small model
 
 **`config/provider-options.test.ts`**
@@ -3146,7 +3111,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P keeps the token-sharing safeguards when the token cannot be refreshed at load — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_safeguards_with_an_expired_login` (adapted: nothing is refreshed at load; the safeguards follow the saved login)
 - P keeps the full OpenAI catalog under an API key connection — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key`
 - D switches between token-sharing and Codex credentials without mixing their routes — deliberate: no Codex CLI sign-in to switch to (it works only as Codex CLI's own OAuth client)
+- P omits the default output limit from OpenAI steps and compaction — `tests/oc_output_limit.rs::oc_omits_the_default_output_limit_from_openai_steps_and_compaction` (adapted: OpenAI Chat to a local fake under a key; the provider id decides, as OpenCode's hook does)
 - P ${connection} compaction uses plugin defaults but allows later model and variant overrides ×2 — `tests/oc_chatgpt.rs::oc_chatgpt_compacts_by_summary_and_a_key_keeps_native_compaction` (adapted: a ChatGPT sign-in compacts by summary; a key keeps the configured compaction)
+- P ${connection} sends mid-session reasoning effort switches in a form its backend accepts ×2 — `tests/oc_chatgpt.rs::oc_chatgpt_sends_effort_switches_in_a_form_its_backend_accepts` (adapted: the sign-in resolves with effortUpdates off; the bodies are pinned by ../codesmith-ai/src/parity_options.rs::oc_chatgpt_and_key_send_effort_switches_in_a_form_their_backend_accepts)
+- P selects WebSocket only from explicit policy — `tests/oc_chatgpt.rs::oc_chatgpt_selects_websocket_only_from_explicit_policy` (adapted: the policy is a provider's transport setting)
 
 **`plugin/provider-cloudflare-ai-gateway.test.ts`**
 
@@ -3303,6 +3271,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D filters the OpenAI catalog to codex-eligible models under a ChatGPT connection — deliberate: the Codex-eligible catalog belongs to Codex CLI's sign-in; a ChatGPT token-sharing sign-in lists ChatGPT's models (tests/oc_chatgpt.rs)
 - P keeps the full OpenAI catalog under an API key connection — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key`
 - D reloads providers on a switch only when the ChatGPT login changes — deliberate: Codex CLI's sign-in and its chatgpt-account-id header are not offered
+- P omits the default output limit from OpenAI steps and compaction — `tests/oc_output_limit.rs::oc_omits_the_default_output_limit_from_openai_steps_and_compaction`
+- P selects WebSocket only from explicit policy — `tests/oc_chatgpt.rs::oc_chatgpt_selects_websocket_only_from_explicit_policy` (adapted: the policy is a provider's transport setting)
 
 **`plugin/provider-opencode-artifacts.test.ts`**
 
