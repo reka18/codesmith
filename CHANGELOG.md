@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- An interrupted turn (**Esc**) keeps the text and reasoning the model had
+  streamed, as a failed stream does: they are saved at once and replayed in
+  the next turn, without the step's unfinished calls or provider state.
+  They were lost.
 - An automation whose creating session was deleted no longer runs without
   that session's permission rules: the run is refused with an error saying
   so, and the automation is paused.

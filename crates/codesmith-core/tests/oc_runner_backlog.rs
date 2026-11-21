@@ -621,12 +621,12 @@ async fn oc_session_makes_no_new_attempt_after_an_interrupt_during_backoff() {
 // --- Interrupted streams ---
 
 /// "durably closes partial ${kind} when the provider stream is interrupted"
-/// (3 cases). Found difference: an interrupt (the turn's future dropped, as
-/// the TUI's Esc does) loses the text and reasoning streamed so far, which
-/// a failed stream keeps; OpenCode keeps both. An incomplete tool call is
-/// never kept (by design, as for a failed stream).
+/// (3 cases). Fixed: an interrupt (the turn's future dropped, as the TUI's
+/// Esc does) lost the text and reasoning streamed so far, which a failed
+/// stream keeps; now both are recorded at once, as OpenCode closes them.
+/// An incomplete tool call is never kept (by design, as for a failed
+/// stream).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "found difference: an interrupted step's partial text is not recorded"]
 async fn oc_session_closes_partial_output_when_the_stream_is_interrupted() {
     for (kind, chunk) in [
         (
@@ -648,18 +648,7 @@ async fn oc_session_closes_partial_output_when_the_stream_is_interrupted() {
         })
         .await;
         t.push([held(&[chunk], &[])]);
-        let seen = t.seen.clone();
-        let mut sink = Rec(seen.clone());
-        let script = t.script.clone();
-        tokio::select! {
-            r = t.s.prompt("Interrupt me", &mut sink) => panic!("{kind}: the turn ended: {r:?}"),
-            _ = until("the partial output", || {
-                let s = seen.lock().unwrap();
-                // Reasoning reaches no sink callback here; the request does.
-                !s.text.is_empty() || !s.lifecycle.is_empty()
-                    || kind == "reasoning" && script.lock().unwrap().log.len() == 1
-            }) => {}
-        }
+        interrupt_after_output(&mut t, "Interrupt me").await;
         let again = t.reopen();
         let last = again.messages.last().unwrap();
         match kind {
@@ -670,6 +659,115 @@ async fn oc_session_closes_partial_output_when_the_stream_is_interrupted() {
             }
         }
     }
+}
+
+/// Records text, reasoning and tool inputs as they stream.
+struct Streaming(Arc<Mutex<Seen>>, Arc<Mutex<String>>);
+impl Sink for Streaming {
+    fn text(&mut self, d: &str) {
+        self.0.lock().unwrap().text.push_str(d);
+    }
+    fn reasoning(&mut self, d: &str) {
+        self.1.lock().unwrap().push_str(d);
+    }
+    fn tool_input(&mut self, id: &str, name: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .lifecycle
+            .push(format!("input {id} {name}"));
+    }
+}
+
+/// Run `prompt` until its held response has shown some output, then drop
+/// the turn, as an interrupt does.
+async fn interrupt_after_output(t: &mut T, prompt: &str) {
+    let seen = t.seen.clone();
+    let reasoning: Arc<Mutex<String>> = Arc::default();
+    let mut sink = Streaming(seen.clone(), reasoning.clone());
+    tokio::select! {
+        r = t.s.prompt(prompt, &mut sink) => panic!("the turn ended: {r:?}"),
+        _ = until("the partial output", || {
+            let s = seen.lock().unwrap();
+            !s.text.is_empty() || !s.lifecycle.is_empty() || !reasoning.lock().unwrap().is_empty()
+        }) => {}
+    }
+}
+
+/// The same, adapted: the next prompt on the same session (the TUI keeps
+/// it when the abort lands between steps; `codesmith run` and memory-only
+/// sessions have no store to reload) replays the interrupted step's text
+/// and reasoning once, without provider state. Stored and memory-only.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt() {
+    for store in [true, false] {
+        let mut t = start(Setup {
+            store,
+            ..Default::default()
+        })
+        .await;
+        t.push([held(
+            &[
+                json!({"choices": [{"delta": {"reasoning_content": "Partial thought"}}]}),
+                json!({"choices": [{"delta": {"content": "Partial answer"}}]}),
+            ],
+            &[],
+        )]);
+        interrupt_after_output(&mut t, "Interrupt me").await;
+        t.script.lock().unwrap().replies.clear();
+        t.push([text("Next")]);
+        t.prompt("Continue").await.unwrap();
+        let reqs = t.requests();
+        let last = reqs.last().unwrap();
+        assert_eq!(
+            roles(last),
+            ["system", "user", "assistant", "user"],
+            "store {store}: {last}"
+        );
+        let replayed = &last["messages"][2];
+        assert_eq!(replayed["content"], "Partial answer", "{replayed}");
+        assert!(replayed.get("reasoning_details").is_none(), "{replayed}");
+        let roles: Vec<Role> = t.s.messages.iter().map(|m| m.role.clone()).collect();
+        assert_eq!(
+            roles,
+            [Role::User, Role::Assistant, Role::User, Role::Assistant],
+            "store {store}"
+        );
+        if store {
+            let again = t.reopen();
+            assert_eq!(again.messages.len(), 4, "{:?}", again.messages);
+        }
+    }
+}
+
+/// The same, adapted to provider state: the text of a Responses message
+/// item cut off by an interrupt keeps no item id or phase, so the next
+/// request never replays it as a finished item (the failed-stream rule).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_session_keeps_no_provider_state_from_an_interrupted_step() {
+    let mut t = start(Setup {
+        store: true,
+        protocol: "openai-responses",
+        ..Default::default()
+    })
+    .await;
+    t.push([held(
+        &[
+            json!({"type": "response.created", "response": {"id": "resp_1"}}),
+            json!({"type": "response.output_item.added", "item": {"type": "message", "id": "msg_cut", "phase": "final_answer"}}),
+            json!({"type": "response.output_text.delta", "item_id": "msg_cut", "delta": "Partial"}),
+        ],
+        &[],
+    )]);
+    interrupt_after_output(&mut t, "Interrupt me").await;
+    let again = t.reopen();
+    let last = again.messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert!(
+        matches!(&last.parts[..], [Part::Text(x)] if x.as_str() == "Partial" && x.meta.is_none()),
+        "{:?}",
+        last.parts
+    );
 }
 
 // --- Provider state replayed ---

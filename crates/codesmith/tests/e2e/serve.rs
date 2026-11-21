@@ -477,7 +477,7 @@ async fn aborting_a_streaming_turn_keeps_the_session_usable() {
     let mut ev = s.turn(&sid, "hello").await;
     let done = ev.until("done").await;
     assert_eq!(done.last().unwrap().1["error"], Value::Null, "{done:?}");
-    // The aborted prompt is kept; its unfinished answer is not.
+    // The aborted prompt is kept, and so is the answer it had streamed.
     let after = &m.by("after")[0];
     let roles: Vec<(String, String)> = crate::model::messages(after)
         .iter()
@@ -494,6 +494,7 @@ async fn aborting_a_streaming_turn_keeps_the_session_usable() {
         roles,
         [
             ("user".to_string(), "think forever".to_string()),
+            ("assistant".to_string(), "Thinking".to_string()),
             ("user".to_string(), "hello".to_string())
         ]
     );

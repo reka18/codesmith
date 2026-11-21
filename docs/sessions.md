@@ -19,6 +19,13 @@ starts over; each session opens in a [tab](interactive-ui.md#session-tabs)
 of its own, and the open tabs are kept for the next start. New sessions get a short generated title ([which model writes it](configuration.md#session-titles)). `codesmith run
 --title` sets one yourself.
 
+A turn you interrupt (**Esc**) keeps what the model had already written:
+the text and reasoning streamed so far are saved as its reply, as when the
+provider fails part way, and the model sees them in the next turn. A tool
+call still streaming is dropped, and nothing the provider would replay as
+finished (a Responses item id, an unfinished reasoning block's signature)
+is kept.
+
 ## Undo and redo
 
 At the start and end of each turn, CodeSmith snapshots the project into a

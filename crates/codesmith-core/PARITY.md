@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 151 | 12 | 2 | 204 | 21 | 3 |
+| Session runner | 393 | 151 | 15 | 2 | 204 | 21 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2462** | **41** | **45** | **2502** | **535** | **3** |
+| **Total** | **5588** | **2462** | **44** | **45** | **2502** | **535** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -73,6 +73,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner.test.ts`: "does not recover context overflow after durable assistant output" (1 case): an overflow after partial output was compacted and retried; it now fails the turn. Pinned by `tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output`.
 - `session-runner.test.ts`: "retries an unknown finish before output" (1 case): an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output`.
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
+- `session-runner.test.ts`: "durably closes partial ${kind} when the provider stream is interrupted" (3 cases): an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step. Pinned by `tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted`.
 - `shell-scan/bash-safety.test.ts`: "still requires redirect targets: %s" (1 case): `X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets`.
 - `shell-scan/bash-safety.test.ts`: "does not invent redirect commands for pure group descriptor duplications: %s" (3 cases): a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications`.
 - `shell-scan/bash-syntax.test.ts`: "rejects ANSI-C escapes whose value differs between shells in %s: %s" (2 cases): `$'a\0b'` was read as `ab` where Bash ends the word at the NUL (so `$'curl\0z'` runs `curl` but was checked as `curlz`), and `\cX` was decoded although the shells read it differently; both are refused now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells`.
@@ -97,7 +98,6 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 
 Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.
 
-- **Bug** (`tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted`), `session-runner.test.ts` "durably closes partial ${kind} when the provider stream is interrupted" (3): an interrupt (the turn's future dropped, as the TUI's Esc does) loses the text and reasoning streamed so far, which a failed stream keeps; OpenCode keeps both.
 - **Difference to decide**, `session-generate.test.ts` "runs generate hooks instead of context hooks" (1): one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook.
 - **Difference to decide**, `session-runner.test.ts` "records malformed provider-executed input as executed" (1): a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record.
 
@@ -1020,7 +1020,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P durably fails a hosted tool left unresolved by a raw provider stream failure — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_by_a_provider_failure`
 - D rejects a second text start before the open fragment ends · projects sequential text fragments as separate content parts · broadcasts pending text while the provider stream is paused — storage-model: streamed part ordering in OpenCode's event model
 - P durably closes partial ${kind} when the provider stream fails ×3 — `tests/runner_parity.rs::oc_session_durably_closes_partial_text_when_the_provider_stream_fails` (text, reasoning and tool input cases)
-- X durably closes partial ${kind} when the provider stream is interrupted ×3 — an interrupt (the turn's future dropped, as the TUI's Esc does) loses the text and reasoning streamed so far, which a failed stream keeps; OpenCode keeps both
+- F durably closes partial ${kind} when the provider stream is interrupted ×3 — `tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted` (an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step)
 - D rejects duplicate streamed text starts · transitions streamed raw tool input to parsed called input · rejects malformed streamed tool input ordering — storage-model: streamed part ordering in OpenCode's event model
 
 **`session-shell.test.ts`**
@@ -1827,7 +1827,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P accepts localhost URLs with the same requested-URL permission check — `src/tool/webfetch.rs::oc_webfetch_accepts_localhost_urls_with_the_same_check`
 - P follows redirects, checking each target against the rules without asking — `src/tool/webfetch.rs::oc_webfetch_follows_redirects_checking_targets_without_asking`
 - P stops at a redirect target the rules deny — `src/tool/webfetch.rs::oc_webfetch_stops_at_a_denied_redirect_target`
-- P matches rules against the URL as written without the fragment and rejects credentials — `src/tool/webfetch.rs::oc_webfetch_matches_the_url_as_written_and_rejects_credentials`
+- P matches rules against the URL as written without the fragment and rejects credentials — `src/tool/webfetch.rs::oc_webfetch_matches_the_url_as_requested_and_rejects_credentials`
 - P rejects redirects to non-HTTP schemes and endless redirect chains — `src/tool/webfetch.rs::oc_webfetch_rejects_non_http_redirects_and_endless_chains`
 - P rejects non-HTTP schemes before permission or transport — `src/tool/webfetch.rs::oc_webfetch_rejects_non_http_schemes_before_permission`
 - P converts HTML to requested markdown and text — `src/tool/webfetch.rs::oc_webfetch_converts_html_to_markdown_and_text`

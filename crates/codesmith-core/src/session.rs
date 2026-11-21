@@ -329,8 +329,12 @@ pub struct Session {
     client: reqwest::Client,
     /// The Responses WebSocket session steps reuse (see `ModelRef::websocket`).
     ws: Arc<codesmith_ai::ws::SessionTransport>,
-    store: Option<Store>,
+    store: Option<Arc<Store>>,
     stored: bool,
+    /// What a step dropped part way (an interrupt) streamed: its assistant
+    /// message, and its store sequence number when it was recorded then.
+    /// The next turn takes it into the history (see [`Streamed`]).
+    interrupted: InterruptedSlot,
     title_task: Option<TitleTask>,
     /// A title waiting for the turn's first response: its first message
     /// and how it is made (see [`TitlePlan::defer`]).
@@ -745,8 +749,9 @@ impl Session {
                 .connect_timeout(Duration::from_secs(30))
                 .build()?,
             ws: Arc::default(),
-            store,
+            store: store.map(Arc::new),
             stored,
+            interrupted: Arc::default(),
             title_task: None,
             title_pending: None,
             loaded: loaded.clone(),
@@ -832,6 +837,28 @@ impl Session {
             }
         }
         Ok(Some(lease))
+    }
+
+    /// Take what a step dropped part way streamed into the history (see
+    /// [`Streamed`]): recorded already unless the session had no store
+    /// then, and already in the history when a reload picked it up.
+    fn take_interrupted(&mut self) -> Result<()> {
+        let Some((message, seq)) = self.interrupted.lock().ok().and_then(|mut s| s.take()) else {
+            return Ok(());
+        };
+        match seq {
+            None => self.push(message),
+            Some(_) if self.seqs.contains(&seq) => Ok(()),
+            Some(n) => {
+                if n != self.shared.seen + 1 {
+                    self.shared.stale = true;
+                }
+                self.shared.seen = self.shared.seen.max(n);
+                self.messages.push(message);
+                self.seqs.push(seq);
+                Ok(())
+            }
+        }
     }
 
     /// The effort update a variant switch since the history last ran makes
@@ -1807,6 +1834,7 @@ impl Session {
         sink: &mut dyn Sink,
     ) -> Result<()> {
         let _lease = self.take_turn(sink).await?;
+        self.take_interrupted()?;
         let plugins = crate::plugin::active();
         // Plugins check permissions for this session through the host
         // while the turn runs.
@@ -4263,7 +4291,18 @@ impl Session {
         // stream that ends without finishing was cut off, and is retried.
         let mut inputs = InputPairs::default();
         let mut hosted = HostedRows::default();
+        // Kept if the turn is dropped before the stream ends.
+        let mut streamed = Streamed {
+            parts: codesmith_ai::Collector::default(),
+            keep: Some(Keep {
+                store: self.store.clone().filter(|_| self.stored),
+                id: self.id.clone(),
+                model: crate::config::split_variant(&self.model_spec).0.to_string(),
+                slot: self.interrupted.clone(),
+            }),
+        };
         let r = codesmith_ai::assemble(stream, |ev| {
+            streamed.parts.push(ev);
             inputs.push(ev, &mut *sink);
             hosted.push(ev, &mut *sink);
             match ev {
@@ -4274,6 +4313,7 @@ impl Session {
             }
         })
         .await;
+        streamed.keep = None;
         inputs.settle(sink);
         hosted.settle(sink);
         match r {
@@ -4292,6 +4332,62 @@ impl Session {
                 Err(f)
             }
         }
+    }
+}
+
+/// What a step's stream showed so far, kept when the turn is dropped
+/// before the stream ends (an interrupt: the TUI's Esc aborts the turn's
+/// task). As OpenCode closes an interrupted step's partial output, it is
+/// kept as a failed stream's is ([`failed_partial`]): its text and
+/// finished reasoning, without its calls or the text's provider state,
+/// recorded at once (the session may be dropped with the turn) and taken
+/// into the in-memory history by the next turn.
+struct Streamed {
+    parts: codesmith_ai::Collector,
+    /// Where to keep it; `None` once the stream ended.
+    keep: Option<Keep>,
+}
+
+/// An interrupted step's message and its store sequence number.
+type InterruptedSlot = Arc<std::sync::Mutex<Option<(Message, Option<i64>)>>>;
+
+struct Keep {
+    /// The session's store, once the session is recorded there.
+    store: Option<Arc<Store>>,
+    id: String,
+    /// The model the step ran on (no variant), for its provider state.
+    model: String,
+    slot: InterruptedSlot,
+}
+
+impl Drop for Streamed {
+    fn drop(&mut self) {
+        let Some(keep) = self.keep.take() else {
+            return;
+        };
+        let mut parts = failed_partial(std::mem::take(&mut self.parts).finish());
+        fail_unresolved_hosted(&mut parts);
+        if parts.is_empty() {
+            return;
+        }
+        stamp_model(&mut parts, &keep.model);
+        let message = Message {
+            role: Role::Assistant,
+            parts,
+        };
+        let seq = keep.store.and_then(|st| {
+            st.append(
+                &keep.id,
+                &Record::Message {
+                    message: message.clone(),
+                },
+            )
+            .ok()
+        });
+        let slot = keep.slot.lock();
+        if let Ok(mut slot) = slot {
+            *slot = Some((message, seq));
+        };
     }
 }
 

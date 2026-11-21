@@ -1,0 +1,4 @@
+# Fixes of found bugs and roadmap features (tests named in each line).
+
+@session-runner.test.ts
+7605 :: fixed :: tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted :: an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step
