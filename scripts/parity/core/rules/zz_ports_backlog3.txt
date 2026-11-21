@@ -36,3 +36,13 @@
 # --- Snapshots and undo ---
 @session-diff.test.ts
 46 :: feature :: Session Diff Ranges :: a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only)
+
+# --- Tool registry, schemas, placement (tests/oc_tools_backlog3.rs) ---
+@tool-registry.test.ts
+993 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_registry_exposes_code_mode_tools_directly_when_execute_is_denied
+1209:1 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_registry_normalizes_output_after_the_final_tool_hook :: the string row; adapted: a hook replaces the result's text
+1209:3 :: design :: deliberate :: a tool result is text, so there is no structured output for missing or empty content to fall back to, and an empty result is sent as "(no tool output)", which every provider accepts; pinned by tests/oc_tools_backlog3.rs::oc_tool_registry_normalizes_output_after_the_final_tool_hook
+1234,1280 :: feature :: Plugin Tool Renaming :: a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call)
+1311 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_registry_hooks_see_one_id_per_call_inside_a_code_mode_program
+@tool-schema.test.ts
+559 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_schema_missing_external_input_schemas_fall_back_to_an_empty_schema :: adapted: an MCP tool listed without a schema is offered with an empty object schema
