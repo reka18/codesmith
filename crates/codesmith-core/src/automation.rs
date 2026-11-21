@@ -146,6 +146,13 @@ pub struct Automation {
     pub created: i64,
     /// Event triggers only: how far the watch has got.
     pub event: Option<EventPosition>,
+    /// The creating session's own permission rules, recorded when the
+    /// automation was created (or, for one created before they were
+    /// recorded, at its first run while that session still existed). Every
+    /// run is held to them, so they still apply once that session is
+    /// deleted. `None`: not recorded (no creating session, or it was gone).
+    #[serde(skip)]
+    pub session_rules: Option<Vec<crate::permission::Rule>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -355,12 +362,20 @@ fn ensure(c: &Connection) -> Result<()> {
     {
         c.execute_batch("ALTER TABLE automation ADD COLUMN event_position TEXT")?;
     }
+    // Added with recorded session rules.
+    if c.prepare("SELECT session_rules FROM automation LIMIT 0")
+        .is_err()
+    {
+        c.execute_batch("ALTER TABLE automation ADD COLUMN session_rules TEXT")?;
+    }
     Ok(())
 }
 
-const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position";
+const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules";
 
-fn row(r: &rusqlite::Row) -> rusqlite::Result<(Automation, String, String, String)> {
+fn row(
+    r: &rusqlite::Row,
+) -> rusqlite::Result<(Automation, String, String, String, Option<String>)> {
     Ok((
         Automation {
             id: r.get(0)?,
@@ -388,19 +403,85 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<(Automation, String, String, Strin
             event: r
                 .get::<_, Option<String>>(14)?
                 .and_then(|p| serde_json::from_str(&p).ok()),
+            session_rules: None,
         },
         r.get(4)?,
         r.get(5)?,
         r.get(9)?,
+        r.get(15)?,
     ))
 }
 
-fn decode(raw: (Automation, String, String, String)) -> Result<Automation> {
-    let (mut a, t, act, st) = raw;
+fn decode(raw: (Automation, String, String, String, Option<String>)) -> Result<Automation> {
+    let (mut a, t, act, st, rules) = raw;
     a.trigger = serde_json::from_str(&t)?;
     a.action = serde_json::from_str(&act)?;
     a.state = serde_json::from_str(&st).unwrap_or(Value::Null);
+    // Unreadable rules are an error, not "none recorded": a run must not
+    // go ahead with fewer restrictions than its creator had.
+    a.session_rules = rules.map(|r| serde_json::from_str(&r)).transpose()?;
     Ok(a)
+}
+
+/// The session that created `a`: its `session_id`, or for an automation
+/// stored before that was recorded, the session its runs are children of.
+pub fn creator(a: &Automation) -> Option<&str> {
+    a.session_id.as_deref().or(match &a.action {
+        Action::Prompt {
+            to: Target::Child { child, .. },
+            ..
+        } => Some(child.as_str()),
+        _ => None,
+    })
+}
+
+/// The own permission rules of session `id`, if it exists (none set is an
+/// empty list).
+fn session_rules_of(db: &Store, id: &str) -> Result<Option<Vec<crate::permission::Rule>>> {
+    if db.get(id)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(db.permissions(id)?.unwrap_or_default()))
+}
+
+/// The session-only rules a run of `a` is held to: those recorded with it,
+/// and the creating session's current ones while it exists. They only
+/// restrict, so both apply.
+fn run_session_rules(db: &Store, a: &Automation) -> Result<Vec<crate::permission::Rule>> {
+    let mut rules = a.session_rules.clone().unwrap_or_default();
+    if let Some(now) = creator(a)
+        .map(|c| session_rules_of(db, c))
+        .transpose()?
+        .flatten()
+    {
+        for r in now {
+            if !rules.contains(&r) {
+                rules.push(r);
+            }
+        }
+    }
+    Ok(rules)
+}
+
+/// `id` if that session exists.
+fn live(db: &Store, id: Option<&str>) -> Result<Option<String>> {
+    Ok(match id {
+        Some(i) if db.get(i)?.is_some() => Some(i.to_string()),
+        _ => None,
+    })
+}
+
+/// Record `rules` as `id`'s creating session's rules.
+fn set_session_rules(db: &Store, id: &str, rules: &[crate::permission::Rule]) -> Result<()> {
+    let text = serde_json::to_string(rules)?;
+    db.with_conn(|c| {
+        ensure(c)?;
+        c.execute(
+            "UPDATE automation SET session_rules = ?2 WHERE id = ?1",
+            params![id, text],
+        )?;
+        Ok(())
+    })
 }
 
 fn id() -> String {
@@ -409,6 +490,7 @@ fn id() -> String {
     format!("aut_{t:x}{:04x}", rand::thread_rng().gen::<u16>())
 }
 
+#[derive(Clone)]
 pub struct New {
     pub name: String,
     pub directory: String,
@@ -442,13 +524,23 @@ pub fn create(db: &Store, n: New) -> Result<Automation> {
         last_error: None,
         created: now,
         event,
+        session_rules: None,
     };
+    let mut a = a;
+    if let Some(c) = creator(&a) {
+        a.session_rules = session_rules_of(db, c)?;
+    }
+    let rules = a
+        .session_rules
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     let position = a.event.as_ref().map(serde_json::to_string).transpose()?;
     db.with_conn(|c| {
         ensure(c)?;
         c.execute(
-            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10)"),
-            params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position],
+            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11)"),
+            params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position, rules],
         )?;
         Ok(())
     })?;
@@ -901,10 +993,11 @@ struct RunError {
 #[derive(Debug)]
 struct TurnFailed;
 
-/// The session that created an automation is gone, so the session-only
-/// permission rules a run would inherit from it are too: the run is
-/// refused and the automation paused rather than run with fewer
-/// restrictions than its creator had.
+/// The session that created an automation is gone and its session-only
+/// permission rules were never recorded with the automation (one stored
+/// before they were, whose creator was deleted before it next ran): they
+/// are unknown, so the run is refused and the automation paused rather
+/// than run with fewer restrictions than its creator had.
 #[derive(Debug)]
 struct CreatorGone(String);
 
@@ -912,9 +1005,9 @@ impl std::fmt::Display for CreatorGone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the session that created this automation ({}) was deleted, so the \
-             permission rules set in that session can no longer be applied to its \
-             runs; the automation is paused. Remove it, or create it again from \
+            "the session that created this automation ({}) was deleted before its \
+             permission rules were recorded with the automation, so they can no \
+             longer be applied to its runs; the automation is paused. Remove it, or create it again from \
              another session",
             self.0
         )
@@ -1252,33 +1345,30 @@ impl Runner {
             Target::Session { session } => {
                 (Some(session.clone()), None, None, a.name.clone(), None)
             }
+            // A child of the creating session while it exists, so it lists
+            // under it and starts with its session rules; once it is gone,
+            // a session of its own (the recorded rules are added below).
             Target::Subagent { subagent } => (
                 None,
                 Some(subagent.clone()),
                 None,
                 title,
-                a.session_id.clone(),
+                live(&db, a.session_id.as_deref())?,
             ),
             Target::Child {
                 child,
                 agent,
                 model,
-            } => {
-                // A child of the creating session, so it lists under it and
-                // starts with its session rules. Without that session
-                // those rules are unknown: refused (see [`CreatorGone`]).
-                if db.get(child)?.is_none() {
-                    return Err(CreatorGone(child.clone()).into());
-                }
-                (
-                    None,
-                    Some(agent.clone()),
-                    model.clone(),
-                    title,
-                    Some(child.clone()),
-                )
-            }
+            } => (
+                None,
+                Some(agent.clone()),
+                model.clone(),
+                title,
+                live(&db, Some(child))?,
+            ),
         };
+        let fresh = resume.is_none();
+        let extra = run_session_rules(&db, a)?;
         let mut s = Session::new(
             &unattended(loaded),
             PathBuf::from(&a.directory),
@@ -1294,6 +1384,20 @@ impl Runner {
             Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
             Some(db),
         )?;
+        // A new session is held to the recorded rules too. (A session the
+        // run continues keeps its own: they are the creator's current ones.)
+        if fresh {
+            let mut own = s.permissions();
+            let before = own.len();
+            for r in extra {
+                if !own.contains(&r) {
+                    own.push(r);
+                }
+            }
+            if own.len() != before {
+                s.set_permissions(own)?;
+            }
+        }
         s.set_wait_for_turn(wait);
         let mut out = Quiet(String::new());
         let turn_failed = |e: anyhow::Error| {
@@ -1351,13 +1455,25 @@ impl Runner {
     }
 
     async fn act(&self, db: &Store, a: &Automation, ok: &str, event: Option<&Value>) -> Result<()> {
-        // Every session a run starts is a child of the creating session and
-        // inherits its session rules; without it they are unknown.
-        if let Some(creator) = &a.session_id {
-            if db.get(creator)?.is_none() {
-                return Err(CreatorGone(creator.clone()).into());
-            }
-        }
+        // Every run is held to the creating session's own rules: those
+        // recorded with the automation, recorded now for one stored before
+        // they were, while that session exists. With neither, they are
+        // unknown and the run is refused.
+        let recorded;
+        let a = if a.session_rules.is_none() && creator(a).is_some() {
+            let c = creator(a).unwrap_or_default().to_string();
+            let Some(rules) = session_rules_of(db, &c)? else {
+                return Err(CreatorGone(c).into());
+            };
+            set_session_rules(db, &a.id, &rules)?;
+            recorded = Automation {
+                session_rules: Some(rules),
+                ..a.clone()
+            };
+            &recorded
+        } else {
+            a
+        };
         let loaded = (self.load)(Path::new(&a.directory))
             .with_context(|| format!("loading config in {}", a.directory))?;
         match &a.action {
@@ -1378,16 +1494,13 @@ impl Runner {
                 let mut rules = crate::agent::resolve(&unattended(&loaded).config, "build")
                     .map(|b| b.permissions)
                     .unwrap_or_default();
-                // The creating session's own rules, which every session a
-                // run starts inherits: like there, they only restrict.
-                if let Some(creator) = &a.session_id {
-                    rules.extend(
-                        db.permissions(creator)?
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(crate::permission::Rule::into_builtin),
-                    );
-                }
+                // The creating session's own rules, as every session a run
+                // starts has them: like there, they only restrict.
+                rules.extend(
+                    run_session_rules(db, a)?
+                        .into_iter()
+                        .map(crate::permission::Rule::into_builtin),
+                );
                 let mcp = crate::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
                 let entries: Vec<crate::codemode::Entry> = mcp
                     .tools()

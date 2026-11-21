@@ -20,6 +20,13 @@ All notable changes to CodeSmith are listed here. Versions follow
 - A Code Mode automation's MCP tool calls are held to the creating
   session's own permission rules, as its prompt runs are: a deny set in
   that session was not applied to the program's calls.
+- An automation keeps the creating session's own permission rules with it,
+  recorded when it is created (and, for one created earlier, at its next
+  run while that session exists), and every run is held to them. Once that
+  session is deleted, runs go on in a session of their own with those
+  rules, rather than unparented without them. Only an automation whose
+  rules were never recorded and whose creator is gone is refused, with an
+  error saying so, and paused.
 - A project root of `/` or the home folder no longer puts every path inside
   the project: the working directory is the boundary then (OpenCode does
   this for `/`), and a session working in `/` or `~` itself has none, so
@@ -38,9 +45,6 @@ All notable changes to CodeSmith are listed here. Versions follow
   streamed, as a failed stream does: they are saved at once and replayed in
   the next turn, without the step's unfinished calls or provider state.
   They were lost.
-- An automation whose creating session was deleted no longer runs without
-  that session's permission rules: the run is refused with an error saying
-  so, and the automation is paused.
 - Plugins' `tool_before` and `tool_after` hooks run for each `fetch` (as
   `webfetch`) and OpenAPI call (as `openapi`) inside `execute`, as they do
   for built-ins: a veto refuses the call and `tool_after` can redact it.

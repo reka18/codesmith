@@ -1070,6 +1070,24 @@ async fn code_runs_keep_the_creating_sessions_rules() {
     let a = au::get(&db, &id).unwrap().unwrap();
     assert_eq!(a.last_outcome.as_deref(), Some("failed"));
     assert_eq!(a.state, Value::Null, "{:?}", a.last_error);
+
+    // The rules were recorded with the automation: they still hold once
+    // the creating session is deleted, and the automation keeps running.
+    db.delete(&creator.id).unwrap();
+    due_now(&db, &id);
+    runner.tick().await.unwrap();
+    let a = au::get(&db, &id).unwrap().unwrap();
+    assert_eq!(a.runs, 2);
+    assert_eq!(a.last_outcome.as_deref(), Some("failed"));
+    assert_eq!(a.state, Value::Null, "{:?}", a.last_error);
+    assert!(
+        a.last_error
+            .as_deref()
+            .is_some_and(|e| !e.contains("was deleted")),
+        "{:?}",
+        a.last_error
+    );
+    assert_eq!(a.status, "active");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1358,6 +1376,15 @@ async fn stored_targets_keep_their_meaning_and_children_run_unattended() {
     .unwrap();
     let mut out = Collect(String::new());
     parent.prompt("hello", &mut out).await.unwrap();
+    // A rule set in the creating session only, recorded with each
+    // automation it creates.
+    let session_rule = codesmith_core::permission::Rule::new(
+        "webfetch",
+        "*",
+        codesmith_core::permission::Effect::Deny,
+    );
+    db.set_permissions(&parent.id, std::slice::from_ref(&session_rule))
+        .unwrap();
     let a = au::create(
         &db,
         job(
@@ -1375,29 +1402,22 @@ async fn stored_targets_keep_their_meaning_and_children_run_unattended() {
     let info = db.get(r.session_id.as_deref().unwrap()).unwrap().unwrap();
     assert_eq!(info.parent_id.as_deref(), Some(parent.id.as_str()));
 
-    // With the creating session gone, so are the session rules a run
-    // would start with: the run is refused, saying why, and the
-    // automation paused. (Security review 7: runs went ahead unparented,
-    // without the creator's session-only rules.)
-    let sessions = db.list(None, true).unwrap().len();
-    db.delete(&parent.id).unwrap();
-    let left = db.list(None, true).unwrap().len();
-    assert!(left < sessions);
-    due_now(&db, &a.id);
-    runner.tick().await.unwrap();
-    let r = &runs_of(&db, &a.id)[1];
-    assert_eq!(r.outcome, "failed", "{}", r.detail);
-    assert!(r.detail.contains("was deleted"), "{}", r.detail);
-    assert!(r.detail.contains(&parent.id), "{}", r.detail);
-    assert_eq!(r.session_id, None);
     assert_eq!(
-        db.list(None, true).unwrap().len(),
-        left,
-        "no session was started"
+        au::get(&db, &a.id).unwrap().unwrap().session_rules,
+        Some(vec![session_rule.clone()])
     );
-    assert_eq!(au::get(&db, &a.id).unwrap().unwrap().status, "paused");
-
-    // The same for an automation whose creator is recorded on it.
+    // An automation stored before session rules were recorded gets them at
+    // its next run while its creator exists.
+    let legacy = |id: &str| {
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation SET session_rules = NULL WHERE id = ?1",
+                rusqlite::params![id],
+            )?)
+        })
+        .unwrap();
+        assert_eq!(au::get(&db, id).unwrap().unwrap().session_rules, None);
+    };
     let mut j = job(
         "sub",
         "x",
@@ -1406,11 +1426,47 @@ async fn stored_targets_keep_their_meaning_and_children_run_unattended() {
         },
     );
     j.session_id = Some(parent.id.clone());
-    let b = au::create(&db, j).unwrap();
+    let b = au::create(&db, j.clone()).unwrap();
+    legacy(&b.id);
     due_now(&db, &b.id);
     runner.tick().await.unwrap();
-    let r = &runs_of(&db, &b.id)[0];
+    assert_eq!(runs_of(&db, &b.id)[0].outcome, "fired");
+    assert_eq!(
+        au::get(&db, &b.id).unwrap().unwrap().session_rules,
+        Some(vec![session_rule.clone()])
+    );
+    // One whose creator goes before that happens can't know them: its run
+    // is refused, saying why, and it is paused.
+    let c = au::create(&db, j).unwrap();
+    legacy(&c.id);
+
+    // With the creating session gone, runs go on in a session of their own
+    // that is held to the recorded rules. (Security review 7: runs went
+    // ahead unparented, without the creator's session-only rules.)
+    db.delete(&parent.id).unwrap();
+    for id in [&a.id, &b.id] {
+        due_now(&db, id);
+        runner.tick().await.unwrap();
+        let r = runs_of(&db, id).last().unwrap().clone();
+        assert_eq!(r.outcome, "fired", "{}", r.detail);
+        let sid = r.session_id.as_deref().unwrap();
+        assert_eq!(db.get(sid).unwrap().unwrap().parent_id, None);
+        let own = db.permissions(sid).unwrap().unwrap_or_default();
+        assert!(own.contains(&session_rule), "{own:?}");
+        assert_eq!(au::get(&db, id).unwrap().unwrap().status, "active");
+    }
+    let sessions = db.list(None, true).unwrap().len();
+    due_now(&db, &c.id);
+    runner.tick().await.unwrap();
+    let r = &runs_of(&db, &c.id)[0];
     assert_eq!(r.outcome, "failed", "{}", r.detail);
     assert!(r.detail.contains("was deleted"), "{}", r.detail);
-    assert_eq!(au::get(&db, &b.id).unwrap().unwrap().status, "paused");
+    assert!(r.detail.contains(&parent.id), "{}", r.detail);
+    assert_eq!(r.session_id, None);
+    assert_eq!(
+        db.list(None, true).unwrap().len(),
+        sessions,
+        "no session was started"
+    );
+    assert_eq!(au::get(&db, &c.id).unwrap().unwrap().status, "paused");
 }

@@ -60,10 +60,14 @@ it again. A child target records the agent and model when the automation
 is created, so later changes to the creating session don't change its
 runs. A run's session is a child of the creating session and starts with
 the permission rules set in it; a Code Mode program's MCP tool calls are
-held to the same rules. If the creating session is deleted, those
-rules are unknown, so the next run is refused with an error saying so and
-the automation is paused; remove it, or create it again from another
-session.
+held to the same rules. Those rules are also recorded with the automation
+when it is created (one created before they were recorded gets them at its
+next run), and every run is held to them as well as to the session's
+current ones: they only restrict. If the creating session is deleted, runs
+go on in a new session of their own, still held to the recorded rules. Only
+an automation whose rules were never recorded, and whose creating session
+is gone, is refused with an error saying so and paused; remove it, or
+create it again from another session.
 
 ### Prompts sent to an existing session
 
