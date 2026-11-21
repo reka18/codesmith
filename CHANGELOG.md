@@ -5,6 +5,16 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **ChatGPT agent registration opt-in:** `codesmith auth login openai
+  --oauth --register`, or `settings.register: true` on the `openai`
+  provider, signs in with OpenAI's agent registration as OpenCode does
+  (`dynamic_agent_client`, agent name CodeSmith), so OpenAI issues you a
+  client of your own. The issued client is saved with the login and used
+  to refresh it. OpenAI may reject the registration; the sign-in says so,
+  and a refused one says what to use instead. Nothing is registered
+  without the opt-in: `dynamic_agent_client` given as a client id (flag,
+  `settings.clientId` or `CODESMITH_CHATGPT_CLIENT_ID`) no longer registers
+  and is refused, naming the two opt-ins.
 - **Plan agent outside the project:** the `plan` agent reaches folders
   outside the project (reads, searches, listings) without an
   `external_directory` prompt, as OpenCode's plan agent does. It still

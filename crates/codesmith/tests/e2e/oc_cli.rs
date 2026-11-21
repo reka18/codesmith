@@ -126,6 +126,43 @@ async fn oc_import_reports_an_existing_session_without_a_stack_trace() {
     assert!(!out.stderr.contains("panicked"), "{}", out.both());
 }
 
+// Sign in with ChatGPT never registers a client, nor borrows one, without
+// the opt-in; `--register` goes only with `--oauth` for openai. Each case
+// fails before any request is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn chatgpt_sign_in_registers_only_with_the_opt_in() {
+    let e = Env::new();
+    let out = e.run(&["auth", "login", "openai", "--oauth"]).await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    assert!(out.stderr.contains("--register"), "{}", out.both());
+    assert!(!out.stderr.contains("Open this URL"), "{}", out.both());
+    let out = e.run(&["auth", "login", "openai", "--register"]).await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    assert!(out.stderr.contains("--oauth"), "{}", out.both());
+    let out = e
+        .run(&["auth", "login", "poe", "--oauth", "--register"])
+        .await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    assert!(
+        out.stderr.contains("--register is for openai"),
+        "{}",
+        out.both()
+    );
+    let out = e
+        .run(&[
+            "auth",
+            "login",
+            "openai",
+            "--oauth",
+            "--register",
+            "--client-id",
+            "oaiapp_x",
+        ])
+        .await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    assert!(out.stderr.contains("Give one of them"), "{}", out.both());
+}
+
 // auth.test.ts: "lists stored and environment connections" (adapted:
 // CodeSmith lists where each provider's key comes from).
 #[tokio::test(flavor = "multi_thread")]

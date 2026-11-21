@@ -9,9 +9,11 @@
 //! none and never borrows another product's (not OpenCode's, not Codex
 //! CLI's). Give it with `--client-id`, `settings.clientId` on the `openai`
 //! provider, or `CODESMITH_CHATGPT_CLIENT_ID`. OpenAI's agent registration
-//! is used only when you ask for it by giving [`REGISTRATION`] as the
-//! client: the sign-in then registers a client owned by you (named
-//! CodeSmith) and OpenAI returns its id on the callback. Either way the
+//! (OpenCode's first sign-in) is used only when you opt in, with
+//! `--register` or `settings.register: true` ([`client_id`]): the sign-in
+//! then asks as [`REGISTRATION`] with the agent name
+//! CodeSmith, so OpenAI registers a client owned by you and returns its id
+//! on the callback. OpenAI may refuse it ([`REGISTER_NOTICE`]). Either way the
 //! client id is saved with the login, reauthorization reuses it, and a
 //! callback naming a different client is refused. The ID token is checked
 //! against OpenAI's signing keys, issuer, the client, its expiry and the
@@ -48,6 +50,13 @@ pub const CLIENT_ID_VAR: &str = "CODESMITH_CHATGPT_CLIENT_ID";
 /// a client of the user's own.
 pub const REGISTRATION: &str = "dynamic_agent_client";
 pub const AGENT_NAME: &str = "CodeSmith";
+/// Said before a registering sign-in opens the browser.
+pub const REGISTER_NOTICE: &str = "Registering a ChatGPT sign-in client of your own, named CodeSmith, with OpenAI (agent registration).\n\
+     OpenAI may reject it: whether it accepts agent registration for CodeSmith is up to OpenAI. \
+     If it is refused, sign in with a client ID of your own (--client-id) or use an OpenAI API key.";
+/// Added to a registering sign-in's failure.
+pub const REGISTER_REJECTED: &str = "OpenAI may have rejected registering a client for CodeSmith. \
+     Sign in with a client ID of your own (--client-id, settings.clientId or CODESMITH_CHATGPT_CLIENT_ID) or use an OpenAI API key.";
 pub const ISSUER: &str = "https://auth.openai.com";
 pub const RESOURCE: &str = "https://api.openai.com/v1";
 pub const SHARING_SCOPE: &str = "chatgpt.tokens.use.direct";
@@ -111,28 +120,62 @@ pub fn signed_in(config_key: bool) -> bool {
         && is_login(crate::auth::entry(ID).as_ref())
 }
 
-/// The OAuth client to sign in as: the one an existing login was issued,
-/// else the flag, `settings.clientId`, then `CODESMITH_CHATGPT_CLIENT_ID`.
+/// The OAuth client to sign in as. `register` (`--register`) asks for a
+/// new registration, even over an existing login. Otherwise: the client an
+/// existing login was issued, the flag, `settings.clientId`,
+/// `CODESMITH_CHATGPT_CLIENT_ID`, then the registration when
+/// `settings.register` opts in. Nothing else: the registration is sent only
+/// on one of those two opt-ins (giving [`REGISTRATION`] as a client id is
+/// refused and names them), and no other product's client is used.
 pub fn client_id(
     saved: Option<&str>,
     flag: Option<&str>,
+    register: bool,
     settings: &super::Settings,
     env: &super::Env,
 ) -> Result<String> {
-    saved
-        .filter(|s| !s.is_empty())
+    let flag = flag.map(str::trim).filter(|s| !s.is_empty());
+    if register {
+        return match flag {
+            Some(_) => Err(anyhow!(
+                "--register asks OpenAI for a new client; --client-id signs in as an existing one. Give one of them."
+            )),
+            None => Ok(REGISTRATION.into()),
+        };
+    }
+    let given = saved
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !registers(s))
         .map(str::to_string)
-        .or_else(|| flag.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+        .or_else(|| flag.map(str::to_string))
         .or_else(|| set(&settings.client_id).map(str::to_string))
-        .or_else(|| env(CLIENT_ID_VAR).map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
+        .or_else(|| {
+            env(CLIENT_ID_VAR)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        });
+    if given.as_deref().is_some_and(registers) {
+        return Err(anyhow!(
+            "{REGISTRATION} is OpenAI's agent registration, not a client id. \
+             Opt in to it with --register or settings.register: true on the openai provider (OpenAI may reject it)."
+        ));
+    }
+    given
+        .or_else(|| (settings.register == Some(true)).then(|| REGISTRATION.to_string()))
         .ok_or_else(|| {
             anyhow!(
                 "Sign in with ChatGPT needs an OAuth client of your own, and CodeSmith ships none (nor uses another product's).\n\
                  Pass its id with --client-id, settings.clientId on the openai provider, or {CLIENT_ID_VAR}; \
-                 or give {REGISTRATION} to have the sign-in register a client of your own with OpenAI.\n\
+                 or opt in to OpenAI's agent registration with --register or settings.register: true, \
+                 which registers a client of your own named {AGENT_NAME} (OpenAI may reject it).\n\
                  Or use an OpenAI API key (`codesmith auth login openai`, or OPENAI_API_KEY)."
             )
         })
+}
+
+/// Whether signing in as `client_id` registers a new client.
+pub fn registers(client_id: &str) -> bool {
+    client_id == REGISTRATION
 }
 
 /// OpenAI's OAuth endpoints (overridable in tests).
@@ -210,7 +253,7 @@ impl Attempt {
     }
 
     fn registering(&self) -> bool {
-        self.client_id == REGISTRATION
+        registers(&self.client_id)
     }
 }
 
@@ -243,6 +286,7 @@ pub fn callback_client(a: &Attempt, returned: Option<&str>) -> Result<String, St
     let returned = returned.filter(|r| !r.is_empty());
     if a.registering() {
         return returned
+            .filter(|r| !registers(r))
             .map(str::to_string)
             .ok_or_else(|| "ChatGPT sign-in did not return a client ID. Connect again.".into());
     }
@@ -445,11 +489,19 @@ pub async fn login(
         callback_client(&a, p.get("client_id").map(String::as_str))?;
         Ok(code)
     };
+    let rejected = |err: anyhow::Error| {
+        if a.registering() {
+            err.context(REGISTER_REJECTED)
+        } else {
+            err
+        }
+    };
     let got = cb
         .wait(check, pasted, |m| eprintln!("{m}"), TIMEOUT)
-        .await?;
+        .await
+        .map_err(rejected)?;
     let issued = callback_client(&a, got.params.get("client_id").map(String::as_str))
-        .map_err(|e| anyhow!(e))?;
+        .map_err(|e| rejected(anyhow!(e)))?;
     match exchange(client, e, &a, &got.code, &issued).await {
         Ok(login) => {
             super::credentials::create_in(
@@ -466,7 +518,7 @@ pub async fn login(
         }
         Err(err) => {
             got.finish(Err(&format!("{err:#}"))).await;
-            Err(err)
+            Err(rejected(err))
         }
     }
 }

@@ -124,7 +124,9 @@ See [Claude Agent](configuration.md#claude-agent-your-claude-code-login).
 Browser logins for Poe, DigitalOcean, GitLab and ChatGPT, and xAI's device
 login, run as an OAuth application you register yourself (CodeSmith ships
 none); each section of
-[the configuration guide](configuration.md#providers-and-models) says how:
+[the configuration guide](configuration.md#providers-and-models) says how
+(for ChatGPT you can instead opt in to OpenAI's agent registration with
+`codesmith auth login openai --oauth --register`, which OpenAI may reject):
 [Cloudflare](configuration.md#cloudflare-ai-gateway-and-workers-ai),
 [Azure](configuration.md#azure-openai), [Poe](configuration.md#poe),
 [DigitalOcean](configuration.md#digitalocean),

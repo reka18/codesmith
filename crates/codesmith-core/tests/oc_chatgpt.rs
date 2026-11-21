@@ -236,23 +236,30 @@ fn oc_chatgpt_registers_the_oauth_method() {
     );
     // No client of CodeSmith's own: the sign-in stops and explains.
     let none: codesmith_core::providers::Env = Arc::new(|_: &str| None);
-    let e = chatgpt::client_id(None, None, &Default::default(), &none)
+    let e = chatgpt::client_id(None, None, false, &Default::default(), &none)
         .unwrap_err()
         .to_string();
     assert!(e.contains("CodeSmith ships none"), "{e}");
     assert!(
-        e.contains(chatgpt::CLIENT_ID_VAR) && e.contains(chatgpt::REGISTRATION),
+        e.contains(chatgpt::CLIENT_ID_VAR) && e.contains("--register"),
         "{e}"
     );
     // An existing connection's client wins.
     let env: codesmith_core::providers::Env =
         Arc::new(|k: &str| (k == chatgpt::CLIENT_ID_VAR).then(|| "mine".to_string()));
     assert_eq!(
-        chatgpt::client_id(Some("oaiapp_issued"), None, &Default::default(), &env).unwrap(),
+        chatgpt::client_id(
+            Some("oaiapp_issued"),
+            None,
+            false,
+            &Default::default(),
+            &env
+        )
+        .unwrap(),
         "oaiapp_issued"
     );
     assert_eq!(
-        chatgpt::client_id(None, None, &Default::default(), &env).unwrap(),
+        chatgpt::client_id(None, None, false, &Default::default(), &env).unwrap(),
         "mine"
     );
 }
@@ -457,6 +464,272 @@ async fn oc_chatgpt_rejects_a_callback_with_a_different_client() {
         credentials::list_in(&codesmith_core::paths::auth_file(), "openai").len(),
         1
     );
+}
+
+// The agent registration is sent only on an opt-in (`--register` or
+// `settings.register`), and never stands in for a missing client.
+#[test]
+fn chatgpt_registers_only_when_asked() {
+    let none: codesmith_core::providers::Env = Arc::new(|_: &str| None);
+    let mine: codesmith_core::providers::Env =
+        Arc::new(|k: &str| (k == chatgpt::CLIENT_ID_VAR).then(|| "mine".to_string()));
+    let plain = codesmith_core::providers::Settings::default();
+    let opted: codesmith_core::providers::Settings =
+        serde_json::from_value(json!({"register": true})).unwrap();
+    let off: codesmith_core::providers::Settings =
+        serde_json::from_value(json!({"register": false})).unwrap();
+    let id = |saved, flag, register, s: &codesmith_core::providers::Settings, env| {
+        chatgpt::client_id(saved, flag, register, s, env)
+    };
+    // No opt-in: no registration, and no borrowed client.
+    assert!(id(None, None, false, &plain, &none).is_err());
+    assert!(id(None, None, false, &off, &none).is_err());
+    // The flag registers, even over an existing login's client.
+    assert_eq!(
+        id(None, None, true, &plain, &none).unwrap(),
+        chatgpt::REGISTRATION
+    );
+    assert_eq!(
+        id(Some("oaiapp_issued"), None, true, &plain, &none).unwrap(),
+        chatgpt::REGISTRATION
+    );
+    let both = id(None, Some("oaiapp_x"), true, &plain, &none)
+        .unwrap_err()
+        .to_string();
+    assert!(both.contains("Give one of them"), "{both}");
+    // settings.register opts in only when no client is given.
+    assert_eq!(
+        id(None, None, false, &opted, &none).unwrap(),
+        chatgpt::REGISTRATION
+    );
+    assert_eq!(id(None, None, false, &opted, &mine).unwrap(), "mine");
+    assert_eq!(
+        id(Some("oaiapp_issued"), None, false, &opted, &none).unwrap(),
+        "oaiapp_issued",
+        "a later sign-in reuses the issued client"
+    );
+    // The registration id given as a client is not an opt-in, by any route.
+    let as_flag = id(None, Some(chatgpt::REGISTRATION), false, &plain, &none);
+    let as_setting: codesmith_core::providers::Settings =
+        serde_json::from_value(json!({"clientId": chatgpt::REGISTRATION})).unwrap();
+    let as_setting = id(None, None, false, &as_setting, &none);
+    let reg_env: codesmith_core::providers::Env = Arc::new(|k: &str| {
+        (k == chatgpt::CLIENT_ID_VAR).then(|| chatgpt::REGISTRATION.to_string())
+    });
+    let as_env = id(None, None, false, &opted, &reg_env);
+    for r in [as_flag, as_setting, as_env] {
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("--register or settings.register"), "{e}");
+    }
+    let with_flag = id(None, Some(chatgpt::REGISTRATION), true, &plain, &none);
+    assert!(with_flag
+        .unwrap_err()
+        .to_string()
+        .contains("Give one of them"));
+    assert!(chatgpt::REGISTER_NOTICE.contains("OpenAI may reject it"));
+    // A registration is answered with an issued client, never itself.
+    let a = chatgpt::Attempt::new(
+        chatgpt::REGISTRATION,
+        "urn:uuid:host",
+        "http://127.0.0.1/cb",
+    );
+    assert!(chatgpt::callback_client(&a, Some(chatgpt::REGISTRATION)).is_err());
+    assert_eq!(
+        chatgpt::callback_client(&a, Some("oaiapp_issued")).unwrap(),
+        "oaiapp_issued"
+    );
+}
+
+fn no_env() -> codesmith_core::providers::Env {
+    Arc::new(|_: &str| None)
+}
+
+type Form = std::collections::HashMap<String, String>;
+type TokenAnswer = Arc<dyn Fn(&Form) -> Value + Send + Sync>;
+
+/// A scripted OpenAI sign-in server: signing keys at `/jwks`, and a token
+/// endpoint answering with `token` for each form posted (kept in `forms`).
+struct Issuer {
+    base: String,
+    forms: Arc<Mutex<Vec<std::collections::HashMap<String, String>>>>,
+}
+
+async fn issuer(token: TokenAnswer) -> Issuer {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let c = ring::rsa::PublicKeyComponents::<Vec<u8>>::from(key("sign-in").public());
+    let jwks = json!({"keys": [{"kty": "RSA", "kid": "sign-in", "alg": "RS256", "use": "sig", "n": b64.encode(&c.n), "e": b64.encode(&c.e)}]}).to_string();
+    let forms: Arc<Mutex<Vec<_>>> = Arc::default();
+    let f2 = forms.clone();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else {
+                return;
+            };
+            let (jwks, forms, token) = (jwks.clone(), f2.clone(), token.clone());
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                // Read the head, then the body its Content-Length gives.
+                loop {
+                    let n = s.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= len {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = text.split_once("\r\n\r\n").map(|x| x.1).unwrap_or("");
+                let answer = if path == "/jwks" {
+                    jwks
+                } else {
+                    let form: std::collections::HashMap<String, String> =
+                        url::form_urlencoded::parse(body.as_bytes())
+                            .into_owned()
+                            .collect();
+                    let a = token(&form).to_string();
+                    forms.lock().unwrap().push(form);
+                    a
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    Issuer {
+        base: format!("http://{addr}"),
+        forms,
+    }
+}
+
+// provider-chatgpt.test.ts: "registers a new ChatGPT agent on first sign-in
+// with a loopback callback", end to end against a fixture issuer: the
+// registration asks as dynamic_agent_client named CodeSmith, the client the
+// callback names is the one exchanged, saved and refreshed with.
+#[tokio::test(flavor = "multi_thread")]
+async fn chatgpt_registration_saves_and_refreshes_the_issued_client() {
+    let _g = serial();
+    let _d = isolate();
+    let nonce: Arc<Mutex<String>> = Arc::default();
+    let n2 = nonce.clone();
+    let claimed: Arc<Mutex<String>> = Arc::default();
+    let c2 = claimed.clone();
+    let iss = issuer(Arc::new(move |form| {
+        let id_token = sign(
+            &key("sign-in"),
+            json!({"iss": c2.lock().unwrap().clone(), "aud": form["client_id"], "sub": "user_123",
+                "exp": codesmith_core::providers::oauth::now_ms() / 1000 + 600,
+                "nonce": n2.lock().unwrap().clone()}),
+        );
+        json!({"access_token": format!("access-{}", form["grant_type"]), "refresh_token": "refresh-1",
+            "expires_in": 3600, "id_token": id_token,
+            "scope": "openid offline_access chatgpt.tokens.use.direct"})
+    }))
+    .await;
+    *claimed.lock().unwrap() = iss.base.clone();
+    let e = Endpoints {
+        issuer: iss.base.clone(),
+        jwks: format!("{}/jwks", iss.base),
+    };
+    let asked: Arc<Mutex<Option<std::collections::HashMap<String, String>>>> = Arc::default();
+    let a2 = asked.clone();
+    let n3 = nonce.clone();
+    let done = Arc::new(tokio::sync::Notify::new());
+    let d2 = done.clone();
+    let open = move |url: &str| {
+        let u = url::Url::parse(url).unwrap();
+        let q: std::collections::HashMap<_, _> = u.query_pairs().into_owned().collect();
+        *n3.lock().unwrap() = q["nonce"].clone();
+        let mut cb = url::Url::parse(&q["redirect_uri"]).unwrap();
+        cb.query_pairs_mut()
+            .append_pair("code", "test-code")
+            .append_pair("state", &q["state"])
+            .append_pair("client_id", "oaiapp_issued");
+        *a2.lock().unwrap() = Some(q);
+        tokio::spawn(async move {
+            let _ = reqwest::get(cb).await;
+            d2.notify_one();
+        });
+    };
+    let file = codesmith_core::paths::auth_file();
+    let id = chatgpt::client_id(None, None, true, &Default::default(), &no_env()).unwrap();
+    let r = chatgpt::login(&reqwest::Client::new(), &file, &e, &id, open, None).await;
+    done.notified().await;
+    r.unwrap();
+    let q = asked.lock().unwrap().clone().unwrap();
+    assert_eq!(q["client_id"], "dynamic_agent_client");
+    assert_eq!(q["agent_name_hint"], "CodeSmith");
+    let forms = iss.forms.lock().unwrap().clone();
+    assert_eq!(forms.len(), 1);
+    assert_eq!(forms[0]["grant_type"], "authorization_code");
+    assert_eq!(forms[0]["client_id"], "oaiapp_issued");
+    let saved = credentials::list_in(&file, "openai");
+    assert_eq!(saved.len(), 1);
+    let login = saved[0].value.clone();
+    assert_eq!(login["metadata"]["clientID"], "oaiapp_issued");
+    // A later sign-in without the opt-in reuses the issued client.
+    assert_eq!(
+        chatgpt::client_id(
+            login["metadata"]["clientID"].as_str(),
+            None,
+            false,
+            &Default::default(),
+            &no_env()
+        )
+        .unwrap(),
+        "oaiapp_issued"
+    );
+    let refreshed = chatgpt::refresh(&reqwest::Client::new(), &e, &login)
+        .await
+        .unwrap();
+    let forms = iss.forms.lock().unwrap().clone();
+    assert_eq!(forms[1]["grant_type"], "refresh_token");
+    assert_eq!(forms[1]["client_id"], "oaiapp_issued");
+    assert_eq!(refreshed["metadata"]["clientID"], "oaiapp_issued");
+    assert_eq!(refreshed["access"], "access-refresh_token");
+}
+
+// A refused registration says OpenAI may reject it, and saves nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn chatgpt_refused_registration_says_openai_may_reject_it() {
+    let _g = serial();
+    let _d = isolate();
+    let (r, status, _) = sign_in(
+        chatgpt::REGISTRATION,
+        &[
+            ("error", "unauthorized_client"),
+            ("error_description", "Unknown agent"),
+        ],
+    )
+    .await;
+    let err = format!("{:#}", r.unwrap_err());
+    assert_eq!(status, 400);
+    assert!(err.contains("Unknown agent"), "{err}");
+    assert!(err.contains("OpenAI may have rejected"), "{err}");
+    assert!(credentials::list_in(&codesmith_core::paths::auth_file(), "openai").is_empty());
+    // A client of your own gets no such hint.
+    let (r, _, _) = sign_in("oaiapp_mine", &[("error", "access_denied")]).await;
+    assert!(!format!("{:#}", r.unwrap_err()).contains("OpenAI may have rejected"));
 }
 
 // provider-chatgpt.test.ts: "moves only token-sharing credentials to the new

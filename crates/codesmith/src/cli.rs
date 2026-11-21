@@ -583,6 +583,11 @@ enum AuthCmd {
         /// (openai, xai, poe, gitlab, digitalocean, snowflake-cortex).
         #[arg(long)]
         oauth: bool,
+        /// openai --oauth: opt in to OpenAI's agent registration, which
+        /// registers a sign-in client of your own named CodeSmith (OpenAI
+        /// may reject it). Without it, a client id of your own is needed.
+        #[arg(long, requires = "oauth")]
+        register: bool,
         /// azure: sign requests with Microsoft Entra ID tokens from the
         /// Azure CLI (`az login`) instead of saving a key.
         #[arg(long)]
@@ -1811,6 +1816,7 @@ struct PluginLogin {
     location: Option<String>,
     client_id: Option<String>,
     oauth: bool,
+    register: bool,
     cli: bool,
     fields: Vec<String>,
     cwd: PathBuf,
@@ -1829,6 +1835,7 @@ async fn plugin_login(
         location,
         client_id,
         oauth,
+        register,
         cli,
         fields,
         cwd,
@@ -1875,9 +1882,16 @@ async fn plugin_login(
         )));
     }
     if oauth {
-        return browser_login(file, provider, client_id.as_deref(), &fields, &cwd)
-            .await
-            .map(Some);
+        return browser_login(
+            file,
+            provider,
+            client_id.as_deref(),
+            register,
+            &fields,
+            &cwd,
+        )
+        .await
+        .map(Some);
     }
     if client_id.is_some() && provider != providers::copilot::ID {
         return Err(anyhow!(
@@ -1974,9 +1988,13 @@ async fn browser_login(
     file: &std::path::Path,
     provider: &str,
     client_id: Option<&str>,
+    register: bool,
     fields: &[String],
     cwd: &std::path::Path,
 ) -> Result<String> {
+    if register && provider != codesmith_core::providers::chatgpt::ID {
+        return Err(anyhow!("--register is for openai (Sign in with ChatGPT)"));
+    }
     use codesmith_core::providers;
     let answers = parse_fields(fields)?;
     let answer = |key: &str, title: &str| -> Result<Option<String>> {
@@ -2049,8 +2067,16 @@ async fn browser_login(
             let saved = codesmith_core::auth::entry_in(file, provider)
                 .filter(|e| providers::chatgpt::is_login(Some(e)))
                 .and_then(|e| e["metadata"]["clientID"].as_str().map(str::to_string));
-            let id =
-                providers::chatgpt::client_id(saved.as_deref(), client_id, &settings.plugin, &env)?;
+            let id = providers::chatgpt::client_id(
+                saved.as_deref(),
+                client_id,
+                register,
+                &settings.plugin,
+                &env,
+            )?;
+            if providers::chatgpt::registers(&id) {
+                eprintln!("{}", providers::chatgpt::REGISTER_NOTICE);
+            }
             let e = providers::chatgpt::Endpoints::default();
             providers::chatgpt::login(
                 &client,
@@ -2102,6 +2128,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             location,
             client_id,
             oauth,
+            register,
             cli,
             fields,
         } => {
@@ -2112,6 +2139,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 location,
                 client_id,
                 oauth,
+                register,
                 cli,
                 fields: fields.clone(),
                 cwd: cwd.to_path_buf(),

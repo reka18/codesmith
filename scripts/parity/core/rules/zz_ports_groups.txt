@@ -56,7 +56,7 @@
 273 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_stops_retries_only_for_failures_retrying_cannot_fix
 325 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_leaves_api_key_openai_retries_alone :: adapted: the safeguards apply only while no API key overrides the sign-in
 351 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_stops_retries_only_for_failures_retrying_cannot_fix
-399 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_registers_a_new_agent_on_first_sign_in :: adapted: registration runs only when the user gives OpenAI's registration value as the client; the agent is named CodeSmith
+399 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_registers_a_new_agent_on_first_sign_in :: adapted: registration runs only on an opt-in, `--register` or `settings.register` (tests/oc_chatgpt.rs::chatgpt_registers_only_when_asked); the agent is named CodeSmith; end to end against a fixture issuer, saving and refreshing with the issued client (tests/oc_chatgpt.rs::chatgpt_registration_saves_and_refreshes_the_issued_client)
 428 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_shows_success_only_once_the_callback_succeeds
 446 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_reauthorizes_with_the_issued_client
 472 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_rejects_a_callback_with_a_different_client

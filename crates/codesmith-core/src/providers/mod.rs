@@ -93,6 +93,9 @@ pub struct Settings {
     /// xAI: the OAuth scopes the SuperGrok login asks for.
     #[serde(alias = "oauthScope")]
     pub oauth_scope: Option<String>,
+    /// OpenAI (Sign in with ChatGPT): opt in to OpenAI's agent
+    /// registration when no client id is given.
+    pub register: Option<bool>,
 }
 
 /// What a provider plugin is given.

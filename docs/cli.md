@@ -154,6 +154,7 @@ codesmith auth logout PROVIDER
 |---|---|
 | `--oauth` | Sign in through the provider's OAuth instead of pasting a key: `openai` ([Sign in with ChatGPT](configuration.md#sign-in-with-chatgpt)), `xai` ([SuperGrok](configuration.md#xai-supergrok-login)), [`poe`](configuration.md#poe), [`gitlab`](configuration.md#gitlab-sign-in), [`digitalocean`](configuration.md#digitalocean), [`snowflake-cortex`](configuration.md#snowflake-cortex). |
 | `--client-id ID` | Your OAuth app's client id, for `github-copilot` (device flow) or with `--oauth`. |
+| `--register` | `openai --oauth`: opt in to OpenAI's agent registration, which registers a client of your own named CodeSmith ([may be rejected](configuration.md#sign-in-with-chatgpt)). |
 | `--enterprise HOST` | `github-copilot`: a GitHub Enterprise host (`company.ghe.com`). |
 | `--profile NAME` | `amazon-bedrock`: sign with this AWS profile instead of saving a key. |
 | `--cli` | `azure`: use Azure CLI (`az login`) tokens instead of a key. |

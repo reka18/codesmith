@@ -735,12 +735,34 @@ The sign-in runs as an OAuth client of your own: CodeSmith ships none, and
 never uses another product's (not OpenCode's, not Codex CLI's). Give its id
 with `--client-id`, `settings.clientId` on the `openai` provider, or
 `CODESMITH_CHATGPT_CLIENT_ID`; without one the sign-in stops and says so.
-Giving `dynamic_agent_client` instead uses OpenAI's agent registration: the
-sign-in registers a client owned by you, named CodeSmith, and OpenAI
-returns its id on the callback. Whether OpenAI accepts that registration
-for CodeSmith is up to OpenAI. The client is saved with the login; signing
-in again reuses it, and a callback that names a different client is
-refused. The ID token must be signed by OpenAI's keys, for that client,
+
+Or opt in to OpenAI's agent registration, as OpenCode's first sign-in
+does:
+
+```sh
+codesmith auth login openai --oauth --register
+```
+
+or set it in config, used when no client id is given:
+
+```jsonc
+{ "providers": { "openai": { "settings": { "register": true } } } }
+```
+
+The sign-in then asks as `dynamic_agent_client` with the agent name
+CodeSmith, so OpenAI registers a client owned by you, named CodeSmith, and
+returns its id on the callback. **OpenAI may reject it**: whether it
+accepts agent registration for CodeSmith is up to OpenAI. The sign-in says
+so before it opens the browser, and a refused sign-in says to use a client
+id of your own or an API key instead. Nothing is registered without one of
+these two opt-ins (`dynamic_agent_client` given as a client id is refused
+and points to them), and CodeSmith never falls back to another product's
+client. `--register` with `--client-id` is refused: give one of them.
+
+The client, given or issued, is saved with the login, and refreshing the
+token uses it. Signing in again without `--register` reuses it;
+`--register` asks for a new one. A callback that names a different client
+is refused. The ID token must be signed by OpenAI's keys, for that client,
 unexpired, and carry the sign-in's nonce.
 
 Signed in (and with no API key, which wins), OpenAI requests go to
