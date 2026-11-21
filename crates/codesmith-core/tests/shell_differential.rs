@@ -13,7 +13,17 @@
 //! (`RLIMIT_NPROC`, and a sweep once it has more than `CASE_LIMIT`
 //! processes); when it ends or times out, everything in its session and
 //! below it is stopped, then killed (see `contain`), so a case that forks
-//! without end cannot fill the process table or outlive its run.
+//! without end cannot fill the process table or outlive its run. Each case
+//! starts with a fresh work dir, home and temporary folder, and the sandbox
+//! keeps it from changing the shims or the shells' startup files, so what
+//! runs before it in the same slot (which depends on scheduling) cannot
+//! change what it does.
+//!
+//! A run cut short by the deadline or the process budget, one where a fork
+//! or a write failed for want of processes or disk space, or one into which
+//! a process of an earlier case logged (each record carries the tag of the
+//! case that wrote it) is inconclusive: what it found is checked by running
+//! the input again, and a clean run decides (see `Run::inconclusive`).
 //!
 //! Every logged command must be accounted for by the scan: some command or
 //! delegated command the scan reports matches a rule `name *` for the logged
@@ -208,6 +218,13 @@ const RS: char = '\u{1e}';
 /// Leads a record the not-found handler wrote: a name looked up, not run.
 const NOT_FOUND: char = '\u{1}';
 const US: char = '\u{1f}';
+/// Ends the case tag that leads each record (see [`Slot::run_case`]).
+const TAG: char = '\u{2}';
+/// The variable a case's tag is passed in.
+const CASE_VAR: &str = "CODESMITH_DIFF_CASE";
+/// Runs of a shell on an input when a run that found something unaccounted
+/// for was inconclusive (see [`Run::inconclusive`]).
+const ATTEMPTS: usize = 3;
 
 fn installed_shells() -> Vec<(&'static str, &'static str)> {
     let mut out: Vec<(&str, &str)> = Vec::new();
@@ -378,6 +395,8 @@ struct Slot {
     bin: PathBuf,
     log: PathBuf,
     profile: Option<PathBuf>,
+    /// Cases run so far: the current case's tag is `c<cases>`.
+    cases: std::sync::atomic::AtomicU64,
 }
 
 fn write_exec(path: &Path, body: &str) {
@@ -398,9 +417,11 @@ impl Slot {
         std::fs::create_dir_all(root.join("zdot")).unwrap();
         let log = root.join("log");
         let logq = sh_quote(&log.display().to_string());
-        // One write per record, so commands running at once do not interleave.
+        // One write per record, so commands running at once do not
+        // interleave. A record starts with the tag of the case that ran it,
+        // so one written late by a process of an earlier case is told apart.
         let record = format!(
-            "s=${{0##*/}}\nfor a in \"$@\"; do s=\"$s{US}$a\"; done\nprintf '%s{RS}' \"$s\" >> {logq}\n"
+            "s=\"${{{CASE_VAR}-}}{TAG}${{0##*/}}\"\nfor a in \"$@\"; do s=\"$s{US}$a\"; done\nprintf '%s{RS}' \"$s\" >> {logq}\n"
         );
         for name in SHIMS {
             write_exec(&bin.join(name), &format!("#!/bin/sh\n{record}exit 0\n"));
@@ -423,7 +444,7 @@ impl Slot {
         }
         let handler = |fname: &str| {
             format!(
-                "{fname}() {{ s={NOT_FOUND}$1; shift; for a in \"$@\"; do s=\"$s{US}$a\"; done; printf '%s{RS}' \"$s\" >> {logq}; return 127; }}\n"
+                "{fname}() {{ s=\"${{{CASE_VAR}-}}{TAG}{NOT_FOUND}$1\"; shift; for a in \"$@\"; do s=\"$s{US}$a\"; done; printf '%s{RS}' \"$s\" >> {logq}; return 127; }}\n"
             )
         };
         std::fs::write(root.join("bashenv"), handler("command_not_found_handle")).unwrap();
@@ -438,7 +459,9 @@ impl Slot {
             let mut p = format!(
                 "(version 1)\n(allow default)\n(deny network*)\n(deny file-write* (subpath \"/\"))\n\
                  (allow file-write* (subpath \"{r}\") (literal \"/dev/null\") (literal \"/dev/tty\") \
-                 (regex #\"^/dev/fd/\") (regex #\"^/dev/ttys\") (literal \"/dev/ptmx\"))\n(deny process-exec*)\n\
+                 (regex #\"^/dev/fd/\") (regex #\"^/dev/ttys\") (literal \"/dev/ptmx\"))\n\
+                 (deny file-write* (subpath \"{r}/bin\") (subpath \"{r}/zdot\") (literal \"{r}/bashenv\") \
+                 (literal \"{r}/profile.sb\"))\n(deny process-exec*)\n\
                  (allow process-exec* (subpath \"{r}/bin\")"
             );
             let shells = SHELLS.iter().map(|(_, s)| s.to_string());
@@ -459,6 +482,7 @@ impl Slot {
             bin,
             log,
             profile,
+            cases: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -466,8 +490,15 @@ impl Slot {
         self.root.join("work")
     }
 
-    /// Fresh work dir with a few files for globs and `source`-free fixtures.
+    /// Fresh work dir with a few files for globs and `source`-free fixtures,
+    /// and fresh home and temporary folders: nothing a case writes changes
+    /// how a later one runs. (The shims and shell startup files cannot be
+    /// written under the sandbox.)
     fn reset(&self) {
+        for d in ["home", "tmp"] {
+            let _ = std::fs::remove_dir_all(self.root.join(d));
+            std::fs::create_dir_all(self.root.join(d)).unwrap();
+        }
         let work = self.work();
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(work.join("sub")).unwrap();
@@ -504,6 +535,9 @@ impl Slot {
     }
 
     fn run_case(&self, label: &str, shell: &str, input: &str) -> Run {
+        let case = self
+            .cases
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.reset();
         let before = self.files();
         let mut cmd = match &self.profile {
@@ -521,6 +555,7 @@ impl Slot {
             .env("HOME", self.root.join("home"))
             .env("TMPDIR", self.root.join("tmp"))
             .env("LC_ALL", "C")
+            .env(CASE_VAR, format!("c{case}"))
             .current_dir(self.work())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -558,6 +593,7 @@ impl Slot {
         });
         let deadline = Instant::now() + Duration::from_secs(4);
         let mut timed_out = false;
+        let mut over_limit = false;
         let mut polls = 0usize;
         loop {
             if child.try_wait().unwrap().is_some() {
@@ -568,6 +604,7 @@ impl Slot {
                 && processes().iter().filter(|p| p.2 == session).count() > CASE_LIMIT
             {
                 timed_out = true;
+                over_limit = true;
                 contain(session);
                 let _ = child.wait();
                 break;
@@ -591,16 +628,47 @@ impl Slot {
             reader.join().unwrap_or_default()
         };
         let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+        let mut stale = false;
         let argvs = log
             .split(RS)
             .filter(|r| !r.is_empty())
+            .filter_map(|r| {
+                // A record an input wrote to the log itself has no tag: kept.
+                let Some((tag, rest)) = r.split_once(TAG) else {
+                    return Some(r);
+                };
+                // An earlier case's tag: a process of that case outlived it.
+                let earlier = tag
+                    .strip_prefix('c')
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| n < case);
+                stale |= earlier;
+                (!earlier).then_some(rest)
+            })
             .map(|r| r.split(US).map(str::to_string).collect())
             .collect();
         let created = self.files().difference(&before).cloned().collect();
+        let starved = [
+            "fork: ",
+            "Resource temporarily unavailable",
+            "No space left",
+        ];
+        let inconclusive = if over_limit {
+            Some("over the process limit")
+        } else if timed_out {
+            Some("timed out")
+        } else if starved.iter().any(|s| stderr.contains(s)) {
+            Some("out of processes or disk space")
+        } else if stale {
+            Some("an earlier case's process wrote to the log")
+        } else {
+            None
+        };
         Run {
             argvs,
             created,
             stderr,
+            inconclusive,
         }
     }
 }
@@ -610,6 +678,13 @@ struct Run {
     created: Vec<String>,
     #[allow(dead_code)]
     stderr: String,
+    /// Why the run may not show what the input does: it was cut short
+    /// (timed out, or stopped over the process budget), a fork or a write
+    /// failed for want of processes or disk space, or a process of an
+    /// earlier case logged into it. What such a run logged did run, but a
+    /// load-dependent failure can change what a shell does next, so a
+    /// finding from it is checked by running the input again.
+    inconclusive: Option<&'static str>,
 }
 
 /// What the scanner decided about an input.
@@ -698,9 +773,9 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
     };
     let mut bases = vec![work.clone()];
     bases.extend(dirs.iter().map(|d| normalize(&work.join(d))));
-    let mut out = Vec::new();
-    for &(label, shell) in shells {
-        let run = slot.run(label, shell, input);
+    // What `run` (of `label`) did that the scan does not account for.
+    let unaccounted = |label: &str, run: &Run| -> Vec<Bypass> {
+        let mut out = Vec::new();
         for argv in &run.argvs {
             let (lookup, argv0) = match argv[0].strip_prefix(NOT_FOUND) {
                 Some(n) => (true, n),
@@ -786,6 +861,26 @@ fn bypasses(slot: &Slot, shells: &[(&str, &str)], input: &str) -> Vec<Bypass> {
                     what: format!("wrote {f}"),
                 });
             }
+        }
+        out
+    };
+    let mut out = Vec::new();
+    for &(label, shell) in shells {
+        // A finding from an inconclusive run is checked by running again:
+        // a clean run decides. Found in every run, it is reported (what
+        // was logged did run), saying the runs were inconclusive.
+        for attempt in 1..=ATTEMPTS {
+            let run = slot.run(label, shell, input);
+            let found = unaccounted(label, &run);
+            match run.inconclusive {
+                Some(_) if !found.is_empty() && attempt < ATTEMPTS => continue,
+                Some(why) => out.extend(found.into_iter().map(|mut b| {
+                    b.what = format!("{} (inconclusive: {why}, in {ATTEMPTS} runs)", b.what);
+                    b
+                })),
+                None => out.extend(found),
+            }
+            break;
         }
     }
     out
@@ -1304,4 +1399,41 @@ fn shell_differential_harness_observes() {
     // The scan reports `$(echo rm) b` as dynamic; a static one is checked.
     let found = bypasses(&slots[0], &shells, "touch a; rm b");
     assert!(found.is_empty(), "{}", report(&found));
+
+    // A record tagged with an earlier case (a process that outlived it) is
+    // not counted, and makes the run inconclusive.
+    if let Some(&(label, shell)) = shells.iter().find(|(l, _)| *l == "bash") {
+        let run = slots[0].run(
+            label,
+            shell,
+            "builtin printf 'c0\\002rm\\037F\\036' >> ../log; touch a",
+        );
+        let names: Vec<&str> = run.argvs.iter().map(|a| a[0].as_str()).collect();
+        assert_eq!(names, ["touch"]);
+        assert!(run.inconclusive.is_some());
+    }
+    // Under the sandbox no case can change the shims or the startup files
+    // a later case runs with, and each starts with an empty home.
+    if slots[0].profile.is_some() {
+        let shim = std::fs::read_to_string(slots[0].bin.join("rm")).unwrap();
+        let bashenv = std::fs::read_to_string(slots[0].root.join("bashenv")).unwrap();
+        for &(label, shell) in &shells {
+            let run = slots[0].run(
+                label,
+                shell,
+                "echo x > ../bin/rm; echo x >> ../bashenv; echo x > ../zdot/.zshenv; echo x > ~/f",
+            );
+            assert!(run.inconclusive.is_none(), "{label}");
+            assert_eq!(
+                std::fs::read_to_string(slots[0].bin.join("rm")).unwrap(),
+                shim
+            );
+            assert_eq!(
+                std::fs::read_to_string(slots[0].root.join("bashenv")).unwrap(),
+                bashenv
+            );
+        }
+        slots[0].reset();
+        assert!(!slots[0].root.join("home/f").exists());
+    }
 }
