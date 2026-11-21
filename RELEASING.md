@@ -14,30 +14,70 @@ hooks once per clone with `scripts/install-hooks.sh`; the pre-push hook runs
 
 ## What a release contains
 
-`codesmith` for four targets:
+`codesmith` for four targets, all built on one Apple Silicon Mac by
+`scripts/release.sh`:
 
-| Target | Built on | Notes |
+| Target | Built with | Notes |
 |---|---|---|
-| `aarch64-apple-darwin` | an Apple Silicon Mac | native |
-| `x86_64-apple-darwin` | the same Mac | cross-compiled with Xcode's SDK |
-| `x86_64-unknown-linux-musl` | a Linux machine, or a cross toolchain | static |
-| `aarch64-unknown-linux-musl` | a Linux machine, or a cross toolchain | static |
+| `aarch64-apple-darwin` | `cargo build` | native |
+| `x86_64-apple-darwin` | `cargo build` | cross-compiled with Xcode's SDK; smoke-tested under Rosetta |
+| `aarch64-unknown-linux-musl` | `cargo zigbuild` | static |
+| `x86_64-unknown-linux-musl` | `cargo zigbuild` | static |
 
 Linux binaries are static musl builds so they have no glibc version floor
 (a glibc build from Ubuntu 24.04 would need glibc 2.39 and fail on Debian 12,
 RHEL 9 and older LTS releases), and musl also covers Alpine. CodeSmith has no
-native dependencies beyond bundled C (SQLite, ring, zstd), which build with
-`musl-gcc`.
+native dependencies beyond bundled C (SQLite, ring, zstd), which
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) compiles and
+links with zig against musl. (Homebrew's musl-cross toolchains would also
+work, but zig is one formula for both architectures and needs no per-target
+`CC_*`/linker settings.) The macOS binaries target macOS 11 and later
+(`MACOSX_DEPLOYMENT_TARGET`).
 
 Each build is packaged as `codesmith-<version>-<target>.tar.gz`, containing a
 `codesmith-<version>-<target>/` directory with the binary, `LICENSE`,
 `README.md`, `CHANGELOG.md` and the `docs/` guide, plus a `SHA256SUMS` file.
 Releases are created as **drafts** with `gh release create --draft` and stay
 drafts until the macOS binaries are signed, so nobody downloads an unsigned
-build from `/releases/latest`.
+build from `/releases/latest` (which is also what `codesmith upgrade` reads).
 
-Building and packaging the four targets is currently manual; a local release
-script is still to be written.
+## Building a release
+
+One-time setup on the build Mac (Xcode or its command line tools installed):
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin \
+  aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+brew install zig
+cargo install --locked cargo-zigbuild
+softwareupdate --install-rosetta   # optional: runs the x86_64 macOS binary
+brew install gh && gh auth login   # for --draft-upload
+```
+
+Docker Desktop is optional; with it, each Linux binary is also run in Alpine
+and Debian containers of its own architecture. The script names whatever is
+missing.
+
+```sh
+scripts/release.sh 0.2.0                  # dry run: build, test, package; no GitHub
+scripts/release.sh 0.2.0 --draft-upload   # the same, then create the draft release
+```
+
+It checks the version against `Cargo.toml`, builds the four targets, and
+smoke-tests them: `--version` for the macOS binaries, `file` must call the
+Linux ones static, and with Docker they run in containers (with no network).
+It then packages into `dist/<version>/`, writes `SHA256SUMS`, renders the
+Homebrew formula from it, and installs the Apple Silicon tarball with
+`install.sh` from `dist/` to check that path too. A dry run stops there and
+prints the `gh` command it would run, without any call to GitHub (`--dry-run`
+is the default and also wins over `--draft-upload`); `--targets
+"aarch64-apple-darwin"` narrows a dry run to some targets. Without Rosetta
+the x86_64 macOS binary is only checked with `file`, and without Docker the
+Linux binaries are only checked with `file`; the script says which checks it
+skipped. `CODESMITH_SKIP_DOCKER=1` skips the containers on purpose. `--draft-upload` also needs a clean tree
+at the tag `v<version>`, pushed (`--verify-tag`), and runs
+`gh release create v<version> --draft --verify-tag --generate-notes` with the
+tarballs and `SHA256SUMS`.
 
 ## Signing the macOS binaries
 
@@ -88,9 +128,9 @@ identity works.
    git push origin main v0.2.0
    ```
 
-3. **Build and upload** the four tarballs and `SHA256SUMS` (see "What a
-   release contains"), then `gh release create v0.2.0 --draft` with them
-   attached.
+3. **Build and upload:** `scripts/release.sh 0.2.0` first as a dry run,
+   then `scripts/release.sh 0.2.0 --draft-upload` (see "Building a
+   release").
 4. **Sign on the signing Mac:**
 
    ```sh

@@ -15,7 +15,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 - An update check, off by default (OpenCode's is on): `"update": "notify"`
   in the global config checks at most once a day with one plain GET and
   prints a line after the UI exits.
-
+- `scripts/release.sh` builds, smoke-tests and packages all four release
+  targets on one Apple Silicon Mac (static musl Linux builds through
+  cargo-zigbuild), and with `--draft-upload` creates the draft release.
 
 ## 0.1.0
 
