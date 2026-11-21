@@ -83,8 +83,16 @@ impl Snapshots {
     }
 
     fn git(&self, args: &[&str]) -> Result<String> {
-        let out = self
-            .command()
+        self.git_with(args, None)
+    }
+
+    /// `git` with its index at `index` (the repository's own when `None`).
+    fn git_with(&self, args: &[&str], index: Option<&Path>) -> Result<String> {
+        let mut c = self.command();
+        if let Some(i) = index {
+            c.env("GIT_INDEX_FILE", i);
+        }
+        let out = c
             .args(args)
             .output()
             .context("running git (is it installed?)")?;
@@ -130,11 +138,50 @@ impl Snapshots {
         Ok(())
     }
 
-    /// Record the working tree; returns its tree hash.
+    /// A fresh index file name of this process, next to the repository's.
+    fn temporary_index(&self) -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.git_dir
+            .join(format!("index.codesmith-{}-{n}", std::process::id()))
+    }
+
+    /// Record the working tree; returns its tree hash. The index is
+    /// written as a copy, then renamed over the repository's (OpenCode's
+    /// temporary index): processes never contend on `index.lock`, a stale
+    /// lock or a writer killed mid-write cannot block later captures, and a
+    /// corrupt index is rebuilt from the files.
     pub fn capture(&self) -> Result<String> {
         self.ensure()?;
-        self.git(&["add", "--all", "--", "."])?;
-        Ok(self.git(&["write-tree"])?.trim().to_string())
+        let index = self.git_dir.join("index");
+        let tmp = self.temporary_index();
+        let copied = copy_index(&index, &tmp);
+        let mut tree = self.capture_into(&tmp);
+        if tree.is_err() && copied {
+            // An unreadable index: start over from the files.
+            let _ = std::fs::remove_file(&tmp);
+            tree = self.capture_into(&tmp);
+        }
+        match tree {
+            Ok(t) => {
+                if std::fs::rename(&tmp, &index).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                Ok(t)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+
+    fn capture_into(&self, index: &Path) -> Result<String> {
+        self.git_with(&["add", "--all", "--", "."], Some(index))?;
+        Ok(self
+            .git_with(&["write-tree"], Some(index))?
+            .trim()
+            .to_string())
     }
 
     /// Paths that differ between two trees.
@@ -172,13 +219,22 @@ impl Snapshots {
         }
         let (added, rest): (Vec<&Change>, Vec<&Change>) =
             changes.iter().partition(|c| c.status == 'A');
+        // One path that cannot be restored does not stop the others; the
+        // first failure is reported once they are done.
+        let mut failed: Option<anyhow::Error> = None;
         for c in &added {
             let p = self.work_tree.join(&c.path);
             if p.is_file() || p.is_symlink() {
-                std::fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
+                if let Err(e) = std::fs::remove_file(&p) {
+                    failed.get_or_insert(anyhow!(e).context(format!("removing {}", p.display())));
+                    continue;
+                }
             }
             remove_empty_parents(&p, &self.work_tree);
         }
+        // Checked out through a temporary index, so a stale lock on the
+        // repository's own cannot block it.
+        let index = self.temporary_index();
         for chunk in rest.chunks(200) {
             let mut args = vec!["checkout", tree, "--"];
             let paths: Vec<String> = chunk
@@ -186,10 +242,31 @@ impl Snapshots {
                 .map(|c| format!(":(literal){}", c.path))
                 .collect();
             args.extend(paths.iter().map(String::as_str));
-            self.git(&args)?;
+            if let Err(e) = self.git_with(&args, Some(&index)) {
+                failed.get_or_insert(e);
+            }
         }
-        Ok(changes)
+        let _ = std::fs::remove_file(&index);
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(changes),
+        }
     }
+}
+
+/// Copy an index, keeping its modification time: Git compares it with its
+/// entries' to tell racily clean files.
+fn copy_index(from: &Path, to: &Path) -> bool {
+    if std::fs::copy(from, to).is_err() {
+        return false;
+    }
+    if let Ok(t) = std::fs::metadata(from).and_then(|m| m.modified()) {
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(to)
+            .and_then(|f| f.set_modified(t));
+    }
+    true
 }
 
 fn remove_empty_parents(file: &Path, stop: &Path) {

@@ -133,3 +133,15 @@
 866 :: ported :: tests/oc_tools_backlog.rs::oc_shell_returns_both_parallel_code_mode_shell_results
 2250,2283,2316,2338,2357,2408,2564 :: design :: deliberate :: a user's stop drops the running call, whose guard stops the command's process group (SIGTERM, then SIGKILL); a stopped foreground call fails with "Command cancelled" (see src/tool/shell.rs's a_dropped_foreground_call_stops_its_process_group)
 
+# --- Snapshots and undo (tests/oc_snapshot_backlog.rs) ---
+@snapshot.test.ts
+82 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_captures_and_restores_only_the_selected_paths :: adapted: the session root is the snapshot's scope
+124 :: fixed :: tests/oc_snapshot_backlog.rs::oc_snapshot_recovers_from_a_corrupt_index_and_a_stale_lock :: a lock left by a killed capture failed every later capture and undo, and a corrupt index failed capture; captures now write a temporary index and rename it into place, rebuilding an unreadable one, and restores check out through their own
+195 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_captures_a_root_whose_name_starts_with_two_dots
+219 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_captures_and_restores_a_root_opened_through_a_symlink
+246 :: design :: platform :: Windows only (case-insensitive paths); OpenCode skips it elsewhere
+271 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_restores_files_from_several_trees_and_removes_absent_ones :: adapted: one restore per tree, as undo restores each turn's paths from its start
+313 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_restores_and_diffs_a_selection_too_long_for_one_command_line :: adapted: the diff is of the two trees
+347 :: fixed :: tests/oc_snapshot_backlog.rs::oc_snapshot_restores_the_other_files_when_removing_one_fails :: the first added file that could not be removed stopped the restore, so the files after it kept the turn's changes; the others are now restored and the failure reported after
+401 :: design :: deliberate :: CodeSmith keeps its own snapshot repository for any project root, Git or not, so undo works outside Git too
+414 :: ported :: tests/oc_snapshot_backlog.rs::oc_snapshot_isolates_linked_worktrees :: adapted: each session root has its own repository

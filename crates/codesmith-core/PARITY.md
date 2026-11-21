@@ -22,7 +22,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
-| Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
+| Snapshots and undo | 15 | 7 | 2 | 0 | 5 | 1 | 0 |
 | Sessions and their store | 308 | 91 | 2 | 0 | 191 | 24 | 0 |
 | Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1792** | **31** | **45** | **2446** | **1271** | **3** |
+| **Total** | **5588** | **1798** | **33** | **45** | **2448** | **1261** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -75,6 +75,8 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
 - `shell.test.ts`: "builds command args per shell family" (1 case): POSIX families; Zsh now gets `+o nomatch`. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `shell.test.ts`: "passes an unmatched zsh glob through to the command" (1 case): an unmatched glob failed the whole Zsh line. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
+- `snapshot.test.ts`: "recovers from a corrupt index and ignores a stale index lock" (1 case): a lock left by a killed capture failed every later capture and undo, and a corrupt index failed capture; captures now write a temporary index and rename it into place, rebuilding an unreadable one, and restores check out through their own. Pinned by `tests/oc_snapshot_backlog.rs::oc_snapshot_recovers_from_a_corrupt_index_and_a_stale_lock`.
+- `snapshot.test.ts`: "restores the other files when removing one path fails" (1 case): the first added file that could not be removed stopped the restore, so the files after it kept the turn's changes; the others are now restored and the failure reported after. Pinned by `tests/oc_snapshot_backlog.rs::oc_snapshot_restores_the_other_files_when_removing_one_fails`.
 - `tool-execute.test.ts`: "execute rejects filesystem fetches" (1 case): Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page; it now has one, with the webfetch tool's checks. Pinned by `src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches`.
 - `tool-execute.test.ts`: "whole-body methods share consumption and expose Bun's empty body" (1 case): as above (adapted: the server's content type). Pinned by `src/codemode/fetch/tests.rs::oc_whole_body_methods_share_consumption_and_expose_an_empty_body`.
 - `tool-execute.test.ts`: "discards a redirect body before reading the destination" (1 case): as above (adapted: the body arrives whole). Pinned by `src/codemode/fetch/tests.rs::oc_discards_a_redirect_body_before_reading_the_destination`.
@@ -187,7 +189,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1271 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1261 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -252,22 +254,10 @@ Tests for behaviour CodeSmith already has but no test pins (1271 cases), by area
 - native instruction epochs after durable replay and provider switches — `store::history_for`
   - `session-native.test.ts`: advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches
 
-### Snapshots and undo (11)
+### Snapshots and undo (1)
 
 - diff of the busy period containing a user message (M) — `snapshot::Snapshots::diff`
   - `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
-- capture/restore, restoring many files and removing absent ones, partial failure, unavailable outside Git (S) — `snapshot::Snapshots`
-  - `snapshot.test.ts`: captures and restores Location-scoped changes
-  - `snapshot.test.ts`: restores many files from several trees and removes paths absent from them
-  - `snapshot.test.ts`: restores the other files when removing one path fails
-  - `snapshot.test.ts`: treats capture outside Git as unavailable
-- corrupt index / stale lock, odd directory names, symlinked or case-different paths, long selections, per-worktree indexes (M) — `snapshot::Snapshots`
-  - `snapshot.test.ts`: recovers from a corrupt index and ignores a stale index lock
-  - `snapshot.test.ts`: captures a Location in a directory whose name starts with two dots
-  - `snapshot.test.ts`: captures and restores a Location opened through a symlinked path
-  - `snapshot.test.ts`: captures a Location opened with different letter case
-  - `snapshot.test.ts`: restores and diffs a selection too long for one command line
-  - `snapshot.test.ts`: isolates snapshot indexes by canonical Git worktree
 
 ### Sessions and their store (24)
 
@@ -868,8 +858,8 @@ Tests for behaviour CodeSmith already has but no test pins (1271 cases), by area
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 687 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 580 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 688 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 581 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -1299,7 +1289,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Snapshots and undo (4 of 15)</summary>
+<details><summary>Snapshots and undo (14 of 15)</summary>
 
 
 **`session-revert.test.ts`**
@@ -1308,7 +1298,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`snapshot.test.ts`**
 
-- D keeps lazy repository discovery after the first caller is interrupted · captures concurrently from independent processes · applies availability transforms — effect-internal: lazy discovery, cross-process capture, availability transforms
+- D keeps lazy repository discovery after the first caller is interrupted — effect-internal: lazy discovery, cross-process capture, availability transforms
+- P captures and restores Location-scoped changes — `tests/oc_snapshot_backlog.rs::oc_snapshot_captures_and_restores_only_the_selected_paths` (adapted: the session root is the snapshot's scope)
+- F recovers from a corrupt index and ignores a stale index lock — `tests/oc_snapshot_backlog.rs::oc_snapshot_recovers_from_a_corrupt_index_and_a_stale_lock` (a lock left by a killed capture failed every later capture and undo, and a corrupt index failed capture; captures now write a temporary index and rename it into place, rebuilding an unreadable one, and restores check out through their own)
+- D captures concurrently from independent processes — effect-internal: lazy discovery, cross-process capture, availability transforms
+- P captures a Location in a directory whose name starts with two dots — `tests/oc_snapshot_backlog.rs::oc_snapshot_captures_a_root_whose_name_starts_with_two_dots`
+- P captures and restores a Location opened through a symlinked path — `tests/oc_snapshot_backlog.rs::oc_snapshot_captures_and_restores_a_root_opened_through_a_symlink`
+- D captures a Location opened with different letter case — platform: Windows only (case-insensitive paths); OpenCode skips it elsewhere
+- P restores many files from several trees and removes paths absent from them — `tests/oc_snapshot_backlog.rs::oc_snapshot_restores_files_from_several_trees_and_removes_absent_ones` (adapted: one restore per tree, as undo restores each turn's paths from its start)
+- P restores and diffs a selection too long for one command line — `tests/oc_snapshot_backlog.rs::oc_snapshot_restores_and_diffs_a_selection_too_long_for_one_command_line` (adapted: the diff is of the two trees)
+- F restores the other files when removing one path fails — `tests/oc_snapshot_backlog.rs::oc_snapshot_restores_the_other_files_when_removing_one_fails` (the first added file that could not be removed stopped the restore, so the files after it kept the turn's changes; the others are now restored and the failure reported after)
+- D applies availability transforms — effect-internal: lazy discovery, cross-process capture, availability transforms
+- D treats capture outside Git as unavailable — deliberate: CodeSmith keeps its own snapshot repository for any project root, Git or not, so undo works outside Git too
+- P isolates snapshot indexes by canonical Git worktree — `tests/oc_snapshot_backlog.rs::oc_snapshot_isolates_linked_worktrees` (adapted: each session root has its own repository)
 
 </details>
 
