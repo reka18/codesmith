@@ -1290,12 +1290,42 @@ async fn stored_targets_keep_their_meaning_and_children_run_unattended() {
     let info = db.get(r.session_id.as_deref().unwrap()).unwrap().unwrap();
     assert_eq!(info.parent_id.as_deref(), Some(parent.id.as_str()));
 
-    // With the creating session gone, runs still go ahead, unparented.
+    // With the creating session gone, so are the session rules a run
+    // would start with: the run is refused, saying why, and the
+    // automation paused. (Security review 7: runs went ahead unparented,
+    // without the creator's session-only rules.)
+    let sessions = db.list(None, true).unwrap().len();
     db.delete(&parent.id).unwrap();
+    let left = db.list(None, true).unwrap().len();
+    assert!(left < sessions);
     due_now(&db, &a.id);
     runner.tick().await.unwrap();
     let r = &runs_of(&db, &a.id)[1];
-    assert_eq!(r.outcome, "fired", "{}", r.detail);
-    let info = db.get(r.session_id.as_deref().unwrap()).unwrap().unwrap();
-    assert_eq!(info.parent_id, None);
+    assert_eq!(r.outcome, "failed", "{}", r.detail);
+    assert!(r.detail.contains("was deleted"), "{}", r.detail);
+    assert!(r.detail.contains(&parent.id), "{}", r.detail);
+    assert_eq!(r.session_id, None);
+    assert_eq!(
+        db.list(None, true).unwrap().len(),
+        left,
+        "no session was started"
+    );
+    assert_eq!(au::get(&db, &a.id).unwrap().unwrap().status, "paused");
+
+    // The same for an automation whose creator is recorded on it.
+    let mut j = job(
+        "sub",
+        "x",
+        Target::Subagent {
+            subagent: "build".into(),
+        },
+    );
+    j.session_id = Some(parent.id.clone());
+    let b = au::create(&db, j).unwrap();
+    due_now(&db, &b.id);
+    runner.tick().await.unwrap();
+    let r = &runs_of(&db, &b.id)[0];
+    assert_eq!(r.outcome, "failed", "{}", r.detail);
+    assert!(r.detail.contains("was deleted"), "{}", r.detail);
+    assert_eq!(au::get(&db, &b.id).unwrap().unwrap().status, "paused");
 }

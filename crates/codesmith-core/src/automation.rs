@@ -901,6 +901,28 @@ struct RunError {
 #[derive(Debug)]
 struct TurnFailed;
 
+/// The session that created an automation is gone, so the session-only
+/// permission rules a run would inherit from it are too: the run is
+/// refused and the automation paused rather than run with fewer
+/// restrictions than its creator had.
+#[derive(Debug)]
+struct CreatorGone(String);
+
+impl std::fmt::Display for CreatorGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the session that created this automation ({}) was deleted, so the \
+             permission rules set in that session can no longer be applied to its \
+             runs; the automation is paused. Remove it, or create it again from \
+             another session",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for CreatorGone {}
+
 impl std::fmt::Display for TurnFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("the run's turn failed")
@@ -1242,10 +1264,19 @@ impl Runner {
                 agent,
                 model,
             } => {
-                // A child of the creating session, so it lists under it. If
-                // that session was deleted, the run still goes ahead on its own.
-                let parent = db.get(child)?.map(|_| child.clone());
-                (None, Some(agent.clone()), model.clone(), title, parent)
+                // A child of the creating session, so it lists under it and
+                // starts with its session rules. Without that session
+                // those rules are unknown: refused (see [`CreatorGone`]).
+                if db.get(child)?.is_none() {
+                    return Err(CreatorGone(child.clone()).into());
+                }
+                (
+                    None,
+                    Some(agent.clone()),
+                    model.clone(),
+                    title,
+                    Some(child.clone()),
+                )
             }
         };
         let mut s = Session::new(
@@ -1310,6 +1341,9 @@ impl Runner {
         }
         let message = format!("{e:#}");
         let _ = finish(&db, a, "failed", None, &message, None, false);
+        if e.downcast_ref::<CreatorGone>().is_some() {
+            let _ = set_status(&db, &a.id, "paused");
+        }
         Err(RunError {
             fatal: e.downcast_ref::<TurnFailed>().is_none(),
             message,
@@ -1317,6 +1351,13 @@ impl Runner {
     }
 
     async fn act(&self, db: &Store, a: &Automation, ok: &str, event: Option<&Value>) -> Result<()> {
+        // Every session a run starts is a child of the creating session and
+        // inherits its session rules; without it they are unknown.
+        if let Some(creator) = &a.session_id {
+            if db.get(creator)?.is_none() {
+                return Err(CreatorGone(creator.clone()).into());
+            }
+        }
         let loaded = (self.load)(Path::new(&a.directory))
             .with_context(|| format!("loading config in {}", a.directory))?;
         match &a.action {

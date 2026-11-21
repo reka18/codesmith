@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- An automation whose creating session was deleted no longer runs without
+  that session's permission rules: the run is refused with an error saying
+  so, and the automation is paused.
 - Plugins' `tool_before` and `tool_after` hooks run for each `fetch` (as
   `webfetch`) and OpenAPI call (as `openapi`) inside `execute`, as they do
   for built-ins: a veto refuses the call and `tool_after` can redact it.

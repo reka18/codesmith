@@ -58,8 +58,11 @@ target they were stored with: one created to continue a session still
 continues it. Nothing is migrated; to switch one over, remove it and create
 it again. A child target records the agent and model when the automation
 is created, so later changes to the creating session don't change its
-runs. If the creating session is deleted, runs go on in new sessions
-without a parent.
+runs. A run's session is a child of the creating session and starts with
+the permission rules set in it. If the creating session is deleted, those
+rules are unknown, so the next run is refused with an error saying so and
+the automation is paused; remove it, or create it again from another
+session.
 
 ### Prompts sent to an existing session
 
