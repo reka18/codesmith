@@ -22,7 +22,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Compaction | 51 | 43 | 0 | 0 | 8 | 0 | 0 |
 | Titles | 26 | 9 | 2 | 0 | 15 | 0 | 0 |
 | Model requests and transport | 68 | 28 | 0 | 0 | 40 | 0 | 0 |
-| Snapshots and undo | 15 | 7 | 2 | 0 | 5 | 1 | 0 |
+| Snapshots and undo | 15 | 7 | 2 | 1 | 5 | 0 | 0 |
 | Sessions and their store | 308 | 107 | 3 | 0 | 198 | 0 | 0 |
 | Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2706** | **68** | **41** | **2543** | **230** | **0** |
+| **Total** | **5588** | **2706** | **68** | **42** | **2543** | **229** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -117,7 +117,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (41 cases in 6 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (42 cases in 7 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -127,6 +127,7 @@ Missing features, by how many OpenCode test cases each would unlock (41 cases in
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
+| [Session Diff Ranges](#session-diff-ranges) | 1 | a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only) |
 
 ### Provider Plugins
 
@@ -195,14 +196,15 @@ Missing features, by how many OpenCode test cases each would unlock (41 cases in
 
 - `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
 
+### Session Diff Ranges
+
+1 cases.
+
+- `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
+
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (230 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### Snapshots and undo (1)
-
-- diff of the busy period containing a user message (M) — `snapshot::Snapshots::diff`
-  - `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
+Tests for behaviour CodeSmith already has but no test pins (229 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Tool registry, schemas, placement (9)
 

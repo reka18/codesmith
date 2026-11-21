@@ -32,3 +32,7 @@
 # --- Model requests and transport (tests/oc_native_backlog3.rs) ---
 @session-native.test.ts
 224 :: ported :: tests/oc_native_backlog3.rs::oc_native_advances_the_instruction_epoch_and_omits_superseded_updates :: adapted: instructions are the project's AGENTS.md; the replay is a resume from the store, the switch one to another model
+
+# --- Snapshots and undo ---
+@session-diff.test.ts
+46 :: feature :: Session Diff Ranges :: a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only)
