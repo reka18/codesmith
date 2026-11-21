@@ -12,6 +12,16 @@ signing happens on the owner's own Mac.
 hooks once per clone with `scripts/install-hooks.sh`; the pre-push hook runs
 `scripts/ci.sh` and a failure stops the push.
 
+`scripts/ci-linux.sh` runs the same checks on Linux in Docker (linux/arm64;
+`--amd64` for x86_64 under emulation), which catches Linux-only `cfg` code and
+lints the Mac run never compiles. It is slow, so the hook runs it only with
+`CODESMITH_CI_LINUX=1` set (`CODESMITH_CI_LINUX=1 git push`); run it by hand
+before a release or after touching platform-specific code. The repo is mounted
+read-only, cargo's registry and target dir are cached in `codesmith-ci-*`
+Docker volumes, and the checks run as a non-root user with `--network none`
+under CPU, memory and pids limits (`CI_LINUX_CPUS`, `CI_LINUX_MEMORY`,
+`CI_LINUX_PIDS`, `CI_LINUX_TIMEOUT`).
+
 ## What a release contains
 
 `codesmith` for four targets, all built on one Apple Silicon Mac by

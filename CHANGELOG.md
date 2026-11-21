@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- `scripts/ci-linux.sh` runs local CI (fmt, clippy, tests, shellcheck) in a
+  Linux container, arm64 or `--amd64`; the pre-push hook adds it with
+  `CODESMITH_CI_LINUX=1`.
 - **Shell permission fixes:** Bash 5.3's `${ cmd; }` and `${| cmd; }`
   command substitutions were read as parameter expansions, so the command
   inside was never checked (`echo "${ rm -rf x; }"` passed as `echo`); they
