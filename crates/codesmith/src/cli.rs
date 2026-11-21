@@ -1447,8 +1447,8 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
         Debug::Model { spec } => {
             let loaded = config::load(&cwd)?;
             let spec = spec
-                .or(loaded.config.model.clone())
-                .ok_or_else(|| anyhow!("no model given or configured"))?;
+                .or_else(|| loaded.config.default_model())
+                .ok_or_else(|| anyhow!("no model given, configured or available"))?;
             let m = loaded.config.resolve_model(&spec)?;
             let base = config::split_variant(&spec).0;
             println!("model:    {base} (sent as {})", m.model_id);

@@ -53,6 +53,12 @@ pub struct Config {
     /// (OpenCode's `small_model`); the session's own model when unset.
     #[serde(deserialize_with = "model_selection")]
     pub small_model: Option<String>,
+    /// Providers never to use (OpenCode's `disabled_providers`): their
+    /// models are not listed or picked, a model naming one does not
+    /// resolve, and a default `model` on one is passed over for the newest
+    /// available model ([`Config::default_model`]). Every config file's
+    /// list counts.
+    pub disabled_providers: Vec<String>,
     /// `false` turns generated session titles off: a session is named after
     /// its first message, with no model request.
     pub title: Option<bool>,
@@ -1210,7 +1216,7 @@ pub fn strip_jsonc(text: &str) -> String {
     out
 }
 
-const APPEND: [&str; 2] = ["permissions", "instructions"];
+const APPEND: [&str; 3] = ["permissions", "instructions", "disabled_providers"];
 
 /// Merge one layer over the layers below it: as [`merge`], except that a
 /// command a later layer defines replaces the earlier definition whole
@@ -1514,6 +1520,48 @@ impl Config {
         }
     }
 
+    /// Whether `disabled_providers` turns provider `id` off.
+    pub fn provider_disabled(&self, id: &str) -> bool {
+        self.disabled_providers.iter().any(|d| d == id)
+    }
+
+    /// The model a session runs when none is chosen: the configured
+    /// `model`, unless its provider is disabled, else the newest available
+    /// chat model that takes and makes text (OpenCode's default model).
+    /// Available is what the model picker lists: configured providers,
+    /// catalog providers with a key, and local servers, never a disabled
+    /// provider. Models without a release date come last, in listing
+    /// order. `None` when there is no model to run.
+    pub fn default_model(&self) -> Option<String> {
+        let configured = self.model.as_deref().filter(|m| {
+            let (base, _) = split_variant(m);
+            !base
+                .split_once('/')
+                .is_some_and(|(p, _)| self.provider_disabled(p))
+        });
+        if let Some(m) = configured {
+            return Some(m.to_string());
+        }
+        self.newest_model()
+    }
+
+    /// The newest available chat model that takes and makes text.
+    pub fn newest_model(&self) -> Option<String> {
+        let text = |v: &[String]| v.is_empty() || v.iter().any(|m| m.starts_with("text"));
+        let mut best: Option<crate::plugin::codesmith::ModelRow> = None;
+        for row in crate::plugin::codesmith::available(self, "chat") {
+            // The catalog's capabilities with the configured ones over them.
+            let text = self
+                .capabilities(&format!("{}/{}", row.provider_id, row.id))
+                .is_some_and(|c| text(&c.input) && text(&c.output));
+            // The first of equally new models wins, as a stable sort keeps it.
+            if text && best.as_ref().is_none_or(|b| row.released > b.released) {
+                best = Some(row);
+            }
+        }
+        best.map(|b| format!("{}/{}", b.provider_id, b.id))
+    }
+
     /// Resolve `provider/model` or `provider/model#variant` (the first `/`
     /// splits; model ids may contain more).
     pub fn resolve_model(&self, spec: &str) -> Result<ModelRef> {
@@ -1522,6 +1570,11 @@ impl Config {
             .split_once('/')
             .filter(|(p, m)| !p.is_empty() && !m.is_empty())
             .ok_or_else(|| anyhow!("model must be provider/model, got {spec:?}"))?;
+        if self.provider_disabled(pid) {
+            return Err(anyhow!(
+                "provider {pid:?} is disabled (\"disabled_providers\" in codesmith.json)"
+            ));
+        }
         let p = self.provider(pid).ok_or_else(|| {
             anyhow!("unknown provider {pid:?}; add it under \"providers\" in codesmith.json")
         })?;

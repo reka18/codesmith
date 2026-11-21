@@ -175,6 +175,7 @@ fn cost_of(c: Option<crate::catalog::Cost>) -> Value {
 /// The models of `kind` (`chat`, `image` or `video`) this config can use:
 /// chat models of configured providers, catalog providers with a key and
 /// local servers; image and video models with a supported API and a key.
+/// A provider `disabled_providers` names is left out.
 pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
     let catalog = config.models_dev.as_ref().map(|c| c.catalog());
     let info = |pid: &str, id: &str| catalog.as_ref().and_then(|c| c.model(pid, id).cloned());
@@ -192,6 +193,9 @@ pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
             .unwrap_or_else(|| pid.to_string())
     };
     let row = |pid: &str, id: &str, name: Option<String>| -> Option<ModelRow> {
+        if config.provider_disabled(pid) {
+            return None;
+        }
         let m = info(pid, id);
         if m.as_ref().is_some_and(|m| !m.enabled) {
             return None;

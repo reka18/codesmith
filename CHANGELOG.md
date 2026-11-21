@@ -32,6 +32,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **Default model fallback:** with no model chosen (no `-m`, agent model or
+  `"model"`), a session runs the newest available chat model that takes and
+  makes text, as OpenCode does, instead of refusing to start: the newest by
+  catalog release date among configured providers, providers with a key and
+  local servers. A configured `model` is still used as given.
+- **`disabled_providers`:** OpenCode's config key. A disabled provider's
+  models are not listed or picked, a model naming one is refused, and a
+  default `model` on one is passed over for the newest available model.
+  Every config file's list counts.
 - **Plugin tool renaming:** a plugin's `tool_before` hook can send a call
   to another tool by setting `call.name`, as OpenCode's can. The call runs
   as the new tool, its input checked against that tool's schema and through

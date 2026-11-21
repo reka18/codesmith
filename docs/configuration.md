@@ -86,7 +86,8 @@ is parsed:
 | Key | Default | What it does |
 |---|---|---|
 | `$schema` | | Ignored; allowed for editors. |
-| `model` | none | Default model as `provider/model` (or `provider/model#variant`), or `{"providerID": "...", "model": "...", "variant": "..."}`. Required unless you pass `-m`. |
+| `model` | none | Default model as `provider/model` (or `provider/model#variant`), or `{"providerID": "...", "model": "...", "variant": "..."}`. Unset (or on a disabled provider), a session runs the newest available chat model that takes and makes text: of a configured provider, a provider with a key, or a local server, by catalog release date. A configured `model` is used as given, even when its provider has no key. |
+| `disabled_providers` | `[]` | Providers never to use, by id (OpenCode's `disabled_providers`): their models are not listed or picked, a model naming one is refused, and a default `model` on one is passed over. Every config file's list counts; a later file cannot turn a provider back on. |
 | `default_agent` | `build` | Primary agent for new sessions. |
 | `small_model` | the session's model | The model that writes session titles, as `provider/model[#variant]`. See [Session titles](#session-titles). |
 | `title` | `true` | `false` names sessions after their first line, with no model request. See [Session titles](#session-titles). |

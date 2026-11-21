@@ -607,8 +607,10 @@ impl Session {
             .model
             .or_else(|| resumed.as_ref().map(|r| r.0.model.clone()).filter(|m| !m.is_empty()))
             .or_else(|| agent.model.clone())
-            .or_else(|| config.model.clone())
-            .ok_or_else(|| anyhow!("no model configured: pass -m provider/model or set \"model\" in codesmith.json"))?;
+            // The configured default, or (none, or on a disabled provider)
+            // the newest available model, as OpenCode picks one.
+            .or_else(|| config.default_model())
+            .ok_or_else(|| anyhow!("no model configured or available: pass -m provider/model, set \"model\" in codesmith.json, or add a provider key"))?;
         let mut model = config.resolve_model(&model_spec)?;
         apply_agent_request(&mut model, &agent);
         let subagents = agent::subagents(config);

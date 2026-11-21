@@ -15,8 +15,13 @@
 
 ## Common problems
 
-**`no model configured`.** Pass `-m provider/model`, or set `"model"` in
-your [config](configuration.md). There is no default model.
+**`no model configured or available`.** No model was chosen and none is
+available to fall back on (no configured provider, no provider key, no local
+server, or all of them in `disabled_providers`). Pass `-m provider/model`,
+set `"model"` in your [config](configuration.md), or set a provider's key.
+
+**`provider "x" is disabled`.** It is listed in `disabled_providers`; remove
+it there to use it.
 
 **`unknown provider`.** The part before the first `/` must be a
 [built-in provider](configuration.md#built-in-providers) or an entry under

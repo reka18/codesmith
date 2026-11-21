@@ -6,3 +6,8 @@
 @tool-registry.test.ts
 1234 :: ported :: tests/oc_plugin_rename.rs::oc_a_hook_can_rename_a_call_inside_a_code_mode_program_to_another_of_its_tools :: adapted: the program's tools are the built-ins a strong model calls from inside execute; there is no automation check
 1280 :: ported :: tests/oc_plugin_rename.rs::oc_a_call_renamed_inside_a_code_mode_program_returns_the_renamed_tools_output :: adapted: results are text; a built-in renamed to an MCP tool
+
+# --- Default Model Fallback (tests/oc_default_model.rs) ---
+@catalog.test.ts
+533 :: ported :: tests/oc_default_model.rs::oc_falls_back_to_the_newest_available_model_when_no_default_is_configured :: adapted: the catalog drops video and speech models, so a configured audio-only model stands in as the newest non-text one
+640 :: ported :: tests/oc_default_model.rs::oc_ignores_a_configured_default_on_a_disabled_provider :: adapted: disabled by OpenCode's disabled_providers config

@@ -57,8 +57,11 @@ Maintainers: see [RELEASING.md](../RELEASING.md).
 
 ## Choose a model
 
-CodeSmith has no default model and no account of its own. It needs a model
-from a provider you choose.
+CodeSmith has no account of its own. It needs a model from a provider you
+choose. With no model set (no `-m` and no `"model"` in config), a session
+runs the newest model available to you, as OpenCode does: the newest chat
+model, by catalog release date, of a configured provider, a provider whose
+key you have set or saved, or a local server. Set `"model"` to choose.
 
 **A hosted provider.** Set its key and pick a model:
 
