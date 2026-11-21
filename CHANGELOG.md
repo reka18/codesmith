@@ -5,6 +5,13 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **The tools an automation's program calls** are read from it when it is
+  created, as in OpenCode: `automation add --code-file` lists them and
+  refuses a program whose calls can't be read (a computed `tools[name]`,
+  an alias of `tools`), that calls an unknown tool, `shell` or
+  `automation`, or whose tools (or running it at all) would be denied or
+  ask in an unattended run. Its runs are offered only those tools, checked
+  again before each run.
 - **Fixed:** an event watch whose run failed was paused twice, by the run
   and again by the watch once its stream closed, so resuming it in between
   could be undone. It is paused once, after the watch has stopped.

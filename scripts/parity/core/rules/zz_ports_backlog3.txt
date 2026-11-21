@@ -143,7 +143,6 @@
 1187 :: ported :: tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged :: adapted: state across runs, done finishes it, and a run that sends nothing starts no session
 1232 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged
 1316 :: feature :: Automation Durable Handoffs :: pending and terminal sends to the creating session
-1648,1683,1726,1757 :: feature :: Automation Tool Extraction :: the tools a program calls read from it at creation, asked about once, and checked at run time
 @tool-automation.test.ts
 173 :: design :: deliberate :: the creating session is recorded with an automation, not the tool call that created it
 194 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_creates_lists_pauses_resumes_and_deletes

@@ -489,6 +489,18 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
                 },
                 _ => return Err(anyhow!("give --prompt or --code-file")),
             };
+            // A program's tools are read from it and checked now, as its
+            // runs will be: each must exist and be allowed unattended.
+            if let au::Action::Code { code, .. } = &action {
+                let loaded = config::load(std::path::Path::new(&dir))?;
+                let tools = au::authorize_code(&db, &loaded, creator.as_deref(), code).await?;
+                if !tools.is_empty() {
+                    println!(
+                        "The program calls {}; its runs may call only these.",
+                        tools.join(", ")
+                    );
+                }
+            }
             let a = au::create_with(
                 &db,
                 au::New {

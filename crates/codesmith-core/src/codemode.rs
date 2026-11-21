@@ -30,6 +30,7 @@ pub(crate) mod fixture;
 pub mod openapi;
 pub mod placement;
 pub mod progress;
+pub mod scan;
 mod search;
 pub mod signature;
 mod web;

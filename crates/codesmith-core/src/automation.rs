@@ -160,6 +160,10 @@ pub struct Automation {
     pub retry_at: Option<i64>,
     /// When it stops (ms): no slot after it is run, and a watch ends then.
     pub expires: Option<i64>,
+    /// A Code Mode program's tools (`slack.post`), read from it when it
+    /// was created: its runs are offered only these. `None`: created
+    /// before they were recorded, so they are read at each run.
+    pub tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -402,6 +406,8 @@ fn ensure(c: &Connection) -> Result<()> {
             ("retry_at", "INTEGER"),
             // Added with expiry.
             ("expires", "INTEGER"),
+            // Added with tool extraction.
+            ("tools", "TEXT"),
         ],
     )?;
     add_columns(
@@ -440,7 +446,7 @@ fn add_columns(c: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<
     Ok(())
 }
 
-const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules, failures, retry_at, expires";
+const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules, failures, retry_at, expires, tools";
 
 fn row(
     r: &rusqlite::Row,
@@ -476,6 +482,9 @@ fn row(
             failures: r.get::<_, i64>(16)? as u32,
             retry_at: r.get(17)?,
             expires: r.get(18)?,
+            tools: r
+                .get::<_, Option<String>>(19)?
+                .and_then(|t| serde_json::from_str(&t).ok()),
         },
         r.get(4)?,
         r.get(5)?,
@@ -613,11 +622,15 @@ pub fn create_with(db: &Store, n: New, o: &Opts) -> Result<Automation> {
         return Err(anyhow!("The automation expires before it first runs"));
     }
     let event = matches!(n.trigger, Trigger::Event { .. }).then(EventPosition::default);
-    if let Action::Code { code, .. } = &n.action {
-        if code.trim().is_empty() {
-            return Err(anyhow!("the code action needs a program"));
+    let tools = match &n.action {
+        Action::Code { code, .. } => {
+            if code.trim().is_empty() {
+                return Err(anyhow!("the code action needs a program"));
+            }
+            Some(program_tools(code).map_err(|e| anyhow!(e))?)
         }
-    }
+        Action::Prompt { .. } => None,
+    };
     let a = Automation {
         id: id(),
         name: n.name,
@@ -638,6 +651,7 @@ pub fn create_with(db: &Store, n: New, o: &Opts) -> Result<Automation> {
         failures: 0,
         retry_at: None,
         expires,
+        tools,
     };
     let mut a = a;
     if let Some(c) = creator(&a) {
@@ -652,8 +666,8 @@ pub fn create_with(db: &Store, n: New, o: &Opts) -> Result<Automation> {
     db.with_conn(|c| {
         ensure(c)?;
         c.execute(
-            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11, 0, NULL, ?12)"),
-            params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position, rules, a.expires],
+            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11, 0, NULL, ?12, ?13)"),
+            params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position, rules, a.expires, a.tools.as_ref().map(serde_json::to_string).transpose()?],
         )?;
         Ok(())
     })?;
@@ -1381,6 +1395,97 @@ const UNATTENDED: &str = "This automation runs unattended, so nothing that needs
 /// machine or send data out. (`write` is the `edit` action; it is listed so
 /// a rule naming it reads as intended.)
 pub const UNATTENDED_DENY: [&str; 5] = ["shell", "edit", "write", "webfetch", "external_directory"];
+
+/// Tools a program must not be granted unattended: the shell (one grant
+/// would allow every command) and managing automations (OpenCode's
+/// `FORBIDDEN_TOOLS`).
+const FORBIDDEN_TOOLS: [&str; 3] = ["shell", TOOL, WATCH_EVENT];
+
+/// The tools `code` calls (see [`crate::codemode::scan::scan_tools`]), or
+/// why it cannot be an automation: its calls cannot be read, or one is
+/// forbidden.
+pub fn program_tools(code: &str) -> Result<Vec<String>, String> {
+    let paths = crate::codemode::scan::scan_tools(code)?;
+    if let Some(p) = paths.iter().find(|p| FORBIDDEN_TOOLS.contains(&p.as_str())) {
+        return Err(format!("Tool {p} cannot be used inside an automation"));
+    }
+    Ok(paths)
+}
+
+/// The rules a program's tool calls are held to: the unattended rules for
+/// the directory, then the creating session's own, which only restrict.
+fn program_rules(
+    loaded: &Loaded,
+    session: Vec<crate::permission::Rule>,
+) -> Vec<crate::permission::Rule> {
+    let mut rules = crate::agent::resolve(&unattended(loaded).config, "build")
+        .map(|b| b.permissions)
+        .unwrap_or_default();
+    rules.extend(
+        session
+            .into_iter()
+            .map(crate::permission::Rule::into_builtin),
+    );
+    rules
+}
+
+/// Why the program cannot call `path` (whose action is `action`) unattended
+/// under `rules`, if it cannot: a deny, or a rule that would ask, which
+/// nobody is there to answer.
+fn tool_refusal(path: &str, action: &str, rules: &[crate::permission::Rule]) -> Option<String> {
+    let named = if path == crate::codemode::TOOL {
+        "execute (running the program)".to_string()
+    } else {
+        format!("Tool {path} ({action})")
+    };
+    match crate::permission::evaluate(action, "*", rules) {
+        crate::permission::Effect::Allow => None,
+        crate::permission::Effect::Deny => Some(format!(
+            "{named} is denied in unattended runs; allow it under `automation.permissions` for the program to call it"
+        )),
+        crate::permission::Effect::Ask => Some(format!(
+            "{named} needs approval, which nobody is there to give in an unattended run; allow it under `automation.permissions`"
+        )),
+    }
+}
+
+/// Check a program before it is made an automation, as OpenCode authorizes
+/// one at creation: the tools it calls are read from it, each must be a
+/// tool of a configured MCP server, and each (and running the program at
+/// all) must be allowed for unattended runs by the directory's rules and
+/// the creating `session`'s own. Returns the tools. The same checks run
+/// again at every run, so a rule added later still applies.
+pub async fn authorize_code(
+    db: &Store,
+    loaded: &Loaded,
+    session: Option<&str>,
+    code: &str,
+) -> Result<Vec<String>> {
+    let paths = program_tools(code).map_err(|e| anyhow!(e))?;
+    let own = match session {
+        Some(s) => session_rules_of(db, s)?.unwrap_or_default(),
+        None => vec![],
+    };
+    let rules = program_rules(loaded, own);
+    if let Some(why) = tool_refusal(crate::codemode::TOOL, crate::codemode::TOOL, &rules) {
+        return Err(anyhow!(why));
+    }
+    if paths.is_empty() {
+        return Ok(paths);
+    }
+    let mcp = crate::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
+    let all = mcp.tools();
+    for p in &paths {
+        let t = all
+            .iter()
+            .find(|t| format!("{}.{}", t.server, t.remote) == *p)
+            .ok_or_else(|| anyhow!("Unknown Code Mode tool: {p}"))?;
+        if let Some(why) = tool_refusal(p, &t.name, &rules) {
+            return Err(anyhow!(why));
+        }
+    }
+    Ok(paths)
+}
 
 /// Config for unattended runs (`"automation": {...}`).
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2305,24 +2410,43 @@ impl Runner {
     ) -> Result<Checked> {
         // MCP tools are denied unless `automation.permissions` opts in, as
         // in any unattended run: the program may act on an untrusted
-        // event. Denied tools aren't offered at all.
-        let mut rules = crate::agent::resolve(&unattended(loaded).config, "build")
-            .map(|b| b.permissions)
-            .unwrap_or_default();
-        // The creating session's own rules, as every session a run starts
-        // has them: like there, they only restrict.
-        rules.extend(
-            run_session_rules(db, a)?
-                .into_iter()
-                .map(crate::permission::Rule::into_builtin),
-        );
+        // event. The creating session's own rules apply too, as every
+        // session a run starts has them: like there, they only restrict.
+        let rules = program_rules(loaded, run_session_rules(db, a)?);
+        // Only the tools read from the program are offered (one stored
+        // before they were recorded is read now), and each must still be
+        // there and allowed: a rule added since creation still applies.
+        let paths = match &a.tools {
+            Some(t) => t.clone(),
+            None => program_tools(code).map_err(|reason| CheckFailed {
+                reason,
+                invalid: true,
+            })?,
+        };
+        let refused = |reason: String| CheckFailed {
+            reason,
+            invalid: false,
+        };
+        if let Some(why) = tool_refusal(crate::codemode::TOOL, crate::codemode::TOOL, &rules) {
+            return Err(refused(why).into());
+        }
         let mcp = crate::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
-        let entries: Vec<crate::codemode::Entry> = mcp
-            .tools()
+        let all = mcp.tools();
+        for p in &paths {
+            // A server that is down now may be back by the next run.
+            let Some(t) = all
+                .iter()
+                .find(|t| format!("{}.{}", t.server, t.remote) == *p)
+            else {
+                return Err(refused(format!("Unknown Code Mode tool: {p}")).into());
+            };
+            if let Some(why) = tool_refusal(p, &t.name, &rules) {
+                return Err(refused(why).into());
+            }
+        }
+        let entries: Vec<crate::codemode::Entry> = all
             .into_iter()
-            .filter(|t| {
-                crate::permission::evaluate(&t.name, "*", &rules) != crate::permission::Effect::Deny
-            })
+            .filter(|t| paths.contains(&format!("{}.{}", t.server, t.remote)))
             .map(|t| crate::codemode::Entry {
                 tool: t.name,
                 namespace: t.server,

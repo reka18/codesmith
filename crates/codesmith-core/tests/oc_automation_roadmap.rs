@@ -729,3 +729,324 @@ async fn the_tool_creates_an_automation_that_expires() {
     );
     assert_eq!(au::list(&h.store(), None).unwrap().len(), 1);
 }
+
+// ----- Automation Tool Extraction --------------------------------------------
+
+fn loaded(w: &World) -> codesmith_core::config::Loaded {
+    (w.loader())(w.project.path()).unwrap()
+}
+
+async fn authorize(w: &World, session: Option<&str>, code: &str) -> anyhow::Result<Vec<String>> {
+    au::authorize_code(&w.db, &loaded(w), session, code).await
+}
+
+/// Run `id` once now and wait for the run to finish.
+async fn run_once(w: &World, runner: &au::Runner, id: &str) {
+    let before = w.phases(id).len();
+    w.due_now(id);
+    tick_until(runner, "the run", || {
+        let p = w.phases(id);
+        p.len() > before && p.iter().all(|(_, p)| p == au::SETTLED || p == au::FAILED)
+    })
+    .await;
+}
+
+// automation.test.ts: "extracts tools at creation, asks once without save,
+// and runs unattended after" (adapted: a program is created by the user
+// from the CLI, which checks the tools read from it then;
+// `automation.permissions` is the grant for unattended runs, and nothing
+// asks at run time)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_extracts_tools_at_creation_and_runs_unattended_after() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let code = "await tools.counter.post({ text: 'run ' + input.runs })\nif (input.runs > 99) await tools.counter.wait({ until: 'never' })\nawait tools.counter.post({ text: 'again ' + input.runs })\nreturn";
+    assert_eq!(
+        authorize(&w, Some(&creator), code).await.unwrap(),
+        ["counter.post", "counter.wait"]
+    );
+    let id = w.code(Some(&creator), code, None);
+    assert_eq!(
+        w.get(&id).tools,
+        Some(vec!["counter.post".to_string(), "counter.wait".to_string()])
+    );
+    let runner = w.runner();
+    run_once(&w, &runner, &id).await;
+    run_once(&w, &runner, &id).await;
+    assert_eq!(w.posts(), ["run 1", "again 1", "run 2", "again 2"]);
+    let a = w.get(&id);
+    assert_eq!((a.runs, a.last_outcome.as_deref()), (2, Some("fired")));
+    runner.release().unwrap();
+}
+
+// automation.test.ts: "asks for resource-scoped ask rules at creation, and
+// still needs a person for them at run time" (adapted: an MCP call has no
+// resource, so a rule that asks about the tool refuses the program at
+// creation, a rule scoped to resources does not apply to it, and one that
+// asks added after creation fails the run before the program runs)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_checks_ask_rules_at_creation_and_still_needs_a_person_at_run_time() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let code = "await tools.counter.post({ text: 'hi' })";
+    let asks = w.creator(json!([{"action": "counter_post", "resource": "*", "effect": "ask"}]));
+    let e = authorize(&w, Some(&asks), code).await.unwrap_err();
+    assert!(e.to_string().contains("needs approval"), "{e}");
+    let scoped =
+        w.creator(json!([{"action": "counter_post", "resource": "vault:*", "effect": "ask"}]));
+    assert_eq!(
+        authorize(&w, Some(&scoped), code).await.unwrap(),
+        ["counter.post"]
+    );
+
+    // The creator asks about the tool only after the automation was made.
+    let creator = w.creator(json!([]));
+    let id = w.code(Some(&creator), code, None);
+    let rules: Vec<codesmith_core::permission::Rule> = serde_json::from_value(
+        json!([{"action": "counter_post", "resource": "*", "effect": "ask"}]),
+    )
+    .unwrap();
+    w.db.set_permissions(&creator, &rules).unwrap();
+    let runner = w.runner();
+    run_once(&w, &runner, &id).await;
+    assert!(w.posts().is_empty());
+    let a = w.get(&id);
+    assert_eq!((a.runs, a.failures, a.status.as_str()), (1, 1, "active"));
+    assert!(a
+        .last_error
+        .as_deref()
+        .is_some_and(|e| e.contains("needs approval")));
+    runner.release().unwrap();
+}
+
+// automation.test.ts: "asks for execute when its tools are already allowed"
+// (adapted: running the program is the `execute` action; a rule that asks
+// about it or denies it refuses the program at creation, tools allowed or
+// not, since nobody is there to approve it at run time)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_checks_execute_when_its_tools_are_already_allowed() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    for (effect, says) in [("ask", "needs approval"), ("deny", "denied")] {
+        let s = w.creator(json!([{"action": "execute", "resource": "*", "effect": effect}]));
+        for code in [
+            "await tools.counter.post({ text: 'x' })",
+            "return { state: 1 }",
+        ] {
+            let e = authorize(&w, Some(&s), code).await.unwrap_err();
+            assert!(
+                e.to_string().contains("execute") && e.to_string().contains(says),
+                "{effect} {code}: {e}"
+            );
+        }
+    }
+    assert!(w.posts().is_empty());
+}
+
+// automation.test.ts: "rejects dynamic tool access, unknown tools, shell,
+// recursive automation tools and denied permissions" (adapted: the
+// shortest interval is a minute)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_rejects_dynamic_access_unknown_tools_shell_recursive_tools_and_denies() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let create = |code: &str| {
+        au::create(
+            &w.db,
+            au::New {
+                name: "bad".into(),
+                directory: w.dir(),
+                session_id: None,
+                trigger: every("1 minute"),
+                action: Action::Code {
+                    code: code.into(),
+                    args: None,
+                },
+            },
+        )
+    };
+    for (code, says) in [
+        ("const x = {", "SyntaxError"),
+        ("return await tools.counter[name]({})", "statically"),
+        ("const c = tools.counter; await c.post({})", "not alias"),
+        (
+            r#"await tools.shell({ command: "pwd" })"#,
+            "Tool shell cannot be used inside an automation",
+        ),
+        (
+            "return await tools.automation({})",
+            "Tool automation cannot be used inside an automation",
+        ),
+    ] {
+        let e = create(code).unwrap_err().to_string();
+        assert!(e.contains(says), "{code}: {e}");
+        let e = authorize(&w, None, code).await.unwrap_err().to_string();
+        assert!(e.contains(says), "{code}: {e}");
+    }
+    let e = authorize(&w, None, "return await tools.counter.missing({})")
+        .await
+        .unwrap_err();
+    assert_eq!(e.to_string(), "Unknown Code Mode tool: counter.missing");
+    let fast = au::create(
+        &w.db,
+        au::New {
+            name: "fast".into(),
+            directory: w.dir(),
+            session_id: None,
+            trigger: every("10 seconds"),
+            action: Action::Code {
+                code: "return".into(),
+                args: None,
+            },
+        },
+    );
+    assert!(fast.is_err());
+    let denies = w.creator(json!([{"action": "counter_post", "resource": "*", "effect": "deny"}]));
+    let e = authorize(&w, Some(&denies), "await tools.counter.post({ text: 'x' })")
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("denied"), "{e}");
+    // A tool no opt-in allows is denied in unattended runs.
+    let e = authorize(&w, None, "await tools.rich.grow({})")
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("automation.permissions"), "{e}");
+    assert!(au::list(&w.db, None).unwrap().is_empty());
+}
+
+// Regression: a run was offered every MCP tool the rules allow; it is
+// offered only those read from the program when it was created, so a
+// program changed since (or one whose calls the scan missed) cannot reach
+// another.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_not_read_from_the_program_is_not_offered_at_run_time() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let id = w.code(None, "await tools.counter.post({ text: 'ok' })", None);
+    let ready = w.data.path().join("ready");
+    std::fs::write(&ready, "").unwrap();
+    let changed = Action::Code {
+        code: format!(
+            "await tools.counter.wait({{ until: {:?} }})\nawait tools.counter.post({{ text: 'changed' }})",
+            ready.display().to_string()
+        ),
+        args: None,
+    };
+    w.sql(
+        "UPDATE automation SET action = ?2 WHERE id = ?1",
+        rusqlite::params![id, serde_json::to_string(&changed).unwrap()],
+    );
+    let runner = w.runner();
+    run_once(&w, &runner, &id).await;
+    assert!(w.posts().is_empty(), "{:?}", w.posts());
+    let a = w.get(&id);
+    assert_eq!((a.failures, a.last_outcome.as_deref()), (1, Some("failed")));
+    runner.release().unwrap();
+}
+
+// Regression: a program whose calls cannot be read was created and failed
+// at its runs; it is refused when created.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_whose_calls_cannot_be_read_is_refused_at_creation() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let r = au::create(
+        &w.db,
+        au::New {
+            name: "dynamic".into(),
+            directory: w.dir(),
+            session_id: None,
+            trigger: every("1 hour"),
+            action: Action::Code {
+                code: "for (const n of ['post']) await tools.counter[n]({ text: 'x' })".into(),
+                args: None,
+            },
+        },
+    );
+    assert!(r.is_err());
+    assert!(au::list(&w.db, None).unwrap().is_empty());
+}
+
+// Edge: an automation stored before its tools were recorded has them read
+// at each run: a program whose calls can be read runs with only those, and
+// one whose calls cannot is paused at once, without running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_stored_before_its_tools_were_recorded_is_read_at_its_run() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let fine = w.code(None, "await tools.counter.post({ text: 'legacy' })", None);
+    let dynamic = w.code(None, "await tools.counter.post({ text: 'x' })", None);
+    let code = Action::Code {
+        code: "const t = tools.counter; await t.post({ text: 'dynamic' })".into(),
+        args: None,
+    };
+    w.sql(
+        "UPDATE automation SET action = ?2 WHERE id = ?1",
+        rusqlite::params![dynamic, serde_json::to_string(&code).unwrap()],
+    );
+    w.sql("UPDATE automation SET tools = NULL", []);
+    assert_eq!(w.get(&fine).tools, None);
+    let runner = w.runner();
+    run_once(&w, &runner, &fine).await;
+    run_once(&w, &runner, &dynamic).await;
+    assert_eq!(w.posts(), ["legacy"]);
+    let d = w.get(&dynamic);
+    assert_eq!(d.status, "paused");
+    assert!(d
+        .last_error
+        .as_deref()
+        .is_some_and(|e| e.contains("not alias")));
+    runner.release().unwrap();
+}
+
+// Edge: at run time, a tool that is gone (its server removed from the
+// config, or down) or that a rule added since denies fails the run as a
+// strike, before the program runs, and it is tried again at the next slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_gone_or_denied_since_creation_fails_the_run_before_it_runs() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let id = w.code(
+        Some(&creator),
+        "await tools.counter.post({ text: 'before' })\nawait tools.rich.grow({})",
+        None,
+    );
+    // rich's tools are not opted in: refused before `counter.post` runs.
+    let runner = w.runner();
+    run_once(&w, &runner, &id).await;
+    assert!(w.posts().is_empty());
+    assert!(w
+        .get(&id)
+        .last_error
+        .as_deref()
+        .is_some_and(|e| e.contains("rich.grow")));
+    // Gone: a program calling a server the config no longer has.
+    let gone = w.code(
+        Some(&creator),
+        "await tools.counter.post({ text: 'gone' })",
+        None,
+    );
+    w.sql(
+        "UPDATE automation SET tools = '[\"counter.post\",\"old.tool\"]' WHERE id = ?1",
+        [&gone],
+    );
+    run_once(&w, &runner, &gone).await;
+    let g = w.get(&gone);
+    assert_eq!((g.status.as_str(), g.failures), ("active", 1));
+    assert!(g
+        .last_error
+        .as_deref()
+        .is_some_and(|e| e.contains("Unknown Code Mode tool: old.tool")));
+    assert!(w.posts().is_empty());
+    runner.release().unwrap();
+}

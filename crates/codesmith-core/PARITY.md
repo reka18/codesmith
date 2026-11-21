@@ -45,14 +45,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 126 | 6 | 0 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
-| Automations | 107 | 49 | 6 | 5 | 47 | 0 | 0 |
+| Automations | 107 | 53 | 6 | 1 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 419 | 0 | 16 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2900** | **80** | **27** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2904** | **80** | **23** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -132,12 +132,11 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (27 cases in 5 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (23 cases in 4 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
-| [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
@@ -162,15 +161,6 @@ Missing features, by how many OpenCode test cases each would unlock (27 cases in
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-
-### Automation Tool Extraction
-
-4 cases.
-
-- `automation.test.ts`: extracts tools at creation, asks once without save, and runs unattended after
-- `automation.test.ts`: asks for resource-scoped ask rules at creation, and still needs a person for them at run time
-- `automation.test.ts`: asks for execute when its tools are already allowed
-- `automation.test.ts`: rejects dynamic tool access, unknown tools, shell, recursive automation tools and denied permissions
 
 ### Browser Attachment
 
@@ -2601,7 +2591,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (102 of 107)</summary>
+<details><summary>Automations (106 of 107)</summary>
 
 
 **`automation-event.test.ts`**
@@ -2669,6 +2659,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D keeps distinct child handoffs pending and rewakes the recorded child on restart — deliberate: automation.rs: one run of an automation is in progress at a time, so handoffs do not pile up
 - P does not use an inbox ID to override changed authority when retrying an admitted child prompt — `tests/automation_handoffs.rs::a_resumed_child_whose_creator_rules_changed_is_failed_not_run` (adapted: checked when the admitted turn is resumed)
 - P reconciles a child handoff already delivered before settlement — `tests/automation_handoffs.rs::a_resume_leaves_a_session_busy_elsewhere_and_settles_an_answered_one`
+- P extracts tools at creation, asks once without save, and runs unattended after — `tests/oc_automation_roadmap.rs::oc_automation_extracts_tools_at_creation_and_runs_unattended_after` (adapted: the user creates a program from the CLI, which checks the tools read from it then; automation.permissions is the unattended grant, and nothing asks at run time)
+- P asks for resource-scoped ask rules at creation, and still needs a person for them at run time — `tests/oc_automation_roadmap.rs::oc_automation_checks_ask_rules_at_creation_and_still_needs_a_person_at_run_time` (adapted: an MCP call has no resource, so a rule asking about the tool refuses the program at creation, a resource-scoped one does not apply, and one added later fails the run before it runs)
+- P asks for execute when its tools are already allowed — `tests/oc_automation_roadmap.rs::oc_automation_checks_execute_when_its_tools_are_already_allowed` (adapted: an execute rule that asks or denies refuses the program at creation, since nobody is there to approve it at run time)
+- P rejects dynamic tool access, unknown tools, shell, recursive automation tools and denied permissions — `tests/oc_automation_roadmap.rs::oc_automation_rejects_dynamic_access_unknown_tools_shell_recursive_tools_and_denies` (adapted: the shortest interval is a minute; a tool no opt-in allows is refused too)
 - D waits for plugins when authorizing, but counts activation against the run timeout — effect-internal: plugin activation
 
 **`job.test.ts`**

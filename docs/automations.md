@@ -71,6 +71,7 @@ instant, a wall-clock time in the trigger's zone, or `"in 8 hours"`, as
   `input = {state, now, runs, args}` and may return
   `{state, done, send: {prompt, to: {subagent}}}`, to keep state between
   runs, finish itself, or hand work to a new session with that agent.
+  See [The tools a program calls](#the-tools-a-program-calls).
 
 Each run's outcome, session and answer are kept for `automation log ID`.
 
@@ -89,6 +90,30 @@ go on in a new session of their own, still held to the recorded rules. Only
 an automation whose rules were never recorded, and whose creating session
 is gone, is refused with an error saying so and paused; remove it, or
 create it again from another session.
+
+### The tools a program calls
+
+As in OpenCode, the tools a program calls are read from it when it is
+created: every `tools.<server>.<tool>(...)` call (`tools["odd-name"].x()`
+too). `automation add` lists them, and refuses the program when:
+
+- its calls can't be read: a syntax error, a computed name
+  (`tools.github[name]()`), or `tools` used other than in a call (`const
+  t = tools.github`, `Object.keys(tools)`, `{ tools }`, `import()`);
+- it calls a tool no configured MCP server has, or `shell` or
+  `automation`;
+- a tool, or running the program at all (the `execute` action), is denied
+  or would ask in an unattended run: MCP tools need an opt-in under
+  `automation.permissions` (below), and the creating session's own rules
+  apply too.
+
+Its runs are offered only those tools, and each run checks them again
+before the program runs: a tool that is gone, or that a rule added since
+denies or asks about, fails the run as a strike, without running it. A
+program stored before its tools were recorded has them read at each run;
+one whose calls can't be read is paused. Unlike OpenCode, a local variable
+named `tools` is not told apart from the global: anything but a static
+call on it is refused too.
 
 ### Prompts sent to an existing session
 
