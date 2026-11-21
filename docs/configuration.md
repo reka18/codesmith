@@ -8,6 +8,7 @@ This page covers where config lives, how files combine, and every key.
 - [Substitution: `{env:}` and `{file:}`](#substitution-env-and-file)
 - [Key reference](#key-reference)
 - [Providers and models](#providers-and-models)
+- [Session titles](#session-titles)
 - [Instructions](#instructions)
 - [References](#references)
 - [Media limits](#media-limits)
@@ -16,6 +17,7 @@ This page covers where config lives, how files combine, and every key.
 - [Tool output](#tool-output)
 - [Web search](#web-search)
 - [The terminal UI: `tui`](#the-terminal-ui-tui)
+- [File watching](#file-watching)
 - [Environment variables](#environment-variables)
 
 ## Files and precedence
@@ -156,6 +158,7 @@ from `settings.apiKey` in config.
 | `digitalocean` | per model: OpenAI Chat, Responses or Anthropic Messages | `DIGITALOCEAN_ACCESS_TOKEN`, or `codesmith auth login digitalocean --oauth`; see [DigitalOcean](#digitalocean) |
 | `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) |
 | `sap-ai-core` | OpenAI Chat | `AICORE_SERVICE_KEY` (the service key JSON) and the deployment; see [SAP AI Core](#sap-ai-core) |
+| `claude-agent` | your installed Claude Code | none: Claude Code's own login; see [Claude Agent](#claude-agent-your-claude-code-login) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -308,7 +311,7 @@ Provider fields:
 | Field | Meaning |
 |---|---|
 | `name` | Display name. |
-| `local` | Whether the server is your own and serves one request at a time. Unset, a loopback, private-network (including Tailscale's `100.64.0.0/10`), `.local`, `.lan`, `.internal`, `.ts.net` or single-label host is local, and only a loopback one is asked for its models unprompted. Set, it decides both. See [Using a local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama). |
+| `local` | Whether the server is your own and serves one request at a time. Unset, a loopback, private-network (including Tailscale's `100.64.0.0/10`), `.local`, `.lan`, `.internal`, `.home.arpa`, `.ts.net` or single-label host is local, and only a loopback one is asked for its models unprompted. Set, it decides both. See [Using a local server](#using-a-local-server-omlx-lm-studio-llamacpp-ollama). |
 | `protocol` | `openai-chat` (the default for custom providers), `openai-responses`, `anthropic-messages` or `google-gemini`. |
 | `settings.baseURL` | API base URL (`baseUrl` and `base_url` also work). Required for a custom provider. |
 | `settings.apiKey` | The key. Use `{env:}` or `{file:}` rather than writing it in the file. |
