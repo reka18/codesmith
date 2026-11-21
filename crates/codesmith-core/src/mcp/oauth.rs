@@ -357,7 +357,7 @@ pub async fn token(
     url: &str,
 ) -> Option<String> {
     let e = load(path, server, url)?;
-    if !e.expires_at.is_some_and(|t| t <= now() + 60) {
+    if e.expires_at.is_none_or(|t| t > now() + 60) {
         return Some(e.access_token);
     }
     // Refresh under the file lock, and look again once it is ours: another
