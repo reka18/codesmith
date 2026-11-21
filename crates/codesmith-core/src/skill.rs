@@ -139,6 +139,21 @@ fn claude_compat() -> bool {
         && std::env::var_os("CODESMITH_DISABLE_CLAUDE_CODE").is_none()
 }
 
+/// The permission rules that come with the built-in skills: filing or
+/// commenting on a GitHub issue with `gh` always asks, so the `report`
+/// skill's "after the user confirms" does not rest on the model. They are
+/// built-in rules ([`Rule::into_builtin`](crate::permission::Rule::into_builtin)):
+/// they only restrict, so a configured allow cannot lift them, while a
+/// configured deny still wins.
+pub fn builtin_rules() -> Vec<crate::permission::Rule> {
+    use crate::permission::{Effect, Rule};
+    ["issue create", "issue comment"]
+        .iter()
+        .flat_map(|cmd| [format!("gh {cmd}*"), format!("gh * {cmd}*")])
+        .map(|pattern| Rule::new("shell", &pattern, Effect::Ask).into_builtin())
+        .collect()
+}
+
 /// The skills a session in `cwd` has: those under [`roots`] (from the
 /// folder, its project, the config folder and home), and the built-in ones
 /// when `builtin_skills` is on.

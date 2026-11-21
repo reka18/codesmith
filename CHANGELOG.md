@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- With `builtin_skills` on, `gh issue create` and `gh issue comment` always
+  ask, through built-in rules a configured allow cannot lift, so the
+  `report` skill's confirmation no longer rests on the model.
 - Code Mode `fetch` and OpenAPI calls ask the permission again when a
   redirect leaves the origin (a 307 or 308 keeps the method and body), and
   `webfetch`, `fetch`, OpenAPI and image input downloads refuse a redirect

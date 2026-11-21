@@ -343,6 +343,9 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
         agent.permissions.extend(c.permissions.iter().cloned());
     }
     agent.permissions.extend(config.overrides.iter().cloned());
+    if config.builtin_skills {
+        agent.permissions.extend(crate::skill::builtin_rules());
+    }
     // Policies deny whatever the rules say; they travel with the rules.
     agent
         .permissions
@@ -685,6 +688,46 @@ mod tests {
 
     fn cfg(v: serde_json::Value) -> Config {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// With the built-in skills on, filing or commenting on a GitHub issue
+    /// asks, and no configured allow lifts it; a deny still wins.
+    #[test]
+    fn builtin_skills_make_gh_issue_writes_ask() {
+        let allow = json!([
+            {"action": "shell", "resource": "*", "effect": "allow"},
+            {"action": "shell", "resource": "gh *", "effect": "allow"},
+            {"action": "shell", "resource": "gh issue create*", "effect": "allow"}
+        ]);
+        let commands = [
+            "gh issue create --repo reka18/codesmith --title t --body-file f",
+            "gh issue comment 12 --body hi",
+            "gh --repo o/r issue create --title t",
+            "gh issue create",
+        ];
+        let off = cfg(json!({"permissions": allow}));
+        let on = cfg(json!({
+            "builtin_skills": true,
+            "permissions": allow,
+            "agents": {"build": {"permissions": allow}}
+        }));
+        for agent in ["build", "general"] {
+            let p = resolve(&off, agent).unwrap().permissions;
+            let q = resolve(&on, agent).unwrap().permissions;
+            for c in commands {
+                assert_eq!(evaluate("shell", c, &p), Effect::Allow, "{agent}: {c}");
+                assert_eq!(evaluate("shell", c, &q), Effect::Ask, "{agent}: {c}");
+            }
+            for c in ["gh issue list", "gh pr create", "ls"] {
+                assert_eq!(evaluate("shell", c, &q), Effect::Allow, "{agent}: {c}");
+            }
+        }
+        let deny = cfg(json!({
+            "builtin_skills": true,
+            "permissions": [{"action": "shell", "resource": "gh *", "effect": "deny"}]
+        }));
+        let p = resolve(&deny, "build").unwrap().permissions;
+        assert_eq!(evaluate("shell", commands[0], &p), Effect::Deny);
     }
 
     #[test]

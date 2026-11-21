@@ -78,6 +78,14 @@ nothing to a session's prompt; turn them on with
 
 A skill of your own with the same id replaces the built-in one.
 
+With `builtin_skills` on, every agent also gets built-in `shell` rules that
+ask before `gh issue create` and `gh issue comment` (also with options
+before `issue`, such as `gh --repo o/r issue create`), so `report` cannot
+file or comment on an issue without your answer whatever the model does.
+Like a built-in agent's own rules they only restrict: an `allow` in your
+config does not lift them, while a `deny` still applies. They do not cover
+other ways of reaching the GitHub API (`gh api`, `curl`).
+
 ## Commands
 
 Commands are prompt templates. Run them as `/name args` in the
