@@ -1375,9 +1375,19 @@ impl Runner {
                 // MCP tools are denied unless `automation.permissions` opts
                 // in, as in any unattended run: the program may act on an
                 // untrusted event. Denied tools aren't offered at all.
-                let rules = crate::agent::resolve(&unattended(&loaded).config, "build")
+                let mut rules = crate::agent::resolve(&unattended(&loaded).config, "build")
                     .map(|b| b.permissions)
                     .unwrap_or_default();
+                // The creating session's own rules, which every session a
+                // run starts inherits: like there, they only restrict.
+                if let Some(creator) = &a.session_id {
+                    rules.extend(
+                        db.permissions(creator)?
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(crate::permission::Rule::into_builtin),
+                    );
+                }
                 let mcp = crate::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
                 let entries: Vec<crate::codemode::Entry> = mcp
                     .tools()

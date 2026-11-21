@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- A Code Mode automation's MCP tool calls are held to the creating
+  session's own permission rules, as its prompt runs are: a deny set in
+  that session was not applied to the program's calls.
 - A project root of `/` or the home folder no longer puts every path inside
   the project: the working directory is the boundary then (OpenCode does
   this for `/`), and a session working in `/` or `~` itself has none, so

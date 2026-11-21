@@ -988,6 +988,90 @@ async fn unattended_runs_deny_mcp_tools_unless_config_opts_in() {
     }
 }
 
+/// A Code Mode program's MCP calls are held to the creating session's own
+/// rules, like every session a run starts: they only restrict, so a deny
+/// set in that session beats the `automation.permissions` opt-in.
+#[tokio::test(flavor = "multi_thread")]
+async fn code_runs_keep_the_creating_sessions_rules() {
+    use codesmith_core::permission::{Effect, Rule};
+    let Some(py) = python() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let dbp = dir.path().join("s.db");
+    let db = Store::open(&dbp).unwrap();
+    let base = model().await;
+    let d = dir.path().display().to_string();
+    let opt_in = json!({"automation": {"permissions": [{"action": "fake_echo", "resource": "*", "effect": "allow"}]}});
+    let loaded = (mcp_loader(base.clone(), py, opt_in.clone()))(dir.path()).unwrap();
+    let mut creator = codesmith_core::session::Session::new(
+        &loaded,
+        dir.path().to_path_buf(),
+        codesmith_core::session::Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("creator".into()),
+            parent: None,
+            questioner: None,
+            mcp: None,
+        },
+        Arc::new(codesmith_core::permission::Fixed(
+            codesmith_core::permission::Reply::Once,
+        )),
+        Some(Store::open(&dbp).unwrap()),
+    )
+    .unwrap();
+    let mut out = Collect(String::new());
+    creator.prompt("hello", &mut out).await.unwrap();
+    let runner = Runner::new(dbp.clone(), mcp_loader(base, py, opt_in));
+    let code = "return { state: await tools.fake.echo({ text: 'hi' }) }";
+    let run = |name: &str| {
+        let a = au::create(
+            &db,
+            au::New {
+                name: name.into(),
+                directory: d.clone(),
+                session_id: Some(creator.id.clone()),
+                trigger: Trigger::Every {
+                    every: "1 hour".into(),
+                    tz: None,
+                },
+                action: Action::Code {
+                    code: code.into(),
+                    args: None,
+                },
+            },
+        )
+        .unwrap();
+        due_now(&db, &a.id);
+        a.id
+    };
+
+    // Rules of the session that don't touch the tool leave the opt-in be.
+    db.set_permissions(&creator.id, &[Rule::new("webfetch", "*", Effect::Deny)])
+        .unwrap();
+    let id = run("other");
+    runner.tick().await.unwrap();
+    let a = au::get(&db, &id).unwrap().unwrap();
+    assert_eq!(
+        a.last_outcome.as_deref(),
+        Some("fired"),
+        "{:?}",
+        a.last_error
+    );
+    assert_eq!(a.state, json!("echo: hi"));
+    au::remove(&db, &id).unwrap();
+
+    // A session deny for the tool holds in the run: the program does not
+    // even see it, and nothing is called.
+    db.set_permissions(&creator.id, &[Rule::new("fake_echo", "*", Effect::Deny)])
+        .unwrap();
+    let id = run("denied");
+    runner.tick().await.unwrap();
+    let a = au::get(&db, &id).unwrap().unwrap();
+    assert_eq!(a.last_outcome.as_deref(), Some("failed"));
+    assert_eq!(a.state, Value::Null, "{:?}", a.last_error);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_event_watch_request_shows_the_server_event_args_and_prompt() {
     use codesmith_core::permission::Reply;
