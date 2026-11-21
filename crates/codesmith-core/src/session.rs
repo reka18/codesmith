@@ -257,6 +257,10 @@ pub struct Options {
     pub mcp: Option<Arc<crate::mcp::Mcp>>,
     /// Who answers the `question` tool; without one the tool is not offered.
     pub questioner: Option<Arc<dyn crate::question::Questioner>>,
+    /// A fixed id for the session (an automation run's deterministic
+    /// child): a stored session with it is adopted, as with `resume`;
+    /// otherwise a new session gets it. Ignored when `resume` is set.
+    pub id: Option<String>,
 }
 
 /// Who wrote a prompt's text.
@@ -553,7 +557,13 @@ impl Session {
         let mut ran_with = None;
         let mut instruction = None;
         let mut metadata = std::collections::HashMap::new();
-        let resumed: Option<Resumed> = match (&opts.resume, &store) {
+        // A fixed id that is already stored is continued, like `resume`.
+        let adopt = match (&opts.resume, &opts.id, &store) {
+            (Some(r), _, _) => Some(r.clone()),
+            (None, Some(id), Some(s)) if s.get(id)?.is_some() => Some(id.clone()),
+            _ => None,
+        };
+        let resumed: Option<Resumed> = match (&adopt, &store) {
             (Some(id), Some(s)) => {
                 let info = s.get(id)?.ok_or_else(|| anyhow!("no session {id}"))?;
                 let entries = s.entries(id)?;
@@ -664,7 +674,7 @@ impl Session {
                 )
             }
             None => (
-                new_id(),
+                opts.id.clone().unwrap_or_else(new_id),
                 Vec::new(),
                 Vec::new(),
                 Usage::default(),
@@ -2670,6 +2680,45 @@ impl Session {
         result
     }
 
+    /// Run a turn on the prompt already stored at the end of this session
+    /// (an automation's admitted handoff): nothing is appended before the
+    /// model runs, so a retry after a restart continues from the last saved
+    /// message. Does nothing when the stored history already ends with an
+    /// answer.
+    pub fn continue_turn<'a>(
+        &'a mut self,
+        sink: &'a mut dyn Sink,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let _lease = self.take_turn(sink).await?;
+            if !store::awaits_reply(&self.messages) {
+                return Ok(());
+            }
+            if let Some(results) = runner::unsettled(&self.messages) {
+                self.push(results)?;
+            }
+            self.note_effort_switch()?;
+            self.turn.stopped = None;
+            let result = self.run_steps(sink).await;
+            if let (Some(st), true) = (&self.store, self.stored) {
+                let outcome = if result.is_ok() {
+                    "succeeded"
+                } else {
+                    "failed"
+                };
+                let _ = st.set_idle(&self.id, outcome);
+            }
+            self.finish_title().await;
+            if result.is_ok() {
+                self.precompute_idle();
+            }
+            if let (Some(s), true) = (&self.store, self.stored) {
+                self.save_usage(s);
+            }
+            result
+        })
+    }
+
     /// Wait for this session's background commands and let the model act on
     /// each result, until none are left: what a one-shot caller does after
     /// [`Session::prompt`] (OpenCode's `run` waits for the jobs its prompt
@@ -3825,6 +3874,7 @@ impl Session {
         sink: &mut dyn Sink,
     ) -> Result<String, String> {
         let opts = Options {
+            id: None,
             questioner: None,
             mcp: Some(self.mcp.clone()),
             agent: Some(agent_id.clone()),
@@ -5094,6 +5144,7 @@ mod tests {
                 resume: None,
                 title: Some("t".into()),
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: None,
             },

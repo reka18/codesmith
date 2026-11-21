@@ -203,6 +203,7 @@ async fn every_hook_runs() {
         resume: None,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };
@@ -273,6 +274,7 @@ async fn every_hook_runs() {
         resume: None,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

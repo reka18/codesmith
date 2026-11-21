@@ -341,6 +341,7 @@ async fn harness(cut: usize, context: &str) -> H {
             resume: None,
             title: Some("t".into()),
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         },

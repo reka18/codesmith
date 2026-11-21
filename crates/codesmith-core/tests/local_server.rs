@@ -130,6 +130,7 @@ fn session(dir: &std::path::Path, base: &str, model: &str, extra: Value) -> Sess
             resume: None,
             title: None,
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         },

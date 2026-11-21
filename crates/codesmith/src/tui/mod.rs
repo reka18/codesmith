@@ -198,6 +198,7 @@ impl Runner {
                 resume,
                 title: None,
                 parent: None,
+                id: None,
                 questioner: self.questioner.clone(),
                 mcp: Some(self.mcp.clone()),
             },

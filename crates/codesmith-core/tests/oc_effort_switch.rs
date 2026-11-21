@@ -121,6 +121,7 @@ impl T {
                 resume: resume.map(String::from),
                 title: Some("t".into()),
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: None,
             },

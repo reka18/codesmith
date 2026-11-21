@@ -336,6 +336,7 @@ pub fn open(
         resume,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

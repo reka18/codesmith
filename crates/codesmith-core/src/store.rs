@@ -624,51 +624,94 @@ impl Store {
     /// message also ends any undone turn's chance of a redo, so the blobs
     /// only those turns named are let go.
     pub fn append_at(&self, id: &str, record: &Record, t: i64) -> Result<i64> {
-        let blobs = self.media_blob() && crate::blob::has_inline(record);
-        let plain = if blobs {
-            None
-        } else {
-            Some(serde_json::to_string(record)?)
-        };
-        let named = crate::blob::hashes(record);
-        let ends_redo = matches!(
-            record,
-            Record::Message { .. } | Record::Checkpoint { .. } | Record::Native { .. }
-        );
+        let blobs = self.media_blob();
         let mut conn = self.conn.lock().unwrap();
         retry_busy(|| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let seq: i64 = tx.query_row(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM record WHERE session_id = ?1",
-                [id],
-                |r| r.get(0),
-            )?;
-            let (body, hashes) = match &plain {
-                Some(b) => (b.clone(), named.clone()),
-                None => {
-                    let mut stored = record.clone();
-                    let hashes = crate::blob::externalize(&tx, &mut stored).map_err(sql_err)?;
-                    (
-                        serde_json::to_string(&stored).map_err(|e| sql_err(e.into()))?,
-                        hashes,
-                    )
-                }
-            };
-            tx.execute(
-                "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
-                params![id, seq, t, body],
-            )?;
-            crate::blob::record_refs(&tx, id, seq, &hashes).map_err(sql_err)?;
-            if ends_redo {
-                crate::blob::release_undone(&tx, id).map_err(sql_err)?;
-            }
-            tx.execute(
-                "UPDATE session SET updated = ?2 WHERE id = ?1",
-                params![id, t],
-            )?;
+            let seq = insert_record(&tx, id, record, t, blobs)?;
             tx.commit()?;
             Ok(seq)
         })
+    }
+
+    /// Hand a prompt to session `id` durably, as one transaction: `commit`
+    /// runs first (an automation's compare-and-set on its own tables; when
+    /// it returns false nothing is written), then the session row `info` is
+    /// added unless it exists, then the user message `message`, tagged
+    /// `key` in a [`Record::Metadata`] after it, unless a message with that
+    /// tag is already there (insert-if-absent). Returns the message's
+    /// sequence number, or `None` when `commit` declined.
+    pub fn admit(
+        &self,
+        info: Option<&Info>,
+        id: &str,
+        message: &Message,
+        key: &str,
+        metadata: serde_json::Value,
+        commit: impl Fn(&Connection) -> Result<bool>,
+    ) -> Result<Option<i64>> {
+        let blobs = self.media_blob();
+        let record = Record::Message {
+            message: message.clone(),
+        };
+        let mut conn = self.conn.lock().unwrap();
+        retry_busy(|| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if !commit(&tx).map_err(sql_err)? {
+                return Ok(None);
+            }
+            if let Some(info) = info {
+                tx.execute(
+                    "INSERT OR IGNORE INTO session (id, directory, title, agent, model, parent_id, created, updated, usage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![info.id, info.directory, info.title, info.agent, info.model, info.parent_id, info.created, info.updated, serde_json::to_string(&info.usage).map_err(|e| sql_err(e.into()))?],
+                )?;
+            }
+            let seq = match tagged(&tx, id, key)? {
+                Some(seq) => seq,
+                None => {
+                    let t = now();
+                    let seq = insert_record(&tx, id, &record, t, blobs)?;
+                    let mut meta = metadata.clone();
+                    meta["automation"]["message"] = serde_json::Value::String(key.to_string());
+                    insert_record(
+                        &tx,
+                        id,
+                        &Record::Metadata {
+                            seq,
+                            metadata: meta,
+                        },
+                        t,
+                        blobs,
+                    )?;
+                    seq
+                }
+            };
+            tx.commit()?;
+            Ok(Some(seq))
+        })
+    }
+
+    /// The sequence number of the message a [`Store::admit`] tagged `key`
+    /// in session `id`.
+    pub fn tagged_message(&self, id: &str, key: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(tagged(&conn, id, key)?)
+    }
+
+    /// Whether session `id` has an answer after the message at `seq`: its
+    /// latest message from then on is the model's, with no tool calls
+    /// left to run.
+    pub fn replied_after(&self, id: &str, seq: i64) -> Result<bool> {
+        let after: Vec<Message> = self
+            .entries(id)?
+            .into_iter()
+            .filter(|e| e.seq >= seq)
+            .filter_map(|e| match e.record {
+                Record::Message { message } => Some(message),
+                _ => None,
+            })
+            .collect();
+        Ok(after.len() > 1 && !awaits_reply(&after))
     }
 
     /// Whether new records keep their media in the blob store.
@@ -1297,6 +1340,78 @@ impl Store {
 
 /// An error inside a write transaction, as SQLite's so the busy retry
 /// passes it on.
+/// Write `record` as the next record of session `id` inside `tx` (see
+/// [`Store::append_at`]).
+fn insert_record(
+    tx: &Connection,
+    id: &str,
+    record: &Record,
+    t: i64,
+    blobs: bool,
+) -> rusqlite::Result<i64> {
+    let blobs = blobs && crate::blob::has_inline(record);
+    let ends_redo = matches!(
+        record,
+        Record::Message { .. } | Record::Checkpoint { .. } | Record::Native { .. }
+    );
+    let seq: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM record WHERE session_id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    let (body, hashes) = if blobs {
+        let mut stored = record.clone();
+        let hashes = crate::blob::externalize(tx, &mut stored).map_err(sql_err)?;
+        (
+            serde_json::to_string(&stored).map_err(|e| sql_err(e.into()))?,
+            hashes,
+        )
+    } else {
+        (
+            serde_json::to_string(record).map_err(|e| sql_err(e.into()))?,
+            crate::blob::hashes(record),
+        )
+    };
+    tx.execute(
+        "INSERT INTO record (session_id, seq, created, body) VALUES (?1, ?2, ?3, ?4)",
+        params![id, seq, t, body],
+    )?;
+    crate::blob::record_refs(tx, id, seq, &hashes).map_err(sql_err)?;
+    if ends_redo {
+        crate::blob::release_undone(tx, id).map_err(sql_err)?;
+    }
+    tx.execute(
+        "UPDATE session SET updated = ?2 WHERE id = ?1",
+        params![id, t],
+    )?;
+    Ok(seq)
+}
+
+/// The sequence number of the message in session `id` that a
+/// [`Store::admit`] tagged `key`, if there is one.
+fn tagged(tx: &Connection, id: &str, key: &str) -> rusqlite::Result<Option<i64>> {
+    tx.query_row(
+        "SELECT json_extract(body, '$.seq') FROM record WHERE session_id = ?1
+         AND json_extract(body, '$.kind') = 'metadata'
+         AND json_extract(body, '$.metadata.automation.message') = ?2 LIMIT 1",
+        params![id, key],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Whether a conversation still waits for the model: it ends with a
+/// prompt or tool results, or with a response whose tool calls have no
+/// results yet (not with a finished answer).
+pub fn awaits_reply(messages: &[Message]) -> bool {
+    messages.last().is_some_and(|m| {
+        m.role != codesmith_ai::Role::Assistant
+            || m.parts
+                .iter()
+                .any(|p| matches!(p, codesmith_ai::Part::ToolCall { .. }))
+    })
+}
+
 fn sql_err(e: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(e.into())
 }

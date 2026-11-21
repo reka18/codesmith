@@ -195,6 +195,7 @@ async fn session(model_id: &str, extra: Value) -> Run {
         resume: None,
         title: Some("Test".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

@@ -395,6 +395,7 @@ async fn oc_native_falls_back_to_an_earlier_compatible_checkpoint() {
         resume: Some(id),
         title: None,
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

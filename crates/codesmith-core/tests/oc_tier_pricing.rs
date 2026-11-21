@@ -121,6 +121,7 @@ async fn oc_session_prices_each_step_at_its_context_tier() {
                 resume: None,
                 title: Some("t".into()),
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: None,
             },

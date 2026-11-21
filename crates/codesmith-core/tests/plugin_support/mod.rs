@@ -181,6 +181,7 @@ pub fn options() -> codesmith_core::session::Options {
         resume: None,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     }

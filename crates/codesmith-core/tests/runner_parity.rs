@@ -278,6 +278,7 @@ async fn start(setup: Setup) -> T {
         resume: None,
         title: Some("Test".into()),
         parent: None,
+        id: None,
         questioner: setup.questioner,
         mcp: None,
     };
@@ -1054,6 +1055,7 @@ async fn oc_session_durably_fails_local_tools_left_running_by_a_prior_process_be
         resume: Some("ses_interrupted".into()),
         title: None,
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };
@@ -1410,6 +1412,7 @@ async fn spending_of_mixed_billed_and_unbilled_steps_survives_a_reload() {
         resume: Some(t.s.id.clone()),
         title: None,
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

@@ -277,6 +277,7 @@ async fn start(setup: Setup) -> T {
         resume: None,
         title: Some("Test".into()),
         parent: None,
+        id: None,
         questioner: setup.questioner,
         mcp: None,
     };
@@ -603,6 +604,7 @@ async fn oc_session_fails_before_the_model_request_when_the_agent_is_unavailable
         resume: None,
         title: Some("Test".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

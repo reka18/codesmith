@@ -579,6 +579,7 @@ impl Server {
                 resume,
                 title: None,
                 parent: None,
+                id: None,
                 questioner,
                 mcp: Some(self.mcp.clone()),
             },

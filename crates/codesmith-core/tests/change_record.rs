@@ -103,6 +103,7 @@ fn session(dir: &std::path::Path, base: &str, permissions: Value, asker: Answer)
             resume: None,
             title: Some("t".into()),
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         },

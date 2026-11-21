@@ -74,6 +74,7 @@ fn session(config: &Config) -> Session {
         resume: None,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

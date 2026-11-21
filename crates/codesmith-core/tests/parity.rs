@@ -155,6 +155,7 @@ async fn session(extra: Value, title: Option<&str>) -> (Session, Shared, tempfil
         resume: None,
         title: title.map(String::from),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

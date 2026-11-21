@@ -24,6 +24,7 @@ fn child(h: &H, parent: &str) -> Session {
             resume: None,
             title: Some("child".into()),
             parent: Some(parent.into()),
+            id: None,
             questioner: None,
             mcp: None,
         },

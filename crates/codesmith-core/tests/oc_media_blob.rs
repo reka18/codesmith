@@ -491,6 +491,7 @@ async fn oc_blob_stores_media_refs_at_admission_when_config_enables_media_blob()
                 resume: None,
                 title: Some("t".into()),
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: None,
             },

@@ -1357,6 +1357,7 @@ impl H {
                 resume: None,
                 title: Some("t".into()),
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: None,
             },
@@ -1402,6 +1403,7 @@ impl H {
                 resume: Some(id.into()),
                 title: None,
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: None,
             },
@@ -1965,6 +1967,7 @@ async fn oc_session_narrates_only_the_code_mode_tools_that_change() {
         resume,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: Some(mcp.clone()),
     };

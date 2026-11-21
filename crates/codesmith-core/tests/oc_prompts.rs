@@ -136,6 +136,7 @@ fn session(config: serde_json::Value, agent: Option<&str>) -> Session {
         resume: None,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

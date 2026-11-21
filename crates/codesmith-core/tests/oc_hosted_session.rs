@@ -129,6 +129,7 @@ fn open(loaded: &Loaded, db: &std::path::Path, resume: Option<String>) -> Sessio
             resume,
             title: Some("t".into()),
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         },

@@ -119,6 +119,7 @@ impl Env {
             resume: None,
             title: Some(title),
             parent: self.parent.clone(),
+            id: None,
             questioner: None,
             mcp: self.mcp.clone(),
         };

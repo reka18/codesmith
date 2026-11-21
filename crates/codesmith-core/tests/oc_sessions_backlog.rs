@@ -45,6 +45,7 @@ fn another(t: &T, cwd: std::path::PathBuf, parent: Option<String>) -> Session {
         resume: None,
         title: Some("Another".into()),
         parent,
+        id: None,
         questioner: None,
         mcp: None,
     };
@@ -323,6 +324,7 @@ async fn oc_session_reports_a_refused_connection_in_its_own_words() {
         resume: None,
         title: Some("t".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

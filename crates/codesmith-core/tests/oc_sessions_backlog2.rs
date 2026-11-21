@@ -268,6 +268,7 @@ async fn oc_session_fails_for_an_unknown_session() {
         resume: Some("ses_missing".into()),
         title: None,
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

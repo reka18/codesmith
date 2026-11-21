@@ -1999,6 +1999,7 @@ impl Agent {
                 resume: stored.then(|| slot.id.clone()),
                 title: None,
                 parent: None,
+                id: None,
                 questioner,
                 mcp: Some(slot.mcp.clone()),
             },

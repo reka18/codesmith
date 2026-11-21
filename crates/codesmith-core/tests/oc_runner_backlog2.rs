@@ -393,6 +393,7 @@ async fn oc_session_updates_the_skill_list_after_an_agent_switch() {
             resume,
             title: Some("Test".into()),
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         };

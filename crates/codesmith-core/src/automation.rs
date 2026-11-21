@@ -13,7 +13,7 @@ use crate::mcp::{EventMessage, StreamError};
 use crate::permission::{Fixed, Reply};
 use crate::session::{Options, Session, Sink};
 use crate::store::Store;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -153,6 +153,11 @@ pub struct Automation {
     /// deleted. `None`: not recorded (no creating session, or it was gone).
     #[serde(skip)]
     pub session_rules: Option<Vec<crate::permission::Rule>>,
+    /// Failed Code Mode checks in a row; the third pauses the automation.
+    pub failures: u32,
+    /// A run whose prompt could not be handed off is retried no earlier
+    /// than this (ms).
+    pub retry_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -386,10 +391,52 @@ fn ensure(c: &Connection) -> Result<()> {
     {
         c.execute_batch("ALTER TABLE automation ADD COLUMN session_rules TEXT")?;
     }
+    // Added with durable handoffs. Runs stored before them read as settled.
+    add_columns(
+        c,
+        "automation",
+        &[
+            ("failures", "INTEGER NOT NULL DEFAULT 0"),
+            ("retry_at", "INTEGER"),
+        ],
+    )?;
+    add_columns(
+        c,
+        "automation_run",
+        &[
+            ("phase", "TEXT NOT NULL DEFAULT 'settled'"),
+            ("target_session", "TEXT"),
+            ("message_id", "TEXT"),
+            ("prompt", "TEXT"),
+            ("result", "TEXT"),
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("updated", "INTEGER NOT NULL DEFAULT 0"),
+            ("due", "INTEGER"),
+            ("position", "TEXT"),
+        ],
+    )?;
     Ok(())
 }
 
-const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules";
+/// Add the columns of `table` that are missing (a database from before them).
+fn add_columns(c: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+    let have: Vec<String> = c
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (name, decl) in columns {
+        if !have.iter().any(|h| h == name) {
+            // Two processes may migrate at once; the loser finds it there.
+            match c.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} {decl}")) {
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                r => r?,
+            }
+        }
+    }
+    Ok(())
+}
+
+const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules, failures, retry_at";
 
 fn row(
     r: &rusqlite::Row,
@@ -422,6 +469,8 @@ fn row(
                 .get::<_, Option<String>>(14)?
                 .and_then(|p| serde_json::from_str(&p).ok()),
             session_rules: None,
+            failures: r.get::<_, i64>(16)? as u32,
+            retry_at: r.get(17)?,
         },
         r.get(4)?,
         r.get(5)?,
@@ -543,6 +592,8 @@ pub fn create(db: &Store, n: New) -> Result<Automation> {
         created: now,
         event,
         session_rules: None,
+        failures: 0,
+        retry_at: None,
     };
     let mut a = a;
     if let Some(c) = creator(&a) {
@@ -557,7 +608,7 @@ pub fn create(db: &Store, n: New) -> Result<Automation> {
     db.with_conn(|c| {
         ensure(c)?;
         c.execute(
-            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11)"),
+            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11, 0, NULL)"),
             params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position, rules],
         )?;
         Ok(())
@@ -606,8 +657,11 @@ pub fn set_status(db: &Store, id: &str, status: &str) -> Result<Automation> {
         _ => a.next_due,
     };
     db.with_conn(|c| {
+        // Resuming starts the strikes and retries over, as in OpenCode.
         Ok(c.execute(
-            "UPDATE automation SET status = ?2, next_due = ?3 WHERE id = ?1",
+            "UPDATE automation SET status = ?2, next_due = ?3,
+             failures = CASE WHEN ?2 = 'active' THEN 0 ELSE failures END,
+             retry_at = CASE WHEN ?2 = 'active' THEN NULL ELSE retry_at END WHERE id = ?1",
             params![id, status, next],
         )?)
     })?;
@@ -625,7 +679,7 @@ pub fn remove(db: &Store, id: &str) -> Result<bool> {
 pub fn runs(db: &Store, id: &str) -> Result<Vec<Run>> {
     db.with_conn(|c| {
         ensure(c)?;
-        let mut st = c.prepare("SELECT run, at, outcome, session_id, detail FROM automation_run WHERE automation_id = ?1 ORDER BY run")?;
+        let mut st = c.prepare("SELECT run, at, outcome, session_id, detail FROM automation_run WHERE automation_id = ?1 AND phase IN ('settled', 'failed') ORDER BY run")?;
         let rows = st.query_map([id], |r| Ok(Run { run: r.get::<_, i64>(0)? as u64, at: r.get(1)?, outcome: r.get(2)?, session_id: r.get(3)?, detail: r.get(4)? }))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     })
@@ -641,19 +695,6 @@ pub fn set_position(db: &Store, id: &str, p: &EventPosition) -> Result<()> {
         )?)
     })?;
     Ok(())
-}
-
-/// Claim one run of an event automation: its run count goes up and the
-/// watch's position moves past the event, in one statement.
-fn claim_event(db: &Store, id: &str, now: i64, p: &EventPosition) -> Result<Automation> {
-    let p = serde_json::to_string(p)?;
-    db.with_conn(|c| {
-        Ok(c.execute(
-            "UPDATE automation SET runs = runs + 1, last_run = ?2, event_position = ?3 WHERE id = ?1",
-            params![id, now, p],
-        )?)
-    })?;
-    get(db, id)?.ok_or_else(|| anyhow!("no automation {id}"))
 }
 
 /// Stop an active automation and say why, as OpenCode's `pauseWith` does.
@@ -711,13 +752,21 @@ pub fn release(db: &Store, holder: &str) -> Result<()> {
 }
 
 /// Due automations, each claimed for one run: its run count goes up and its
-/// next due time moves on (or it is marked done), all in one transaction.
+/// next due time moves on (or it is marked done), and its `claimed` run row
+/// is written, all in one transaction. The count only moves while it is the
+/// one read (a compare-and-set), and an automation whose last run has not
+/// settled, or whose handoff waits for a retry, is not claimed again.
 pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
     db.with_conn(|c| {
         ensure(c)?;
         let tx = c.unchecked_transaction()?;
         let due: Vec<Automation> = {
-            let mut st = tx.prepare(&format!("SELECT {COLS} FROM automation WHERE status = 'active' AND next_due IS NOT NULL AND next_due <= ?1 ORDER BY next_due"))?;
+            let mut st = tx.prepare(&format!(
+                "SELECT {COLS} FROM automation WHERE status = 'active' AND next_due IS NOT NULL AND next_due <= ?1
+                 AND (retry_at IS NULL OR retry_at <= ?1)
+                 AND NOT EXISTS (SELECT 1 FROM automation_run r WHERE r.automation_id = automation.id AND r.phase IN {UNSETTLED})
+                 ORDER BY next_due"
+            ))?;
             let rows = st.query_map([now], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter().map(decode).collect::<Result<_>>()?
         };
@@ -726,10 +775,23 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
             let was_due = a.next_due.unwrap_or(now);
             let next = next_slot(&a.trigger, a.created, now).unwrap_or(None);
             let status = if next.is_none() { "done" } else { "active" };
-            tx.execute("UPDATE automation SET runs = runs + 1, next_due = ?2, status = ?3, last_run = ?4 WHERE id = ?1", params![a.id, next, status, now])?;
+            let n = tx.execute(
+                "UPDATE automation SET runs = runs + 1, next_due = ?2, status = ?3, last_run = ?4, retry_at = NULL
+                 WHERE id = ?1 AND runs = ?5 AND status = 'active'",
+                params![a.id, next, status, now, a.runs as i64],
+            )?;
+            if n == 0 {
+                continue;
+            }
             a.runs += 1;
             a.next_due = next;
             a.status = status.into();
+            let label = if now - was_due > 60_000 { "late" } else { "fired" };
+            let prompt = match &a.action {
+                Action::Prompt { prompt, .. } => Some(prompt.as_str()),
+                Action::Code { .. } => None,
+            };
+            insert_claim(&tx, &a, now, label, prompt, Some(was_due), None)?;
             out.push((a, was_due));
         }
         tx.commit()?;
@@ -737,43 +799,443 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
     })
 }
 
+/// The phases of a run (see the module docs in `docs/automations.md`).
+pub const CLAIMED: &str = "claimed";
+/// A Code Mode program ran and its result is saved; it never runs again.
+pub const CHECKED: &str = "checked";
+/// Its prompt is in the target session, with the run's outcome committed.
+pub const ADMITTED: &str = "admitted";
+pub const SETTLED: &str = "settled";
+pub const FAILED: &str = "failed";
+const UNSETTLED: &str = "('claimed', 'checked', 'admitted')";
+
+/// The handoff a check or prompt makes: what it sends, where, and what the
+/// automation commits with it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Checked {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<Value>,
+    #[serde(default)]
+    pub done: bool,
+    /// The program's output (its logs, or the rendered result).
+    #[serde(default)]
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send: Option<Handoff>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Handoff {
+    pub prompt: String,
+    pub to: Target,
+    /// Named by the program (`to.subagent`), so the target is checked
+    /// against the creating session's policy.
+    #[serde(default)]
+    pub named: bool,
+}
+
+/// A run that has not settled yet, as its row has it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Pending {
+    pub run: u64,
+    pub at: i64,
+    pub phase: String,
+    /// `fired` or `late`.
+    pub label: String,
+    pub target_session: Option<String>,
+    pub message_id: Option<String>,
+    /// The prompt a prompt action sends (an event's, with the event).
+    pub prompt: Option<String>,
+    pub result: Option<Checked>,
+    pub attempts: u32,
+    pub updated: i64,
+    pub due: Option<i64>,
+    /// An event run's position, committed with its handoff.
+    pub position: Option<EventPosition>,
+}
+
+const PENDING_COLS: &str = "run, at, phase, outcome, target_session, message_id, prompt, result, attempts, updated, due, position";
+
+fn pending_row(r: &rusqlite::Row) -> rusqlite::Result<Pending> {
+    pending_at(r, 0)
+}
+
+/// A [`Pending`] from the row's columns `PENDING_COLS`, starting at `o`.
+fn pending_at(r: &rusqlite::Row, o: usize) -> rusqlite::Result<Pending> {
+    let json = |i: usize| -> rusqlite::Result<Option<String>> { r.get(o + i) };
+    Ok(Pending {
+        run: r.get::<_, i64>(o)? as u64,
+        at: r.get(o + 1)?,
+        phase: r.get(o + 2)?,
+        label: r.get(o + 3)?,
+        target_session: r.get(o + 4)?,
+        message_id: r.get(o + 5)?,
+        prompt: r.get(o + 6)?,
+        result: json(7)?.and_then(|v| serde_json::from_str(&v).ok()),
+        attempts: r.get::<_, i64>(o + 8)? as u32,
+        updated: r.get(o + 9)?,
+        due: r.get(o + 10)?,
+        position: json(11)?.and_then(|v| serde_json::from_str(&v).ok()),
+    })
+}
+
+/// The runs of `id` that have not settled.
+pub fn pending(db: &Store, id: &str) -> Result<Vec<Pending>> {
+    db.with_conn(|c| {
+        ensure(c)?;
+        let mut st = c.prepare(&format!(
+            "SELECT {PENDING_COLS} FROM automation_run WHERE automation_id = ?1 AND phase IN {UNSETTLED} ORDER BY run"
+        ))?;
+        let rows = st.query_map([id], pending_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// Unsettled runs nobody has touched since `stale`, of automations whose
+/// retry time has come by `now`.
+fn stale_runs(db: &Store, stale: i64, now: i64) -> Result<Vec<(String, Pending)>> {
+    db.with_conn(|c| {
+        ensure(c)?;
+        let cols = PENDING_COLS
+            .split(", ")
+            .map(|c| format!("r.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut st = c.prepare(&format!(
+            "SELECT r.automation_id, {cols} FROM automation_run r JOIN automation a ON a.id = r.automation_id
+             WHERE r.phase IN {UNSETTLED} AND r.updated <= ?1 AND (a.retry_at IS NULL OR a.retry_at <= ?2)
+             ORDER BY r.automation_id, r.run"
+        ))?;
+        let rows = st.query_map(params![stale, now], |r| Ok((r.get(0)?, pending_at(r, 1)?)))?;
+        let out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    })
+}
+
+/// Write run `a.runs`'s `claimed` row.
+fn insert_claim(
+    c: &Connection,
+    a: &Automation,
+    now: i64,
+    label: &str,
+    prompt: Option<&str>,
+    due: Option<i64>,
+    position: Option<&EventPosition>,
+) -> Result<()> {
+    let position = position.map(serde_json::to_string).transpose()?;
+    c.execute(
+        "INSERT OR REPLACE INTO automation_run (automation_id, run, at, outcome, session_id, detail, phase, prompt, attempts, updated, due, position)
+         VALUES (?1, ?2, ?3, ?4, NULL, '', 'claimed', ?5, 0, ?3, ?6, ?7)",
+        params![a.id, a.runs as i64, now, label, prompt, due, position],
+    )?;
+    Ok(())
+}
+
+/// Claim one run of an event automation for the event at `p`: its run
+/// count goes up (a compare-and-set) and the `claimed` row keeps the
+/// position, which the automation commits only with the handoff, so an
+/// event whose handoff is refused is replayed (at-least-once). `None`: it
+/// is no longer active, or a run of it has not settled.
+fn claim_event(
+    db: &Store,
+    a: &Automation,
+    now: i64,
+    p: &EventPosition,
+    prompt: Option<&str>,
+) -> Result<Option<Automation>> {
+    db.with_conn(|c| {
+        ensure(c)?;
+        let tx = c.unchecked_transaction()?;
+        let n = tx.execute(
+            &format!(
+                "UPDATE automation SET runs = runs + 1, last_run = ?2 WHERE id = ?1 AND runs = ?3 AND status = 'active'
+                 AND NOT EXISTS (SELECT 1 FROM automation_run r WHERE r.automation_id = ?1 AND r.phase IN {UNSETTLED})"
+            ),
+            params![a.id, now, a.runs as i64],
+        )?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let mut run = a.clone();
+        run.runs += 1;
+        run.last_run = Some(now);
+        insert_claim(&tx, &run, now, "fired", prompt, None, Some(p))?;
+        tx.commit()?;
+        Ok(Some(run))
+    })
+}
+
+/// Whether event `eid` already has a run of `id` that did not fail (one
+/// that ran, or one still being handed off): a replay of it is skipped.
+fn event_claimed(db: &Store, id: &str, eid: &str) -> Result<bool> {
+    db.with_conn(|c| {
+        ensure(c)?;
+        Ok(c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM automation_run WHERE automation_id = ?1 AND phase != 'failed'
+             AND json_extract(position, '$.id') = ?2)",
+            params![id, eid],
+            |r| r.get(0),
+        )?)
+    })
+}
+
+/// Whether `id` has a run that has not settled.
+fn unsettled(db: &Store, id: &str) -> Result<bool> {
+    Ok(!pending(db, id)?.is_empty())
+}
+
 /// Undo the claim of a timed run whose session was busy: the run count goes
-/// back down and it is due again now, so the next tick retries it.
+/// back down, its row goes, and it is due again now, so the next tick
+/// retries it.
 fn defer(db: &Store, a: &Automation) -> Result<()> {
     db.with_conn(|c| {
+        let tx = c.unchecked_transaction()?;
+        let n = tx.execute(
+            "DELETE FROM automation_run WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
+            params![a.id, a.runs as i64],
+        )?;
+        if n > 0 {
+            tx.execute(
+                "UPDATE automation SET runs = MAX(runs - 1, 0), next_due = ?2, last_outcome = 'deferred',
+                 status = CASE WHEN status = 'done' THEN 'active' ELSE status END WHERE id = ?1 AND runs = ?3",
+                params![a.id, crate::store::now(), a.runs as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// Save a program's result: run `run` moves from `claimed` to `checked`.
+fn save_check(db: &Store, id: &str, run: u64, result: &Checked) -> Result<bool> {
+    let text = serde_json::to_string(result)?;
+    db.with_conn(|c| {
+        Ok(c.execute(
+            "UPDATE automation_run SET phase = 'checked', result = ?3, updated = ?4
+             WHERE automation_id = ?1 AND run = ?2 AND phase = 'claimed'",
+            params![id, run as i64, text, crate::store::now()],
+        )? > 0)
+    })
+}
+
+/// Record where run `run` hands off before the session is made, so a retry
+/// adopts the same one.
+fn set_target(db: &Store, id: &str, run: u64, session: &str) -> Result<()> {
+    db.with_conn(|c| {
         c.execute(
-            "UPDATE automation SET runs = MAX(runs - 1, 0), next_due = ?2, last_outcome = 'deferred',
-             status = CASE WHEN status = 'done' THEN 'active' ELSE status END WHERE id = ?1",
-            params![a.id, crate::store::now()],
+            "UPDATE automation_run SET target_session = ?3, updated = ?4
+             WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
+            params![id, run as i64, session, crate::store::now()],
         )?;
         Ok(())
     })
 }
 
-fn finish(
-    db: &Store,
-    a: &Automation,
-    outcome: &str,
-    session: Option<&str>,
-    detail: &str,
-    state: Option<&Value>,
+/// What the automation commits when run `run`'s prompt is admitted (or its
+/// check finishes without one).
+struct Commit<'a> {
+    state: Option<&'a Value>,
     done: bool,
+    position: Option<&'a EventPosition>,
+    label: &'a str,
+}
+
+/// The admission's compare-and-set, inside the transaction that writes the
+/// prompt: the run moves from `claimed` or `checked` to `admitted` (or
+/// `settled` without a session), and the automation, still on this run and
+/// not paused, takes its state, `done` and event position. False when
+/// either has moved on.
+fn commit_run(
+    c: &Connection,
+    id: &str,
+    run: u64,
+    to: Option<(&str, &str)>,
+    v: &Commit,
+    detail: Option<&str>,
+) -> Result<bool> {
+    let now = crate::store::now();
+    let state = v.state.map(|s| s.to_string());
+    let position = v.position.map(serde_json::to_string).transpose()?;
+    let n = c.execute(
+        "UPDATE automation SET state = COALESCE(?3, state), event_position = COALESCE(?4, event_position),
+         status = CASE WHEN ?5 THEN 'done' ELSE status END, next_due = CASE WHEN ?5 THEN NULL ELSE next_due END,
+         failures = 0, retry_at = NULL, last_outcome = ?6, last_error = NULL
+         WHERE id = ?1 AND runs = ?2 AND status != 'paused'",
+        params![id, run as i64, state, position, v.done, v.label],
+    )?;
+    if n == 0 {
+        return Ok(false);
+    }
+    let n = match (to, detail) {
+        (Some((session, message)), _) => c.execute(
+            "UPDATE automation_run SET phase = 'admitted', target_session = ?3, message_id = ?4, attempts = 1, updated = ?5
+             WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
+            params![id, run as i64, session, message, now],
+        )?,
+        (None, detail) => c.execute(
+            "UPDATE automation_run SET phase = 'settled', outcome = ?3, detail = ?4, at = ?5, updated = ?5
+             WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
+            params![id, run as i64, v.label, detail.unwrap_or(""), now],
+        )?,
+    };
+    Ok(n > 0)
+}
+
+/// Settle admitted run `run` with its outcome and the reply.
+fn settle(
+    db: &Store,
+    id: &str,
+    run: u64,
+    outcome: &str,
+    session: &str,
+    detail: &str,
 ) -> Result<()> {
+    let detail = cap(detail, OUTPUT_BUDGET);
+    let now = crate::store::now();
     db.with_conn(|c| {
-        c.execute(
-            "INSERT OR REPLACE INTO automation_run (automation_id, run, at, outcome, session_id, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![a.id, a.runs as i64, crate::store::now(), outcome, session, detail.chars().take(4000).collect::<String>()],
+        let tx = c.unchecked_transaction()?;
+        let phase = if outcome == "failed" { FAILED } else { SETTLED };
+        let n = tx.execute(
+            "UPDATE automation_run SET phase = ?3, outcome = ?4, session_id = ?5, detail = ?6, at = ?7, updated = ?7
+             WHERE automation_id = ?1 AND run = ?2 AND phase = 'admitted'",
+            params![id, run as i64, phase, outcome, session, detail, now],
         )?;
-        let err = (outcome == "failed").then_some(detail);
-        c.execute("UPDATE automation SET last_outcome = ?2, last_error = ?3 WHERE id = ?1", params![a.id, outcome, err])?;
-        if let Some(s) = state {
-            c.execute("UPDATE automation SET state = ?2 WHERE id = ?1", params![a.id, s.to_string()])?;
+        if n > 0 {
+            let err = (outcome == "failed").then_some(detail.as_str());
+            tx.execute(
+                "UPDATE automation SET last_outcome = ?3, last_error = ?4 WHERE id = ?1 AND runs = ?2",
+                params![id, run as i64, outcome, err],
+            )?;
         }
-        if done {
-            c.execute("UPDATE automation SET status = 'done', next_due = NULL WHERE id = ?1", [&a.id])?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// Mark unsettled run `run` failed with `reason`, nothing of it committed
+/// (an admitted one keeps what its admission committed).
+fn fail_run(db: &Store, id: &str, run: u64, reason: &str, session: Option<&str>) -> Result<()> {
+    let reason = cap(reason, OUTPUT_BUDGET);
+    let now = crate::store::now();
+    db.with_conn(|c| {
+        let tx = c.unchecked_transaction()?;
+        let n = tx.execute(
+            &format!(
+                "UPDATE automation_run SET phase = 'failed', outcome = 'failed', detail = ?3,
+                 session_id = COALESCE(?5, session_id, target_session), at = ?4, updated = ?4
+                 WHERE automation_id = ?1 AND run = ?2 AND phase IN {UNSETTLED}"
+            ),
+            params![id, run as i64, reason, now, session],
+        )?;
+        if n > 0 {
+            tx.execute(
+                "UPDATE automation SET last_outcome = 'failed', last_error = ?3 WHERE id = ?1 AND runs = ?2",
+                params![id, run as i64, reason],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// A failed Code Mode check of run `run`: a strike. The third in a row
+/// pauses the automation, saying why; a check that cannot work (`invalid`)
+/// pauses it at once.
+fn strike(db: &Store, id: &str, run: u64, reason: &str, invalid: bool) -> Result<()> {
+    fail_run(db, id, run, reason, None)?;
+    db.with_conn(|c| {
+        let failures: i64 = c
+            .query_row(
+                "SELECT failures FROM automation WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let strikes = failures + 1;
+        if invalid || strikes >= MAX_CODE_FAILURES {
+            let prefix = if invalid {
+                "Paused: ".to_string()
+            } else {
+                format!("Paused after {strikes} failed runs: ")
+            };
+            c.execute(
+                "UPDATE automation SET status = 'paused', failures = ?2, last_outcome = 'failed', last_error = ?3, retry_at = NULL
+                 WHERE id = ?1 AND status != 'done'",
+                params![id, strikes, cap(&format!("{prefix}{reason}"), OUTPUT_BUDGET)],
+            )?;
+        } else {
+            c.execute(
+                "UPDATE automation SET failures = ?2 WHERE id = ?1",
+                params![id, strikes],
+            )?;
         }
         Ok(())
     })
+}
+
+/// A handoff of run `run` failed (the database, a lost connection): its
+/// check's result is kept and the handoff retried in a minute; the third
+/// failure in a row fails the run and pauses the automation.
+fn handoff_failed(db: &Store, id: &str, run: u64, reason: &str) -> Result<()> {
+    let now = crate::store::now();
+    let attempts: i64 = db.with_conn(|c| {
+        c.execute(
+            "UPDATE automation_run SET attempts = attempts + 1, updated = ?3
+             WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
+            params![id, run as i64, now],
+        )?;
+        Ok(c.query_row(
+            "SELECT attempts FROM automation_run WHERE automation_id = ?1 AND run = ?2",
+            params![id, run as i64],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+    })?;
+    let reason = cap(reason, OUTPUT_BUDGET);
+    if attempts >= MAX_HANDOFF_FAILURES {
+        fail_run(db, id, run, &reason, None)?;
+        return db.with_conn(|c| {
+            c.execute(
+                "UPDATE automation SET status = 'paused', last_error = ?2, retry_at = NULL WHERE id = ?1 AND status != 'done'",
+                params![id, cap(&format!("Paused after {attempts} failed handoffs: {reason}"), OUTPUT_BUDGET)],
+            )?;
+            Ok(())
+        });
+    }
+    db.with_conn(|c| {
+        c.execute(
+            "UPDATE automation SET last_outcome = 'failed', last_error = ?2, retry_at = ?3 WHERE id = ?1",
+            params![id, reason, now + HANDOFF_RETRY_MS],
+        )?;
+        Ok(())
+    })
+}
+
+/// A turn that resumes a run takes over only an unsettled row nobody has
+/// touched for this long (a turn lease's lifetime).
+const STALE_MS: i64 = crate::store::TURN_LEASE_MS;
+/// Failed checks in a row that pause an automation (OpenCode's `MAX_CODE_FAILURES`).
+const MAX_CODE_FAILURES: i64 = 3;
+/// Failed handoffs of one run that fail it and pause the automation.
+const MAX_HANDOFF_FAILURES: i64 = 3;
+/// How long a failed handoff waits before it is retried.
+const HANDOFF_RETRY_MS: i64 = 60_000;
+/// The most a run's detail, an error or a pause reason keeps, in UTF-8 bytes.
+pub const OUTPUT_BUDGET: usize = 32 * 1024;
+
+/// `s` cut to at most `max` bytes on a character boundary, ending with "…"
+/// when it was cut.
+pub fn cap(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max.saturating_sub('…'.len_utf8());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 // ----- running ---------------------------------------------------------------
@@ -1008,10 +1470,6 @@ struct RunError {
     fatal: bool,
 }
 
-/// The model turn of a run failed (the run itself was set up fine).
-#[derive(Debug)]
-struct TurnFailed;
-
 /// The session that created an automation is gone and its session-only
 /// permission rules were never recorded with the automation (one stored
 /// before they were, whose creator was deleted before it next ran): they
@@ -1035,27 +1493,6 @@ impl std::fmt::Display for CreatorGone {
 
 impl std::error::Error for CreatorGone {}
 
-/// What a run needs is gone, so no run can succeed: the session a prompt
-/// continues was deleted, or the automation's directory was. The
-/// automation is paused with the reason (as OpenCode pauses it) rather
-/// than failing at every slot.
-#[derive(Debug)]
-struct Unreachable(String);
-
-impl std::fmt::Display for Unreachable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Paused: {}", self.0)
-    }
-}
-
-impl std::error::Error for Unreachable {}
-
-impl std::fmt::Display for TurnFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the run's turn failed")
-    }
-}
-
 /// How long the scheduler lease lasts, and how often it is renewed while
 /// runs are in flight.
 const LEASE_MS: i64 = 60_000;
@@ -1067,6 +1504,8 @@ pub struct Runner {
     pub holder: String,
     /// Event automations this process follows, by id.
     watches: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Runs in flight in this process, which resuming leaves alone.
+    inflight: Arc<Mutex<std::collections::HashSet<(String, u64)>>>,
 }
 
 impl Drop for Runner {
@@ -1082,6 +1521,7 @@ impl Runner {
             load,
             holder: format!("{}-{}", std::process::id(), id()),
             watches: Mutex::new(HashMap::new()),
+            inflight: Arc::default(),
         }
     }
 
@@ -1092,6 +1532,7 @@ impl Runner {
             load: self.load.clone(),
             holder: self.holder.clone(),
             watches: Mutex::new(HashMap::new()),
+            inflight: self.inflight.clone(),
         }
     }
 
@@ -1106,11 +1547,18 @@ impl Runner {
         }
         self.reconcile_watches(&db)?;
         let now = crate::store::now();
+        // Runs a stopped process left unsettled (and handoffs whose retry
+        // is due) are picked up first, so their automations claim nothing
+        // new meanwhile.
+        let stale: Vec<(String, Pending)> = stale_runs(&db, now - STALE_MS, now)?
+            .into_iter()
+            .filter(|(id, p)| !self.inflight.lock().unwrap().contains(&(id.clone(), p.run)))
+            .collect();
         let due = claim_due(&db, now)?;
         let n = due.len();
-        let jobs = futures_util::future::join_all(
-            due.into_iter()
-                .map(|(a, was)| self.fire(a, now - was > 60_000)),
+        let jobs = futures_util::future::join(
+            futures_util::future::join_all(stale.into_iter().map(|(id, p)| self.resume_one(id, p))),
+            futures_util::future::join_all(due.into_iter().map(|(a, _)| self.fire(a))),
         );
         // Runs can outlast the lease; keep it while they are in flight, so
         // no other process takes over scheduling (and the event watches)
@@ -1329,21 +1777,59 @@ impl Runner {
                 if name != &event || input.to_string().len() > MAX_EVENT_BYTES || !fits {
                     return Err(Watch::Fatal("Invalid MCP event: wrong name, oversized event or data does not match payloadSchema".into()));
                 }
-                // A replay of the event that already ran.
-                if p.id.as_deref() == Some(eid.as_str()) {
+                // A replay of the event that already ran, or one whose
+                // run is still being handed off (delivery is at least
+                // once; duplicates go by event id).
+                if p.id.as_deref() == Some(eid.as_str())
+                    || event_claimed(db, id, eid).map_err(fatal)?
+                {
                     continue;
                 }
-                // The position moves on with the claim, before the run, as
-                // OpenCode commits it with the hand-off: a scheduler that
-                // takes over mid-run, or a restart, does not run it again.
-                p.cursor = cursor.clone();
-                p.id = Some(eid.clone());
-                let run = claim_event(db, id, crate::store::now(), &p).map_err(fatal)?;
+                // An earlier run still being resumed commits its own
+                // position first, so the cursor never moves back.
+                while unsettled(db, id).map_err(fatal)? {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let still = get(db, id).map_err(fatal)?;
+                    if still.is_none_or(|a| a.status != "active")
+                        || !lease(db, &self.holder, LEASE_MS).map_err(fatal)?
+                    {
+                        return Ok(());
+                    }
+                }
+                let Some(current) = get(db, id).map_err(fatal)? else {
+                    return Ok(());
+                };
+                // The position moves on with the handoff, as OpenCode
+                // commits it: a refused one leaves it, so the event is
+                // replayed when the automation is resumed.
+                let mut next = current.event.clone().unwrap_or_default();
+                next.opened = true;
+                next.cursor = cursor.clone();
+                next.id = Some(eid.clone());
+                let prompt = match &current.action {
+                    Action::Prompt { prompt, .. } => {
+                        Some(event_prompt(prompt, &input).map_err(fatal)?)
+                    }
+                    Action::Code { .. } => None,
+                };
+                let Some(run) =
+                    claim_event(db, &current, crate::store::now(), &next, prompt.as_deref())
+                        .map_err(fatal)?
+                else {
+                    return Ok(());
+                };
+                let Some(pend) = pending(db, id)
+                    .map_err(fatal)?
+                    .into_iter()
+                    .find(|r| r.run == run.runs)
+                else {
+                    continue;
+                };
                 *attempt = 0;
-                // A failed run is recorded; the watch goes on unless the
+                // A failed turn is recorded; the watch goes on unless the
                 // automation itself cannot run (OpenCode pauses on those,
                 // and on a failed Code Mode program).
-                if let Err(e) = self.run(&run, "fired", Some(&input)).await {
+                if let Err(e) = self.run_pending(&run, pend, Some(&input), false).await {
                     if e.fatal {
                         return Err(Watch::Fatal(e.message));
                     }
@@ -1362,71 +1848,538 @@ impl Runner {
         }
     }
 
-    /// Send `prompt` to the target. A session another process is running a
-    /// turn in is waited for when `wait`, else the run fails with
-    /// [`crate::store::Busy`] (and is deferred).
-    async fn prompt(
+    /// Fire a claimed timed run.
+    async fn fire(&self, a: Automation) {
+        let Ok(db) = Store::open(&self.db) else {
+            return;
+        };
+        let Some(p) = pending(&db, &a.id)
+            .ok()
+            .and_then(|r| r.into_iter().find(|p| p.run == a.runs))
+        else {
+            return;
+        };
+        let _ = self.run_pending(&a, p, None, false).await;
+    }
+
+    /// Pick up run `p` of automation `id`, left unsettled by a process that
+    /// stopped (or a handoff waiting for its retry).
+    async fn resume_one(&self, id: String, p: Pending) {
+        let Ok(db) = Store::open(&self.db) else {
+            return;
+        };
+        let Ok(Some(a)) = get(&db, &id) else { return };
+        if a.status == "paused" && p.phase != ADMITTED {
+            let _ = fail_run(&db, &id, p.run, HALTED, None);
+            return;
+        }
+        let _ = self.run_pending(&a, p, None, true).await;
+    }
+
+    /// Mark run `run` of `id` as in flight in this process; `None` when it
+    /// already is.
+    fn track(&self, id: &str, run: u64) -> Option<Inflight> {
+        let key = (id.to_string(), run);
+        if !self.inflight.lock().unwrap().insert(key.clone()) {
+            return None;
+        }
+        Some(Inflight {
+            set: self.inflight.clone(),
+            key,
+        })
+    }
+
+    /// Take run `p` of `a` to settled or failed, and handle why it could
+    /// not be: an error says whether the automation cannot run at all.
+    /// `event` is the `{id, timestamp, data}` of the event that set it off;
+    /// `resumed`, that it was left unsettled by a process that stopped.
+    async fn run_pending(
+        &self,
+        a: &Automation,
+        p: Pending,
+        event: Option<&Value>,
+        resumed: bool,
+    ) -> Result<(), RunError> {
+        let Some(_inflight) = self.track(&a.id, p.run) else {
+            return Ok(());
+        };
+        let db = match Store::open(&self.db) {
+            Ok(d) => d,
+            Err(e) => {
+                return Err(RunError {
+                    message: format!("{e:#}"),
+                    fatal: false,
+                })
+            }
+        };
+        let run = p.run;
+        let watch = matches!(a.trigger, Trigger::Event { .. });
+        let Err(e) = self.drive(&db, a, p, event, resumed).await else {
+            return Ok(());
+        };
+        let message = format!("{e:#}");
+        let fatal = |db: &Store, reason: &str| {
+            let _ = fail_run(db, &a.id, run, reason, None);
+            // A watch pauses through its loop too; a resumed run has none.
+            if watch {
+                let _ = pause_with(db, &a.id, reason);
+            }
+            Err(RunError {
+                message: reason.to_string(),
+                fatal: true,
+            })
+        };
+        if e.downcast_ref::<crate::store::Busy>().is_some() {
+            // Its session is running a turn elsewhere. A first timed
+            // prompt is deferred to the next tick; a resumed run is left
+            // for a later one.
+            if !resumed && event.is_none() {
+                let _ = defer(&db, a);
+            }
+            return Ok(());
+        }
+        if e.downcast_ref::<Halted>().is_some() {
+            let _ = fail_run(&db, &a.id, run, HALTED, None);
+            return Err(RunError {
+                message: HALTED.into(),
+                fatal: false,
+            });
+        }
+        if let Some(c) = e.downcast_ref::<CheckFailed>() {
+            if watch {
+                return fatal(&db, &c.reason);
+            }
+            let _ = strike(&db, &a.id, run, &c.reason, c.invalid);
+            return Err(RunError {
+                message: c.reason.clone(),
+                fatal: false,
+            });
+        }
+        if e.downcast_ref::<CreatorGone>().is_some() {
+            let _ = fail_run(&db, &a.id, run, &message, None);
+            let _ = set_status(&db, &a.id, "paused");
+            if watch {
+                let _ = pause_with(&db, &a.id, &message);
+            }
+            return Err(RunError {
+                message,
+                fatal: true,
+            });
+        }
+        if let Some(Invalid(reason)) = e.downcast_ref::<Invalid>() {
+            let _ = fail_run(&db, &a.id, run, reason, None);
+            let _ = pause_with(&db, &a.id, reason);
+            return Err(RunError {
+                message: reason.clone(),
+                fatal: true,
+            });
+        }
+        // The handoff itself failed (the database): an event run pauses its
+        // watch, so the event is replayed on resume; a timed one is retried.
+        if watch {
+            return fatal(&db, &message);
+        }
+        let _ = handoff_failed(&db, &a.id, run, &message);
+        Err(RunError {
+            message,
+            fatal: false,
+        })
+    }
+
+    /// The phases of one run, from where `p` is: a program's check (saved
+    /// as `checked`), the handoff (`admitted`), then the turn.
+    async fn drive(
+        &self,
+        db: &Store,
+        a: &Automation,
+        mut p: Pending,
+        event: Option<&Value>,
+        resumed: bool,
+    ) -> Result<()> {
+        let recorded = with_rules(db, a)?;
+        let a = &recorded;
+        if !Path::new(&a.directory).is_dir() {
+            let reason = format!("Directory no longer exists: {}", a.directory);
+            if p.phase == ADMITTED {
+                fail_run(db, &a.id, p.run, &reason, None)?;
+                return Ok(());
+            }
+            return Err(Invalid(reason).into());
+        }
+        let loaded = match (self.load)(Path::new(&a.directory)) {
+            Ok(l) => l,
+            Err(e) if p.phase == ADMITTED => {
+                fail_run(db, &a.id, p.run, &format!("{e:#}"), None)?;
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(Invalid(format!("loading config in {}: {e:#}", a.directory)).into())
+            }
+        };
+        if p.phase == CLAIMED {
+            if let Action::Code { code, args } = &a.action {
+                // Its tool calls may have had effects: never run it twice.
+                if resumed {
+                    return Err(CheckFailed {
+                        reason: INTERRUPTED_CHECK.into(),
+                        invalid: false,
+                    }
+                    .into());
+                }
+                let result = self.check(db, a, &loaded, code, args, event).await?;
+                if !save_check(db, &a.id, p.run, &result)? {
+                    return Err(Halted.into());
+                }
+                p.phase = CHECKED.into();
+                p.result = Some(result);
+            }
+        }
+        let (to, named) = match &a.action {
+            Action::Prompt { to, .. } => (to.clone(), false),
+            Action::Code { .. } => match p.result.as_ref().and_then(|r| r.send.as_ref()) {
+                Some(send) => (send.to.clone(), send.named),
+                None => {
+                    // A check without a handoff settles with its result.
+                    let r = p.result.clone().unwrap_or_default();
+                    let v = Commit {
+                        state: r.state.as_ref(),
+                        done: r.done,
+                        position: p.position.as_ref(),
+                        label: &p.label,
+                    };
+                    let detail = cap(&r.output, OUTPUT_BUDGET);
+                    let ok = db.with_conn(|c| {
+                        let tx = c.unchecked_transaction()?;
+                        let ok = commit_run(&tx, &a.id, p.run, None, &v, Some(&detail))?;
+                        if ok {
+                            tx.commit()?;
+                        }
+                        Ok(ok)
+                    })?;
+                    if !ok {
+                        return Err(Halted.into());
+                    }
+                    return Ok(());
+                }
+            },
+        };
+        if p.phase == CLAIMED || p.phase == CHECKED {
+            let (text, state, done) = match &a.action {
+                Action::Prompt { prompt, .. } => {
+                    (p.prompt.clone().unwrap_or(prompt.clone()), None, false)
+                }
+                Action::Code { .. } => {
+                    let r = p.result.as_ref().expect("a check with a handoff");
+                    let send = r.send.as_ref().expect("checked above");
+                    (send.prompt.clone(), r.state.clone(), r.done)
+                }
+            };
+            let v = Commit {
+                state: state.as_ref(),
+                done,
+                position: p.position.as_ref(),
+                label: &p.label,
+            };
+            // A first timed prompt into a busy session is deferred; an
+            // event's, a check's that already ran, wait for it. A resumed
+            // one is left for a later tick.
+            let wait = !resumed && (event.is_some() || matches!(a.action, Action::Code { .. }));
+            let sid = self
+                .admit(db, a, &loaded, &p, &text, &to, named, &v, wait)
+                .await?;
+            p.phase = ADMITTED.into();
+            p.target_session = Some(sid);
+            p.message_id = Some(message_id(&a.id, p.run));
+            p.attempts = 1;
+            return self.turn(db, a, &loaded, &p, &to, false).await;
+        }
+        self.turn(db, a, &loaded, &p, &to, resumed).await
+    }
+
+    /// Run a Code Mode check: its result, or why it failed.
+    async fn check(
+        &self,
+        db: &Store,
+        a: &Automation,
+        loaded: &Loaded,
+        code: &str,
+        args: &Option<Value>,
+        event: Option<&Value>,
+    ) -> Result<Checked> {
+        // MCP tools are denied unless `automation.permissions` opts in, as
+        // in any unattended run: the program may act on an untrusted
+        // event. Denied tools aren't offered at all.
+        let mut rules = crate::agent::resolve(&unattended(loaded).config, "build")
+            .map(|b| b.permissions)
+            .unwrap_or_default();
+        // The creating session's own rules, as every session a run starts
+        // has them: like there, they only restrict.
+        rules.extend(
+            run_session_rules(db, a)?
+                .into_iter()
+                .map(crate::permission::Rule::into_builtin),
+        );
+        let mcp = crate::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
+        let entries: Vec<crate::codemode::Entry> = mcp
+            .tools()
+            .into_iter()
+            .filter(|t| {
+                crate::permission::evaluate(&t.name, "*", &rules) != crate::permission::Effect::Deny
+            })
+            .map(|t| crate::codemode::Entry {
+                tool: t.name,
+                namespace: t.server,
+                name: t.remote,
+                description: t.description,
+                schema: t.schema,
+                output: None,
+                freeform: false,
+            })
+            .collect();
+        let mut input =
+            json!({"state": a.state, "now": crate::store::now(), "runs": a.runs, "args": args});
+        if let Some(e) = event {
+            input["event"] = e.clone();
+        }
+        let program = format!("const input = {input};\n{code}");
+        let gate = crate::permission::Gate::new(
+            rules,
+            Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
+        );
+        let out = crate::codemode::execute(
+            &program,
+            &entries,
+            crate::codemode::MAX_TOOL_CALLS,
+            crate::codemode::TIMEOUT,
+            |tool, input| {
+                let mcp = mcp.clone();
+                let allowed = gate.assert(&crate::permission::Request {
+                    action: tool.clone(),
+                    resources: vec!["*".into()],
+                    save: vec![],
+                    title: format!("Run MCP tool {tool}"),
+                });
+                async move {
+                    allowed.map_err(|e| e.to_string())?;
+                    match mcp.call(&tool, input).await {
+                        Ok((text, false)) => Ok(text),
+                        Ok((text, true)) => Err(text),
+                        Err(e) => Err(format!("{e:#}")),
+                    }
+                }
+            },
+        )
+        .await;
+        let logs = out.logs.join("\n");
+        let failed = |reason: String, invalid: bool| CheckFailed {
+            reason: if logs.is_empty() {
+                reason
+            } else {
+                format!("{reason}\n{logs}")
+            },
+            invalid,
+        };
+        let result = match &out.result {
+            Ok(v) => v.clone(),
+            Err(e) => return Err(failed(e.clone(), false).into()),
+        };
+        if !result.is_null() && !result.is_object() {
+            return Err(failed(
+                "the program must return nothing or { state, done, send }".into(),
+                true,
+            )
+            .into());
+        }
+        let mut checked = Checked {
+            state: result.get("state").cloned(),
+            done: result["done"].as_bool() == Some(true),
+            output: out.render().0,
+            send: None,
+        };
+        if let Some(send) = result.get("send").filter(|s| !s.is_null()) {
+            let Some(prompt) = send["prompt"].as_str().filter(|p| !p.trim().is_empty()) else {
+                return Err(failed("send.prompt must be text".into(), true).into());
+            };
+            let to = &send["to"];
+            let (to, named) = if to.is_null() {
+                match &a.session_id {
+                    Some(s) => (Target::Session { session: s.clone() }, false),
+                    None => (
+                        Target::Subagent {
+                            subagent: "build".into(),
+                        },
+                        false,
+                    ),
+                }
+            } else {
+                match to["subagent"].as_str().filter(|s| !s.is_empty()) {
+                    Some(s) => (Target::Subagent { subagent: s.into() }, true),
+                    None => {
+                        return Err(failed(
+                            "the program must return nothing or { state, done, send: { prompt, to: { subagent } } }".into(),
+                            true,
+                        )
+                        .into())
+                    }
+                }
+            };
+            checked.output = logs;
+            checked.send = Some(Handoff {
+                prompt: prompt.into(),
+                to,
+                named,
+            });
+        }
+        Ok(checked)
+    }
+
+    /// Hand run `p`'s prompt `text` to its target: the target is checked
+    /// and recorded, then one transaction writes the prompt into the
+    /// session and commits `v` with the run's move to `admitted`. Returns
+    /// the target session.
+    #[allow(clippy::too_many_arguments)]
+    async fn admit(
+        &self,
+        db: &Store,
+        a: &Automation,
+        loaded: &Loaded,
+        p: &Pending,
+        text: &str,
+        to: &Target,
+        named: bool,
+        v: &Commit<'_>,
+        wait: bool,
+    ) -> Result<String> {
+        if named {
+            check_send(db, a, loaded, to)?;
+        }
+        let spec = child_spec(db, a, to, p.run)?;
+        let sid = match (&spec, to) {
+            (Some(s), _) => s.id.clone(),
+            (None, Target::Session { session }) => {
+                if db.get(session)?.is_none() {
+                    return Err(
+                        Invalid(format!("the session this automation sends its prompt to ({session}) no longer exists")).into(),
+                    );
+                }
+                session.clone()
+            }
+            (None, _) => unreachable!("only a session target has no child"),
+        };
+        set_target(db, &a.id, p.run, &sid)?;
+        let path = db
+            .path()
+            .ok_or_else(|| anyhow!("automations need a session database on disk"))?;
+        // Nothing is written into a session while a turn runs in it.
+        let _lease = crate::store::TurnLease::acquire(
+            &path,
+            &sid,
+            &format!("{}-handoff", self.holder),
+            wait,
+            || {},
+        )
+        .await?;
+        let info = match &spec {
+            Some(spec) if db.get(&sid)?.is_none() => {
+                let s = self.open(a, loaded, to, &sid, Some(spec))?;
+                let t = crate::store::now();
+                Some(crate::store::Info {
+                    id: sid.clone(),
+                    directory: s.cwd.display().to_string(),
+                    title: Some(spec.title.clone()),
+                    agent: s.agent.id.clone(),
+                    model: s.model_spec.clone(),
+                    parent_id: spec.parent.clone(),
+                    created: t,
+                    updated: t,
+                    usage: Default::default(),
+                })
+            }
+            Some(spec) => {
+                // Adopted: it must still be what this run would start.
+                self.open(a, loaded, to, &sid, Some(spec))?;
+                None
+            }
+            None => None,
+        };
+        let key = message_id(&a.id, p.run);
+        let meta = json!({"automation": {"id": a.id, "name": a.name, "run": p.run, "late": p.label == "late"}});
+        let admitted = db.admit(
+            info.as_ref(),
+            &sid,
+            &codesmith_ai::Message::user(text),
+            &key,
+            meta,
+            |c| commit_run(c, &a.id, p.run, Some((&sid, &key)), v, None),
+        )?;
+        if admitted.is_none() {
+            return Err(Halted.into());
+        }
+        Ok(sid)
+    }
+
+    /// Open the session a run hands off to, rebuilt the same way on every
+    /// attempt: unattended rules, every ask rejected, and (for a session
+    /// the run starts) the recorded rules of the creating session, which
+    /// only restrict. A child that already exists must still be what the
+    /// run would start.
+    fn open(
         &self,
         a: &Automation,
         loaded: &Loaded,
-        prompt: &str,
         to: &Target,
-        wait: bool,
-    ) -> Result<(String, String)> {
+        sid: &str,
+        spec: Option<&Spec>,
+    ) -> Result<Session> {
         let db = Store::open(&self.db)?;
-        let title = run_title(&a.name, crate::store::now());
-        let (resume, agent, model, title, parent) = match to {
-            Target::Session { session } => {
-                if db.get(session)?.is_none() {
-                    return Err(Unreachable(format!(
-                        "the session this automation sends its prompt to ({session}) no longer exists"
-                    ))
-                    .into());
-                }
-                (Some(session.clone()), None, None, a.name.clone(), None)
-            }
-            // A child of the creating session while it exists, so it lists
-            // under it and starts with its session rules; once it is gone,
-            // a session of its own (the recorded rules are added below).
-            Target::Subagent { subagent } => (
-                None,
-                Some(subagent.clone()),
-                None,
-                title,
-                live(&db, a.session_id.as_deref())?,
-            ),
-            Target::Child {
-                child,
-                agent,
-                model,
-            } => (
-                None,
-                Some(agent.clone()),
-                model.clone(),
-                title,
-                live(&db, Some(child))?,
-            ),
-        };
-        let fresh = resume.is_none();
         let extra = run_session_rules(&db, a)?;
+        let stored = db.get(sid)?;
+        if let (Some(spec), Some(info)) = (spec, &stored) {
+            check_child(&db, a, spec, info, &extra)?;
+        }
+        let opts = match (spec, &stored) {
+            (Some(spec), None) => {
+                // No rules from an attempt that stopped before the session was stored.
+                db.set_meta(sid, crate::store::PERMISSIONS_META, None)?;
+                Options {
+                    agent: Some(spec.agent.clone()),
+                    model: spec.model.clone(),
+                    resume: None,
+                    title: Some(spec.title.clone()),
+                    parent: spec.parent.clone(),
+                    questioner: None,
+                    mcp: None,
+                    id: Some(sid.to_string()),
+                }
+            }
+            (_, Some(info)) => Options {
+                agent: None,
+                model: None,
+                resume: None,
+                title: None,
+                parent: info.parent_id.clone(),
+                questioner: None,
+                mcp: None,
+                id: Some(sid.to_string()),
+            },
+            (None, None) => {
+                return Err(Invalid(format!(
+                    "the session this automation sends its prompt to ({sid}) no longer exists"
+                ))
+                .into())
+            }
+        };
         let mut s = Session::new(
             &unattended(loaded),
             PathBuf::from(&a.directory),
-            Options {
-                agent,
-                model,
-                resume,
-                title: Some(title),
-                parent,
-                questioner: None,
-                mcp: None,
-            },
+            opts,
             Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
             Some(db),
-        )?;
-        // A new session is held to the recorded rules too. (A session the
-        // run continues keeps its own: they are the creator's current ones.)
-        if fresh {
+        )
+        .map_err(|e| Invalid(format!("{e:#}")))?;
+        // A session the run starts is held to the recorded rules too. (A
+        // session the run continues keeps its own: they are the creator's.)
+        if !matches!(to, Target::Session { .. }) {
             let mut own = s.permissions();
             let before = own.len();
             for r in extra {
@@ -1438,192 +2391,362 @@ impl Runner {
                 s.set_permissions(own)?;
             }
         }
-        s.set_wait_for_turn(wait);
-        let mut out = Quiet(String::new());
-        let turn_failed = |e: anyhow::Error| {
-            if e.downcast_ref::<crate::store::Busy>().is_some() {
-                e
-            } else {
-                e.context(TurnFailed)
-            }
-        };
-        s.prompt_from(crate::session::Origin::Engine, prompt, vec![], &mut out)
-            .await
-            .map_err(turn_failed)?;
-        // The session is dropped next, which would stop its background commands.
-        s.settle_background(&mut out).await.map_err(turn_failed)?;
-        Ok((s.id.clone(), out.0))
+        Ok(s)
     }
 
-    async fn fire(&self, a: Automation, late: bool) {
-        let _ = self
-            .run(&a, if late { "late" } else { "fired" }, None)
-            .await;
-    }
-
-    /// Run the action once and record the outcome; an error says why it failed.
-    /// `event` is the `{id, timestamp, data}` of the event that set it off.
-    async fn run(&self, a: &Automation, ok: &str, event: Option<&Value>) -> Result<(), RunError> {
-        let db = match Store::open(&self.db) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("automation {}: {e:#}", a.id);
-                return Err(RunError {
-                    message: format!("{e:#}"),
-                    fatal: false,
-                });
-            }
+    /// Run the turn of admitted run `p` and settle it. A resumed one is
+    /// settled at once when the session already answered, waits for no
+    /// one, and is resumed only once.
+    async fn turn(
+        &self,
+        db: &Store,
+        a: &Automation,
+        loaded: &Loaded,
+        p: &Pending,
+        to: &Target,
+        resumed: bool,
+    ) -> Result<()> {
+        let sid = p
+            .target_session
+            .clone()
+            .ok_or_else(|| anyhow!("an admitted run without a session"))?;
+        let key = p
+            .message_id
+            .clone()
+            .unwrap_or_else(|| message_id(&a.id, p.run));
+        let fail = |reason: &str| fail_run(db, &a.id, p.run, reason, Some(&sid));
+        let Some(seq) = db.tagged_message(&sid, &key)? else {
+            return fail("Its prompt is no longer in the session");
         };
-        let r = self.act(&db, a, ok, event).await;
-        let Err(e) = r else { return Ok(()) };
-        if e.downcast_ref::<crate::store::Busy>().is_some() {
-            // Its session is running a turn elsewhere: try again next tick.
-            return defer(&db, a).map_err(|e| RunError {
-                message: format!("{e:#}"),
-                fatal: false,
-            });
-        }
-        let message = format!("{e:#}");
-        let _ = finish(&db, a, "failed", None, &message, None, false);
-        if e.downcast_ref::<CreatorGone>().is_some() || e.downcast_ref::<Unreachable>().is_some() {
-            let _ = set_status(&db, &a.id, "paused");
-        }
-        Err(RunError {
-            fatal: e.downcast_ref::<TurnFailed>().is_none(),
-            message,
-        })
-    }
-
-    async fn act(&self, db: &Store, a: &Automation, ok: &str, event: Option<&Value>) -> Result<()> {
-        if !Path::new(&a.directory).is_dir() {
-            return Err(Unreachable(format!("Directory no longer exists: {}", a.directory)).into());
-        }
-        // Every run is held to the creating session's own rules: those
-        // recorded with the automation, recorded now for one stored before
-        // they were, while that session exists. With neither, they are
-        // unknown and the run is refused.
-        let recorded;
-        let a = if a.session_rules.is_none() && creator(a).is_some() {
-            let c = creator(a).unwrap_or_default().to_string();
-            let Some(rules) = session_rules_of(db, &c)? else {
-                return Err(CreatorGone(c).into());
-            };
-            set_session_rules(db, &a.id, &rules)?;
-            recorded = Automation {
-                session_rules: Some(rules),
-                ..a.clone()
-            };
-            &recorded
-        } else {
-            a
-        };
-        let loaded = (self.load)(Path::new(&a.directory))
-            .with_context(|| format!("loading config in {}", a.directory))?;
-        match &a.action {
-            Action::Prompt { prompt, to } => {
-                let text = match event {
-                    Some(e) => event_prompt(prompt, e)?,
-                    None => prompt.clone(),
-                };
-                // A timed run into a busy session is deferred; an event's
-                // run waits, since the event cannot be fetched again.
-                let (sid, answer) = self.prompt(a, &loaded, &text, to, event.is_some()).await?;
-                finish(db, a, ok, Some(&sid), &answer, None, false)
+        if resumed {
+            if db.replied_after(&sid, seq)? {
+                let reply = last_reply(db, &sid)?;
+                let detail = self.detail(p, to, &sid, &reply);
+                return settle(db, &a.id, p.run, &p.label, &sid, &detail);
             }
-            Action::Code { code, args } => {
-                // MCP tools are denied unless `automation.permissions` opts
-                // in, as in any unattended run: the program may act on an
-                // untrusted event. Denied tools aren't offered at all.
-                let mut rules = crate::agent::resolve(&unattended(&loaded).config, "build")
-                    .map(|b| b.permissions)
-                    .unwrap_or_default();
-                // The creating session's own rules, as every session a run
-                // starts has them: like there, they only restrict.
-                rules.extend(
-                    run_session_rules(db, a)?
-                        .into_iter()
-                        .map(crate::permission::Rule::into_builtin),
-                );
-                let mcp = crate::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
-                let entries: Vec<crate::codemode::Entry> = mcp
-                    .tools()
-                    .into_iter()
-                    .filter(|t| {
-                        crate::permission::evaluate(&t.name, "*", &rules)
-                            != crate::permission::Effect::Deny
-                    })
-                    .map(|t| crate::codemode::Entry {
-                        tool: t.name,
-                        namespace: t.server,
-                        name: t.remote,
-                        description: t.description,
-                        schema: t.schema,
-                        output: None,
-                        freeform: false,
-                    })
-                    .collect();
-                let mut input = json!({"state": a.state, "now": crate::store::now(), "runs": a.runs, "args": args});
-                if let Some(e) = event {
-                    input["event"] = e.clone();
-                }
-                let program = format!("const input = {input};\n{code}");
-                let gate = crate::permission::Gate::new(
-                    rules,
-                    Arc::new(Fixed(Reply::Reject(Some(UNATTENDED.into())))),
-                );
-                let out = crate::codemode::execute(
-                    &program,
-                    &entries,
-                    crate::codemode::MAX_TOOL_CALLS,
-                    crate::codemode::TIMEOUT,
-                    |tool, input| {
-                        let mcp = mcp.clone();
-                        let allowed = gate.assert(&crate::permission::Request {
-                            action: tool.clone(),
-                            resources: vec!["*".into()],
-                            save: vec![],
-                            title: format!("Run MCP tool {tool}"),
-                        });
-                        async move {
-                            allowed.map_err(|e| e.to_string())?;
-                            match mcp.call(&tool, input).await {
-                                Ok((text, false)) => Ok(text),
-                                Ok((text, true)) => Err(text),
-                                Err(e) => Err(format!("{e:#}")),
-                            }
-                        }
-                    },
+            // A turn running there (another process, an open window) is
+            // left alone; a later tick looks again.
+            let path = db
+                .path()
+                .ok_or_else(|| anyhow!("automations need a session database on disk"))?;
+            drop(
+                crate::store::TurnLease::acquire(
+                    &path,
+                    &sid,
+                    &format!("{}-probe", self.holder),
+                    false,
+                    || {},
                 )
-                .await;
-                let result = out.result.clone().map_err(|e| anyhow!("{e}"))?;
-                let state = result.get("state");
-                let done = result["done"].as_bool() == Some(true);
-                let mut detail = out.render().0;
-                let mut session = None;
-                if let Some(send) = result.get("send").filter(|s| s.is_object()) {
-                    let prompt = send["prompt"]
-                        .as_str()
-                        .filter(|p| !p.trim().is_empty())
-                        .ok_or_else(|| anyhow!("send.prompt must be text"))?;
-                    let to = match send["to"]["subagent"].as_str() {
-                        Some(s) => Target::Subagent { subagent: s.into() },
-                        None => match &a.session_id {
-                            Some(s) => Target::Session { session: s.clone() },
-                            None => Target::Subagent {
-                                subagent: "build".into(),
-                            },
-                        },
-                    };
-                    // The program already ran, so wait rather than run it again.
-                    let (sid, answer) = self.prompt(a, &loaded, prompt, &to, true).await?;
-                    session = Some(sid);
-                    detail.push_str(&format!("\n\nSent: {prompt}\n{answer}"));
-                }
-                finish(db, a, ok, session.as_deref(), &detail, state, done)
+                .await?,
+            );
+            if p.attempts >= MAX_TURN_ATTEMPTS {
+                return fail(INTERRUPTED_TWICE);
+            }
+            let taken = db.with_conn(|c| {
+                Ok(c.execute(
+                    "UPDATE automation_run SET attempts = attempts + 1, updated = ?4
+                     WHERE automation_id = ?1 AND run = ?2 AND phase = 'admitted' AND attempts = ?3",
+                    params![a.id, p.run as i64, p.attempts as i64, crate::store::now()],
+                )?)
+            })?;
+            if taken == 0 {
+                return Ok(());
             }
         }
+        let spec = child_spec(db, a, to, p.run)?.filter(|s| s.id == sid);
+        let mut s = match self.open(a, loaded, to, &sid, spec.as_ref()) {
+            Ok(s) => s,
+            Err(e) => return fail(&format!("{e:#}")),
+        };
+        s.set_wait_for_turn(true);
+        let mut out = Quiet(String::new());
+        let r = match s.continue_turn(&mut out).await {
+            Ok(()) => s.settle_background(&mut out).await,
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(()) => {
+                let detail = self.detail(p, to, &sid, &out.0);
+                settle(db, &a.id, p.run, &p.label, &sid, &detail)
+            }
+            Err(e) => settle(db, &a.id, p.run, "failed", &sid, &format!("{e:#}")),
+        }
+    }
+
+    /// A run's detail: the reply, after a check's handoff summary and
+    /// logs, within [`OUTPUT_BUDGET`] (the summary always shows).
+    fn detail(&self, p: &Pending, to: &Target, sid: &str, reply: &str) -> String {
+        let Some(r) = p.result.as_ref().filter(|r| r.send.is_some()) else {
+            return cap(reply, OUTPUT_BUDGET);
+        };
+        let head = match to {
+            Target::Session { .. } => format!("Prompted {sid}"),
+            _ => format!("Started subagent {sid}"),
+        };
+        let tail = format!("\n\n{}", cap(reply, OUTPUT_BUDGET / 2));
+        let body = if r.output.is_empty() {
+            head
+        } else {
+            format!("{head}\n{}", r.output)
+        };
+        format!("{}{tail}", cap(&body, OUTPUT_BUDGET - tail.len()))
     }
 }
+
+/// A run in flight in this process, until dropped.
+struct Inflight {
+    set: Arc<Mutex<std::collections::HashSet<(String, u64)>>>,
+    key: (String, u64),
+}
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        self.set.lock().unwrap().remove(&self.key);
+    }
+}
+
+/// The id of the message run `run` of automation `id` hands off.
+pub fn message_id(id: &str, run: u64) -> String {
+    format!("auto_{id}_{run}")
+}
+
+/// The id of the session run `run` of automation `id` starts.
+pub fn run_session_id(id: &str, run: u64) -> String {
+    format!("ses_{id}_{run}")
+}
+
+const HALTED: &str = "The automation was paused or removed before its prompt was delivered";
+const INTERRUPTED_CHECK: &str = "Interrupted before its check finished; the check is not run again, since its tool calls may already have had effects";
+const INTERRUPTED_TWICE: &str =
+    "Interrupted again after it was resumed once; it is not resumed again";
+/// An admitted turn runs at most this often: once, and once resumed.
+const MAX_TURN_ATTEMPTS: u32 = 2;
+
+/// The session a run starts (none for a run into an existing session).
+struct Spec {
+    id: String,
+    agent: String,
+    model: Option<String>,
+    parent: Option<String>,
+    title: String,
+}
+
+fn child_spec(db: &Store, a: &Automation, to: &Target, run: u64) -> Result<Option<Spec>> {
+    let id = run_session_id(&a.id, run);
+    let title = run_title(&a.name, crate::store::now());
+    Ok(match to {
+        Target::Session { .. } => None,
+        // A child of the creating session while it exists, so it lists
+        // under it and starts with its session rules; once it is gone, a
+        // session of its own (the recorded rules are added).
+        Target::Subagent { subagent } => Some(Spec {
+            id,
+            agent: subagent.clone(),
+            model: None,
+            parent: live(db, a.session_id.as_deref())?,
+            title,
+        }),
+        Target::Child {
+            child,
+            agent,
+            model,
+        } => Some(Spec {
+            id,
+            agent: agent.clone(),
+            model: model.clone(),
+            parent: live(db, Some(child))?,
+            title,
+        }),
+    })
+}
+
+/// A child a run adopts must be the one it would start: same parent,
+/// agent and folder, and the rules it would start with.
+fn check_child(
+    db: &Store,
+    a: &Automation,
+    spec: &Spec,
+    info: &crate::store::Info,
+    extra: &[crate::permission::Rule],
+) -> Result<()> {
+    if info.parent_id != spec.parent || info.agent != spec.agent {
+        return Err(Invalid(format!(
+            "Run child {} has a different parent, agent or project",
+            spec.id
+        ))
+        .into());
+    }
+    let dir: PathBuf = Path::new(&a.directory).components().collect();
+    if info.directory != dir.display().to_string() {
+        return Err(Invalid(format!(
+            "Run child {} is no longer in the creator's location",
+            spec.id
+        ))
+        .into());
+    }
+    let mut expected = match &spec.parent {
+        Some(p) => db.permissions(p)?.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    for r in extra {
+        if !expected.contains(r) {
+            expected.push(r.clone());
+        }
+    }
+    if db.permissions(&spec.id)?.unwrap_or_default() != expected {
+        return Err(Invalid(format!(
+            "Run child {} no longer matches the creator's permissions",
+            spec.id
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Whether a program may hand off to the subagent it named: one that can
+/// be delegated to, within the depth limit, allowed by the creating
+/// session's rules (an unattended run cannot ask), and one an automation
+/// created there could run as (see [`check_target`]).
+fn check_send(db: &Store, a: &Automation, loaded: &Loaded, to: &Target) -> Result<()> {
+    let Target::Subagent { subagent: id } = to else {
+        return Ok(());
+    };
+    let invalid = |m: String| -> anyhow::Error { Invalid(m).into() };
+    let config = unattended(loaded).config;
+    let Some(target) = crate::agent::resolve(&config, id) else {
+        return Err(invalid(format!("Unknown subagent: {id}")));
+    };
+    if target.mode == "primary" {
+        return Err(invalid(format!("Agent {id} is primary-only")));
+    }
+    if target.hidden {
+        return Err(invalid(format!("Subagent {id} is hidden")));
+    }
+    let creator = creator(a).map(|c| db.get(c)).transpose()?.flatten();
+    let own = creator
+        .as_ref()
+        .map(|c| c.agent.clone())
+        .unwrap_or_default();
+    if let Some(info) = &creator {
+        let mut depth = 0u32;
+        let mut parent = info.parent_id.clone();
+        while let Some(p) = parent {
+            depth += 1;
+            if depth > 64 {
+                break;
+            }
+            parent = db.get(&p)?.and_then(|i| i.parent_id);
+        }
+        let limit = config.subagent_depth.unwrap_or(crate::session::MAX_DEPTH);
+        if depth >= limit {
+            return Err(invalid(format!("Subagent depth limit reached ({limit})")));
+        }
+    }
+    let mut rules = crate::agent::resolve(&config, if own.is_empty() { "build" } else { &own })
+        .map(|b| b.permissions)
+        .unwrap_or_default();
+    rules.extend(
+        run_session_rules(db, a)?
+            .into_iter()
+            .map(crate::permission::Rule::into_builtin),
+    );
+    match crate::permission::evaluate("subagent", id, &rules) {
+        crate::permission::Effect::Deny => {
+            return Err(invalid(format!(
+                "Cannot start subagent {id}: Permission denied: subagent"
+            )))
+        }
+        crate::permission::Effect::Ask => {
+            return Err(invalid(format!(
+                "Cannot start subagent {id}: Permission subagent needs approval"
+            )))
+        }
+        crate::permission::Effect::Allow => {}
+    }
+    check_target(&own, &target).map_err(|e| invalid(format!("{e}")))
+}
+
+/// The text of the latest answer in session `id`.
+fn last_reply(db: &Store, id: &str) -> Result<String> {
+    Ok(db
+        .history(id)?
+        .iter()
+        .rev()
+        .find(|m| m.role == codesmith_ai::Role::Assistant)
+        .map(|m| {
+            m.parts
+                .iter()
+                .filter_map(|p| match p {
+                    codesmith_ai::Part::Text(t) => Some(t.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default())
+}
+
+/// `a` held to its creating session's own rules: those recorded with it,
+/// recorded now for one stored before they were while that session
+/// exists. With neither, they are unknown and the run is refused.
+fn with_rules(db: &Store, a: &Automation) -> Result<Automation> {
+    if a.session_rules.is_some() {
+        return Ok(a.clone());
+    }
+    let Some(c) = creator(a).map(str::to_string) else {
+        return Ok(a.clone());
+    };
+    let Some(rules) = session_rules_of(db, &c)? else {
+        return Err(CreatorGone(c).into());
+    };
+    set_session_rules(db, &a.id, &rules)?;
+    Ok(Automation {
+        session_rules: Some(rules),
+        ..a.clone()
+    })
+}
+
+/// The run cannot go ahead as set up (its target, or the policy of the
+/// session or agent): the automation is paused with this reason, nothing
+/// of the run committed (OpenCode's `InvalidError`).
+#[derive(Debug)]
+struct Invalid(String);
+
+impl std::fmt::Display for Invalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Invalid {}
+
+/// A Code Mode check failed: a strike (`invalid`: it can never work, a
+/// pause).
+#[derive(Debug)]
+struct CheckFailed {
+    reason: String,
+    invalid: bool,
+}
+
+impl std::fmt::Display for CheckFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for CheckFailed {}
+
+/// The automation was paused or removed before the run's handoff.
+#[derive(Debug)]
+struct Halted;
+
+impl std::fmt::Display for Halted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(HALTED)
+    }
+}
+
+impl std::error::Error for Halted {}
 
 pub const TOOL: &str = "automation";
 
@@ -1919,15 +3042,31 @@ mod tests {
             "an `at` runs once"
         );
 
-        finish(
-            &db,
-            &a2,
-            "fired",
-            Some("ses_x"),
-            "ok",
-            Some(&json!({"n": 1})),
-            false,
-        )
+        // A run without a session settles with its commit; the runs list
+        // shows finished runs only.
+        assert!(runs(&db, &a.id).unwrap().is_empty(), "still claimed");
+        assert_eq!(pending(&db, &a.id).unwrap()[0].phase, CLAIMED);
+        let state = json!({"n": 1});
+        let v = Commit {
+            state: Some(&state),
+            done: false,
+            position: None,
+            label: "fired",
+        };
+        assert!(db
+            .with_conn(|c| commit_run(c, &a2.id, a2.runs, None, &v, Some("ok")))
+            .unwrap());
+        assert!(
+            !db.with_conn(|c| commit_run(c, &a2.id, a2.runs, None, &v, Some("ok")))
+                .unwrap(),
+            "a settled run is not committed twice"
+        );
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation_run SET session_id = 'ses_x' WHERE automation_id = ?1",
+                [&a2.id],
+            )?)
+        })
         .unwrap();
         let a3 = get(&db, &a.id).unwrap().unwrap();
         assert_eq!(

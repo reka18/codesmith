@@ -78,6 +78,7 @@ fn session(config: Config, root: &std::path::Path) -> Session {
         resume: None,
         title: Some("Test".into()),
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };

@@ -160,6 +160,7 @@ impl Project {
             resume: None,
             title: Some("Parent session".into()),
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         };

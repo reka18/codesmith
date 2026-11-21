@@ -317,6 +317,7 @@ impl T {
             resume: Some(self.s.id.clone()),
             title: None,
             parent: None,
+            id: None,
             questioner: None,
             mcp: None,
         };
@@ -403,6 +404,7 @@ pub async fn start(setup: Setup) -> T {
         resume: None,
         title: setup.title,
         parent: None,
+        id: None,
         questioner: setup.questioner,
         mcp: None,
     };
