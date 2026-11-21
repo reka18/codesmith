@@ -146,7 +146,6 @@
 @tool-automation.test.ts
 173 :: design :: deliberate :: the creating session is recorded with an automation, not the tool call that created it
 194 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_creates_lists_pauses_resumes_and_deletes
-224 :: feature :: Automation Command :: an /automation command that hands the request to the model
 264 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_rejects_a_malformed_trigger_or_target :: adapted: an empty name is taken from the prompt
 293 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_lists_id_trigger_status_next_run_and_action :: adapted: CodeSmith's listing
 320 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_treats_another_projects_automation_as_missing

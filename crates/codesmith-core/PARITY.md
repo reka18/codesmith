@@ -45,14 +45,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 126 | 6 | 0 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
-| Automations | 107 | 53 | 6 | 1 | 47 | 0 | 0 |
+| Automations | 107 | 54 | 6 | 0 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 419 | 0 | 16 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2904** | **80** | **23** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2905** | **80** | **22** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -132,14 +132,13 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (23 cases in 4 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (22 cases in 3 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
 
 ### Provider Plugins
 
@@ -177,12 +176,6 @@ Missing features, by how many OpenCode test cases each would unlock (23 cases in
 - `voice.test.ts`: uses the first key or env connection Integration lists and never a ChatGPT sign-in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
-
-### Automation Command
-
-1 cases.
-
-- `tool-automation.test.ts`: /automation hands the request to the model with the automation instructions
 
 ## Porting backlog
 
@@ -2591,7 +2584,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (106 of 107)</summary>
+<details><summary>Automations (107 of 107)</summary>
 
 
 **`automation-event.test.ts`**
@@ -2674,6 +2667,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D are absent unless experimental.automations is enabled — deliberate: automations are not behind an experimental flag
 - D passes the originating tool call to the service when creating an event watch — deliberate: the creating session is recorded with an automation, not the tool call that created it
 - P creates, lists, pauses, resumes and deletes this project's automations — `tests/oc_automation_backlog3.rs::oc_tool_automation_creates_lists_pauses_resumes_and_deletes`
+- P /automation hands the request to the model with the automation instructions — `tests/oc_automation_roadmap.rs::oc_tool_automation_hands_the_request_to_the_model_with_the_automation_instructions` (adapted: a built-in command run in the session, which the model answers through the automation tool)
 - D rechecks the flag on each call, since a request keeps its tools after config reloads — deliberate: automations are not behind an experimental flag
 - P rejects a malformed trigger, target or empty name — `tests/oc_automation_backlog3.rs::oc_tool_automation_rejects_a_malformed_trigger_or_target` (adapted: an empty name is taken from the prompt)
 - P puts each automation's id, trigger, status, next run and action in the text without Code Mode — `tests/oc_automation_backlog3.rs::oc_tool_automation_lists_id_trigger_status_next_run_and_action` (adapted: CodeSmith's listing)

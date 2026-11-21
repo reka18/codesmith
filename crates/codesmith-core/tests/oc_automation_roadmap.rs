@@ -1050,3 +1050,248 @@ async fn a_tool_gone_or_denied_since_creation_fails_the_run_before_it_runs() {
     assert!(w.posts().is_empty());
     runner.release().unwrap();
 }
+
+// ----- Automation Command ----------------------------------------------------
+
+/// An asker that records what it was asked and answers `reply`.
+struct Recording {
+    asked: std::sync::Mutex<Vec<codesmith_core::permission::Request>>,
+    reply: codesmith_core::permission::Reply,
+}
+
+impl codesmith_core::permission::Asker for Recording {
+    fn ask(&self, req: &codesmith_core::permission::Request) -> codesmith_core::permission::Reply {
+        self.asked.lock().unwrap().push(req.clone());
+        self.reply.clone()
+    }
+}
+
+/// The model's answer to an `/automation` prompt: it calls the automation
+/// tool to create what was asked for.
+fn creates_on_request() -> support::Reply_ {
+    std::sync::Arc::new(|body: &serde_json::Value| {
+        let last = body["messages"].as_array()?.last()?.clone();
+        let text = last["content"].as_str().unwrap_or("");
+        if last["role"] != "user" || !text.contains("Request: every morning at 9") {
+            return None;
+        }
+        let args = json!({"action": "create", "name": "ci", "prompt": "Check CI and report failures", "trigger": {"type": "cron", "cron": "0 9 * * *"}});
+        Some(
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "automation", "arguments": args.to_string()}}]}, "finish_reason": "tool_calls"}]}),
+        )
+    })
+}
+
+/// A stored session in `h`'s project with this asker, on `agent`.
+fn session_with(
+    h: &support::H,
+    asker: std::sync::Arc<dyn codesmith_core::permission::Asker>,
+    agent: Option<&str>,
+) -> codesmith_core::session::Session {
+    codesmith_core::session::Session::new(
+        &h.loaded,
+        h.root(),
+        codesmith_core::session::Options {
+            agent: agent.map(str::to_string),
+            model: None,
+            resume: None,
+            title: Some("Parent".into()),
+            parent: None,
+            id: None,
+            questioner: None,
+            mcp: None,
+        },
+        asker,
+        Some(h.store()),
+    )
+    .unwrap()
+}
+
+/// Run `/automation <args>` in `s` as a front end does.
+async fn run_automation_command(
+    h: &support::H,
+    s: &mut codesmith_core::session::Session,
+    line: &str,
+) {
+    use codesmith_core::command;
+    let all = command::discover(
+        command::builtins(&h.loaded.root),
+        &[],
+        &h.loaded.config.commands,
+    );
+    let (name, args) = command::find_invocation(line, &all).unwrap();
+    assert_eq!(name, "automation");
+    s.run_command(line, &all[&name], &args, vec![], &mut support::Quiet)
+        .await
+        .unwrap();
+}
+
+fn user_texts(body: &serde_json::Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .map(|m| match &m["content"] {
+            serde_json::Value::String(s) => s.clone(),
+            v => v[0]["text"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
+// tool-automation.test.ts: "/automation hands the request to the model with
+// the automation instructions" (adapted: a built-in command run in the
+// session, which the model answers)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_tool_automation_hands_the_request_to_the_model_with_the_automation_instructions() {
+    let mut h = support::H::new().await;
+    let line = "/automation   every morning at 9 check CI  ";
+    let all = codesmith_core::command::builtins(&h.loaded.root);
+    let (name, args) = codesmith_core::command::find_invocation(line, &all).unwrap();
+    h.s.run_command(line, &all[&name], &args, vec![], &mut support::Quiet)
+        .await
+        .unwrap();
+    let reqs = h.requests();
+    assert_eq!(reqs.len(), 1);
+    let texts = user_texts(&reqs[0]);
+    let asked: Vec<&String> = texts.iter().filter(|t| t.contains("Request:")).collect();
+    assert_eq!(asked.len(), 1, "{texts:?}");
+    let text = asked[0];
+    assert!(text.contains("every morning at 9 check CI"), "{text}");
+    assert!(!text.contains("$ARGUMENTS"), "{text}");
+    assert!(
+        text.contains("`automation` tool") && text.contains("expires"),
+        "{text}"
+    );
+    assert!(!text.to_lowercase().contains("opencode"));
+    // The model gets the tool to act on it with.
+    assert!(reqs[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["function"]["name"] == "automation"));
+}
+
+// The command is only a prompt: what it leads to goes through the
+// automation tool, which asks, refuses on a decline, honours a deny and is
+// not offered to an agent denied it, as when the model calls it unbidden.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_automation_command_cannot_exceed_the_automation_tools_permissions() {
+    use codesmith_core::permission::Reply;
+    let line = "/automation every morning at 9 check CI";
+    let recording = |reply: Reply| {
+        std::sync::Arc::new(Recording {
+            asked: Default::default(),
+            reply,
+        })
+    };
+
+    // Asked, and declined: nothing is created.
+    let h = support::H::with(json!({}), Some(creates_on_request())).await;
+    let asker = recording(Reply::Reject(None));
+    let mut s = session_with(&h, asker.clone(), None);
+    run_automation_command(&h, &mut s, line).await;
+    let asked = asker.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(
+        (asked[0].action.as_str(), asked[0].resources.as_slice()),
+        ("automation", &["create".to_string()][..])
+    );
+    assert!(
+        asked[0].title.contains("Check CI and report failures"),
+        "{}",
+        asked[0].title
+    );
+    assert!(au::list(&h.store(), None).unwrap().is_empty());
+    // A declined request ends the turn; the tool's answer is in the session.
+    let history = format!("{:?}", h.store().history(&s.id).unwrap());
+    assert!(history.contains("declined"), "{history}");
+
+    // Asked, and approved: created, as through the tool itself.
+    let asker = recording(Reply::Once);
+    let mut s = session_with(&h, asker.clone(), None);
+    run_automation_command(&h, &mut s, line).await;
+    assert_eq!(asker.asked.lock().unwrap().len(), 1);
+    let made = au::list(&h.store(), None).unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(made[0].session_id.as_deref(), Some(s.id.as_str()));
+
+    // A rule denying it wins over an approval, and nothing is asked.
+    let h = support::H::with(
+        json!({"permissions": [{"action": "automation", "resource": "create", "effect": "deny"}]}),
+        Some(creates_on_request()),
+    )
+    .await;
+    let asker = recording(Reply::Always);
+    let mut s = session_with(&h, asker.clone(), None);
+    run_automation_command(&h, &mut s, line).await;
+    assert!(asker.asked.lock().unwrap().is_empty());
+    assert!(au::list(&h.store(), None).unwrap().is_empty());
+    assert!(
+        tool_result(&h).contains("Permission denied"),
+        "{}",
+        tool_result(&h)
+    );
+
+    // An agent denied the tool is not offered it, so the command can't reach it.
+    let h = support::H::with(
+        json!({"agents": {"build": {"permissions": [{"action": "automation", "resource": "*", "effect": "deny"}]}}}),
+        Some(creates_on_request()),
+    )
+    .await;
+    let asker = recording(Reply::Always);
+    let mut s = session_with(&h, asker.clone(), Some("build"));
+    run_automation_command(&h, &mut s, line).await;
+    let first = &h.requests()[0];
+    assert!(!first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["function"]["name"] == "automation"));
+    assert!(asker.asked.lock().unwrap().is_empty());
+    assert!(au::list(&h.store(), None).unwrap().is_empty());
+}
+
+// Edge: an empty request still sends the instructions, with nothing left
+// of the placeholder; and a project's own `/automation` replaces it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_automation_command_with_no_request_or_overridden() {
+    let mut h = support::H::new().await;
+    let all = codesmith_core::command::builtins(&h.loaded.root);
+    let (name, args) = codesmith_core::command::find_invocation("/automation", &all).unwrap();
+    assert_eq!((name.as_str(), args.as_str()), ("automation", ""));
+    h.s.run_command(
+        "/automation",
+        &all[&name],
+        &args,
+        vec![],
+        &mut support::Quiet,
+    )
+    .await
+    .unwrap();
+    let texts = user_texts(&h.requests()[0]);
+    let text = texts.last().unwrap();
+    assert!(
+        text.contains("Request: \n") && text.contains("If the request is empty"),
+        "{text}"
+    );
+    assert!(
+        au::list(&h.store(), None).unwrap().is_empty(),
+        "nothing is created by the command itself"
+    );
+
+    let configured: std::collections::BTreeMap<String, codesmith_core::command::Command> = [(
+        "automation".to_string(),
+        codesmith_core::command::Command {
+            template: "Mine: $ARGUMENTS".into(),
+            ..Default::default()
+        },
+    )]
+    .into();
+    let all = codesmith_core::command::discover(
+        codesmith_core::command::builtins(&h.loaded.root),
+        &[],
+        &configured,
+    );
+    assert_eq!(all["automation"].template, "Mine: $ARGUMENTS");
+}

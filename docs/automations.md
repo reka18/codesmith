@@ -3,7 +3,9 @@
 Automations run a prompt, or a Code Mode program, later or on a schedule,
 with nobody at the keyboard, as in OpenCode. Ask the agent ("check the build
 every 10 minutes", "remind me at 17:00 to ...") and it uses its `automation`
-tool, or use the CLI:
+tool, type `/automation every morning at 9 check CI` (OpenCode's command:
+it hands the request to the model with how to use the tool, so it asks
+just as the tool does and can do nothing the tool can't), or use the CLI:
 
 ```sh
 codesmith automation add --name standup --cron "0 9 * * 1-5" --tz Europe/Paris \

@@ -157,6 +157,7 @@ Built-in commands:
 | Command | What it does |
 |---|---|
 | `/init` | Write or improve `AGENTS.md` for the project, guided. |
+| `/automation [request]` | Schedule, list, pause, resume or remove [automations](automations.md): the request goes to the model with how to use the `automation` tool. |
 | `/calibrate` | Choose the project's review dimensions. See [code review](code-review.md). |
 | `/review [target]` | Review changes. See [code review](code-review.md). |
 

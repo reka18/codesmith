@@ -1,0 +1,16 @@
+Manage this project's automations.
+
+Request: $ARGUMENTS
+
+Use the `automation` tool. It sees every automation in this project. Creating, pausing, resuming or removing one asks the user unless a permission rule names it; if the user declines, say so and stop.
+
+- To create one, call it with `action: "create"`, a short `name`, a `trigger` and a `prompt`.
+  - `trigger`: `{ "type": "at", "at": "in 20 minutes" }` or `{ "type": "at", "at": "2026-10-27T09:00" }` (runs once), `{ "type": "every", "every": "1 hour" }` or `{ "type": "cron", "cron": "0 9 * * 1-5" }`, each with an optional `tz`.
+  - For a connected MCP server that offers push events, use `{ "type": "event", "server", "event", "args" }` instead of a timer. Each run's prompt receives the event as untrusted data.
+  - `prompt` is the instruction each run receives: write it with enough context to act on without this conversation. By default each run is a new child session of this one, with this session's agent and model; `target: "session"` continues this session instead, and `agent` runs a read-only subagent such as explore or review.
+  - To stop it at a time, add `expires`: an instant, a wall-clock time, or "in 8 hours".
+  - Runs are unattended: shell commands, edits, web fetches and MCP tools are denied unless the user's `automation.permissions` config allows them, and anything else that needs approval is refused. Schedule only work that fits.
+- To pause, resume or remove one, find its id with `action: "list"`, then call the tool with that `action` and `id`.
+- If the request is empty, list the automations and show each one's name, trigger, status and next run.
+
+Reply in one line: what changed and which time or event triggers it.

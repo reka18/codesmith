@@ -12,3 +12,5 @@
 1683 :: ported :: tests/oc_automation_roadmap.rs::oc_automation_checks_ask_rules_at_creation_and_still_needs_a_person_at_run_time :: adapted: an MCP call has no resource, so a rule asking about the tool refuses the program at creation, a resource-scoped one does not apply, and one added later fails the run before it runs
 1726 :: ported :: tests/oc_automation_roadmap.rs::oc_automation_checks_execute_when_its_tools_are_already_allowed :: adapted: an execute rule that asks or denies refuses the program at creation, since nobody is there to approve it at run time
 1757 :: ported :: tests/oc_automation_roadmap.rs::oc_automation_rejects_dynamic_access_unknown_tools_shell_recursive_tools_and_denies :: adapted: the shortest interval is a minute; a tool no opt-in allows is refused too
+@tool-automation.test.ts
+224 :: ported :: tests/oc_automation_roadmap.rs::oc_tool_automation_hands_the_request_to_the_model_with_the_automation_instructions :: adapted: a built-in command run in the session, which the model answers through the automation tool

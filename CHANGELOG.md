@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **`/automation [request]`**, as in OpenCode: hands the request to the
+  model with how to manage automations through the `automation` tool. It
+  is only a prompt, so creating or changing one still asks (or follows the
+  rules) as the tool does.
 - **The tools an automation's program calls** are read from it when it is
   created, as in OpenCode: `automation add --code-file` lists them and
   refuses a program whose calls can't be read (a computed `tools[name]`,

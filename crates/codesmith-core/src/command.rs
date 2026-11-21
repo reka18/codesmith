@@ -33,6 +33,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const INITIALIZE: &str = include_str!("prompt/initialize.txt");
+/// `/automation`: the request, with how to manage automations through the
+/// `automation` tool (OpenCode's `plugin/command/automation.txt`).
+const AUTOMATION: &str = include_str!("prompt/automation.txt");
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -89,9 +92,20 @@ impl Command {
     }
 }
 
-/// Built-in commands: `/init`, plus the native `/review` and `/calibrate`.
+/// Built-in commands: `/init` and `/automation`, plus the native `/review`
+/// and `/calibrate`.
 pub fn builtins(project: &Path) -> BTreeMap<String, Command> {
     let mut m = BTreeMap::new();
+    // Only a prompt: whatever it leads to goes through the `automation`
+    // tool and its permission checks, as any request would.
+    m.insert(
+        "automation".into(),
+        Command {
+            template: AUTOMATION.into(),
+            description: Some("schedule, list, pause, resume or remove automations".into()),
+            ..Default::default()
+        },
+    );
     m.insert(
         "init".into(),
         Command {
