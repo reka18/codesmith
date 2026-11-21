@@ -168,3 +168,26 @@
 @shell-parse-parity.test.ts
 24:22 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_scans_the_native_parity_commands :: POSIX rows
 24:5 :: design :: platform :: PowerShell rows
+@shell-scan/arithmetic.test.ts
+5 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_arithmetic_without_evaluating_it
+29 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_reports_explicit_commands_inside_arithmetic
+53 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_recognizes_arithmetic_in_existing_shell_contexts
+67 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_expand_arithmetic_inside_single_quotes
+80:4 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_rejects_malformed_arithmetic_syntax
+80:1 :: design :: deliberate :: `$((1; printf 2))` is read as an arithmetic expansion that names no command (every shell fails it as arithmetic when it runs); pinned by tests/oc_shell_scan_backlog.rs::oc_scan_rejects_malformed_arithmetic_syntax
+90 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_bounds_arithmetic_nesting_input_size_and_repeated_work :: adapted: deep parentheses in one expansion scan (they name no command); conditionals around substitutions are refused past eleven levels, not sixteen
+@shell-scan/bash-safety.test.ts
+54 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_recognizes_shell_whitespace
+61 :: design :: deliberate :: a non-shell space (CR, VT, FF, NBSP, BOM) is refused or kept in its word, as the shell reads it (`printf\rok` is checked as that name), rather than always refused; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_normalize_non_shell_whitespace
+66 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_consume_quoted_command_names_as_fd_prefixes
+84 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_commandless_redirects_as_permission_resources :: adapted: a commandless command has no words; its saved prefix is the operator's
+98:5 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets
+98:1 :: fixed :: tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets :: `X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it
+105 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_file_redirects_on_groups_and_trailing_assignments :: adapted: the redirect's resource has no words
+121 :: fixed :: tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications :: a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now
+131 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_redirect_resources_and_substitutions_in_commandless_redirects :: adapted: resources, since the redirect's has no words
+149 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_scans_a_list_following_a_group_redirect_suffix :: adapted: the redirect's resource has no words
+160 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_colon_commands_and_their_redirects_after_a_group
+170 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_repeatedly_rescan_nested_conditionals :: adapted: eleven levels (deeper ones are refused)
+186:3 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion
+186:1 :: design :: deliberate :: a quoted `)` in a substitution nested in a quoted one is refused as unanalyzable, which asks rather than guesses; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion

@@ -37,7 +37,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
-| Shell scan and parse | 1465 | 640 | 0 | 0 | 455 | 370 | 0 |
+| Shell scan and parse | 1465 | 702 | 4 | 0 | 462 | 297 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2264** | **33** | **45** | **2459** | **784** | **3** |
+| **Total** | **5588** | **2326** | **37** | **45** | **2466** | **711** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -73,6 +73,8 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner.test.ts`: "does not recover context overflow after durable assistant output" (1 case): an overflow after partial output was compacted and retried; it now fails the turn. Pinned by `tests/oc_runner.rs::oc_session_does_not_recover_context_overflow_after_output`.
 - `session-runner.test.ts`: "retries an unknown finish before output" (1 case): an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output`.
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
+- `shell-scan/bash-safety.test.ts`: "still requires redirect targets: %s" (1 case): `X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets`.
+- `shell-scan/bash-safety.test.ts`: "does not invent redirect commands for pure group descriptor duplications: %s" (3 cases): a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications`.
 - `shell.test.ts`: "builds command args per shell family" (1 case): POSIX families; Zsh now gets `+o nomatch`. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `shell.test.ts`: "passes an unmatched zsh glob through to the command" (1 case): an unmatched glob failed the whole Zsh line. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `snapshot.test.ts`: "recovers from a corrupt index and ignores a stale index lock" (1 case): a lock left by a killed capture failed every later capture and undo, and a corrupt index failed capture; captures now write a temporary index and rename it into place, rebuilding an unreadable one, and restores check out through their own. Pinned by `tests/oc_snapshot_backlog.rs::oc_snapshot_recovers_from_a_corrupt_index_and_a_stale_lock`.
@@ -189,7 +191,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (784 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (711 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -372,7 +374,7 @@ Tests for behaviour CodeSmith already has but no test pins (784 cases), by area,
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
 
-### Shell scan and parse (370)
+### Shell scan and parse (297)
 
 - prefix for long argument lists (S) — `shell_scan::scan`
   - `shell-parse-compatibility.test.ts`: derives the prefix for long argument lists
@@ -395,29 +397,10 @@ Tests for behaviour CodeSmith already has but no test pins (784 cases), by area,
   - `shell-parse-syntax.test.ts`: %s rejects variable sinks when a substitution can build the subscript: %s (5 cases)
 - repeated zsh q flags in bounded time (S) — `shell_scan::scan`
   - `shell-scan/adversarial.test.ts`: scans repeated zsh q flags in bounded time
-- arithmetic tables: kept unevaluated, explicit commands found, malformed rejected, bounded (M) — `shell_scan::scan`
-  - `shell-scan/arithmetic.test.ts`: preserves arithmetic without evaluating it: %s (14 cases)
-  - `shell-scan/arithmetic.test.ts`: reports explicit commands inside arithmetic: %s (6 cases)
-  - `shell-scan/arithmetic.test.ts`: recognizes arithmetic in existing shell contexts: %s (5 cases)
-  - `shell-scan/arithmetic.test.ts`: does not expand arithmetic inside single quotes
-  - `shell-scan/arithmetic.test.ts`: rejects malformed arithmetic syntax: %s (5 cases)
-  - `shell-scan/arithmetic.test.ts`: bounds arithmetic nesting, input size, and repeated conditional work
 - arithmetic rows checked against real bash/zsh (M) — `tests/shell_differential.rs`
   - `shell-scan/arithmetic.test.ts`: ${shell} evaluates %s independently (20 cases)
 - Bash safety tables: whitespace, fd prefixes, commandless redirects, group redirects, delimiter confusion (M) — `shell_scan::scan`
   - `shell-scan/bash-safety.test.ts`: ${shell} command syntax is visible: %s (2 cases)
-  - `shell-scan/bash-safety.test.ts`: recognizes shell whitespace %j (2 cases)
-  - `shell-scan/bash-safety.test.ts`: does not normalize non-shell whitespace %j (5 cases)
-  - `shell-scan/bash-safety.test.ts`: does not consume quoted command names as fd prefixes: %s (3 cases)
-  - `shell-scan/bash-safety.test.ts`: retains commandless redirects as explicit permission resources: %s (6 cases)
-  - `shell-scan/bash-safety.test.ts`: still requires redirect targets: %s (6 cases)
-  - `shell-scan/bash-safety.test.ts`: retains file redirects on compound groups and trailing assignments: %s (5 cases)
-  - `shell-scan/bash-safety.test.ts`: does not invent redirect commands for pure group descriptor duplications: %s (3 cases)
-  - `shell-scan/bash-safety.test.ts`: retains both redirect resources and explicit substitutions in commandless redirects: %s (4 cases)
-  - `shell-scan/bash-safety.test.ts`: scans a list following a group redirect suffix
-  - `shell-scan/bash-safety.test.ts`: retains explicit colon commands and their redirects after a group
-  - `shell-scan/bash-safety.test.ts`: does not repeatedly rescan nested conditionals
-  - `shell-scan/bash-safety.test.ts`: does not lose commands through delimiter or quote confusion: %s (4 cases)
   - `shell-scan/bash-safety.test.ts`: ${shell}: %s (3 cases)
   - `shell-scan/bash-safety.test.ts`: ${shell} preserves commands around redirect-only syntax: %s (12 cases)
 - the fixtures run in real bash/zsh (add them to the differential corpus) (M) — `tests/shell_differential.rs`
@@ -846,7 +829,7 @@ Tests for behaviour CodeSmith already has but no test pins (784 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 688 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 592 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 599 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -2242,7 +2225,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell scan and parse (1095 of 1465)</summary>
+<details><summary>Shell scan and parse (1168 of 1465)</summary>
 
 
 **`shell-parse-compatibility.test.ts`**
@@ -2288,10 +2271,34 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P scans adversarial Bash input in bounded time: %s ×6 — `src/tool/shell_scan.rs::oc_scan_adversarial_input_in_bounded_time`
 - D scans visible PowerShell command positions: %s ×14 · reports incomplete PowerShell input: %s ×2 — platform: PowerShell
 
+**`shell-scan/arithmetic.test.ts`**
+
+- P preserves arithmetic without evaluating it: %s ×14 — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_arithmetic_without_evaluating_it`
+- P reports explicit commands inside arithmetic: %s ×6 — `tests/oc_shell_scan_backlog.rs::oc_scan_reports_explicit_commands_inside_arithmetic`
+- P recognizes arithmetic in existing shell contexts: %s ×5 — `tests/oc_shell_scan_backlog.rs::oc_scan_recognizes_arithmetic_in_existing_shell_contexts`
+- P does not expand arithmetic inside single quotes — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_expand_arithmetic_inside_single_quotes`
+- P rejects malformed arithmetic syntax: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_malformed_arithmetic_syntax`
+- D rejects malformed arithmetic syntax: %s — deliberate: `$((1; printf 2))` is read as an arithmetic expansion that names no command (every shell fails it as arithmetic when it runs); pinned by tests/oc_shell_scan_backlog.rs::oc_scan_rejects_malformed_arithmetic_syntax
+- P bounds arithmetic nesting, input size, and repeated conditional work — `tests/oc_shell_scan_backlog.rs::oc_scan_bounds_arithmetic_nesting_input_size_and_repeated_work` (adapted: deep parentheses in one expansion scan (they name no command); conditionals around substitutions are refused past eleven levels, not sixteen)
+
 **`shell-scan/bash-safety.test.ts`**
 
 - P rejects malformed command positions: %s ×7 — `src/tool/shell_scan.rs::oc_scan_adversarial_command_positions`
+- P recognizes shell whitespace %j ×2 — `tests/oc_shell_scan_backlog.rs::oc_scan_recognizes_shell_whitespace`
+- D does not normalize non-shell whitespace %j ×5 — deliberate: a non-shell space (CR, VT, FF, NBSP, BOM) is refused or kept in its word, as the shell reads it (`printf\rok` is checked as that name), rather than always refused; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_normalize_non_shell_whitespace
+- P does not consume quoted command names as fd prefixes: %s ×3 — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_consume_quoted_command_names_as_fd_prefixes`
 - P keeps unsupported group positions and empty command names opaque: %s ×6 — `src/tool/shell_scan.rs::oc_scan_keeps_dynamic_command_names`
+- P retains commandless redirects as explicit permission resources: %s ×6 — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_commandless_redirects_as_permission_resources` (adapted: a commandless command has no words; its saved prefix is the operator's)
+- P still requires redirect targets: %s ×5 — `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets`
+- F still requires redirect targets: %s — `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets` (`X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it)
+- P retains file redirects on compound groups and trailing assignments: %s ×5 — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_file_redirects_on_groups_and_trailing_assignments` (adapted: the redirect's resource has no words)
+- F does not invent redirect commands for pure group descriptor duplications: %s ×3 — `tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications` (a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now)
+- P retains both redirect resources and explicit substitutions in commandless redirects: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_redirect_resources_and_substitutions_in_commandless_redirects` (adapted: resources, since the redirect's has no words)
+- P scans a list following a group redirect suffix — `tests/oc_shell_scan_backlog.rs::oc_scan_scans_a_list_following_a_group_redirect_suffix` (adapted: the redirect's resource has no words)
+- P retains explicit colon commands and their redirects after a group — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_colon_commands_and_their_redirects_after_a_group`
+- P does not repeatedly rescan nested conditionals — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_repeatedly_rescan_nested_conditionals` (adapted: eleven levels (deeper ones are refused))
+- P does not lose commands through delimiter or quote confusion: %s ×3 — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion`
+- D does not lose commands through delimiter or quote confusion: %s — deliberate: a quoted `)` in a substitution nested in a quoted one is refused as unanalyzable, which asks rather than guesses; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion
 
 **`shell-scan/bash-syntax.test.ts`**
 

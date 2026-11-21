@@ -794,3 +794,411 @@ fn oc_scan_scans_the_native_parity_commands() {
         );
     }
 }
+
+// --- arithmetic.test.ts ---
+
+/// A command's source, unquoted words and words as written.
+fn parts(c: &shell_scan::Command) -> (String, Vec<String>, Vec<String>) {
+    (c.resource.clone(), c.words.clone(), c.raw_words.clone())
+}
+
+fn owned(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+/// "preserves arithmetic without evaluating it: %s"
+#[test]
+fn oc_scan_preserves_arithmetic_without_evaluating_it() {
+    let mut failed = Vec::new();
+    for expression in [
+        "$((1+1))",
+        "$((1 + 1))",
+        "$(((1 + 2) * (3 + (4))))",
+        "$((value + $other + ${third}))",
+        "$((value += 2, value > 1 ? value << 2 : ~value))",
+        "$((16#ff & 0xff | 2 ** 3))",
+        "$((1 + $((2 * 3))))",
+        "$((1 + \\\n2))",
+        "$((1 +\n2))",
+        "$((1 + ${value:-2}))",
+        "$((array[index]))",
+        "$((1 + $[2]))",
+        "$((1 + \"2\"))",
+        "$((1 + '2'))",
+    ] {
+        for argument in [expression.to_string(), format!("\"{expression}\"")] {
+            let source = format!("echo {argument}");
+            let want = vec![(
+                source.clone(),
+                owned(&["echo", expression]),
+                vec!["echo".to_string(), argument.clone()],
+            )];
+            match shell_scan::scan(&source) {
+                Ok(c) if c.iter().map(parts).collect::<Vec<_>>() == want => {}
+                other => failed.push(format!("{source:?}: {other:?}")),
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// "reports explicit commands inside arithmetic: %s"
+#[test]
+fn oc_scan_reports_explicit_commands_inside_arithmetic() {
+    let mut failed = Vec::new();
+    for expression in [
+        "$((1 + $(printf 2)))",
+        "$((1 + `printf 2`))",
+        "$((1 + $((2 * $(printf 2)))))",
+        "$((1 + $(printf \"%s\" \"$(printf 2)\")))",
+        "$((array[$(printf 2)]))",
+        "$((1 + `printf \\2`))",
+    ] {
+        for argument in [expression.to_string(), format!("\"{expression}\"")] {
+            let source = format!("echo {argument}; pwd");
+            let inner: &[&str] = if expression.contains("\"$(printf") {
+                &["printf", "printf"]
+            } else {
+                &["printf"]
+            };
+            let ok = shell_scan::scan(&source).is_ok_and(|c| {
+                c.len() == inner.len() + 2
+                    && parts(&c[0])
+                        == (
+                            format!("echo {argument}"),
+                            owned(&["echo", expression]),
+                            vec!["echo".to_string(), argument.clone()],
+                        )
+                    && c[1..c.len() - 1]
+                        .iter()
+                        .map(|c| c.words[0].as_str())
+                        .collect::<Vec<_>>()
+                        == inner
+                    && parts(&c[c.len() - 1]) == ("pwd".into(), owned(&["pwd"]), owned(&["pwd"]))
+            });
+            if !ok {
+                failed.push(format!("{source:?}: {:?}", shell_scan::scan(&source)));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// "recognizes arithmetic in existing shell contexts: %s"
+#[test]
+fn oc_scan_recognizes_arithmetic_in_existing_shell_contexts() {
+    for source in [
+        "VALUE=$((1 + $(printf 2))) echo ok >\"$((3 + $(printf 4)))\"",
+        "echo \"$(echo $((1 + $(printf 2))))\"",
+        "{ echo \"$((1 + $(printf 2)))\"; }",
+        "(echo \"$((1 + $(printf 2)))\")",
+        "if true; then echo \"$((1 + $(printf 2)))\"; fi",
+    ] {
+        let heads: Vec<String> = shell_scan::scan(source)
+            .unwrap_or_else(|e| panic!("{source:?}: {e}"))
+            .into_iter()
+            .map(|c| c.words[0].clone())
+            .collect();
+        assert!(
+            heads.contains(&"printf".into()) && heads.contains(&"echo".into()),
+            "{source:?}: {heads:?}"
+        );
+    }
+}
+
+/// "does not expand arithmetic inside single quotes"
+#[test]
+fn oc_scan_does_not_expand_arithmetic_inside_single_quotes() {
+    let c = shell_scan::scan("echo '$((1 + $(ignored)))'").unwrap();
+    assert_eq!(
+        c.iter().map(parts).collect::<Vec<_>>(),
+        [(
+            "echo '$((1 + $(ignored)))'".to_string(),
+            owned(&["echo", "$((1 + $(ignored)))"]),
+            owned(&["echo", "'$((1 + $(ignored)))'"])
+        )]
+    );
+}
+
+/// "rejects malformed arithmetic syntax: %s"
+#[test]
+fn oc_scan_rejects_malformed_arithmetic_syntax() {
+    for source in [
+        "echo $((1 + 2)",
+        "echo $(((1 + 2))",
+        "echo $((1 + $(printf 2))) &&",
+        "echo $((1 + $(printf 2 &&)))",
+    ] {
+        assert!(shell_scan::scan(source).is_err(), "{source:?}");
+    }
+    // Differs on purpose: read as an arithmetic expansion that names no
+    // command (every shell fails it as arithmetic when it runs).
+    let c = shell_scan::scan("echo $((1; printf 2))").unwrap();
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].words, ["echo", "$((1; printf 2))"]);
+}
+
+/// "bounds arithmetic nesting, input size, and repeated conditional work"
+#[test]
+fn oc_scan_bounds_arithmetic_nesting_input_size_and_repeated_work() {
+    // Adapted: deep parentheses inside one expansion name no command, so
+    // they scan; nested expansions and oversized input are refused.
+    assert!(shell_scan::scan(&format!("echo $(({}1{}))", "(".repeat(33), ")".repeat(33))).is_ok());
+    assert!(shell_scan::scan(&format!("echo {}1{}", "$((".repeat(33), "))".repeat(33))).is_err());
+    assert!(shell_scan::scan(&format!("echo $(({}1))", "1+".repeat(32 * 1024))).is_err());
+    // Repeated conditional work stays bounded. Adapted: CodeSmith scans
+    // eleven levels of conditionals around substitutions and refuses deeper
+    // ones (OpenCode scans sixteen), which asks rather than guesses.
+    let start = std::time::Instant::now();
+    let mut source = format!("printf {}", "1".repeat(1024));
+    for level in 1..=16 {
+        source = format!("if true; then echo $((1 + $({source}))); fi");
+        let scanned = shell_scan::scan(&source);
+        if level <= 11 {
+            assert_eq!(scanned.map(|c| c.len()), Ok(2 * level + 1), "{level}");
+        } else {
+            assert!(scanned.is_err(), "{level}");
+        }
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert!(shell_scan::scan("echo $((1+1))").is_ok());
+}
+
+// --- bash-safety.test.ts ---
+
+fn scanned(source: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
+    shell_scan::scan(source)
+        .unwrap_or_else(|e| panic!("{source:?}: {e}"))
+        .iter()
+        .map(parts)
+        .collect()
+}
+
+fn triple(resource: &str, words: &[&str], raw: &[&str]) -> (String, Vec<String>, Vec<String>) {
+    (resource.to_string(), owned(words), owned(raw))
+}
+
+/// "recognizes shell whitespace %j"
+#[test]
+fn oc_scan_recognizes_shell_whitespace() {
+    for space in [" ", "\t"] {
+        let c = shell_scan::scan(&format!("printf{space}ok")).unwrap();
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].resource, format!("printf{space}ok"));
+        assert_eq!(c[0].words, ["printf", "ok"]);
+    }
+}
+
+/// "does not normalize non-shell whitespace %j". Adapted: the scan
+/// either refuses it or keeps it in the word, as the shell reads it, so
+/// `printf\rok` is checked as that command name, never as `printf`.
+#[test]
+fn oc_scan_does_not_normalize_non_shell_whitespace() {
+    for space in ["\r", "\u{b}", "\u{c}", "\u{a0}", "\u{feff}"] {
+        for source in [format!("{space}printf ok"), format!("printf{space}ok")] {
+            if let Ok(c) = shell_scan::scan(&source) {
+                assert!(c[0].words[0].contains(space), "{source:?}: {c:?}");
+            }
+        }
+    }
+}
+
+/// "does not consume quoted command names as fd prefixes: %s"
+#[test]
+fn oc_scan_does_not_consume_quoted_command_names_as_fd_prefixes() {
+    for head in ["'123'", "\"123\"", "1\\23"] {
+        let source = format!("{head}>/dev/null argument");
+        let c = shell_scan::scan(&source).unwrap();
+        assert_eq!(c.len(), 1, "{source:?}");
+        assert_eq!(c[0].resource, source);
+        assert_eq!(c[0].words, ["123", "argument"], "{source:?}");
+    }
+}
+
+/// "retains commandless redirects as explicit permission resources: %s".
+/// Adapted: a commandless command has no words; its resource is the
+/// source, and "always" saves its operator prefix.
+#[test]
+fn oc_scan_retains_commandless_redirects_as_permission_resources() {
+    for (source, save) in [
+        ("X=value > /dev/null", "X=value > *"),
+        ("X=x 2> output", "X=x 2> *"),
+        ("X=x < input", "X=x < *"),
+        ("> /dev/null", "> *"),
+        ("2>> output", "2>> *"),
+        (">output 2>&1", "> *"),
+    ] {
+        assert_eq!(scanned(source), [triple(source, &[], &[])], "{source:?}");
+        let a = shell_scan::analyze(source, Path::new("/w")).unwrap();
+        assert_eq!(
+            a.commands,
+            [(source.to_string(), save.to_string())],
+            "{source:?}"
+        );
+    }
+}
+
+/// "still requires redirect targets: %s". Fixed: `> # comment` read `#`
+/// as the target and `comment` as a command.
+#[test]
+fn oc_scan_still_requires_redirect_targets() {
+    for source in [
+        ">",
+        "X=x >",
+        "X=x > # comment\nprintf ok",
+        ">; printf ok",
+        "(printf ok) >",
+        "{ printf ok; } >",
+    ] {
+        assert!(shell_scan::scan(source).is_err(), "{source:?}");
+    }
+}
+
+/// "retains file redirects on compound groups and trailing assignments:
+/// %s". Adapted: the redirect's resource has no words (see above).
+#[test]
+fn oc_scan_retains_file_redirects_on_groups_and_trailing_assignments() {
+    for (source, resource) in [
+        ("{ printf ok; } > output", "> output"),
+        ("{ printf ok; } 2> output", "2> output"),
+        ("{ printf ok; } &> output", "&> output"),
+        ("(printf ok) > output", "> output"),
+        ("{ printf ok; }; X=x > output", "X=x > output"),
+    ] {
+        assert_eq!(
+            scanned(source),
+            [
+                triple("printf ok", &["printf", "ok"], &["printf", "ok"]),
+                triple(resource, &[], &[])
+            ],
+            "{source:?}"
+        );
+    }
+}
+
+/// "does not invent redirect commands for pure group descriptor
+/// duplications: %s". Fixed: `(make) 2>&1` also asked about `2>&1`.
+#[test]
+fn oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications() {
+    for source in [
+        "{ printf ok; } 2>&1",
+        "(printf ok) 2>&1",
+        "(printf ok) 2>&-",
+    ] {
+        assert_eq!(
+            scanned(source),
+            [triple("printf ok", &["printf", "ok"], &["printf", "ok"])],
+            "{source:?}"
+        );
+    }
+}
+
+/// "retains both redirect resources and explicit substitutions in
+/// commandless redirects: %s". Adapted: resources, since the redirect's
+/// has no words.
+#[test]
+fn oc_scan_retains_redirect_resources_and_substitutions_in_commandless_redirects() {
+    for source in [
+        "X=x >$(printf output)",
+        ">$(printf output)",
+        "{ :; } >$(printf output)",
+        "(:) >$(printf output)",
+    ] {
+        let c = shell_scan::scan(source).unwrap();
+        let head = if source.starts_with("X=x") {
+            "X=x >$(printf output)"
+        } else {
+            ">$(printf output)"
+        };
+        let resources: Vec<&str> = c.iter().map(|c| c.resource.as_str()).collect();
+        let want: Vec<&str> = if source.contains(':') {
+            vec![":", head, "printf output"]
+        } else {
+            vec![head, "printf output"]
+        };
+        assert_eq!(resources, want, "{source:?}");
+        assert_eq!(
+            parts(c.last().unwrap()),
+            triple(
+                "printf output",
+                &["printf", "output"],
+                &["printf", "output"]
+            )
+        );
+    }
+}
+
+/// "scans a list following a group redirect suffix" (adapted: the
+/// redirect's resource has no words)
+#[test]
+fn oc_scan_scans_a_list_following_a_group_redirect_suffix() {
+    assert_eq!(
+        scanned("(printf ok) >output && pwd"),
+        [
+            triple("printf ok", &["printf", "ok"], &["printf", "ok"]),
+            triple(">output", &[], &[]),
+            triple("pwd", &["pwd"], &["pwd"]),
+        ]
+    );
+}
+
+/// "retains explicit colon commands and their redirects after a group"
+#[test]
+fn oc_scan_retains_colon_commands_and_their_redirects_after_a_group() {
+    let c = scanned("(printf ok); : > output");
+    assert_eq!(c.len(), 2);
+    assert_eq!(
+        (c[0].0.as_str(), c[0].1.clone()),
+        ("printf ok", owned(&["printf", "ok"]))
+    );
+    assert_eq!(
+        (c[1].0.as_str(), c[1].1.clone()),
+        (": > output", owned(&[":"]))
+    );
+}
+
+/// "does not repeatedly rescan nested conditionals". Adapted: eleven
+/// levels scan in bounded time; deeper ones are refused (see the
+/// arithmetic bound above).
+#[test]
+fn oc_scan_does_not_repeatedly_rescan_nested_conditionals() {
+    let start = std::time::Instant::now();
+    let mut source = format!("printf {}", "x".repeat(1024));
+    for _ in 0..11 {
+        source = format!("if true; then echo $({source}); fi");
+    }
+    assert!(shell_scan::scan(&source).is_ok());
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    let c = scanned("if true; then echo $(printf safe); fi");
+    let summary: Vec<(String, Vec<String>)> = c.into_iter().map(|(r, w, _)| (r, w)).collect();
+    assert_eq!(
+        summary,
+        [
+            ("true".to_string(), owned(&["true"])),
+            (
+                "echo $(printf safe)".to_string(),
+                owned(&["echo", "$(printf safe)"])
+            ),
+            ("printf safe".to_string(), owned(&["printf", "safe"])),
+        ]
+    );
+}
+
+/// "does not lose commands through delimiter or quote confusion: %s"
+#[test]
+fn oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion() {
+    for source in [
+        "(printf safe # ) ignored\nscan_probe)",
+        "{ printf safe; # } ignored\nscan_probe; }",
+        "echo \"$(printf \"'\"; scan_probe)\"",
+    ] {
+        let heads: Vec<String> = scanned(source)
+            .into_iter()
+            .map(|c| c.1[0].clone())
+            .collect();
+        assert!(
+            heads.contains(&"scan_probe".to_string()),
+            "{source:?}: {heads:?}"
+        );
+    }
+}

@@ -268,6 +268,16 @@ struct Redir {
     write: Option<(String, String)>,
 }
 
+/// Whether a redirect only duplicates or closes a descriptor: `2>&1`,
+/// `>&2`, `0<&3`, `2>&-`.
+fn is_duplication(redirect: &str) -> bool {
+    let r = redirect.trim_start_matches(|c: char| c.is_ascii_digit());
+    let Some(target) = r.strip_prefix(">&").or_else(|| r.strip_prefix("<&")) else {
+        return false;
+    };
+    target == "-" || !target.is_empty() && target.chars().all(|c| c.is_ascii_digit())
+}
+
 /// What the script does with text, for [`Scanned::dynamic`].
 #[derive(Debug, Default, Clone, Copy)]
 struct Flags {
@@ -717,6 +727,9 @@ impl<'a> Scanner<'a> {
                 return Err("invalid-redirect")
             }
             Some('(') => return Err("invalid-redirect"),
+            // After a blank, `#` starts a comment: the redirect has no
+            // target, which the shell refuses (`> # x` is not a file `#`).
+            Some('#') if self.pos > op_end => return Err("invalid-redirect"),
             _ => {}
         }
         let target = self.word()?;
@@ -2182,17 +2195,24 @@ impl<'a> Scanner<'a> {
         let mut nested = Vec::new();
         let mut heredoc = false;
         let mut writes = Vec::new();
+        // Only descriptor duplications and closes (`2>&1`, `>&-`): they
+        // touch no file, so they are no resource of their own (OpenCode).
+        let mut duplications = true;
         while let Tok::Redir(_) = self.peek()? {
             let Tok::Redir(r) = self.next()? else {
                 unreachable!()
             };
+            duplications &= r.write.is_none()
+                && !r.heredoc
+                && r.nested.is_empty()
+                && is_duplication(&self.text(r.start, r.end));
             first.get_or_insert((r.start, r.op_end));
             end = r.end;
             heredoc |= r.heredoc;
             nested.extend(r.nested);
             writes.extend(r.write);
         }
-        if let Some((start, op_end)) = first {
+        if let Some((start, op_end)) = first.filter(|_| !duplications) {
             self.push(
                 Command {
                     redirect_prefix_end: Some(op_end - start),
