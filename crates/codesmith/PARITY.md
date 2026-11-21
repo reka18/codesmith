@@ -113,7 +113,7 @@ Where the tests live:
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet | Deferred |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
-| cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
+| cli: ACP | 105 | 72 | 5 | 0 | 28 | 0 | 0 |
 | tui: main UI | 1247 | 15 | 519 | 6 | 707 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
@@ -121,7 +121,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **765** | **813** | **8** | **2387** | **236** | **428** |
+| **Total** | **4637** | **782** | **814** | **8** | **2390** | **215** | **428** |
 
 ## Fixes made while porting
 
@@ -350,6 +350,12 @@ Where the tests live:
   folders that fit, the last one shortened, and a file name shortened
   before its extension. `@` and directory completions longer than their
   column keep both ends (`Locale.truncateMiddle`) instead of overflowing.
+- **A cancel during prompt setup** (`cli/test/acp/prompt`): messages are
+  handled concurrently, so a `session/cancel` sent right after
+  `session/prompt` could arrive while the prompt was still being set up
+  (its content read, the session taken), find no turn to stop, and be
+  lost: the turn ran on. A prompt now notes the cancels that came after
+  it, and stops its turn as soon as it starts, answering `cancelled`.
 - **`mcp auth` without a name** (`cli/test/mcp-auth-choices`): the name
   was required. It is now optional: in a terminal CodeSmith lists the
   remote servers that take an OAuth sign-in and asks for one; without a
@@ -965,6 +971,24 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/acp/prompt` | session/cancel forwards the server's wind-down before resolving cancelled | already passing | oc_acp_prompt_streams_..., oc_acp_cancel_*, oc_acp_close_and_delete_settle_the_active_turn |
 | `cli/test/acp/prompt` | stops waiting for a wind-down that never ends and fails the tools left running | already passing | oc_acp_prompt_streams_..., oc_acp_cancel_*, oc_acp_close_and_delete_settle_the_active_turn |
 | `cli/test/acp/prompt` | $/cancel_request on the prompt request cancels the turn like session/cancel | already passing | oc_acp_prompt_streams_..., oc_acp_cancel_*, oc_acp_close_and_delete_settle_the_active_turn |
+| `cli/test/acp/lifecycle.subprocess` | stdin EOF exits cleanly | already passing | oc_acp_stdin_eof_exits_cleanly |
+| `cli/test/acp/prompt` | routes slash commands and compact through their session endpoints | already passing | oc_acp_routes_slash_commands_and_compact (adapted: a command's template is the turn's prompt, in-process) |
+| `cli/test/acp/prompt` | session/cancel during prompt setup or before admission returns cancelled | after a fix | oc_acp_cancel_during_prompt_setup_returns_cancelled |
+| `cli/test/acp/translate` | ends a normal turn with end_turn | already passing | oc_acp_turn_outcomes |
+| `cli/test/acp/translate` | ends a content-filtered step with refusal | already passing | oc_acp_turn_outcomes |
+| `cli/test/acp/translate` | ends a content-filter failure with refusal and no error | already passing | oc_acp_turn_outcomes |
+| `cli/test/acp/translate` | ends an aborted execution with cancelled and no error | already passing | oc_acp_cancel_request_on_the_prompt_cancels_the_turn |
+| `cli/test/acp/translate` | fails other execution failures as service failures | already passing | oc_acp_turn_outcomes |
+| `cli/test/acp/translate` | streams a tool call from pending through progress to completion | already passing | oc_acp_streams_a_tool_call_from_pending_to_completion (adapted: no tool metadata, so no progress update or `rawOutput.metadata`) |
+| `cli/test/acp/translate` | fails a tool call with its partial content and error | already passing | oc_acp_fails_a_tool_call_with_its_error (adapted: no partial content or metadata) |
+| `cli/test/acp/translate` | locates the file of an edit tool | already passing | oc_acp_locates_the_file_of_an_edit_or_write_tool |
+| `cli/test/acp/translate` | locates the file of a write tool | already passing | oc_acp_locates_the_file_of_an_edit_or_write_tool |
+| `cli/test/acp/translate` | keeps a background shell pending after its turn ends | already passing | oc_acp_background_shell_wakes_the_session |
+| `cli/test/acp/translate` | keeps a background shell pending until its queued notice is delivered | already passing | oc_acp_background_shell_wakes_the_session |
+| `cli/test/acp/translate` | settles a background shell once its notice is delivered | already passing | oc_acp_background_shell_wakes_the_session, oc_acp_prompt_during_the_wait_reports_the_command_once |
+| `cli/test/acp/translate` | settles a background shell whose notice is cancelled | already passing | a_cancelled_resume_waits_for_another_command (adapted: the command is reported with the next one) |
+| `cli/test/acp/translate` | settles a shell that exits before its call's result arrives | already passing | oc_acp_settles_a_background_shell_that_exits_at_once |
+| `cli/test/acp/turn` | cancels unsupported session forms so execution can continue | already passing | oc_acp_unsupported_forms_let_the_turn_continue |
 | `cli/test/acp/prompt` | %s settles the active turn before responding and deta (2 cases) | already passing | oc_acp_prompt_streams_..., oc_acp_cancel_*, oc_acp_close_and_delete_settle_the_active_turn |
 | `cli/test/acp/replay` | replays user, text, reasoning, and tool messages in order on session/load | already passing | oc_acp_replay_shape |
 | `cli/test/acp/session` | initialize advertises capabilities, negotiates the version, and offers terminal auth only when asked | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
@@ -1108,6 +1132,7 @@ its remaining work is tracked in
 | tui: new designs experiment | by design | 6 | 3 | OpenCode's `opencode2` theme and its V1 migration exist only behind its `new-designs` experiment |
 | cli: stats | by design | 4 | 1 | statistics are computed locally (always with tool counts), no server request |
 | acp: separate server | by design | 4 | 3 | no separate server or plugin activation; no server defects to wrap; no shared event stream |
+| acp: turn translation | by design | 3 | 1 | only the client stops a turn (no server-side interruption); a step that fails is retried inside the turn and a failed attempt reports no usage; ACP prompts have no user shell commands (`!` text goes to the model) |
 | util: titles | by design | 4 | 1 | CodeSmith keeps untitled sessions untitled until a title is generated |
 | tui: diff viewer: mouse, images and routes | by design | 33 | 5 | no mouse: OpenCode's right-click file menu, clicked folders and source label; no image previews in the terminal; the viewer is always a session's panel (no standalone route, session tabs or plugin to disable, one kind of panel); the file tree's unused list layout, and its loading and empty states, which the viewer never shows |
 | tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
@@ -1205,29 +1230,3 @@ assertions built at run time or calling tools; not extracted some of its asserti
 - `codemode/test/promise` (1): e.g. "Promise.resolve / Promise.reject > resolve wraps plain values and passes promises through"
 - `codemode/test/string-core-test262` (1): e.g. "(1 more)"
 - `codemode/test/string-regexp-test262` (1): e.g. "(1 more)"
-
-### acp (left to the ACP work) (21)
-
-behaviour exists; no test cites it not cited by a test oc_acp_elicitation_mapping covers forms, not this flow stdin EOF ends the loop; not cited by a test
-
-- `cli/test/acp/lifecycle.subprocess`: stdin EOF exits cleanly
-- `cli/test/acp/prompt`: routes slash commands and compact through their session endpoints
-- `cli/test/acp/prompt`: session/cancel during prompt setup or before admission returns cancelled
-- `cli/test/acp/translate`: ends a normal turn with end_turn
-- `cli/test/acp/translate`: ends a content-filtered step with refusal
-- `cli/test/acp/translate`: ends a content-filter failure with refusal and no error
-- `cli/test/acp/translate`: ends a server-side interruption with cancelled
-- `cli/test/acp/translate`: ends an aborted execution with cancelled and no error
-- `cli/test/acp/translate`: fails other execution failures as service failures
-- `cli/test/acp/translate`: counts a failed step's tokens and clears its error when the next step starts
-- `cli/test/acp/translate`: streams a tool call from pending through progress to completion
-- `cli/test/acp/translate`: fails a tool call with its partial content and error
-- `cli/test/acp/translate`: locates the file of an edit tool
-- `cli/test/acp/translate`: locates the file of a write tool
-- `cli/test/acp/translate`: keeps a background shell pending after its turn ends
-- `cli/test/acp/translate`: keeps a background shell pending until its queued notice is delivered
-- `cli/test/acp/translate`: settles a background shell once its notice is delivered
-- `cli/test/acp/translate`: settles a background shell whose notice is cancelled
-- `cli/test/acp/translate`: settles a shell that exits before its call's result arrives
-- `cli/test/acp/translate`: leaves a user's shell command, whose notice waits for the next prompt, out of pending work
-- `cli/test/acp/turn`: cancels unsupported session forms so execution can continue

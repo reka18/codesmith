@@ -136,6 +136,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   cut as OpenCode cuts them (`…/src/ui/dialog-se….tsx`), keeping the root,
   the nearest folders and the extension; long `@` and directory
   completions keep both ends.
+- ACP: a `session/cancel` sent while a prompt is still being set up
+  cancels its turn; it was lost, and the turn ran on.
 
 ## 0.1.0
 

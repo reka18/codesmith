@@ -406,6 +406,32 @@ fn stop_reason(finish: Option<Reason>) -> &'static str {
     }
 }
 
+/// How a finished prompt turn answers: its stop reason, or the error. As in
+/// OpenCode, a content filter's failure is a refusal rather than an error,
+/// running out of output is `max_tokens`, a provider's 401 or 403 asks for
+/// authentication, and anything else is a service failure.
+fn turn_reply(result: &Result<()>, finish: Option<Reason>) -> Result<&'static str, RpcError> {
+    let e = match result {
+        Ok(()) => return Ok(stop_reason(finish)),
+        Err(e) => e,
+    };
+    let msg = format!("{e:#}");
+    if msg.contains(codesmith_core::runner::OUTPUT_LIMIT_EXHAUSTED) {
+        return Ok("max_tokens");
+    }
+    if msg.contains(codesmith_core::runner::CONTENT_FILTERED) {
+        return Ok("refusal");
+    }
+    if msg.contains("HTTP 401") || msg.contains("HTTP 403") {
+        return Err((
+            -32000,
+            "Authentication required: provider authentication required".into(),
+            json!({}),
+        ));
+    }
+    Err(internal(msg, json!({"service": "session"})))
+}
+
 /// What the running turn has used, shared so a cancel can report it.
 #[derive(Default)]
 struct TurnStats {
@@ -1349,6 +1375,10 @@ pub struct Agent {
     sessions: tokio::sync::Mutex<HashMap<String, Arc<Slot>>>,
     /// What the client advertised in `initialize`.
     client: Mutex<Value>,
+    /// Each session's latest `session/cancel`, by the order messages
+    /// arrived in: a prompt still being set up when it came is cancelled
+    /// once its turn starts.
+    cancels: Mutex<HashMap<String, u64>>,
 }
 
 /// Editor-supplied MCP servers, in CodeSmith's config shape. Like OpenCode,
@@ -2240,7 +2270,8 @@ impl Agent {
         }
     }
 
-    async fn handle(self: &Arc<Self>, id: Value, method: &str, p: Value) {
+    /// `seq` is the request's place in the order messages arrived in.
+    async fn handle(self: &Arc<Self>, id: Value, method: &str, p: Value, seq: u64) {
         let r: Result<Value, RpcError> = match method {
             "initialize" => {
                 *self.client.lock().unwrap() = p["clientCapabilities"].clone();
@@ -2313,7 +2344,7 @@ impl Agent {
             }
             "session/prompt" => {
                 // Answered when the turn ends.
-                if let Err(e) = self.prompt(id.clone(), &p).await {
+                if let Err(e) = self.prompt(id.clone(), &p, seq).await {
                     self.conn.error(&id, &e);
                 }
                 return;
@@ -2543,7 +2574,7 @@ impl Agent {
         Ok(options)
     }
 
-    async fn prompt(self: &Arc<Self>, rpc: Value, p: &Value) -> Result<(), RpcError> {
+    async fn prompt(self: &Arc<Self>, rpc: Value, p: &Value, seq: u64) -> Result<(), RpcError> {
         let sid = p["sessionId"].as_str().unwrap_or("").to_string();
         let slot = self.slot(&sid).await?;
         let mut content = prompt_content(&p["prompt"], &slot.loaded.config.media.image)?;
@@ -2601,37 +2632,27 @@ impl Agent {
                 }
                 me.conn.respond(&rpc, r)
             };
-            match result {
-                Ok(()) => response(stop_reason(stats.finish)),
-                Err(e)
-                    if e.to_string()
-                        .contains(codesmith_core::runner::OUTPUT_LIMIT_EXHAUSTED) =>
-                {
-                    response("max_tokens")
-                }
-                Err(e)
-                    if e.to_string()
-                        .contains(codesmith_core::runner::CONTENT_FILTERED) =>
-                {
-                    response("refusal")
-                }
-                Err(e) => {
-                    let msg = format!("{e:#}");
-                    let err = if msg.contains("HTTP 401") || msg.contains("HTTP 403") {
-                        (
-                            -32000,
-                            "Authentication required: provider authentication required".into(),
-                            json!({}),
-                        )
-                    } else {
-                        internal(msg, json!({"service": "session"}))
-                    };
-                    me.conn.error(&rpc, &err)
-                }
+            match turn_reply(&result, stats.finish) {
+                Ok(reason) => response(reason),
+                Err(err) => me.conn.error(&rpc, &err),
             }
             me.clone().wake(slot2).await;
         });
         *slot.task.lock().unwrap() = Some(task);
+        // A cancel that came while the prompt was set up (reading its
+        // content, waiting for the session) found no turn to stop: stop it
+        // now. Whichever of the two takes the task answers the prompt.
+        let cancelled_since = self
+            .cancels
+            .lock()
+            .unwrap()
+            .get(&slot.id)
+            .is_some_and(|&at| at > seq);
+        if cancelled_since {
+            self.stop(&slot.id, &slot, true).await;
+            self.hold_finished(&slot).await;
+            self.clone().wake(slot).await;
+        }
         Ok(())
     }
 
@@ -3037,9 +3058,12 @@ where
         load,
         sessions: Default::default(),
         client: Mutex::new(Value::Null),
+        cancels: Default::default(),
     });
     let mut lines = reader.lines();
+    let mut seq: u64 = 0;
     while let Some(line) = lines.next_line().await? {
+        seq += 1;
         let Ok(m) = serde_json::from_str::<Value>(&line) else {
             conn.send(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}));
             continue;
@@ -3049,9 +3073,14 @@ where
         match (m.get("id").cloned().filter(|v| !v.is_null()), method) {
             (Some(id), Some(method)) => {
                 let a = agent.clone();
-                tokio::spawn(async move { a.handle(id, &method, params).await });
+                tokio::spawn(async move { a.handle(id, &method, params, seq).await });
             }
             (None, Some(method)) => {
+                if method == "session/cancel" {
+                    if let Some(sid) = params["sessionId"].as_str() {
+                        agent.cancels.lock().unwrap().insert(sid.to_string(), seq);
+                    }
+                }
                 let a = agent.clone();
                 tokio::spawn(async move { a.notification(&method, params).await });
             }
@@ -3121,7 +3150,11 @@ pub async fn run() -> Result<()> {
 ///   retry markers go to the session's own stream;
 /// - permissions settled elsewhere (no other client shares a session's
 ///   asks), and the `patch` tool (CodeSmith has none);
-/// - the server-unavailable and catalog error boundaries (no separate server).
+/// - the server-unavailable and catalog error boundaries (no separate server),
+///   and turns interrupted by the server (only the client stops a turn);
+/// - a failed step's tokens: a step that fails is retried inside the turn,
+///   and a failed attempt reports no usage;
+/// - user shell commands (`!`): ACP prompt text goes to the model.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3199,7 +3232,9 @@ mod tests {
 
     // A user's cancel of a resumed turn that had not reported its commands
     // yet does not wake the session again for them: only another command
-    // finishing does, and that turn reports both.
+    // finishing does, and that turn reports both. Ports translate.test.ts:
+    // "settles a background shell whose notice is cancelled" (adapted: the
+    // command is reported with the next one rather than dropped).
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cancelled_resume_waits_for_another_command() {
         let (_d, cwd, base) = tmp().await;
@@ -3233,7 +3268,8 @@ mod tests {
     }
     /// The background command notices the model answered, by marker.
     static WOKE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    const MARKERS: [&str; 11] = [
+    const MARKERS: [&str; 12] = [
+        "done-fast",
         "done-fail",
         "done-held",
         "done-later",
@@ -4549,7 +4585,8 @@ mod tests {
     }
 
     // prompt.test.ts: "$/cancel_request on the prompt request cancels the
-    // turn like session/cancel"
+    // turn like session/cancel"; translate.test.ts: "ends an aborted
+    // execution with cancelled and no error"
     #[tokio::test(flavor = "multi_thread")]
     async fn oc_acp_cancel_request_on_the_prompt_cancels_the_turn() {
         let (_d, cwd, base) = tmp().await;
@@ -6129,7 +6166,10 @@ mod tests {
     /// OpenCode's background-turn test: a background command finishing
     /// after `end_turn` wakes the idle session, and the model's reaction
     /// streams as agent-initiated `session/update`s (a new message, no
-    /// request to answer); the session then takes prompts as usual.
+    /// request to answer); the session then takes prompts as usual. Also
+    /// translate.test.ts: "keeps a background shell pending after its turn
+    /// ends", "... until its queued notice is delivered" and "settles a
+    /// background shell once its notice is delivered".
     #[tokio::test(flavor = "multi_thread")]
     async fn oc_acp_background_shell_wakes_the_session() {
         let (_d, cwd, base) = tmp().await;
@@ -6519,5 +6559,314 @@ mod tests {
             text.contains(&format!("{}/*", secret_dir.display())),
             "{text}"
         );
+    }
+
+    // translate.test.ts: "ends a normal turn with end_turn", "ends a
+    // content-filtered step with refusal", "ends a content-filter failure
+    // with refusal and no error", "fails other execution failures as service
+    // failures"
+    #[test]
+    fn oc_acp_turn_outcomes() {
+        let one = Usage {
+            input: 1,
+            output: 1,
+            ..Default::default()
+        };
+        assert_eq!(turn_reply(&Ok(()), Some(Reason::Stop)), Ok("end_turn"));
+        assert_eq!(
+            usage_json(&one),
+            json!({"inputTokens": 1, "outputTokens": 1, "totalTokens": 2})
+        );
+        assert_eq!(
+            turn_reply(&Ok(()), Some(Reason::ContentFilter)),
+            Ok("refusal")
+        );
+        let filtered = Err(anyhow!(
+            "{} (blocked)",
+            codesmith_core::runner::CONTENT_FILTERED
+        ));
+        assert_eq!(turn_reply(&filtered, None), Ok("refusal"));
+        let limited = Err(anyhow!(codesmith_core::runner::OUTPUT_LIMIT_EXHAUSTED));
+        assert_eq!(turn_reply(&limited, None), Ok("max_tokens"));
+        let (code, message, data) =
+            turn_reply(&Err(anyhow!("HTTP 429: slow down")), None).unwrap_err();
+        assert_eq!(
+            (code, message.as_str(), data),
+            (
+                -32603,
+                "Internal error: HTTP 429: slow down",
+                json!({"service": "session"})
+            )
+        );
+        assert_eq!(
+            turn_reply(&Err(anyhow!("HTTP 401: missing key")), None)
+                .unwrap_err()
+                .0,
+            -32000
+        );
+    }
+
+    // translate.test.ts: "streams a tool call from pending through progress
+    // to completion" (adapted: CodeSmith's tools carry no metadata, so the
+    // progress update and `rawOutput.metadata` are dropped)
+    #[test]
+    fn oc_acp_streams_a_tool_call_from_pending_to_completion() {
+        let cwd = Path::new("/workspace");
+        let input = json!({"command": "printf done", "workdir": "sub"});
+        let pending = tool_call(cwd, "call_ok", "shell", &input, "pending");
+        assert_eq!(
+            (
+                &pending["toolCallId"],
+                &pending["name"],
+                &pending["status"],
+                &pending["kind"]
+            ),
+            (
+                &json!("call_ok"),
+                &json!("shell"),
+                &json!("pending"),
+                &json!("execute")
+            )
+        );
+        assert_eq!(pending["title"], "printf done");
+        assert_eq!(pending["locations"], json!([{"path": "/workspace/sub"}]));
+        assert_eq!(pending["rawInput"], input);
+        let done = result_update(cwd, "call_ok", "shell", &input, "done", false, &[]);
+        assert_eq!(
+            (&done["sessionUpdate"], &done["status"]),
+            (&json!("tool_call_update"), &json!("completed"))
+        );
+        assert_eq!(
+            done["content"],
+            json!([{"type": "content", "content": {"type": "text", "text": "done"}}])
+        );
+    }
+
+    // translate.test.ts: "fails a tool call with its partial content and
+    // error" (adapted: a failed call has no partial content or metadata in
+    // CodeSmith; its content is the error)
+    #[test]
+    fn oc_acp_fails_a_tool_call_with_its_error() {
+        let cwd = Path::new("/workspace");
+        let input = json!({"path": "/workspace/missing.ts"});
+        let failed = result_update(cwd, "call_fail", "read", &input, "not found", true, &[]);
+        assert_eq!(
+            (&failed["status"], &failed["kind"]),
+            (&json!("failed"), &json!("read"))
+        );
+        assert_eq!(
+            failed["locations"],
+            json!([{"path": "/workspace/missing.ts"}])
+        );
+        assert_eq!(
+            failed["content"],
+            json!([{"type": "content", "content": {"type": "text", "text": "not found"}}])
+        );
+        assert_eq!(failed["rawOutput"], json!({"error": "not found"}));
+    }
+
+    // translate.test.ts: "locates the file of an edit tool", "locates the
+    // file of a write tool"
+    #[test]
+    fn oc_acp_locates_the_file_of_an_edit_or_write_tool() {
+        let cwd = Path::new("/workspace");
+        for (name, input, file) in [
+            (
+                "edit",
+                json!({"path": "/workspace/a.ts", "oldString": "a", "newString": "b"}),
+                "/workspace/a.ts",
+            ),
+            (
+                "write",
+                json!({"path": "/workspace/b.ts", "content": "b"}),
+                "/workspace/b.ts",
+            ),
+        ] {
+            let at = json!([{ "path": file }]);
+            assert_eq!(
+                tool_call(cwd, "c", name, &input, "pending")["locations"],
+                at
+            );
+            assert_eq!(
+                result_update(cwd, "c", name, &input, "ok", false, &[])["locations"],
+                at,
+                "{name}"
+            );
+        }
+    }
+
+    // lifecycle.subprocess.test.ts: "stdin EOF exits cleanly"
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_stdin_eof_exits_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client_w, server_r) = tokio::io::duplex(1 << 16);
+        let (server_w, client_r) = tokio::io::duplex(1 << 16);
+        let load: Loader = Arc::new(|cwd: &Path| {
+            Ok(Loaded {
+                config: config::Config::default(),
+                files: vec![],
+                root: cwd.to_path_buf(),
+            })
+        });
+        let served = tokio::spawn(serve(
+            BufReader::new(server_r),
+            server_w,
+            dir.path().join("acp.db"),
+            load,
+        ));
+        let mut c = Client {
+            w: client_w,
+            r: BufReader::new(client_r).lines(),
+            next: 0,
+        };
+        let init = c
+            .request(
+                "initialize",
+                json!({"protocolVersion": 1, "clientCapabilities": {}}),
+            )
+            .await;
+        assert_eq!(init["result"]["protocolVersion"], 1);
+        drop(c);
+        let ended = tokio::time::timeout(Duration::from_secs(10), served)
+            .await
+            .expect("serve returns at EOF")
+            .unwrap();
+        assert!(ended.is_ok(), "{ended:?}");
+    }
+
+    // prompt.test.ts: "routes slash commands and compact through their
+    // session endpoints" (adapted: CodeSmith runs a command's template as
+    // the turn's prompt, in-process)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_routes_slash_commands_and_compact() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start_with(
+            &cwd,
+            &base,
+            json!({"commands": {"look": {"template": "describe $ARGUMENTS", "description": "Look around"}}}),
+        );
+        let sid = c.new_session(&cwd).await;
+        let prompt =
+            |text: &str| json!({"sessionId": sid, "prompt": [{"type": "text", "text": text}]});
+        let id = c.call("session/prompt", prompt("/look now")).await;
+        let (done, seen) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        let text: String = seen.iter().filter_map(chunk_text).collect();
+        assert_eq!(text, "described");
+        let commands = updates(&seen, "available_commands_update");
+        let listed = &commands.last().expect("commands listed")["availableCommands"];
+        let named = |n: &str| {
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == n)
+                .cloned()
+        };
+        assert_eq!(
+            named("look").map(|c| c["description"].clone()),
+            Some(json!("Look around"))
+        );
+        assert_eq!(
+            named("compact").map(|c| c["description"].clone()),
+            Some(json!("Compact the session"))
+        );
+        let id = c.call("session/prompt", prompt("/compact")).await;
+        let (done, seen) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+    }
+
+    // prompt.test.ts: "session/cancel during prompt setup or before admission
+    // returns cancelled" (adapted: no server to interrupt; the turn stops in
+    // process)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_cancel_during_prompt_setup_returns_cancelled() {
+        let (_d, cwd, base) = tmp().await;
+        std::fs::write(cwd.join("notes.md"), "# notes\n").unwrap();
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        let link = file_uri(&cwd.join("notes.md").display().to_string());
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [
+                    {"type": "text", "text": "slow"},
+                    {"type": "resource_link", "uri": link, "name": "notes.md"},
+                ]}),
+            )
+            .await;
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        let (done, seen) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "cancelled", "{seen:?}");
+        let r = c
+            .request(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "describe"}]}),
+            )
+            .await;
+        assert_eq!(r["result"]["stopReason"], "end_turn", "{r}");
+    }
+
+    // turn.test.ts: "cancels unsupported session forms so execution can
+    // continue": without form elicitation no form is sent, and the turn
+    // goes on to end normally
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_unsupported_forms_let_the_turn_continue() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        c.request(
+            "initialize",
+            json!({"protocolVersion": 1, "clientCapabilities": {}}),
+        )
+        .await;
+        let sid = c.new_session(&cwd).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "ask me"}]}),
+            )
+            .await;
+        let mut asked = Vec::new();
+        let (done, _) = c
+            .until(id, |m| {
+                asked.push(m["method"].clone());
+                None
+            })
+            .await;
+        assert_eq!(done["result"]["stopReason"], "end_turn");
+        assert!(asked.is_empty(), "{asked:?}");
+    }
+
+    // translate.test.ts: "settles a shell that exits before its call's result
+    // arrives": a background command that is done by the time its call
+    // returns is reported once, and the session does not wait for it again
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_acp_settles_a_background_shell_that_exits_at_once() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        // Done by the time its call returns, it is reported within the
+        // turn, or by the turn it wakes at once.
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "background echo done-fast"}]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, allow_once).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        let text: String = seen.iter().filter_map(chunk_text).collect();
+        if !text.contains("woke") {
+            let (m, _) = c
+                .wait(|m| chunk_text(m).is_some_and(|t| t.contains("woke")))
+                .await;
+            assert_eq!(chunk_text(&m), Some("woke: done-fast"));
+        } else {
+            assert!(text.ends_with("woke: done-fast"), "{text}");
+        }
+        // Nothing wakes the session for it afterwards.
+        let more = tokio::time::timeout(Duration::from_millis(1500), c.recv()).await;
+        assert!(more.is_err(), "{more:?}");
+        assert_eq!(woke("done-fast"), 1, "reported once");
     }
 }
