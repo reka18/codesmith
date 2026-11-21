@@ -602,6 +602,28 @@ fn bench_calls(dir: &Path, rt: &tokio::runtime::Runtime, filter: &str) {
             report_us(&name, t, "2 commands, 40 rules + 4 policies");
         }
     }
+    if want("webfetch html to markdown") {
+        // A documentation page: headings, prose, quotes and 40 code blocks.
+        let page: String = (0..40)
+            .map(|i| {
+                format!(
+                    "<h2>Section {i}</h2><p>Some <b>prose</b> about <a href=\"/x{i}\">item {i}</a>,   \n</p>\
+                     <blockquote><p>A quoted note {i}.</p></blockquote>\
+                     <pre><code class=\"language-rust\">fn f{i}() -> u32 {{\n    {i}\n}}\n</code></pre>\
+                     <ul><li>one</li><li>two</li></ul>\n\n\n"
+                )
+            })
+            .collect();
+        let page = format!("<html><body>{page}</body></html>");
+        let t = per_call(10, || {
+            std::hint::black_box(codesmith_core::tool::html_markdown::to_markdown(&page));
+        });
+        report_us(
+            "webfetch html to markdown",
+            t,
+            &format!("{} KB, 40 code blocks", page.len() / 1024),
+        );
+    }
     if want("webfetch authorize") {
         let g = gate(rules.clone());
         let c = ctx(dir, &g);
