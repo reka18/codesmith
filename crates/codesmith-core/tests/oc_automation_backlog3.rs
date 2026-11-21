@@ -289,6 +289,15 @@ async fn oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase(
     assert_eq!(claimed.len(), 1, "missed slots run once");
     assert_eq!(claimed[0].1, a.created + 10 * MINUTE, "as due");
     assert_eq!(e.get(&a.id).next_due, Some(a.created + 110 * MINUTE));
+    // That claim was only to read the schedule: drop its unsettled run, which
+    // would otherwise hold back the next claim until it is resumed.
+    e.db.with_conn(|c| {
+        Ok(c.execute(
+            "DELETE FROM automation_run WHERE automation_id = ?1",
+            [&a.id],
+        )?)
+    })
+    .unwrap();
     // Marked late when it runs more than a minute after its slot.
     let runner = Runner::new(e.dbp.clone(), loader(model().await, None));
     e.due_at(&a.id, codesmith_core::store::now() - 5 * MINUTE);
@@ -606,7 +615,7 @@ async fn oc_automation_event_rejects_an_oversized_rendered_prompt_before_creatin
     };
     w.until("the pause", |a| a.status == "paused").await;
     let a = w.automation();
-    assert_eq!(a.runs, 1, "claimed, then refused");
+    assert_eq!(a.runs, 0, "refused before it was claimed");
     let why = a.last_error.clone().unwrap_or_default();
     assert!(why.contains("Event prompt exceeds 32 KiB"), "{why}");
     let run = au::runs(&w.e.db, &w.id).unwrap();

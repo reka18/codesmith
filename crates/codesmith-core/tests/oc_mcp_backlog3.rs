@@ -917,6 +917,7 @@ async fn oc_mcp_asks_before_calling_and_calls_nothing_when_refused() {
                 resume: None,
                 title: Some("t".into()),
                 parent: None,
+                id: None,
                 questioner: None,
                 mcp: h.mcp.clone(),
             },

@@ -45,14 +45,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 105 | 6 | 21 | 80 | 0 | 0 |
 | Code Mode | 67 | 38 | 8 | 1 | 20 | 0 | 0 |
-| Automations | 107 | 43 | 5 | 12 | 47 | 0 | 0 |
+| Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 411 | 0 | 24 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2860** | **79** | **68** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2863** | **79** | **65** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,7 +131,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (68 cases in 21 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (65 cases in 20 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -140,14 +140,13 @@ Missing features, by how many OpenCode test cases each would unlock (68 cases in
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
-| [Automation Failure Handling](#automation-failure-handling) | 3 | a five-minute backoff after a failed prompt, a pause after three failed programs, a pause on a malformed program result |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Default Model Fallback](#default-model-fallback) | 2 | the newest available model when none is configured, skipping disabled providers (CodeSmith asks for a model) |
 | [MCP Output Schemas](#mcp-output-schemas) | 2 | keeping MCP tools' output schemas and showing them in the Code Mode catalog |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
-| [Automation Durable Handoffs](#automation-durable-handoffs) | 1 | pending and terminal sends to the creating session |
+| [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
 | [MCP Session Recovery](#mcp-session-recovery) | 1 | initializing again and retrying a call when an HTTP server has forgotten the session |
 | [MCP Resource Blobs](#mcp-resource-blobs) | 1 | decoding text blobs and saving binary blobs to files (CodeSmith notes them) |
 | [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
@@ -223,14 +222,6 @@ Missing features, by how many OpenCode test cases each would unlock (68 cases in
 - `automation.test.ts`: stops at expires
 - `automation.test.ts`: never runs a slot that only comes up after expires, after downtime or on resume
 
-### Automation Failure Handling
-
-3 cases.
-
-- `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
-- `automation.test.ts`: keeps state on failure, retries a minute later, and pauses after 3 failed runs
-- `automation.test.ts`: pauses at once when a run returns an invalid shape
-
 ### Browser Attachment
 
 3 cases.
@@ -275,11 +266,11 @@ Missing features, by how many OpenCode test cases each would unlock (68 cases in
 - `tool-registry.test.ts`: a hook can rename a call inside a Code Mode program to another of its tools
 - `tool-registry.test.ts`: a call renamed inside a Code Mode program returns the renamed tool's structured output
 
-### Automation Durable Handoffs
+### Automation Failure Handling
 
 1 cases.
 
-- `automation.test.ts`: stays quiet while pending, then admits both a progress and a terminal send to the creator
+- `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
 
 ### MCP Session Recovery
 
@@ -2701,7 +2692,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (95 of 107)</summary>
+<details><summary>Automations (98 of 107)</summary>
 
 
 **`automation-event.test.ts`**
@@ -2753,6 +2744,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D does not call a tool while another server holds the lease, then takes over when it expires · picks up an automation created by another process sharing the DB while idle — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
 - P keeps state across runs, stays quiet without a return, and stops when done — `tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged` (adapted: state across runs, done finishes it, and a run that sends nothing starts no session)
 - P a program that returns nothing leaves state unchanged — `tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged`
+- P keeps state on failure, retries a minute later, and pauses after 3 failed runs — `tests/oc_automation_handoffs.rs::oc_automation_keeps_state_on_failure_and_pauses_after_3_failed_runs` (adapted: a failed run counts at claim and the next slot retries it)
+- P pauses at once when a run returns an invalid shape — `tests/oc_automation_handoffs.rs::oc_automation_pauses_at_once_when_a_run_returns_an_invalid_shape` (adapted: the refused run counts at claim)
+- P stays quiet while pending, then admits both a progress and a terminal send to the creator — `tests/oc_automation_handoffs.rs::oc_automation_stays_quiet_while_pending_then_admits_both_a_progress_and_a_terminal_send_to_the_creator`
 - P hands a failed check to one quiet child with the creator's permissions — `tests/oc_automation_handoffs.rs::oc_automation_hands_a_failed_check_to_one_quiet_child_with_the_creators_permissions`
 - P keeps the handoff visible and logs within the UTF-8 output budget — `tests/oc_automation_handoffs.rs::oc_automation_keeps_the_handoff_visible_and_logs_within_the_utf8_output_budget` (adapted: the reply follows the summary and logs)
 - P bounds failed code output including the pause reason in UTF-8 bytes — `tests/oc_automation_handoffs.rs::oc_automation_bounds_failed_code_output_including_the_pause_reason_in_utf8_bytes`

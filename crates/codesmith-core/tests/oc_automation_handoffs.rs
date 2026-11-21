@@ -557,3 +557,114 @@ async fn oc_automation_pauses_on_a_missing_handoff_directory_without_rerunning_t
     assert!(w.texts(&creator).is_empty());
     assert_eq!(w.tagged(&au::message_id(&id, 1)), 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_keeps_state_on_failure_and_pauses_after_3_failed_runs() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let id = w.code(
+        Some(&creator),
+        "if (input.runs > 1) throw new Error('Slack is down')\nreturn { state: { replies: 2 } }",
+        None,
+    );
+    let runner = w.runner();
+    w.due_now(&id);
+    runner.tick().await.unwrap();
+    assert_eq!(w.get(&id).state, json!({"replies": 2}));
+    for strike in 1..=3 {
+        w.due_now(&id);
+        runner.tick().await.unwrap();
+        let a = w.get(&id);
+        assert_eq!(
+            (
+                a.status.as_str(),
+                a.last_outcome.as_deref(),
+                a.state.clone()
+            ),
+            (
+                if strike == 3 { "paused" } else { "active" },
+                Some("failed"),
+                json!({"replies": 2})
+            ),
+            "strike {strike}"
+        );
+        let why = a.last_error.unwrap();
+        assert!(why.contains("Slack is down"), "{why}");
+        if strike == 3 {
+            assert!(why.starts_with("Paused after 3 failed runs"), "{why}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_pauses_at_once_when_a_run_returns_an_invalid_shape() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let id = w.code(Some(&creator), "return 'not-a-result'", None);
+    w.due_now(&id);
+    w.runner().tick().await.unwrap();
+    let a = w.get(&id);
+    assert_eq!(
+        (a.status.as_str(), a.last_outcome.as_deref()),
+        ("paused", Some("failed"))
+    );
+    let why = a.last_error.unwrap();
+    assert!(
+        why.starts_with("Paused: ") && why.contains("must return nothing or { state, done, send }"),
+        "{why}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_automation_stays_quiet_while_pending_then_admits_both_a_progress_and_a_terminal_send_to_the_creator(
+) {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    // The counter's reply counts the checks so far, like the thread's replies.
+    let id = w.code(
+        Some(&creator),
+        "const t = await tools.counter.post({ text: 'run ' + input.runs })\nconst replies = Number(t.split(' ')[1]) - 1\nif (!replies) return\nif (replies === 1) return { state: 'in progress', send: { prompt: 'First reply' } }\nconsole.log('checks complete')\nreturn { done: true, send: { prompt: 'All checks passed' } }",
+        None,
+    );
+    let runner = w.runner();
+    w.due_now(&id);
+    runner.tick().await.unwrap();
+    assert!(w.texts(&creator).is_empty(), "nothing sent while pending");
+    assert_eq!(w.tagged(&au::message_id(&id, 1)), 0);
+    assert_eq!(w.get(&id).state, Value::Null);
+    w.due_now(&id);
+    runner.tick().await.unwrap();
+    let a = w.get(&id);
+    assert_eq!(
+        (a.status.as_str(), a.runs, a.state.clone()),
+        ("active", 2, json!("in progress"))
+    );
+    assert_eq!(
+        au::runs(&w.db, &id).unwrap()[1].detail,
+        format!("Prompted {creator}\n\nanswer to: First reply")
+    );
+    w.due_now(&id);
+    runner.tick().await.unwrap();
+    let a = w.get(&id);
+    assert_eq!(
+        (a.status.as_str(), a.runs, a.state.clone()),
+        ("done", 3, json!("in progress"))
+    );
+    assert_eq!(
+        au::runs(&w.db, &id).unwrap()[2].detail,
+        format!("Prompted {creator}\nchecks complete\n\nanswer to: All checks passed")
+    );
+    assert_eq!(
+        user_prompts(&w, &creator),
+        ["u:First reply", "u:All checks passed"]
+    );
+    for run in [2, 3] {
+        assert_eq!(w.tagged(&au::message_id(&id, run)), 1);
+    }
+}

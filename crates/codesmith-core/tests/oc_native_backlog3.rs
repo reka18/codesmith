@@ -114,6 +114,7 @@ async fn oc_native_advances_the_instruction_epoch_and_omits_superseded_updates()
         resume: Some(id),
         title: None,
         parent: None,
+        id: None,
         questioner: None,
         mcp: None,
     };
