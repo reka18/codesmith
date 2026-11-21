@@ -47,12 +47,12 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
-| Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
+| Worktrees, VCS and projects | 158 | 21 | 0 | 0 | 113 | 24 | 0 |
 | Providers, models and credentials | 796 | 389 | 0 | 22 | 351 | 34 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2670** | **67** | **41** | **2536** | **274** | **0** |
+| **Total** | **5588** | **2685** | **67** | **41** | **2540** | **255** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -196,7 +196,7 @@ Missing features, by how many OpenCode test cases each would unlock (41 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (274 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (255 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Model requests and transport (1)
 
@@ -425,20 +425,8 @@ Tests for behaviour CodeSmith already has but no test pins (274 cases), by area,
   - `tool-automation.test.ts`: puts each automation's id, trigger, status, next run and action in the text without Code Mode
   - `tool-automation.test.ts`: treats another project's automation as missing
 
-### Worktrees, VCS and projects (43)
+### Worktrees, VCS and projects (24)
 
-- create/list/remove linked worktrees; unborn repositories (S) — `worktree`
-  - `git.test.ts`: creates, lists, and removes linked worktrees
-  - `git.test.ts`: reads no remote and no root commits from an unborn repository
-- project identity from the repository (root commit / remote), nested dirs resolve to the root, linked worktrees (S) — `worktree::project_id`
-  - `project.test.ts`: returns git global for repo with no commits and no remote
-  - `project.test.ts`: falls back to root commit when origin is missing and the cached id is corrupt
-  - `project.test.ts`: prefers normalized origin over root commit
-  - `project.test.ts`: normalizes ssh and https remotes to the same id
-  - `project.test.ts`: ignores file remotes and falls back to root commit
-  - `project.test.ts`: returns previous cached id from common dir
-  - `project.test.ts`: resolves from nested directories to repo root
-  - `project.test.ts`: linked worktree returns opened worktree directory and previous from common dir
 - review diffs: working copy, before first commit, feature branch vs default, staged/untracked, explicit and missing bases (M) — `review::target::resolve`
   - `vcs.test.ts`: lists local branches by recent activity
   - `vcs.test.ts`: lists remote branches without remote HEAD symrefs
@@ -463,17 +451,6 @@ Tests for behaviour CodeSmith already has but no test pins (274 cases), by area,
   - `vcs.test.ts`: creates detached worktrees without review metadata and requires an explicit base without a named hint
   - `vcs.test.ts`: rejects a branch creation anchor removed by rebase
   - `vcs.test.ts`: does not infer beyond the bounded creation-reflog window
-- create and remove, default directory and suffixes, from a branch, branch not read as an option, missing source, dirty needs force, conflicts (S) — `worktree::create / remove`
-  - `worktree.test.ts`: creates and removes a git worktree directory
-  - `worktree.test.ts`: defaults to the TUI worktree directory and suffixes duplicate names
-  - `worktree.test.ts`: creates a git worktree from a selected branch
-  - `worktree.test.ts`: does not interpret a branch as a git option
-  - `worktree.test.ts`: rejects a missing source directory
-  - `worktree.test.ts`: requires force to remove a dirty git worktree
-  - `worktree.test.ts`: adds a numeric suffix when a worktree directory already exists
-  - `worktree.test.ts`: fails after ten worktree directory conflicts
-- the setup (start) command runs with worktree paths (S) — `worktree::create`
-  - `worktree.test.ts`: runs the project setup script with worktree paths
 
 ### Providers, models and credentials (34)
 
@@ -527,7 +504,7 @@ Tests for behaviour CodeSmith already has but no test pins (274 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 657 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 661 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -2820,12 +2797,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Worktrees, VCS and projects (115 of 158)</summary>
+<details><summary>Worktrees, VCS and projects (134 of 158)</summary>
 
 
 **`git.test.ts`**
 
-- D discovers repository metadata without a work tree · clones a remote and reads checkout metadata · fetches, checks out, and resets remote changes · fingerprint changes with repository metadata, including from a linked worktree · refresh handles check-ignore exit ${exitCode} ×3 · lists both sides of a rename as separate file changes · caps batched tree patches, keeps per-file stats past the cap, and matches non-ASCII names · diffs a path selection longer than any platform command line · captures, compares, previews, and restores scoped trees · packs loose objects and combines packs without losing or delegating any object · applies both the store's own and the source's ignore rules and never splits the index · queued captures share one capture that still sees changes made before the call · skips repeat ignore checks for oversized and info/exclude-only untracked files · seeds and rebuilds the store from a source with a split index · sweeps abandoned temporary indexes by their creation time, not their mtime · records a tracked file replaced by an embedded repository as a gitlink · keeps the index when Git cannot even start — other: OpenCode's Git service (clone/fetch, tree capture with a private index); CodeSmith shells out per feature
+- D discovers repository metadata without a work tree · clones a remote and reads checkout metadata · fetches, checks out, and resets remote changes — other: OpenCode's Git service (clone/fetch, tree capture with a private index); CodeSmith shells out per feature
+- P creates, lists, and removes linked worktrees — `tests/oc_worktree_backlog2.rs::oc_worktree_creates_lists_and_removes_a_worktree`
+- P reads no remote and no root commits from an unborn repository — `tests/oc_worktree_backlog2.rs::oc_project_id_of_an_unborn_repository_is_its_path` (adapted: without a commit the project is named by its path)
+- D fingerprint changes with repository metadata, including from a linked worktree · refresh handles check-ignore exit ${exitCode} ×3 · lists both sides of a rename as separate file changes · caps batched tree patches, keeps per-file stats past the cap, and matches non-ASCII names · diffs a path selection longer than any platform command line · captures, compares, previews, and restores scoped trees · packs loose objects and combines packs without losing or delegating any object · applies both the store's own and the source's ignore rules and never splits the index · queued captures share one capture that still sees changes made before the call · skips repeat ignore checks for oversized and info/exclude-only untracked files · seeds and rebuilds the store from a source with a split index · sweeps abandoned temporary indexes by their creation time, not their mtime · records a tracked file replaced by an embedded repository as a gitlink · keeps the index when Git cannot even start — other: OpenCode's Git service (clone/fetch, tree capture with a private index); CodeSmith shells out per feature
 
 **`plugin/vcs-init.test.ts`**
 
@@ -2837,11 +2817,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`project.test.ts`**
 
-- D returns complete projects ordered by recent activity · updates and clears project metadata · records activity without editing metadata time and throttles repeats · lists archived projects only when requested · archives projects whose directories are gone and unarchives them on resolve · moves the canonical directory to a surviving clone instead of archiving · skips projects updated or active within the last sweep interval · never archives the global project · creates distinct deterministic projects for exact markerless directories · repository markers override markerless directory projects · does not publish project updates for first or repeated resolutions · publishes preserved project metadata when its canonical directory is renamed · keeps the canonical project directory when opening another clone · does not write the cache while resolving — client-server: OpenCode's project registry (list, archive, activity)
+- D returns complete projects ordered by recent activity · updates and clears project metadata · records activity without editing metadata time and throttles repeats · lists archived projects only when requested · archives projects whose directories are gone and unarchives them on resolve · moves the canonical directory to a surviving clone instead of archiving · skips projects updated or active within the last sweep interval · never archives the global project · creates distinct deterministic projects for exact markerless directories · repository markers override markerless directory projects · does not publish project updates for first or repeated resolutions · publishes preserved project metadata when its canonical directory is renamed · keeps the canonical project directory when opening another clone — client-server: OpenCode's project registry (list, archive, activity)
+- P returns git global for repo with no commits and no remote — `tests/oc_worktree_backlog2.rs::oc_project_id_of_an_unborn_repository_is_its_path` (adapted: named by its path rather than a shared global project)
+- P falls back to root commit when origin is missing and the cached id is corrupt — `tests/oc_worktree_backlog2.rs::oc_project_id_is_the_root_commit_from_anywhere_in_the_repository` (adapted: the id is the root commit's, never cached)
+- D prefers normalized origin over root commit · normalizes ssh and https remotes to the same id · ignores file remotes and falls back to root commit — deliberate: a project is identified by its root commit only, which every clone and worktree shares; remotes are not read
+- D returns previous cached id from common dir — deliberate: the project id is computed from the repository each time; there is no cached id to return
+- D does not write the cache while resolving — client-server: OpenCode's project registry (list, archive, activity)
+- P resolves from nested directories to repo root — `tests/oc_worktree_backlog2.rs::oc_project_id_is_the_root_commit_from_anywhere_in_the_repository` (adapted: the id is the root commit's, never cached)
 - P prefers git when both git and mercurial metadata exist — `tests/oc_vcs.rs::oc_project_prefers_git_when_both_git_and_mercurial_metadata_exist`
 - P prefers the nearest mercurial marker over an outer git repository — `tests/oc_vcs.rs::oc_project_prefers_the_nearest_mercurial_marker_over_an_outer_git_repository`
 - P prefers the nearest git marker over an outer mercurial repository — `tests/oc_vcs.rs::oc_project_prefers_the_nearest_git_marker_over_an_outer_mercurial_repository`
 - P returns global id for unreadable mercurial metadata — `tests/oc_vcs.rs::oc_project_returns_global_id_for_unreadable_mercurial_metadata`
+- P linked worktree returns opened worktree directory and previous from common dir — `tests/oc_worktree_backlog2.rs::oc_project_id_is_the_root_commit_from_anywhere_in_the_repository` (adapted: the id is the root commit's, never cached)
 - D reuses git discovery until git metadata changes · does not cache a transient git failure · sees the first commit in a reftable repository — client-server: OpenCode's project registry (list, archive, activity)
 
 **`util/git-executable.test.ts`**
@@ -2863,7 +2850,20 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`worktree.test.ts`**
 
-- D tracks canonical and linked worktrees when a project resolves · accepts arbitrary non-empty strategy ids · reports unavailable recorded strategy ids · requires a tracked project worktree · uses canonical configuration with an explicit source clone · creates from another managed worktree · preserves worktrees whose stored strategy is unavailable · does not publish an event when refresh finds no directory changes · refresh finds and prunes an externally managed git worktree · refresh ignores stale git worktree registrations · refresh ignores existing directories that are no longer git checkouts · refresh seeds the canonical checkout when inventory is empty · refresh removes missing ordinary checkouts · defaults to Git and configured directory without depending on Config · selects the last active registration and restores earlier strategies on disposal · does not fall back to Git when a registered strategy fails · rejects a source override belonging to another project · cannot remove a worktree belonging to another project · list is independent of an ambient workspace-qualified location · only refresh scans and prunes; list reads saved inventory · a failed strategy does not block list or other discovery · applies directory config through the adapter and restores defaults after config removal · resolves ${mode} global directory config from a linked checkout's subdirectory ×3 · normalization retains worktree directory and rejects invalid configuration — client-server: OpenCode's worktree inventory, strategies and refresh
+- D tracks canonical and linked worktrees when a project resolves · accepts arbitrary non-empty strategy ids · reports unavailable recorded strategy ids · requires a tracked project worktree — client-server: OpenCode's worktree inventory, strategies and refresh
+- P creates and removes a git worktree directory — `tests/oc_worktree_backlog2.rs::oc_worktree_creates_lists_and_removes_a_worktree` (adapted: no project rows or update event)
+- P defaults to the TUI worktree directory and suffixes duplicate names — `tests/oc_worktree_backlog2.rs::oc_worktree_suffixes_duplicate_names_and_gives_up_after_ten` (adapted: the default folder is `<data>/worktree/<project>`)
+- P runs the project setup script with worktree paths — `tests/oc_worktree_backlog2.rs::oc_worktree_runs_the_setup_command_with_worktree_paths` (adapted: `worktree.start` and `CODESMITH_WORKTREE_*`)
+- D uses canonical configuration with an explicit source clone — client-server: OpenCode's worktree inventory, strategies and refresh
+- P creates a git worktree from a selected branch — `tests/oc_worktree_backlog2.rs::oc_worktree_creates_a_worktree_from_a_selected_branch`
+- P does not interpret a branch as a git option — `tests/oc_worktree_backlog2.rs::oc_worktree_does_not_interpret_a_branch_as_a_git_option`
+- P rejects a missing source directory — `tests/oc_worktree_backlog2.rs::oc_worktree_rejects_a_missing_source_directory`
+- D creates from another managed worktree — client-server: OpenCode's worktree inventory, strategies and refresh
+- P requires force to remove a dirty git worktree — `tests/oc_worktree_backlog2.rs::oc_worktree_requires_force_to_remove_a_dirty_worktree`
+- D preserves worktrees whose stored strategy is unavailable — client-server: OpenCode's worktree inventory, strategies and refresh
+- P adds a numeric suffix when a worktree directory already exists — `tests/oc_worktree_backlog2.rs::oc_worktree_suffixes_duplicate_names_and_gives_up_after_ten` (adapted: the default folder is `<data>/worktree/<project>`)
+- P fails after ten worktree directory conflicts — `tests/oc_worktree_backlog2.rs::oc_worktree_suffixes_duplicate_names_and_gives_up_after_ten` (adapted: the default folder is `<data>/worktree/<project>`)
+- D does not publish an event when refresh finds no directory changes · refresh finds and prunes an externally managed git worktree · refresh ignores stale git worktree registrations · refresh ignores existing directories that are no longer git checkouts · refresh seeds the canonical checkout when inventory is empty · refresh removes missing ordinary checkouts · defaults to Git and configured directory without depending on Config · selects the last active registration and restores earlier strategies on disposal · does not fall back to Git when a registered strategy fails · rejects a source override belonging to another project · cannot remove a worktree belonging to another project · list is independent of an ambient workspace-qualified location · only refresh scans and prunes; list reads saved inventory · a failed strategy does not block list or other discovery · applies directory config through the adapter and restores defaults after config removal · resolves ${mode} global directory config from a linked checkout's subdirectory ×3 · normalization retains worktree directory and rejects invalid configuration — client-server: OpenCode's worktree inventory, strategies and refresh
 
 </details>
 

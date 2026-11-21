@@ -195,3 +195,21 @@
 1664 :: ported :: tests/oc_agents_backlog2.rs::oc_config_lists_the_home_ecosystem_folders_once :: adapted: the skill roots
 @config/model.test.ts
 23 :: ported :: tests/oc_agents_backlog2.rs::oc_config_rejects_a_model_without_its_provider :: adapted: an empty `#` is read as no variant rather than refused
+
+# --- Worktrees and projects (tests/oc_worktree_backlog2.rs) ---
+@git.test.ts
+78 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_creates_lists_and_removes_a_worktree
+102 :: ported :: tests/oc_worktree_backlog2.rs::oc_project_id_of_an_unborn_repository_is_its_path :: adapted: without a commit the project is named by its path
+@project.test.ts
+465 :: ported :: tests/oc_worktree_backlog2.rs::oc_project_id_of_an_unborn_repository_is_its_path :: adapted: named by its path rather than a shared global project
+481,567,642 :: ported :: tests/oc_worktree_backlog2.rs::oc_project_id_is_the_root_commit_from_anywhere_in_the_repository :: adapted: the id is the root commit's, never cached
+498,513,529 :: design :: deliberate :: a project is identified by its root commit only, which every clone and worktree shares; remotes are not read
+541 :: design :: deliberate :: the project id is computed from the repository each time; there is no cached id to return
+@worktree.test.ts
+213 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_creates_lists_and_removes_a_worktree :: adapted: no project rows or update event
+247,516,545 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_suffixes_duplicate_names_and_gives_up_after_ten :: adapted: the default folder is `<data>/worktree/<project>`
+271 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_runs_the_setup_command_with_worktree_paths :: adapted: `worktree.start` and `CODESMITH_WORKTREE_*`
+365 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_creates_a_worktree_from_a_selected_branch
+389 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_does_not_interpret_a_branch_as_a_git_option
+409 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_rejects_a_missing_source_directory
+463 :: ported :: tests/oc_worktree_backlog2.rs::oc_worktree_requires_force_to_remove_a_dirty_worktree
