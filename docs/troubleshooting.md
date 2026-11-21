@@ -4,7 +4,7 @@
 
 | Command | Answers |
 |---|---|
-| `codesmith debug paths` | Where are config, data, tool output and scratch files? |
+| `codesmith debug paths` | Where are config, data, tool output, scratch and cache files? |
 | `codesmith debug config` | Which config files loaded, and what did they merge to? |
 | `codesmith debug model [provider/model]` | Which URL, protocol, limits and extra body does a model use? |
 | `codesmith debug agents` | Which tools does each agent have, and which rules apply, in order? |
@@ -62,8 +62,8 @@ some command. Rewrite the command so each part is visible, or run it
 yourself.
 
 **Access outside the project keeps asking.** `external_directory` asks by
-default. Answer **a** to allow that folder for the session, or add an
-`allow` rule for it. See [paths outside the project](permissions.md#paths-outside-the-project).
+default. Answer **a** to allow that folder (or its repository) for the
+project from then on, or add an `allow` rule for it. See [paths outside the project](permissions.md#paths-outside-the-project).
 
 **Compaction never happens.** It needs the model's `limit.context`. See
 [compaction](configuration.md#compaction).
@@ -107,11 +107,15 @@ goes to `log/mcp-<name>.log` in the data folder.
 
 ## Starting fresh
 
-Everything CodeSmith stores lives in the data folder
+Almost everything CodeSmith stores lives in the data folder
 (`~/.local/share/codesmith`): the session database, snapshots, saved keys
 (`auth.json`), MCP tokens (`mcp-auth.json`), the server token, worktrees,
-tool output and logs. Deleting a file there removes just that piece.
-Deleting `codesmith.db` removes all sessions and automations.
+plan files, the UI's prompt history and model choices, tool output and
+logs. Deleting a file there removes just that piece. Deleting
+`codesmith.db` removes all sessions and automations. The cache folder
+(`~/.cache/codesmith`: the model catalog, downloaded skills, the update
+check) can be deleted at any time, and the shell daemon keeps its runtime
+files under `~/.local/state/codesmith`.
 
 If `auth.json` or `mcp-auth.json` is damaged so that it no longer parses,
 saving a key or a token stops with an error that names the file instead of
