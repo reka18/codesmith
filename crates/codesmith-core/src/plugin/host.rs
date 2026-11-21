@@ -462,6 +462,9 @@ impl Drop for LiveGate {
 pub(crate) fn live_gate(id: &str, gate: &crate::permission::Gate) -> LiveGate {
     let mut copy = crate::permission::Gate::new(gate.configured().to_vec(), gate.asker());
     copy.share_approvals(gate.approvals());
+    // A browser attachment's rules reach plugins' checks too, and go when
+    // it ends (they are read at each request, never copied).
+    copy.set_granted(gate.granted_source());
     let gate = std::sync::Arc::new(copy);
     GATES
         .lock()

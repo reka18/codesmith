@@ -5,6 +5,14 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Browser attachments** (OpenCode's browser plugin): a browser attached
+  to a session grants it `browser *` and the `browser` skill while the
+  attachment lasts. Replacing, dropping, idling out (30 minutes) or
+  disposing it revokes them, and a replaced attachment's revoke never
+  takes its replacement's. The rules never lift a configured, built-in or
+  policy deny or a secret guard, and reach no other session. No browser
+  driver is built in; a custom build plugs one in. See
+  [permissions](docs/permissions.md#browser-attachments).
 - **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
   backend reached through GitLab's unpublished Duo workflow and
   agentic-chat SDK protocols; porting it would mean reimplementing a

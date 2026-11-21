@@ -399,7 +399,17 @@ impl std::fmt::Display for Denied {
 impl std::error::Error for Denied {}
 
 /// A project's saved approvals read once (see [`Gate::durable_now`]).
-pub struct DurableNow(Vec<Rule>);
+pub struct DurableNow(Vec<Rule>, Vec<Rule>);
+
+/// Rules granted to a session from outside its configuration for as long as
+/// something holds them (a browser attachment's: see
+/// [`crate::plugin::browser`]). They are read afresh at every request and
+/// judged like saved approvals: after the configured, built-in and policy
+/// denies, which they never lift, and never over a secret guard. Only their
+/// plain allows count ([`Gate::granted`]).
+pub trait Granted: Send + Sync {
+    fn rules(&self) -> Vec<Rule>;
+}
 
 /// Approvals saved by "always" answers. Shared, so a session rebuilt from
 /// the store (after an interrupt, undo or agent switch) keeps them.
@@ -414,6 +424,8 @@ pub struct Gate {
     asker: Arc<dyn Asker>,
     /// Where "always" answers are kept for the project, and its key.
     durable: Option<(Arc<crate::approvals::Book>, String)>,
+    /// Rules granted for a while ([`Granted`]).
+    granted: Option<Arc<dyn Granted>>,
 }
 
 impl Gate {
@@ -423,7 +435,32 @@ impl Gate {
             saved: Approvals::default(),
             asker,
             durable: None,
+            granted: None,
         }
+    }
+
+    /// Judge requests with the rules `granted` holds at the time, too (see
+    /// [`Granted`]), in place of any source set before.
+    pub fn set_granted(&mut self, granted: Option<Arc<dyn Granted>>) {
+        self.granted = granted;
+    }
+
+    /// The source of granted rules, to share with a copy of this gate.
+    pub fn granted_source(&self) -> Option<Arc<dyn Granted>> {
+        self.granted.clone()
+    }
+
+    /// The rules granted now: only plain allows, so a grant can add what
+    /// the session may do but never mark a rule built-in, a guard or a
+    /// policy statement.
+    pub fn granted(&self) -> Vec<Rule> {
+        let Some(g) = &self.granted else {
+            return vec![];
+        };
+        g.rules()
+            .into_iter()
+            .filter(|r| r.effect == Effect::Allow && !r.builtin && !r.guard && r.policy.is_none())
+            .collect()
     }
 
     /// Keep "always" answers in `book` for the project `project`, and judge
@@ -522,7 +559,7 @@ impl Gate {
     /// resources of one request (a search's files) with
     /// [`Gate::allows_given`] without reading them again for each.
     pub fn durable_now(&self) -> DurableNow {
-        DurableNow(self.durable_rules())
+        DurableNow(self.durable_rules(), self.granted())
     }
 
     /// [`Gate::allows`] with the project's saved approvals read before
@@ -538,7 +575,11 @@ impl Gate {
             return false;
         }
         let saved = self.saved.lock().unwrap();
-        evaluate_all_layers(action, resources, &[&self.rules, &saved, &durable.0]) == Effect::Allow
+        evaluate_all_layers(
+            action,
+            resources,
+            &[&self.rules, &saved, &durable.1, &durable.0],
+        ) == Effect::Allow
     }
 
     /// Refuse only when a configured rule denies the request; never asks.
@@ -574,12 +615,15 @@ impl Gate {
             }
         }
         let durable = self.durable_rules();
+        // Granted rules are judged here, after the configured denies above:
+        // like a saved approval, a grant cannot lift one or a secret guard.
+        let granted = self.granted();
         let effect = {
             let saved = self.saved.lock().unwrap();
             evaluate_all_layers(
                 &req.action,
                 &req.resources,
-                &[&self.rules, &saved, &durable],
+                &[&self.rules, &saved, &granted, &durable],
             )
         };
         match effect {

@@ -1,0 +1,9 @@
+# Browser Attachment, ported in tests/oc_browser_attach.rs: the permission
+# lifecycle of a browser attached to a session (codesmith_core::plugin::browser).
+# CodeSmith has no browser driver; the attachment, its grant and the checks in
+# front of a driver are what these drive.
+@browser-attach.test.ts
+116 :: ported :: tests/oc_browser_attach.rs::oc_browser_a_replaced_attachments_revoke_never_removes_its_replacements_grant :: adapted: the grant is read by the session's gate at each request, and a revoke checks and removes the attachment under one lock, so OpenCode's interleaved read and write cannot arise (raced on threads in oc_browser_a_stale_revoke_racing_a_replacement_never_drops_its_grant)
+140 :: ported :: tests/oc_browser_attach.rs::oc_browser_disposing_the_plugin_revokes_the_browser_rules_before_the_location_finishes_closing :: adapted: Browsers::dispose is the plugin's teardown; the rules are gone when it returns and before the attachment's holder hears it end
+@browser-idle.test.ts
+60 :: ported :: tests/oc_browser_attach.rs::oc_browser_idle_eviction_ends_the_browser_attachment_and_permits_a_fresh_attachment :: adapted: the attachment, not the location, idles out; a real background sweep on a clock only the test moves

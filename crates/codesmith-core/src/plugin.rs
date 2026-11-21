@@ -11,6 +11,7 @@
 //! hooks around tool calls, shell commands, model requests, compactions,
 //! permission prompts, session events and going idle.
 
+pub mod browser;
 pub mod codesmith;
 mod context;
 pub mod goal;

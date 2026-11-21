@@ -95,6 +95,21 @@ calls fail with a `HostError` (`NotFound` for an unknown session):
 Tests and embedders with their own store install a host with
 `plugin::set_host`.
 
+## Browser attachments
+
+`plugin::browser` is the permission side of OpenCode's browser plugin:
+`Browsers::global().attach(session_id, connection_id)` attaches a browser
+to a session and returns a handle that grants the session the browser
+rules (`browser *` and the `browser` skill) until it is dropped, replaced
+by another attach, evicted as idle, or the registry is disposed. The
+session's checks, `assert_permission` included, see the rules only while
+the attachment lasts, and never over a deny or a secret guard (see
+[permissions](permissions.md#browser-attachments)). `Browsers::open` and
+`open_file` run those checks before handing a URL to a `Driver`. No driver
+is built in: CodeSmith is a terminal agent with no browser pane, so the
+default refuses to open anything, and a custom build supplies its own
+through `browser::Options`.
+
 ## The goal plugin
 
 Every build has three built-in plugins: `goal`, `plan` and `codesmith`

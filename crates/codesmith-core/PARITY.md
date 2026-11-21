@@ -51,8 +51,8 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Providers, models and credentials | 796 | 419 | 0 | 0 | 377 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
-| Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2905** | **80** | **6** | **2597** | **0** | **0** |
+| Runtime, locations and filesystem | 242 | 31 | 0 | 0 | 211 | 0 | 0 |
+| **Total** | **5588** | **2908** | **80** | **3** | **2597** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -132,20 +132,11 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (6 cases in 2 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (3 cases in 1 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-
-### Browser Attachment
-
-3 cases.
-
-- `browser-attach.test.ts`: a replaced attachment's revoke never removes its replacement's grant
-- `browser-attach.test.ts`: disposing the plugin revokes the browser rules before the location finishes closing
-- `browser-idle.test.ts`: idle eviction ends the browser attachment and permits a fresh attachment
 
 ### Voice
 
@@ -3561,7 +3552,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Runtime, locations and filesystem (239 of 242)</summary>
+<details><summary>Runtime, locations and filesystem (242 of 242)</summary>
 
 
 **`app.test.ts`**
@@ -3575,6 +3566,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`boot-work.test.ts`**
 
 - D counts catalog lookups, Azure model edits and git spawns over a cold boot and one turn — effect-internal: boot work
+
+**`browser-attach.test.ts`**
+
+- P a replaced attachment's revoke never removes its replacement's grant — `tests/oc_browser_attach.rs::oc_browser_a_replaced_attachments_revoke_never_removes_its_replacements_grant` (adapted: the grant is read by the session's gate at each request, and a revoke checks and removes the attachment under one lock, so OpenCode's interleaved read and write cannot arise (raced on threads in oc_browser_a_stale_revoke_racing_a_replacement_never_drops_its_grant))
+- P disposing the plugin revokes the browser rules before the location finishes closing — `tests/oc_browser_attach.rs::oc_browser_disposing_the_plugin_revokes_the_browser_rules_before_the_location_finishes_closing` (adapted: Browsers::dispose is the plugin's teardown; the rules are gone when it returns and before the attachment's holder hears it end)
+
+**`browser-idle.test.ts`**
+
+- P idle eviction ends the browser attachment and permits a fresh attachment — `tests/oc_browser_attach.rs::oc_browser_idle_eviction_ends_the_browser_attachment_and_permits_a_fresh_attachment` (adapted: the attachment, not the location, idles out; a real background sweep on a clock only the test moves)
 
 **`effect-app-node-platform.test.ts`**
 

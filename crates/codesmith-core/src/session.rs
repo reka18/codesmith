@@ -723,6 +723,10 @@ impl Session {
             &crate::plugin::plan::directory(),
         );
         let mut gate = Gate::new(rules, watch(asker.clone(), &declined));
+        // A browser attached to this session grants its rules while it lasts.
+        gate.set_granted(Some(
+            crate::plugin::browser::Browsers::global().grants_for(&id),
+        ));
         // "Always" answers are kept for the project beside its sessions.
         if let Some(book) = store
             .as_ref()
@@ -1236,10 +1240,15 @@ impl Session {
     /// before the first record is written). The rule letting it read its own
     /// saved tool output moves to the new id's directory: assigning
     /// [`Session::id`] directly leaves it on the generated one, so reading
-    /// that output asks for `external_directory`.
+    /// that output asks for `external_directory`. A browser attached under
+    /// the new id grants its rules here too (see [`crate::plugin::browser`]).
     pub fn set_id(&mut self, id: impl Into<String>) {
         let id = id.into();
         self.gate.rescope_tool_output(&self.id, &id);
+        // Browser grants follow the session's id.
+        self.gate.set_granted(Some(
+            crate::plugin::browser::Browsers::global().grants_for(&id),
+        ));
         self.id = id;
     }
 

@@ -346,7 +346,8 @@ An agent's rules are assembled in this order, and the last match wins:
 5. for [unattended runs](#unattended-runs) only, the unattended denies and
    then `automation.permissions`
 6. the [session's own rules](#session-rules), which only restrict
-7. approvals saved with "always" for the project
+7. approvals saved with "always" for the project, and the rules of a
+   [browser attached](#browser-attachments) to the session
 
 Consequences:
 
@@ -381,6 +382,25 @@ CodeSmith keeps the configured denies in force.)
 A [plugin](plugins.md) can answer a permission request in place of the
 user, but it is consulted only for requests that the rules would ask about,
 never for ones they deny.
+
+### Browser attachments
+
+A browser attached to a session (OpenCode's browser plugin) grants that
+session `browser *` and the `browser` skill, as allows, for as long as the
+attachment lasts: there is one per session, attaching again replaces it,
+and its rules are revoked when its holder lets it go, when it has been
+idle for its time to live (30 minutes by default) and when the registry
+is disposed. A replaced attachment's revoke never removes its
+replacement's rules, and another session never sees them. They are judged
+like saved approvals, so they never override a configured `deny`, a
+built-in agent's own rules, a [policy](#policies) or a [secret
+guard](#secret-files): opening a workspace file in the browser also needs
+`read` for it.
+
+CodeSmith has no browser of its own, so no browser driver is built in:
+`codesmith_core::plugin::browser` provides the attachment lifecycle and
+the permission checks in front of a driver, and a custom build plugs a
+driver in through its `Driver` trait. Without one, nothing opens.
 
 ## Policies
 
