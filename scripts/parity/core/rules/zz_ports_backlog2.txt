@@ -73,3 +73,21 @@
 @session-stats.test.ts
 49 :: ported :: tests/oc_sessions_backlog2.rs::oc_stats_aggregates_activity_and_tool_reliability_over_a_range :: adapted: CodeSmith's step and tool records; no unfinished calls are stored, and a fork's copied history is its own
 
+# --- Session runner (tests/oc_runner_backlog2.rs, tests/oc_compaction.rs) ---
+@session-runner.test.ts
+1249 :: ported :: tests/oc_runner_backlog2.rs::oc_session_continues_instead_of_going_idle_when_the_idle_hook_admits_input :: adapted: the hook's message continues the turn whether or not the session would resume for it
+1289 :: ported :: tests/oc_runner_backlog2.rs::oc_session_runs_the_idle_hook_only_once_the_session_would_go_idle
+1302 :: design :: deliberate :: the idle hook sees the session's own background shell commands; subagents run inside their tool call, so a child leaves no background work behind (pinned by tests/oc_runner_backlog2.rs::oc_session_passes_its_background_work_to_the_idle_hook)
+1347 :: ported :: tests/oc_runner_backlog2.rs::oc_session_runs_the_idle_hook_again_when_a_background_notice_wakes_it
+2228 :: fixed :: tests/oc_runner_backlog2.rs::oc_session_updates_the_skill_list_after_an_agent_switch :: the skill list offered every discovered skill whatever the agent's rules, so a skill an agent denies was still advertised (its load refused); the list now leaves out the skills the agent's rules deny, and a switch withdraws them
+3046 :: fixed :: tests/oc_compaction.rs::oc_compaction_stops_or_recovers_after_one_template_reminder :: a summary that only mentioned a heading ("I will fill in ## Objective later") was taken as a summary, and a second reply without the template replaced the history after the reminder; a heading must be a line of its own, and a second miss fails the compaction (adapted: the reminder request carries the rejected reply)
+3122 :: ported :: tests/oc_runner_backlog2.rs::oc_session_restarts_compaction_drafts_after_transient_failures :: adapted: a dropped stream, an unavailable provider and a rate limit, retried with the same request
+3168 :: ported :: tests/oc_runner_backlog2.rs::oc_session_bounds_compaction_retries_across_a_template_correction
+3561 :: ported :: tests/oc_runner_backlog2.rs::oc_session_cancelled_manual_compaction_leaves_the_history :: adapted: the interrupt drops the compaction; nothing is recorded
+3588,3610 :: design :: deliberate :: compaction runs on the session's model, resolved when the session starts (an unknown model fails `Session::new`), so there is no later model resolution to fail
+3794 :: ported :: tests/oc_runner_backlog2.rs::oc_session_stops_after_required_automatic_compaction_fails
+3955 :: ported :: tests/oc_runner_backlog2.rs::oc_session_compacts_before_requesting_an_undersized_context_limit
+4035,4054 :: design :: deliberate :: past the ceiling the whole conversation still goes to the summary unchanged while the window can fit one (keeping the provider's cache), with the output limit fitted to the room it leaves, where OpenCode shrinks the request and gives the summary the whole reserve; pinned by tests/oc_runner_backlog2.rs::oc_session_fits_the_summary_output_to_the_room_an_unchanged_conversation_leaves
+4098 :: ported :: tests/oc_runner_backlog2.rs::oc_session_interrupts_overflow_recovery_while_the_summary_streams :: adapted: the interrupt drops the turn; no summary replaces the history
+7374,7397 :: design :: deliberate :: tools run after the model's stream ends (runner.rs), so a provider failure mid-stream leaves no tool run, defect or output to settle beside it
+

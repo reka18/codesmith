@@ -160,7 +160,16 @@ pub const NUDGE: &str = "The previous response did not fill in the required summ
 
 /// Whether text looks like a filled-in summary.
 pub fn is_summary(text: &str) -> bool {
-    text.contains("## Objective") || text.contains("## Work State") || text.contains("## Next Move")
+    // A line that is one of the template's headings, as OpenCode checks: a
+    // reply that only mentions one ("I will fill in ## Objective later") is
+    // not a summary.
+    text.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with("##")
+            && SUMMARY_TEMPLATE
+                .lines()
+                .any(|h| h.starts_with("##") && h == l)
+    })
 }
 
 /// The prompt size at which automatic compaction starts, for a context window.
@@ -783,7 +792,11 @@ mod tests {
     #[test]
     fn summary_detection() {
         assert!(is_summary("## Objective\n- x"));
+        assert!(is_summary("### Active\n- x"));
         assert!(!is_summary("Sure! Here's what we did."));
+        assert!(!is_summary(
+            "Let me search. I will fill in ## Objective later."
+        ));
     }
 
     #[test]

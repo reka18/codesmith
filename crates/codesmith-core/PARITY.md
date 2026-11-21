@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 153 | 15 | 0 | 204 | 21 | 0 |
+| Session runner | 393 | 160 | 22 | 0 | 211 | 0 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2589** | **51** | **40** | **2519** | **389** | **0** |
+| **Total** | **5588** | **2596** | **58** | **40** | **2526** | **368** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -67,6 +67,8 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner-message.test.ts`: "uses materialized image and PDF data as provider media" (1 case): an attachment-only prompt stored an empty text part before its attachments, sent as an empty `input_text` to the Responses API or a leading blank line to Chat Completions; it is left out now. Pinned by `tests/oc_sessions_backlog2.rs::oc_runner_message_omits_empty_prompt_text_before_an_attachment`.
 - `session-runner-retry.test.ts`: "names the network when the provider's host can't be reached" (1 case): an unreachable host failed the turn with reqwest's text; the error now names the host and the network (a refused connection keeps its own text). Pinned by `src/retry.rs::oc_session_runner_retry_names_the_network_when_the_providers_host_cant_be_reached`.
 - `session-runner.test.ts`: "uses the selected model family prompt when the agent system override is empty" (1 case): an agent's empty `system` replaced the model's prompt with nothing; it now keeps the default. Pinned by `tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_when_the_agent_override_is_empty`.
+- `session-runner.test.ts`: "updates selected-agent skill instructions after an agent switch" (1 case): the skill list offered every discovered skill whatever the agent's rules, so a skill an agent denies was still advertised (its load refused); the list now leaves out the skills the agent's rules deny, and a switch withdraws them. Pinned by `tests/oc_runner_backlog2.rs::oc_session_updates_the_skill_list_after_an_agent_switch`.
+- `session-runner.test.ts`: "compaction ${summary ? "recovers" : "stops"} after one template reminder for ${response}" (6 cases): a summary that only mentioned a heading ("I will fill in ## Objective later") was taken as a summary, and a second reply without the template replaced the history after the reminder; a heading must be a line of its own, and a second miss fails the compaction (adapted: the reminder request carries the rejected reply). Pinned by `tests/oc_compaction.rs::oc_compaction_stops_or_recovers_after_one_template_reminder`.
 - `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
 - `session-runner.test.ts`: "rejects compaction ${response} without retrying or committing its draft" (2 cases): the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history. Pinned by `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it`.
 - `session-runner.test.ts`: "fits the output limit to the prompt size" (1 case): a turn's request asked for the model's whole output limit however full the window was; it is now fitted to the room left, less 1% of the window. Pinned by `tests/oc_runner_backlog.rs::oc_session_fits_the_output_limit_to_the_prompt_size`.
@@ -179,38 +181,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (389 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### Session runner (21)
-
-- the idle hook can admit input and runs once the session would go idle (M) — `plugin::Plugin::idle`
-  - `session-runner.test.ts`: continues instead of going idle when a session idle hook admits input (resume: ${resume}) (2 cases)
-  - `session-runner.test.ts`: runs the session idle hook only once the session would go idle
-  - `session-runner.test.ts`: passes background work of the session and its descendants to the idle hook
-  - `session-runner.test.ts`: runs the idle hook again when a background notice wakes the session
-- skills listed for the newly selected agent after an agent switch (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: updates selected-agent skill instructions after an agent switch
-- compaction stops after the one template reminder fails (S) — `tests/parity.rs`
-  - `session-runner.test.ts`: compaction ${summary ? "recovers" : "stops"} after one template reminder for ${response} (3 cases)
-- compaction drafts retried after transient failures, bounded across a template correction (M) — `tests/parity.rs`
-  - `session-runner.test.ts`: restarts compaction drafts after transient failures and unsuccessful finishes
-  - `session-runner.test.ts`: bounds compaction network retries across a template correction
-- cancelled/failed manual compaction recorded without a model call (S) — `tests/parity.rs`
-  - `session-runner.test.ts`: records cancelled manual compaction without surfacing an internal failure
-  - `session-runner.test.ts`: settles an admitted manual compaction when pre-start resolution throws
-  - `session-runner.test.ts`: records manual compaction model resolution failures without calling the model
-- a required automatic compaction that fails stops the turn (S) — `tests/parity.rs`
-  - `session-runner.test.ts`: stops after required automatic compaction fails
-- overflow recovery without a configured limit, before an undersized limit, once only, from a raw overflow (M) — `tests/parity.rs`
-  - `session-runner.test.ts`: compacts before requesting an undersized configured context limit
-- output limit fitted to the prompt / capped / summary keeps its room (S) — `compaction`
-  - `session-runner.test.ts`: gives the summary its full output limit when the conversation overshot the threshold
-  - `session-runner.test.ts`: keeps the summary its room on a small window
-- the original overflow is reported when recovery fails; interrupting recovery (M) — `tests/parity.rs`
-  - `session-runner.test.ts`: interrupts overflow recovery while the summary provider is running
-- a tool defect / output persistence failure is kept alongside the provider failure (M) — `tests/runner_parity.rs`
-  - `session-runner.test.ts`: preserves a tool defect before provider failure settlement
-  - `session-runner.test.ts`: preserves the provider failure when tool output persistence also fails
+Tests for behaviour CodeSmith already has but no test pins (368 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Subagents (1)
 
@@ -704,7 +675,7 @@ Tests for behaviour CodeSmith already has but no test pins (389 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 642 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 649 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -716,7 +687,7 @@ Tests for behaviour CodeSmith already has but no test pins (389 cases), by area,
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (372 of 393)</summary>
+<details><summary>Session runner (393 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -786,6 +757,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P executes a tool renamed by a session context hook — `tests/oc_context_hooks.rs::oc_executes_a_tool_renamed_by_a_session_context_hook` (adapted: `Plugin::context` renames a `ContextTool` by its `name`)
 - P passes stored message metadata to the context hook but not to the model request — `tests/oc_context_hooks.rs::oc_passes_stored_message_metadata_to_the_context_hook_but_not_to_the_model_request` (adapted: `Plugin::prompt` keeps the metadata as a session record)
 - P keeps context hook edits to messages without stored metadata — `tests/oc_context_hooks.rs::oc_keeps_context_hook_edits_to_messages_without_stored_metadata`
+- P continues instead of going idle when a session idle hook admits input (resume: ${resume}) ×2 — `tests/oc_runner_backlog2.rs::oc_session_continues_instead_of_going_idle_when_the_idle_hook_admits_input` (adapted: the hook's message continues the turn whether or not the session would resume for it)
+- P runs the session idle hook only once the session would go idle — `tests/oc_runner_backlog2.rs::oc_session_runs_the_idle_hook_only_once_the_session_would_go_idle`
+- D passes background work of the session and its descendants to the idle hook — deliberate: the idle hook sees the session's own background shell commands; subagents run inside their tool call, so a child leaves no background work behind (pinned by tests/oc_runner_backlog2.rs::oc_session_passes_its_background_work_to_the_idle_hook)
+- P runs the idle hook again when a background notice wakes the session — `tests/oc_runner_backlog2.rs::oc_session_runs_the_idle_hook_again_when_a_background_notice_wakes_it`
 - D runs the idle hook after a move delivered at the idle boundary · keeps idle hook input pending across a compaction admitted with it · does not run the session idle hook after manual compaction of an idle session — deliberate: session.rs: no moves or queued input
 - D executes the tool advertised before a registry reload — client-server: Location tool registry / registry reload
 - D starts a real runner step after default prompt recording · runs a follow-up when synthetic input arrives during an active continuation — storage-model: default prompt recording / synthetic input
@@ -807,6 +782,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P uses the configured default agent system for omitted-agent sessions — `tests/oc_runner_backlog.rs::oc_session_uses_the_configured_default_agents_system`
 - P uses an explicitly selected non-build agent system — `tests/oc_runner_backlog.rs::oc_session_uses_an_explicitly_selected_agents_system`
 - P fails before the model request when the selected agent is unavailable — `tests/oc_runner.rs::oc_session_fails_before_the_model_request_when_the_agent_is_unavailable`
+- F updates selected-agent skill instructions after an agent switch — `tests/oc_runner_backlog2.rs::oc_session_updates_the_skill_list_after_an_agent_switch` (the skill list offered every discovered skill whatever the agent's rules, so a skill an agent denies was still advertised (its load refused); the list now leaves out the skills the agent's rules deny, and a switch withdraws them)
 - D keeps the sampled agent when selection changes during observation · keeps the sampled model when selection changes during model resolution — effect-internal: selection sampled once during observation
 - P admits removed context as a chronological System message — `tests/oc_instruction_state.rs::oc_session_admits_removed_context_as_a_system_message`
 - P renders API context entries through add, change, and removal — `tests/oc_instruction_state.rs::oc_session_renders_context_entries_through_add_change_and_removal` (adapted: Store::put_context, no per-source request metadata)
@@ -823,25 +799,33 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D delivers steered manual compaction when the model has no context limit · runs manual compaction at the next step boundary before queued prompts · runs manual compaction before the continuation of an active tool turn — deliberate: session.rs: manual compaction runs between turns, not at a step boundary
 - P preserves provider errors from manual compaction — `tests/oc_compaction.rs::oc_compaction_preserves_provider_errors_from_manual_compaction`
 - P preserves the session request prefix during ${reason} compaction (${route.id}) ×6 — `tests/oc_compaction_cache.rs::oc_compaction_preserves_the_session_request_prefix_during_compaction` (adapted: no hooks or tool call)
-- P compaction ${summary ? "recovers" : "stops"} after one template reminder for ${response} ×3 — `tests/parity.rs::oc_compaction_nudges_a_reply_without_the_template`
+- F compaction ${summary ? "recovers" : "stops"} after one template reminder for ${response} ×6 — `tests/oc_compaction.rs::oc_compaction_stops_or_recovers_after_one_template_reminder` (a summary that only mentioned a heading ("I will fill in ## Objective later") was taken as a summary, and a second reply without the template replaced the history after the reminder; a heading must be a line of its own, and a second miss fails the compaction (adapted: the reminder request carries the rejected reply))
 - D waits for plugin activation before each step and tool call — effect-internal: plugin activation waits
+- P restarts compaction drafts after transient failures and unsuccessful finishes — `tests/oc_runner_backlog2.rs::oc_session_restarts_compaction_drafts_after_transient_failures` (adapted: a dropped stream, an unavailable provider and a rate limit, retried with the same request)
+- P bounds compaction network retries across a template correction — `tests/oc_runner_backlog2.rs::oc_session_bounds_compaction_retries_across_a_template_correction`
 - F explains a compaction blocked by the provider — `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider` (a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category))
 - D stops compaction retries through the ${header ? "provider header" : "retry hook"} ×2 — deliberate: retry.rs: retry headers and retry hooks not honoured
 - F rejects compaction ${response} without retrying or committing its draft ×2 — `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it` (the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history)
 - D stops after four smaller compaction inputs overflow · resends compaction as text after payload too large, then shrinks later rejections · shortens the only exchange's user text when it does not fit · shrinks after payload too large on a compaction already sent as text · does not resend a rejected conversation unchanged when compacting · aims the first overflow compaction below the rejected context · serializes history without tools or media after a summary input overflow · drops tool output in serialized compaction history before omitting exchanges · fits serialized compaction history by omitting oldest exchanges — deliberate: compaction.rs: a summary request is not shrunk and retried
+- P records cancelled manual compaction without surfacing an internal failure — `tests/oc_runner_backlog2.rs::oc_session_cancelled_manual_compaction_leaves_the_history` (adapted: the interrupt drops the compaction; nothing is recorded)
+- D settles an admitted manual compaction when pre-start resolution throws · records manual compaction model resolution failures without calling the model — deliberate: compaction runs on the session's model, resolved when the session starts (an unknown model fails `Session::new`), so there is no later model resolution to fail
 - P automatically compacts into a completed summary and retained recent turn — `tests/parity.rs::oc_compaction_auto_compacts_past_the_buffered_ceiling`
 - P automatically persists native windows, retains earlier users, and waits for fresh usage — `tests/oc_native_compaction.rs::oc_native_automatically_persists_windows_retains_users_and_waits_for_fresh_usage` (adapted: one compaction, then none until measured)
 - P recovers an overflowing native window with another native compaction — `tests/oc_native_compaction.rs::oc_native_recovers_an_overflowing_native_window_with_another_native_compaction`
 - P does not compact immediately when the advertised output limit fills the context — `tests/oc_runner_backlog.rs::oc_session_does_not_compact_when_the_advertised_output_limit_fills_the_context`
+- P stops after required automatic compaction fails — `tests/oc_runner_backlog2.rs::oc_session_stops_after_required_automatic_compaction_fails`
 - P forces one compaction and retries after provider context overflow — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries`
 - D refreshes preparation after overflow compaction without promoting new input — deliberate: session.rs: no queued input to promote
 - P does not recover provider context overflow when automatic compaction is disabled — `tests/parity.rs::oc_compaction_overflow_is_left_to_the_user_when_auto_is_disabled`
 - P recovers from provider context overflow without a configured context limit — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
+- P compacts before requesting an undersized configured context limit — `tests/oc_runner_backlog2.rs::oc_session_compacts_before_requesting_an_undersized_context_limit`
 - P persists a second context overflow after one recovery — `tests/oc_compaction.rs::oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn`
 - P recovers once from a raw context overflow failure — `tests/parity.rs::oc_compaction_an_overflow_compacts_and_retries` (the scripted model has no configured limit and fails with a raw overflow)
 - F fits the output limit to the prompt size — `tests/oc_runner_backlog.rs::oc_session_fits_the_output_limit_to_the_prompt_size` (a turn's request asked for the model's whole output limit however full the window was; it is now fitted to the room left, less 1% of the window)
 - F caps the output limit a large model advertises — `tests/oc_runner_backlog.rs::oc_session_caps_the_output_limit_a_large_model_advertises` (the 256k output cap applied to catalog limits only, not configured ones)
+- D gives the summary its full output limit when the conversation overshot the threshold · keeps the summary its room on a small window — deliberate: past the ceiling the whole conversation still goes to the summary unchanged while the window can fit one (keeping the provider's cache), with the output limit fitted to the room it leaves, where OpenCode shrinks the request and gives the summary the whole reserve; pinned by tests/oc_runner_backlog2.rs::oc_session_fits_the_summary_output_to_the_room_an_unchanged_conversation_leaves
 - F publishes the original overflow when recovery summarization fails — `tests/oc_compaction.rs::oc_compaction_reports_the_original_overflow_when_recovery_fails` (the failed summary's error was reported instead of the overflow)
+- P interrupts overflow recovery while the summary provider is running — `tests/oc_runner_backlog2.rs::oc_session_interrupts_overflow_recovery_while_the_summary_streams` (adapted: the interrupt drops the turn; no summary replaces the history)
 - P uses epoch values after compaction while a source is unavailable — `tests/oc_instruction_state.rs::oc_session_uses_the_epoch_values_after_compaction_while_unreadable`
 - D projects reasoning and tool events without executing or continuing tools — storage-model: projection-only replay of events
 - P continues with reloaded history after durably settling one local tool call — `tests/oc_runner_backlog.rs::oc_session_continues_with_reloaded_history_after_settling_a_local_tool`
@@ -918,6 +902,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P does not continue malformed tool input past the agent step limit — `tests/runner_parity.rs::oc_session_does_not_continue_malformed_tool_input_past_the_agent_step_limit`
 - P does not continue automatically after a provider error follows a local tool call — `tests/oc_runner.rs::oc_session_does_not_continue_after_a_provider_error_follows_a_tool_call`
 - P durably fails a hosted tool when its provider errors before returning a result — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_by_a_provider_failure`
+- D preserves a tool defect before provider failure settlement · preserves the provider failure when tool output persistence also fails — deliberate: tools run after the model's stream ends (runner.rs), so a provider failure mid-stream leaves no tool run, defect or output to settle beside it
 - P durably fails a hosted tool left unresolved at normal provider EOF — `tests/oc_hosted_session.rs::oc_hosted_durably_fails_a_hosted_tool_left_unresolved_at_provider_eof` (adapted: an unfinished stream is retried as cut off first)
 - P fails an unresolved hosted tool before one clean step end — `tests/oc_hosted_session.rs::oc_hosted_fails_an_unresolved_hosted_tool_before_one_clean_step_end`
 - D settles unresolved local and hosted tools before one raw provider failure — deliberate: runner.rs: tool calls from a failed stream are never run; the hosted call alone is settled failed (tests/oc_hosted_session.rs)

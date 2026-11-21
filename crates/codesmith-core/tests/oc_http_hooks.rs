@@ -122,7 +122,7 @@ async fn oc_tags_every_session_request_kind_on_http_request_and_http_response() 
     let dir = tempfile::tempdir().unwrap();
     let m = serve(|r| {
         if r.last_text().contains("summar") {
-            text("## Goal\n- summary")
+            text("## Objective\n- summary")
         } else {
             text("Done")
         }

@@ -138,7 +138,7 @@ async fn oc_an_admitted_compaction_runs_at_the_sessions_next_step() {
     plugin::set_host(h.host.clone());
     let m = serve(|r| {
         if r.last_text().contains("summar") {
-            text("## Goal\n- the summary")
+            text("## Objective\n- the summary")
         } else {
             text("Done")
         }

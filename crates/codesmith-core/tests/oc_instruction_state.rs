@@ -1270,7 +1270,11 @@ async fn model(log: Arc<Mutex<Vec<Value>>>) -> String {
                 log.lock().unwrap().push(body.clone());
                 let last = body["messages"].as_array().unwrap().last().unwrap().clone();
                 let content = last["content"].as_str().unwrap_or("").to_string();
-                let chunk = if body.get("tools").is_none() {
+                let summary = body.get("tools").is_none()
+                    || body["messages"]
+                        .to_string()
+                        .contains("Do not continue the task or call tools.");
+                let chunk = if summary {
                     json!({"choices": [{"delta": {"content": "## Objective\n- summary"}, "finish_reason": "stop"}]})
                 } else if let Some(rest) = content
                     .strip_prefix("call ")

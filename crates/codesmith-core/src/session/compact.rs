@@ -952,11 +952,15 @@ async fn send(
         });
         prompted.messages.push(Message::user(compaction::NUDGE));
         summary = stream(client, model, &prompted, delta, usages).await?;
-    }
-    if summary.trim().is_empty() {
-        return Err(Failure::Unusable(anyhow!(
-            "compaction failed: the model returned an empty summary"
-        )));
+        // One reminder only: a second reply without the template would
+        // replace the history with something that is not a summary of it.
+        if !compaction::is_summary(&summary) {
+            return Err(Failure::Unusable(anyhow!(if summary.trim().is_empty() {
+                "Compaction produced no summary"
+            } else {
+                "Compaction summary did not match the required template"
+            })));
+        }
     }
     Ok(summary)
 }

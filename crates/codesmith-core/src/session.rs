@@ -1475,6 +1475,13 @@ impl Session {
         lists.push(crate::reference::source(&references));
         if self.tools.contains(&Tool::Skill) {
             self.skills = crate::skill::find(&self.cwd, &self.root, &config.skills);
+            // A skill the agent's rules deny is not offered (its load would
+            // be refused anyway).
+            let gate = &self.gate;
+            self.skills.retain(|s| {
+                gate.assert_not_denied("skill", std::slice::from_ref(&s.id))
+                    .is_ok()
+            });
             lists.push(crate::skill::source(&self.skills));
         }
         let files = instructions::discover(

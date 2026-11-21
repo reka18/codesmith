@@ -81,6 +81,12 @@ pub async fn model(log: Arc<Mutex<Vec<Value>>>, reply: Option<Reply_>) -> String
                 let content = last["content"].as_str().unwrap_or("").to_string();
                 let chunk = if let Some(c) = reply.as_ref().and_then(|r| r(&body)) {
                     c
+                } else if body["messages"]
+                    .to_string()
+                    .contains("Do not continue the task or call tools.")
+                {
+                    // A summary request: a summary in the template's form.
+                    json!({"choices": [{"delta": {"content": "## Objective\n- summary"}, "finish_reason": "stop"}]})
                 } else if body.get("tools").is_none() {
                     json!({"choices": [{"delta": {"content": "Title"}, "finish_reason": "stop"}]})
                 } else if let Some(rest) = content

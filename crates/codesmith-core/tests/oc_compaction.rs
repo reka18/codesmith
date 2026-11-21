@@ -331,3 +331,73 @@ async fn oc_compaction_a_second_overflow_after_one_recovery_fails_the_turn() {
     assert_eq!(requests(&script, Kind::Main).len(), 3);
     assert!(text_of(&s.messages[0]).starts_with("<conversation-checkpoint>"));
 }
+
+fn sse_of(chunks: &[Value]) -> String {
+    let body: String = chunks
+        .iter()
+        .map(|c| format!("data: {c}\n\n"))
+        .chain(["data: [DONE]\n\n".to_string()])
+        .collect();
+    http(200, "text/event-stream", &body)
+}
+
+/// "compaction ${summary ? "recovers" : "stops"} after one template
+/// reminder for ${response}". Fixed: a summary reply that only mentioned a
+/// heading ("I will fill in ## Objective later") was taken as a summary,
+/// and a second reply without the template replaced the history after the
+/// reminder; a heading must be a line of its own now, and the second miss
+/// fails the compaction. Adapted: the reminder request also carries the
+/// rejected reply (OpenCode sends the first request again with the
+/// reminder alone).
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_compaction_stops_or_recovers_after_one_template_reminder() {
+    let invalid_text = "Let me search the codebase. I will fill in ## Objective later.";
+    for response in ["tools", "reasoning", "invalid text"] {
+        for recovers in [true, false] {
+            let (mut s, script, _d) = session(json!({}), Some("t")).await;
+            s.prompt("Earlier question", &mut Quiet).await.unwrap();
+            let before = s.messages.clone();
+            let invalid = match response {
+                "tools" => sse_of(&[
+                    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-summary", "type": "function", "function": {"name": "shell", "arguments": "{\"command\":\"touch must-not-run\"}"}}]}, "finish_reason": "tool_calls"}]}),
+                ]),
+                "reasoning" => sse_of(&[
+                    json!({"choices": [{"delta": {"reasoning_content": "## Objective\n- Not a summary"}}]}),
+                    json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+                ]),
+                _ => finish("stop", invalid_text),
+            };
+            {
+                let mut sc = script.lock().unwrap();
+                sc.raw_summaries.push_back(invalid.clone());
+                sc.raw_summaries.push_back(if recovers {
+                    finish("stop", "### Active\n- Recovered summary")
+                } else {
+                    invalid
+                });
+            }
+            let r = s.compact(&mut Quiet).await;
+            let summaries = requests(&script, Kind::Summary);
+            assert_eq!(summaries.len(), 2, "{response} {recovers}");
+            assert!(
+                last_user_text(&summaries[1])
+                    .contains("did not fill in the required summary template"),
+                "{response}"
+            );
+            assert!(!_d.path().join("must-not-run").exists());
+            if recovers {
+                r.unwrap_or_else(|e| panic!("{response}: {e:#}"));
+                assert!(text_of(&s.messages[0]).contains("Recovered summary"));
+            } else {
+                let e = format!("{:#}", r.unwrap_err());
+                let want = if response == "invalid text" {
+                    "Compaction summary did not match the required template"
+                } else {
+                    "Compaction produced no summary"
+                };
+                assert_eq!(e, want, "{response}");
+                assert_eq!(s.messages, before, "{response}: the history is kept");
+            }
+        }
+    }
+}
