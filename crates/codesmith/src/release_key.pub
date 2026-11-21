@@ -7,7 +7,9 @@
 # starting with RW). Lines starting with # and blank lines are ignored. List
 # two keys while rotating from one to the next.
 #
-# PLACEHOLDER below means no key has been generated yet: upgrades check
-# SHA256SUMS only and say releases aren't signed. Replace that line with the
-# real key; with neither a key nor PLACEHOLDER, upgrades are refused.
-PLACEHOLDER
+# The CodeSmith release key: ~/.minisign/codesmith.pub on Skeptic-Mac, the
+# Mac that holds its secret key (~/.minisign/codesmith.key) and signs every
+# release's SHA256SUMS with scripts/sign-release.sh. A file holding only the
+# line PLACEHOLDER (no key) makes upgrades check SHA256SUMS only; one with
+# neither a key nor PLACEHOLDER refuses upgrades.
+RWTFKe6qhvSs57s1pw5x6aJRK0jdZr42tg1NgNp3a9rAJ3HersFsRoMV

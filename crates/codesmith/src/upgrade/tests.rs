@@ -1039,10 +1039,16 @@ fn run_install_sh(
     minisign: Option<&str>,
 ) -> (bool, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let script = install_sh().replace(
-        "\nRELEASE_KEYS=\"\"\n",
-        &format!("\nRELEASE_KEYS=\"{keys}\"\n"),
-    );
+    let script: String = install_sh()
+        .lines()
+        .map(|l| {
+            if l.starts_with("RELEASE_KEYS=") {
+                format!("RELEASE_KEYS=\"{keys}\"\n")
+            } else {
+                format!("{l}\n")
+            }
+        })
+        .collect();
     assert!(script.contains(&format!("RELEASE_KEYS=\"{keys}\"")));
     std::fs::write(dir.path().join("install.sh"), script).unwrap();
     let tools = dir.path().join("tools");
@@ -1329,4 +1335,52 @@ fn scratch_files_are_private() {
     drop(private_file(&file).unwrap());
     assert_eq!(mode(&file), 0o700);
     assert!(private_file(&file).is_err(), "only a new file");
+}
+
+/// The CodeSmith release key (`~/.minisign/codesmith.pub` on Skeptic-Mac).
+const CODESMITH_KEY: &str = "RWTFKe6qhvSs57s1pw5x6aJRK0jdZr42tg1NgNp3a9rAJ3HersFsRoMV";
+
+#[test]
+fn this_build_pins_the_codesmith_release_key_and_only_it() {
+    let pinned: Vec<&str> = RELEASE_KEYS
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert_eq!(pinned, [CODESMITH_KEY], "release_key.pub changed");
+    assert!(matches!(release_keys(), Ok(Trust::Keys(k)) if k.len() == 1));
+}
+
+#[test]
+fn a_test_key_signature_verifies_only_where_that_key_is_listed() {
+    let sums = b"0000  codesmith-2.0.0-aarch64-apple-darwin.tar.gz\n";
+    let comment = "codesmith 2.0.0 SHA256SUMS timestamp:1";
+    let signature = test_key().sign(sums, comment);
+    let keys = |text: &str| match parse_keys(text).unwrap() {
+        Trust::Keys(keys) => keys,
+        Trust::Unsigned => unreachable!(),
+    };
+
+    // The compiled-in key refuses a signature by any other key.
+    let Trust::Keys(real) = release_keys().unwrap() else {
+        panic!("no release key compiled in")
+    };
+    let e = verify_sums(&real, sums, signature.as_bytes(), "2.0.0").unwrap_err();
+    assert!(e.to_string().contains("not signed by"), "{e}");
+
+    // Listed alongside the real key (as while rotating), it verifies.
+    let both = keys(&format!("{RELEASE_KEYS}\n{}\n", test_key().public_line()));
+    assert_eq!(both.len(), 2);
+    verify_sums(&both, sums, signature.as_bytes(), "2.0.0").unwrap();
+    // But not for another version, nor for changed checksums.
+    assert!(verify_sums(&both, sums, signature.as_bytes(), "2.0.1").is_err());
+    assert!(verify_sums(&both, b"1111", signature.as_bytes(), "2.0.0").is_err());
+
+    // Another test key, listed instead, does not verify it either.
+    let other = keys(&format!(
+        "{CODESMITH_KEY}\n{}\n",
+        TestKey::generate().public_line()
+    ));
+    let e = verify_sums(&other, sums, signature.as_bytes(), "2.0.0").unwrap_err();
+    assert!(e.to_string().contains("not signed by"), "{e}");
 }

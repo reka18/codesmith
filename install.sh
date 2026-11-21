@@ -20,9 +20,8 @@ set -eu
 
 REPO="reka18/codesmith"
 # The minisign public keys that sign releases, space-separated: the same list
-# as crates/codesmith/src/release_key.pub (a test keeps the two equal). Empty
-# until the first release key is generated.
-RELEASE_KEYS=""
+# as crates/codesmith/src/release_key.pub (a test keeps the two equal).
+RELEASE_KEYS="RWTFKe6qhvSs57s1pw5x6aJRK0jdZr42tg1NgNp3a9rAJ3HersFsRoMV"
 INSTALL_DIR="${CODESMITH_INSTALL_DIR:-${HOME}/.local/bin}"
 
 say() { printf 'codesmith-install: %s\n' "$*" >&2; }
