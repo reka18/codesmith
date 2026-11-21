@@ -11,7 +11,13 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn analyze(source: &str) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+/// `(resource, save)` pairs and `cd` directories, as `analyze` reports them.
+type Resources = (Vec<(String, String)>, Vec<String>);
+
+/// A command, its `(resource, save)` pairs and directories.
+type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
+
+fn analyze(source: &str) -> Result<Resources, String> {
     shell_scan::analyze(source, Path::new("/workspace")).map(|a| (a.commands, a.directories))
 }
 
@@ -89,7 +95,7 @@ fn oc_scan_derives_the_prefix_for_long_argument_lists() {
 /// "scanner behavior on former tree-sitter gaps": the POSIX fixtures.
 #[test]
 fn oc_scan_handles_the_former_tree_sitter_gaps() {
-    let cases: &[(&str, &[(&str, &str)], &[&str])] = &[
+    let cases: &[Case] = &[
         (
             "FOO=bar > output",
             &[("FOO=bar > output", "FOO=bar > *")],

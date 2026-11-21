@@ -266,7 +266,8 @@ async fn oc_write_formats_the_committed_file() {
 async fn oc_formatter_layers_merge_as_configured() {
     let md = || json!({"command": append("md"), "extensions": [".mdtest"]});
     let project = || json!({"command": append("project"), "extensions": [".project"]});
-    let cases: Vec<(&str, Vec<Option<Value>>, Vec<(&str, Option<&str>)>)> = vec![
+    type Case<'a> = (&'a str, Vec<Option<Value>>, Vec<(&'a str, Option<&'a str>)>);
+    let cases: Vec<Case> = vec![
         (
             "keeps lower formatters when a higher config adds another",
             vec![
