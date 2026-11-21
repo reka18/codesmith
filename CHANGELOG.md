@@ -13,6 +13,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   policy deny or a secret guard, and reach no other session. No browser
   driver is built in; a custom build plugs one in. See
   [permissions](docs/permissions.md#browser-attachments).
+- **A browser opens a workspace file only after the read tool's checks:**
+  `open_file` resolves the path as `read` does and asks `read` under its
+  project-relative, as-named and real names, so `secrets/./key` or
+  `secrets//key` meet a `secrets/*` deny, a symlink out of the workspace
+  is refused, names with `%`, `#` or `?` are refused, and the browser is
+  handed the percent-encoded file:// URL of the real path.
 - **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
   backend reached through GitLab's unpublished Duo workflow and
   agentic-chat SDK protocols; porting it would mean reimplementing a

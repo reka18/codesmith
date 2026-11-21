@@ -26,13 +26,17 @@
 //! ([`NoDriver`]) refuses to open anything. Only the attachment lifecycle and
 //! the permission checks in front of a driver are implemented.
 
+use crate::config::ToolOutputConfig;
 use crate::permission::{Denied, Effect, Gate, Granted, Request, Rule};
+use crate::tool::read::authorize_target;
+use crate::tool::{real_path, Ctx, Target};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
+use url::Url;
 
 /// The permission action a browser's own operations are checked under.
 pub const ACTION: &str = "browser";
@@ -434,9 +438,12 @@ impl Browsers {
     }
 
     /// Open workspace file `path` (relative to `root`) as a file:// tab
-    /// (OpenCode's `openFile`). Showing a file reads it, so the gate must
-    /// allow `read` for it too: the secret guards apply, and an
-    /// attachment's grant does not lift them.
+    /// (OpenCode's `openFile`). Showing a file reads it, so it is checked
+    /// as the read tool checks a file ([`authorize_file`]): the configured
+    /// denies and secret guards apply under every name it goes by, and an
+    /// attachment's grant does not lift them. `path` must name a file in
+    /// the workspace: not absolute, no `.` or `..`, no `%`, `#` or `?`, and
+    /// not a symlink that leads out of `root`.
     pub fn open_file(
         &self,
         gate: &Gate,
@@ -446,6 +453,7 @@ impl Browsers {
     ) -> Result<(), BrowserError> {
         let rel = Path::new(path);
         if path.is_empty()
+            || path.contains(['%', '#', '?', '\0'])
             || rel.is_absolute()
             || rel
                 .components()
@@ -456,9 +464,8 @@ impl Browsers {
             )));
         }
         self.current(session)?;
-        let full = root.join(rel);
-        assert(gate, "read", &full.display().to_string())?;
-        self.open(gate, session, &format!("file://{}", full.display()))
+        let url = authorize_file(gate, session, root, &root.join(rel), Within::Workspace)?;
+        self.open(gate, session, url.as_str())
     }
 
     /// The id of the session's live attachment.
@@ -470,6 +477,75 @@ impl Browsers {
         self.live(&mut st, session)
             .map(|s| s.id)
             .ok_or_else(|| BrowserError::NotAttached(session.to_string()))
+    }
+}
+
+/// Where a file a browser shows may be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Within {
+    /// Only under the workspace root, symlinks followed.
+    Workspace,
+}
+
+/// The checks the read tool makes before it reads `path` (absolute), for
+/// showing it in `session`'s browser: resolved exactly as `read` resolves
+/// it ([`crate::tool::Ctx::resolve`]: normalized, symlinks followed), then
+/// `external_directory` when its real path is outside the project, then
+/// `read` under every name it goes by (project-relative, as named and as
+/// resolved), so the configured denies and the secret guards meet each
+/// spelling ([`crate::tool::read::authorize_target`]). With
+/// [`Within::Workspace`] a real path outside `root` (a symlink leading out)
+/// is refused before anything is asked. The result is the file:// URL of
+/// the real path, percent-encoded, so the browser opens the file that was
+/// checked. The questions are asked as a tool asks them, so call this from
+/// outside a runtime or from a multi-thread runtime's worker.
+fn authorize_file(
+    gate: &Gate,
+    session: &str,
+    root: &Path,
+    path: &Path,
+    within: Within,
+) -> Result<Url, BrowserError> {
+    let invalid =
+        || BrowserError::Invalid(format!("Not a file a browser may open: {}", path.display()));
+    let name = path
+        .to_str()
+        .filter(|n| path.is_absolute() && root.is_absolute() && !n.contains('\0'))
+        .ok_or_else(invalid)?;
+    let ctx = file_ctx(gate, session, root);
+    let workspace = real_path(root);
+    let outside = |t: &Target| within == Within::Workspace && !t.real.starts_with(&workspace);
+    if outside(&ctx.resolve(name)) {
+        return Err(BrowserError::Invalid(format!(
+            "Not a workspace file (it leads outside the workspace): {}",
+            path.display()
+        )));
+    }
+    let (target, _) = authorize_target(&ctx, name).map_err(BrowserError::Denied)?;
+    if outside(&target) {
+        return Err(invalid());
+    }
+    Url::from_file_path(&target.real).map_err(|_| invalid())
+}
+
+/// A tool context for checking a file the way the tools do: the project
+/// and the working directory are `root`. It runs nothing and fetches
+/// nothing.
+fn file_ctx<'a>(gate: &'a Gate, session: &str, root: &Path) -> Ctx<'a> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    Ctx {
+        cwd: root.to_path_buf(),
+        root: root.to_path_buf(),
+        gate,
+        shell: String::new(),
+        session_id: session.to_string(),
+        limits: ToolOutputConfig::default(),
+        client: CLIENT.get_or_init(reqwest::Client::new).clone(),
+        jobs: None,
+        websearch: None,
+        format: None,
+        lsp: None,
+        progress: None,
     }
 }
 
@@ -576,6 +652,264 @@ mod tests {
             driver: Arc::new(NoDriver),
         });
         (b, clock)
+    }
+
+    /// A driver that records every URL it was asked to open.
+    #[derive(Default)]
+    struct Opened(Mutex<Vec<String>>);
+
+    impl Driver for Opened {
+        fn open(&self, _: &str, url: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(url.to_string());
+            Ok(())
+        }
+    }
+
+    impl Opened {
+        fn urls(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    /// Records every question asked and declines it.
+    #[derive(Default)]
+    struct Declines(Mutex<Vec<(String, Vec<String>)>>);
+
+    impl crate::permission::Asker for Declines {
+        fn ask(&self, req: &Request) -> Reply {
+            let mut asked = self.0.lock().unwrap();
+            asked.push((req.action.clone(), req.resources.clone()));
+            Reply::Reject(None)
+        }
+    }
+
+    impl Declines {
+        fn requests(&self) -> Vec<(String, Vec<String>)> {
+            self.0.lock().unwrap().clone()
+        }
+        fn actions(&self) -> Vec<String> {
+            self.requests().into_iter().map(|r| r.0).collect()
+        }
+    }
+
+    /// A stand-in home (with an SSH key), a workspace with a `.env`, a
+    /// `secrets/key` and a page, and a folder outside both; nothing real is
+    /// read.
+    struct Files {
+        _dir: tempfile::TempDir,
+        home: std::path::PathBuf,
+        root: std::path::PathBuf,
+        outside: std::path::PathBuf,
+    }
+
+    fn files() -> Files {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let (home, root, outside) = (base.join("home"), base.join("work"), base.join("outside"));
+        for p in [
+            home.join(".ssh/id_rsa"),
+            root.join(".env"),
+            root.join("secrets/key"),
+            root.join("index.html"),
+            root.join("a b.html"),
+            outside.join("page.html"),
+        ] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+        }
+        Files {
+            _dir: dir,
+            home,
+            root,
+            outside,
+        }
+    }
+
+    /// An attached session `s` whose gate holds `extra`, `read * allow` and
+    /// the secret guards for `f.home`, with every question declined by a
+    /// recorder; and the driver that records what reached it.
+    fn attached(
+        f: &Files,
+        extra: Vec<Rule>,
+    ) -> (
+        Arc<Browsers>,
+        BrowserAttachment,
+        Gate,
+        Arc<Declines>,
+        Arc<Opened>,
+    ) {
+        let driver = Arc::new(Opened::default());
+        let b = Browsers::new(Options {
+            time_to_live: Duration::from_secs(60),
+            sweep_every: None,
+            clock: Arc::new(ManualClock::default()),
+            driver: driver.clone(),
+        });
+        let mut rules = vec![Rule::new("read", "*", Effect::Allow)];
+        rules.extend(crate::permission::secret_guards_for(
+            std::slice::from_ref(&f.home),
+            &[],
+            &[],
+            &[],
+        ));
+        rules.extend(extra);
+        let rec = Arc::new(Declines::default());
+        let mut gate = Gate::new(rules, rec.clone());
+        gate.set_granted(Some(b.grants_for("s")));
+        let a = b.attach("s", "c").unwrap();
+        (b, a, gate, rec, driver)
+    }
+
+    fn file_url(p: &std::path::Path) -> String {
+        Url::from_file_path(p).unwrap().to_string()
+    }
+
+    fn symlink(target: &std::path::Path, link: &std::path::Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn opening_a_workspace_file_opens_its_real_path_percent_encoded() {
+        let f = files();
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        b.open_file(&gate, "s", &f.root, "index.html").unwrap();
+        b.open_file(&gate, "s", &f.root, "a b.html").unwrap();
+        assert_eq!(
+            driver.urls(),
+            [
+                file_url(&f.root.join("index.html")),
+                format!(
+                    "{}a%20b.html",
+                    file_url(&f.root.join("x")).trim_end_matches('x')
+                ),
+            ]
+        );
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+    }
+
+    /// A project-relative deny is met however the file is spelled: the
+    /// check names it as the read tool does, relative to the project.
+    #[test]
+    fn opening_a_file_meets_a_project_relative_deny_under_every_spelling() {
+        let f = files();
+        let deny = vec![Rule::new("read", "secrets/*", Effect::Deny)];
+        let (b, _a, gate, _rec, driver) = attached(&f, deny);
+        for name in ["secrets/key", "secrets/./key", "secrets//key"] {
+            assert!(
+                matches!(
+                    b.open_file(&gate, "s", &f.root, name),
+                    Err(BrowserError::Denied(_))
+                ),
+                "{name}"
+            );
+        }
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
+    #[test]
+    fn opening_a_file_meets_an_exact_deny_under_every_spelling() {
+        let f = files();
+        // Inside the project a `read` resource is project-relative, for the
+        // read tool as here (docs/permissions.md).
+        for deny in ["secrets/key", "secrets/k*"] {
+            let rules = vec![Rule::new("read", deny, Effect::Deny)];
+            let (b, _a, gate, _rec, driver) = attached(&f, rules);
+            for name in ["secrets/key", "secrets/./key", "secrets//key"] {
+                assert!(
+                    matches!(
+                        b.open_file(&gate, "s", &f.root, name),
+                        Err(BrowserError::Denied(_))
+                    ),
+                    "{deny} {name}"
+                );
+            }
+            assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+        }
+    }
+
+    #[test]
+    fn opening_a_file_keeps_the_env_guard() {
+        let f = files();
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        assert!(matches!(
+            b.open_file(&gate, "s", &f.root, ".env"),
+            Err(BrowserError::Denied(_))
+        ));
+        assert_eq!(rec.actions(), ["read"]);
+        assert!(driver.urls().is_empty());
+    }
+
+    /// A workspace symlink that leads out (to an ordinary file, or to the
+    /// SSH folder) is refused before anything is asked or opened.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_file_refuses_a_symlink_out_of_the_workspace() {
+        let f = files();
+        symlink(&f.home.join(".ssh"), &f.root.join("keys"));
+        symlink(&f.outside.join("page.html"), &f.root.join("page.html"));
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        for name in ["keys/id_rsa", "keys", "page.html"] {
+            assert!(
+                matches!(
+                    b.open_file(&gate, "s", &f.root, name),
+                    Err(BrowserError::Invalid(_))
+                ),
+                "{name}"
+            );
+        }
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
+    /// A symlink inside the workspace is opened by its real path, and
+    /// checked under that name too.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_file_checks_and_opens_a_workspace_symlink_by_its_target() {
+        let f = files();
+        symlink(&f.root.join("secrets/key"), &f.root.join("note.txt"));
+        let deny = vec![Rule::new("read", "secrets/*", Effect::Deny)];
+        let (b, _a, gate, _rec, driver) = attached(&f, deny);
+        assert!(matches!(
+            b.open_file(&gate, "s", &f.root, "note.txt"),
+            Err(BrowserError::Denied(_))
+        ));
+        let (b, _a, gate, _rec, driver2) = attached(&f, vec![]);
+        b.open_file(&gate, "s", &f.root, "note.txt").unwrap();
+        assert!(driver.urls().is_empty());
+        assert_eq!(driver2.urls(), [file_url(&f.root.join("secrets/key"))]);
+    }
+
+    #[test]
+    fn opening_a_file_refuses_what_is_not_a_plain_workspace_path() {
+        let f = files();
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        let etc = "/etc/passwd".to_string();
+        for name in [
+            "",
+            "../outside/page.html",
+            "secrets/../../outside/page.html",
+            ".",
+            "./index.html",
+            etc.as_str(),
+            "%2e%2e/%2e%2e/etc/passwd",
+            "%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+            "index.html#x",
+            "index.html?x",
+            "a#/../../etc/passwd",
+            "index\0.html",
+        ] {
+            assert!(
+                matches!(
+                    b.open_file(&gate, "s", &f.root, name),
+                    Err(BrowserError::Invalid(_))
+                ),
+                "{name:?}"
+            );
+        }
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
     }
 
     #[test]

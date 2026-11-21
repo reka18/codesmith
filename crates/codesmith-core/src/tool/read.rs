@@ -88,11 +88,17 @@ pub fn authorize(ctx: &Ctx, path: &str) -> Result<std::path::PathBuf, String> {
 /// [`authorize`] for a file or a directory: its absolute path, and
 /// whether it is a directory.
 pub fn authorize_any(ctx: &Ctx, path: &str) -> Result<(std::path::PathBuf, bool), String> {
+    authorize_target(ctx, path).map(|(t, is_dir)| (t.absolute, is_dir))
+}
+
+/// [`authorize_any`], keeping the resolved target: its real path is what
+/// was checked, under every name it goes by (see [`super::Target`]).
+pub(crate) fn authorize_target(ctx: &Ctx, path: &str) -> Result<(super::Target, bool), String> {
     let target = ctx.resolve(path);
     let is_dir = target.absolute.is_dir();
     ctx.authorize_external(&target, is_dir)?;
     ask_read(ctx, &target)?;
-    Ok((target.absolute, is_dir))
+    Ok((target, is_dir))
 }
 
 /// A directory's entries, one per line, folders first (with a trailing
