@@ -31,7 +31,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tools: glob and grep | 39 | 21 | 5 | 0 | 11 | 2 | 0 |
 | Tool: webfetch | 100 | 100 | 0 | 0 | 0 | 0 | 0 |
 | Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
-| Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
+| Tools: question, todo, skill | 9 | 2 | 0 | 0 | 2 | 5 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
 | Tool registry, schemas, placement | 100 | 34 | 0 | 0 | 57 | 9 | 0 |
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
@@ -40,7 +40,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
 | Permission | 177 | 101 | 1 | 0 | 50 | 25 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
-| Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
+| Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
@@ -52,13 +52,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2596** | **58** | **40** | **2526** | **368** | **0** |
+| **Total** | **5588** | **2604** | **63** | **40** | **2526** | **355** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
 - `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
+- `config/skill.test.ts`: "maps config entry types to skill directories" (1 case): a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories`.
 - `file-access-path.test.ts`: "does not treat a filesystem-root project sentinel as an internal boundary" (1 case): a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary). Pinned by `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary`.
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
@@ -85,6 +86,10 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `shell-scan/bash-syntax.test.ts`: "retains explicit substitutions without evaluating expressions: %s" (2 cases): Bash 5.3's `${ cmd; }` and `${| cmd; }` run `cmd` in the current shell, but the scan read them as parameter expansions and saw no command, so `echo "${ rm -rf x; }"` was checked as `echo` alone and passed a deny rule on `rm`; they are refused as unanalyzable now (OpenCode reads the commands inside). Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_retains_explicit_substitutions_without_evaluating_expressions`.
 - `shell.test.ts`: "builds command args per shell family" (1 case): POSIX families; Zsh now gets `+o nomatch`. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `shell.test.ts`: "passes an unmatched zsh glob through to the command" (1 case): an unmatched glob failed the whole Zsh line. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
+- `skill.test.ts`: "hides and refuses denied skills while organization policy overrides local allows" (1 case): the skill list offered every discovered skill whatever the agent's rules (a denied one was advertised, its load refused); the skills the agent's rules deny are left out now (adapted: the agent's rules stand in for an organization policy; the refusal is pinned by tests/oc_skills_backlog2.rs::oc_skill_tool_refuses_a_denied_skill_before_loading_it). Pinned by `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules`.
+- `skill.test.ts`: "filters values by agent permissions" (1 case): as above. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules`.
+- `skill/instructions.test.ts`: "renders described agent skills and updates the complete available list" (1 case): as above. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules`.
+- `skill/instructions.test.ts`: "retains specifically allowed skills after a global denial" (1 case): as above. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules`.
 - `snapshot.test.ts`: "recovers from a corrupt index and ignores a stale index lock" (1 case): a lock left by a killed capture failed every later capture and undo, and a corrupt index failed capture; captures now write a temporary index and rename it into place, rebuilding an unreadable one, and restores check out through their own. Pinned by `tests/oc_snapshot_backlog.rs::oc_snapshot_recovers_from_a_corrupt_index_and_a_stale_lock`.
 - `snapshot.test.ts`: "restores the other files when removing one path fails" (1 case): the first added file that could not be removed stopped the restore, so the files after it kept the turn's changes; the others are now restored and the failure reported after. Pinned by `tests/oc_snapshot_backlog.rs::oc_snapshot_restores_the_other_files_when_removing_one_fails`.
 - `tool-execute.test.ts`: "execute rejects filesystem fetches" (1 case): Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page; it now has one, with the webfetch tool's checks. Pinned by `src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches`.
@@ -181,7 +186,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (368 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (355 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Subagents (1)
 
@@ -249,7 +254,7 @@ Tests for behaviour CodeSmith already has but no test pins (368 cases), by area,
 - HTTP failures reported safely (S) — `tool::websearch`
   - `tool-websearch.test.ts`: reports safe HTTP failures with the attempted provider
 
-### Tools: question, todo, skill (7)
+### Tools: question, todo, skill (5)
 
 - one item schema for the questions array (S) — `question schema`
   - `tool-question.test.ts`: emits one item schema for the nonempty questions array
@@ -259,10 +264,6 @@ Tests for behaviour CodeSmith already has but no test pins (368 cases), by area,
   - `tool-question.test.ts`: registers question and projects user answers without a permission assertion
 - dismissed questions stay out of model-facing output (S) — `question`
   - `tool-question.test.ts`: keeps dismissed questions out of model-facing output
-- a denied skill is refused before loading (S) — `tool skill + permission`
-  - `tool-skill.test.ts`: refuses a policy-blocked skill before authorization or content preparation
-- lists skills and loads the chosen one's content (S) — `tool skill`
-  - `tool-skill.test.ts`: lists available skills, authorizes the selected ID, and loads model-facing content
 - todowrite summarizes the update (S) — `tool::todo`
   - `tool-todo.test.ts`: registers todowrite on the native tool list and summarizes the update
 
@@ -335,26 +336,6 @@ Tests for behaviour CodeSmith already has but no test pins (368 cases), by area,
   - `config/agent.test.ts`: matches POSIX paths against home-relative permissions
 - OpenAI Responses verbosity defaults (S) — `codesmith_ai options`
   - `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
-
-### Skills and commands (11)
-
-- plain content without frontmatter (S) — `skill frontmatter`
-  - `config/markdown.test.ts`: parses plain content without frontmatter
-- config entry types map to skill directories; a worktree copy beats the parent checkout's (S) — `skill::discover`
-  - `config/skill.test.ts`: maps config entry types to skill directories
-  - `config/skill.test.ts`: prefers a worktree skill over the parent checkout copy
-- built-in init and review commands registered (S) — `command::builtin`
-  - `plugin/command.test.ts`: registers built-in init and review commands
-- denied skills hidden and refused (S) — `skill + permission`
-  - `skill.test.ts`: hides and refuses denied skills while organization policy overrides local allows
-  - `skill.test.ts`: filters values by agent permissions
-- described skills rendered into the prompt (S) — `skill::instructions`
-  - `skill/instructions.test.ts`: renders described agent skills and updates the complete available list
-- skill list follows the agent's skill rules (S) — `skill + permission`
-  - `skill/instructions.test.ts`: omits instructions when the selected agent denies all skills
-  - `skill/instructions.test.ts`: omits instructions when a resource-specific denial follows the global denial
-  - `skill/instructions.test.ts`: retains specifically allowed skills after a global denial
-  - `skill/instructions.test.ts`: omits instructions when a specifically allowed skill is denied again
 
 ### Instructions and references (2)
 
@@ -1770,12 +1751,17 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tools: question, todo, skill (2 of 9)</summary>
+<details><summary>Tools: question, todo, skill (4 of 9)</summary>
 
 
 **`tool-question.test.ts`**
 
 - D does not invent tool ownership metadata without a durable registry source — storage-model: tool ownership metadata
+
+**`tool-skill.test.ts`**
+
+- P refuses a policy-blocked skill before authorization or content preparation — `tests/oc_skills_backlog2.rs::oc_skill_tool_refuses_a_denied_skill_before_loading_it` (adapted: an agent's deny rule stands in for a policy)
+- P lists available skills, authorizes the selected ID, and loads model-facing content — `tests/oc_skills_backlog2.rs::oc_skill_tool_lists_skills_and_loads_the_chosen_ones_content`
 
 **`tool-todo.test.ts`**
 
@@ -2453,7 +2439,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Skills and commands (48 of 59)</summary>
+<details><summary>Skills and commands (59 of 59)</summary>
 
 
 **`command.test.ts`**
@@ -2478,14 +2464,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P recovers unquoted-colon frontmatter via the sanitize fallback — `src/skill.rs::oc_skill_frontmatter_values_with_colons_and_brackets`
 - P recovers a frontmatter value that starts with a bracketed tag — `src/skill.rs::oc_skill_frontmatter_values_with_colons_and_brackets`
 - D recovers the same content again after a previous failed parse · keeps throwing for the same unparseable content on every call — deliberate: skill.rs: frontmatter is read as flat key: value lines, so nothing fails to parse
+- P parses plain content without frontmatter — `tests/oc_skills_backlog2.rs::oc_markdown_parses_plain_content_without_frontmatter` (adapted: a skill file's frontmatter)
 
 **`config/skill.test.ts`**
 
 - D reads disable-model-invocation as autoinvoke — deliberate: skill.rs: disable-model-invocation not supported
 - P parses root and nested skill ids and metadata flags — `src/skill.rs::oc_skill_ids_come_from_the_folder_and_name_defaults_to_it`
+- F maps config entry types to skill directories — `tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories` (a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now)
 - P loads directory and individual downloaded skill roots with later-source precedence — `tests/oc_skill_remote.rs::oc_skill_loads_directory_and_downloaded_skill_roots_with_later_source_precedence` (adapted: against a local catalog)
+- P prefers a worktree skill over the parent checkout copy — `tests/oc_skills_backlog2.rs::oc_skill_prefers_a_worktree_skill_over_the_parent_checkout_copy`
 - P keeps directory skills when a URL source fails — `tests/oc_skill_remote.rs::oc_skill_keeps_directory_skills_when_a_url_source_fails` (adapted: an unreachable catalog)
 - D rescans directory sources when watched files change · watches canonical files behind symlinked skills · reloads symlinked sources when their target changes · follows missing source directories as their parents appear · ignores unrelated config updates and coalesces compatibility bursts into one reload — deliberate: config.rs: no file watching
+
+**`plugin/command.test.ts`**
+
+- P registers built-in init and review commands — `tests/oc_skills_backlog2.rs::oc_command_registers_builtin_init_and_review_commands`
 
 **`plugin/skill.test.ts`**
 
@@ -2500,15 +2493,22 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`skill.test.ts`**
 
+- F hides and refuses denied skills while organization policy overrides local allows — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (the skill list offered every discovered skill whatever the agent's rules (a denied one was advertised, its load refused); the skills the agent's rules deny are left out now (adapted: the agent's rules stand in for an organization policy; the refusal is pinned by tests/oc_skills_backlog2.rs::oc_skill_tool_refuses_a_denied_skill_before_loading_it))
 - D applies configuration precedence to skills without changing their registered values — effect-internal: skill registry transforms and events
 - D publishes catalog updates when organization policy changes — cloud: organization policy
 - D reads the current editor entry by ID · registers values with last-write-wins precedence · updates and removes registered values · restores earlier values when an updating transform is disposed · publishes updates after committed values are visible — effect-internal: skill registry transforms and events
+- F filters values by agent permissions — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (as above)
 - P stores virtual skill files, notifies when they change, and prepares skill:// output without disk scans — `src/tool/read.rs::oc_read_virtual_skill_paths`
 
 **`skill/instructions.test.ts`**
 
+- F renders described agent skills and updates the complete available list — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (as above)
 - P announces added and removed skills as deltas without restating the list — `tests/oc_instruction_state.rs::oc_skills_announce_added_and_removed_skills_as_deltas`
 - P renders only the changed skill when a description changes — `tests/oc_instruction_state.rs::oc_skills_render_only_the_changed_skill`
+- P omits instructions when the selected agent denies all skills — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (an agent denying every skill has no skill tool, so no list)
+- P omits instructions when a resource-specific denial follows the global denial — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (an agent denying every skill has no skill tool, so no list)
+- F retains specifically allowed skills after a global denial — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (as above)
+- P omits instructions when a specifically allowed skill is denied again — `tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules` (an agent denying every skill has no skill tool, so no list)
 
 </details>
 

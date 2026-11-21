@@ -210,7 +210,13 @@ pub fn roots(
             out.extend(crate::skill_remote::pulled(e));
             continue;
         }
-        let p = PathBuf::from(e);
+        // `~/x` is in the home folder, as in OpenCode; other relative paths
+        // are the project's.
+        let p = match e.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None if e == "~" => home.to_path_buf(),
+            None => PathBuf::from(e),
+        };
         out.push(if p.is_absolute() { p } else { root.join(p) });
     }
     out

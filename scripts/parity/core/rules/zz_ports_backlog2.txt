@@ -91,3 +91,20 @@
 4098 :: ported :: tests/oc_runner_backlog2.rs::oc_session_interrupts_overflow_recovery_while_the_summary_streams :: adapted: the interrupt drops the turn; no summary replaces the history
 7374,7397 :: design :: deliberate :: tools run after the model's stream ends (runner.rs), so a provider failure mid-stream leaves no tool run, defect or output to settle beside it
 
+# --- Skills and commands (tests/oc_skills_backlog2.rs) ---
+@config/markdown.test.ts
+36 :: ported :: tests/oc_skills_backlog2.rs::oc_markdown_parses_plain_content_without_frontmatter :: adapted: a skill file's frontmatter
+@config/skill.test.ts
+180 :: fixed :: tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories :: a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now
+254 :: ported :: tests/oc_skills_backlog2.rs::oc_skill_prefers_a_worktree_skill_over_the_parent_checkout_copy
+@plugin/command.test.ts
+36 :: ported :: tests/oc_skills_backlog2.rs::oc_command_registers_builtin_init_and_review_commands
+@skill.test.ts
+35 :: fixed :: tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules :: the skill list offered every discovered skill whatever the agent's rules (a denied one was advertised, its load refused); the skills the agent's rules deny are left out now (adapted: the agent's rules stand in for an organization policy; the refusal is pinned by tests/oc_skills_backlog2.rs::oc_skill_tool_refuses_a_denied_skill_before_loading_it)
+212 :: fixed :: tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules :: as above
+@skill/instructions.test.ts
+48,169 :: fixed :: tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules :: as above
+144,155,185 :: ported :: tests/oc_skills_backlog2.rs::oc_skill_list_follows_the_agents_skill_rules :: an agent denying every skill has no skill tool, so no list
+@tool-skill.test.ts
+34 :: ported :: tests/oc_skills_backlog2.rs::oc_skill_tool_refuses_a_denied_skill_before_loading_it :: adapted: an agent's deny rule stands in for a policy
+69 :: ported :: tests/oc_skills_backlog2.rs::oc_skill_tool_lists_skills_and_loads_the_chosen_ones_content
