@@ -277,6 +277,9 @@ pub struct Session {
     pub agent: Agent,
     pub model: ModelRef,
     pub model_spec: String,
+    /// The model Copilot's Auto router picked for this step, when the
+    /// session's model is `github-copilot/auto`.
+    auto_route: Option<ModelRef>,
     /// The system prompt of the latest request: [`Session::base_system`]
     /// and the instruction baseline (see [`crate::instruction_state`]).
     pub system: String,
@@ -711,6 +714,7 @@ impl Session {
             root: loaded.root.clone(),
             agent,
             model,
+            auto_route: None,
             model_spec,
             system,
             base_system,
@@ -1325,7 +1329,12 @@ impl Session {
     fn base_request(&self, plugins: &crate::plugin::Registry) -> Request {
         let code = self.code_entries();
         Request {
-            model: self.model.model_id.clone(),
+            model: self
+                .auto_route
+                .as_ref()
+                .unwrap_or(&self.model)
+                .model_id
+                .clone(),
             system: self.system_prompt(&code),
             messages: self.sendable_history(&self.messages),
             tools: self.tool_specs(plugins, &code),
@@ -1365,11 +1374,11 @@ impl Session {
         };
         match crate::plugin::active().http_hooks(&self.loaded.config, scope) {
             Some(h) => {
-                let mut m = self.model.clone();
+                let mut m = self.auto_route.as_ref().unwrap_or(&self.model).clone();
                 m.provider.hooks = Some(h);
                 std::borrow::Cow::Owned(m)
             }
-            None => std::borrow::Cow::Borrowed(&self.model),
+            None => std::borrow::Cow::Borrowed(self.auto_route.as_ref().unwrap_or(&self.model)),
         }
     }
 
@@ -1488,6 +1497,58 @@ impl Session {
         }
         self.claude_instructions = claude;
         Ok(())
+    }
+
+    /// The model Copilot's Auto router picks for the next request, with its
+    /// session token (see [`crate::providers::copilot_auto`]); `None` for
+    /// any other model, or when nothing can serve.
+    async fn route_auto(&self) -> Option<ModelRef> {
+        use crate::providers::copilot_auto as auto;
+        if !auto::is_auto(&self.model.provider_id, &self.model.model_id) {
+            return None;
+        }
+        let kept = crate::providers::live::load(crate::providers::copilot::ID)?;
+        let account = auto::Account::from_kept(&kept)?;
+        let last =
+            self.messages.iter().rev().find(|m| {
+                m.role == Role::User && m.parts.iter().any(|p| matches!(p, Part::Text(_)))
+            });
+        let prompt = auto::Prompt {
+            text: last
+                .map(|m| {
+                    m.parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            Part::Text(t) => Some(t.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default(),
+            has_image: last.is_some_and(|m| {
+                m.parts
+                    .iter()
+                    .any(|p| matches!(p, Part::Media(x) if x.mime.starts_with("image/")))
+            }),
+        };
+        let now = crate::providers::oauth::now_ms() as i64;
+        let pick = auto::resolve(
+            &self.client,
+            &self.model.provider,
+            &self.id,
+            false,
+            &account,
+            &prompt,
+            now,
+        )
+        .await?;
+        let spec = format!("{}/{}", crate::providers::copilot::ID, pick.model);
+        let mut m = self.loaded.config.resolve_model(&spec).ok()?;
+        if let Some(t) = auto::token(&self.id, &pick.model) {
+            m.provider.headers.push((auto::TOKEN_HEADER.into(), t));
+        }
+        Some(m)
     }
 
     /// Save the Plan mode reminder the history lacks for this session's
@@ -4034,6 +4095,7 @@ impl Session {
     ) -> Result<(Vec<Part>, FinishReason, Usage)> {
         // Pick up tool and prompt lists a server announced as changed.
         self.mcp.refresh().await;
+        self.auto_route = self.route_auto().await;
         let (mut req, renamed) = self.request();
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
         self.turn.schemas = req

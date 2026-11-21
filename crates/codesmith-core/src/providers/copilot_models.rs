@@ -35,6 +35,8 @@ pub struct Remote {
     pub adaptive: bool,
     pub max_thinking: Option<u64>,
     pub auto_discount: Option<f64>,
+    /// The model Copilot falls back to for chat (`is_chat_fallback`).
+    pub chat_fallback: bool,
     /// `(batch size, input, output, cache read)`.
     pub prices: Option<(f64, f64, f64, f64)>,
 }
@@ -131,6 +133,7 @@ pub fn decode(v: &Value) -> Option<Remote> {
             adaptive: boolean(&supports["adaptive_thinking"])?.unwrap_or(false),
             max_thinking: num(&supports["max_thinking_budget"])?.map(|n| n as u64),
             auto_discount: num(&v["billing"]["auto_discount"])?,
+            chat_fallback: boolean(&v["is_chat_fallback"])?.unwrap_or(false),
             prices,
         };
         if v["policy"]["state"] == "disabled" {

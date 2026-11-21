@@ -506,6 +506,8 @@ impl Session {
             Ok(summary) => {
                 sink.compaction_end(Ok(&summary));
                 self.keep_summary(summary, k)?;
+                // The prompt changed: Copilot's Auto router picks again.
+                crate::providers::copilot_auto::compacted(&self.id);
                 sink.compacted(before, self.estimate_prompt());
                 Ok(())
             }

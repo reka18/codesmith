@@ -10,6 +10,7 @@ pub mod bedrock;
 pub mod claude_agent;
 pub mod cloudflare;
 pub mod copilot;
+pub mod copilot_auto;
 pub mod copilot_models;
 pub mod digitalocean;
 pub mod gateways;

@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
-| Providers, models and credentials | 796 | 352 | 0 | 65 | 343 | 36 | 0 |
+| Providers, models and credentials | 796 | 353 | 0 | 64 | 343 | 36 | 0 |
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1688** | **18** | **87** | **2401** | **1394** | **0** |
+| **Total** | **5588** | **1689** | **18** | **86** | **2401** | **1394** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,13 +83,13 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (87 cases in 6 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (86 cases in 6 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
-| [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
+| [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
@@ -152,9 +152,8 @@ Missing features, by how many OpenCode test cases each would unlock (87 cases in
 
 ### Provider Plugins
 
-17 cases.
+16 cases.
 
-- `plugin/provider-github-copilot.test.ts`: routes Auto through Copilot's router and keeps the pick until compaction
 - `plugin/provider-gitlab.test.ts`: discovers workflow models for the location and exposes their refs in the model registry
 - `plugin/provider-gitlab.test.ts`: uses OAuth access tokens for discovery
 - `plugin/provider-gitlab.test.ts`: sends requests to the instance an OAuth login was issued against
@@ -3019,7 +3018,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (695 of 796)</summary>
+<details><summary>Providers, models and credentials (696 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3276,6 +3275,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P keeps a declared agent initiator when the body looks user-initiated — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (a declared agent step stays agent-initiated)
 - P classifies session generation requests as agent interactions — `tests/oc_providers.rs::oc_copilot_classifies_steps_by_kind` (agent steps)
 - P routes models.dev fallback models to native Copilot APIs — `tests/oc_providers.rs::oc_copilot_routes_models_dev_fallback_models_to_native_copilot_apis`
+- P routes Auto through Copilot's router and keeps the pick until compaction — `tests/oc_copilot_auto.rs::oc_copilot_routes_auto_through_the_router_and_keeps_the_pick_until_compaction` (adapted: the router module driven directly; a session on github-copilot/auto routes each step through it)
 - P disables gpt-5-chat-latest before Copilot language selection — `tests/oc_providers.rs::oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection` (adapted: hidden from `codesmith models`)
 - P does not disable gpt-5-chat-latest for non-Copilot providers — `tests/oc_providers.rs::oc_copilot_disables_gpt_5_chat_latest_before_copilot_language_selection` (only Copilot's list hides it)
 

@@ -622,8 +622,19 @@ catalog's Copilot models stay only while Copilot still lists them, and
 list that has Copilot's free utility model (`gpt-4o-mini`), sessions on
 Copilot are named with it (marked as session-name generation, as Copilot's
 own client does), and only fall back to the billed title request when that
-fails. Copilot's Auto router (which picks a model per session) is not used
-yet: `auto` goes to Copilot as is.
+fails.
+
+A session on `github-copilot/auto` asks Copilot's Auto router (`POST
+<api>/auto`, with the latest prompt, through the account's own Copilot
+credentials) which model of the account's Auto pool serves it, and sends
+its requests to that model, with the `Copilot-Session-Token` the router
+issued (it unlocks the Auto discount; Copilot rejects it for any other
+model). The pick holds until its token is about to expire, the session is
+compacted (the compaction itself still uses it), or the kept list is for
+another account. When the router fails, or picks a model the kept list
+doesn't have, the account's chat fallback serves for five minutes before
+the router is asked again. Titles never route. Auto needs the kept list
+(`codesmith models github-copilot`).
 
 ### Cloudflare AI Gateway and Workers AI
 

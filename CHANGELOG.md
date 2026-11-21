@@ -70,6 +70,11 @@ All notable changes to CodeSmith are listed here. Versions follow
   worktrees. Creating or removing a worktree asks the same `edit` approval
   writing there does. It never changes configuration; `"plugins":
   {"codesmith": false}` turns it off.
+- **GitHub Copilot Auto:** a session on `github-copilot/auto` asks
+  Copilot's Auto router which model serves it and keeps the pick (and its
+  session token, sent only with that model's requests) until the token
+  nears expiry, the session is compacted, or the account changes; the
+  account's chat fallback serves while the router fails.
 
 ## 0.1.0
 
