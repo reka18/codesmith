@@ -206,41 +206,193 @@ pub(crate) async fn is_local(url: &reqwest::Url) -> bool {
     }
 }
 
-/// Refuse a redirect from a host that is not local to one that is
-/// ([`is_local`]): a public site must not steer a request to the machine
-/// or its network. Local to local (a dev server) is fine.
-///
-/// The target's name is resolved here and again when connecting, so a
-/// name that changes its address in between is not caught.
+/// What the connection for a request may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// Any address: the first request, which the user approved, or a hop
+    /// from a local host.
+    Any,
+    /// Public addresses only: a hop a public host redirected to. The name is
+    /// resolved and checked by [`PublicOnly`] in the lookup the connection
+    /// itself uses, so a name that answers with a public address for the
+    /// check and a private one for the connection (DNS rebinding) cannot
+    /// steer it.
+    Public,
+}
+
+impl Reach {
+    /// `b` with this reach's resolver.
+    pub(crate) fn apply(self, b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        match self {
+            Reach::Any => b,
+            Reach::Public => b.dns_resolver(std::sync::Arc::new(PublicOnly::system())),
+        }
+    }
+}
+
+/// The shared client for `reach` in `cell` (one per reach, so a public-only
+/// hop never reuses a connection made without the check), built with `build`
+/// and [`Reach::apply`] the first time.
+pub(crate) fn shared_client(
+    cell: &'static [std::sync::OnceLock<Option<reqwest::Client>>; 2],
+    reach: Reach,
+    build: impl FnOnce() -> reqwest::ClientBuilder,
+) -> Result<&'static reqwest::Client, String> {
+    cell[reach as usize]
+        .get_or_init(|| reach.apply(build()).build().ok())
+        .as_ref()
+        .ok_or_else(|| "Unable to create the HTTP client".to_string())
+}
+
+type Lookup = dyn Fn(
+        String,
+    ) -> futures_util::future::BoxFuture<'static, std::io::Result<Vec<std::net::SocketAddr>>>
+    + Send
+    + Sync;
+
+/// A resolver that fails unless every address a name resolves to is public
+/// ([`codesmith_ai::generation::public_ip`]); the connection then goes to
+/// exactly the addresses checked. Reqwest does not consult it for an IP
+/// literal (checked by [`check_redirect_target`]) or when a proxy resolves
+/// the name.
+pub(crate) struct PublicOnly {
+    lookup: Box<Lookup>,
+}
+
+impl PublicOnly {
+    /// Resolving with the system resolver.
+    pub(crate) fn system() -> PublicOnly {
+        PublicOnly::with(|host| {
+            Box::pin(
+                async move { Ok(tokio::net::lookup_host((host.as_str(), 0)).await?.collect()) },
+            )
+        })
+    }
+
+    /// Resolving with `lookup` (a fixture, in tests).
+    pub(crate) fn with(
+        lookup: impl Fn(
+                String,
+            ) -> futures_util::future::BoxFuture<
+                'static,
+                std::io::Result<Vec<std::net::SocketAddr>>,
+            > + Send
+            + Sync
+            + 'static,
+    ) -> PublicOnly {
+        PublicOnly {
+            lookup: Box::new(lookup),
+        }
+    }
+}
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        let lookup = (self.lookup)(host.clone());
+        Box::pin(async move {
+            use codesmith_ai::generation::public_ip;
+            let addrs = lookup.await?;
+            if let Some(a) = addrs.iter().find(|a| !public_ip(a.ip())) {
+                return Err(Box::new(LocalAddress { host, ip: a.ip() }) as _);
+            }
+            if addrs.is_empty() {
+                return Err(format!("{host} has no address").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// [`PublicOnly`] refused a name for one of its addresses.
+#[derive(Debug)]
+struct LocalAddress {
+    host: String,
+    ip: std::net::IpAddr,
+}
+
+impl std::fmt::Display for LocalAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Refusing a redirect to {}: it resolves to {}, a local or private address",
+            self.host, self.ip
+        )
+    }
+}
+
+impl std::error::Error for LocalAddress {}
+
+/// The message of a [`PublicOnly`] refusal somewhere in `e`'s causes.
+pub(crate) fn refusal(e: &reqwest::Error) -> Option<String> {
+    let mut source: Option<&dyn std::error::Error> = Some(e);
+    while let Some(s) = source {
+        if let Some(l) = s.downcast_ref::<LocalAddress>() {
+            return Some(l.to_string());
+        }
+        source = s.source();
+    }
+    None
+}
+
+/// Whether the host that sent `resp` for `url` (fetched with
+/// [`Reach::Any`]) is local: the address it was connected to is not public
+/// and `url`'s host is local ([`is_local`]). Both must say so, so a name
+/// that resolves differently for the check than it did for the connection
+/// cannot make a public host look local and be let through to a local one.
+pub(crate) async fn answered_locally(resp: &reqwest::Response, url: &reqwest::Url) -> bool {
+    use codesmith_ai::generation::public_ip;
+    if resp.remote_addr().is_some_and(|a| public_ip(a.ip())) {
+        return false;
+    }
+    is_local(url).await
+}
+
+/// Refuse a redirect from a host that is not local (`from_local`, see
+/// [`answered_locally`]) to one that is ([`is_local`]): a public site must
+/// not steer a request to the machine or its network. Local to local (a dev
+/// server) is fine. What the next hop may reach: from a public host to a
+/// name, [`Reach::Public`], so the address the connection uses is checked
+/// too and a name that changes its address in between is caught.
 pub(crate) async fn check_redirect_target(
     from: &reqwest::Url,
+    from_local: bool,
     to: &reqwest::Url,
-) -> Result<(), String> {
-    if is_local(to).await && !is_local(from).await {
+) -> Result<Reach, String> {
+    if from_local {
+        return Ok(Reach::Any);
+    }
+    if is_local(to).await {
         return Err(format!(
             "Refusing a redirect from {} to {}, a local or private address",
             from.origin().ascii_serialization(),
             to.host_str().unwrap_or("")
         ));
     }
-    Ok(())
+    Ok(public_reach(to))
 }
 
-/// The client webfetch uses. It never follows redirects itself: each hop is
-/// followed by hand so its target is checked against the rules (a client
-/// with reqwest's default policy would follow up to ten hops unchecked).
-fn client() -> Result<&'static reqwest::Client, String> {
-    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(30))
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or_else(|| "Unable to create the HTTP client".to_string())
+/// What a hop to `to` from a public host may reach: an IP literal was
+/// checked as it is, a name is checked again where it is resolved.
+fn public_reach(to: &reqwest::Url) -> Reach {
+    match to.host() {
+        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => Reach::Any,
+        _ => Reach::Public,
+    }
+}
+
+/// The client webfetch uses for `reach`. It never follows redirects itself:
+/// each hop is followed by hand so its target is checked against the rules
+/// (a client with reqwest's default policy would follow up to ten hops
+/// unchecked).
+fn client(reach: Reach) -> Result<&'static reqwest::Client, String> {
+    static CLIENTS: [std::sync::OnceLock<Option<reqwest::Client>>; 2] =
+        [const { std::sync::OnceLock::new() }; 2];
+    shared_client(&CLIENTS, reach, || {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+    })
 }
 
 enum Fetched {
@@ -324,11 +476,12 @@ pub(crate) async fn get_following(
 ) -> Result<reqwest::Response, String> {
     let mut current = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL {url:?}: {e}"))?;
     let mut redirects = 0;
+    let mut reach = Reach::Any;
     loop {
-        let resp = build(client()?.get(current.clone()))
+        let resp = build(client(reach)?.get(current.clone()))
             .send()
             .await
-            .map_err(|e| format!("Unable to fetch {url}: {e}"))?;
+            .map_err(|e| refusal(&e).unwrap_or_else(|| format!("Unable to fetch {url}: {e}")))?;
         let status = resp.status().as_u16();
         let location = resp
             .headers()
@@ -347,7 +500,8 @@ pub(crate) async fn get_following(
         check_url(&next)?;
         next.set_fragment(None);
         ctx.check_not_denied("webfetch", &deny_forms(None, &next))?;
-        check_redirect_target(&current, &next).await?;
+        let from_local = reach == Reach::Any && answered_locally(&resp, &current).await;
+        reach = check_redirect_target(&current, from_local, &next).await?;
         current = next;
         redirects += 1;
     }
@@ -463,10 +617,12 @@ mod tests {
 
     /// A public host may not redirect to a local or private one; local to
     /// local, and anything to a public host, is fine. (IP literals and
-    /// `localhost` only: nothing is looked up.)
+    /// `localhost` only: nothing is looked up.) From a public host, a name
+    /// is fetched public-only, so its connection's addresses are checked.
     #[tokio::test]
     async fn public_hosts_may_not_redirect_to_local_ones() {
         let u = |s: &str| reqwest::Url::parse(s).unwrap();
+        let public = u("https://93.184.216.34/x");
         for to in [
             "http://127.0.0.1:8080/",
             "http://localhost/",
@@ -482,24 +638,143 @@ mod tests {
             "http://[fd00::1]/",
             "http://[::ffff:127.0.0.1]/",
         ] {
-            let err = check_redirect_target(&u("https://93.184.216.34/x"), &u(to))
+            let err = check_redirect_target(&public, false, &u(to))
                 .await
                 .unwrap_err();
             assert!(err.contains("local or private address"), "{to}: {err}");
-            // From a local host it is allowed.
-            check_redirect_target(&u("http://127.0.0.1:3000/"), &u(to))
-                .await
-                .unwrap();
-            check_redirect_target(&u("http://192.168.0.2/"), &u(to))
-                .await
-                .unwrap();
+            // From a local host it is allowed, with any address.
+            for from in ["http://127.0.0.1:3000/", "http://192.168.0.2/"] {
+                assert!(is_local(&u(from)).await);
+                let reach = check_redirect_target(&u(from), true, &u(to)).await;
+                assert_eq!(reach, Ok(Reach::Any), "{from} -> {to}");
+            }
         }
-        check_redirect_target(&u("http://127.0.0.1/"), &u("https://93.184.216.34/"))
+        let (from, to) = (u("http://8.8.8.8/"), u("https://93.184.216.34/"));
+        let reach = check_redirect_target(&from, false, &to).await;
+        assert_eq!(reach, Ok(Reach::Any));
+        // A name is checked again in the lookup the connection uses.
+        assert_eq!(public_reach(&u("https://example.com/")), Reach::Public);
+        assert_eq!(
+            public_reach(&u("https://[2606:2800:220:1::1]/")),
+            Reach::Any
+        );
+    }
+
+    /// A fixture resolver: each lookup takes the next answer in `answers`
+    /// (the last one repeats), and the count of lookups is kept.
+    fn fixture(
+        answers: Vec<Vec<&'static str>>,
+    ) -> (PublicOnly, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let n = calls.clone();
+        let resolver = PublicOnly::with(move |_| {
+            let i = n.fetch_add(1, Ordering::SeqCst);
+            let ips = &answers[i.min(answers.len() - 1)];
+            let addrs = ips
+                .iter()
+                .map(|ip| std::net::SocketAddr::new(ip.parse().unwrap(), 0))
+                .collect();
+            Box::pin(async move { Ok(addrs) })
+        });
+        (resolver, calls)
+    }
+
+    /// The public-only resolver passes on exactly the public addresses it
+    /// checked, and refuses an answer with any local or private one: a name
+    /// that turns local between lookups (DNS rebinding) is refused at the
+    /// lookup the connection uses, not let through by an earlier check.
+    #[tokio::test]
+    async fn the_public_only_resolver_checks_the_addresses_it_returns() {
+        use reqwest::dns::Resolve;
+        let (r, calls) = fixture(vec![
+            vec!["93.184.216.34", "2606:2800:220:1::1"],
+            vec!["127.0.0.1"],
+            vec!["93.184.216.34", "10.0.0.7"],
+            vec![],
+        ]);
+        let name = |n: &str| <reqwest::dns::Name as std::str::FromStr>::from_str(n).unwrap();
+        let got: Vec<std::net::SocketAddr> =
+            r.resolve(name("rebind.test")).await.unwrap().collect();
+        assert_eq!(
+            got,
+            [
+                "93.184.216.34:0".parse().unwrap(),
+                "[2606:2800:220:1::1]:0".parse().unwrap()
+            ]
+        );
+        for local in ["127.0.0.1", "10.0.0.7"] {
+            let err = r
+                .resolve(name("rebind.test"))
+                .await
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(err.contains(local) && err.contains("rebind.test"), "{err}");
+        }
+        assert!(r.resolve(name("rebind.test")).await.is_err(), "no address");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    /// A request through a public-only client to a name that resolves to a
+    /// live local server never reaches it, and the error says why.
+    #[tokio::test]
+    async fn a_public_only_request_never_connects_to_a_local_address() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((_s, _)) = listener.accept().await {
+                h.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let (r, calls) = fixture(vec![vec!["127.0.0.1"]]);
+        let public_only = reqwest::Client::builder()
+            .no_proxy()
+            .dns_resolver(std::sync::Arc::new(r))
+            .build()
+            .unwrap();
+        let err = public_only
+            .get(format!("http://rebind.test:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        let why = refusal(&err).expect("a refusal");
+        assert!(
+            why.contains("rebind.test") && why.contains("127.0.0.1"),
+            "{why}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "the local server was reached"
+        );
+
+        // A response says which address answered: a local one is local.
+        let ok = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ok_port = ok.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = ok.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf).await;
+            let _ = s
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        });
+        let url = reqwest::Url::parse(&format!("http://127.0.0.1:{ok_port}/")).unwrap();
+        let resp = client(Reach::Any)
+            .unwrap()
+            .get(url.clone())
+            .send()
             .await
             .unwrap();
-        check_redirect_target(&u("https://8.8.8.8/"), &u("https://93.184.216.34/"))
-            .await
-            .unwrap();
+        assert!(resp.remote_addr().is_some());
+        assert!(answered_locally(&resp, &url).await);
     }
 
     /// The rules see the URL as it is requested, whatever the spelling.

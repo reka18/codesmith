@@ -186,7 +186,10 @@ A patch looks like this:
 Fetches over HTTP(S) and converts HTML to Markdown unless asked for text or
 raw HTML. Each redirect target is checked against your `deny` rules, so a
 denied host can't be reached through a redirect, and a public host may not
-redirect to `localhost` or a loopback, private or link-local address. As
+redirect to `localhost` or a loopback, private or link-local address: the
+redirect target's name is checked in the same lookup its connection uses,
+so a name that answers differently the second time (DNS rebinding) cannot
+get around it (except through a proxy, which looks names up itself). As
 in OpenCode, a redirect to another origin is not asked about: `webfetch`
 only sends GETs, without a body or credentials. (Code Mode's `fetch` does
 ask; see [fetch](mcp.md#fetch).)

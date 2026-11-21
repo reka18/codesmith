@@ -25,7 +25,7 @@
 //! in a `Response`.
 
 use crate::permission::{Denied, Gate, Request};
-use crate::tool::webfetch;
+use crate::tool::webfetch::{self, Reach};
 use base64::Engine;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -71,20 +71,17 @@ pub fn display(input: &Value) -> Value {
     })
 }
 
-/// The client: no redirects (followed by hand), no cookie store.
-fn client() -> Result<&'static reqwest::Client, String> {
-    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(30))
-                .user_agent("codesmith")
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or_else(|| "Unable to create the HTTP client".to_string())
+/// The client for `reach`: no redirects (followed by hand), no cookie
+/// store.
+fn client(reach: Reach) -> Result<&'static reqwest::Client, String> {
+    static CLIENTS: [std::sync::OnceLock<Option<reqwest::Client>>; 2] =
+        [const { std::sync::OnceLock::new() }; 2];
+    webfetch::shared_client(&CLIENTS, reach, || {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+            .user_agent("codesmith")
+    })
 }
 
 struct Req {
@@ -224,7 +221,7 @@ async fn send(
     mut req: Req,
     first: &str,
 ) -> Result<Value, String> {
-    let client = client()?;
+    let mut reach = Reach::Any;
     let mut deadline = tokio::time::Instant::now() + TIMEOUT;
     let timed_out = || {
         format!(
@@ -236,7 +233,7 @@ async fn send(
     let resp = loop {
         let method = reqwest::Method::from_bytes(req.method.as_bytes())
             .map_err(|_| format!("'{}' is not a valid HTTP method.", req.method))?;
-        let mut rb = client.request(method, current.clone());
+        let mut rb = client(reach)?.request(method, current.clone());
         for (k, v) in &req.headers {
             rb = rb.header(k, v);
         }
@@ -246,7 +243,10 @@ async fn send(
         let resp = tokio::time::timeout_at(deadline, rb.send())
             .await
             .map_err(|_| timed_out())?
-            .map_err(|e| format!("fetch failed: {}", e.without_url()))?;
+            .map_err(|e| {
+                webfetch::refusal(&e)
+                    .unwrap_or_else(|| format!("fetch failed: {}", e.without_url()))
+            })?;
         let status = resp.status().as_u16();
         let location = resp
             .headers()
@@ -256,6 +256,10 @@ async fn send(
         let (true, Some(location)) = (REDIRECTS.contains(&status), location) else {
             break resp;
         };
+        let from_local = reach == Reach::Any
+            && tokio::time::timeout_at(deadline, webfetch::answered_locally(&resp, &current))
+                .await
+                .map_err(|_| timed_out())?;
         drop(resp);
         if redirects >= webfetch::MAX_REDIRECTS {
             return Err(format!(
@@ -279,9 +283,12 @@ async fn send(
         next.set_fragment(None);
         gate.assert_not_denied(ACTION, &webfetch::deny_forms(None, &next))
             .map_err(|e| e.to_string())?;
-        tokio::time::timeout_at(deadline, webfetch::check_redirect_target(&current, &next))
-            .await
-            .map_err(|_| timed_out())??;
+        reach = tokio::time::timeout_at(
+            deadline,
+            webfetch::check_redirect_target(&current, from_local, &next),
+        )
+        .await
+        .map_err(|_| timed_out())??;
         req = redirected(req, status, &current, &next);
         if next.origin() != current.origin() {
             // Another origin is a request the user has not approved: it

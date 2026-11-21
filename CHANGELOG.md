@@ -5,6 +5,13 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- The check that keeps a public host from redirecting `webfetch`, Code
+  Mode `fetch`, OpenAPI calls and image input downloads to a local or
+  private address now covers the connection itself: the target's name was
+  looked up for the check and again to connect, so a name that answered
+  with a public address and then a private one (DNS rebinding) got
+  through. A redirect hop from a public host now resolves the name once,
+  refuses it unless every address is public, and connects to those.
 - jdtls's workspace data moved from a fixed folder in the shared temporary
   directory to `~/.cache/codesmith/jdtls/`, created owner-only (a symlink
   or another user's folder there is refused), and the external editor's

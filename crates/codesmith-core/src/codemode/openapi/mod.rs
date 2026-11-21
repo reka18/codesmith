@@ -19,6 +19,7 @@ pub mod runtime;
 pub mod spec;
 
 use crate::permission::{Gate, Request};
+use crate::tool::webfetch::Reach;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
@@ -309,18 +310,14 @@ pub fn template_resource(t: &Tool) -> String {
     format!("{} {}", t.plan.operation.method, t.plan.url)
 }
 
-fn client() -> Result<&'static reqwest::Client, String> {
-    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(30))
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or_else(|| "Unable to create the HTTP client".to_string())
+fn client(reach: Reach) -> Result<&'static reqwest::Client, String> {
+    static CLIENTS: [std::sync::OnceLock<Option<reqwest::Client>>; 2] =
+        [const { std::sync::OnceLock::new() }; 2];
+    crate::tool::webfetch::shared_client(&CLIENTS, reach, || {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+    })
 }
 
 /// Ask `gate` for `req` (the user may be prompted).
@@ -369,7 +366,7 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
         .iter()
         .map(|(k, _)| k.to_ascii_lowercase())
         .collect();
-    let client = client()?;
+    let mut reach = Reach::Any;
     let mut credentialed = true;
     let mut hops = 0;
     loop {
@@ -388,7 +385,7 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
         }
         let method = reqwest::Method::from_bytes(wire.method.as_bytes())
             .map_err(|_| format!("{label}: invalid method"))?;
-        let mut rb = client
+        let mut rb = client(reach)?
             .request(method, wire.url.clone())
             .timeout(api.timeout);
         for (k, v) in &wire.headers {
@@ -403,7 +400,13 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
                 .header(reqwest::header::CONTENT_TYPE, media)
                 .body(body.clone());
         }
-        let resp = rb.send().await.map_err(|e| runtime::transport(op, &e))?;
+        let resp = rb
+            .send()
+            .await
+            .map_err(|e| match crate::tool::webfetch::refusal(&e) {
+                Some(r) => format!("{label}: redirect refused: {r}"),
+                None => runtime::transport(op, &e),
+            })?;
         let status = resp.status().as_u16();
         let location = resp
             .headers()
@@ -431,7 +434,9 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
             }
             gate.assert_not_denied(ACTION, &deny_forms(&prepared.method, &next, &hidden))
                 .map_err(|e| e.to_string())?;
-            crate::tool::webfetch::check_redirect_target(&prepared.url, &next)
+            let from_local = reach == Reach::Any
+                && crate::tool::webfetch::answered_locally(&resp, &prepared.url).await;
+            reach = crate::tool::webfetch::check_redirect_target(&prepared.url, from_local, &next)
                 .await
                 .map_err(|e| format!("{label}: redirect refused: {e}"))?;
             if next.origin() != prepared.url.origin() {
