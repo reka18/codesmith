@@ -581,3 +581,240 @@ async fn mcp_session_recovery_needs_a_session() {
     assert_eq!(server.calls("initialize").len(), 1);
     assert_eq!(server.calls("tools/call").len(), 1);
 }
+
+// === MCP Resource Blobs ===
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// A server whose `attachments` tool returns the embedded resources in
+/// `blobs` (uri, mimeType, data), and whose resource `docs://blob` reads as
+/// the same.
+fn blob_server(blobs: Vec<(&'static str, &'static str, String)>) -> Handler {
+    let tools = json!([{"name": "attachments", "inputSchema": {"type": "object"}}]);
+    let parts: Vec<Value> = blobs
+        .iter()
+        .map(|(u, m, d)| json!({"type": "resource", "resource": {"uri": u, "mimeType": m, "blob": d}}))
+        .collect();
+    let contents: Vec<Value> = blobs
+        .iter()
+        .map(|(u, m, d)| json!({"uri": u, "mimeType": m, "blob": d}))
+        .collect();
+    Arc::new(move |g: &Got| match g.method() {
+        "tools/call" => Http::Result(json!({"content": parts})),
+        "resources/read" => Http::Result(json!({"contents": contents})),
+        _ => answer(g, &tools),
+    })
+}
+
+/// The file a `[Binary resource ... saved to <path>]` line names.
+fn saved_path(line: &str) -> std::path::PathBuf {
+    let p = line
+        .rsplit_once("saved to ")
+        .unwrap_or_else(|| panic!("not saved: {line}"))
+        .1
+        .trim_end_matches(']');
+    std::path::PathBuf::from(p)
+}
+
+// mcp.test.ts: "decodes text blobs and saves other MCP blobs instead of
+// attaching them"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_mcp_decodes_text_blobs_and_saves_other_blobs_instead_of_attaching_them() {
+    let server = remote(blob_server(vec![
+        ("file:///README.md", "text/markdown", b64(b"# Notes")),
+        (
+            "file:///data.parquet",
+            "application/vnd.apache.parquet",
+            "UEFSMQ==".into(),
+        ),
+    ]))
+    .await;
+    let mut h = session_with(&server.url, false, json!([])).await;
+    h.prompt("call srv_attachments {}").await;
+    let text = last_tool_result(&h);
+    let lines: Vec<&str> = text.splitn(3, '\n').collect();
+    assert_eq!(
+        lines[..2],
+        ["[Resource file:///README.md (text/markdown)]", "# Notes"]
+    );
+    assert!(
+        lines[2].starts_with(
+            "[Binary resource file:///data.parquet (application/vnd.apache.parquet, 4 bytes) saved to "
+        ),
+        "{text}"
+    );
+    let file = saved_path(lines[2]);
+    let dir = codesmith_core::paths::session_output_dir(&h.s.id);
+    assert_eq!(file.parent(), Some(dir.as_path()));
+    let name = file.file_name().unwrap().to_str().unwrap();
+    assert!(
+        name.starts_with("tool_") && name.ends_with(".parquet"),
+        "{name}"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), b"PAR1");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    // Nothing was attached as media.
+    let req = h.requests().pop().unwrap().to_string();
+    assert!(
+        !req.contains("UEFSMQ=="),
+        "the blob is not sent to the model"
+    );
+}
+
+// Reading a resource with read_mcp_resource does the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_read_resource_decodes_text_and_saves_binary_blobs() {
+    let server = remote(blob_server(vec![
+        (
+            "docs://notes",
+            "text/plain; charset=utf-8",
+            b64("héllo ✓".as_bytes()),
+        ),
+        ("docs://archive", "application/zip", b64(b"PK\x03\x04zip")),
+    ]))
+    .await;
+    let mut h = session_with(&server.url, false, json!([])).await;
+    h.prompt(&format!(
+        "call read_mcp_resource {}",
+        json!({"server": "srv", "uri": "docs://blob"})
+    ))
+    .await;
+    let text = last_tool_result(&h);
+    assert!(
+        text.contains("[Resource docs://notes (text/plain)]\nhéllo ✓"),
+        "{text}"
+    );
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("[Binary resource docs://archive"))
+        .unwrap();
+    let file = saved_path(line);
+    assert!(file.to_str().unwrap().ends_with(".zip"));
+    assert_eq!(std::fs::read(file).unwrap(), b"PK\x03\x04zip");
+}
+
+// What a server names its content never becomes part of a path: traversal
+// URIs, separators, NUL and control characters, and media types that try
+// to steer the extension all land in the session's folder under a name of
+// CodeSmith's; the label shown is cleaned.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_blob_names_from_the_server_never_reach_the_path() {
+    let server = remote(blob_server(vec![
+        (
+            "file:///../../../../etc/passwd",
+            "application/octet-stream",
+            b64(b"one"),
+        ),
+        (
+            "../../escape.sh",
+            "application/x-sh/../../x",
+            b64(&[0xff, 0xfe]),
+        ),
+        ("x\u{1b}[2J\u{202e}name", "application/zip", b64(b"two")),
+        (
+            "C:\\Windows\\System32\\evil.dll",
+            "application/zip",
+            b64(b"three"),
+        ),
+    ]))
+    .await;
+    let mut h = session_with(&server.url, false, json!([])).await;
+    h.prompt("call srv_attachments {}").await;
+    let text = last_tool_result(&h);
+    let dir = codesmith_core::paths::session_output_dir(&h.s.id);
+    let saved: Vec<_> = text
+        .lines()
+        .filter(|l| l.starts_with("[Binary resource"))
+        .map(saved_path)
+        .collect();
+    assert_eq!(saved.len(), 4, "{text}");
+    for f in &saved {
+        assert_eq!(f.parent(), Some(dir.as_path()), "{text}");
+        assert!(f
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("tool_"));
+    }
+    assert!(
+        text.contains("(application/octet-stream, 2 bytes)"),
+        "{text}"
+    );
+    assert!(
+        !text.contains('\u{1b}') && !text.contains('\u{202e}'),
+        "{text:?}"
+    );
+    let entries = std::fs::read_dir(&dir).unwrap().count();
+    assert_eq!(entries, 4, "nothing written outside the files named");
+}
+
+// Edge cases: empty, invalid and non-UTF-8 "text", a large blob, and
+// unicode text.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_blob_edge_cases() {
+    let big = vec![7u8; 3 << 20];
+    let server = remote(blob_server(vec![
+        ("empty://text", "text/plain", String::new()),
+        ("empty://bin", "application/octet-stream", String::new()),
+        ("bad://b64", "application/zip", "@@not base64@@".into()),
+        ("latin1://text", "text/plain", b64(&[0x68, 0xe9])),
+        ("big://bin", "application/octet-stream", b64(&big)),
+        (
+            "uni://text",
+            "application/json",
+            b64("{\"k\":\"日本語\"}".as_bytes()),
+        ),
+    ]))
+    .await;
+    let mut h = session_with(&server.url, false, json!([])).await;
+    h.prompt("call srv_attachments {}").await;
+    let text = last_tool_result(&h);
+    assert!(
+        text.contains("[Resource empty://text (text/plain)]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[Binary resource empty://bin (application/octet-stream, 0 bytes) saved to "),
+        "{text}"
+    );
+    assert!(
+        text.contains("[Resource bad://b64 (application/zip) omitted: invalid base64]"),
+        "{text}"
+    );
+    let latin = text.lines().find(|l| l.contains("latin1://text")).unwrap();
+    assert_eq!(std::fs::read(saved_path(latin)).unwrap(), [0x68, 0xe9]);
+    let big_line = text.lines().find(|l| l.contains("big://bin")).unwrap();
+    assert!(
+        big_line.contains(&format!("{} bytes", 3 << 20)),
+        "{big_line}"
+    );
+    assert_eq!(std::fs::read(saved_path(big_line)).unwrap(), big);
+    assert!(text.contains("{\"k\":\"日本語\"}"), "{text}");
+}
+
+// In Code Mode the program gets the same text: the saved file's path.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_blobs_are_saved_for_code_mode_too() {
+    let server = remote(blob_server(vec![(
+        "file:///data.parquet",
+        "application/vnd.apache.parquet",
+        "UEFSMQ==".into(),
+    )]))
+    .await;
+    let mut h = session_with(&server.url, true, json!([])).await;
+    let out = run_code(&mut h, "return await tools.srv.attachments({})").await;
+    assert!(out.contains("saved to "), "{out}");
+    let dir = codesmith_core::paths::session_output_dir(&h.s.id);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}

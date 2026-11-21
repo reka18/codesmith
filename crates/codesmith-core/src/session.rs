@@ -2974,7 +2974,7 @@ impl Session {
                 return (e, true);
             }
             self.mcp
-                .read_resource(server, uri)
+                .read_resource_in(server, uri, Some(&paths::session_output_dir(&self.id)))
                 .await
                 .map_err(|e| anyhow!("Unable to read MCP resource {server}:{uri}: {e:#}"))
         };
@@ -3764,12 +3764,9 @@ impl Session {
     /// A `tools/call` result as the model gets it, its text cut to the
     /// output limits.
     fn mcp_content(&self, raw: &serde_json::Value) -> (String, bool, Vec<codesmith_ai::Media>) {
-        let (text, is_error, media) = crate::mcp::result_content(raw);
-        (
-            tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
-            is_error,
-            media,
-        )
+        let dir = paths::session_output_dir(&self.id);
+        let (text, is_error, media) = crate::mcp::result_content_in(raw, Some(&dir));
+        (tool::truncate(&text, self.limits, &dir), is_error, media)
     }
 
     /// Call an MCP tool once its permission is granted: the raw result and

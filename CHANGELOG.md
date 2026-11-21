@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP resource blobs:** binary content in MCP tool results and resource
+  reads that is not an image or PDF is no longer only noted: text blobs are
+  decoded, and other blobs (and audio) are saved to an owner-only file in
+  the session's tool-output folder, under a name CodeSmith picks, with the
+  result naming the file.
 - **MCP session recovery:** a remote server that forgot its session (it
   answers 404 to a request carrying the `Mcp-Session-Id`) is initialized
   again and the tool call or resource read is sent once more.

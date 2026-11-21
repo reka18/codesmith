@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 121 | 6 | 5 | 80 | 0 | 0 |
+| MCP | 212 | 122 | 6 | 4 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2892** | **79** | **36** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2893** | **79** | **35** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,7 +131,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (36 cases in 11 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (35 cases in 10 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -142,7 +142,6 @@ Missing features, by how many OpenCode test cases each would unlock (36 cases in
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
-| [MCP Resource Blobs](#mcp-resource-blobs) | 1 | decoding text blobs and saving binary blobs to files (CodeSmith notes them) |
 | [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
 | [MCP Code Mode Defaults](#mcp-code-mode-defaults) | 1 | Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
@@ -213,12 +212,6 @@ Missing features, by how many OpenCode test cases each would unlock (36 cases in
 1 cases.
 
 - `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
-
-### MCP Resource Blobs
-
-1 cases.
-
-- `mcp.test.ts`: decodes text blobs and saves other MCP blobs instead of attaching them
 
 ### MCP Events over HTTP
 
@@ -2390,7 +2383,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (207 of 212)</summary>
+<details><summary>MCP (208 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2547,6 +2540,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P advertises MCP tools directly when Code Mode is disabled for the server — `tests/oc_mcp_backlog3.rs::oc_mcp_advertises_tools_directly_when_code_mode_is_disabled`
 - P fails the call when MCP reports isError — `tests/oc_mcp_backlog3.rs::oc_mcp_fails_on_is_error_and_keeps_text_and_media`
 - P preserves MCP text and media content for the model — `tests/oc_mcp_backlog3.rs::oc_mcp_fails_on_is_error_and_keeps_text_and_media`
+- P decodes text blobs and saves other MCP blobs instead of attaching them — `tests/oc_mcp_roadmap.rs::oc_mcp_decodes_text_blobs_and_saves_other_blobs_instead_of_attaching_them` (adapted: saved in the session's tool-output folder; read_mcp_resource does the same)
 - P waits for permission before calling an MCP tool — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`
 - P does not call MCP when permission is blocked — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`
 - P returns permission feedback instead of calling MCP — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`

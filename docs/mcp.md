@@ -370,6 +370,16 @@ Images, PDFs and videos embedded in a resource or tool result are sent to the
 model as media, fitted to the same [limits](tools.md#images-and-pdfs) as
 `read` (video only to models that take it).
 
+Other binary content (a resource's `blob`, audio) is not attached. Text
+(a `text/*`, JSON, XML or YAML media type, valid UTF-8) is decoded in place,
+as `[Resource <uri> (<type>)]` and the text. Anything else is saved to a
+file in the session's tool-output folder (owner-only, kept for a week like
+other saved output) and the result says where:
+`[Binary resource <uri> (<type>, <n> bytes) saved to <path>]`. The file is
+named by CodeSmith (`tool_<id>` and an extension chosen from its media
+type); nothing the server sends, such as the URI, goes into the path. This
+applies to tool results, in Code Mode too, and to `read_mcp_resource`.
+
 ## Prompts
 
 A server's prompts become slash commands named `/<server>:<prompt>`.

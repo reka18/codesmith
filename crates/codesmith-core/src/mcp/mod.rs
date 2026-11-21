@@ -10,6 +10,7 @@
 //! draft `io.modelcontextprotocol/events` extension) drive event-triggered
 //! automations.
 
+pub mod blobs;
 pub mod elicit;
 pub mod events;
 pub mod oauth;
@@ -321,6 +322,16 @@ pub fn command_name(server: &str, prompt: &str) -> String {
 /// Image data is sniffed when the server names no or an odd media type; data
 /// that is not an image or PDF is noted instead.
 pub fn result_content(result: &Value) -> (String, bool, Vec<codesmith_ai::Media>) {
+    result_content_in(result, None)
+}
+
+/// [`result_content`], decoding text blobs and saving other binary content
+/// (resource blobs, audio) to files in `dir` (see [`blobs`]); without `dir`
+/// binary content is noted.
+pub fn result_content_in(
+    result: &Value,
+    dir: Option<&Path>,
+) -> (String, bool, Vec<codesmith_ai::Media>) {
     let is_error = result["isError"].as_bool().unwrap_or(false);
     let mut parts = Vec::new();
     let mut media = Vec::new();
@@ -339,12 +350,21 @@ pub fn result_content(result: &Value) -> (String, bool, Vec<codesmith_ai::Media>
                     (None, Some(blob)) => {
                         match result_media(Some(blob), r["mimeType"].as_str(), Some(uri)) {
                             Some(m) => media.push(m),
-                            None => parts.push(format!("[resource {uri}]")),
+                            None => parts.push(
+                                blobs::describe(uri, r["mimeType"].as_str(), blob, dir)
+                                    .unwrap_or_else(|| format!("[resource {uri}]")),
+                            ),
                         }
                     }
                     _ => parts.push(format!("[resource {uri}]")),
                 }
             }
+            Some("audio") => parts.push(
+                c["data"]
+                    .as_str()
+                    .and_then(|d| blobs::describe("audio", c["mimeType"].as_str(), d, dir))
+                    .unwrap_or_else(|| "[audio content omitted]".into()),
+            ),
             Some("resource_link") => {
                 parts.push(format!("[resource {}]", c["uri"].as_str().unwrap_or("?")))
             }
@@ -414,6 +434,12 @@ pub fn with_media_note(mut text: String, media: &[codesmith_ai::Media], why: &st
 
 /// The text of a `resources/read` result: each part's text, binary parts noted.
 pub fn resource_text(result: &Value) -> String {
+    resource_text_in(result, None)
+}
+
+/// [`resource_text`], decoding text blobs and saving binary ones to files
+/// in `dir` (see [`blobs`]).
+pub fn resource_text_in(result: &Value, dir: Option<&Path>) -> String {
     let contents = result["contents"].as_array().cloned().unwrap_or_default();
     let several = contents.len() > 1;
     contents
@@ -422,11 +448,15 @@ pub fn resource_text(result: &Value) -> String {
             let uri = c["uri"].as_str().unwrap_or("?");
             let body = match (c["text"].as_str(), c["blob"].as_str()) {
                 (Some(t), _) => t.to_string(),
-                (None, Some(b)) => format!(
-                    "[binary content, {} omitted: {} bytes of base64]",
-                    c["mimeType"].as_str().unwrap_or("unknown type"),
-                    b.len()
-                ),
+                (None, Some(b)) => blobs::describe(uri, c["mimeType"].as_str(), b, dir)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "[binary content, {} omitted: {} bytes of base64]",
+                            blobs::mime(c["mimeType"].as_str())
+                                .unwrap_or_else(|| "unknown type".into()),
+                            b.len()
+                        )
+                    }),
                 _ => "[empty]".into(),
             };
             if several {
@@ -2243,6 +2273,16 @@ impl Mcp {
     }
 
     pub async fn read_resource(&self, server: &str, uri: &str) -> Result<String> {
+        self.read_resource_in(server, uri, None).await
+    }
+
+    /// [`Mcp::read_resource`], saving binary content to files in `dir`.
+    pub async fn read_resource_in(
+        &self,
+        server: &str,
+        uri: &str,
+        dir: Option<&Path>,
+    ) -> Result<String> {
         let c = self.connected(server)?;
         if !c.has_resources() {
             return Err(anyhow!("MCP server {server:?} does not expose resources"));
@@ -2251,7 +2291,7 @@ impl Mcp {
             Err(e) if expired(&e) => self.renew(server, &c).await?.read_resource(uri).await,
             r => r,
         };
-        Ok(resource_text(&read?))
+        Ok(resource_text_in(&read?, dir))
     }
 
     /// The servers' prompts as slash commands named `server:prompt`.
