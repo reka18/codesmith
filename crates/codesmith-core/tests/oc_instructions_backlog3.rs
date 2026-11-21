@@ -3,6 +3,10 @@
 
 use codesmith_core::instructions::discover_in;
 use std::path::Path;
+use std::sync::Mutex;
+
+/// The tests here set and read `CODESMITH_DISABLE_PROJECT_CONFIG`.
+static ENV: Mutex<()> = Mutex::new(());
 
 fn write(p: &Path, body: &str) {
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -15,6 +19,7 @@ fn write(p: &Path, body: &str) {
 // `OPENCODE_DISABLE_PROJECT_CONFIG`)
 #[test]
 fn oc_instructions_canonicalize_boundaries_and_honor_project_opt_out() {
+    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let d = tempfile::tempdir().unwrap();
     let base = d.path().canonicalize().unwrap();
     let (home, global) = (base.join("home"), base.join("global"));
@@ -46,5 +51,38 @@ fn oc_instructions_canonicalize_boundaries_and_honor_project_opt_out() {
     assert_eq!(
         discover_in(&repo, &repo, &global, &home, &[]),
         [global.join("AGENTS.md"), repo.join("AGENTS.md")]
+    );
+}
+
+// Regression for the opt-out: the project's files, walked from a nested
+// folder too, are left out whatever the variable is set to (as project
+// config is), and the configured files still load.
+#[test]
+fn oc_instructions_project_opt_out_skips_every_project_file() {
+    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let d = tempfile::tempdir().unwrap();
+    let base = d.path().canonicalize().unwrap();
+    let (home, global) = (base.join("home"), base.join("global"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&global).unwrap();
+    let repo = base.join("repo");
+    let nested = repo.join("pkg/ünï cødé");
+    write(&repo.join("AGENTS.md"), "repo");
+    write(&nested.join("CLAUDE.md"), "nested");
+    write(&repo.join("docs/extra.md"), "configured");
+    let configured = [repo.join("docs/extra.md").display().to_string()];
+    for value in ["1", "", "0"] {
+        std::env::set_var("CODESMITH_DISABLE_PROJECT_CONFIG", value);
+        let found = discover_in(&nested, &repo, &global, &home, &configured);
+        std::env::remove_var("CODESMITH_DISABLE_PROJECT_CONFIG");
+        assert_eq!(found, [repo.join("docs/extra.md")], "{value:?}");
+    }
+    assert_eq!(
+        discover_in(&nested, &repo, &global, &home, &configured),
+        [
+            nested.join("CLAUDE.md"),
+            repo.join("AGENTS.md"),
+            repo.join("docs/extra.md")
+        ]
     );
 }

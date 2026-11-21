@@ -819,3 +819,36 @@ async fn oc_automation_pauses_with_a_reason_when_its_directory_disappears() {
     );
     runner.release().unwrap();
 }
+
+// Regression for the interval phase: slots are on the grid from creation,
+// whatever the time asked about, and one past what can be stored is an
+// error rather than a wrapped time.
+#[test]
+fn oc_automation_interval_slots_keep_their_grid() {
+    let t = every("10 minutes");
+    let created = 1_000_000;
+    let slot = |now: i64| au::next_slot(&t, created, now).unwrap();
+    assert_eq!(
+        slot(created - 5 * MINUTE),
+        Some(created + 10 * MINUTE),
+        "before creation"
+    );
+    assert_eq!(slot(created), Some(created + 10 * MINUTE));
+    assert_eq!(
+        slot(created + 10 * MINUTE),
+        Some(created + 20 * MINUTE),
+        "on a slot: the next one"
+    );
+    assert_eq!(slot(created + 10 * MINUTE - 1), Some(created + 10 * MINUTE));
+    assert_eq!(
+        slot(created + 999 * MINUTE + 7),
+        Some(created + 1000 * MINUTE)
+    );
+    assert!(au::next_slot(&t, i64::MAX - MINUTE, i64::MAX - 1).is_err());
+    // Other triggers are unchanged.
+    let at = Trigger::At {
+        at: "in 5 minutes".into(),
+        tz: None,
+    };
+    assert_eq!(au::next_slot(&at, created, created).unwrap(), None);
+}

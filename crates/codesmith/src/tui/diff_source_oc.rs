@@ -765,3 +765,29 @@ fn oc_vcs_does_not_infer_beyond_the_bounded_creation_reflog_window() {
     assert!(child.wait().unwrap().success());
     no_base(&p);
 }
+
+// Regression for the folder scope (vcs.test.ts's nested-path case): a
+// session folder whose name has spaces, non-ASCII letters and pathspec
+// magic sees only its own files, and so does a symlink to it.
+#[test]
+fn oc_vcs_scopes_to_an_oddly_named_or_symlinked_folder_literally() {
+    let (_d, p) = repo();
+    let outside = tempfile::tempdir().unwrap();
+    let odd = "dé jà*[x]";
+    write(&p, &format!("{odd}/in.txt"), "a\n");
+    write(&p, "déjà other/out.txt", "a\n");
+    write(&p, "dé jàZ[x]/glob-match.txt", "a\n");
+    commit_all(&p, "initial");
+    write(&p, &format!("{odd}/in.txt"), "b\n");
+    write(&p, "déjà other/out.txt", "b\n");
+    write(&p, "dé jàZ[x]/glob-match.txt", "b\n");
+    write(&p, &format!("{odd}/new.txt"), "n\n");
+    let nested = p.join(odd);
+    let want = [format!("{odd}/in.txt"), format!("{odd}/new.txt")];
+    assert_eq!(files(&diff(&nested, Source::Working, None)), want);
+    let link = outside.path().join("link");
+    std::os::unix::fs::symlink(&nested, &link).unwrap();
+    assert_eq!(files(&diff(&link, Source::Working, None)), want);
+    // The top of the repository sees everything.
+    assert_eq!(diff(&p, Source::Working, None).len(), 4);
+}
