@@ -61,6 +61,8 @@ Patterns:
 | `skill` | the skill id | |
 | `lsp` | the file path | |
 | `question`, `todowrite` | `*` | |
+| `experimental_image_generate`, `experimental_video_generate` | the model | Ask by default. See [generating images and videos](tools.md#generating-images-and-videos). |
+| `codesmith` | `*` | The [`codesmith` tool](tools.md#codesmith). Creating or removing a worktree also asks `edit` on its folder. |
 | `external_directory` | the path outside the project | See [Paths outside the project](#paths-outside-the-project). |
 | `<server>_<tool>` | `*` | An MCP tool, by the name the model sees. See [MCP](mcp.md#permissions). |
 | `list_mcp_resources`, `read_mcp_resource` | server, or `server:uri` | See [MCP resources](mcp.md#resources). |
@@ -91,6 +93,9 @@ Every agent starts from these rules, in this order:
   { "action": "read", "resource": "*.env", "effect": "ask" },
   { "action": "read", "resource": "*.env.*", "effect": "ask" },
   { "action": "read", "resource": "*.env.example", "effect": "allow" },
+  // generating images and videos costs money
+  { "action": "experimental_image_generate", "resource": "*", "effect": "ask" },
+  { "action": "experimental_video_generate", "resource": "*", "effect": "ask" },
   // reference checkouts are read-only to tools
   { "action": "edit", "resource": "<data>/repos/*", "effect": "deny" },
   { "action": "edit", "resource": "<data>/repos-state/*", "effect": "deny" }
@@ -98,7 +103,7 @@ Every agent starts from these rules, in this order:
 ```
 
 So by default everything inside the project is allowed, except reading
-`.env` files, which asks. Anything outside the project asks. Tools can never
+`.env` files and generating images or videos, which ask. Anything outside the project asks. Tools can never
 write into the cache of [reference](configuration.md#references) checkouts, where
 CodeSmith runs git itself (without hooks, fsmonitor or the `ext` and `file`
 transports). Each built-in
