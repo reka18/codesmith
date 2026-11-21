@@ -91,6 +91,10 @@ pub trait Sink: Send {
     fn todos(&mut self, _todos: &[Todo]) {}
     /// Something worth telling the user that is not part of the answer.
     fn notice(&mut self, _message: &str) {}
+    /// Instruction files a step's reads brought in (see [`crate::nearby`]),
+    /// given to the model in a message of their own: their paths, nearest
+    /// first. A subagent's are its own and are not reported.
+    fn instructions(&mut self, _paths: &[PathBuf]) {}
     /// A subagent session started. Until its `child_end`, the tool calls
     /// this sink sees are its own (or its subagents'), and its text and
     /// reasoning arrive as `child_text` and `child_reasoning`.
@@ -1160,7 +1164,7 @@ impl Session {
 
     /// After a step's tool results: the instruction files its reads bring
     /// in (see [`crate::nearby`]).
-    fn give_nearby_instructions(&mut self) -> Result<()> {
+    fn give_nearby_instructions(&mut self, sink: &mut dyn Sink) -> Result<()> {
         let n = self.messages.len();
         if n < 2 {
             return Ok(());
@@ -1174,6 +1178,9 @@ impl Session {
             &|names| self.gate.allows("read", names),
         );
         for text in texts {
+            if let Some(paths) = crate::nearby::paths_of(&text) {
+                sink.instructions(&paths);
+            }
             self.push(Message::user(text))?;
         }
         Ok(())
@@ -2483,7 +2490,7 @@ impl Session {
                 role: Role::User,
                 parts: results,
             })?;
-            self.give_nearby_instructions()?;
+            self.give_nearby_instructions(sink)?;
             if let Some(e) = failure {
                 return Err(e);
             }
@@ -3508,6 +3515,7 @@ impl Session {
         let changed = &changed;
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let calls = &calls;
+        let last = rows.clone();
         let progress = crate::codemode::progress::Progress::new(move |m| {
             let _ = rows.send(m);
         });
@@ -3583,6 +3591,13 @@ impl Session {
         )
         .await;
         progress.finish(out.result.is_ok());
+        // A program that ended well dropped its pending update; its final
+        // rows go out once, before the call ends, as OpenCode's result
+        // metadata carries them (the transcript counts them).
+        let calls = progress.rows();
+        if out.result.is_ok() && !calls.is_empty() {
+            let _ = last.send(serde_json::json!({ "toolCalls": calls }));
+        }
         let (text, is_error) = out.render();
         let changed = std::mem::take(&mut *changed.lock().unwrap_or_else(|e| e.into_inner()));
         (

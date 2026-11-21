@@ -262,3 +262,29 @@ async fn a_large_instruction_file_is_capped() {
         [dir.join("big/AGENTS.md")]
     );
 }
+
+/// The instruction loads a front end shows (OpenCode's instruction
+/// messages in the transcript): the files of each load, nearest first,
+/// reported once, when the model is given them.
+#[tokio::test(flavor = "multi_thread")]
+async fn instruction_loads_are_reported_to_the_front_end() {
+    struct Loads(Vec<Vec<std::path::PathBuf>>);
+    impl codesmith_core::session::Sink for Loads {
+        fn text(&mut self, _: &str) {}
+        fn instructions(&mut self, paths: &[std::path::PathBuf]) {
+            self.0.push(paths.to_vec());
+        }
+    }
+    let mut h = H::new().await;
+    let dir = h.root();
+    let sub = dir.join("sub/AGENTS.md");
+    let deep = dir.join("sub/deep/AGENTS.md");
+    write(&sub, "sub-instructions");
+    write(&deep, "deep-instructions");
+    write(&dir.join("sub/deep/file.txt"), "file content");
+    let mut loads = Loads(vec![]);
+    let call = format!("call read {}", json!({"path": "sub/deep/file.txt"}));
+    h.s.prompt(&call, &mut loads).await.unwrap();
+    h.s.prompt(&call, &mut loads).await.unwrap();
+    assert_eq!(loads.0, [vec![deep, sub]]);
+}

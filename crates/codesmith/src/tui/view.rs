@@ -825,6 +825,7 @@ fn entry_path(app: &App, e: &Entry) -> Option<&'static [GroupKind]> {
         Entry::Reasoning(t) if !thought_visible(t) => None,
         Entry::Reasoning(_) => Some(group::part_path(Part::Reasoning, app.verbosity)),
         Entry::Tool(t) => Some(group::part_path(Part::Tool(t.base()), app.verbosity)),
+        Entry::Instructions(_) => Some(group::instructions_path(app.verbosity)),
         _ => Some(&[]),
     }
 }
@@ -973,6 +974,7 @@ impl<'a> Rows<'a> {
                     GroupKind::Activity => self.activity(children, &leaves, completed, out),
                     GroupKind::Exploration => self.exploration(children, &leaves, completed, out),
                     GroupKind::Reasoning => self.reasoning(children, &leaves, completed, out),
+                    GroupKind::Instructions => self.instructions(children, &leaves, completed, out),
                 }
             }
         }
@@ -1012,6 +1014,7 @@ impl<'a> Rows<'a> {
                     streaming: self.streaming(i),
                     visible: thought_visible(t),
                 }),
+                Entry::Instructions(p) => Some(Item::Instructions(p)),
                 Entry::Tool(t) => Some(Item::Tool {
                     name: t.base(),
                     state: if t.forming {
@@ -1021,6 +1024,7 @@ impl<'a> Rows<'a> {
                     } else {
                         State::Done
                     },
+                    calls: &t.calls,
                 }),
                 _ => None,
             })
@@ -1041,6 +1045,34 @@ impl<'a> Rows<'a> {
             self.nodes(children, completed, out);
         } else {
             self.live(leaves, out);
+        }
+    }
+
+    /// Adjacent instruction loads: "◈ Instructions: 2 files", the files
+    /// below when expanded, open at high verbosity (OpenCode's
+    /// `InstructionsGroup`).
+    fn instructions(
+        &self,
+        children: &[Node<usize, GroupKind>],
+        leaves: &[usize],
+        completed: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let files =
+            group::instruction_files(leaves.iter().filter_map(|&i| match &self.app.entries[i] {
+                Entry::Instructions(p) => Some(p.as_slice()),
+                _ => None,
+            }));
+        if files == 0 {
+            return;
+        }
+        let label = format!(
+            "◈ Instructions: {files} {}",
+            if files == 1 { "file" } else { "files" }
+        );
+        out.push(Line::from(Span::styled(cut(&label, self.w), dim())));
+        if self.app.expand_tools || self.app.verbosity == Verbosity::High {
+            self.nodes(children, completed, out);
         }
     }
 
@@ -1206,6 +1238,16 @@ fn entry_lines(app: &App, e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
         )),
         Entry::Notice(t) => out.extend(styled(wrap(t, w), "", fg(p.warning))),
         Entry::Media(label) => out.push(media_line(label, w)),
+        Entry::Instructions(paths) => {
+            for p in paths {
+                let shown = p.strip_prefix(&app.cwd).unwrap_or(p).display().to_string();
+                let shown = escape_controls(&shown).replace('\n', "\\n");
+                out.push(Line::from(Span::styled(
+                    cut(&format!("  ↳ Loaded {shown}"), w),
+                    dim(),
+                )));
+            }
+        }
         Entry::Footer(f) => {
             out.push(footer_line(f, w));
             out.extend(tokens_lines(&f.tokens, app.expand_tools, w));

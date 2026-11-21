@@ -30,6 +30,9 @@ pub enum Entry {
     Media(String),
     /// The row after a turn: its agent, model, duration and throughput.
     Footer(Footer),
+    /// Instruction files a read brought in, given to the model in a
+    /// message of their own (OpenCode's instruction loads).
+    Instructions(Vec<std::path::PathBuf>),
 }
 
 /// A turn's footer, as OpenCode's: `Build · model · 12.3s · 45.2 tok/s`.
@@ -64,6 +67,9 @@ pub struct Tool {
     pub media: Vec<String>,
     /// The subagent a `subagent` call runs, once it started.
     pub sub: Option<Box<Sub>>,
+    /// The tool calls an `execute` call's program made, as its progress
+    /// reported them (counted in low verbosity's activity summary).
+    pub calls: Vec<super::group::Call>,
 }
 
 /// Most bytes of a running command's output kept for its row.
@@ -1026,7 +1032,7 @@ impl App {
             }
             Ev::ChildText(d) => sub.push_text(&d),
             // A subagent's command output and media stay in its session.
-            Ev::ToolOutput { .. } | Ev::ToolMedia { .. } => {}
+            Ev::ToolOutput { .. } | Ev::ToolMedia { .. } | Ev::ToolCalls { .. } => {}
             other => return Some(other),
         }
         None
@@ -1140,7 +1146,13 @@ impl App {
                     t.media.extend(labels);
                 }
             }
+            Ev::ToolCalls { id, calls } => {
+                if let Some(t) = self.running(&id) {
+                    t.calls = calls;
+                }
+            }
             Ev::Media(label) => self.entries.push(Entry::Media(label)),
+            Ev::Instructions(paths) => self.entries.push(Entry::Instructions(paths)),
             Ev::ChildStart { id, title, agent } => {
                 if self.children.is_empty() {
                     let call = self.entries.iter_mut().rev().find_map(|e| match e {
@@ -3420,6 +3432,11 @@ pub fn replay(messages: &[codesmith_ai::Message]) -> Vec<Entry> {
                         ..Default::default()
                     }))
                 }
+                // Instruction files a read brought in.
+                (Role::User, Part::Text(t)) if codesmith_core::nearby::paths_of(t).is_some() => out
+                    .push(Entry::Instructions(
+                        codesmith_core::nearby::paths_of(t).unwrap_or_default(),
+                    )),
                 (Role::User, Part::Text(t))
                     if t.starts_with("<shell ")
                         || t.starts_with("<system-reminder>")

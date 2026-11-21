@@ -252,8 +252,18 @@ and cycled with `/verbosity` (or `session.verbosity.cycle` when bound):
 | `high` | one `Thought` row per run | in full | an `Explored` row, open | each on its own row, output and diffs collapsed |
 
 The summary counts finished work by kind: commands, edits (`edit`,
-`write`, `patch`), thoughts, reads, and other tools (searches, fetches,
-subagents, …); failed calls count, running ones do not. **ctrl+o** opens
+`write`, `patch`), thoughts, reads, other tools (searches, fetches,
+subagents, …) and instruction files; failed calls count, running ones do
+not. A Code Mode `execute` call counts the calls its program finished
+(`+ 2 reads, 1 tool`) rather than itself, and itself as one tool when its
+program called none (or, in a continued session, whose calls were not
+stored).
+
+When a read brings in the `AGENTS.md` (or `CLAUDE.md`) files of the
+folders above it, the load is a row of its own: adjacent loads are one
+`◈ Instructions: 2 files` row (inside the run's summary at `low`, where
+they count as `2 instructions`, and open at `high`), with each file below
+it (`↳ Loaded src/AGENTS.md`) when opened. **ctrl+o** opens
 every group at any level and shows output and diffs in full.
 `session.grouping` set to `none` (or `session.toggle.exploration_grouping`)
 draws reads and searches one by one at `medium` and `high`. The level and

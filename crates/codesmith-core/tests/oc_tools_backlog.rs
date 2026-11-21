@@ -74,6 +74,53 @@ async fn oc_registry_code_mode_programs_have_no_path_or_bun() {
     assert!(out.contains(r#"["undefined","undefined"]"#), "{}", r[0].1);
 }
 
+/// The `toolCalls` rows of each `tool_progress`, and where the call ended.
+struct Rows(Vec<Value>, Option<usize>);
+impl codesmith_core::session::Sink for Rows {
+    fn text(&mut self, _: &str) {}
+    fn tool_progress(&mut self, _: &str, metadata: &Value) {
+        self.0.push(metadata["toolCalls"].clone());
+    }
+    fn tool_end(&mut self, _: &str, _: &str, _: &str, _: bool) {
+        self.1 = Some(self.0.len());
+    }
+}
+
+/// "execute counts its finished nested calls instead of itself"
+/// (`tui/test/cli/tui/session-verbosity`), its core half: a program that
+/// ends well reports its final call rows before the call ends, as
+/// OpenCode's result metadata carries them, so the transcript can count
+/// them.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_execute_reports_its_final_nested_calls_before_it_ends() {
+    let mut t = start(Setup {
+        extra: json!({"full_codemode": true, "model": "fake/gpt-5"}),
+        reply: codesmith_core::permission::Reply::Always,
+        ..Default::default()
+    })
+    .await;
+    std::fs::write(t.path("a.txt"), "a\n").unwrap();
+    let code = "await tools.read({path: 'a.txt'}); await tools.read({path: 'a.txt'}); return 1";
+    t.push([
+        call("call-reads", "execute", json!({"code": code})),
+        text("Done"),
+    ]);
+    let mut sink = Rows(vec![], None);
+    t.s.prompt("Read twice", &mut sink).await.unwrap();
+    let end = sink.1.expect("the call ended");
+    let last = &sink.0[..end].last().cloned().unwrap_or_default();
+    assert_eq!(
+        last,
+        &json!([
+            {"tool": "read", "status": "completed", "input": {"path": "a.txt"}},
+            {"tool": "read", "status": "completed", "input": {"path": "a.txt"}},
+        ]),
+        "{:?}",
+        sink.0
+    );
+    assert_eq!(sink.0.len(), end, "nothing after the end");
+}
+
 // --- Shell tool and runtime ---
 
 /// "returns both parallel CodeMode shell results" (`tool-shell.test.ts`)

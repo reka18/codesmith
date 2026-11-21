@@ -76,6 +76,8 @@ pub enum GroupKind {
     Activity,
     Reasoning,
     Exploration,
+    /// Instruction loads: "Instructions: 2 files".
+    Instructions,
 }
 
 /// A grouped transcript: entries, and groups of them (which may nest).
@@ -199,6 +201,28 @@ pub fn part_path(part: Part, v: Verbosity) -> &'static [GroupKind] {
     }
 }
 
+/// How an instruction load groups: with the loads next to it, inside the
+/// activity group at `low` (OpenCode's `messagePath`).
+pub fn instructions_path(v: Verbosity) -> &'static [GroupKind] {
+    use GroupKind::*;
+    if v == Verbosity::Low {
+        &[Activity, Instructions]
+    } else {
+        &[Instructions]
+    }
+}
+
+/// The distinct files in instruction loads.
+pub fn instruction_files<'a>(loads: impl IntoIterator<Item = &'a [std::path::PathBuf]>) -> usize {
+    let mut seen: Vec<&std::path::Path> = Vec::new();
+    for p in loads.into_iter().flatten() {
+        if !seen.contains(&p.as_path()) {
+            seen.push(p);
+        }
+    }
+    seen.len()
+}
+
 /// How a call stands, for its group's summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -214,14 +238,40 @@ pub enum State {
 pub enum Item<'a> {
     /// A thought: whether it is still streaming, and whether it has
     /// anything to show (a redacted one has not).
-    Thought {
-        streaming: bool,
-        visible: bool,
-    },
+    Thought { streaming: bool, visible: bool },
     Tool {
         name: &'a str,
         state: State,
+        /// An `execute` call's nested tool calls, as its progress reported
+        /// them.
+        calls: &'a [Call],
     },
+    /// An instruction load: the files it gave.
+    Instructions(&'a [std::path::PathBuf]),
+}
+
+/// A tool call an `execute` program made, from the call's progress rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Call {
+    pub tool: String,
+    /// It settled, as `completed` or `error`.
+    pub finished: bool,
+}
+
+/// The nested calls in an `execute` call's progress (`{"toolCalls":
+/// [{"tool", "status"}, ...]}`); `None` when it reports none.
+pub fn nested_calls(metadata: &serde_json::Value) -> Option<Vec<Call>> {
+    let rows = metadata.get("toolCalls")?.as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|r| {
+                Some(Call {
+                    tool: r.get("tool")?.as_str()?.to_string(),
+                    finished: r.get("status").and_then(|s| s.as_str()) != Some("running"),
+                })
+            })
+            .collect(),
+    )
 }
 
 impl Item<'_> {
@@ -230,6 +280,7 @@ impl Item<'_> {
         match *self {
             Item::Thought { streaming, .. } => !closed && streaming,
             Item::Tool { state, .. } => state != State::Done,
+            Item::Instructions(_) => false,
         }
     }
 }
@@ -246,9 +297,31 @@ pub struct Summary {
 /// included); running work makes it `active`. Once a later row closes the
 /// group (`closed`), its thoughts count as finished.
 pub fn activity_summary(items: &[Item], closed: bool) -> Summary {
-    // command, edit, thought, read, tool
-    let mut counts = [0usize; 5];
+    // command, edit, thought, read, tool, instruction (distinct files)
+    let mut counts = [0usize; 6];
+    counts[5] = instruction_files(items.iter().filter_map(|i| match *i {
+        Item::Instructions(p) => Some(p),
+        _ => None,
+    }));
     for item in items {
+        // Code Mode counts the calls its program finished rather than
+        // itself, while it runs too; with none, a finished `execute` is
+        // one tool.
+        if let Item::Tool { name, state, calls } = *item {
+            if canonical(name) == "execute" {
+                let mut any = false;
+                if state != State::Streaming {
+                    for c in calls.iter().filter(|c| c.finished) {
+                        any = true;
+                        counts[if canonical(&c.tool) == "read" { 3 } else { 4 }] += 1;
+                    }
+                }
+                if !any && !item.active(closed) {
+                    counts[4] += 1;
+                }
+                continue;
+            }
+        }
         if item.active(closed) {
             continue;
         }
@@ -256,6 +329,7 @@ pub fn activity_summary(items: &[Item], closed: bool) -> Summary {
             // A redacted thought shows nothing, so it is not a visible one.
             Item::Thought { visible, .. } if !visible => continue,
             Item::Thought { .. } => 2,
+            Item::Instructions(_) => continue,
             Item::Tool { name, .. } => match canonical(name) {
                 "shell" => 0,
                 "read" => 3,
@@ -265,7 +339,7 @@ pub fn activity_summary(items: &[Item], closed: bool) -> Summary {
         };
         counts[i] += 1;
     }
-    let names = ["command", "edit", "thought", "read", "tool"];
+    let names = ["command", "edit", "thought", "read", "tool", "instruction"];
     let label = counts
         .iter()
         .zip(names)
@@ -296,7 +370,8 @@ pub fn summarize(items: &[Item], closed: bool) -> Summary {
 pub fn busy_label(item: &Item) -> String {
     match *item {
         Item::Thought { .. } => "Thinking…".into(),
-        Item::Tool { name, state } => {
+        Item::Instructions(_) => String::new(),
+        Item::Tool { name, state, .. } => {
             let noun = match canonical(name) {
                 "shell" => "command",
                 "execute" => "code",
@@ -388,6 +463,7 @@ pub fn reasoning_summary(text: &str) -> (Option<&str>, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use GroupKind::*;
     use Verbosity::*;
 
@@ -473,22 +549,24 @@ mod tests {
     }
 
     #[test]
-    fn oc_medium_and_high_add_web_tools_to_exploration() {
-        // Adapted: CodeSmith's transcript does not show instruction loads,
-        // so their half is dropped.
+    fn oc_medium_and_high_add_web_tools_to_exploration_and_group_instruction_loads() {
         for v in [Medium, High] {
             assert_eq!(part_path(Part::Tool("webfetch"), v), &[Exploration]);
             assert_eq!(part_path(Part::Tool("websearch"), v), &[Exploration]);
             assert_eq!(part_path(Part::Tool("shell"), v), &[] as &[GroupKind]);
+            assert_eq!(instructions_path(v), &[Instructions]);
         }
     }
 
     #[test]
-    fn oc_low_wraps_tools_and_thoughts_in_activity_text_breaks_it() {
+    fn oc_low_wraps_tools_thoughts_and_instruction_loads_in_activity_text_breaks_it() {
+        // Adapted: other messages (a user's, a notice) are not grouped at
+        // all, so only text is checked among them.
         assert_eq!(part_path(Part::Reasoning, Low), &[Activity, Reasoning]);
         assert_eq!(part_path(Part::Tool("read"), Low), &[Activity, Exploration]);
         assert_eq!(part_path(Part::Tool("shell"), Low), &[Activity]);
         assert_eq!(part_path(Part::Text, Low), &[] as &[GroupKind]);
+        assert_eq!(instructions_path(Low), &[Activity, Instructions]);
     }
 
     #[test]
@@ -499,7 +577,11 @@ mod tests {
     }
 
     fn tool(name: &str, state: State) -> Item<'_> {
-        Item::Tool { name, state }
+        Item::Tool {
+            name,
+            state,
+            calls: &[],
+        }
     }
     const DONE_THOUGHT: Item<'static> = Item::Thought {
         streaming: false,
@@ -508,7 +590,11 @@ mod tests {
 
     #[test]
     fn oc_activity_summary_counts_finished_work_by_category() {
-        // Adapted: no instruction loads to count.
+        // Adapted: the two instruction files come as a load.
+        let files = [
+            PathBuf::from("/p/a/AGENTS.md"),
+            PathBuf::from("/p/b/AGENTS.md"),
+        ];
         let items = [
             DONE_THOUGHT,
             tool("shell", State::Done),
@@ -517,11 +603,12 @@ mod tests {
             tool("apply_patch", State::Done),
             tool("read", State::Done),
             tool("grep", State::Done),
+            Item::Instructions(&files),
         ];
         assert_eq!(
             activity_summary(&items, false),
             Summary {
-                label: "2 commands, 2 edits, 1 thought, 1 read, 1 tool".into(),
+                label: "2 commands, 2 edits, 1 thought, 1 read, 1 tool, 2 instructions".into(),
                 active: false
             }
         );
@@ -549,8 +636,12 @@ mod tests {
     }
 
     #[test]
-    fn oc_activity_summary_skips_redacted_thoughts() {
-        // Adapted: the instruction-file half is dropped.
+    fn oc_activity_summary_counts_distinct_instruction_files_and_skips_redacted_thoughts() {
+        let first = [PathBuf::from("AGENTS.md"), PathBuf::from("src/AGENTS.md")];
+        let second = [
+            PathBuf::from("src/AGENTS.md"),
+            PathBuf::from("docs/AGENTS.md"),
+        ];
         let redacted = thought_text("[REDACTED]");
         let items = [
             Item::Thought {
@@ -562,8 +653,13 @@ mod tests {
                 visible: !thought_text("Plan").is_empty(),
             },
             tool("read", State::Done),
+            Item::Instructions(&first),
+            Item::Instructions(&second),
         ];
-        assert_eq!(activity_summary(&items, true).label, "1 thought, 1 read");
+        assert_eq!(
+            activity_summary(&items, true).label,
+            "1 thought, 1 read, 3 instructions"
+        );
     }
 
     #[test]
@@ -632,6 +728,42 @@ mod tests {
         assert_eq!(
             activity_summary(&[tool("execute", State::Done)], false).label,
             "1 tool"
+        );
+    }
+
+    #[test]
+    fn oc_execute_counts_its_finished_nested_calls_instead_of_itself() {
+        let calls = nested_calls(&serde_json::json!({"toolCalls": [
+            {"tool": "read", "status": "completed"},
+            {"tool": "read", "status": "completed"},
+            {"tool": "custom.lookup", "status": "error"},
+            {"tool": "custom.slow", "status": "running"},
+        ]}))
+        .unwrap();
+        let execute = Item::Tool {
+            name: "execute",
+            state: State::Done,
+            calls: &calls,
+        };
+        assert_eq!(
+            activity_summary(&[execute], false),
+            Summary {
+                label: "2 reads, 1 tool".into(),
+                active: false
+            }
+        );
+        // While it runs, what it finished counts already.
+        let running = Item::Tool {
+            name: "execute",
+            state: State::Running,
+            calls: &calls,
+        };
+        assert_eq!(
+            activity_summary(&[running], false),
+            Summary {
+                label: "2 reads, 1 tool".into(),
+                active: true
+            }
         );
     }
 

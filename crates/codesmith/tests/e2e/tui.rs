@@ -341,6 +341,78 @@ async fn a_switched_agent_is_kept_for_resuming() {
     assert_eq!(list[0].model, "fake/other");
 }
 
+// context/local-selection.test.tsx: "a manual agent switch supersedes the
+// CLI agent after its commit". (adapted) The session is opened again from
+// `/sessions` rather than through a home route; the agent a request ran
+// with is told by its Plan mode reminders.
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_a_manual_agent_switch_supersedes_the_cli_agent_after_its_commit() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Switched")
+            .always(
+                "hello",
+                M::tools().and(M::prompt("say hello")),
+                Reply::text("Hello there."),
+            )
+            .always(
+                "first",
+                M::tools().and(M::prompt("first plan")),
+                Reply::text("First done."),
+            )
+            .always(
+                "second",
+                M::tools().and(M::prompt("second plan")),
+                Reply::text("Second done."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({"tui": {"tabs": {"mode": "off"}}}));
+    let Some(mut ui) = Ui::start(&e, "--agent build --prompt 'say hello'") else {
+        return;
+    };
+    // The turn's footer: it is over.
+    ui.wait_for("Build · fake/m · ").await;
+    ui.send(b"/agent plan\r").await;
+    ui.wait_for("agent: plan").await;
+    ui.send(b"first plan\r").await;
+    ui.wait_for("First done.").await;
+    // The turn ends just after its answer (the screen still shows the
+    // first turn's footer, so there is nothing new to wait for).
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Keys are handled in order, and picking opens the session at once.
+    ui.send(b"/sessions\r\r").await;
+    ui.send(b"second plan\r").await;
+    ui.wait_for("Second done.").await;
+    // Opened again: the transcript was replayed from the store, without
+    // the switch's notice.
+    let shown = ui.term.screen().contents();
+    assert!(
+        shown.contains("first plan") && !shown.contains("agent: plan"),
+        "{shown}"
+    );
+    ui.quit().await;
+    // The request's last reminder: entering Plan mode, or leaving it.
+    let in_plan = |label: &str| {
+        let bodies = m.by(label);
+        assert_eq!(bodies.len(), 1, "{label}");
+        let text = serde_json::to_string(&bodies[0]["messages"]).unwrap();
+        match (
+            text.rfind("You are in Plan mode"),
+            text.rfind("NO LONGER in Plan mode"),
+        ) {
+            (Some(enter), Some(leave)) => enter > leave,
+            (enter, _) => enter.is_some(),
+        }
+    };
+    assert!(!in_plan("hello"), "the CLI's build agent");
+    assert!(in_plan("first"), "plan after the switch");
+    assert!(in_plan("second"), "plan after opening the session again");
+    let list = e.store().list(None, false).unwrap();
+    assert_eq!(list[0].agent, "plan");
+}
+
 // The model starts a background command and answers, so the turn ends;
 // when the command finishes the idle UI resumes the session by itself (as OpenCode does) with its result.
 #[tokio::test(flavor = "multi_thread")]

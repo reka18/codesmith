@@ -118,14 +118,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 72 | 5 | 0 | 28 | 0 | 0 |
-| tui: main UI | 1247 | 15 | 520 | 5 | 707 | 0 | 0 |
+| tui: main UI | 1247 | 16 | 522 | 1 | 708 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 785 | 223 | 0 | 658 | 0 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **920** | **820** | **7** | **2462** | **0** | **428** |
+| **Total** | **4637** | **921** | **822** | **3** | **2463** | **0** | **428** |
 
 ## Fixes made while porting
 
@@ -256,6 +256,19 @@ Where the tests live:
   command's output and a running subagent's row stay in view below their
   collapsed group, as OpenCode keeps a call waiting for permission there.
   The level is not written back to the config (the UI never writes it).
+
+- **Code Mode calls and instruction loads in the transcript**
+  (`cli/tui/session-verbosity`, `group-view`): an `execute` call counted as
+  one tool in an activity summary, and instruction files a read brought in
+  were not shown. As in OpenCode, `execute` now counts the calls its
+  program finished (`2 reads, 1 tool`), from its progress rows, whose
+  final rows the session now sends before the call ends (a program that
+  ended well dropped them); and each instruction load is a row of its own,
+  grouped as `◈ Instructions: 2 files` (inside the activity group at
+  `low`, open at `high`, its files below as `↳ Loaded AGENTS.md`), counted
+  as distinct files in the summary (`1 read, 3 instructions`), live and
+  when a stored session is continued. A stored session's execute calls
+  count as one tool each: their rows are not stored.
 
 - **The diff viewer and review panel** (`cli/tui/diff-viewer` and the
   rest of its roadmap group): there was none. `/diff` (or `diff.open`)
@@ -657,20 +670,21 @@ dropped.
 | `tui/test/cli/tui/dialog-prompt` | dialog prompt renders block cursor and survives cursor hot reloads | after a fix | oc_dialog_prompt_renders_block_cursor_and_survives_cursor_hot_reloads (adapted: set at start; the hot-reload half is dropped) |
 | `tui/test/cli/tui/reasoning-body` | reasoning follows the markdown setting, also when it changes | after a fix | oc_reasoning_follows_the_markdown_setting_also_when_it_changes (adapted) |
 | `tui/test/cli/tui/session-verbosity` | reasoning and exploration group at every level; other tools stand alone | after a fix | oc_reasoning_and_exploration_group_at_every_level_other_tools_stand_alone |
-| `tui/test/cli/tui/session-verbosity` | medium and high add web tools to exploration and group instruction loads | after a fix | oc_medium_and_high_add_web_tools_to_exploration (adapted: the instruction half is dropped; the transcript does not show instruction loads) |
-| `tui/test/cli/tui/session-verbosity` | low wraps tools, thoughts and instruction loads in activity; text and other messages break it | after a fix | oc_low_wraps_tools_and_thoughts_in_activity_text_breaks_it (adapted: the instruction half is dropped) |
-| `tui/test/cli/tui/session-verbosity` | low hydration nests subgroups inside one activity group per run | after a fix | oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run (adapted: no instruction load) |
-| `tui/test/cli/tui/session-verbosity` | medium hydration keeps production shape plus instruction groups | after a fix | oc_medium_hydration_keeps_production_shape (adapted: the instruction group is dropped) |
+| `tui/test/cli/tui/session-verbosity` | medium and high add web tools to exploration and group instruction loads | after a fix | oc_medium_and_high_add_web_tools_to_exploration_and_group_instruction_loads |
+| `tui/test/cli/tui/session-verbosity` | low wraps tools, thoughts and instruction loads in activity; text and other messages break it | after a fix | oc_low_wraps_tools_thoughts_and_instruction_loads_in_activity_text_breaks_it (adapted: a user's message and a notice are not grouped at all) |
+| `tui/test/cli/tui/session-verbosity` | low hydration nests subgroups inside one activity group per run | after a fix | oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run (adapted: no footer row) |
+| `tui/test/cli/tui/session-verbosity` | medium hydration keeps production shape plus instruction groups | after a fix | oc_medium_hydration_keeps_production_shape_plus_instruction_groups |
 | `tui/test/cli/tui/session-verbosity` | live appends under low merge into the open activity group | after a fix | oc_live_appends_under_low_merge_into_the_open_activity_group (adapted: through session events) |
 | `tui/test/cli/tui/session-verbosity` | permission-blocked tools inside an activity group are tracked as pending without reordering | after a fix | oc_permission_blocked_tools_inside_an_activity_group_are_tracked_as_pending_without_reordering (adapted: a running call stays in place and in view) |
-| `tui/test/cli/tui/session-verbosity` | activity summary counts finished work by category | after a fix | oc_activity_summary_counts_finished_work_by_category (adapted: no instructions to count) |
+| `tui/test/cli/tui/session-verbosity` | activity summary counts finished work by category | after a fix | oc_activity_summary_counts_finished_work_by_category (adapted: the two instruction files come as a load) |
 | `tui/test/cli/tui/session-verbosity` | running work is active but not counted, and failed tools are counted | after a fix | oc_running_work_is_active_but_not_counted_and_failed_tools_are_counted |
-| `tui/test/cli/tui/session-verbosity` | activity summary counts distinct instruction files and skips redacted thoughts | after a fix | oc_activity_summary_skips_redacted_thoughts (adapted: the instruction-file half is dropped) |
+| `tui/test/cli/tui/session-verbosity` | activity summary counts distinct instruction files and skips redacted thoughts | after a fix | oc_activity_summary_counts_distinct_instruction_files_and_skips_redacted_thoughts |
 | `tui/test/cli/tui/session-verbosity` | questions stand alone at every level and end an activity run | after a fix | oc_questions_stand_alone_at_every_level, oc_questions_stand_alone_at_every_level_and_end_an_activity_run |
 | `tui/test/cli/tui/session-verbosity` | a thought still streaming counts as finished once a later row closes its group | after a fix | oc_a_thought_still_streaming_counts_as_finished_once_a_later_row_closes_its_group |
 | `tui/test/cli/tui/session-verbosity` | until something finishes, the label is the first running item's status | after a fix | oc_until_something_finishes_the_label_is_the_first_running_items_status (both modules) |
 | `tui/test/cli/tui/session-verbosity` | busy labels depend only on the tool and whether it is still being prepared | after a fix | oc_busy_labels_depend_only_on_the_tool_and_whether_it_is_still_being_prepared |
 | `tui/test/cli/tui/session-verbosity` | a finished execute with no nested calls counts as one tool | after a fix | oc_a_finished_execute_with_no_nested_calls_counts_as_one_tool |
+| `tui/test/cli/tui/session-verbosity` | execute counts its finished nested calls instead of itself | after a fix | oc_execute_counts_its_finished_nested_calls_instead_of_itself, oc_execute_counts_its_finished_nested_calls_in_the_activity_row, oc_execute_reports_its_final_nested_calls_before_it_ends (core) |
 | `tui/test/cli/tui/grouping-tree` | groups adjacent entries by path and counts leaves, not wrappers | after a fix | oc_groups_adjacent_entries_by_path_and_counts_leaves_not_wrappers |
 | `tui/test/cli/tui/grouping-tree` | a direct child breaks a subgroup without ending the outer group | after a fix | oc_a_direct_child_breaks_a_subgroup_without_ending_the_outer_group |
 | `tui/test/cli/tui/session-grouping` | a pending tool does not hide a later tool reusing its call ID in another message | after a fix | oc_a_pending_tool_does_not_hide_a_later_tool_reusing_its_call_id_in_another_message (adapted: rows are entries, not ids) |
@@ -682,6 +696,7 @@ dropped.
 | `tui/test/cli/tui/group-view` | retains nested expansion state and registers exact headers and parts | after a fix | oc_retains_nested_expansion_state_and_registers_exact_headers_and_parts (adapted: ctrl+o opens every group; no anchors) |
 | `tui/test/cli/tui/group-view` | a low activity group with nothing finished stays collapsed behind a status | after a fix | oc_a_low_activity_group_with_nothing_finished_stays_collapsed_behind_a_status |
 | `tui/test/cli/tui/group-view` | failed low activity uses a disclosure icon and keeps details expandable | after a fix | oc_failed_low_activity_uses_a_disclosure_icon_and_keeps_details_expandable (adapted: ctrl+o rather than a click) |
+| `tui/test/cli/tui/group-view` | expanded instructions stay adjacent to their summary and each other | after a fix | oc_expanded_instructions_stay_adjacent_to_their_summary_and_each_other (adapted: ctrl+o rather than a click) |
 | `tui/test/session-activity-anchor` | a low activity summary that ends the transcript opens like v2 at the bottom | after a fix | oc_a_low_activity_summary_that_ends_the_transcript_opens_like_v2_at_the_bottom (adapted: ctrl+o) |
 | `tui/test/session-backfill-disclosure` | clicking a backfilled thought group toggles it | after a fix | oc_clicking_a_backfilled_thought_group_toggles_it (adapted: a replayed session, ctrl+o) |
 | `tui/test/session-mount-budget` | an expanded group spends the mounting budget that older rows used | after a fix | oc_an_expanded_group_spends_the_mounting_budget_that_older_rows_used (adapted: only the rows in view are laid out) |
@@ -972,6 +987,7 @@ dropped.
 | `tui/test/context/local-selection` | switching agents restores their model and variant within the session | after a fix | oc_switching_agents_restores_their_model_and_variant_within_the_session (adapted: the runner's selection memory) |
 | `tui/test/context/local-selection` | agent and model drafts are isolated across sessions and survive navigation | after a fix | oc_agent_and_model_drafts_are_isolated_across_sessions (adapted: the agent is saved with the session) |
 | `tui/test/context/local-selection` | retains an unavailable saved session model instead of selecting a fallback | after a fix | oc_retains_an_unavailable_saved_session_model (adapted) |
+| `tui/test/context/local-selection` | a manual agent switch supersedes the CLI agent after its commit | already passing | `tests/e2e/tui.rs::oc_a_manual_agent_switch_supersedes_the_cli_agent_after_its_commit` (adapted: opened again from `/sessions`; the agent told by its Plan mode reminders) |
 | `tui/test/prompt/parse` | preserves file line-range parsing semantics | after a fix | oc_preserves_file_line_range_parsing_semantics |
 | `tui/test/prompt/traits` | normal mode without autocomplete only captures tab | after a fix | oc_normal_mode_without_autocomplete_only_captures_tab |
 | `tui/test/prompt/traits` | normal mode with autocomplete captures navigation keys | after a fix | oc_normal_mode_with_autocomplete_captures_navigation_keys |
@@ -1119,30 +1135,21 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
-### tui: per-agent and per-session model selection, the rest (1)
-
-- `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit (no runner-level test harness yet)
-
 ### cli: SSH askpass for git prompts (2)
 
 - `cli/src/ssh-askpass`: the executable askpass branch returns only the response, without CLI output
 - `cli/src/ssh-askpass`: a response split inside a multi-byte character is written intact
 
-### sessions: fork (1)
-
-- `tui/test/session-fork-pending`: choosing a row in /fork shows the pending view until the fork finishes
-
 ### tui: export dialog (1)
 
+The dialog sets the options of the UI's session export (Markdown or JSON,
+thinking, tools, sanitizing; copy or save), which CodeSmith's UI does not
+have: there is only `codesmith session export` (JSON, without the
+sanitizing half), and the `session.export` binding (`<leader>x`) does
+nothing yet. The dialog comes with that feature (a Markdown transcript, the
+sanitized JSON, copy through the terminal and save to a file).
+
 - `tui/test/component/dialog-export-options`: tab and shift+tab move a visible focus through the export options
-
-### tui: instruction loads in the transcript (1)
-
-- `tui/test/cli/tui/group-view`: expanded instructions stay adjacent to their summary and each other (the instruction halves of four `session-verbosity` tests are dropped too)
-
-### tui: Code Mode calls in activity summaries (1)
-
-- `tui/test/cli/tui/session-verbosity`: execute counts its finished nested calls instead of itself
 
 ## By design or not applicable
 
@@ -1170,6 +1177,7 @@ its remaining work is tracked in
 | tui: session tabs: mouse, motion and server sync | by design | 33 | 7 | no mouse: clicks, middle-click closing, drags, the tab menu and its recently closed list, opening a tab in the background, the compact rail reached by narrowing the column; no motion: width seeding, the completion reveal and running pulses; one UI running its sessions in-process: no server viewed times, terminal focus or acknowledgement retries, no other UI sharing the list, no session moves or per-tab locations and branches, no queued prompt pulses, new sessions start in the UI's folder; subagents have no transcript of their own; no home page footer |
 | tui: attachments | by design | 10 | 2 | attachments are read on send by path; SVG is not media; no remote server; every attachment has its label in the prompt (no mentionless ones to keep), and the transcript shows a prompt's labels, not image cards to deduplicate |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |
+| sessions: fork pending view | by design | 1 | 1 | `/fork` copies the session in the local store while the pick is handled, before the next frame: there is no request to wait on, so nothing to show pending |
 | tui: new designs experiment | by design | 6 | 3 | OpenCode's `opencode2` theme and its V1 migration exist only behind its `new-designs` experiment |
 | cli: stats | by design | 4 | 1 | statistics are computed locally (always with tool counts), no server request |
 | acp: separate server | by design | 4 | 3 | no separate server or plugin activation; no server defects to wrap; no shared event stream |

@@ -76,6 +76,7 @@ fn kind(k: GroupKind) -> &'static str {
         GroupKind::Activity => "activity",
         GroupKind::Reasoning => "reasoning",
         GroupKind::Exploration => "exploration",
+        GroupKind::Instructions => "instructions",
     }
 }
 
@@ -106,8 +107,11 @@ fn children(a: &App, n: &Node<usize, GroupKind>) -> Vec<String> {
 
 // ----- tui/test/cli/tui/session-verbosity -----------------------------------
 
-// (adapted) Without the instruction load, which CodeSmith's transcript does
-// not show.
+fn instructions(paths: &[&str]) -> Entry {
+    Entry::Instructions(paths.iter().map(std::path::PathBuf::from).collect())
+}
+
+// (adapted) No footer row.
 #[test]
 fn oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run() {
     let mut a = app(Verbosity::Low);
@@ -116,33 +120,41 @@ fn oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run() {
         Entry::Reasoning("Plan".into()),
         done("read", "a.rs", "Read a.rs"),
         done("grep", "x", "1 match"),
+        instructions(&["AGENTS.md"]),
         done("shell", "ls", "a.rs"),
         done("read", "b.rs", "Read b.rs"),
         Entry::Assistant("Done".into()),
     ];
-    assert_eq!(shape(&a), ["user", "activity:5", "text"]);
+    assert_eq!(shape(&a), ["user", "activity:6", "text"]);
     let rows = view::rows(&a);
     assert_eq!(
         children(&a, &rows[1]),
-        ["reasoning:1", "exploration:2", "shell", "exploration:1"]
+        [
+            "reasoning:1",
+            "exploration:2",
+            "instructions:1",
+            "shell",
+            "exploration:1"
+        ]
     );
     assert!(
-        has(&a, "+ 1 command, 1 thought, 2 reads, 1 tool"),
+        has(&a, "+ 1 command, 1 thought, 2 reads, 1 tool, 1 instruction"),
         "{:?}",
         lines(&a)
     );
 }
 
-// (adapted) Without the instruction group.
 #[test]
-fn oc_medium_hydration_keeps_production_shape() {
+fn oc_medium_hydration_keeps_production_shape_plus_instruction_groups() {
     let mut a = app(Verbosity::Medium);
     a.entries = vec![
         done("read", "a.rs", "Read a.rs"),
         done("webfetch", "https://x", "Fetched"),
+        instructions(&["AGENTS.md"]),
+        instructions(&["packages/tui/AGENTS.md"]),
         done("shell", "ls", "a.rs"),
     ];
-    assert_eq!(shape(&a), ["exploration:2", "shell"]);
+    assert_eq!(shape(&a), ["exploration:2", "instructions:2", "shell"]);
 }
 
 // (adapted) Through the session's events.
@@ -247,6 +259,43 @@ fn oc_a_pending_tool_does_not_hide_a_later_tool_reusing_its_call_id_in_another_m
         error: false,
     });
     assert_eq!(lines(&a), ["+ 2 reads"]);
+}
+
+/// "execute counts its finished nested calls instead of itself", drawn:
+/// the call's progress rows reach its row, and the summary counts them.
+#[test]
+fn oc_execute_counts_its_finished_nested_calls_in_the_activity_row() {
+    let mut a = app(Verbosity::Low);
+    a.busy = true;
+    a.on_event(Ev::ToolStart {
+        id: "x".into(),
+        name: "execute".into(),
+        detail: String::new(),
+        diff: None,
+    });
+    assert_eq!(lines(&a), ["+ Running code…"]);
+    let calls = |rows: serde_json::Value| Ev::ToolCalls {
+        id: "x".into(),
+        calls: super::group::nested_calls(&json!({ "toolCalls": rows })).unwrap(),
+    };
+    a.on_event(calls(json!([
+        {"tool": "read", "status": "completed"},
+        {"tool": "custom.slow", "status": "running"},
+    ])));
+    assert_eq!(lines(&a), ["+ 1 read …"]);
+    a.on_event(calls(json!([
+        {"tool": "read", "status": "completed"},
+        {"tool": "read", "status": "completed"},
+        {"tool": "custom.lookup", "status": "error"},
+        {"tool": "custom.slow", "status": "running"},
+    ])));
+    a.on_event(Ev::ToolEnd {
+        id: "x".into(),
+        name: "execute".into(),
+        output: "done".into(),
+        error: false,
+    });
+    assert_eq!(lines(&a), ["+ 2 reads, 1 tool"]);
 }
 
 // ----- tui/test/cli/tui/session-rows ----------------------------------------
@@ -374,6 +423,55 @@ fn oc_failed_low_activity_uses_a_disclosure_icon_and_keeps_details_expandable() 
     let l = lines(&a);
     assert_eq!(l[0], "− 1 command");
     assert!(has(&a, "command failed"), "{l:?}");
+}
+
+// (adapted) Ctrl+O opens the group (no click); a load's rows say "↳
+// Loaded", relative to the session's folder.
+#[test]
+fn oc_expanded_instructions_stay_adjacent_to_their_summary_and_each_other() {
+    let mut a = app(Verbosity::Medium);
+    a.cwd = "/p".into();
+    a.entries = vec![
+        instructions(&["/p/AGENTS.md"]),
+        instructions(&["/p/packages/tui/AGENTS.md"]),
+    ];
+    assert_eq!(lines(&a), ["◈ Instructions: 2 files"]);
+    assert!(!has(&a, "Loaded AGENTS.md"));
+    ctrl_o(&mut a);
+    assert_eq!(
+        lines(&a),
+        [
+            "◈ Instructions: 2 files",
+            "  ↳ Loaded AGENTS.md",
+            "  ↳ Loaded packages/tui/AGENTS.md"
+        ]
+    );
+    // High opens it by default; a file loaded twice counts once.
+    let mut a = app(Verbosity::High);
+    a.entries = vec![
+        instructions(&["AGENTS.md"]),
+        instructions(&["AGENTS.md", "src/AGENTS.md"]),
+    ];
+    assert_eq!(lines(&a)[0], "◈ Instructions: 2 files");
+    assert_eq!(lines(&a).len(), 4);
+}
+
+/// Instruction loads come from the session as it runs, and from the
+/// stored history when it is continued; a path's control characters are
+/// shown as escapes.
+#[test]
+fn instruction_loads_reach_the_transcript_live_and_replayed() {
+    use codesmith_ai::Message;
+    let mut a = app(Verbosity::Medium);
+    a.on_event(Ev::Instructions(vec!["/p/sub/AGENTS.md".into()]));
+    assert_eq!(lines(&a), ["◈ Instructions: 1 file"]);
+    a.entries = super::app::replay(&[Message::user(
+        "Instructions from: /p/sub/AGENTS.md\nbe nice\n\nInstructions from: /p/AGENTS.md\nok",
+    )]);
+    assert_eq!(lines(&a), ["◈ Instructions: 2 files"]);
+    a.verbosity = Verbosity::High;
+    a.entries = vec![instructions(&["/p/a\u{1b}[2J/AGENTS.md"])];
+    assert!(has(&a, "Loaded /p/a\\x1b[2J/AGENTS.md"), "{:?}", lines(&a));
 }
 
 // ----- tui/test/session-activity-anchor --------------------------------------

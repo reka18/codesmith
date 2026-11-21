@@ -30,6 +30,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   server listed, are read only from the global config file, and only a
   person can start a swap: it is not a tool, and `run`, automations,
   `serve`, ACP and CodeSmith's own shells cannot.
+- The transcript's activity summary counts the tool calls a Code Mode
+  `execute` program finished (`+ 2 reads, 1 tool`) instead of the
+  `execute` call itself, as OpenCode does, and shows the instruction files
+  a read brought in: adjacent loads are one `◈ Instructions: 2 files` row
+  (counted as `2 instructions` at the `low` verbosity), live and in a
+  continued session.
 - Code Mode's `console` shows values as OpenCode's Code Mode does instead
   of as JSON: getters, `toJSON` and proxy traps are no longer run to log a
   value (an accessor shows as `[Getter]`), a `Map`, `Set` or error shows its

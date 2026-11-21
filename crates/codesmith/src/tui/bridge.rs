@@ -60,6 +60,11 @@ pub enum Ev {
         output: String,
         error: bool,
     },
+    /// An `execute` call's nested tool calls so far.
+    ToolCalls {
+        id: String,
+        calls: Vec<super::group::Call>,
+    },
     /// Output a running command printed since the last report.
     ToolOutput {
         id: String,
@@ -72,6 +77,8 @@ pub enum Ev {
     },
     /// The label of an image (or other file) the model generated.
     Media(String),
+    /// Instruction files a step's reads brought in.
+    Instructions(Vec<PathBuf>),
     /// A subagent session started (`agent` is the one its call named).
     /// Until its `ChildEnd`, tool calls are its own (or its subagents').
     ChildStart {
@@ -174,6 +181,14 @@ impl Sink for ChanSink {
             error: is_error,
         });
     }
+    fn tool_progress(&mut self, id: &str, metadata: &serde_json::Value) {
+        if let Some(calls) = super::group::nested_calls(metadata) {
+            let _ = self.tx.send(Ev::ToolCalls {
+                id: id.to_string(),
+                calls,
+            });
+        }
+    }
     fn tool_output(&mut self, id: &str, delta: &str) {
         let _ = self.tx.send(Ev::ToolOutput {
             id: id.to_string(),
@@ -185,6 +200,9 @@ impl Sink for ChanSink {
             id: id.to_string(),
             labels: media.iter().map(super::app::media_label).collect(),
         });
+    }
+    fn instructions(&mut self, paths: &[PathBuf]) {
+        let _ = self.tx.send(Ev::Instructions(paths.to_vec()));
     }
     fn media(&mut self, media: &codesmith_ai::Media) {
         let _ = self.tx.send(Ev::Media(super::app::media_label(media)));
