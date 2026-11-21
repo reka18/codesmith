@@ -135,6 +135,46 @@ pub fn price(u: &Usage, c: &Cost) -> f64 {
         / 1_000_000.0
 }
 
+/// The context tier of catalog prices `costs` a step with usage `u` pays:
+/// the largest whose size its prompt (input and cache, read and written)
+/// exceeds, as OpenCode picks it.
+pub fn context_tier<'a>(
+    costs: &'a [crate::catalog::Cost],
+    u: &Usage,
+) -> Option<&'a crate::catalog::Cost> {
+    let context = (u.input + u.cache_read + u.cache_write) as f64;
+    costs
+        .iter()
+        .filter(|c| {
+            c.tier
+                .is_some_and(|t| t.kind == "context" && context > t.size)
+        })
+        .max_by(|a, b| {
+            let size = |c: &crate::catalog::Cost| c.tier.map_or(0.0, |t| t.size);
+            size(a).total_cmp(&size(b))
+        })
+}
+
+/// A step's cost from catalog prices `costs` (OpenCode's `calculateCost`):
+/// at its context tier, else the default price; `None` without either.
+pub fn step_cost(costs: &[crate::catalog::Cost], u: &Usage) -> Option<f64> {
+    let cost = context_tier(costs, u).or_else(|| costs.iter().find(|c| c.tier.is_none()))?;
+    Some(catalog_price(u, cost))
+}
+
+/// The tokens of `u` at catalog price `c` (output includes reasoning).
+pub fn catalog_price(u: &Usage, c: &crate::catalog::Cost) -> f64 {
+    price(
+        u,
+        &Cost {
+            input: c.input,
+            output: c.output,
+            cache_read: c.cache.read,
+            cache_write: c.cache.write,
+        },
+    )
+}
+
 /// Messages the user typed (not tool results or CodeSmith's own notes).
 fn is_prompt(text: &str) -> bool {
     let t = text.trim_start();

@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 151 | 15 | 2 | 204 | 21 | 0 |
+| Session runner | 393 | 153 | 15 | 0 | 204 | 21 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2466** | **44** | **42** | **2501** | **535** | **0** |
+| **Total** | **5588** | **2468** | **44** | **40** | **2501** | **535** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -103,7 +103,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (42 cases in 6 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (40 cases in 5 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -112,7 +112,6 @@ Missing features, by how many OpenCode test cases each would unlock (42 cases in
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Context-Tier Pricing](#context-tier-pricing) | 2 | pricing a step at the catalog tier its context size reaches (CodeSmith prices every step at the base price, and a model with only tiered prices at none) |
 
 ### Provider Plugins
 
@@ -174,13 +173,6 @@ Missing features, by how many OpenCode test cases each would unlock (42 cases in
 - `voice.test.ts`: uses the first key or env connection Integration lists and never a ChatGPT sign-in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
-
-### Context-Tier Pricing
-
-2 cases.
-
-- `session-runner.test.ts`: calculates step cost using the matching context tier
-- `session-runner.test.ts`: does not apply an ineligible tier without base pricing
 
 ## Porting backlog
 
@@ -805,7 +797,7 @@ Tests for behaviour CodeSmith already has but no test pins (535 cases), by area,
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (370 of 393)</summary>
+<details><summary>Session runner (372 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -864,7 +856,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-runner.test.ts`**
 
+- P calculates step cost using the matching context tier — `tests/oc_tier_pricing.rs::oc_usage_calculates_step_cost_using_the_matching_context_tier` (adapted: CodeSmith's output count includes reasoning. In a session: tests/oc_tier_pricing.rs::oc_session_prices_each_step_at_its_context_tier (a step past a tier is priced when it ends and counts as billed; the others are priced together at the default price, as before))
 - D ignores malformed model cost fields — other: prices are typed numbers once decoded; a catalog model with a malformed price is dropped at decoding, so no step is priced from it
+- P does not apply an ineligible tier without base pricing — `tests/oc_tier_pricing.rs::oc_usage_does_not_apply_an_ineligible_tier_without_base_pricing` (adapted: no price is `None` (unknown, not shown) where OpenCode records zero)
 - P generates the title while the first model step is still running — `tests/oc_runner_backlog.rs::oc_session_requests_the_title_while_the_first_step_is_still_running` (adapted: the title request goes out while the step runs; the session takes the title when the turn ends)
 - P does not automatically replace an existing session title — `tests/oc_runner_backlog.rs::oc_session_does_not_replace_an_existing_title`
 - P coalesces title generation while a request is active — `tests/parity.rs::oc_title_generates_from_the_first_user_message_only_once` (adapted: one title request across prompts; the title settles before the first turn ends, so it cannot outlive it)

@@ -471,6 +471,32 @@ pub struct Cost {
 }
 
 impl Config {
+    /// What one step of `provider/model` with usage `u` costs at the
+    /// catalog's context tier its prompt passes (OpenCode prices each step
+    /// so: `calculateCost`). `None` when no tier applies, so the step is
+    /// priced with the rest at the default price ([`Config::cost`]): below
+    /// every tier, without tiers, or with a configured price, a ChatGPT
+    /// plan or a Claude sign-in.
+    pub fn tier_price(&self, spec: &str, u: &codesmith_ai::Usage) -> Option<f64> {
+        let (p, m) = split_variant(spec).0.split_once('/')?;
+        if (p == crate::providers::chatgpt::ID && self.chatgpt())
+            || p == crate::providers::claude_agent::ID
+        {
+            return None;
+        }
+        let configured = self.provider(p).and_then(|c| c.models.get(m).cloned());
+        if configured.as_ref().is_some_and(|c| c.cost.is_some()) {
+            return None;
+        }
+        let id = configured.and_then(|c| c.id);
+        let catalog = self.models_dev.as_ref()?.catalog();
+        let cm = id
+            .and_then(|id| catalog.model(p, &id))
+            .or_else(|| catalog.model(p, m))?;
+        let tier = crate::stats::context_tier(&cm.cost, u)?;
+        Some(crate::stats::catalog_price(u, tier))
+    }
+
     /// The price of `provider/model`: the configured one, else the
     /// catalog's default price.
     pub fn cost(&self, spec: &str) -> Option<Cost> {

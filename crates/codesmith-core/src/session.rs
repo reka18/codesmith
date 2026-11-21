@@ -950,6 +950,17 @@ impl Session {
         Ok(())
     }
 
+    /// A step of `model` the provider billed nothing for, priced now when
+    /// its context passes one of the catalog's context tiers (OpenCode
+    /// prices every step at the tier it reaches): it then counts as
+    /// billed at that price. Other steps are priced later, together.
+    fn price_step(&self, model: &str, mut usage: Usage) -> Usage {
+        if usage.cost.is_none() {
+            usage.cost = self.loaded.config.tier_price(model, &usage);
+        }
+        usage
+    }
+
     /// Add one call's usage to the session's: to the unbilled part too
     /// when the provider reported no billed cost for it.
     fn count_usage(&mut self, usage: &Usage) {
@@ -2111,6 +2122,7 @@ impl Session {
             };
             steps += 1;
             compacted_this_step = false;
+            let usage = self.price_step(&self.model_spec, usage);
             self.count_usage(&usage);
             self.measured(&usage);
             sink.step_end(&reason, &usage);
@@ -4074,6 +4086,7 @@ impl Session {
         if usage == Usage::default() {
             return Ok(());
         }
+        let usage = self.price_step(&model, usage);
         self.count_usage(&usage);
         self.record(&Record::Step { model, usage })?;
         Ok(())

@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Context-tier pricing:** a step whose prompt passes one of the catalog's
+  context tiers (such as over 200k tokens) is priced at that tier, as
+  OpenCode prices it, for the session cost and `codesmith stats`. Every step
+  was priced at the default price, and a model with only tiered prices at
+  none.
 - **Tool input validation:** a call's input is checked against the tool's
   JSON Schema after repair, as OpenCode checks it. Input that does not fit
   never reaches the tool: the call fails with the issues (up to five) and

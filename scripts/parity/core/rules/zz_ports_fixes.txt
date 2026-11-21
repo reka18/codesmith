@@ -1,6 +1,8 @@
 # Fixes of found bugs and roadmap features (tests named in each line).
 
 @session-runner.test.ts
+159 :: ported :: tests/oc_tier_pricing.rs::oc_usage_calculates_step_cost_using_the_matching_context_tier :: adapted: CodeSmith's output count includes reasoning. In a session: tests/oc_tier_pricing.rs::oc_session_prices_each_step_at_its_context_tier (a step past a tier is priced when it ends and counts as billed; the others are priced together at the default price, as before)
+209 :: ported :: tests/oc_tier_pricing.rs::oc_usage_does_not_apply_an_ineligible_tier_without_base_pricing :: adapted: no price is `None` (unknown, not shown) where OpenCode records zero
 7605 :: fixed :: tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted :: an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step
 
 @tool-schema.test.ts

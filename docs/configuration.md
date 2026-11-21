@@ -184,9 +184,11 @@ all. A model resolves from it like this:
 - **Limits**: `limit.context` and `limit.output` come from the catalog unless
   configured, so compaction knows the context window of any listed model. The
   output limit asked for is the catalog's, capped at 256k tokens.
-- **Costs**: the catalog's default price is used for the session cost and
-  `codesmith stats` unless the model has a `cost` (context tiers above the
-  default are kept in the catalog but not applied).
+- **Costs**: the catalog's prices are used for the session cost and
+  `codesmith stats` unless the model has a `cost`. As in OpenCode, each step
+  pays the price of the largest context tier its prompt (input and cache)
+  passes, such as the catalog's price over 200k tokens, else the default
+  price. A configured `cost` has no tiers.
 - **Modalities**: the catalog's input modalities decide whether images, PDFs,
   audio and video are sent, unless `modalities`, `attachment` or
   `capabilities.input` say otherwise.
