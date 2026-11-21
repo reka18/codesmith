@@ -98,6 +98,69 @@ codesmith automation run-due    # fire whatever is due once and exit (for cron)
 
 A lease in the database keeps two processes from firing the same run.
 
+## Restarts, retries and failures
+
+A run is saved at each step, so closing the UI or restarting `serve` in
+the middle of one doesn't lose it. The steps are:
+
+1. **Claimed.** The run is counted and its next due time is set.
+2. **Checked** (Code Mode only). The program has run and its result
+   (`state`, `done`, the `send` and its logs) is saved before anything is
+   delivered.
+3. **Handed off.** The prompt is written into its session, and the
+   automation's `state`, `done` and event cursor are committed, in one
+   database transaction. A run's new session gets a fixed id
+   (`ses_<automation>_<run>`) and its prompt is tagged
+   `auto_<automation>_<run>`, so a retry reuses them instead of starting a
+   second session or writing the prompt twice.
+4. **Settled** or **failed**, when the turn ends. Its answer is kept for
+   `automation log`, up to 32 KiB.
+
+Whichever process holds the scheduler lease next (the same one restarted,
+or another CodeSmith) picks up a run that was left in the middle, once
+nobody has touched it for 30 seconds:
+
+| Left at | What happens |
+|---|---|
+| Claimed, prompt | The prompt is handed off now. |
+| Claimed, program | The run is marked failed and counts as a strike (below). The program isn't run again: its tool calls may already have done something. |
+| Checked | The saved result is handed off. The program isn't run again. |
+| Handed off, answered | The run is settled with the answer already in the session. |
+| Handed off, no answer | The turn continues from the saved prompt, once. If it's interrupted again, the run is marked failed. |
+
+A resumed turn is set up exactly like the first attempt: unattended, with
+every question refused, held to your config's rules for the directory and
+to the creating session's recorded rules (even if that session has since
+been deleted). A UI that has the session open doesn't resume it itself; it
+shows the prompt, and the turn lease keeps it and the scheduler from
+running the same turn twice. A session busy with a turn elsewhere is left
+until that turn ends.
+
+**Failures:**
+
+- **A failed Code Mode program** counts a strike, and so does one that
+  was interrupted. The third strike in a row pauses the automation, with
+  "Paused after 3 failed runs" and the error in `automation list`. A run
+  that succeeds, or resuming the automation, clears the strikes. A program
+  that returns something other than nothing or `{state, done, send}` pauses
+  it at once.
+- **A handoff that can't be written** (a database error) keeps the
+  program's result and is retried a minute later. After three failures in
+  a row the run fails and the automation pauses.
+- **A target that can't take the run** pauses the automation at once, with
+  nothing of the run committed: a session that no longer exists, a missing
+  directory, an agent that doesn't exist, or a `send.to.subagent` the
+  creating session can't start (a primary-only or hidden agent, a nested
+  session past `subagent_depth`, a `subagent` rule that denies it or would
+  ask, or an agent an automation created there couldn't run as).
+- **A turn that fails** after the handoff is logged as `failed`. The
+  handoff was accepted, so the state it committed stays.
+- **Pausing** before a run's prompt is handed off cancels the run; pausing
+  after lets its turn finish.
+
+Only one run of an automation is in progress at a time: a timed run that
+comes due while an earlier one hasn't finished waits for it.
+
 ## Safety
 
 An automation is a way for a prompt-injected model to come back later, so
@@ -173,10 +236,14 @@ extension, as in OpenCode):
   and `--event-args` must match the event's input schema.
 - Each run's prompt carries the event (`{id, timestamp, data}`) quoted as
   untrusted data. A program gets it as `input.event`.
-- The watch saves the server's cursor after every message (for an event,
-  when its run starts), so pausing and resuming, a restart, or another
-  process taking over picks up where it left off without running an event
-  twice. A stream that breaks is reopened on a new connection from the saved
+- The watch saves the server's cursor after every message. For an event,
+  the cursor moves when its run's prompt is handed off, as in OpenCode.
+  Delivery is at least once: if the handoff is refused, or the process
+  stops before it, the event is replayed when the watch next opens. An
+  event that already ran, or whose run is still being handed off, is
+  recognized by its id and skipped. So pausing and resuming, a restart, or
+  another process taking over picks up where it left off without running
+  an event twice. A stream that breaks is reopened on a new connection from the saved
   cursor, 1, 2 and 4 seconds later; after three reopened streams in a row
   that send no event or heartbeat, the watch pauses. A stream that sent
   something starts the count again.
@@ -184,6 +251,7 @@ extension, as in OpenCode):
   `automation list`. That happens for a refused or ended subscription, a
   server that can't replay from the saved cursor, an event that doesn't match
   its schema, a run that can't start (its config, session or agent is
-  gone), a failed Code Mode program, or a `watch_mcp_event` rule that
-  denies the server. A prompt whose turn fails (the model returned an
+  gone), a handoff that can't be written, a failed Code Mode program, or a
+  `watch_mcp_event` rule that denies the server. The event whose run could
+  not start is run again when you resume the watch. A prompt whose turn fails (the model returned an
   error, say) is logged as `failed` and the watch goes on, as in OpenCode.

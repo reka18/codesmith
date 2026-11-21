@@ -1,0 +1,23 @@
+# Ports of the Automation Durable Handoffs group (and the crash-adoption
+# tests it made portable): runs saved by phase and resumed after a restart.
+@automation-event.test.ts
+314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_continue :: adapted: CodeSmith automations have no expiry; the run continues
+314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_done
+314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_reject :: adapted: the handoff's write is refused (OpenCode's wake fails before commit)
+469:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_checkpoints_an_accepted_handoff_across_a_local_pause
+469:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_checkpoints_an_accepted_handoff_across_a_reconciled_pause
+547 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_does_not_checkpoint_a_rejected_handoff_or_commit_its_terminal_state :: adapted: runs are counted at claim, so the refused run counts
+
+@automation.test.ts
+525 :: ported :: tests/automation_handoffs.rs::restart_after_checked_admits_the_saved_result_once :: adapted: the stopped run's recorded child or session is adopted on resume
+712 :: ported :: src/automation.rs::an_admission_is_refused_once_paused_or_overtaken :: adapted: the admission's compare-and-set on the run count
+780 :: ported :: tests/automation_handoffs.rs::restart_after_admitted_resumes_the_turn_with_exactly_one_reply :: adapted: the prompt is tagged with the run's message id and written once
+1362 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_hands_a_failed_check_to_one_quiet_child_with_the_creators_permissions
+1391 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_keeps_the_handoff_visible_and_logs_within_the_utf8_output_budget :: adapted: the reply follows the summary and logs
+1409 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_bounds_failed_code_output_including_the_pause_reason_in_utf8_bytes
+1431 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_bad_targets_and_session_or_agent_policy_never_deliver_or_commit_the_rest_of_the_result :: adapted: runs are counted at claim; a session target is refused as not a subagent
+1495 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_retries_failed_admission_without_committing_state_or_done_then_settles_the_handoff_once :: adapted: the check's saved result is handed off, not run again
+1530 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_pauses_on_a_missing_handoff_directory_without_rerunning_the_check :: adapted: the folder goes while the handoff waits, and a new runner resumes it
+1564 :: design :: deliberate :: automation.rs: one run of an automation is in progress at a time, so handoffs do not pile up
+1586 :: ported :: tests/automation_handoffs.rs::a_resumed_child_whose_creator_rules_changed_is_failed_not_run :: adapted: checked when the admitted turn is resumed
+1618 :: ported :: tests/automation_handoffs.rs::a_resume_leaves_a_session_busy_elsewhere_and_settles_an_answered_one

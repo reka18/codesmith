@@ -45,14 +45,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 105 | 6 | 21 | 80 | 0 | 0 |
 | Code Mode | 67 | 38 | 8 | 1 | 20 | 0 | 0 |
-| Automations | 107 | 26 | 5 | 24 | 52 | 0 | 0 |
+| Automations | 107 | 43 | 5 | 12 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 411 | 0 | 24 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2843** | **79** | **80** | **2586** | **0** | **0** |
+| **Total** | **5588** | **2860** | **79** | **68** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,12 +131,11 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (80 cases in 21 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (68 cases in 21 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
-| [Automation Durable Handoffs](#automation-durable-handoffs) | 13 | checkpointed handoffs settled across pauses and expiry; pending and terminal sends to the creating session; … |
 | [MCP OAuth Login Options](#mcp-oauth-login-options) | 13 | completing a login from a pasted redirect URL; the callback page reporting a token exchange the server rejected (CodeSmith's page reports the redirect, the terminal the exchange); … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
@@ -148,6 +147,7 @@ Missing features, by how many OpenCode test cases each would unlock (80 cases in
 | [MCP Output Schemas](#mcp-output-schemas) | 2 | keeping MCP tools' output schemas and showing them in the Code Mode catalog |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
+| [Automation Durable Handoffs](#automation-durable-handoffs) | 1 | pending and terminal sends to the creating session |
 | [MCP Session Recovery](#mcp-session-recovery) | 1 | initializing again and retrying a call when an HTTP server has forgotten the session |
 | [MCP Resource Blobs](#mcp-resource-blobs) | 1 | decoding text blobs and saving binary blobs to files (CodeSmith notes them) |
 | [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
@@ -177,21 +177,6 @@ Missing features, by how many OpenCode test cases each would unlock (80 cases in
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-
-### Automation Durable Handoffs
-
-13 cases.
-
-- `automation-event.test.ts`: settles a durable handoff before expiry: ${outcome} (3 cases)
-- `automation-event.test.ts`: checkpoints an accepted handoff across a ${pause} pause (2 cases)
-- `automation-event.test.ts`: does not checkpoint a rejected handoff or commit its terminal state
-- `automation.test.ts`: stays quiet while pending, then admits both a progress and a terminal send to the creator
-- `automation.test.ts`: hands a failed check to one quiet child with the creator's permissions
-- `automation.test.ts`: keeps the handoff visible and logs within the UTF-8 output budget
-- `automation.test.ts`: bounds failed code output including the pause reason in UTF-8 bytes
-- `automation.test.ts`: bad targets and session or agent policy never deliver or commit the rest of the result
-- `automation.test.ts`: retries failed admission without committing state or done, then settles the handoff once
-- `automation.test.ts`: pauses on a missing handoff directory without rerunning the check
 
 ### MCP OAuth Login Options
 
@@ -290,6 +275,12 @@ Missing features, by how many OpenCode test cases each would unlock (80 cases in
 - `tool-registry.test.ts`: a hook can rename a call inside a Code Mode program to another of its tools
 - `tool-registry.test.ts`: a call renamed inside a Code Mode program returns the renamed tool's structured output
 
+### Automation Durable Handoffs
+
+1 cases.
+
+- `automation.test.ts`: stays quiet while pending, then admits both a progress and a terminal send to the creator
+
 ### MCP Session Recovery
 
 1 cases.
@@ -346,9 +337,9 @@ Tests for behaviour CodeSmith already has but no test pins (0 cases), by area, w
 
 | Reason | Cases |
 |---|---:|
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 696 |
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 696 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 353 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 692 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 352 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 316 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
@@ -2710,7 +2701,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (83 of 107)</summary>
+<details><summary>Automations (95 of 107)</summary>
 
 
 **`automation-event.test.ts`**
@@ -2719,11 +2710,17 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D a timer added to a running watch fires without reopening its stream — deliberate: an automation has one trigger, so a watch takes no timer
 - P continues on the same stream after a nonterminal producer error — `tests/automation.rs::event_triggered_runs` (adapted: the default stream sends a nonterminal error after its tickets, and the watch stays on it)
 - D retains the location only while its quiet subscription is open — client-server: Location retention and prompt-preparation hooks
+- P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_continue` (adapted: CodeSmith automations have no expiry; the run continues)
+- P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_done`
+- P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_reject` (adapted: the handoff's write is refused (OpenCode's wake fails before commit))
 - P a broken stream opens on the replacement connection, replaying from the last committed event — `tests/oc_automation_stream.rs::oc_automation_event_a_broken_stream_opens_on_the_replacement_connection_replaying_from_the_last_committed_event` (adapted: a prompt automation; every reconnect connects the server afresh)
 - P reopens after four healthy streams disconnect, each from its last committed cursor — `tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor`
 - F pauses after three consecutive reconnects without confirmed stream output — `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output` (the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever)
 - P pause, restart, resume and delete cancel and reacquire exactly one stream — `tests/automation.rs::event_triggered_runs` (adapted: pause, resume and removal stop and restart the one watch (no restart in place))
+- P checkpoints an accepted handoff across a ${pause} pause — `tests/oc_automation_handoffs.rs::oc_automation_event_checkpoints_an_accepted_handoff_across_a_local_pause`
+- P checkpoints an accepted handoff across a ${pause} pause — `tests/oc_automation_handoffs.rs::oc_automation_event_checkpoints_an_accepted_handoff_across_a_reconciled_pause`
 - D pause cancels a prompt still preparing without waiting for its hook or admitting it on resume — client-server: Location retention and prompt-preparation hooks
+- P does not checkpoint a rejected handoff or commit its terminal state — `tests/oc_automation_handoffs.rs::oc_automation_event_does_not_checkpoint_a_rejected_handoff_or_commit_its_terminal_state` (adapted: runs are counted at claim, so the refused run counts)
 - P validates permission, push capability and arguments before creating a watch — `tests/oc_automation_backlog3.rs::oc_automation_event_validates_permission_push_capability_and_arguments`
 - P plain prompt events stay distinct and quote untrusted fields; oversized input does not run — `tests/oc_automation_backlog3.rs::oc_automation_event_prompts_stay_distinct_and_quote_untrusted_fields`
 - P rejects an oversized rendered event prompt before creating a child — `tests/oc_automation_backlog3.rs::oc_automation_event_rejects_an_oversized_rendered_prompt_before_creating_a_child`
@@ -2738,13 +2735,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D rejects tool-created code and child actions if the session switched agents during the model request — storage-model: agent switches during the model request / inbox IDs
 - P sends a prompt to another existing Session — `tests/automation.rs::scheduled_runs` (adapted: a prompt into an existing session)
 - P starts a child of the creating Session with the agent on each run, without waking the parent — `tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it`
-- D adopts the child a crashed run already started — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P adopts the child a crashed run already started — `tests/automation_handoffs.rs::restart_after_checked_admits_the_saved_result_once` (adapted: the stopped run's recorded child or session is adopted on resume)
 - D allows any agent that can run as a subagent, and rejects hidden and primary-only agents — deliberate: an automation created in a session runs only as that session's agent or a read-only subagent (automation::check_target), so a restricted agent cannot schedule work for a more capable one
 - P runs without a Session in the given directory, and needs a target for a prompt — `tests/oc_automation_backlog3.rs::oc_automation_runs_without_a_session_in_the_given_directory` (adapted: a prompt always names its target)
-- D drops a run's result when another process recorded a run meanwhile — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P drops a run's result when another process recorded a run meanwhile — `src/automation.rs::an_admission_is_refused_once_paused_or_overtaken` (adapted: the admission's compare-and-set on the run count)
 - F runs once after downtime, marked late, and keeps the phase — `tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase` (an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation)
 - D skips a run while the previous prompt is unconsumed — storage-model: there is no inbox of unconsumed prompts: a run's prompt is a turn that runs at once, and a run into a busy session is deferred (tests/automation.rs::a_busy_session_defers_runs_and_a_live_session_catches_up)
-- D does not duplicate a prompt admitted before a crash — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P does not duplicate a prompt admitted before a crash — `tests/automation_handoffs.rs::restart_after_admitted_resumes_the_turn_with_exactly_one_reply` (adapted: the prompt is tagged with the run's message id and written once)
 - F keeps automations when their creating Session is deleted, and pauses when a target is gone — `tests/oc_automation_backlog3.rs::oc_automation_keeps_automations_when_the_creator_goes_and_pauses_when_the_target_does` (an automation whose target session was deleted failed at every slot and stayed active; it is paused with the reason now)
 - D rejects creation when experimental.automations is off · rechecks hourly while its location has the flag off, then catches up once it is on — deliberate: automations are not behind an experimental flag
 - D keeps the run count when paused while a prompt is being admitted — storage-model: no inbox admission to be paused in the middle of
@@ -2756,9 +2753,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D does not call a tool while another server holds the lease, then takes over when it expires · picks up an automation created by another process sharing the DB while idle — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
 - P keeps state across runs, stays quiet without a return, and stops when done — `tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged` (adapted: state across runs, done finishes it, and a run that sends nothing starts no session)
 - P a program that returns nothing leaves state unchanged — `tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged`
-- D keeps distinct child handoffs pending and rewakes the recorded child on restart — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
-- D does not use an inbox ID to override changed authority when retrying an admitted child prompt — storage-model: agent switches during the model request / inbox IDs
-- D reconciles a child handoff already delivered before settlement — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P hands a failed check to one quiet child with the creator's permissions — `tests/oc_automation_handoffs.rs::oc_automation_hands_a_failed_check_to_one_quiet_child_with_the_creators_permissions`
+- P keeps the handoff visible and logs within the UTF-8 output budget — `tests/oc_automation_handoffs.rs::oc_automation_keeps_the_handoff_visible_and_logs_within_the_utf8_output_budget` (adapted: the reply follows the summary and logs)
+- P bounds failed code output including the pause reason in UTF-8 bytes — `tests/oc_automation_handoffs.rs::oc_automation_bounds_failed_code_output_including_the_pause_reason_in_utf8_bytes`
+- P bad targets and session or agent policy never deliver or commit the rest of the result — `tests/oc_automation_handoffs.rs::oc_automation_bad_targets_and_session_or_agent_policy_never_deliver_or_commit_the_rest_of_the_result` (adapted: runs are counted at claim; a session target is refused as not a subagent)
+- P retries failed admission without committing state or done, then settles the handoff once — `tests/oc_automation_handoffs.rs::oc_automation_retries_failed_admission_without_committing_state_or_done_then_settles_the_handoff_once` (adapted: the check's saved result is handed off, not run again)
+- P pauses on a missing handoff directory without rerunning the check — `tests/oc_automation_handoffs.rs::oc_automation_pauses_on_a_missing_handoff_directory_without_rerunning_the_check` (adapted: the folder goes while the handoff waits, and a new runner resumes it)
+- D keeps distinct child handoffs pending and rewakes the recorded child on restart — deliberate: automation.rs: one run of an automation is in progress at a time, so handoffs do not pile up
+- P does not use an inbox ID to override changed authority when retrying an admitted child prompt — `tests/automation_handoffs.rs::a_resumed_child_whose_creator_rules_changed_is_failed_not_run` (adapted: checked when the admitted turn is resumed)
+- P reconciles a child handoff already delivered before settlement — `tests/automation_handoffs.rs::a_resume_leaves_a_session_busy_elsewhere_and_settles_an_answered_one`
 - D waits for plugins when authorizing, but counts activation against the run timeout — effect-internal: plugin activation
 
 **`job.test.ts`**

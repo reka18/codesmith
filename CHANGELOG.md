@@ -5,6 +5,33 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Automation runs survive restarts:** a run is saved as it goes (claimed,
+  a Code Mode program's result, the prompt handed to its session, then the
+  outcome), and the process holding the scheduler lease next picks up one
+  that was left in the middle. A program is never run twice: one that was
+  interrupted fails and counts as a strike, and a saved result is handed
+  off. A prompt that was handed off but not answered is continued once.
+  Resumed turns are set up like first attempts: unattended, every question
+  refused, held to the directory's rules and the creating session's
+  recorded rules. Retries reuse the run's session and prompt, which now
+  have fixed ids.
+- **Automation failures:** three failed Code Mode runs in a row pause the
+  automation, with the reason, and a handoff that can't be written is
+  retried a minute later (three failures pause it). An invalid target or a
+  policy that refuses the run pauses it at once, with nothing committed. A
+  program's `send.to.subagent` is checked against the creating session's
+  policy as OpenCode does: unknown, primary-only and hidden agents, the
+  subagent depth limit, `subagent` rules that deny or would ask, and agents
+  an automation created there couldn't run as are refused. A run's detail,
+  error and pause reason are kept up to 32 KiB.
+- **At-least-once MCP events:** an event watch's cursor now moves when the
+  run's prompt is handed off, not when the run starts, as in OpenCode. An
+  event whose handoff is refused, or whose process stops first, is replayed;
+  replays are skipped by event id. Pausing a watch in the middle of a run
+  now lets that run finish.
+- `session::Options` takes an optional fixed `id`; a stored session with it
+  is adopted.
+
 - **Signed releases:** the CodeSmith minisign release key
   (`RWTFKe6qhvSs57s1pw5x6aJRK0jdZr42tg1NgNp3a9rAJ3HersFsRoMV`) is pinned in
   `codesmith upgrade` and `install.sh`, so from this release on an upgrade
