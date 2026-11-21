@@ -395,6 +395,31 @@ fn markdown_is_safe_to_print_and_fences_hold() {
     assert!(md.contains("**Tool: shell**"));
 }
 
+/// Security review 8, finding 8: the transcript kept bidi controls and
+/// zero-width characters, which reorder or hide what a terminal shows.
+#[test]
+fn markdown_drops_bidi_and_zero_width_characters() {
+    let e = Export {
+        info: info("ses_bidi", Some("title\u{202e}txt.exe")),
+        entries: vec![entry(
+            1,
+            msg(
+                Role::User,
+                vec![Part::text(
+                    "run \u{2066}rm\u{2069} ok\u{200b}ay \u{202d}x\u{202c} é ✓ 😀\u{fe0f}\nnext",
+                )],
+            ),
+        )],
+    };
+    let md = export::markdown(&e, BOTH, &[]);
+    for c in [
+        '\u{202e}', '\u{2066}', '\u{2069}', '\u{200b}', '\u{202d}', '\u{202c}',
+    ] {
+        assert!(!md.contains(c), "{:x} in {md:?}", c as u32);
+    }
+    assert!(md.contains("run rm okay x é ✓ 😀\u{fe0f}\nnext"), "{md:?}");
+}
+
 #[test]
 fn default_names_are_plain_file_names() {
     assert_eq!(export::default_name("ses_1", false), "session-ses_1.md");

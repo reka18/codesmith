@@ -147,7 +147,9 @@ pub fn argv(template: &[String], model: &str) -> Vec<String> {
         .collect()
 }
 
-/// `s` without escape sequences and control characters (tabs become spaces).
+/// `s` without escape sequences, control characters and Unicode format
+/// characters ([`crate::unicode::format_char`]: bidi controls, zero-width
+/// characters); tabs become spaces.
 pub fn strip_controls(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -175,7 +177,7 @@ pub fn strip_controls(s: &str) -> String {
                 _ => {}
             },
             '\t' => out.push(' '),
-            c if c.is_control() => {}
+            c if c.is_control() || crate::unicode::format_char(c) => {}
             c => out.push(c),
         }
     }
@@ -706,6 +708,41 @@ mod tests {
             "red ok!"
         );
         assert_eq!(strip_controls("a\u{9b}b\u{0}c"), "abc");
+    }
+
+    /// Security review 8, finding 8: bidi controls and zero-width
+    /// characters survived; a progress line could read backwards. The
+    /// probe's case first.
+    #[test]
+    fn format_characters_are_stripped() {
+        assert_eq!(
+            strip_controls("ok\u{202e}evil\u{200b}\u{9b}31m"),
+            "okevil31m"
+        );
+        assert_eq!(
+            strip_controls(
+                "\u{2066}a\u{2067}b\u{2068}c\u{2069}d\u{202a}e\u{202b}f\u{202c}g\u{202d}h"
+            ),
+            "abcdefgh"
+        );
+        assert_eq!(
+            strip_controls("z\u{200c}w\u{200d}j\u{2060}\u{feff}!"),
+            "zwj!"
+        );
+        // Ordinary text, accents, CJK and emoji stay.
+        assert_eq!(
+            strip_controls("modèle ホ 😀\u{fe0f} ok"),
+            "modèle ホ 😀\u{fe0f} ok"
+        );
+        // A name listed one per line with one hidden inside is listed by
+        // what it shows.
+        assert_eq!(
+            parse_list("qwen\u{202e}:7b\nllama3:8b\n")
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            ["qwen:7b", "llama3:8b"]
+        );
     }
 
     #[test]

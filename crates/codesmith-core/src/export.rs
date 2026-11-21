@@ -222,11 +222,14 @@ fn sanitize_value(v: &mut Value, key: &str, seq: &str, tool: bool) {
     }
 }
 
-/// Strip control characters but newlines and tabs, so a transcript is safe
-/// to print to a terminal.
+/// Strip control characters but newlines and tabs, and Unicode format
+/// characters ([`crate::unicode::format_char`]: bidi controls, zero-width
+/// characters), so a transcript is safe to print to a terminal.
 fn printable(s: &str) -> String {
     s.chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .filter(|c| {
+            (!c.is_control() || matches!(c, '\n' | '\t')) && !crate::unicode::format_char(*c)
+        })
         .collect()
 }
 

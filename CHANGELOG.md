@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Bidi and zero-width characters are stripped** from swap progress
+  lines, swap errors and exported Markdown transcripts, along with the
+  other Unicode format characters, so text can't read backwards or hide
+  characters.
 - **MCP OAuth ignores forged callbacks:** a browser callback whose `state`
   doesn't match the login is answered 400 and the login keeps waiting,
   instead of failing, so a stray or forged request can't cancel it.

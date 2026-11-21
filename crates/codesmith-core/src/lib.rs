@@ -52,6 +52,7 @@ pub mod stats;
 pub mod store;
 pub mod title;
 pub mod tool;
+pub mod unicode;
 pub mod user_shell;
 pub mod vcs;
 pub mod video;
