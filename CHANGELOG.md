@@ -5,6 +5,23 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Shell permission fixes:** Bash 5.3's `${ cmd; }` and `${| cmd; }`
+  command substitutions were read as parameter expansions, so the command
+  inside was never checked (`echo "${ rm -rf x; }"` passed as `echo`); they
+  are now refused as unanalyzable. An ANSI-C NUL (`$'curl\0z'`, which Bash
+  runs as `curl`) and `\cX` escapes are refused too. A group's descriptor
+  duplication (`(make) 2>&1`) no longer asks about `2>&1`, and
+  `> # comment` is refused as the shell refuses it.
+- Undo survives a snapshot capture that was killed: a stale `index.lock`
+  or a corrupt index no longer breaks every later capture and undo, and a
+  restore that cannot remove one file still restores the others.
+- A turn's request fits its output limit to the room the prompt leaves in
+  the context window (less 1%), and a configured output limit is capped at
+  256k like a catalog one.
+- An agent whose `system` prompt is empty gets the default prompt rather
+  than none; a session started in `dir/` lists with `dir`; an unreachable
+  provider host is named in the error ("Can't reach host. Check the network
+  connection.").
 - Mini mode moved out of the main branch to `feature/slim-mode` (#1).
 - `codesmith upgrade` (also `codesmith update`): upgrades a copy installed
   from a release tarball to the latest or a given release, checking the
