@@ -168,7 +168,8 @@
 124 :: design :: deliberate :: a path is judged by where it really is, so a file created through a link out of the project asks `external_directory` first (pinned by tests/oc_permission_backlog2.rs::oc_file_access_judges_a_target_below_an_external_symlink_by_where_it_is)
 210 :: design :: other :: each tool resolves the kind of path it takes (write a file, glob a folder), so there is no explicit kind to pass
 295 :: fixed :: tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home :: a bare `~` was a file named `~` in the working folder; it is the home folder now
-316,334 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home
+316 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home
+334 :: design :: deliberate :: a session working in the home folder itself has no project boundary, so a `~/` path still asks `external_directory` (decided with the `/` and home project-root fix; pinned by tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home)
 @file-access.test.ts
 72 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_authorizes_an_external_directory_before_the_read
 93 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_propagates_a_denial_without_continuing

@@ -219,7 +219,7 @@ async fn oc_file_access_judges_a_target_below_an_external_symlink_by_where_it_is
 
 /// "expands a leading tilde against the home directory", "resolves a
 /// tilde path as an external home target" and "treats a tilde path as
-/// in-location when the location is home". Fixed: a bare `~` was a file
+/// in-location when the location is home" (which differs). Fixed: a bare `~` was a file
 /// named `~` in the working folder; it is the home folder now. HOME is the
 /// harness's temporary one.
 #[tokio::test(flavor = "multi_thread")]
@@ -242,11 +242,11 @@ async fn oc_file_access_expands_a_leading_tilde_against_home() {
         .await;
     assert!(!err, "{out}");
     assert_eq!(env.rec.actions(), ["external_directory", "edit"]);
-    // Working in the home folder, it is the project's.
+    // Differs on purpose ("treats a tilde path as in-location when the
+    // location is home"): a session working in the home folder itself has
+    // no project boundary, so its paths still ask.
     let at_home = Env::new(&home, &home, vec![]);
-    let t = at_home.ctx().resolve("~/notes.md");
-    assert!(!t.external);
-    assert_eq!(t.resource, "notes.md");
+    assert!(at_home.ctx().resolve("~/notes.md").external);
 }
 
 // --- file-access.test.ts ------------------------------------------------

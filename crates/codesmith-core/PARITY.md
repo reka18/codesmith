@@ -38,7 +38,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
-| Permission | 177 | 119 | 2 | 0 | 54 | 2 | 0 |
+| Permission | 177 | 118 | 2 | 0 | 55 | 2 | 0 |
 | Agents | 65 | 48 | 1 | 1 | 15 | 0 | 0 |
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 0 | 0 | 13 | 1 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2685** | **67** | **41** | **2540** | **255** | **0** |
+| **Total** | **5588** | **2684** | **67** | **41** | **2541** | **255** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -504,7 +504,7 @@ Tests for behaviour CodeSmith already has but no test pins (255 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 661 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 662 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -2248,7 +2248,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - F expands a leading tilde against the home directory — `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home` (a bare `~` was a file named `~` in the working folder; it is the home folder now)
 - D normalizes Windows shell drive path %s before resolution ×4 — platform: Windows drive paths
 - P resolves a tilde path as an external home target — `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`
-- P treats a tilde path as in-location when the location is home — `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`
+- D treats a tilde path as in-location when the location is home — deliberate: a session working in the home folder itself has no project boundary, so a `~/` path still asks `external_directory` (decided with the `/` and home project-root fix; pinned by tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home)
 
 **`file-access.test.ts`**
 
