@@ -483,7 +483,11 @@ pub fn branches(dir: &Path) -> Result<Vec<String>, String> {
 /// Changed paths (status letter, path) between `from` and `to` (the
 /// working tree when `None`), with the patches the command prints for
 /// them, in the same order.
-fn changes(mut base: impl FnMut() -> Command, range: &[&str]) -> Result<Vec<FileDiff>, String> {
+fn changes(
+    mut base: impl FnMut() -> Command,
+    range: &[&str],
+    scope: &[String],
+) -> Result<Vec<FileDiff>, String> {
     let mut c = base();
     c.args([
         "diff",
@@ -493,7 +497,8 @@ fn changes(mut base: impl FnMut() -> Command, range: &[&str]) -> Result<Vec<File
         "-z",
     ])
     .args(range)
-    .arg("--");
+    .arg("--")
+    .args(scope);
     let listed = run(c)?;
     let mut parts = listed.split('\0').filter(|s| !s.is_empty());
     let mut files = Vec::new();
@@ -515,7 +520,8 @@ fn changes(mut base: impl FnMut() -> Command, range: &[&str]) -> Result<Vec<File
     ])
     .arg(format!("-U{CONTEXT}"))
     .args(range)
-    .arg("--");
+    .arg("--")
+    .args(scope);
     let (text, cut) = run_bounded(c, MAX_TOTAL)?;
     let mut sections: Vec<&str> = Vec::new();
     let mut rest = text.as_str();
@@ -602,9 +608,10 @@ fn untracked(root: &Path, file: &str) -> FileDiff {
     }
 }
 
-fn with_untracked(root: &Path, mut files: Vec<FileDiff>) -> Vec<FileDiff> {
+fn with_untracked(root: &Path, scope: &[String], mut files: Vec<FileDiff>) -> Vec<FileDiff> {
     let mut c = git(root);
-    c.args(["ls-files", "--others", "--exclude-standard", "-z"]);
+    c.args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
+        .args(scope);
     let listed = ok(c).unwrap_or_default();
     let size = |d: &FileDiff| -> usize {
         d.hunks
@@ -647,24 +654,51 @@ fn toplevel(dir: &Path) -> Result<std::path::PathBuf, String> {
         })
 }
 
+/// The pathspec limiting a comparison to `dir` inside the repository at
+/// `top`: none at the top itself.
+fn scope_of(top: &Path, dir: &Path) -> Vec<String> {
+    let here = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let top = top.canonicalize().unwrap_or_else(|_| top.to_path_buf());
+    match here.strip_prefix(&top) {
+        Ok(rel) if !rel.as_os_str().is_empty() => {
+            vec![format!(":(literal){}", rel.display())]
+        }
+        _ => vec![],
+    }
+}
+
 /// The project's changes for `source` (not `Turn`) against `base` (the
-/// default branch when `None`), as OpenCode's `vcs.diff` makes them.
+/// default branch when `None`), as OpenCode's `vcs.diff` makes them: for
+/// the files under `dir`, a subfolder of the repository limiting them.
 pub fn vcs_diff(dir: &Path, source: Source, base: Option<&str>) -> Result<Vec<FileDiff>, String> {
     // Paths are relative to the repository's top, as OpenCode lists them.
     let top = toplevel(dir)?;
+    let scope = scope_of(&top, dir);
     let dir = top.as_path();
     let cmd = || git(dir);
     if source == Source::Working {
         if has_head(dir) {
-            return Ok(with_untracked(dir, changes(cmd, &["HEAD"])?));
+            return Ok(with_untracked(
+                dir,
+                &scope,
+                changes(cmd, &["HEAD"], &scope)?,
+            ));
         }
-        return Ok(with_untracked(dir, empty_tree_changes(dir)?));
+        return Ok(with_untracked(
+            dir,
+            &scope,
+            empty_tree_changes(dir, &scope)?,
+        ));
     }
     if !has_head(dir) {
         if source == Source::Committed {
             return Ok(vec![]);
         }
-        return Ok(with_untracked(dir, empty_tree_changes(dir)?));
+        return Ok(with_untracked(
+            dir,
+            &scope,
+            empty_tree_changes(dir, &scope)?,
+        ));
     }
     let reference = match base {
         Some(b) => Some(b.to_string()),
@@ -682,17 +716,21 @@ pub fn vcs_diff(dir: &Path, source: Source, base: Option<&str>) -> Result<Vec<Fi
         return Err(format!("No merge base available for {reference}"));
     };
     if source == Source::Committed {
-        return changes(cmd, &[&merge_base, "HEAD"]);
+        return changes(cmd, &[&merge_base, "HEAD"], &scope);
     }
-    Ok(with_untracked(dir, changes(cmd, &[&merge_base])?))
+    Ok(with_untracked(
+        dir,
+        &scope,
+        changes(cmd, &[&merge_base], &scope)?,
+    ))
 }
 
 /// Staged files of a repository with no commit yet.
-fn empty_tree_changes(dir: &Path) -> Result<Vec<FileDiff>, String> {
+fn empty_tree_changes(dir: &Path, scope: &[String]) -> Result<Vec<FileDiff>, String> {
     let mut c = git(dir);
     c.args(["hash-object", "-t", "tree", "/dev/null"]);
     let empty = ok(c).ok_or("git hash-object failed")?;
-    changes(|| git(dir), &[&empty])
+    changes(|| git(dir), &[&empty], scope)
 }
 
 /// What the session's last finished turn changed: its start snapshot
@@ -726,8 +764,12 @@ pub fn turn_diff(
     let Some((from, to)) = range else {
         return Ok(vec![]);
     };
-    changes(|| snaps.command(), &[&from, &to])
+    changes(|| snaps.command(), &[&from, &to], &[])
 }
+
+#[cfg(test)]
+#[path = "diff_source_oc.rs"]
+mod oc;
 
 #[cfg(test)]
 mod tests {

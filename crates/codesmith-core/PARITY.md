@@ -47,12 +47,12 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
-| Worktrees, VCS and projects | 158 | 21 | 0 | 0 | 113 | 24 | 0 |
+| Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 389 | 0 | 22 | 351 | 34 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2684** | **67** | **41** | **2541** | **255** | **0** |
+| **Total** | **5588** | **2705** | **68** | **41** | **2543** | **231** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -106,6 +106,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `tool-search.test.ts`: "${name} distinguishes a malformed filename glob from an empty search" (2 cases): the glob error read "Invalid glob in pattern error parsing glob ...". Pinned by `tests/oc_tools.rs::oc_search_distinguishes_a_malformed_glob_from_an_empty_search`.
 - `tool-search.test.ts`: "${name} reports a missing search path" (2 cases): glob said "not a directory", grep "Unable to grep for ...". Pinned by `tests/oc_tools.rs::oc_search_reports_a_missing_search_path`.
 - `tool-write.test.ts`: "preserves exactly one BOM when overwriting existing files" (1 case): overwriting a file dropped its byte order mark. Pinned by `tests/oc_tools.rs::oc_write_preserves_exactly_one_bom`.
+- `vcs.test.ts`: "scopes committed diffs to nested paths and retains binary, rename, and deletion metadata" (1 case): the diff viewer compared the whole repository whatever folder the session worked in, so a session in `nested/` was shown changes outside it; the comparison is limited to the session's folder now, paths still relative to the repository's top (adapted: a binary file has no hunks rather than a "Binary files" patch). Pinned by `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_scopes_committed_diffs_to_nested_paths_with_binary_rename_and_deletion`.
 
 ## Found bugs and differences
 
@@ -196,7 +197,7 @@ Missing features, by how many OpenCode test cases each would unlock (41 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (255 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (231 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Model requests and transport (1)
 
@@ -425,33 +426,6 @@ Tests for behaviour CodeSmith already has but no test pins (255 cases), by area,
   - `tool-automation.test.ts`: puts each automation's id, trigger, status, next run and action in the text without Code Mode
   - `tool-automation.test.ts`: treats another project's automation as missing
 
-### Worktrees, VCS and projects (24)
-
-- review diffs: working copy, before first commit, feature branch vs default, staged/untracked, explicit and missing bases (M) — `review::target::resolve`
-  - `vcs.test.ts`: lists local branches by recent activity
-  - `vcs.test.ts`: lists remote branches without remote HEAD symrefs
-  - `vcs.test.ts`: reports modified, deleted, and untracked files
-  - `vcs.test.ts`: diffs the working copy against HEAD with patches
-  - `vcs.test.ts`: respects the repository's line-ending conversion
-  - `vcs.test.ts`: respects the repository's symlink setting
-  - `vcs.test.ts`: respects the context option
-  - `vcs.test.ts`: diffs before the first commit
-  - `vcs.test.ts`: diffs a feature branch against the default branch
-  - `vcs.test.ts`: separates committed, combined, and staged/unstaged/untracked working changes
-  - `vcs.test.ts`: keeps a locally undone commit visible only in committed and working modes
-  - `vcs.test.ts`: shows local WIP on the default branch
-  - `vcs.test.ts`: keeps unpushed default-branch commits in the resolved review
-  - `vcs.test.ts`: scopes committed diffs to nested paths and retains binary, rename, and deletion metadata
-  - `vcs.test.ts`: uses an explicit diff base without treating upstream or Git config as a parent
-  - `vcs.test.ts`: reports missing explicit bases and missing default bases without calling them clean
-  - `vcs.test.ts`: diffs explicit remote-only bases without borrowing another fork's branch
-  - `vcs.test.ts`: reports ${scenario.name} base metadata as unavailable rather than absent (2 cases)
-  - `vcs.test.ts`: reviews every feature commit and local changes against inferred v2, not the unrelated default
-  - `vcs.test.ts`: ignores stale, deleted, renamed, and self-mirroring creation hints
-  - `vcs.test.ts`: creates detached worktrees without review metadata and requires an explicit base without a named hint
-  - `vcs.test.ts`: rejects a branch creation anchor removed by rebase
-  - `vcs.test.ts`: does not infer beyond the bounded creation-reflog window
-
 ### Providers, models and credentials (34)
 
 - default model when none is configured; a disabled provider's default ignored (S) — `config::resolve_model`
@@ -504,7 +478,7 @@ Tests for behaviour CodeSmith already has but no test pins (255 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 662 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 664 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -2797,7 +2771,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Worktrees, VCS and projects (134 of 158)</summary>
+<details><summary>Worktrees, VCS and projects (158 of 158)</summary>
 
 
 **`git.test.ts`**
@@ -2842,7 +2816,32 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`vcs.test.ts`**
 
-- D routes initialization through the requested provider before a repository exists · returns empty results outside version control · serves scoped providers and restores the fallback after disposal · automatically selects a provider matching the resolved repository · reads batched providers without refreshing intermediate selections · passes location scope and bounded diff options to providers · validates provider results and bounds oversized patches · preserves provider interruption · stops in-flight and queued VCS reloads when its layer closes · keeps watching HEAD changes after a transform replay failure · serializes filesystem and config refreshes while reading the latest desired provider · keeps branch streams current when listeners change the selected provider · batches untracked files without spawning Git per file or touching the index · lists an untracked folder as one entry and its entries from inside it when asked for folders · stops listing an untracked folder after its scan budget and says more were not checked · caches branch info and publishes HEAD changes · reports provider failures and validates optional base metadata — client-server: OpenCode's VCS provider service, streams and branch watching
+- D routes initialization through the requested provider before a repository exists · returns empty results outside version control · serves scoped providers and restores the fallback after disposal · automatically selects a provider matching the resolved repository · reads batched providers without refreshing intermediate selections · passes location scope and bounded diff options to providers · validates provider results and bounds oversized patches · preserves provider interruption · stops in-flight and queued VCS reloads when its layer closes · keeps watching HEAD changes after a transform replay failure · serializes filesystem and config refreshes while reading the latest desired provider · keeps branch streams current when listeners change the selected provider — client-server: OpenCode's VCS provider service, streams and branch watching
+- P lists local branches by recent activity — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_lists_local_branches_by_recent_activity` (adapted: the base picker searches and limits the list)
+- P lists remote branches without remote HEAD symrefs — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_lists_remote_branches_without_remote_head_symrefs`
+- P reports modified, deleted, and untracked files — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_reports_modified_deleted_and_untracked_files` (adapted: a status is the working diff's files and counts)
+- D batches untracked files without spawning Git per file or touching the index · lists an untracked folder as one entry and its entries from inside it when asked for folders · stops listing an untracked folder after its scan budget and says more were not checked · caches branch info and publishes HEAD changes — client-server: OpenCode's VCS provider service, streams and branch watching
+- P diffs the working copy against HEAD with patches — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_the_working_copy_against_head_with_patches`
+- P respects the repository's line-ending conversion — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_respects_the_repositorys_line_ending_conversion`
+- P respects the repository's symlink setting — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_respects_the_repositorys_symlink_setting`
+- P respects the context option — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_respects_the_context_option` (adapted: the context is fixed at OpenCode's default of twelve lines; there is no per-call option)
+- P diffs before the first commit — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_before_the_first_commit`
+- P diffs a feature branch against the default branch — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_a_feature_branch_against_the_default_branch`
+- P separates committed, combined, and staged/unstaged/untracked working changes — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_separates_committed_combined_and_working_changes`
+- P keeps a locally undone commit visible only in committed and working modes — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_keeps_a_locally_undone_commit_visible_only_in_committed_and_working`
+- P shows local WIP on the default branch — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_shows_local_wip_on_the_default_branch`
+- P keeps unpushed default-branch commits in the resolved review — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_keeps_unpushed_default_branch_commits_in_the_resolved_review`
+- F scopes committed diffs to nested paths and retains binary, rename, and deletion metadata — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_scopes_committed_diffs_to_nested_paths_with_binary_rename_and_deletion` (the diff viewer compared the whole repository whatever folder the session worked in, so a session in `nested/` was shown changes outside it; the comparison is limited to the session's folder now, paths still relative to the repository's top (adapted: a binary file has no hunks rather than a "Binary files" patch))
+- P uses an explicit diff base without treating upstream or Git config as a parent — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_uses_an_explicit_diff_base_without_treating_upstream_as_a_parent`
+- P reports missing explicit bases and missing default bases without calling them clean — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_reports_missing_bases_without_calling_them_clean`
+- P diffs explicit remote-only bases without borrowing another fork's branch — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_explicit_remote_only_bases_without_borrowing_another_forks`
+- D reports ${scenario.name} base metadata as unavailable rather than absent ×2 — deliberate: Git and Mercurial are built in; there are no VCS provider plugins whose base metadata could fail or be malformed
+- D reports provider failures and validates optional base metadata — client-server: OpenCode's VCS provider service, streams and branch watching
+- P reviews every feature commit and local changes against inferred v2, not the unrelated default — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_reviews_against_the_inferred_parent_not_the_unrelated_default`
+- P ignores stale, deleted, renamed, and self-mirroring creation hints — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_ignores_stale_deleted_renamed_and_self_mirroring_creation_hints`
+- P creates detached worktrees without review metadata and requires an explicit base without a named hint — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_detached_worktrees_have_no_review_metadata_and_need_an_explicit_base` (adapted: the worktrees come from `worktree::create`)
+- P rejects a branch creation anchor removed by rebase — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_rejects_a_branch_creation_anchor_removed_by_rebase`
+- P does not infer beyond the bounded creation-reflog window — `../codesmith/src/tui/diff_source_oc.rs::oc_vcs_does_not_infer_beyond_the_bounded_creation_reflog_window`
 
 **`workspace.test.ts`**
 

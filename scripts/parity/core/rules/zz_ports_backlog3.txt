@@ -1,0 +1,30 @@
+# Ports from the third pass over PARITY.md's porting backlog, and the
+# backlog cases they showed to be by design or missing features.
+
+# --- Worktrees, VCS and projects (src/tui/diff_source_oc.rs in the codesmith
+# crate: the diff viewer's Git side is OpenCode's vcs.branches, vcs.base and
+# vcs.diff) ---
+@vcs.test.ts
+525 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_lists_local_branches_by_recent_activity :: adapted: the base picker searches and limits the list
+552 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_lists_remote_branches_without_remote_head_symrefs
+575 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_reports_modified_deleted_and_untracked_files :: adapted: a status is the working diff's files and counts
+811 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_the_working_copy_against_head_with_patches
+836 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_respects_the_repositorys_line_ending_conversion
+857 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_respects_the_repositorys_symlink_setting
+875 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_respects_the_context_option :: adapted: the context is fixed at OpenCode's default of twelve lines; there is no per-call option
+895 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_before_the_first_commit
+913 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_a_feature_branch_against_the_default_branch
+937 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_separates_committed_combined_and_working_changes
+966 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_keeps_a_locally_undone_commit_visible_only_in_committed_and_working
+985 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_shows_local_wip_on_the_default_branch
+1001 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_keeps_unpushed_default_branch_commits_in_the_resolved_review
+1024 :: fixed :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_scopes_committed_diffs_to_nested_paths_with_binary_rename_and_deletion :: the diff viewer compared the whole repository whatever folder the session worked in, so a session in `nested/` was shown changes outside it; the comparison is limited to the session's folder now, paths still relative to the repository's top (adapted: a binary file has no hunks rather than a "Binary files" patch)
+1065 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_uses_an_explicit_diff_base_without_treating_upstream_as_a_parent
+1091 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_reports_missing_bases_without_calling_them_clean
+1114 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_diffs_explicit_remote_only_bases_without_borrowing_another_forks
+1165 :: design :: deliberate :: Git and Mercurial are built in; there are no VCS provider plugins whose base metadata could fail or be malformed
+1199 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_reviews_against_the_inferred_parent_not_the_unrelated_default
+1254 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_ignores_stale_deleted_renamed_and_self_mirroring_creation_hints
+1294 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_detached_worktrees_have_no_review_metadata_and_need_an_explicit_base :: adapted: the worktrees come from `worktree::create`
+1355 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_rejects_a_branch_creation_anchor_removed_by_rebase
+1376 :: ported :: ../codesmith/src/tui/diff_source_oc.rs::oc_vcs_does_not_infer_beyond_the_bounded_creation_reflog_window
