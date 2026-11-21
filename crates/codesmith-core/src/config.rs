@@ -117,6 +117,12 @@ pub struct Config {
     pub review: crate::review::ReviewConfig,
     /// Model Context Protocol servers whose tools the agent can use.
     pub mcp: crate::mcp::McpConfig,
+    /// OpenAPI specs whose operations Code Mode offers as
+    /// `tools.<name>.<operation>(input)` (see [`crate::codemode::openapi`]).
+    /// An entry that does not parse is kept, to be reported as a notice
+    /// rather than failing the whole config.
+    #[serde(deserialize_with = "crate::codemode::openapi::lenient")]
+    pub openapi: BTreeMap<String, crate::codemode::openapi::ApiConfig>,
     /// Web search through a self-hosted SearXNG instance.
     pub websearch: crate::tool::websearch::WebSearchConfig,
     /// Commands defined inline: name → template and options.

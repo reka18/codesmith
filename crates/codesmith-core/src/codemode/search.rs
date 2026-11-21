@@ -486,6 +486,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             schema: json!({"type": "object", "properties": {}}),
+            output: None,
         }
     }
 

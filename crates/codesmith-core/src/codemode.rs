@@ -24,6 +24,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+#[cfg(test)]
+pub(crate) mod fixture;
+pub mod openapi;
 pub mod placement;
 pub mod progress;
 mod search;
@@ -40,9 +43,18 @@ pub struct Entry {
     pub name: String,
     pub description: String,
     pub schema: Value,
+    /// The result's schema, when the tool declares one (OpenAPI operations
+    /// do); the catalog shows `Promise<unknown>` without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<Value>,
 }
 
 pub const TOOL: &str = "execute";
+/// A tool result that starts with this is JSON to hand the program as the
+/// value it encodes, whatever it is (`null`, a number, a string): OpenAPI
+/// operations return their decoded responses this way. Other results are
+/// parsed only when they are a JSON object or array.
+pub const JSON_RESULT: &str = "\u{1}codesmith-json\u{1}";
 pub const MAX_TOOL_CALLS: usize = 50;
 pub const TIMEOUT: Duration = Duration::from_secs(180);
 const LOOP_LIMIT: u64 = 5_000_000;
@@ -86,11 +98,14 @@ pub fn signature(e: &Entry) -> String {
     let mut h = HASHER.build_hasher();
     path.hash(&mut h);
     e.schema.to_string().hash(&mut h);
+    if let Some(o) = &e.output {
+        o.to_string().hash(&mut h);
+    }
     let key = h.finish();
     if let Some(s) = MEMO.lock().ok().and_then(|m| m.get(&key).cloned()) {
         return s;
     }
-    let s = signature::signature(&path, &e.schema, None);
+    let s = signature::signature(&path, &e.schema, e.output.as_ref());
     if let Ok(mut m) = MEMO.lock() {
         if m.len() >= KEEP {
             m.clear();
@@ -391,6 +406,12 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
                     .into());
             }
             match caller(tool.clone(), input) {
+                Some(Ok(text)) if text.starts_with(JSON_RESULT) => {
+                    match serde_json::from_str::<Value>(&text[JSON_RESULT.len()..]) {
+                        Ok(v) => JsValue::from_json(&v, ctx),
+                        Err(_) => Ok(JsValue::from(js_string!(text.as_str()))),
+                    }
+                }
                 Some(Ok(text)) => match serde_json::from_str::<Value>(&text) {
                     Ok(v) if v.is_object() || v.is_array() => JsValue::from_json(&v, ctx),
                     _ => Ok(JsValue::from(js_string!(text.as_str()))),
@@ -934,6 +955,7 @@ mod tests {
                 name: "issues".into(),
                 description: "List issues\nmore".into(),
                 schema: json!({"type": "object", "properties": {"repo": {"type": "string"}, "state": {"enum": ["open", "closed"]}}, "required": ["repo"]}),
+                output: None,
             },
             Entry {
                 tool: "gh_get-issue".into(),
@@ -941,6 +963,7 @@ mod tests {
                 name: "get-issue".into(),
                 description: String::new(),
                 schema: json!({"type": "object", "properties": {"n": {"type": "integer"}}}),
+                output: None,
             },
         ]
     }
@@ -967,6 +990,7 @@ mod tests {
                 name: format!("tool_{i:03}"),
                 description: "Does a thing with a fairly long description".into(),
                 schema: json!({"type": "object", "properties": {"q": {"type": "string", "description": "What to look for"}}}),
+                output: None,
             })
             .collect();
         let s = instructions(&many);

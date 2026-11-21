@@ -18,6 +18,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `scripts/release.sh` builds, smoke-tests and packages all four release
   targets on one Apple Silicon Mac (static musl Linux builds through
   cargo-zigbuild), and with `--draft-upload` creates the draft release.
+- **OpenAPI tools in Code Mode:** OpenAPI 3.x specs named in config
+  (`openapi.<name>`) become `tools.<name>.<operation>(input)` inside
+  `execute`. Each call asks the `openapi` permission ("always" covers the
+  method on that origin); credentials come from config or `{env:}` and go
+  only to `base_url`'s origin, and are dropped once a redirect leaves it.
 
 ## 0.1.0
 

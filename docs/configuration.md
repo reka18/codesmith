@@ -104,6 +104,7 @@ is parsed:
 | `mcp` | `{}` | `{"servers": {...}, "timeout": {...}}`. See [MCP](mcp.md). |
 | `codemode` | `true` | `false` offers every MCP tool as a direct tool call instead of through [Code Mode](mcp.md#code-mode). |
 | `full_codemode` | `false` | Hide glob, grep and webfetch, and let GPT and Claude models call the other built-ins from inside `execute`. See [built-in tools in Code Mode](mcp.md#built-in-tools-in-code-mode-full_codemode). |
+| `openapi` | `{}` | `{"<name>": {"spec", "base_url", "auth", "headers", "timeout", "enabled"}}`: OpenAPI specs whose operations are Code Mode tools. See [OpenAPI tools](mcp.md#openapi-tools). |
 | `websearch` | off | `{"url", "engines", "results"}`. See [Web search](#web-search). |
 | `review` | see below | `/review` and `/calibrate` settings. See [code review](code-review.md#settings). |
 | `worktree` | | `{"directory", "start"}`. See [worktrees](sessions.md#worktrees). |

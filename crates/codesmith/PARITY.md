@@ -88,6 +88,8 @@ Where the tests live:
 - `src/upgrade/tests.rs`: `codesmith upgrade` and update checks
   (`cli/test/upgrade`, `updater-install`, `src/services/updater`), against
   a local fixture server.
+- `codesmith-core/src/codemode/openapi/tests.rs`: OpenAPI tools
+  (`codemode/test/openapi`), with OpenCode's two spec fixtures.
 - `src/acp.rs`: the `oc_acp_*` tests, with the ACP tests not ported listed
   above its test module.
 - `src/tui/parity_form.rs`: the question form (`tui/test/util/form`,
@@ -108,14 +110,20 @@ Where the tests live:
 | tui: main UI | 1247 | 15 | 460 | 84 | 675 | 13 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
-| codemode | 1666 | 647 | 179 | 39 | 586 | 215 | 0 |
+| codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **760** | **710** | **125** | **2355** | **259** | **428** |
+| **Total** | **4637** | **760** | **749** | **86** | **2355** | **259** | **428** |
 
 ## Fixes made while porting
 
+- **OpenAPI tools** (`codemode/test/openapi`): CodeSmith had no OpenAPI
+  support. Specs named in config (`openapi.<name>`) now become Code Mode
+  tools, `tools.<name>.<operation>(input)`, generated and called as
+  OpenCode's `OpenAPI.fromSpec` does; each call asks the `openapi`
+  permission, and credentials come from config and go only to
+  `base_url`'s origin (see `docs/mcp.md`).
 - **Worktree names need `=`** (`cli/test/flag`): `-w`/`--worktree` took the
   next word as the worktree's name, so `codesmith run -w "fix it"` (the
   form `docs/sessions.md` showed) made a worktree named `fix it` and sent no
@@ -342,6 +350,45 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 
 | OpenCode file | Test | Status | CodeSmith test |
 |---|---|---|---|
+| `codemode/test/openapi` | covers a representative API from generation through execution | after a fix | oc_covers_a_representative_api_from_generation_through_execution (adapted: fields listed in name order) |
+| `codemode/test/openapi` | generates supported operations and reports unsupported transports | after a fix | oc_generates_supported_operations_and_reports_unsupported_transports (adapted: skipped operations compared as a set) |
+| `codemode/test/openapi` | preserves operation path sanitization and collision handling | after a fix | oc_preserves_operation_path_sanitization_and_collision_handling |
+| `codemode/test/openapi` | does not reserve names for unsupported operations between duplicate operation IDs | after a fix | oc_does_not_reserve_names_for_unsupported_operations_between_duplicate_operation_ids |
+| `codemode/test/openapi` | synthesizes flat operation IDs from methods and paths | after a fix | oc_synthesizes_flat_operation_ids_from_methods_and_paths |
+| `codemode/test/openapi` | lets operation parameters override matching path parameters | after a fix | oc_lets_operation_parameters_override_matching_path_parameters |
+| `codemode/test/openapi` | normalizes OpenAPI 3.0 schemas with Effect | after a fix | oc_normalizes_openapi_3_0_schemas |
+| `codemode/test/openapi` | preserves schema-local definitions alongside component definitions | after a fix | oc_preserves_schema_local_definitions_alongside_component_definitions (adapted: a tool carries only the components it reaches) |
+| `codemode/test/openapi` | projects read-only and write-only properties by schema direction | after a fix | oc_projects_read_only_and_write_only_properties_by_schema_direction (adapted: name order; the flattened request reaches no component) |
+| `codemode/test/openapi` | projects directional annotations through local refs and allOf composition | after a fix | oc_projects_directional_annotations_through_local_refs_and_all_of_composition |
+| `codemode/test/openapi` | honors declarations that are siblings of a $ref | after a fix | oc_honors_declarations_that_are_siblings_of_a_ref |
+| `codemode/test/openapi` | honors directional declarations on intermediate reference hops | after a fix | oc_honors_directional_declarations_on_intermediate_reference_hops |
+| `codemode/test/openapi` | projects cyclic component references without hanging | after a fix | oc_projects_cyclic_component_references_without_hanging (adapted: name order) |
+| `codemode/test/openapi` | projects diamond-shaped reference graphs in linear time | after a fix | oc_projects_diamond_shaped_reference_graphs_in_linear_time |
+| `codemode/test/openapi` | resolves hiding through reference cycles regardless of evaluation order | after a fix | oc_resolves_hiding_through_reference_cycles_regardless_of_evaluation_order |
+| `codemode/test/openapi` | keeps not, if, and contains subschemas unprojected | after a fix | oc_keeps_not_if_and_contains_subschemas_unprojected |
+| `codemode/test/openapi` | does not hide properties whose direction is declared only in anyOf or oneOf alternatives | after a fix | oc_does_not_hide_properties_whose_direction_is_declared_only_in_any_of_or_one_of_alternatives |
+| `codemode/test/openapi` | does not misresolve shadowed local $defs when flattening body fields | after a fix | oc_does_not_misresolve_shadowed_local_defs_when_flattening_body_fields |
+| `codemode/test/openapi` | projects directional annotations inside parameter schemas | after a fix | oc_projects_directional_annotations_inside_parameter_schemas |
+| `codemode/test/openapi` | ignores inherited directional annotations | after a fix | oc_ignores_inherited_directional_annotations (adapted: JSON has no inherited keys; a property named `readOnly` does not hide its schema) |
+| `codemode/test/openapi` | cleans required properties across allOf branches | after a fix | oc_cleans_required_properties_across_all_of_branches |
+| `codemode/test/openapi` | keeps directional schemas model-facing while preserving runtime pass-through | after a fix | oc_keeps_directional_schemas_model_facing_while_preserving_runtime_pass_through |
+| `codemode/test/openapi` | exposes generated operations through CodeMode discovery | after a fix | oc_exposes_generated_operations_through_code_mode_discovery |
+| `codemode/test/openapi` | serializes supported simple and form parameter shapes | after a fix | oc_serializes_supported_simple_and_form_parameter_shapes (adapted: `[{}]` for `[undefined]`) |
+| `codemode/test/openapi` | preserves ordered exploded and deep-object query parameters | after a fix | oc_preserves_ordered_exploded_and_deep_object_query_parameters (adapted: an object's keys in name order) |
+| `codemode/test/openapi` | skips unsupported parameter encodings and malformed security | after a fix | oc_skips_unsupported_parameter_encodings_and_malformed_security |
+| `codemode/test/openapi` | fails closed on prototype-named missing security schemes | after a fix | oc_fails_closed_on_prototype_named_missing_security_schemes |
+| `codemode/test/openapi` | resolves bearer authentication without exposing it as input | after a fix | oc_resolves_bearer_authentication_without_exposing_it_as_input |
+| `codemode/test/openapi` | applies authentication carriers without prototype or collision loss | after a fix | oc_applies_authentication_carriers_without_prototype_or_collision_loss |
+| `codemode/test/openapi` | honors server precedence and rejects ambiguous base URLs | after a fix | oc_honors_server_precedence_and_rejects_ambiguous_base_urls (adapted: the operation's URL is checked, not requested) |
+| `codemode/test/openapi` | resolves chained response refs before detecting unsupported transports | after a fix | oc_resolves_chained_response_refs_before_detecting_unsupported_transports |
+| `codemode/test/openapi` | resolves response schemas before detecting binary output | after a fix | oc_resolves_response_schemas_before_detecting_binary_output |
+| `codemode/test/openapi` | validates composite parameters before resolving auth | after a fix | oc_validates_composite_parameters_before_resolving_auth (adapted: `{value: {}}` for `{value: undefined}`) |
+| `codemode/test/openapi` | preserves JSON media types and rejects unencodable bodies | after a fix | oc_preserves_json_media_types (adapted: JSON cannot hold the cyclic body; that half is dropped) |
+| `codemode/test/openapi` | rejects oversized and malformed JSON responses | after a fix | oc_rejects_oversized_and_malformed_json_responses (adapted: a 10 MiB cap) |
+| `codemode/test/openapi` | keeps non-JSON responses raw and unions every success output | after a fix | oc_keeps_non_json_responses_raw_and_unions_every_success_output |
+| `codemode/test/openapi` | fails missing required parameters before auth and network | after a fix | oc_fails_missing_required_parameters_before_auth_and_network |
+| `codemode/test/openapi` | prefixes cross-location collisions and reconstructs the HTTP request | after a fix | oc_prefixes_cross_location_collisions_and_reconstructs_the_http_request (adapted: the tools under a namespace; name order) |
+| `codemode/test/openapi` | keeps bodies nested when flattening would lose schema semantics | after a fix | oc_keeps_bodies_nested_when_flattening_would_lose_schema_semantics |
 | `cli/test/env` | session environment omits server credentials | after a fix | oc_shell_commands_do_not_see_the_server_token; also local_mcp_servers_do_not_see_the_server_token (e2e), local_mcp_servers_do_not_inherit_the_server_token, language_servers_do_not_inherit_the_server_token |
 | `cli/test/flag` | parses $args (3 cases) | after a fix | oc_flag_parses_an_optional_worktree_value |
 | `cli/test/flag` | renders the value as optional in help | after a fix | oc_flag_renders_the_value_as_optional_in_help |
@@ -927,10 +974,6 @@ its remaining work is tracked in
 - `tui/test/cli/tui/prompt-move` (19): e.g. "passes the current project and uses server worktree defaul"; "uses Home's selected location instead of launch in $name"
 - `tui/test/cli/tui/dialog-session-list` (1): e.g. "scopes sessions to the active session location"
 - `tui/test/config-v2` (1): e.g. "shows the new session location default in settings"
-
-### codemode: OpenAPI tools (39)
-
-- `codemode/test/openapi` (39): e.g. "(all 39)"
 
 ### tui: mouse selection and copy (32)
 

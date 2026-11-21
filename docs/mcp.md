@@ -148,6 +148,54 @@ offer its tools as direct calls instead. That suits models that write
 JavaScript poorly. An agent whose rules deny `execute` gets every MCP tool
 as a direct call too.
 
+### OpenAPI tools
+
+An OpenAPI 3.x spec named in config becomes Code Mode tools, one for each
+operation, as OpenCode's `OpenAPI.fromSpec` makes them: `tools.<name>.<operationId>(input)`,
+where the input holds the path, query and header parameters and the JSON
+body's fields, and the result is the decoded response.
+
+```jsonc
+"openapi": {
+  "billing": {
+    "spec": "specs/billing.json",          // a file (relative to the project), a URL, or the document itself
+    "base_url": "https://billing.example.com/v2",
+    "auth": { "BearerAuth": { "type": "bearer", "token": "{env:BILLING_TOKEN}" } },
+    "headers": { "X-Tenant": "acme" },
+    "timeout": 60                          // seconds a request may take
+  }
+}
+```
+
+```js
+const invoice = await tools.billing.invoices.get({ invoiceId: "inv_42" });
+```
+
+- Specs come only from config, never from the model. They must be JSON
+  (YAML is not read), at most 20 MiB, and are loaded once per process (a
+  failed load is tried again after a minute and reported once). Swagger
+  2.0, cookie parameters and authentication, binary bodies and responses,
+  SSE and WebSocket operations are left out, as in OpenCode.
+- Each call asks the `openapi` permission for `<METHOD> <url>`, for
+  example `GET https://billing.example.com/v2/invoices/inv_42`; "always"
+  saves that method on that origin (`GET https://billing.example.com/*`).
+  An operation whose URL a rule denies is not listed.
+- Credentials (`auth`, keyed by the spec's security scheme names, with
+  `type` `bearer`, `basic`, `api_key` or `header`) and `headers` come from
+  config, usually as `{env:VAR}`, and need `base_url`: they are sent only to
+  its origin. An unset variable leaves the credential out, so the next
+  alternative the spec allows is tried. Credentials are applied last, so a
+  header parameter cannot replace them.
+- Redirects are followed one hop at a time, at most 10, each target
+  checked against `openapi` deny rules. Once a redirect leaves the
+  origin, credentials and configured headers are dropped for the rest of
+  the chain, even if it comes back.
+- Responses are capped at 10 MiB. A non-2xx status fails the call with the
+  start of the response, with any credential in it replaced by
+  `[redacted]`; secrets never appear in debug output or error messages.
+- `"enabled": false` leaves an API out. Its tools take no path an MCP tool
+  already has.
+
 ### Built-in tools in Code Mode: `full_codemode`
 
 `"full_codemode": true` (off by default; OpenCode's `full_codemode` flag)

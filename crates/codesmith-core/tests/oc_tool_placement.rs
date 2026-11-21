@@ -289,3 +289,73 @@ async fn a_strong_model_runs_a_built_in_from_inside_execute() {
     let sent = l.1.last().unwrap()["messages"].to_string();
     assert!(sent.contains("hello from a file"), "{sent}");
 }
+
+/// A local server for the program to fetch from: its base URL and the
+/// paths it was asked for.
+async fn page(body: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut tmp).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
+                let line = head.lines().next().unwrap_or("").to_string();
+                log.lock().unwrap().push(line);
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+fn execute_call(code: &str) -> String {
+    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+        "function": {"name": "execute", "arguments": json!({"code": code}).to_string()}}]}, "finish_reason": "tool_calls"}]})
+    .to_string()
+}
+
+/// An OpenAPI spec in config becomes `tools.<name>.<operation>` in Code
+/// Mode; a call is an HTTP request with the configured credential.
+#[tokio::test(flavor = "multi_thread")]
+async fn configured_openapi_operations_are_code_mode_tools() {
+    let (base, seen) = page(r#"{"id": "42", "name": "Ada"}"#).await;
+    let spec = json!({
+        "openapi": "3.1.0",
+        "paths": {"/users/{id}": {"get": {
+            "operationId": "users.get",
+            "summary": "Get a user",
+            "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+            "responses": {"200": {"description": "The user", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}
+            }}}}}
+        }}}
+    });
+    let config = json!({
+        "openapi": {"api": {"spec": spec, "base_url": base}},
+        "permissions": [{"action": "openapi", "resource": "*", "effect": "allow"}]
+    });
+    let mut r = session("deepseek-reasoner", config).await;
+    let (names, system) = r.offered().await;
+    assert!(names.contains(&"execute".to_string()), "{names:?}");
+    assert!(system.contains("tools.api.users.get("), "{system}");
+    r.log.lock().unwrap().0.push_back(execute_call(
+        "const u = await tools.api.users.get({ id: '42' }); return u.name",
+    ));
+    r.s.prompt("who is 42", &mut Quiet).await.unwrap();
+    let l = r.log.lock().unwrap();
+    let sent = l.1.last().unwrap()["messages"].to_string();
+    assert!(sent.contains("Ada"), "{sent}");
+    assert_eq!(*seen.lock().unwrap(), ["GET /users/42 HTTP/1.1"]);
+}

@@ -1726,6 +1726,12 @@ impl Session {
         // What changed since the last turn comes before the new prompt; a
         // baseline that cannot be made yet leaves the prompt unsent.
         self.mcp.refresh().await;
+        if self.codemode_on() && !self.loaded.config.openapi.is_empty() {
+            let config = &self.loaded.config.openapi;
+            for n in crate::codemode::openapi::load(config, &self.root).await {
+                sink.notice(&n);
+            }
+        }
         self.observe_instructions()?;
         self.turn.observed = true;
         // Subagents share the parent's turn snapshot.
@@ -2922,9 +2928,11 @@ impl Session {
                 name: spec.name,
                 description: spec.description,
                 schema: spec.parameters,
+                output: None,
             }
         });
-        self.permitted_mcp()
+        let mut entries: Vec<_> = self
+            .permitted_mcp()
             .into_iter()
             .filter(|t| t.codemode)
             .map(|t| crate::codemode::Entry {
@@ -2933,9 +2941,37 @@ impl Session {
                 name: t.remote.clone(),
                 description: t.description.clone(),
                 schema: t.schema.clone(),
+                output: None,
             })
             .chain(builtins)
-            .collect()
+            .collect();
+        let rules = &self.agent.permissions;
+        for api in crate::codemode::openapi::loaded(&self.loaded.config.openapi, &self.root) {
+            let extra = api.entries(|t| {
+                let r = crate::codemode::openapi::template_resource(t);
+                crate::permission::evaluate(crate::codemode::openapi::ACTION, &r, rules)
+                    != crate::permission::Effect::Deny
+            });
+            crate::codemode::openapi::merge_entries(&mut entries, extra);
+        }
+        entries
+    }
+
+    /// An OpenAPI operation called from Code Mode: its result as the
+    /// program's value, or the error.
+    async fn run_openapi(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        use crate::codemode::openapi;
+        let apis = openapi::loaded(&self.loaded.config.openapi, &self.root);
+        let Some((api, t)) = openapi::find(&apis, name) else {
+            return (
+                format!("The {name} tool is not available to this agent."),
+                true,
+            );
+        };
+        match openapi::call(api, t, input, &self.gate).await {
+            Ok(v) => (openapi::result_text(&v), false),
+            Err(e) => (e, true),
+        }
     }
 
     /// An image or video generation call: it starts a background job.
@@ -3207,6 +3243,8 @@ impl Session {
                         .unwrap_or_else(|e| e.into_inner())
                         .extend(before);
                     (text, failed)
+                } else if crate::codemode::openapi::is_tool(&tool) {
+                    self.run_openapi(&tool, &args).await
                 } else {
                     // Code Mode hands results to code as JSON, so images
                     // and PDFs are noted rather than passed on.
