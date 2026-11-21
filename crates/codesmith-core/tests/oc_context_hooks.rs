@@ -266,7 +266,7 @@ async fn oc_keeps_context_hook_edits_to_messages_without_stored_metadata() {
         .clone();
     let raw = last["content"].to_string();
     assert!(
-        raw.find("EDITED").is_some() && raw.find("EDITED") < raw.find("Start"),
+        raw.contains("EDITED") && raw.find("EDITED") < raw.find("Start"),
         "{last}"
     );
     assert!(
