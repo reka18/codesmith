@@ -117,6 +117,17 @@ pub(crate) fn check_host(url: &reqwest::Url) -> Result<(), String> {
 pub(crate) fn normalize(raw: &str) -> Result<reqwest::Url, url::ParseError> {
     let mut url = reqwest::Url::parse(raw)?;
     url.set_fragment(None);
+    // A trailing dot makes a distinct host name ("evil.test." != "evil.test")
+    // that resolves to the same server, so a deny on "evil.test" would miss
+    // the dotted form. Strip it before any allow or deny matching. Only a
+    // domain can carry one; IP literals never do.
+    if let Some(url::Host::Domain(host)) = url.host() {
+        let trimmed = host.trim_end_matches('.');
+        if trimmed != host && !trimmed.is_empty() {
+            let trimmed = trimmed.to_string();
+            let _ = url.set_host(Some(&trimmed));
+        }
+    }
     Ok(url)
 }
 
@@ -787,6 +798,14 @@ mod tests {
         assert_eq!(n("https://inter\tnal.co\nrp/x"), "https://internal.corp/x");
         assert_eq!(n("https://internal.corp/a/../x"), "https://internal.corp/x");
         assert_eq!(n("https://internal.corp"), "https://internal.corp/");
+        // A trailing dot resolves to the same host, so it is stripped before
+        // matching; a deny on "internal.corp" then also catches the dotted form.
+        assert_eq!(n("https://internal.corp./x"), "https://internal.corp/x");
+        assert_eq!(n("https://internal.corp.../x"), "https://internal.corp/x");
+        assert_eq!(n("https://INTERNAL.CORP.:443/x"), "https://internal.corp/x");
+        // IP literals are untouched.
+        assert_eq!(n("http://127.0.0.1:8080/x"), "http://127.0.0.1:8080/x");
+        assert_eq!(n("http://[::1]/x"), "http://[::1]/x");
         let url = normalize("https://internal.corp/%73ecret#f").unwrap();
         assert_eq!(
             deny_forms(Some("HTTPS://internal.corp/%73ecret#f"), &url),

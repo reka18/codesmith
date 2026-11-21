@@ -5,6 +5,7 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **A trailing dot in a URL host no longer dodges a deny.** `https://host./` resolves to the same server as `https://host/` but parsed as a distinct host, so a `webfetch`/`fetch`/OpenAPI deny on the host could be bypassed; the dot is now stripped before allow/deny matching.
 - **Browser attachments** (OpenCode's browser plugin): a browser attached
   to a session grants it `browser *` and the `browser` skill while the
   attachment lasts. Replacing, dropping, idling out (30 minutes) or
