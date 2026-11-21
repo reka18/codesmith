@@ -28,6 +28,19 @@ All notable changes to CodeSmith are listed here. Versions follow
   credentials, a 5 MiB cap). Under `full_codemode`, which hides `webfetch`,
   programs could not fetch at all before; a model offered no `execute`
   now keeps `webfetch`.
+- **Client-attached MCP servers:** a client embedding the core can attach
+  an MCP server it hosts over its own connection (`Mcp::attach`), scoped
+  to the attachment it holds. Attaching under a name already attached
+  stacks, and the connection below takes over when the top one closes.
+  Attached tools go through the same permission rules, plugin hooks and
+  Code Mode as a configured server's, and each call carries its session's
+  ID. Configured servers can be added, removed and reconnected at runtime
+  (`Mcp::add`, `Mcp::remove`, `Mcp::restart`).
+- The TUI MCP dialog connects a server as soon as you sign in to it,
+  without a restart.
+- ACP: an editor-supplied HTTP MCP server no longer uses CodeSmith's saved
+  MCP OAuth logins. The headers the editor sends are its credentials, as
+  in OpenCode.
 
 ## 0.1.0
 

@@ -1,0 +1,15 @@
+# Client-attached MCP Servers, ported in tests/oc_mcp_attach.rs.
+@mcp-attach.test.ts
+135 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_attaches_a_client_server_and_routes_its_tools_with_the_session :: adapted: through a session calling it in Code Mode; the session ID goes in _meta["codesmith/sessionId"]
+153 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_removes_an_attached_entry_when_its_scope_closes :: adapted: the scope is the Attachment the caller holds
+174 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_fails_an_attach_whose_initial_tool_list_fails_and_closes_its_transport
+196 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_routes_an_unknown_tool_on_an_attached_only_name_to_the_client
+206 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_removes_an_attached_entry_when_the_client_closes_the_connection
+223 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_stacks_a_second_attach_under_the_same_name_and_keeps_the_first_connected
+242 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_falls_back_to_the_previous_connection_when_the_top_one_closes
+268 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_falls_back_to_a_connection_with_the_same_tools_without_publishing_a_change
+294 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_keeps_the_stored_tools_when_the_fallback_re_list_fails
+319 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_refreshes_the_top_connections_tools_when_it_reports_a_change
+340 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_closing_a_connection_below_the_top_changes_nothing_visible
+361 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_removes_the_entry_once_every_stacked_connection_closes
+380 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_hides_attached_entries_from_server_status_and_keeps_them_across_config_reconciles :: adapted: adding and removing configured servers stands for a reconcile

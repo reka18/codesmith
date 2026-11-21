@@ -1159,7 +1159,7 @@ impl Runner {
             "mcp.list" if self.app.modal.is_none() => {
                 let servers = self
                     .mcp
-                    .statuses
+                    .statuses()
                     .iter()
                     .map(|(n, s)| mcp_view::Server::from_core(n, s))
                     .collect();
@@ -1194,6 +1194,7 @@ impl Runner {
             });
             return;
         }
+        let mcp = self.mcp.clone();
         tokio::spawn(async move {
             let r = oauth::login(
                 &reqwest::Client::new(),
@@ -1204,9 +1205,20 @@ impl Runner {
                 oauth::open_browser,
             )
             .await;
+            let mut result = r.map(|_| ()).map_err(|e| format!("{e:#}"));
+            // Signed in: connect it now with the new token.
+            if result.is_ok() {
+                result = match mcp.restart(&name).await {
+                    Some(codesmith_core::mcp::Status::Connected { .. }) => Ok(()),
+                    Some(codesmith_core::mcp::Status::Failed(e)) => {
+                        Err(format!("signed in, but connecting failed: {e}"))
+                    }
+                    _ => Err("signed in, but it did not connect".into()),
+                };
+            }
             let _ = tx.send(Ev::McpSignedIn {
                 server: name,
-                result: r.map(|_| ()).map_err(|e| format!("{e:#}")),
+                result,
             });
         });
     }
@@ -1735,7 +1747,7 @@ pub async fn run(cwd: PathBuf, opts: Opts) -> Result<()> {
     codesmith_core::automation::spawn_scheduler(&loaded);
     let mcp = crate::connect_mcp(&loaded, false).await;
     let mcp_failures: Vec<String> = mcp
-        .statuses
+        .statuses()
         .iter()
         .filter_map(|(n, s)| match s {
             codesmith_core::mcp::Status::Failed(e) => {

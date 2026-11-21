@@ -3314,7 +3314,7 @@ impl Session {
         }
         match self
             .mcp
-            .call_media_asking(name, args, self.questioner.clone())
+            .call_media_for(name, args, self.questioner.clone(), Some(&self.id))
             .await
         {
             Ok((text, is_error, media)) => (

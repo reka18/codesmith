@@ -323,6 +323,29 @@ requests.
   (`notifications/cancelled`). Where nobody can answer (`codesmith run
   --auto`, automations), the request is declined at once.
 
+## Servers a client attaches
+
+Besides the configured servers, a client embedding CodeSmith's core can
+attach an MCP server it hosts itself over a connection it opened
+(`Mcp::attach`, newline-delimited JSON-RPC), scoped to whoever holds the
+attachment: dropping it, or the connection closing, detaches it. As in
+OpenCode:
+
+- Its tools are offered as `<name>_<tool>` (in Code Mode by default) and
+  go through the same permission rules, plugin hooks and output handling as
+  a configured server's. Each call carries the session's ID in
+  `_meta["codesmith/sessionId"]`.
+- Attaching again under the same name stacks: the newest connection serves
+  the name's tools, and when it closes the one below takes over, listing
+  its tools again (and keeping those it had if that fails). A connection
+  below the top that closes changes nothing visible.
+- An attached connection's tools shadow a configured server's tools of the
+  same name, and it never shows in `codesmith mcp list` or the MCP dialog.
+
+A configured server can also be added, removed or reconnected while the
+session runs (`Mcp::add`, `Mcp::remove`, `Mcp::restart`); the MCP dialog
+reconnects a server after its sign-in.
+
 ## Instructions, notifications and events
 
 - A server's `instructions` (from its `initialize` reply) join the system

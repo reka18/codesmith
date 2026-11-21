@@ -1042,7 +1042,7 @@ async fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             }
             let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
-            for (name, s) in &mcp.statuses {
+            for (name, s) in &mcp.statuses() {
                 match s {
                     codesmith_core::mcp::Status::Connected { tools } => {
                         println!("{name}: connected, {tools} tool(s)")
@@ -2205,7 +2205,7 @@ pub(crate) async fn connect_mcp(
 ) -> Arc<codesmith_core::mcp::Mcp> {
     let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
     if warn {
-        for (name, s) in &mcp.statuses {
+        for (name, s) in &mcp.statuses() {
             match s {
                 codesmith_core::mcp::Status::Failed(e) => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} failed to start: {}", crate::render::safe(e)),
                 codesmith_core::mcp::Status::NeedsAuth => eprintln!("\x1b[33mwarning:\x1b[0m MCP server {name} needs authorization: run `codesmith mcp auth {name}`"),

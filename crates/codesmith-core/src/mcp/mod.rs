@@ -42,6 +42,8 @@ const MAX_MESSAGE: usize = 16 << 20;
 pub const LIST_RESOURCES: &str = "list_mcp_resources";
 /// The tool that reads one MCP resource (also its permission action).
 pub const READ_RESOURCE: &str = "read_mcp_resource";
+/// The `_meta` key a tool call carries its session's ID under.
+pub const SESSION_META: &str = "codesmith/sessionId";
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
@@ -634,6 +636,12 @@ struct Shared {
     elicit_requests: Mutex<HashMap<String, String>>,
     /// How many more elicitations the server may start.
     elicit_budget: Arc<elicit::Budget>,
+    /// Run once when the connection ends (an attached connection leaves
+    /// its stack).
+    on_close: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Run when the server says its tools changed (an attached connection
+    /// lists them again while it serves its name).
+    on_tools_changed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// What [`Shared::dispatch`] answers a server request with.
@@ -692,7 +700,13 @@ impl Shared {
 
     fn notification(&self, method: &str, params: &Value) {
         match method {
-            "notifications/tools/list_changed" => self.tools_stale.store(true, Ordering::SeqCst),
+            "notifications/tools/list_changed" => {
+                self.tools_stale.store(true, Ordering::SeqCst);
+                let hook = self.on_tools_changed.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
             "notifications/prompts/list_changed" => {
                 self.prompts_stale.store(true, Ordering::SeqCst)
             }
@@ -827,6 +841,10 @@ impl Shared {
         for (_, tx) in self.streams.lock().unwrap().drain() {
             let _ = tx.send(Err(StreamError::Disconnected(why.into())));
         }
+        let hook = self.on_close.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 }
 
@@ -842,10 +860,16 @@ impl Drop for Pending<'_> {
     }
 }
 
+/// Where a stream transport's messages go: a stdio server's stdin, or the
+/// write half of a connection a client attached.
+type Writer = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
+
 enum Transport {
-    Stdio {
-        stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
-        _child: tokio::process::Child,
+    /// Newline-delimited JSON-RPC: a local server's stdio, or a connection
+    /// a client attached ([`Mcp::attach`]).
+    Stream {
+        writer: tokio::sync::Mutex<Writer>,
+        _child: Option<tokio::process::Child>,
     },
     Http {
         client: reqwest::Client,
@@ -866,6 +890,16 @@ pub struct Client {
     init: OnceLock<Value>,
     tools: RwLock<Vec<McpTool>>,
     prompts: RwLock<Vec<McpPrompt>>,
+    /// A stream transport's reader task, stopped with the client.
+    reader: Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        if let Some(r) = self.reader.lock().unwrap().take() {
+            r.abort();
+        }
+    }
 }
 
 impl Client {
@@ -935,15 +969,14 @@ impl Client {
 
     async fn send(&self, msg: &Value) -> Result<()> {
         match &self.transport {
-            Transport::Stdio { stdin, .. } => {
+            Transport::Stream { writer, .. } => {
                 let mut line = serde_json::to_string(msg)?;
                 line.push('\n');
-                stdin
-                    .lock()
+                let mut w = writer.lock().await;
+                w.write_all(line.as_bytes())
                     .await
-                    .write_all(line.as_bytes())
-                    .await
-                    .context("writing to the MCP server")
+                    .context("writing to the MCP server")?;
+                w.flush().await.context("writing to the MCP server")
             }
             Transport::Http { .. } => self.post(msg).await,
         }
@@ -1229,12 +1262,18 @@ impl Client {
 
     /// The raw `tools/call` result.
     pub async fn call_raw(&self, tool: &str, args: Value) -> Result<Value> {
-        self.request(
-            "tools/call",
-            json!({"name": tool, "arguments": args}),
-            self.timeouts.1,
-        )
-        .await
+        self.call_in(tool, args, None).await
+    }
+
+    /// The raw `tools/call` result of a call made for `session`, whose ID
+    /// the server sees as `_meta["codesmith/sessionId"]` (OpenCode sends
+    /// its own `ai.opencode/sessionID`).
+    pub async fn call_in(&self, tool: &str, args: Value, session: Option<&str>) -> Result<Value> {
+        let mut params = json!({"name": tool, "arguments": args});
+        if let Some(id) = session {
+            params["_meta"] = json!({ SESSION_META: id });
+        }
+        self.request("tools/call", params, self.timeouts.1).await
     }
 
     /// Every event type the server offers (`events/list`).
@@ -1287,16 +1326,92 @@ impl Client {
     }
 }
 
-/// Every configured server's client, tools, prompts and status.
+/// Every configured server's client, tools, prompts and status, and the
+/// connections clients attached ([`Mcp::attach`]).
 pub struct Mcp {
     clients: RwLock<BTreeMap<String, Arc<Client>>>,
-    pub statuses: BTreeMap<String, Status>,
+    statuses: RwLock<BTreeMap<String, Status>>,
     /// What reconnecting a server needs: its config, the project root and
     /// the default timeouts.
-    configs: BTreeMap<String, ServerConfig>,
+    configs: RwLock<BTreeMap<String, ServerConfig>>,
     root: PathBuf,
     defaults: Timeouts,
+    /// Attached connections by name, the latest last: the top one serves
+    /// the name's tools, and those below take over as it closes.
+    attached: Mutex<BTreeMap<String, Vec<Attached>>>,
+    next_attach: AtomicU64,
+    /// Serializes relisting an attached connection's tools.
+    relisting: tokio::sync::Mutex<()>,
+    /// A server's name each time the tools under it change (attached
+    /// connections only).
+    changes: tokio::sync::broadcast::Sender<String>,
 }
+
+/// One attached connection in its name's stack.
+#[derive(Clone)]
+struct Attached {
+    id: u64,
+    client: Arc<Client>,
+    tools: Arc<RwLock<Vec<McpTool>>>,
+}
+
+/// How long a connection taking over its name may take to list its tools
+/// again (OpenCode's `FALLBACK_LIST_TIMEOUT`).
+const FALLBACK_LIST_MS: u64 = 5_000;
+
+/// An attached MCP connection, scoped to whoever holds it: dropping it
+/// (or [`Attachment::detach`]) closes the connection and takes it off its
+/// name's stack, as the connection closing from the other side does.
+pub struct Attachment {
+    mcp: std::sync::Weak<Mcp>,
+    name: String,
+    id: u64,
+}
+
+impl Attachment {
+    /// The name the connection's tools are offered under.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn detach(self) {}
+}
+
+impl Drop for Attachment {
+    fn drop(&mut self) {
+        if let Some(mcp) = self.mcp.upgrade() {
+            mcp.detach(&self.name, self.id);
+        }
+    }
+}
+
+/// No configured server or attached connection has this name.
+#[derive(Debug)]
+pub struct NotFound(pub String);
+
+impl std::fmt::Display for NotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MCP server {:?} not found", self.0)
+    }
+}
+
+impl std::error::Error for NotFound {}
+
+/// A tool call reached a server (or client) and failed there.
+#[derive(Debug)]
+pub struct ToolCallError {
+    pub server: String,
+    pub tool: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for ToolCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ToolCallError {}
 
 /// Connect to one server and list its tools and prompts.
 async fn start(
@@ -1314,15 +1429,59 @@ async fn start(
     Ok(c)
 }
 
+/// A server's status after starting it, and its client when it connected.
+fn outcome(r: Result<Arc<Client>>) -> (Status, Option<Arc<Client>>) {
+    match r {
+        Ok(c) => {
+            let tools = c.tools.read().unwrap().len();
+            (Status::Connected { tools }, Some(c))
+        }
+        Err(e) if e.downcast_ref::<oauth::Unauthorized>().is_some() => (Status::NeedsAuth, None),
+        Err(e) => (Status::Failed(format!("{e:#}")), None),
+    }
+}
+
 impl Mcp {
-    pub fn empty() -> Arc<Mcp> {
+    fn with(
+        clients: BTreeMap<String, Arc<Client>>,
+        statuses: BTreeMap<String, Status>,
+        configs: BTreeMap<String, ServerConfig>,
+        root: PathBuf,
+        defaults: Timeouts,
+    ) -> Arc<Mcp> {
         Arc::new(Mcp {
-            clients: RwLock::new(BTreeMap::new()),
-            statuses: BTreeMap::new(),
-            configs: BTreeMap::new(),
-            root: PathBuf::new(),
-            defaults: Timeouts::default(),
+            clients: RwLock::new(clients),
+            statuses: RwLock::new(statuses),
+            configs: RwLock::new(configs),
+            root,
+            defaults,
+            attached: Mutex::new(BTreeMap::new()),
+            next_attach: AtomicU64::new(1),
+            relisting: tokio::sync::Mutex::new(()),
+            changes: tokio::sync::broadcast::channel(256).0,
         })
+    }
+
+    pub fn empty() -> Arc<Mcp> {
+        Self::with(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            PathBuf::new(),
+            Timeouts::default(),
+        )
+    }
+
+    /// An empty registry whose attached connections (and added servers)
+    /// see `root` as their root.
+    pub fn at(root: &Path) -> Arc<Mcp> {
+        Self::with(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            root.to_path_buf(),
+            Timeouts::default(),
+        )
     }
 
     /// Connect to every enabled server concurrently.
@@ -1348,27 +1507,306 @@ impl Mcp {
         }
         for p in pending {
             let Ok((name, r)) = p.await else { continue };
-            match r {
-                Ok(c) => {
-                    let tools = c.tools.read().unwrap().len();
-                    statuses.insert(name.clone(), Status::Connected { tools });
-                    clients.insert(name, c);
-                }
-                Err(e) if e.downcast_ref::<oauth::Unauthorized>().is_some() => {
-                    statuses.insert(name, Status::NeedsAuth);
-                }
-                Err(e) => {
-                    statuses.insert(name, Status::Failed(format!("{e:#}")));
-                }
+            let (status, client) = outcome(r);
+            statuses.insert(name.clone(), status);
+            if let Some(c) = client {
+                clients.insert(name, c);
             }
         }
-        Arc::new(Mcp {
-            clients: RwLock::new(clients),
+        Self::with(
+            clients,
             statuses,
-            configs: cfg.servers.clone(),
-            root: root.to_path_buf(),
-            defaults: cfg.timeout.clone(),
-        })
+            cfg.servers.clone(),
+            root.to_path_buf(),
+            cfg.timeout.clone(),
+        )
+    }
+
+    /// Each configured server's status (attached connections are not
+    /// servers and never show here).
+    pub fn statuses(&self) -> BTreeMap<String, Status> {
+        self.statuses.read().unwrap().clone()
+    }
+
+    /// Hear the name of each server whose tools change: an attached
+    /// connection arriving, leaving, or listing new tools.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.changes.subscribe()
+    }
+
+    fn changed(&self, server: &str) {
+        let _ = self.changes.send(server.to_string());
+    }
+
+    /// Configure (or reconfigure) server `name` and connect it now, in
+    /// place of any connection it had: its status after.
+    pub async fn add(&self, name: &str, cfg: ServerConfig) -> Status {
+        self.configs.write().unwrap().insert(name.to_string(), cfg);
+        self.restart(name)
+            .await
+            .unwrap_or_else(|| Status::Failed("not configured".into()))
+    }
+
+    /// Forget configured server `name`, stopping it. Attached connections
+    /// under the same name stay.
+    pub fn remove(&self, name: &str) {
+        self.configs.write().unwrap().remove(name);
+        self.statuses.write().unwrap().remove(name);
+        self.clients.write().unwrap().remove(name);
+    }
+
+    /// Connect configured server `name` again (after a sign-in, say),
+    /// replacing its connection: its new status, or `None` when no server
+    /// has that name.
+    pub async fn restart(&self, name: &str) -> Option<Status> {
+        let cfg = self.configs.read().unwrap().get(name).cloned()?;
+        let (status, client) = if cfg.disabled() {
+            (Status::Disabled, None)
+        } else {
+            outcome(start(name, &cfg, &self.root, &self.defaults).await)
+        };
+        {
+            let mut clients = self.clients.write().unwrap();
+            match client {
+                Some(c) => clients.insert(name.to_string(), c),
+                None => clients.remove(name),
+            };
+        }
+        self.statuses
+            .write()
+            .unwrap()
+            .insert(name.to_string(), status.clone());
+        Some(status)
+    }
+
+    /// Attach a client-hosted MCP server, reached over `reader`/`writer`
+    /// (newline-delimited JSON-RPC), under `name`, until the returned
+    /// [`Attachment`] is dropped or the connection closes.
+    ///
+    /// Attaching under a name already attached stacks: the newest live
+    /// connection serves the name's tools, and the one below takes over
+    /// when it closes. An attached connection's tools shadow a configured
+    /// server's tools of the same name; it never shows among the servers'
+    /// statuses. Its tools are called like any MCP server's, through the
+    /// same permission rules and plugin hooks, and what it sends back is
+    /// tool output like any other.
+    pub async fn attach<R, W>(
+        self: &Arc<Self>,
+        name: &str,
+        reader: R,
+        writer: W,
+    ) -> Result<Attachment>
+    where
+        R: tokio::io::AsyncRead + Send + Unpin + 'static,
+        W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        let shared = Arc::new(Shared {
+            roots: vec![self.root.display().to_string()],
+            server: name.to_string(),
+            ..Default::default()
+        });
+        let client = Arc::new(Client {
+            server: name.to_string(),
+            transport: Transport::Stream {
+                writer: tokio::sync::Mutex::new(Box::new(writer)),
+                _child: None,
+            },
+            shared,
+            next: AtomicU64::new(1),
+            timeouts: (
+                self.defaults.catalog.unwrap_or(DEFAULT_CATALOG_MS),
+                self.defaults.execution.unwrap_or(DEFAULT_EXECUTION_MS),
+            ),
+            codemode: true,
+            init: OnceLock::new(),
+            tools: RwLock::new(vec![]),
+            prompts: RwLock::new(vec![]),
+            reader: Mutex::new(None),
+        });
+        read_stream(&client, reader);
+        // A failure drops the client, which closes the connection.
+        handshake(&client, self.defaults.startup.unwrap_or(DEFAULT_STARTUP_MS))
+            .await
+            .with_context(|| format!("attaching MCP client {name}"))?;
+        let tools = client
+            .list_tools()
+            .await
+            .with_context(|| format!("listing the tools of MCP client {name}"))?;
+        let id = self.next_attach.fetch_add(1, Ordering::SeqCst);
+        let entry = Attached {
+            id,
+            client: client.clone(),
+            tools: Arc::new(RwLock::new(tools)),
+        };
+        self.attached
+            .lock()
+            .unwrap()
+            .entry(name.to_string())
+            .or_default()
+            .push(entry.clone());
+        let attachment = Attachment {
+            mcp: Arc::downgrade(self),
+            name: name.to_string(),
+            id,
+        };
+        let (weak, owned) = (Arc::downgrade(self), name.to_string());
+        *client.shared.on_close.lock().unwrap() = Some(Box::new(move || {
+            if let Some(mcp) = weak.upgrade() {
+                mcp.detach(&owned, id);
+            }
+        }));
+        if client.exited().is_some() {
+            drop(attachment);
+            return Err(anyhow!("attaching MCP client {name}: Connection closed"));
+        }
+        let (weak, owned) = (Arc::downgrade(self), name.to_string());
+        // Weak, so the client's own hook never keeps it open.
+        let (conn, listed_tools) = (Arc::downgrade(&client), entry.tools.clone());
+        *client.shared.on_tools_changed.lock().unwrap() = Some(Arc::new(move || {
+            let (Some(mcp), Ok(rt)) = (weak.upgrade(), tokio::runtime::Handle::try_current())
+            else {
+                return;
+            };
+            let (name, conn, tools) = (owned.clone(), conn.clone(), listed_tools.clone());
+            rt.spawn(async move {
+                let _one = mcp.relisting.lock().await;
+                if mcp.top(&name).map(|t| t.id) != Some(id) {
+                    return;
+                }
+                let Some(conn) = conn.upgrade() else { return };
+                let listed = tokio::time::timeout(
+                    Duration::from_millis(FALLBACK_LIST_MS),
+                    conn.list_tools(),
+                )
+                .await;
+                if let Ok(Ok(listed)) = listed {
+                    *tools.write().unwrap() = listed;
+                    mcp.changed(&name);
+                }
+            });
+        }));
+        self.changed(name);
+        Ok(attachment)
+    }
+
+    /// The connection serving attached name `name`.
+    fn top(&self, name: &str) -> Option<Attached> {
+        self.attached
+            .lock()
+            .unwrap()
+            .get(name)
+            .and_then(|s| s.last().cloned())
+    }
+
+    /// Take attached connection `id` off `name`'s stack and close it. When
+    /// it served the name, the one below takes over and lists its tools
+    /// again (keeping those it had if that fails).
+    fn detach(self: &Arc<Self>, name: &str, id: u64) {
+        let (entry, next, was_top) = {
+            let mut map = self.attached.lock().unwrap();
+            let Some(stack) = map.get_mut(name) else {
+                return;
+            };
+            let Some(at) = stack.iter().position(|e| e.id == id) else {
+                return;
+            };
+            let was_top = at + 1 == stack.len();
+            let entry = stack.remove(at);
+            let next = stack.last().cloned();
+            if next.is_none() {
+                map.remove(name);
+            }
+            (entry, next, was_top)
+        };
+        *entry.client.shared.on_close.lock().unwrap() = None;
+        *entry.client.shared.on_tools_changed.lock().unwrap() = None;
+        let gone = entry.tools.read().unwrap().clone();
+        drop(entry);
+        let Some(next) = next else {
+            self.changed(name);
+            return;
+        };
+        // Closing a connection below the top changes nothing visible.
+        if !was_top {
+            return;
+        }
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            if gone != *next.tools.read().unwrap() {
+                self.changed(name);
+            }
+            return;
+        };
+        let (mcp, name) = (self.clone(), name.to_string());
+        rt.spawn(async move {
+            let _one = mcp.relisting.lock().await;
+            let before = next.tools.read().unwrap().clone();
+            let listed = tokio::time::timeout(
+                Duration::from_millis(FALLBACK_LIST_MS),
+                next.client.list_tools(),
+            )
+            .await;
+            if let Ok(Ok(tools)) = listed {
+                *next.tools.write().unwrap() = tools;
+            }
+            let now = next.tools.read().unwrap().clone();
+            // Readers may have seen the stored tools meanwhile: compare both.
+            if gone != now || before != now {
+                mcp.changed(&name);
+            }
+        });
+    }
+
+    /// Call tool `tool` on server `server` (its own name there) for
+    /// `session`: the raw result. An attached connection owns the tools it
+    /// lists, even when a configured server shares its name, and owns the
+    /// name outright when no configured server has it.
+    pub async fn call_tool(
+        &self,
+        server: &str,
+        tool: &str,
+        args: Value,
+        session: Option<&str>,
+    ) -> Result<Value> {
+        self.call_tool_asking(server, tool, args, session, None)
+            .await
+    }
+
+    async fn call_tool_asking(
+        &self,
+        server: &str,
+        tool: &str,
+        args: Value,
+        session: Option<&str>,
+        asker: Option<Arc<dyn crate::question::Questioner>>,
+    ) -> Result<Value> {
+        let failed = |owner: &str, e: anyhow::Error| -> anyhow::Error {
+            ToolCallError {
+                server: server.to_string(),
+                tool: tool.to_string(),
+                message: format!("MCP tool {tool:?} on {owner} {server:?} failed: {e:#}"),
+            }
+            .into()
+        };
+        if let Some(top) = self.top(server) {
+            let configured = self.configs.read().unwrap().contains_key(server);
+            let owns = top.tools.read().unwrap().iter().any(|t| t.remote == tool);
+            if owns || !configured {
+                let _asking = asker.map(|a| Asking::new(&top.client.shared, a));
+                return top
+                    .client
+                    .call_in(tool, args, session)
+                    .await
+                    .map_err(|e| failed("client", e));
+            }
+        }
+        if !self.configs.read().unwrap().contains_key(server)
+            && !self.clients.read().unwrap().contains_key(server)
+        {
+            return Err(NotFound(server.to_string()).into());
+        }
+        let c = self.connected_or_restart(server).await?;
+        let _asking = asker.map(|a| Asking::new(&c.shared, a));
+        c.call_in(tool, args, session).await
     }
 
     /// A server's client while it is connected (a stdio server that exited
@@ -1403,8 +1841,8 @@ impl Mcp {
         if old.shared.reconnect_tried.swap(true, Ordering::SeqCst) {
             return None;
         }
-        let cfg = self.configs.get(server)?;
-        match start(server, cfg, &self.root, &self.defaults).await {
+        let cfg = self.configs.read().unwrap().get(server).cloned()?;
+        match start(server, &cfg, &self.root, &self.defaults).await {
             Ok(c) => {
                 self.clients
                     .write()
@@ -1441,16 +1879,34 @@ impl Mcp {
     /// [`disambiguate`] over all of them, exited servers included, so a
     /// name means the same tool whichever servers are up.
     fn named_tools(&self) -> Vec<(bool, McpTool)> {
+        // The top attached connection's tools, which shadow a configured
+        // server's tool of the same name.
+        let mut attached: Vec<McpTool> = self
+            .attached
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|s| s.last())
+            .flat_map(|e| e.tools.read().unwrap().clone())
+            .collect();
+        attached.sort_by(|a, b| (&a.server, &a.remote).cmp(&(&b.server, &b.remote)));
+        let shadowed = |t: &McpTool| {
+            attached
+                .iter()
+                .any(|a| a.server == t.server && a.remote == t.remote)
+        };
         let clients = self.clients.read().unwrap();
-        let mut live = Vec::new();
-        let mut all = Vec::new();
+        let mut both: Vec<(bool, McpTool)> = Vec::new();
         for c in clients.values() {
-            for t in c.tools.read().unwrap().iter() {
-                live.push(c.exited().is_none());
-                all.push(t.clone());
+            for t in c.tools.read().unwrap().iter().filter(|t| !shadowed(t)) {
+                both.push((c.exited().is_none(), t.clone()));
             }
         }
-        let named = disambiguate(all);
+        both.extend(attached.into_iter().map(|t| (true, t)));
+        // By server, each server's tools in their own order.
+        both.sort_by(|a, b| a.1.server.cmp(&b.1.server));
+        let live: Vec<bool> = both.iter().map(|(l, _)| *l).collect();
+        let named = disambiguate(both.into_iter().map(|(_, t)| t).collect());
         named.into_iter().map(|(i, t)| (live[i], t)).collect()
     }
 
@@ -1557,12 +2013,36 @@ impl Mcp {
         args: Value,
         asker: Option<Arc<dyn crate::question::Questioner>>,
     ) -> Result<Value> {
+        self.call_raw_for(name, args, asker, None).await
+    }
+
+    /// [`Mcp::call_raw_asking`] for `session`, whose ID the server sees
+    /// ([`SESSION_META`]).
+    pub async fn call_raw_for(
+        &self,
+        name: &str,
+        args: Value,
+        asker: Option<Arc<dyn crate::question::Questioner>>,
+        session: Option<&str>,
+    ) -> Result<Value> {
         let t = self
             .tool(name)
             .ok_or_else(|| anyhow!("no MCP tool {name}"))?;
-        let c = self.connected_or_restart(&t.server).await?;
-        let _asking = asker.map(|a| Asking::new(&c.shared, a));
-        c.call_raw(&t.remote, args).await
+        self.call_tool_asking(&t.server, &t.remote, args, session, asker)
+            .await
+    }
+
+    /// [`Mcp::call_media_asking`] for `session`.
+    pub async fn call_media_for(
+        &self,
+        name: &str,
+        args: Value,
+        asker: Option<Arc<dyn crate::question::Questioner>>,
+        session: Option<&str>,
+    ) -> Result<(String, bool, Vec<codesmith_ai::Media>)> {
+        Ok(result_content(
+            &self.call_raw_for(name, args, asker, session).await?,
+        ))
     }
 
     /// The server's client, restarting it once if its process exited.
@@ -1743,6 +2223,7 @@ async fn connect(
         init: OnceLock::new(),
         tools: RwLock::new(vec![]),
         prompts: RwLock::new(vec![]),
+        reader: Mutex::new(None),
     };
     let client = match cfg {
         ServerConfig::Remote {
@@ -1803,64 +2284,79 @@ async fn connect(
                 .with_context(|| format!("starting {prog}"))?;
             let stdout = child.stdout.take().unwrap();
             let stdin = child.stdin.take().unwrap();
-            let client = Arc::new(make(Transport::Stdio {
-                stdin: tokio::sync::Mutex::new(stdin),
-                _child: child,
+            let client = Arc::new(make(Transport::Stream {
+                writer: tokio::sync::Mutex::new(Box::new(stdin)),
+                _child: Some(child),
             }));
-            let weak = Arc::downgrade(&client);
-            let shared = shared.clone();
-            tokio::spawn(async move {
-                let mut out = BufReader::new(stdout);
-                let mut buf = Vec::new();
-                loop {
-                    buf.clear();
-                    match read_line_capped(&mut out, &mut buf, MAX_MESSAGE).await {
-                        Ok(true) => {}
-                        Ok(false) => break,
-                        Err(e) => {
-                            // Pending requests fail with this reason; the
-                            // process is stopped when the client is dropped.
-                            shared.close(&format!("{e:#}"));
-                            break;
-                        }
-                    }
-                    // Stray output (a banner, broken UTF-8) is skipped, not fatal.
-                    let line = String::from_utf8_lossy(&buf);
-                    let Ok(m) = serde_json::from_str::<Value>(line.trim()) else {
-                        continue;
-                    };
-                    let messages = match m {
-                        Value::Array(list) => list,
-                        m => vec![m],
-                    };
-                    for m in messages {
-                        let Some(reply) = shared.dispatch(&m) else {
-                            continue;
-                        };
-                        match reply {
-                            Answer::Now(reply) => {
-                                if let Some(c) = weak.upgrade() {
-                                    let _ = c.send(&reply).await;
-                                }
-                            }
-                            // Answered once the user has: reading goes on meanwhile.
-                            later => {
-                                let weak = weak.clone();
-                                tokio::spawn(async move {
-                                    let reply = later.value().await;
-                                    if let Some(c) = weak.upgrade() {
-                                        let _ = c.send(&reply).await;
-                                    }
-                                });
-                            }
-                        }
-                    }
-                }
-                shared.close("the MCP server exited");
-            });
+            read_stream(&client, stdout);
             client
         }
     };
+    handshake(&client, startup).await?;
+    Ok(client)
+}
+
+/// Read a stream transport's messages on a task: replies go to their
+/// requests and server requests are answered. The task holds only a weak
+/// reference to the client and ends with it (or when the stream ends,
+/// which fails whatever still waits on the connection).
+fn read_stream<R: tokio::io::AsyncRead + Send + Unpin + 'static>(client: &Arc<Client>, reader: R) {
+    let weak = Arc::downgrade(client);
+    let shared = client.shared.clone();
+    let task = tokio::spawn(async move {
+        let mut out = BufReader::new(reader);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match read_line_capped(&mut out, &mut buf, MAX_MESSAGE).await {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => {
+                    // Pending requests fail with this reason; the
+                    // process is stopped when the client is dropped.
+                    shared.close(&format!("{e:#}"));
+                    break;
+                }
+            }
+            // Stray output (a banner, broken UTF-8) is skipped, not fatal.
+            let line = String::from_utf8_lossy(&buf);
+            let Ok(m) = serde_json::from_str::<Value>(line.trim()) else {
+                continue;
+            };
+            let messages = match m {
+                Value::Array(list) => list,
+                m => vec![m],
+            };
+            for m in messages {
+                let Some(reply) = shared.dispatch(&m) else {
+                    continue;
+                };
+                match reply {
+                    Answer::Now(reply) => {
+                        if let Some(c) = weak.upgrade() {
+                            let _ = c.send(&reply).await;
+                        }
+                    }
+                    // Answered once the user has: reading goes on meanwhile.
+                    later => {
+                        let weak = weak.clone();
+                        tokio::spawn(async move {
+                            let reply = later.value().await;
+                            if let Some(c) = weak.upgrade() {
+                                let _ = c.send(&reply).await;
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        shared.close("the MCP server exited");
+    });
+    *client.reader.lock().unwrap() = Some(task.abort_handle());
+}
+
+/// The `initialize` handshake.
+async fn handshake(client: &Client, startup: u64) -> Result<()> {
     let params = json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": {"roots": {"listChanged": false}, "elicitation": {"form": {}, "url": {}}, "extensions": {events::EXTENSION: {}}},
@@ -1868,8 +2364,7 @@ async fn connect(
     });
     let init = client.request("initialize", params, startup).await?;
     let _ = client.init.set(init);
-    client.notify("notifications/initialized", None).await?;
-    Ok(client)
+    client.notify("notifications/initialized", None).await
 }
 
 /// Read one line (through its `\n`) into `buf`: `false` at the end of the
@@ -2022,7 +2517,7 @@ mod tests {
         .unwrap();
         let started = std::time::Instant::now();
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
-        match &mcp.statuses["huge"] {
+        match &mcp.statuses()["huge"] {
             Status::Failed(e) => assert!(e.contains("larger than 16 MiB"), "{e}"),
             s => panic!("{s:?}"),
         }
@@ -2263,12 +2758,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mcp = Mcp::connect(&cfg, dir.path()).await;
         assert_eq!(
-            mcp.statuses["fake"],
+            mcp.statuses()["fake"],
             Status::Connected { tools: 2 },
             "both pages listed"
         );
-        assert!(matches!(&mcp.statuses["broken"], Status::Failed(e) if e.contains("starting")));
-        assert_eq!(mcp.statuses["off"], Status::Disabled);
+        assert!(matches!(&mcp.statuses()["broken"], Status::Failed(e) if e.contains("starting")));
+        assert_eq!(mcp.statuses()["off"], Status::Disabled);
         let names: Vec<String> = mcp.tools().into_iter().map(|t| t.name).collect();
         assert_eq!(names, ["fake_echo", "fake_fail_now"]);
         assert_eq!(
@@ -2358,7 +2853,7 @@ mod tests {
         }}))
         .unwrap();
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
-        assert_eq!(mcp.statuses["once"], Status::Connected { tools: 2 });
+        assert_eq!(mcp.statuses()["once"], Status::Connected { tools: 2 });
         let _ = mcp.call("once_echo", json!({"text": "crash"})).await;
         let e = mcp
             .call("once_echo", json!({"text": "hi"}))
@@ -2398,7 +2893,7 @@ mod tests {
         let port: u16 = line.trim().parse().unwrap();
         let cfg: McpConfig = serde_json::from_value(json!({"servers": {"calc": {"type": "remote", "url": format!("http://127.0.0.1:{port}/mcp")}}})).unwrap();
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
-        assert_eq!(mcp.statuses["calc"], Status::Connected { tools: 1 });
+        assert_eq!(mcp.statuses()["calc"], Status::Connected { tools: 1 });
         assert_eq!(
             mcp.call("calc_add", json!({"a": 2, "b": 3})).await.unwrap(),
             ("5".into(), false)
@@ -2418,7 +2913,7 @@ mod tests {
         }}))
         .unwrap();
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
-        assert_eq!(mcp.statuses["rich"], Status::Connected { tools: 1 });
+        assert_eq!(mcp.statuses()["rich"], Status::Connected { tools: 1 });
         assert_eq!(
             mcp.instructions(),
             [(
@@ -2571,7 +3066,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
         assert!(start.elapsed() < Duration::from_secs(5));
-        assert!(matches!(&mcp.statuses["slow"], Status::Failed(e) if e.contains("timed out")));
+        assert!(matches!(&mcp.statuses()["slow"], Status::Failed(e) if e.contains("timed out")));
     }
 }
 
@@ -2613,7 +3108,7 @@ mod oauth_flow_tests {
             serde_json::from_value(json!({"servers": {&name: {"type": "remote", "url": &url}}}))
                 .unwrap();
         assert_eq!(
-            Mcp::connect(&cfg, Path::new("/")).await.statuses[&name],
+            Mcp::connect(&cfg, Path::new("/")).await.statuses()[&name],
             Status::NeedsAuth
         );
 
@@ -2654,7 +3149,7 @@ mod oauth_flow_tests {
 
         let cfg: McpConfig = serde_json::from_value(json!({"servers": {&name: {"type": "remote", "url": &url, "headers": {"Authorization": format!("Bearer {tok}")}}}})).unwrap();
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
-        assert_eq!(mcp.statuses[&name], Status::Connected { tools: 1 });
+        assert_eq!(mcp.statuses()[&name], Status::Connected { tools: 1 });
         let tool = tool_name(&name, "whoami");
         assert_eq!(mcp.call(&tool, json!({})).await.unwrap().0, "token at-2");
     }

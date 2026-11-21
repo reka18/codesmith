@@ -223,7 +223,7 @@ impl McpView {
                 Status::Disabled => ("Disabled ○", p.dialog_muted),
                 Status::Failed(_) => ("Failed !", p.error),
                 Status::NeedsAuth => ("Sign in required →", p.warning),
-                Status::SignedIn => ("Signed in · connects on restart", p.success),
+                Status::SignedIn => ("Signed in · connected", p.success),
             };
             let name = Span::styled(
                 format!(" {:<24}", safe(&s.name)),

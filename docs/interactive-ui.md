@@ -412,8 +412,8 @@ palette) shows each configured [MCP server](mcp.md) with its status:
 `Connected ✓`, `Disabled ○`, `Failed !` or `Sign in required →`. **Enter**
 or **Space** (`dialog.mcp.toggle`) on one that needs a sign-in starts its
 OAuth login, as `codesmith mcp auth` does: the browser opens and the
-dialog waits, then comes back to the list (the server connects when its
-session's servers next start). On one that failed it shows the error;
+dialog waits, then comes back to the list, and the server reconnects
+with its new sign-in (its tools are offered from the next model step). On one that failed it shows the error;
 **i** then opens a new session with a prompt to investigate it, to edit
 and send.
 

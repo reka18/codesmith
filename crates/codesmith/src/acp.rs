@@ -1369,8 +1369,10 @@ pub fn mcp_servers(list: &Value) -> Result<BTreeMap<String, ServerConfig>, RpcEr
     let mut out = BTreeMap::new();
     for s in list.as_array().into_iter().flatten() {
         let cfg = match s["type"].as_str() {
+            // The editor brings its own credentials in the headers; as in
+            // OpenCode, CodeSmith's saved OAuth logins are not used for it.
             Some("http") => {
-                json!({"type": "remote", "url": s["url"], "headers": pairs(&s["headers"])})
+                json!({"type": "remote", "url": s["url"], "headers": pairs(&s["headers"]), "oauth": false})
             }
             Some(_) => {
                 return Err(invalid(
@@ -3417,6 +3419,11 @@ mod tests {
                         "function": {"name": "read", "arguments": "{\"pa"}}]}, "finish_reason": "length"}]}),
                     ]
                 }
+            } else if prompt.contains("editor tool") {
+                match done {
+                    0 => call(1, "editor_echo", json!({"text": "hi"})),
+                    _ => reply(&after),
+                }
             } else if prompt.contains("flaky") {
                 if FLAKY.fetch_add(1, Ordering::SeqCst) == 0 {
                     return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "busy").into_response();
@@ -3723,6 +3730,69 @@ mod tests {
             bad["error"],
             json!({"code": -32602, "message": "Invalid params: unknown auth method: missing", "data": {"methodId": "missing"}})
         );
+    }
+
+    /// An editor-supplied MCP server (`mcpServers`) is trusted as the user's
+    /// own config, but its tools go through the same permission rules as a
+    /// configured server's: asked about, or hidden when denied.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editor_supplied_mcp_servers_tools_go_through_the_permission_rules() {
+        let Some(py) = ["python3", "python"].into_iter().find(|p| {
+            std::process::Command::new(p)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }) else {
+            return;
+        };
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../codesmith-core/tests/fixtures/mcp_stdio.py"
+        );
+        let servers = json!([{"name": "editor", "command": py, "args": [fixture], "env": []}]);
+        for (effect, asked) in [("ask", 1), ("deny", 0)] {
+            let (_d, cwd, base) = tmp().await;
+            let rules = json!([{"action": "editor_*", "resource": "*", "effect": effect}]);
+            let mut c = start_with(
+                &cwd,
+                &base,
+                json!({"codemode": false, "permissions": rules}),
+            );
+            c.request(
+                "initialize",
+                json!({"protocolVersion": 1, "clientCapabilities": {}}),
+            )
+            .await;
+            let new = c
+                .request("session/new", json!({"cwd": cwd, "mcpServers": servers}))
+                .await;
+            let sid = new["result"]["sessionId"].as_str().unwrap().to_string();
+            let id = c
+                .call(
+                    "session/prompt",
+                    json!({"sessionId": sid, "prompt": [{"type": "text", "text": "use the editor tool"}]}),
+                )
+                .await;
+            let mut n = 0;
+            let (done, seen) = c
+                .until(id, |m| {
+                    assert_eq!(m["method"], "session/request_permission");
+                    n += 1;
+                    allow_once(m)
+                })
+                .await;
+            assert_eq!(n, asked, "{effect}");
+            assert_eq!(done["result"]["stopReason"], "end_turn");
+            let upd = updates(&seen, "tool_call_update");
+            let out = upd.last().unwrap().to_string();
+            if effect == "ask" {
+                assert_eq!(upd.last().unwrap()["status"], "completed", "{out}");
+                assert!(out.contains("echo: hi"), "{out}");
+            } else {
+                assert_eq!(upd.last().unwrap()["status"], "failed", "{out}");
+                assert!(!out.contains("echo: hi"), "{out}");
+            }
+        }
     }
 
     // session.test.ts: "rejects relative cwds, MCP-over-ACP, and SSE servers
@@ -6371,7 +6441,7 @@ mod tests {
             matches!(&s["fs"], ServerConfig::Local { command, environment, .. } if command == &["npx", "-y", "srv"] && environment["K"] == "v")
         );
         assert!(
-            matches!(&s["web"], ServerConfig::Remote { headers, .. } if headers["Authorization"] == "Bearer t")
+            matches!(&s["web"], ServerConfig::Remote { headers, oauth: Some(codesmith_core::mcp::oauth::Setting::Enabled(false)), .. } if headers["Authorization"] == "Bearer t")
         );
         assert!(mcp_servers(
             &json!([{"type": "sse", "name": "old", "url": "https://m/sse", "headers": []}])

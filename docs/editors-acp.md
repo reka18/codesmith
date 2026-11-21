@@ -67,8 +67,13 @@ the terminal (see [configuration](configuration.md)).
   use.
 - **Questions.** When the editor supports form elicitation, the agent can ask
   questions with the `question` tool.
-- **MCP servers** the editor passes in are added to the session (stdio and
-  HTTP).
+- **MCP servers** the editor passes in (`mcpServers`, stdio and HTTP) are
+  added to the session, in place of a configured server of the same name:
+  the editor stands for you, so they count as your own config. Their tools
+  still go through your [permission rules](permissions.md) like any MCP
+  server's, and what they return (results, elicitation forms) is tool
+  output, not instructions. An HTTP server's credentials are the headers the
+  editor sends; CodeSmith's saved MCP OAuth logins are not used for it.
 
 ## Subagents
 

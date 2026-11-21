@@ -1214,7 +1214,7 @@ impl App {
                 let t = match result {
                     Ok(()) => super::toast::Toast::new(
                         super::toast::Variant::Success,
-                        format!("Signed in to {server}: it connects when the servers next start"),
+                        format!("Signed in to {server}: connected"),
                     ),
                     Err(e) => super::toast::Toast::new(
                         super::toast::Variant::Error,

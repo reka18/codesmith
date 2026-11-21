@@ -106,7 +106,7 @@ Where the tests live:
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet | Deferred |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
-| cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 | 0 |
+| cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
 | tui: main UI | 1247 | 15 | 460 | 84 | 675 | 13 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
@@ -114,7 +114,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **760** | **749** | **86** | **2355** | **259** | **428** |
+| **Total** | **4637** | **759** | **750** | **86** | **2355** | **259** | **428** |
 
 ## Fixes made while porting
 
@@ -313,8 +313,9 @@ Where the tests live:
   It now lists the servers with OpenCode's status labels, starts the OAuth
   login of one that needs a sign-in (Enter or Space) and waits for it, and
   shows a failed one's error with `i` to open a new session drafting
-  OpenCode's investigation prompt. Difference: a server signed in here
-  connects when its session's servers next start.
+  OpenCode's investigation prompt. A server signed in here reconnects
+  right away (`Mcp::restart`), and its tools are offered from the next
+  step.
 - **A compaction that fails before it starts** (`cli/test/acp/translate`):
   a `/compact` with nothing to compact sent ACP clients nothing. Core now
   ends such a compaction without starting it, and the ACP sink opens and
@@ -335,6 +336,11 @@ Where the tests live:
   a run that was stopped part way left its session in the lists. The
   session is now marked archived before its prompt runs (the mark is
   dropped if the run never stores the session).
+- **Editor-supplied HTTP MCP servers used saved OAuth logins**
+  (`cli/test/acp/session`): an `http` server in `mcpServers` was
+  configured with OAuth on, so CodeSmith's saved login for that name and
+  URL went with its requests. As in OpenCode (`oauth: false`), the
+  editor's own headers are its credentials now.
 
 ## Differences found but not fixed
 
@@ -885,7 +891,7 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/acp/session` | initialize advertises capabilities, negotiates the version, and offers terminal auth only when asked | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
 | `cli/test/acp/session` | loads with paginated replay while resume and fork do not replay | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
 | `cli/test/acp/session` | publishes a session's commands after the response that attaches it | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
-| `cli/test/acp/session` | converts MCP configs and deduplicates registrations per session and config | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
+| `cli/test/acp/session` | converts MCP configs and deduplicates registrations per session and config | after a fix | content_and_servers (`oauth: false` for HTTP servers), editor_supplied_mcp_servers_tools_go_through_the_permission_rules (adapted: one Mcp per open session, so a resume replaces the session's servers) |
 | `cli/test/acp/session` | rejects relative cwds, MCP-over-ACP, and SSE servers before creating or loading a session | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
 | `cli/test/acp/session` | close removes a new session that was never prompted and keeps every other session | already passing | oc_acp_initialize_..., oc_acp_load_replays_..., oc_acp_close_keeps_..., oc_acp_rejects_... |
 | `cli/test/acp/translate` | streams text and reasoning with one message ID per reasoning ordinal | already passing | oc_acp_prompt_streams_message_ids_and_resolves_with_usage, oc_acp_replay_shape |
