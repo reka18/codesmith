@@ -422,6 +422,22 @@ and the current one, then a `provider/…` row for each other built-in
 provider, which fills in `/model provider/` for you to finish. To use any
 other model, type `/model provider/model`.
 
+For a provider with a [`swap`](configuration.md#swapping-the-servers-model-swap)
+setting (a server that holds one model at a time), the picker also lists the
+models the server can load, after the others, each with "loads it on the
+server, which takes several minutes". The list comes from the provider's
+`list` command, run in the background each time the picker opens (the
+models it reported last time show at once). Choosing one, while no turn is
+running, starts its `use` command and opens a progress view with the
+command's output, escape sequences and control characters taken out. When
+it succeeds, the model is selected; when it fails, the view shows why (for
+tblink, how many bytes short the memory is) and the current model stays.
+**esc** hides the view; the swap goes on, and a notice says how it ended.
+Only one swap runs at a time, and only you start one: the model, `run`,
+automations and the server API cannot. While the server loads, it serves
+nothing, so a turn sent to it meanwhile fails. ctrl+f does not make such an
+entry a favourite until it is loaded.
+
 **ctrl+p** opens the command palette, as in OpenCode: every UI command
 with its keys, and the slash commands, filtered as you type; **enter**
 runs the one highlighted. It is also how to reach commands that have no

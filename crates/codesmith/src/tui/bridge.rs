@@ -32,6 +32,8 @@ pub enum Ev {
     /// The local servers were asked for their models (the model picker
     /// refreshes its list).
     LocalModels,
+    /// A model swap's output line or result (see `swap`).
+    Swap(super::swap::Progress),
     Text(String),
     Reasoning(String),
     /// A tool call started streaming its arguments.

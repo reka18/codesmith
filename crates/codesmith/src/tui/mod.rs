@@ -62,6 +62,7 @@ mod parity_tabs;
 mod parity_ui;
 pub(crate) mod settings;
 mod stash;
+mod swap;
 mod tabs;
 mod tabs_host;
 mod term;
@@ -754,6 +755,7 @@ impl Runner {
                     let items = self.model_items();
                     self.app.modal = Some(Modal::Picker(Picker::new(Pick::Model, "Models", items)));
                     refresh_local_models(&self.loaded.config, self.tx.clone());
+                    swap::refresh(&self.loaded.config, self.tx.clone());
                 } else {
                     self.set_model(args)?;
                 }
@@ -887,6 +889,9 @@ impl Runner {
     fn model_items(&self) -> Vec<PickItem> {
         let prefs = self.models.read();
         let mut items = model_items(&self.loaded.config, &self.app.header.model);
+        // The models the servers with a `swap` setting can load, last.
+        let swaps = swap::items(&self.loaded.config, &items);
+        items.extend(swaps);
         let rank = |id: &str| {
             let key = id.split('#').next().unwrap_or(id);
             if prefs.favorite.iter().any(|m| m.key() == key) {
@@ -921,6 +926,11 @@ impl Runner {
     /// ctrl+f in the model picker: the model goes on or off the
     /// favourites, and the picker opens again on it.
     fn toggle_favorite(&mut self, id: &str) {
+        if id.starts_with(swap::PREFIX) {
+            self.app
+                .notice("a model the server has yet to load cannot be a favorite");
+            return;
+        }
         let Some(m) = models::Model::parse(id) else {
             return;
         };
@@ -1049,6 +1059,25 @@ impl Runner {
                 self.theme_before = None;
                 self.set_theme(&id, true);
             }
+            // A model the provider's server can load: only ever started here,
+            // by a person choosing it.
+            Pick::Model if id.starts_with(swap::PREFIX) => match swap::parse_id(&id) {
+                None => {
+                    let pid = id.trim_start_matches(swap::PREFIX).trim_end_matches('/');
+                    self.app.error(format!(
+                        "{pid} could not list the models it can load; see the picker entry"
+                    ));
+                }
+                Some(_) if !self.idle_or_say() => {}
+                Some((pid, model)) => {
+                    match swap::start(&self.loaded.config, &pid, &model, self.tx.clone()) {
+                        Ok(()) => {
+                            self.app.modal = Some(Modal::Swap(swap::SwapView::new(&pid, &model)))
+                        }
+                        Err(e) => self.app.error(e),
+                    }
+                }
+            },
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => {
@@ -1488,6 +1517,36 @@ impl Runner {
             Ev::Hangup => self.app.quit = true,
             Ev::Files(f) => {
                 self.app.set_files(f);
+            }
+            Ev::Swap(swap::Progress::Line(l)) => {
+                if let Some(Modal::Swap(v)) = self.app.modal.as_mut() {
+                    v.push(l);
+                }
+            }
+            Ev::Swap(swap::Progress::Done { provider, result }) => {
+                let outcome = match result {
+                    Ok(id) => {
+                        let spec = format!("{provider}/{id}");
+                        refresh_local_models(&self.loaded.config, self.tx.clone());
+                        match self.set_model(&spec) {
+                            Ok(()) => swap::Status::Done(spec),
+                            Err(e) => swap::Status::Failed(format!(
+                                "the server loaded {id}, but {spec} could not be selected: {e:#}"
+                            )),
+                        }
+                    }
+                    Err(e) => swap::Status::Failed(e),
+                };
+                match (&outcome, self.app.modal.as_mut()) {
+                    (_, Some(Modal::Swap(v))) => v.status = outcome,
+                    (swap::Status::Done(spec), _) => {
+                        self.app.notice(format!("the server now serves {spec}"))
+                    }
+                    (swap::Status::Failed(e), _) => {
+                        self.app.error(format!("model swap failed: {e}"))
+                    }
+                    (swap::Status::Running, _) => {}
+                }
             }
             Ev::LocalModels => {
                 let items = self.model_items();

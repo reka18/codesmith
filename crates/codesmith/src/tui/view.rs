@@ -1916,6 +1916,19 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             ("Subagents and shells".into(), lines, p.primary)
         }
         Modal::Mcp(v) => (v.title(), v.lines(&app.keymap), p.primary),
+        Modal::Swap(v) => {
+            let rows = room.saturating_sub(2).clamp(3, 30);
+            let lines = v
+                .rows(rows)
+                .into_iter()
+                .map(|l| Line::from(display_safe(&l)))
+                .collect();
+            let color = match v.status {
+                super::swap::Status::Failed(_) => p.error,
+                _ => p.primary,
+            };
+            (v.title(), lines, color)
+        }
         Modal::ShellOutput(v) => {
             let width = MODAL_WIDTH
                 .min(area.width.saturating_sub(2))
@@ -2637,6 +2650,33 @@ mod tests {
         let i = s.iter().position(|r| r.contains("@src/main.rs")).unwrap();
         assert!(s[i - 1].contains("files"), "{s:#?}");
         assert!(s[i + 3].contains("@mai"), "input box below: {s:#?}");
+    }
+
+    #[test]
+    fn the_swap_view_shows_progress_and_closes_on_esc() {
+        use crate::tui::swap::{Status, SwapView};
+        let mut a = App::new();
+        let mut v = SwapView::new("stable", "big");
+        v.push("unloading old-1".into());
+        v.push("loading big-1 on jaccl; this takes a few minutes".into());
+        a.modal = Some(Modal::Swap(v.clone()));
+        let s = screen(&a, 100, 24).join("\n");
+        assert!(s.contains("Loading big on stable"), "{s}");
+        assert!(s.contains("loading big-1 on jaccl"), "{s}");
+        assert!(s.contains("takes several minutes"), "{s}");
+        v.status = Status::Failed("big does not fit; 3460000000 bytes (3.46 GB) short".into());
+        a.modal = Some(Modal::Swap(v));
+        let s = screen(&a, 100, 24).join("\n");
+        assert!(s.contains("Failed: big does not fit"), "{s}");
+        assert!(s.contains("The current model is unchanged."), "{s}");
+        a.on_key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Char('x'),
+        ));
+        assert!(a.modal.is_some(), "other keys leave it open");
+        a.on_key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Esc,
+        ));
+        assert!(a.modal.is_none());
     }
 
     #[test]

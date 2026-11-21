@@ -163,6 +163,11 @@ pub struct Config {
     /// Git repository CodeSmith keeps a checkout of (see
     /// [`crate::reference`]). Those with a description are listed to the model.
     pub references: BTreeMap<String, crate::reference::Entry>,
+
+    /// `providers.<id>.swap` settings [`load_from`] dropped because they
+    /// were not in the global config file, as `<id> in <source>`.
+    #[serde(skip)]
+    pub swap_ignored: Vec<String>,
 }
 
 /// The `experimental` key.
@@ -221,6 +226,11 @@ pub struct ProviderConfig {
     /// provider (see [`ModelConfig::compatibility`]).
     pub compatibility: Map<String, Value>,
     pub models: BTreeMap<String, ModelConfig>,
+    /// Commands that list the models the server can load and load one
+    /// (`{"list": [...], "use": [..., "{model}", ...], "timeout": 600}`);
+    /// see [`crate::providers::swap`]. Read only from the global config
+    /// file: [`load_from`] drops it from every other source.
+    pub swap: Option<crate::providers::swap::SwapConfig>,
 }
 
 impl ProviderConfig {
@@ -1007,11 +1017,33 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
     Ok(loaded)
 }
 
+/// Remove `providers.*.swap` from a config document that is not the global
+/// config file, noting each one as `<id> in <source>`: a swap runs
+/// commands, so a project (or anything else) may not set one.
+pub fn strip_swap(v: &mut Value, source: &str, ignored: &mut Vec<String>) {
+    let Some(providers) = v.get_mut("providers").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (id, p) in providers.iter_mut() {
+        if p.as_object_mut().and_then(|o| o.remove("swap")).is_some() {
+            ignored.push(format!("{id} in {source}"));
+        }
+    }
+}
+
 pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     let root = project_root(cwd);
     let mut merged = Value::Object(Map::new());
     let mut files: Vec<PathBuf> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
+    let mut swap_ignored: Vec<String> = Vec::new();
+    // Only the global config file may set a provider's `swap`.
+    let global_dir = (!global_disabled()).then(|| {
+        sources
+            .global_dir
+            .canonicalize()
+            .unwrap_or_else(|_| sources.global_dir.clone())
+    });
     for layer in layers(cwd, &root, sources) {
         let path = match layer {
             Layer::File(p) if p.is_file() => p,
@@ -1036,18 +1068,24 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
         seen.push(canonical);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let v = parse(&text, path.parent().unwrap_or(Path::new(".")))
+        let mut v = parse(&text, path.parent().unwrap_or(Path::new(".")))
             .with_context(|| format!("in {}", path.display()))?;
+        let global_file = global_dir
+            .as_deref()
+            .is_some_and(|g| seen.last().and_then(|c| c.parent()) == Some(g));
+        if !global_file {
+            strip_swap(&mut v, &path.display().to_string(), &mut swap_ignored);
+        }
         merge_layer(&mut merged, v);
         files.push(path);
     }
     if let Some(text) = &sources.content {
-        merge_layer(
-            &mut merged,
-            parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?,
-        );
+        let mut v = parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?;
+        strip_swap(&mut v, "$CODESMITH_CONFIG_CONTENT", &mut swap_ignored);
+        merge_layer(&mut merged, v);
     }
     let mut config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
+    config.swap_ignored = swap_ignored;
     crate::plugin::active().transform(&mut config);
     Ok(Loaded {
         config,
@@ -1471,6 +1509,7 @@ impl Config {
                 compaction: c.compaction.or(b.compaction),
                 compatibility: c.compatibility,
                 models: c.models,
+                swap: c.swap,
             }),
         }
     }
@@ -2613,6 +2652,59 @@ mod tests {
         src.content = Some(r#"{"shell": "content"}"#.into());
         let l = load_from(&project, &src).unwrap();
         assert_eq!(l.config.shell.as_deref(), Some("content"));
+    }
+
+    // A provider's `swap` runs commands, so only the global config file
+    // may set it; every other source has it dropped, with a note.
+    #[test]
+    fn swap_comes_only_from_the_global_config_file() {
+        let (_d, t) = tmp();
+        let (global, project) = (t.join("global"), project(&t));
+        let swap = |prog: &str| {
+            format!(
+                r#"{{"providers": {{"stable": {{"swap": {{"list": ["{prog}", "list"], "use": ["{prog}", "use", "{{model}}"], "timeout": 900}}}}}}}}"#
+            )
+        };
+        write(&global.join("codesmith.json"), &swap("/usr/bin/ssh"));
+        let l = load_from(&project, &sources(&global)).unwrap();
+        let s = l.config.providers["stable"].swap.clone().unwrap();
+        assert_eq!(s.use_, ["/usr/bin/ssh", "use", "{model}"]);
+        assert_eq!(s.timeout, Some(900));
+        assert!(l.config.swap_ignored.is_empty());
+        assert_eq!(l.config.provider("stable").unwrap().swap, Some(s.clone()));
+
+        // A project file (plain or under .codesmith) cannot replace or add one.
+        write(&project.join("codesmith.json"), &swap("/tmp/evil"));
+        write(
+            &project.join(".codesmith/codesmith.json"),
+            r#"{"providers": {"other": {"swap": {"use": ["/tmp/evil", "{model}"]}, "name": "Other"}}}"#,
+        );
+        let l = load_from(&project, &sources(&global)).unwrap();
+        assert_eq!(l.config.providers["stable"].swap, Some(s.clone()));
+        assert_eq!(l.config.providers["other"].swap, None);
+        assert_eq!(
+            l.config.providers["other"].name.as_deref(),
+            Some("Other"),
+            "the rest still loads"
+        );
+        assert_eq!(l.config.swap_ignored.len(), 2);
+        assert!(l.config.swap_ignored[0].starts_with("stable in "));
+
+        // Nor can $CODESMITH_CONFIG or $CODESMITH_CONFIG_CONTENT.
+        std::fs::remove_file(global.join("codesmith.json")).unwrap();
+        std::fs::remove_file(project.join("codesmith.json")).unwrap();
+        let explicit = t.join("custom.json");
+        write(&explicit, &swap("/tmp/evil"));
+        let mut src = sources(&global);
+        src.file = Some(explicit);
+        src.content = Some(swap("/tmp/evil2"));
+        let l = load_from(&project, &src).unwrap();
+        assert!(l.config.providers["stable"].swap.is_none());
+        assert!(l
+            .config
+            .swap_ignored
+            .iter()
+            .any(|i| i == "stable in $CODESMITH_CONFIG_CONTENT"));
     }
 
     #[test]

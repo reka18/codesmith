@@ -142,6 +142,28 @@ models it offers. `--refresh` first fetches the
 [model catalog](configuration.md#the-model-catalog-modelsdev) into the cache,
 even when background fetching is off.
 
+For a provider with a [`swap`](configuration.md#swapping-the-servers-model-swap)
+setting, `codesmith models PROVIDER` also runs its `list` and prints the
+models the server can load, marking the live and configured ones (a server
+that is down or busy loading still gets this part):
+
+```text
+$ codesmith models stable
+stable/Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq
+
+stable can load (`codesmith models swap stable MODEL`; loading takes a while):
+stable/Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq  (live, configured, 42.4 GB)
+stable/Qwen3.5-122B-A10B-oQ3.5e-mtp  (58.1 GB)
+```
+
+`codesmith models swap PROVIDER MODEL` loads `MODEL` on that server with the
+`use` command, showing its output as it goes, and prints `provider/model`
+when it is loaded; it exits 1 with the reason (and, from tblink, how many
+bytes short the memory is) when it is not. It runs only from a terminal,
+never inside a CodeSmith session's shell, and only with a `swap` from the
+global config. It does not change your default model: use `--model` or
+`/model`.
+
 ## `codesmith auth`
 
 ```sh

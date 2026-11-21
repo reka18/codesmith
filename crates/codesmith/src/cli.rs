@@ -73,9 +73,15 @@ enum Command {
         questions: Option<PathBuf>,
     },
     /// List providers and their models, or ask one provider for its models.
+    /// `codesmith models swap PROVIDER MODEL` loads MODEL on the server of a
+    /// provider with a `swap` setting.
     Models {
-        /// A provider id: list the models its API reports.
+        /// A provider id: list the models its API reports, and the models its
+        /// server can load when it has a `swap` setting. Or `swap`.
         provider: Option<String>,
+        /// After `swap`: the provider and the model to load.
+        #[arg(value_name = "PROVIDER MODEL")]
+        args: Vec<String>,
         /// Fetch the models.dev catalog into the cache first (the one
         /// network request CodeSmith makes for it unless fetching is on).
         #[arg(long)]
@@ -1089,8 +1095,18 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Models {
+            provider: Some(p),
+            args,
+            ..
+        }) if p == "swap" && !args.is_empty() => models_swap(&cwd, &args).await,
+        Some(Command::Models { args, .. }) if !args.is_empty() => Err(anyhow!(
+            "unexpected {:?}: `codesmith models PROVIDER` lists, `codesmith models swap PROVIDER MODEL` loads a model",
+            args.join(" ")
+        )),
+        Some(Command::Models {
             provider,
             refresh: true,
+            ..
         }) => {
             if codesmith_core::catalog::fetch_disabled() {
                 return Err(anyhow!(
@@ -1115,6 +1131,7 @@ async fn run(cli: Cli) -> Result<()> {
             Box::pin(run(Cli {
                 command: Some(Command::Models {
                     provider,
+                    args: vec![],
                     refresh: false,
                 }),
                 ..cli
@@ -1126,41 +1143,15 @@ async fn run(cli: Cli) -> Result<()> {
             ..
         }) => {
             let loaded = config::load(&cwd)?;
-            let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
-            let client = reqwest::Client::new();
-            // Claude Code reports its own models (no prompt is sent).
-            if pid == codesmith_core::providers::claude_agent::ID {
-                use codesmith_core::providers::claude_agent;
-                let p = loaded.config.provider(&pid).unwrap_or_default();
-                let state = claude_agent::check(&claude_agent::connection(&p)).await;
-                if let Some(problem) = state.problem() {
-                    return Err(anyhow!(problem));
-                }
-                for m in claude_agent::catalog().models {
-                    println!("{pid}/{}", m.id);
-                }
-                return Ok(());
+            let swap = codesmith_core::providers::swap::for_provider(&loaded.config, &pid).is_some();
+            let listed = list_provider_models(&loaded, &pid).await;
+            if !swap {
+                return listed;
             }
-            // Providers with a live list keep it for model resolution.
-            let settings = loaded.config.provider(&pid).unwrap_or_default().settings;
-            if let Some(ids) =
-                codesmith_core::providers::live::refresh(&client, &pid, &m.provider, &settings)
-                    .await
-            {
-                for id in ids? {
-                    println!("{pid}/{id}");
-                }
-                return Ok(());
+            if let Err(e) = listed {
+                eprintln!("{e:#}");
             }
-            let ids = m
-                .provider
-                .list_models(&reqwest::Client::new())
-                .await
-                .map_err(|e| anyhow!("listing {pid} models: {e}"))?;
-            for id in ids {
-                println!("{pid}/{id}");
-            }
-            Ok(())
+            print_swappable(&loaded.config, &pid).await
         }
         Some(Command::Models { provider: None, .. }) => {
             let loaded = config::load(&cwd)?;
@@ -3035,6 +3026,124 @@ fn variant_lines(m: &config::ModelRef) -> Result<Vec<String>> {
         out.push(line);
     }
     Ok(out)
+}
+
+/// `codesmith models PROVIDER`: the models the provider's API reports.
+async fn list_provider_models(loaded: &config::Loaded, pid: &str) -> Result<()> {
+    let pid = pid.to_string();
+    let m = loaded.config.resolve_model(&format!("{pid}/_"))?;
+    let client = reqwest::Client::new();
+    // Claude Code reports its own models (no prompt is sent).
+    if pid == codesmith_core::providers::claude_agent::ID {
+        use codesmith_core::providers::claude_agent;
+        let p = loaded.config.provider(&pid).unwrap_or_default();
+        let state = claude_agent::check(&claude_agent::connection(&p)).await;
+        if let Some(problem) = state.problem() {
+            return Err(anyhow!(problem));
+        }
+        for m in claude_agent::catalog().models {
+            println!("{pid}/{}", m.id);
+        }
+        return Ok(());
+    }
+    // Providers with a live list keep it for model resolution.
+    let settings = loaded.config.provider(&pid).unwrap_or_default().settings;
+    if let Some(ids) =
+        codesmith_core::providers::live::refresh(&client, &pid, &m.provider, &settings).await
+    {
+        for id in ids? {
+            println!("{pid}/{id}");
+        }
+        return Ok(());
+    }
+    let ids = m
+        .provider
+        .list_models(&reqwest::Client::new())
+        .await
+        .map_err(|e| anyhow!("listing {pid} models: {e}"))?;
+    for id in ids {
+        println!("{pid}/{id}");
+    }
+    Ok(())
+}
+
+/// The models a provider with a `swap` setting can load on its server.
+async fn print_swappable(c: &config::Config, pid: &str) -> Result<()> {
+    use codesmith_core::providers::swap;
+    let models = swap::swappable(c, pid).await?;
+    println!("\n{pid} can load (`codesmith models swap {pid} MODEL`; loading takes a while):");
+    for m in models {
+        let mut marks = Vec::new();
+        if m.live {
+            marks.push("live".to_string());
+        }
+        if m.configured {
+            marks.push("configured".to_string());
+        }
+        if let Some(b) = m.size_bytes {
+            marks.push(format!("{:.1} GB", b as f64 / 1e9));
+        }
+        println!(
+            "{pid}/{}{}",
+            m.name,
+            if marks.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", marks.join(", "))
+            }
+        );
+    }
+    Ok(())
+}
+
+/// `codesmith models swap PROVIDER MODEL`: load MODEL on the provider's
+/// server with its `swap.use` command. Only from a person's terminal: never
+/// from inside a CodeSmith session's shell tool, and not without a terminal.
+async fn models_swap(cwd: &std::path::Path, args: &[String]) -> Result<()> {
+    use codesmith_core::providers::swap;
+    let [pid, model] = args else {
+        return Err(anyhow!("usage: codesmith models swap PROVIDER MODEL"));
+    };
+    swap::guard()?;
+    let loaded = config::load(cwd)?;
+    let Some(s) = swap::for_provider(&loaded.config, pid) else {
+        let ignored: Vec<&String> = loaded
+            .config
+            .swap_ignored
+            .iter()
+            .filter(|i| i.starts_with(&format!("{pid} in ")))
+            .collect();
+        return Err(if ignored.is_empty() {
+            anyhow!("provider {pid} has no swap setting (providers.{pid}.swap in the global codesmith.json)")
+        } else {
+            anyhow!(
+                "provider {pid}'s swap setting is only read from the global codesmith.json; ignored: {}",
+                ignored.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            )
+        });
+    };
+    swap::validate(s)?;
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow!(
+            "codesmith models swap runs only from a terminal: it changes the model the server serves for everyone"
+        ));
+    }
+    eprintln!("asking {pid} which models it can load...");
+    let models = swap::swappable(&loaded.config, pid).await?;
+    if models.iter().any(|m| m.name == *model && m.live) {
+        println!("{pid}/{model}");
+        eprintln!("{model} is already loaded on {pid}'s server");
+        return Ok(());
+    }
+    let known: Vec<String> = models.into_iter().map(|m| m.name).collect();
+    eprintln!(
+        "loading {model} on {pid}'s server; this takes a while (up to {} s)",
+        s.timeout().as_secs()
+    );
+    let id = swap::swap(s, model, &known, &mut |l| eprintln!("  {l}")).await?;
+    println!("{pid}/{id}");
+    eprintln!("{pid} now serves {id}: use --model {pid}/{id}, or /model in the UI");
+    Ok(())
 }
 
 #[cfg(test)]

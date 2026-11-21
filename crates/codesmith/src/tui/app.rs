@@ -300,6 +300,8 @@ pub enum Modal {
     Help(usize),
     /// The diff viewer's shortcuts, scrolled this many rows.
     DiffHelp(usize),
+    /// A model swap's progress.
+    Swap(super::swap::SwapView),
 }
 
 /// Where a question form's answer goes.
@@ -1281,6 +1283,7 @@ impl App {
             | Ev::Hangup
             | Ev::Files(_)
             | Ev::LocalModels
+            | Ev::Swap(_)
             | Ev::Done { .. }
             | Ev::Stopped
             | Ev::Background
@@ -1392,6 +1395,7 @@ impl App {
                 | Modal::DiffHelp(_)
                 | Modal::Panel(_)
                 | Modal::ShellOutput(_)
+                | Modal::Swap(_)
                 | Modal::Mcp(_),
             ) => {}
             None => {
@@ -2544,6 +2548,12 @@ impl App {
                         self.modal = back.map(Modal::Panel);
                     }
                     _ => {}
+                }
+            }
+            // The swap goes on when its view closes.
+            Modal::Swap(_) => {
+                if matches!(k.code, KeyCode::Esc | KeyCode::Enter) {
+                    self.modal = None;
                 }
             }
             Modal::Help(scroll) | Modal::DiffHelp(scroll) => match k.code {

@@ -49,6 +49,12 @@ Web pages can reach loopback too, so the server also refuses:
 Only sessions of the folder the server was started in are visible, and
 permission and question ids are random.
 
+Model swaps (a provider's [`swap`](configuration.md#swapping-the-servers-model-swap)
+setting, which loads another model on a server such as an oMLX cluster) are
+not offered through this API: they start only from the interactive UI's
+model picker or `codesmith models swap` in a terminal, so no client of the
+server can trigger one.
+
 ## Routes
 
 | Route | |

@@ -20,6 +20,16 @@ All notable changes to CodeSmith are listed here. Versions follow
   `external_directory` prompt, as OpenCode's plan agent does. It still
   writes only plan files in the Plan directory. A configured
   `external_directory` deny or ask, and policies, still win.
+- **Model swap:** a provider can have a `swap` setting: a `list` and a `use` command that
+  list the models its server can load and load one, for servers that hold
+  one model at a time (such as a two-Mac oMLX cluster run by tblink). The
+  model picker lists those models and loads one when chosen, with a
+  progress view, selecting it once it is loaded; `codesmith models
+  PROVIDER` lists them and `codesmith models swap PROVIDER MODEL` loads one
+  from a terminal. The commands run without a shell, take only a name the
+  server listed, are read only from the global config file, and only a
+  person can start a swap: it is not a tool, and `run`, automations,
+  `serve`, ACP and CodeSmith's own shells cannot.
 - The check that keeps a public host from redirecting `webfetch`, Code
   Mode `fetch`, OpenAPI calls and image input downloads to a local or
   private address now covers the connection itself: the target's name was

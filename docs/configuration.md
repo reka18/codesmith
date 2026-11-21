@@ -58,6 +58,11 @@ drop a `deny` rule.
 > rules that come after your global ones and so override them. Before you run
 > CodeSmith in a repository you don't trust, read its `codesmith.json[c]` and
 > `.codesmith/` first, or run with `CODESMITH_DISABLE_PROJECT_CONFIG=1`.
+>
+> One setting is the exception: a provider's [`swap`](#swapping-the-servers-model-swap)
+> commands are read only from the global config file. Project files,
+> `.codesmith/`, `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT` cannot
+> set or change them; `codesmith models swap` names any it ignored.
 
 ## Substitution: `{env:}` and `{file:}`
 
@@ -478,6 +483,130 @@ machine (the box above, with `"discovery": "openai"`) is listed in
 many requests at once (a vLLM cluster behind a gateway, a proxy to a
 hosted service on `localhost`): side requests run beside the turn and its
 models are listed only when asked.
+
+### Swapping the server's model (`swap`)
+
+A server that holds one large model at a time, such as a two-Mac oMLX
+cluster, can be told to load another one from CodeSmith. Give the provider a
+`swap` setting with two commands, in your **global** config
+(`~/.config/codesmith/codesmith.json`):
+
+```jsonc
+"swap": {
+  "list": ["ssh", "-o", "BatchMode=yes", "stable", "/usr/local/bin/tblink", "models", "--json"],
+  "use":  ["ssh", "-o", "BatchMode=yes", "stable", "/usr/local/bin/tblink", "use", "{model}", "--json"],
+  "timeout": 1200
+}
+```
+
+| Key | |
+|---|---|
+| `list` | Prints the models the server can load. Optional: without it, the provider's configured `models` are the choices. |
+| `use` | Loads one. `{model}` must be a whole element of the array; it is replaced by the model's name as one argument. |
+| `timeout` | Seconds `use` may run before CodeSmith stops it (default 600). `list` gets at most 60. |
+
+How CodeSmith runs them:
+
+- **No shell.** Each array is a program and its arguments, run as given,
+  with no input and with `$CODESMITH_SERVER_TOKEN` removed from its
+  environment. Use `ssh -o BatchMode=yes` so a missing key fails instead of
+  waiting for a password.
+- **Only names the server listed.** The name must be one that `list`
+  printed (or, without `list`, a configured model), and only letters,
+  digits and `. _ + - : @ /`, with no `..`. `ssh` hands its arguments to a
+  shell on the other machine, so nothing else is allowed through.
+- **Only from the global config file**, since it runs commands (see
+  [Files and precedence](#files-and-precedence)).
+- **Only when you choose it.** A swap starts from the model picker
+  ([`/model`](interactive-ui.md#pickers)) or `codesmith models swap
+  PROVIDER MODEL` (see [the CLI](cli.md#codesmith-models)), nowhere else.
+  It is not a tool, so the model cannot call it; `codesmith run`,
+  automations, `codesmith serve` and ACP sessions never start one; and
+  `codesmith models swap` refuses to run without a terminal or inside a
+  CodeSmith session's shell (`$CODESMITH` or `$CODESMITH_SESSION_ID` set).
+  The model's shell tool could still run the `ssh` command itself, as it
+  could any command; [permission rules](permissions.md) for `shell` govern
+  that.
+- **Output** lines are shown with escape sequences and control characters
+  removed.
+
+`list` may print JSON, the last JSON line counting: an array of names, an
+array of `{"name" (or "id"), "live", "configured", "size_bytes"}` objects,
+or an object with such a `models` array and optional `live` and
+`configured` names (what `tblink models --json` prints). Anything else is
+read as one name per line. A model marked `live` is already loaded, so the
+picker offers it as an ordinary choice.
+
+`use` succeeds when it exits 0 and its last JSON line, if any, does not
+say `"ok": false`. Its `model_id`, when given, is the model selected
+afterwards (as `provider/model_id`); otherwise the name chosen is. On
+failure CodeSmith shows the JSON's `error`, its `shortfall_bytes` and
+whether the server `rolled_back`, or the command's last line, and keeps
+the current model.
+
+While the server loads a model it serves nothing, so requests to it fail
+until the swap ends. If CodeSmith stops `use` at the timeout, or you quit,
+only the local command is stopped; a remote command such as `tblink use`
+carries on to the end or rolls back by itself, and `codesmith models
+PROVIDER` shows what the server has afterwards.
+
+#### Example: a two-Mac oMLX cluster run by tblink
+
+[tblink](https://github.com/Skeptic-Dog-Software/tblink) keeps a two-Mac
+oMLX cluster up over Thunderbolt and has `tblink models` and `tblink use
+MODEL`, which unloads the live model, measures each Mac's free memory,
+plans, and loads the new one, or puts the old one back if it does not fit.
+Here the coordinator Mac is reached as `stable` over SSH:
+
+```sshconfig
+# ~/.ssh/config on the Mac running CodeSmith
+Host stable
+  HostName 10.77.0.1
+  User sk-karnes
+```
+
+```jsonc
+// ~/.config/codesmith/codesmith.json
+{
+  "model": "stable/Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq",
+  "providers": {
+    "stable": {
+      "name": "Stable-Mac cluster",
+      "protocol": "openai-chat",
+      "local": true,
+      "settings": {
+        "baseURL": "http://10.77.0.1:8000/v1",
+        "apiKey": "{env:OMLX_API_KEY}",        // the key you already use for chat, never the admin key
+        "discovery": "openai"
+      },
+      "models": {
+        "Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq": { "limit": { "context": 32768, "output": 16384 } },
+        "Qwen3.5-122B-A10B-oQ3.5e-mtp": { "limit": { "context": 32768, "output": 16384 } }
+      },
+      "swap": {
+        "list": ["ssh", "-o", "BatchMode=yes", "stable", "/usr/local/bin/tblink", "models", "--json"],
+        "use":  ["ssh", "-o", "BatchMode=yes", "stable", "/usr/local/bin/tblink", "use", "{model}", "--json"],
+        "timeout": 1200
+      }
+    }
+  }
+}
+```
+
+- The full path `/usr/local/bin/tblink` matters: a non-interactive SSH
+  session on macOS does not have `/usr/local/bin` on its `PATH`.
+- `timeout` is 1200 because `tblink use` may first wait for the
+  coordinator's current check, then unload, measure, plan and load a 58 GB
+  model and wait for its first answer.
+- `codesmith models stable` lists both models and marks the live one;
+  `/model` shows the other with "loads it on the server, which takes
+  several minutes"; `codesmith models swap stable
+  Qwen3.5-122B-A10B-oQ3.5e-mtp` loads it from a terminal.
+- Give each model the `limit.context` you plan it with (`tblink use MODEL
+  --context N` changes the plan; add `"--context", "65536"` to `use` to
+  always ask for that).
+- The oMLX admin key stays in `~/.omlx/settings.json` on the coordinator
+  Mac, where tblink reads it; CodeSmith never needs it.
 
 ### Azure OpenAI
 
