@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
-| Providers, models and credentials | 796 | 389 | 0 | 22 | 351 | 34 | 0 |
+| Providers, models and credentials | 796 | 411 | 0 | 24 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2722** | **69** | **45** | **2550** | **202** | **0** |
+| **Total** | **5588** | **2744** | **69** | **47** | **2560** | **168** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -113,12 +113,14 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 
 Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.
 
+- **Difference to decide**, `model-resolver.test.ts` "rejects unresolved variables in constructed provider routes" (1): a configured URL's {env:NAME} with the variable unset is replaced with nothing, as OpenCode's config replaces it, and a catalog URL with an unset variable is not used; neither is refused up front naming the variables.
+- **Difference to decide**, `model-resolver.test.ts` "prefers stored credentials over configured auth" (1): a key in the config wins over one saved with `codesmith auth` (then the key variables, then the saved key), where OpenCode prefers the stored credential.
 - **Difference to decide**, `session-generate.test.ts` "runs generate hooks instead of context hooks" (1): one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook.
 - **Difference to decide**, `session-runner.test.ts` "records malformed provider-executed input as executed" (1): a hosted call is kept once its input block ends; a failure while its input still streams leaves no call to record.
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (45 cases in 9 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (47 cases in 10 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -127,6 +129,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
+| [Default Model Fallback](#default-model-fallback) | 2 | the newest available model when none is configured, skipping disabled providers (CodeSmith asks for a model) |
 | [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
 | [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
 | [Session Diff Ranges](#session-diff-ranges) | 1 | a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only) |
@@ -193,6 +196,13 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
 
+### Default Model Fallback
+
+2 cases.
+
+- `catalog.test.ts`: falls back to newest available model when no default is configured
+- `catalog.test.ts`: ignores a configured default on a disabled provider
+
 ### Plugin Tool Renaming
 
 2 cases.
@@ -220,7 +230,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (202 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (168 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### MCP (121)
 
@@ -390,65 +400,18 @@ Tests for behaviour CodeSmith already has but no test pins (202 cases), by area,
   - `tool-automation.test.ts`: puts each automation's id, trigger, status, next run and action in the text without Code Mode
   - `tool-automation.test.ts`: treats another project's automation as missing
 
-### Providers, models and credentials (34)
-
-- default model when none is configured; a disabled provider's default ignored (S) — `config::resolve_model`
-  - `catalog.test.ts`: falls back to newest available model when no default is configured
-  - `catalog.test.ts`: ignores a configured default on a disabled provider
-- provider/model/variant options split into settings and body (S) — `codesmith_ai options`
-  - `config/provider-options.test.ts`: splits provider overlays without changing package settings
-  - `config/provider-options.test.ts`: moves openai-compatible options the package does not read into the body
-  - `config/provider-options.test.ts`: keeps model and variant options unchanged
-  - `config/provider-options.test.ts`: uses mechanical lowering for custom provider options
-- provider and model compatibility precedence and later overrides (S) — `config providers`
-  - `config/provider.test.ts`: keeps provider and model compatibility precedence across config documents
-  - `config/provider.test.ts`: lets configured provider compatibility override built-in provider defaults
-  - `config/provider.test.ts`: applies provider compatibility to every provider model with model overrides
-  - `config/provider.test.ts`: passes configured stream usage compatibility to the runtime model
-  - `config/provider.test.ts`: loads configured providers and applies later model overrides
-- key auth for custom providers, default custom model metadata, model types (S) — `config providers`
-  - `config/provider.test.ts`: adds key auth for custom providers without env credentials
-  - `config/provider.test.ts`: defaults custom model metadata
-  - `config/provider.test.ts`: lists a custom model by its configured type and an untyped one as chat
-  - `config/provider.test.ts`: resolves a config model with only input/output capabilities using default tools
-- a configured baseURL overrides model URLs (S) — `config providers`
-  - `config/provider.test.ts`: lets a configured provider baseURL override catalog model baseURLs
-- configured variant bodies kept unchanged (S) — `config variants`
-  - `config/provider.test.ts`: keeps configured model variant bodies unchanged
-  - `config/provider.test.ts`: keeps layered model variant bodies unchanged
-- Azure deployment routing (S) — `config providers (azure)`
-  - `model-resolver.test.ts`: constructs native Azure requests with deployment IDs and projected resource URLs
-  - `model-resolver.test.ts`: lets Azure CLI requests past package auth for the Azure plugin to authorize
-- API model IDs, empty keys omitted, env templates, unresolved variables rejected, variant overlays, stored vs configured credentials (S) — `config::resolve_model`
-  - `model-resolver.test.ts`: uses the API modelID instead of the catalog ID for native OpenAI routes
-  - `model-resolver.test.ts`: treats an empty configured API key as omitted
-  - `model-resolver.test.ts`: uses merged API settings for OpenAI-compatible auth and request defaults
-  - `model-resolver.test.ts`: resolves provider URLs from environment without mutating the catalog model
-  - `model-resolver.test.ts`: rejects unresolved variables in constructed provider routes
-  - `model-resolver.test.ts`: overlays selected OpenAI variant settings and bodies
-  - `model-resolver.test.ts`: overlays selected OpenAI-compatible variant bodies
-  - `model-resolver.test.ts`: rejects an explicit unavailable variant during model resolution
-  - `model-resolver.test.ts`: overlays selected Anthropic variant settings
-  - `model-resolver.test.ts`: uses resolved credentials for bearer auth
-  - `model-resolver.test.ts`: prefers stored credentials over configured auth
-- xAI Responses effort with reasoning summaries (S) — `codesmith_ai options`
-  - `model-resolver.test.ts`: sends xAI Responses effort variants with reasoning summaries
-- OpenRouter / Mistral headers and body (S) — `config providers`
-  - `model-resolver.test.ts`: merges mapped OpenRouter headers and body with catalog overlays
-  - `model-resolver.test.ts`: merges mapped Mistral headers and body with catalog overlays
-
 ## By design or not applicable
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 671 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 696 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 677 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 98 |
-| Behaviour that differs and is for the maintainer to decide (see above) | 2 |
+| Behaviour that differs and is for the maintainer to decide (see above) | 4 |
 
 ## Per-test inventory
 
@@ -2853,7 +2816,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (740 of 796)</summary>
+<details><summary>Providers, models and credentials (772 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -2871,23 +2834,39 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D uses a transform-provided default model until that transform is replaced — storage-model: OpenCode's editable provider/model store, its events and credential-derived availability (CodeSmith resolves config over the catalog at each model resolution; see tests/oc_catalog.rs)
 - D small model uses the newest release in the first matching family · small model returns undefined without a matching family — deliberate: title.rs: no small model
 
+**`config/provider-options.test.ts`**
+
+- D splits provider overlays without changing package settings · moves openai-compatible options the package does not read into the body · keeps model and variant options unchanged · uses mechanical lowering for custom provider options — deliberate: config.rs: no v1 format migration; a provider's settings, headers, body and options are separate config fields, so there is no options object to split
+
 **`config/provider.test.ts`**
 
 - D inherits the provider compaction setting with model overrides and rejects unsupported routes — other: provider-native compaction settings (CodeSmith always compacts by summary)
+- P keeps provider and model compatibility precedence across config documents — `tests/oc_providers_backlog3.rs::oc_provider_keeps_compatibility_precedence_across_config_documents` (adapted: requireFinishReason and maxTokensField; there is no supportsPromptCacheKey)
+- D lets configured provider compatibility override built-in provider defaults — deliberate: there is no supportsPromptCacheKey flag or built-in per-provider default for it: a stable prompt_cache_key goes to every OpenAI Chat and Responses request unless caching is off (see codesmith-ai's cache.rs)
 - D carries a configured provider cache format to the runtime model — other: CodeSmith detects the cache marker format from the endpoint; there is no cacheFormat setting
+- P applies provider compatibility to every provider model with model overrides — `tests/oc_providers_backlog3.rs::oc_provider_applies_provider_compatibility_to_every_model_with_model_overrides` (adapted: without supportsPromptCacheKey)
+- P passes configured stream usage compatibility to the runtime model — `tests/oc_providers_backlog3.rs::oc_provider_passes_configured_stream_usage_compatibility_to_the_model`
 - D keeps the provider websocket policy out of model settings — other: model-level transport settings (CodeSmith's transport is a provider setting only)
 - P configured provider transport overrides ${builtin.id} defaults ×2 — `tests/oc_catalog.rs::oc_catalog_configured_provider_transport_overrides_builtin_defaults` (the openai and azure rows)
 - D configured provider transport overrides ${builtin.id} defaults ×2 — other: xAI is OpenAI Chat in CodeSmith, and only the azure provider defaults to WebSocket
+- P adds key auth for custom providers without env credentials — `tests/oc_providers_backlog3.rs::oc_provider_takes_a_saved_key_for_a_custom_provider_without_env_credentials` (adapted: any provider takes a saved key; there is no list of login methods)
+- D defaults custom model metadata — deliberate: a custom model's unset limits stay unknown (compaction then follows the provider's overflow error) and its unset input is taken as text, images and PDFs, rather than defaulting to 200k/32k
+- P lists a custom model by its configured type and an untyped one as chat — `tests/oc_providers_backlog3.rs::oc_provider_lists_a_custom_model_by_its_configured_type` (adapted: an image model still resolves when named)
 - P lets config change a catalog model's type and keeps it when unset — `tests/oc_catalog.rs::oc_catalog_lets_config_change_a_catalog_models_type_and_keeps_it_when_unset`
 - P preserves catalog capabilities unless config overrides them — `tests/oc_catalog.rs::oc_catalog_preserves_catalog_capabilities_unless_config_overrides_them`
 - P merges partial config capabilities onto the base model's existing fields — `tests/oc_catalog.rs::oc_catalog_merges_partial_config_capabilities_onto_the_base_models_existing_fields`
+- P resolves a config model with only input/output capabilities using default tools — `tests/oc_providers_backlog3.rs::oc_provider_resolves_a_model_with_only_input_and_output_capabilities` (adapted: tools are always offered)
 - D uses native model defaults for migrated ${scenario.name} ×7 · matches native configuration for migrated ${scenario.name} ×7 · preserves existing catalog metadata when migrated fields are omitted · keeps catalog capabilities that a migrated override omits — deliberate: config.rs: no v1 format migration
+- P lets a configured provider baseURL override catalog model baseURLs — `tests/oc_providers_backlog3.rs::oc_provider_lets_a_configured_base_url_serve_every_model` (adapted: a model has no URL of its own in config)
 - P generates variants after rewriting a configured model package — `tests/oc_catalog.rs::oc_catalog_generates_variants_after_rewriting_a_configured_model_package` (adapted: a configured protocol for the package)
 - D preserves plugin-supplied variants on custom models when config omits variants — deliberate: plugin.rs: plugins supplying variants to custom models
 - P respells inherited variants when config moves a catalog model to another package — `tests/oc_catalog.rs::oc_catalog_respells_inherited_variants_when_config_moves_a_catalog_model_to_another_package` (adapted: moved to another protocol)
 - P keeps a moved catalog model without reasoning variants free of variants — `tests/oc_catalog.rs::oc_catalog_keeps_a_moved_catalog_model_without_reasoning_variants_free_of_variants`
 - P builds configured reasoning variants after provider and model package normalization — `tests/oc_catalog.rs::oc_catalog_builds_configured_reasoning_variants_after_provider_and_model_package_normalization` (adapted: one provider per protocol)
 - P applies configured release date, temperature support, and reasoning field — `tests/oc_catalog.rs::oc_catalog_applies_configured_release_date_temperature_support_and_reasoning_field` (adapted: no release dates or freeform formats kept)
+- P keeps configured model variant bodies unchanged — `tests/oc_providers_backlog3.rs::oc_provider_keeps_configured_model_variant_bodies_unchanged`
+- P keeps layered model variant bodies unchanged — `tests/oc_providers_backlog3.rs::oc_provider_keeps_layered_model_variant_bodies_unchanged`
+- P loads configured providers and applies later model overrides — `tests/oc_providers_backlog3.rs::oc_provider_loads_configured_providers_and_applies_later_model_overrides` (adapted: no canonical providers, integrations or model transforms)
 
 **`config/warming.test.ts`**
 
@@ -2943,13 +2922,31 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`model-resolver.test.ts`**
 
+- P constructs native Azure requests with deployment IDs and projected resource URLs — `tests/oc_providers_backlog3.rs::oc_resolver_constructs_azure_requests_with_deployment_ids_and_resource_urls`
 - D routes compatible packages to the host's dedicated package when one exists · resolves environment templates before native providers inspect endpoints — platform: AI SDK / native package routing and loaders
 - P maps Bedrock Mantle GPT-OSS models to Chat and other models to Responses — `tests/oc_providers.rs::oc_resolver_maps_bedrock_mantle_chat_and_responses_packages` (adapted: by the catalog's native Mantle packages)
 - P resolves Bedrock Mantle catalog endpoints from the configured region — `tests/oc_providers.rs::oc_resolver_resolves_bedrock_mantle_catalog_endpoints_from_the_configured_region`
 - P fills Mantle catalog URLs from the provider region — `tests/oc_providers.rs::oc_resolver_fills_mantle_catalog_urls_from_the_provider_region`
 - P prefers the configured Mantle region over the environment — `tests/oc_providers.rs::oc_resolver_prefers_the_configured_mantle_region_over_the_environment`
-- D keeps catalog apiKey credentials out of provider JSON · uses no native API-key auth for explicitly enabled providers without credentials · keeps native provider environment auth strict when no API key is configured · maps catalog Anthropic AI SDK models into native routes · does not project API key metadata into settings or the request body · does not project OAuth account metadata into the request body · applies plugin-projected OpenAI endpoint and headers · does not route native OpenAI-compatible packages to the codex backend · maps legacy OpenAI organization and project settings to headers · keeps non-ChatGPT OAuth credentials on the configured endpoint · loads dynamic native provider packages through the injected package loader · maps OAuth credentials to native provider auth settings without their metadata · routes supported AISDK catalog packages through native provider packages · never loads the AI SDK for packages with native implementations — platform: AI SDK / native package routing and loaders
+- P uses the API modelID instead of the catalog ID for native OpenAI routes — `tests/oc_providers_backlog3.rs::oc_resolver_uses_the_api_model_id_instead_of_the_catalog_id`
+- D keeps catalog apiKey credentials out of provider JSON — platform: AI SDK / native package routing and loaders
+- P treats an empty configured API key as omitted — `tests/oc_providers_backlog3.rs::oc_resolver_treats_an_empty_configured_api_key_as_omitted`
+- D uses no native API-key auth for explicitly enabled providers without credentials · keeps native provider environment auth strict when no API key is configured — platform: AI SDK / native package routing and loaders
+- P uses merged API settings for OpenAI-compatible auth and request defaults — `tests/oc_providers_backlog3.rs::oc_resolver_uses_merged_api_settings_for_openai_compatible_auth_and_defaults`
+- P resolves provider URLs from environment without mutating the catalog model — `tests/oc_providers_backlog3.rs::oc_resolver_resolves_provider_urls_from_the_environment` (adapted: a configured URL takes a variable as {env:NAME})
+- D rejects unresolved variables in constructed provider routes — differs: a configured URL's {env:NAME} with the variable unset is replaced with nothing, as OpenCode's config replaces it, and a catalog URL with an unset variable is not used; neither is refused up front naming the variables
+- P overlays selected OpenAI variant settings and bodies — `tests/oc_providers_backlog3.rs::oc_resolver_overlays_selected_openai_variant_settings_and_bodies`
+- P sends xAI Responses effort variants with reasoning summaries — `tests/oc_providers_backlog3.rs::oc_resolver_sends_xai_responses_effort_variants_with_reasoning_summaries` (adapted: xAI configured on the Responses protocol (the built-in xAI is OpenAI Chat))
+- P overlays selected OpenAI-compatible variant bodies — `tests/oc_providers_backlog3.rs::oc_resolver_overlays_selected_openai_compatible_variant_bodies`
+- P rejects an explicit unavailable variant during model resolution — `tests/oc_providers_backlog3.rs::oc_resolver_rejects_an_explicit_unavailable_variant`
+- P overlays selected Anthropic variant settings — `tests/oc_providers_backlog3.rs::oc_resolver_overlays_selected_anthropic_variant_settings`
+- D maps catalog Anthropic AI SDK models into native routes — platform: AI SDK / native package routing and loaders
+- P uses resolved credentials for bearer auth — `tests/oc_providers_backlog3.rs::oc_resolver_uses_resolved_credentials_for_bearer_auth`
+- D prefers stored credentials over configured auth — differs: a key in the config wins over one saved with `codesmith auth` (then the key variables, then the saved key), where OpenCode prefers the stored credential
+- P lets Azure CLI requests past package auth for the Azure plugin to authorize — `tests/oc_providers_backlog3.rs::oc_resolver_lets_azure_cli_requests_past_key_auth` (adapted: an Azure CLI login sends no key; its token is added per request (oc_azure.rs))
+- D does not project API key metadata into settings or the request body · does not project OAuth account metadata into the request body · applies plugin-projected OpenAI endpoint and headers · does not route native OpenAI-compatible packages to the codex backend · maps legacy OpenAI organization and project settings to headers · keeps non-ChatGPT OAuth credentials on the configured endpoint · loads dynamic native provider packages through the injected package loader · maps OAuth credentials to native provider auth settings without their metadata · routes supported AISDK catalog packages through native provider packages · never loads the AI SDK for packages with native implementations — platform: AI SDK / native package routing and loaders
 - P routes Vertex Anthropic catalog models through native Messages — `tests/oc_providers.rs::oc_resolver_routes_vertex_anthropic_catalog_models_through_native_messages`
+- D merges mapped OpenRouter headers and body with catalog overlays · merges mapped Mistral headers and body with catalog overlays — platform: the AI SDK OpenRouter and Mistral packages' own settings (appName, appUrl, extraBody); CodeSmith takes headers and body as given
 - D loads supported AISDK catalog packages as native routes · loads arbitrary AISDK packages through the injected AISDK loader · rejects unresolved variables before loading opaque AISDK packages · rejects placeholders introduced by environment expansion before loading providers · rejects unresolved variables before loading native provider packages · rejects AISDK packages without an available loader · reports provider configuration errors from supported packages · distinguishes unexpected constructor failures from configuration errors · reports package load and AISDK initialization failures with their causes · drops an empty API key before loading an AISDK package · applies provider timeouts to resolved image, video, and decision models · reports whether a catalog model declares a provider package — platform: AI SDK / native package routing and loaders
 
 **`model.test.ts`**
