@@ -455,3 +455,12 @@ reconnects a server after its sign-in.
   `events/unsubscribe`) names its event in an `Mcp-Name` header too, so a
   server or proxy can route it without reading the body; a name that is not
   plain printable ASCII is sent as `=?base64?<name in base64>?=`.
+- While a connected server offers events, the model gets a
+  `list_mcp_events` tool that lists the events one server pushes, shaped
+  like the trigger they feed (`{server, event, description, args, data}`,
+  `args` and `data` being the JSON Schemas of the trigger's arguments and
+  of each event's data). It is checked as `list_mcp_events` with the server
+  as the resource, and a rule denying `watch_mcp_event` on the server
+  denies it too; where `watch_mcp_event` is denied everywhere (as in
+  unattended runs) it is not offered. Descriptions are shown without
+  control characters and cut at 1,000 characters.

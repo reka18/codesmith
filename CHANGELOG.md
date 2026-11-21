@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **`list_mcp_events` tool:** while a connected server offers MCP Events,
+  the model can list the events one server pushes, to use as an
+  automation's trigger. It asks `list_mcp_events` for the server, is denied
+  wherever `watch_mcp_event` is denied on it, and is not offered where
+  watching events is denied everywhere (unattended runs).
 - **MCP events over HTTP:** an `events/stream` request (and the other
   events requests) to a Streamable HTTP server names its event in an
   `Mcp-Name` header, base64-encoded when it is not plain ASCII.

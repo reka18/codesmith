@@ -43,6 +43,8 @@ const MAX_MESSAGE: usize = 16 << 20;
 pub const LIST_RESOURCES: &str = "list_mcp_resources";
 /// The tool that reads one MCP resource (also its permission action).
 pub const READ_RESOURCE: &str = "read_mcp_resource";
+/// The tool that lists a server's push events (also its permission action).
+pub const LIST_EVENTS: &str = "list_mcp_events";
 /// The `_meta` key a tool call carries its session's ID under.
 pub const SESSION_META: &str = "codesmith/sessionId";
 
@@ -601,6 +603,21 @@ pub fn resource_tools() -> Vec<(&'static str, String, Value)> {
         ),
     ]
 }
+
+/// The `list_mcp_events` tool definition: (name, description, parameters),
+/// with OpenCode's description.
+pub fn events_tool() -> (&'static str, String, Value) {
+    (
+        LIST_EVENTS,
+        "List the events an MCP server sends. Use one as an automation's event trigger.".into(),
+        json!({"type": "object", "properties": {
+            "server": {"type": "string", "description": "MCP server name as configured"}
+        }, "required": ["server"]}),
+    )
+}
+
+/// The longest event description listed; a server's longer one is cut.
+const MAX_EVENT_DESCRIPTION: usize = 1000;
 
 /// An asker for a server's elicitations while a call runs.
 struct Asking {
@@ -2358,6 +2375,48 @@ impl Mcp {
         Ok(prompt_result_text(
             &c.get_prompt(name, Value::Object(map)).await?,
         ))
+    }
+
+    /// Configured servers that are connected and offer MCP Events.
+    pub fn event_servers(&self) -> Vec<String> {
+        self.live()
+            .into_iter()
+            .filter(|(_, c)| c.has_events())
+            .map(|(n, _)| n)
+            .collect()
+    }
+
+    /// `{events: [{server, event, description, args, data}]}`: the events
+    /// `server` pushes, shaped like the event trigger they feed (OpenCode's
+    /// `list_mcp_events`). Descriptions are cleaned and cut short; poll-only
+    /// events are left out, since automations can use only pushed ones.
+    pub async fn list_push_events(&self, server: &str) -> Result<Value> {
+        let c = self
+            .client(server)
+            .filter(|c| c.has_events())
+            .ok_or_else(|| {
+                anyhow!("MCP server \"{server}\" is not connected or sends no events")
+            })?;
+        let events: Vec<Value> = c
+            .list_events()
+            .await?
+            .into_iter()
+            .filter(|t| t.delivery.iter().any(|d| d == "push"))
+            .map(|t| {
+                let mut e = json!({"server": server, "event": t.name});
+                if let Some(d) = t.description {
+                    e["description"] = json!(oauth::clean(&d, MAX_EVENT_DESCRIPTION));
+                }
+                if let Some(a) = t.input_schema {
+                    e["args"] = a;
+                }
+                if let Some(d) = t.payload_schema {
+                    e["data"] = d;
+                }
+                e
+            })
+            .collect();
+        Ok(json!({ "events": events }))
     }
 
     /// Check that `server` offers `event` for push delivery and that `args`

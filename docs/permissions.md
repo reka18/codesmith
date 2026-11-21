@@ -67,6 +67,7 @@ Patterns:
 | `<server>_<tool>` | `*` | An MCP tool, by the name the model sees. See [MCP](mcp.md#permissions). |
 | `list_mcp_resources`, `read_mcp_resource` | server, or `server:uri` | See [MCP resources](mcp.md#resources). |
 | `automation`, `watch_mcp_event` | operation (`create`, `pause`, ...), or server | See [automations](automations.md#what-the-agent-may-schedule). |
+| `list_mcp_events` | server | Also denied where `watch_mcp_event` is denied on the server. See [MCP events](mcp.md#instructions-notifications-and-events). |
 | plugin tools | `*` | By tool name, like any other tool. |
 
 A path rule is checked against every name the path goes by: the path as

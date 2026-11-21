@@ -970,3 +970,208 @@ fn mcp_name_header_values() {
         Some(10_000)
     );
 }
+
+// === MCP Events Tool ===
+
+/// Records every permission request and answers it with `reply`.
+struct Recorder {
+    reply: codesmith_core::permission::Reply,
+    asked: Mutex<Vec<codesmith_core::permission::Request>>,
+}
+
+impl codesmith_core::permission::Asker for Recorder {
+    fn ask(&self, req: &codesmith_core::permission::Request) -> codesmith_core::permission::Reply {
+        self.asked.lock().unwrap().push(req.clone());
+        self.reply.clone()
+    }
+}
+
+/// A session over `server` (with `rules`) whose permission requests go to
+/// a recorder answering `reply`.
+async fn asking_session(
+    url: &str,
+    rules: Value,
+    reply: codesmith_core::permission::Reply,
+) -> (H, Arc<Recorder>) {
+    let mut h = session_with(url, false, rules).await;
+    let rec = Arc::new(Recorder {
+        reply,
+        asked: Mutex::default(),
+    });
+    h.s = codesmith_core::session::Session::new(
+        &h.loaded,
+        h.root(),
+        codesmith_core::session::Options {
+            agent: None,
+            model: None,
+            resume: None,
+            title: Some("t".into()),
+            parent: None,
+            questioner: None,
+            mcp: h.mcp.clone(),
+            id: None,
+        },
+        rec.clone(),
+        Some(h.store()),
+    )
+    .unwrap();
+    (h, rec)
+}
+
+async fn list_events(h: &mut H, server: &str) -> String {
+    h.prompt(&format!(
+        "call list_mcp_events {}",
+        json!({ "server": server })
+    ))
+    .await;
+    last_tool_result(h)
+}
+
+// tool-mcp-events.test.ts: "lists one server's push events after asking
+// permission"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_tool_mcp_events_lists_one_servers_push_events_after_asking_permission() {
+    use codesmith_core::permission::Reply;
+    let server = remote(event_server()).await;
+    let (mut h, rec) = asking_session(
+        &server.url,
+        json!([{"action": "list_mcp_events", "resource": "*", "effect": "ask"}]),
+        Reply::Once,
+    )
+    .await;
+    let out = list_events(&mut h, "srv").await;
+    let v: Value = serde_json::from_str(&out).unwrap_or_else(|_| panic!("{out}"));
+    assert_eq!(
+        v,
+        json!({"events": [{
+            "server": "srv", "event": "job.finished", "description": "A job ended",
+            "args": {"type": "object", "properties": {"job": {"type": "string"}}},
+            "data": {"type": "object"}
+        }]})
+    );
+    let asked = rec.asked.lock().unwrap();
+    let mine: Vec<_> = asked
+        .iter()
+        .filter(|r| r.action == "list_mcp_events")
+        .collect();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].resources, ["srv"]);
+    assert_eq!(mine[0].save, ["srv"]);
+    assert!(tool_names(&h.requests()[0]).contains(&"list_mcp_events".to_string()));
+}
+
+// tool-mcp-events.test.ts: "fails for a server that sends no events"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_tool_mcp_events_fails_for_a_server_that_sends_no_events() {
+    let server = remote(event_server()).await;
+    let mut h = session_with(&server.url, false, json!([])).await;
+    let out = list_events(&mut h, "offline").await;
+    assert_eq!(
+        out,
+        "MCP server \"offline\" is not connected or sends no events"
+    );
+    let stored = h
+        .store()
+        .history(&h.s.id)
+        .unwrap()
+        .iter()
+        .flat_map(|m| m.parts.clone())
+        .find_map(|p| match p {
+            codesmith_ai::Part::ToolResult { is_error, .. } => Some(is_error),
+            _ => None,
+        });
+    assert_eq!(stored, Some(true));
+}
+
+// A refusal, a rule denying the tool on the server, and a rule denying
+// watch_mcp_event on it all stop the listing before the server is asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_events_tool_goes_through_the_permission_gate() {
+    use codesmith_core::permission::Reply;
+    for (rules, reply, asks) in [
+        (
+            json!([{"action": "list_mcp_events", "resource": "*", "effect": "ask"}]),
+            Reply::Reject(Some("not now".into())),
+            true,
+        ),
+        (
+            json!([{"action": "list_mcp_events", "resource": "srv", "effect": "deny"}]),
+            Reply::Once,
+            false,
+        ),
+        (
+            json!([{"action": "watch_mcp_event", "resource": "srv", "effect": "deny"}]),
+            Reply::Once,
+            false,
+        ),
+    ] {
+        let server = remote(event_server()).await;
+        let (mut h, rec) = asking_session(&server.url, rules.clone(), reply).await;
+        let out = list_events(&mut h, "srv").await;
+        assert!(!out.contains("job.finished"), "{rules}: {out}");
+        assert!(server.calls("events/list").is_empty(), "{rules}");
+        let asked = rec
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.action == "list_mcp_events");
+        assert_eq!(asked, asks, "{rules}");
+    }
+}
+
+// Where watching events is denied everywhere (as in unattended runs), or
+// the tool is, or no server offers events, it is not offered at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_events_tool_is_offered_only_where_it_can_be_used() {
+    for rules in [
+        json!([{"action": "watch_mcp_event", "resource": "*", "effect": "deny"}]),
+        json!([{"action": "list_mcp_events", "resource": "*", "effect": "deny"}]),
+    ] {
+        let server = remote(event_server()).await;
+        let mut h = session_with(&server.url, false, rules.clone()).await;
+        h.prompt("hello").await;
+        assert!(
+            !tool_names(&h.requests()[0]).contains(&"list_mcp_events".to_string()),
+            "{rules}"
+        );
+        // Called anyway, it is not run.
+        let out = list_events(&mut h, "srv").await;
+        assert!(!out.contains("job.finished"), "{out}");
+        assert!(server.calls("events/list").is_empty());
+    }
+    let plain = remote(Arc::new(|g: &Got| answer(g, &json!([])))).await;
+    let mut h = session_with(&plain.url, false, json!([])).await;
+    h.prompt("hello").await;
+    assert!(!tool_names(&h.requests()[0]).contains(&"list_mcp_events".to_string()));
+}
+
+// What a server says about its events is cleaned and cut short; names in
+// other scripts stay; an empty server name is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_events_tool_edge_cases() {
+    let long = format!("\u{1b}[31mred\u{202e}{}", "d".repeat(5000));
+    let server = remote(Arc::new(move |g: &Got| match g.method() {
+        "initialize" => Http::Result(init_result(events_caps())),
+        "events/list" => Http::Result(json!({"events": [
+            {"name": "タスク.完了", "description": long, "delivery": ["push", "poll"]},
+            {"name": "webhook.only", "delivery": ["webhook"]},
+            {"name": "nothing"}
+        ]})),
+        _ => answer(g, &json!([])),
+    }))
+    .await;
+    let mut h = session_with(&server.url, false, json!([])).await;
+    let out = list_events(&mut h, "srv").await;
+    let v: Value = serde_json::from_str(&out).unwrap_or_else(|_| panic!("{out}"));
+    let events = v["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{out}");
+    assert_eq!(events[0]["event"], "タスク.完了");
+    let d = events[0]["description"].as_str().unwrap();
+    assert!(d.starts_with(" [31mred"), "{d:?}");
+    assert!(!d.chars().any(|c| c.is_control() || c == '\u{202e}'));
+    assert!(d.chars().count() <= 1001);
+    for blank in ["", "   "] {
+        assert_eq!(list_events(&mut h, blank).await, "`server` is required");
+    }
+}

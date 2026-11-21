@@ -19,3 +19,6 @@
 1225 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_reconnects_and_retries_a_tool_call_after_the_session_expires :: adapted: a 404 to a request in a session starts a new one (initialize, tool list) and the call is sent once more
 3015 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_decodes_text_blobs_and_saves_other_blobs_instead_of_attaching_them :: adapted: saved in the session's tool-output folder; read_mcp_resource does the same
 3994 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_streams_events_over_streamable_http_naming_the_event_in_mcp_name :: adapted: a name that is not plain ASCII is sent base64-encoded
+@tool-mcp-events.test.ts
+81 :: ported :: tests/oc_mcp_roadmap.rs::oc_tool_mcp_events_lists_one_servers_push_events_after_asking_permission :: adapted: named list_mcp_events, a direct tool; a rule denying watch_mcp_event on the server denies it too
+90 :: ported :: tests/oc_mcp_roadmap.rs::oc_tool_mcp_events_fails_for_a_server_that_sends_no_events

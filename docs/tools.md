@@ -24,6 +24,7 @@ its rules don't deny outright (`codesmith debug agents` lists them).
 | `execute` | Run a Code Mode program over MCP tools. | MCP tools are in Code Mode ([MCP](mcp.md#code-mode)) |
 | `<server>_<tool>` | An MCP tool, as a direct call. | `codemode` is off for that server |
 | `list_mcp_resources`, `read_mcp_resource` | Browse and read MCP resources. | a connected server has resources ([MCP](mcp.md#resources)) |
+| `list_mcp_events` | List the events an MCP server pushes, to use as an automation's trigger. | a connected server offers events and `watch_mcp_event` is not denied everywhere ([MCP](mcp.md#instructions-notifications-and-events)) |
 | `codesmith` | Manage CodeSmith itself: search the available chat, image and video models (`models`), and list, create or remove the project's git worktrees. See [below](#codesmith). | the `codesmith` plugin is on (the default) |
 | `experimental_image_generate` | Make or edit an image with an image model, in the background. See [below](#generating-images-and-videos). | an image model is reachable and `experimental.image_generate` is not `false` |
 | `experimental_video_generate` | Make a video with a video model, in the background. See [below](#generating-images-and-videos). | a video model is reachable, the session is stored, and `experimental.video_generate` is `true` or `{"model": …}` (off by default) |

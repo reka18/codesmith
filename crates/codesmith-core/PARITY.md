@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 123 | 6 | 3 | 80 | 0 | 0 |
+| MCP | 212 | 125 | 6 | 1 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2894** | **79** | **34** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2896** | **79** | **32** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,7 +131,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (34 cases in 9 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (32 cases in 8 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -140,7 +140,6 @@ Missing features, by how many OpenCode test cases each would unlock (34 cases in
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
 | [MCP Code Mode Defaults](#mcp-code-mode-defaults) | 1 | Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
@@ -198,13 +197,6 @@ Missing features, by how many OpenCode test cases each would unlock (34 cases in
 - `voice.test.ts`: uses the first key or env connection Integration lists and never a ChatGPT sign-in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
-
-### MCP Events Tool
-
-2 cases.
-
-- `tool-mcp-events.test.ts`: lists one server's push events after asking permission
-- `tool-mcp-events.test.ts`: fails for a server that sends no events
 
 ### Automation Failure Handling
 
@@ -2376,7 +2368,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (209 of 212)</summary>
+<details><summary>MCP (211 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2549,6 +2541,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`tool-mcp-events.test.ts`**
 
 - D is absent while the mcp_events flag is off — deliberate: MCP events are not behind a flag
+- P lists one server's push events after asking permission — `tests/oc_mcp_roadmap.rs::oc_tool_mcp_events_lists_one_servers_push_events_after_asking_permission` (adapted: named list_mcp_events, a direct tool; a rule denying watch_mcp_event on the server denies it too)
+- P fails for a server that sends no events — `tests/oc_mcp_roadmap.rs::oc_tool_mcp_events_fails_for_a_server_that_sends_no_events`
 
 </details>
 

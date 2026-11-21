@@ -1792,6 +1792,7 @@ impl Session {
                     }),
             )
             .chain(self.resource_tools())
+            .chain(self.events_tools())
             .chain(
                 self.plugin_tools(plugins)
                     .iter()
@@ -2401,6 +2402,9 @@ impl Session {
                     _ if self.resource_tools().iter().any(|t| t.name == name) => {
                         self.run_resource_tool(&name, &input).await
                     }
+                    _ if self.events_tools().iter().any(|t| t.name == name) => {
+                        self.run_events_tool(&input).await
+                    }
                     _ if self.plugin_tools(&plugins).iter().any(|t| t.name() == name) => {
                         self.run_plugin_tool(&plugins, &name, &input).await
                     }
@@ -2939,6 +2943,73 @@ impl Session {
                 freeform: None,
             })
             .collect()
+    }
+
+    /// `list_mcp_events`, when a connected server offers events and the
+    /// rules deny neither it nor watching events everywhere
+    /// (`watch_mcp_event`, as unattended runs do).
+    fn events_tools(&self) -> Vec<codesmith_ai::ToolSpec> {
+        let rules = &self.agent.permissions;
+        let denied = |action: &str| {
+            crate::permission::evaluate(action, "*", rules) == crate::permission::Effect::Deny
+        };
+        if self.mcp.event_servers().is_empty()
+            || denied(crate::mcp::LIST_EVENTS)
+            || denied(crate::automation::WATCH_EVENT)
+        {
+            return vec![];
+        }
+        let (name, description, parameters) = crate::mcp::events_tool();
+        vec![codesmith_ai::ToolSpec {
+            name: name.into(),
+            description,
+            parameters,
+            freeform: None,
+        }]
+    }
+
+    /// List one server's push events, asking `list_mcp_events` with the
+    /// server as the resource; a rule denying `watch_mcp_event` on it denies
+    /// this too, since the listing is only for watching them.
+    async fn run_events_tool(&self, input: &serde_json::Value) -> (String, bool) {
+        let input = tool::repair(input);
+        let Some(server) = input["server"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return ("`server` is required".into(), true);
+        };
+        let server = server.to_string();
+        if let Err(e) = self.gate.assert_not_denied(
+            crate::automation::WATCH_EVENT,
+            std::slice::from_ref(&server),
+        ) {
+            return (e.to_string(), true);
+        }
+        let title = format!(
+            "List the events MCP server {} sends",
+            crate::automation::quote(&server, 200)
+        );
+        if let Err(e) = self.allowed_with(
+            crate::mcp::LIST_EVENTS,
+            vec![server.clone()],
+            vec![server.clone()],
+            title,
+        ) {
+            return (e, true);
+        }
+        match self.mcp.list_push_events(&server).await {
+            Ok(v) => (
+                tool::truncate(
+                    &serde_json::to_string_pretty(&v).unwrap_or_default(),
+                    self.limits,
+                    &paths::session_output_dir(&self.id),
+                ),
+                false,
+            ),
+            Err(e) => (format!("{e:#}"), true),
+        }
     }
 
     async fn run_resource_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
