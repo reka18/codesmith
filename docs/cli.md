@@ -285,7 +285,7 @@ How it upgrades depends on where this copy lives:
 
 | Installed with | `codesmith upgrade` |
 |---|---|
-| `install.sh` or a release tarball | Downloads `codesmith-<version>-<target>.tar.gz` and `SHA256SUMS`, checks the tarball against it, checks that the binary in it runs and reports `<version>`, then renames it over the running binary (so a failure at any step leaves the old one untouched). |
+| `install.sh` or a release tarball | Downloads `SHA256SUMS` and its signature `SHA256SUMS.minisig` and checks the signature (see below), then downloads `codesmith-<version>-<target>.tar.gz`, checks it against `SHA256SUMS`, checks that the binary in it runs and reports `<version>`, then renames it over the running binary (so a failure at any step leaves the old one untouched). |
 | Homebrew (a `Cellar/codesmith` path) | Changes nothing; tells you to run `brew upgrade reka18/tap/codesmith`. |
 | `cargo install` (`~/.cargo/bin`) | Changes nothing; prints the `cargo install` command. |
 | A source checkout (`target/...`) | Changes nothing. |
@@ -297,6 +297,32 @@ all, pass `--method binary` for a copy you installed from a tarball. The
 folder holding the binary must be writable: the new binary is written to a
 temporary folder beside it, so the final rename is atomic on one filesystem,
 and that folder is removed however the upgrade ends.
+
+**Signed releases.** Each release's `SHA256SUMS` is signed with
+[minisign](https://jedisct1.github.io/minisign/), and `codesmith` carries
+the release public keys in the binary. Before it uses any checksum, and so
+before it writes or runs anything, `codesmith upgrade` checks that
+`SHA256SUMS.minisig` is a valid signature of `SHA256SUMS` by one of those
+keys, and that its trusted comment (which the signature also covers) is
+`codesmith <version> SHA256SUMS` for the version asked for, so an older
+release's signed checksums can't stand in for another version's. A missing
+or bad signature refuses the upgrade: `the signed SHA256SUMS is for ..., not
+codesmith <version>`, `SHA256SUMS is not signed by a CodeSmith release key`
+or `could not get the release signature`, each ending `nothing was changed`.
+There is no flag to skip the check. A rollback to a release from before
+signing began is refused for the same reason; install that one with
+`install.sh` or by hand. Builds made before the first release key existed
+check `SHA256SUMS` only and print `warning: CodeSmith releases aren't signed
+yet; checking SHA256SUMS only`.
+
+`install.sh` checks the same signature when `minisign` is installed (`brew
+install minisign`, or your distribution's package); without it, it checks
+`SHA256SUMS` only and says so. To check a manual download:
+
+```sh
+minisign -V -P <key> -m SHA256SUMS   # the key from release_key.pub
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
 
 The upgrade makes plain GET requests with a `codesmith/<version>` user agent,
 to `https://github.com/reka18/codesmith/releases/...` only (and the download

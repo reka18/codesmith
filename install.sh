@@ -9,11 +9,20 @@
 #   CODESMITH_BASE_URL     where release files live (default: GitHub Releases;
 #                          useful for mirrors and testing)
 #
-# This script only downloads the release tarball and its checksum file. It
-# sends nothing else anywhere and installs nothing outside the install dir.
+# This script only downloads the release tarball, its checksum file and the
+# checksum file's signature. It sends nothing else anywhere and installs
+# nothing outside the install dir.
+#
+# If minisign (https://jedisct1.github.io/minisign/) is installed, SHA256SUMS
+# must carry a valid signature by a CodeSmith release key, for the version
+# being installed; without minisign that check is skipped with a note.
 set -eu
 
 REPO="reka18/codesmith"
+# The minisign public keys that sign releases, space-separated: the same list
+# as crates/codesmith/src/release_key.pub (a test keeps the two equal). Empty
+# until the first release key is generated.
+RELEASE_KEYS=""
 INSTALL_DIR="${CODESMITH_INSTALL_DIR:-${HOME}/.local/bin}"
 
 say() { printf 'codesmith-install: %s\n' "$*" >&2; }
@@ -59,6 +68,38 @@ sha256_of() {
     fi
 }
 
+# verify_signature DIR VERSION: DIR holds SHA256SUMS; check its signature.
+verify_signature() {
+    if [ -z "$RELEASE_KEYS" ]; then
+        say "note: CodeSmith releases are not signed yet; checked SHA256SUMS only"
+        return 0
+    fi
+    if ! command -v minisign >/dev/null 2>&1; then
+        say "note: install minisign to also check the release signature; checked SHA256SUMS only"
+        return 0
+    fi
+    fetch "${base}/SHA256SUMS.minisig" "$1/SHA256SUMS.minisig" \
+        || die "download failed: ${base}/SHA256SUMS.minisig (CodeSmith releases are signed; this one is not)"
+    # Prehashed signatures only (minisign's default), as codesmith upgrade:
+    # their signature line encodes "ED", so it starts with RU.
+    case $(sed -n 2p "$1/SHA256SUMS.minisig") in
+        RU*) ;;
+        *) die "SHA256SUMS.minisig is not a prehashed minisign signature" ;;
+    esac
+    for key in $RELEASE_KEYS; do
+        # -Q prints only the trusted comment, which minisign has verified.
+        if comment=$(minisign -V -Q -P "$key" -m "$1/SHA256SUMS" -x "$1/SHA256SUMS.minisig" 2>/dev/null); then
+            case "$comment" in
+                "codesmith $2 SHA256SUMS" | "codesmith $2 SHA256SUMS "*) ;;
+                *) die "the signed SHA256SUMS is for '${comment}', not codesmith $2" ;;
+            esac
+            say "signature ok"
+            return 0
+        fi
+    done
+    die "SHA256SUMS is not signed by a CodeSmith release key"
+}
+
 detect_target() {
     os=$(uname -s)
     arch=$(uname -m)
@@ -102,6 +143,7 @@ main() {
     say "downloading ${file}"
     fetch "${base}/${file}" "${tmp}/${file}" || die "download failed: ${base}/${file}"
     fetch "${base}/SHA256SUMS" "${tmp}/SHA256SUMS" || die "download failed: ${base}/SHA256SUMS"
+    verify_signature "$tmp" "$version"
 
     expected=$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1 }' "${tmp}/SHA256SUMS")
     [ -n "$expected" ] || die "${file} is not listed in SHA256SUMS"

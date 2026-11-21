@@ -1006,6 +1006,140 @@ fn a_signature_made_by_the_minisign_tool_verifies() {
     assert!(e.to_string().contains("not signed by"), "{e}");
 }
 
+/// install.sh can't read release_key.pub, so it lists the keys itself.
+fn install_sh() -> String {
+    std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../install.sh")).unwrap()
+}
+
+#[test]
+fn install_sh_pins_the_same_keys_as_codesmith_upgrade() {
+    let script = install_sh();
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("RELEASE_KEYS="))
+        .expect("install.sh sets RELEASE_KEYS");
+    let listed: Vec<&str> = line["RELEASE_KEYS=".len()..]
+        .trim_matches('"')
+        .split_whitespace()
+        .collect();
+    let pinned: Vec<&str> = RELEASE_KEYS
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && *l != "PLACEHOLDER")
+        .collect();
+    assert_eq!(listed, pinned, "update RELEASE_KEYS in install.sh");
+}
+
+// install.sh checks the signature with minisign when it is installed. The
+// script is run with a key substituted for RELEASE_KEYS and a stand-in
+// `minisign` that reports what the real one would (its checks are its own).
+fn run_install_sh(
+    server: &Server,
+    keys: &str,
+    minisign: Option<&str>,
+) -> (bool, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let script = install_sh().replace(
+        "\nRELEASE_KEYS=\"\"\n",
+        &format!("\nRELEASE_KEYS=\"{keys}\"\n"),
+    );
+    assert!(script.contains(&format!("RELEASE_KEYS=\"{keys}\"")));
+    std::fs::write(dir.path().join("install.sh"), script).unwrap();
+    let tools = dir.path().join("tools");
+    std::fs::create_dir(&tools).unwrap();
+    // Only the system's tools, so a real minisign on this machine is unseen.
+    let mut path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());
+    if let Some(body) = minisign {
+        let stub = tools.join("minisign");
+        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    } else {
+        path = "/usr/bin:/bin:/usr/sbin:/sbin".to_string();
+    }
+    let output = std::process::Command::new("/bin/sh")
+        .arg(dir.path().join("install.sh"))
+        .env_clear()
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("CODESMITH_VERSION", "2.0.0")
+        .env("CODESMITH_INSTALL_DIR", dir.path().join("bin"))
+        .env(
+            "CODESMITH_BASE_URL",
+            format!("{}/download/v2.0.0", server.base),
+        )
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stderr).into_owned();
+    (output.status.success(), text, dir)
+}
+
+#[test]
+fn install_sh_checks_the_signature_when_minisign_is_installed() {
+    if !Path::new("/usr/bin/curl").exists() || !Path::new("/usr/bin/tar").exists() {
+        return; // install.sh needs curl and tar from the system.
+    }
+    // T is a macOS target; install.sh picks this machine's, so publish it.
+    let target = TARGET.unwrap_or(T);
+    let server = Server::start();
+    server.publish("2.0.0", target, "2.0.0", None);
+    let key = test_key().public_line();
+    let installed = |dir: &tempfile::TempDir| dir.path().join("bin/codesmith").exists();
+    let good = "echo 'codesmith 2.0.0 SHA256SUMS timestamp:1'";
+
+    // Placeholder: checksums only, with a note.
+    let (ok, err, dir) = run_install_sh(&server, "", Some("exit 1"));
+    assert!(ok && installed(&dir), "{err}");
+    assert!(err.contains("not signed yet"), "{err}");
+
+    // A key, no minisign here: skipped with a note.
+    let (ok, err, dir) = run_install_sh(&server, &key, None);
+    assert!(ok && installed(&dir), "{err}");
+    assert!(err.contains("install minisign"), "{err}");
+
+    // A key and minisign: verified, with the version checked.
+    let (ok, err, dir) = run_install_sh(&server, &key, Some(good));
+    assert!(ok && installed(&dir), "{err}");
+    assert!(err.contains("signature ok"), "{err}");
+
+    let (ok, err, dir) = run_install_sh(&server, &key, Some("exit 1"));
+    assert!(!ok && !installed(&dir), "{err}");
+    assert!(
+        err.contains("not signed by a CodeSmith release key"),
+        "{err}"
+    );
+
+    let (ok, err, dir) = run_install_sh(
+        &server,
+        &key,
+        Some("echo 'codesmith 1.9.0 SHA256SUMS timestamp:1'"),
+    );
+    assert!(!ok && !installed(&dir), "{err}");
+    assert!(err.contains("not codesmith 2.0.0"), "{err}");
+
+    // A legacy signature (minisign -l) is refused, as codesmith upgrade does.
+    let sums = sums_of(&server, "2.0.0");
+    let legacy = test_key().sign_legacy(&sums, "codesmith 2.0.0 SHA256SUMS");
+    sign_release(&server, "2.0.0", &legacy);
+    let (ok, err, dir) = run_install_sh(&server, &key, Some(good));
+    assert!(!ok && !installed(&dir), "{err}");
+    assert!(err.contains("prehashed"), "{err}");
+
+    server.route(
+        "/releases/download/v2.0.0/SHA256SUMS.minisig",
+        404,
+        &[],
+        b"",
+    );
+    let (ok, err, dir) = run_install_sh(&server, &key, Some(good));
+    assert!(!ok && !installed(&dir), "{err}");
+    assert!(err.contains("SHA256SUMS.minisig"), "{err}");
+}
+
 // "method detection identifies ${method} using the V2 package": by path.
 #[test]
 fn oc_method_detection_identifies_the_installation() {

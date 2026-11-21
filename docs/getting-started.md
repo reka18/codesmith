@@ -11,8 +11,10 @@ notarized by Apple. The Linux binaries are statically linked (musl) and run
 on any distribution.
 
 **Install script** (macOS and Linux). It downloads the release tarball for
-your platform, checks it against the release's `SHA256SUMS`, and puts
-`codesmith` in `~/.local/bin`. It sends nothing anywhere else.
+your platform, checks it against the release's `SHA256SUMS` (and, if
+[minisign](https://jedisct1.github.io/minisign/) is installed, checks that
+`SHA256SUMS` is signed by a CodeSmith release key), and puts `codesmith` in
+`~/.local/bin`. It sends nothing anywhere else.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/reka18/codesmith/main/install.sh | sh
@@ -28,8 +30,11 @@ files from a mirror. You can [read the script](../install.sh) first.
 brew install reka18/tap/codesmith
 ```
 
-**Manually.** Download `codesmith-<version>-<target>.tar.gz` and
-`SHA256SUMS` from the release. Check them with
+**Manually.** Download `codesmith-<version>-<target>.tar.gz`,
+`SHA256SUMS` and `SHA256SUMS.minisig` from the release. Check the signature
+with `minisign -V -P <key> -m SHA256SUMS`, using the key in
+[`release_key.pub`](../crates/codesmith/src/release_key.pub), and that its
+trusted comment names the version; then check the tarball with
 `shasum -a 256 -c SHA256SUMS --ignore-missing`, unpack, and put `codesmith`
 on your `PATH`.
 
@@ -42,7 +47,8 @@ cargo install --locked --path crates/codesmith
 ```
 
 **Upgrading.** `codesmith upgrade` upgrades a copy from the install script
-or a tarball, after checking the new tarball against `SHA256SUMS`. Homebrew
+or a tarball, after checking the signature of `SHA256SUMS` with the release
+key built into it and the new tarball against `SHA256SUMS`. Homebrew
 and cargo copies are left to `brew upgrade` and `cargo install`. CodeSmith
 never checks for updates on its own unless you
 [opt in](cli.md#update-checks). See [`codesmith upgrade`](cli.md#codesmith-upgrade).
