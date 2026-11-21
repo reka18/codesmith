@@ -2508,7 +2508,7 @@ mod tests {
     #[cfg(unix)]
     fn on_a_terminal(name: &str, deadline: Duration) -> bool {
         use std::io::Read;
-        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         use std::os::unix::process::CommandExt;
         if std::env::var_os(ON_A_TERMINAL).is_some() {
             return false;
@@ -2529,6 +2529,12 @@ mod tests {
         // SAFETY: openpty just returned them; nothing else owns them.
         let (master, slave) =
             unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        // Neither side may leak into a program another test starts meanwhile,
+        // which would keep the terminal open after the child is gone.
+        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+            // SAFETY: fcntl on descriptors this function owns; no pointers.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
         let test = format!("{}::{name}", module_path!().split_once("::").unwrap().1);
         let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
         cmd.args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
@@ -2549,17 +2555,15 @@ mod tests {
         drop(cmd);
         let pid = child.id() as i32;
         let mut reader = std::fs::File::from(master);
-        let output = std::thread::spawn(move || {
-            let mut all = Vec::new();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             // EOF, or EIO once the terminal's last user is gone.
             while let Ok(n) = reader.read(&mut buf) {
-                if n == 0 {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
                     break;
                 }
-                all.extend_from_slice(&buf[..n]);
             }
-            String::from_utf8_lossy(&all).into_owned()
         });
         let until = std::time::Instant::now() + deadline;
         let status = loop {
@@ -2579,7 +2583,17 @@ mod tests {
             child.wait().ok();
             None
         });
-        let text = output.join().unwrap();
+        // What it wrote, read until the terminal closes (bounded: a program
+        // that kept it open must not hold the test).
+        let mut all = Vec::new();
+        let drained = std::time::Instant::now() + Duration::from_secs(5);
+        while let Some(left) = drained.checked_duration_since(std::time::Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(chunk) => all.extend_from_slice(&chunk),
+                Err(_) => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&all).into_owned();
         match status {
             Some(s) => assert!(s.success(), "{test} failed on a terminal:\n{text}"),
             None => panic!("{test} did not finish within {deadline:?} on a terminal:\n{text}"),
