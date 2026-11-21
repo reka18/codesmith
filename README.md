@@ -68,7 +68,7 @@ Then run `codesmith` in a project. Ollama, LM Studio and llama.cpp at their
 default ports need no config at all: `codesmith -m ollama/qwen3-coder`.
 
 Type a request and press **Enter**. Permission prompts take **y** (allow
-once), **a** (always, for this session), or **n**/**Esc**/**Enter**
+once), **a** (always, saved for the project), or **n**/**Esc**/**Enter**
 (reject). For scripts:
 
 ```sh
