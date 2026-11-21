@@ -11,7 +11,10 @@ so the client must skip what already ran.
 
 A plan is a JSON list, one entry per connection, in order: `{"events":
 [[id, cursor, title], ...], "exit": true}` sends those events and then
-exits (a broken stream); without `exit` the stream heartbeats. Each
+exits (a broken stream); without `exit` the stream heartbeats. `"notes":
+[[method, params], ...]` are sent after the events, each with the
+subscription's `_meta` (a malformed event, a cursorless `active`, a
+`terminated`). Each
 stream's resume cursor is appended to `<plan>.log`, one JSON value a
 line."""
 import json, os, sys, threading, time
@@ -81,6 +84,10 @@ def planned(mid, params, meta, cursor):
     for eid, cur, title in step.get("events", []):
         note("notifications/events/event", {"eventId": eid, "name": "ticket.created", "timestamp": "2026-11-19T10:00:00Z", "data": {"title": title}, "cursor": cur, "_meta": meta})
         last = cur
+    for method, extra in step.get("notes", []):
+        p = dict(extra)
+        p["_meta"] = meta
+        note(method, p)
     if step.get("exit"):
         time.sleep(0.2)
         os._exit(0)

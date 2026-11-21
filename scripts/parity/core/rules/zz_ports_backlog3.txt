@@ -112,3 +112,46 @@
 711 :: design :: differs :: a key in the config wins over one saved with `codesmith auth` (then the key variables, then the saved key), where OpenCode prefers the stored credential
 734 :: ported :: tests/oc_providers_backlog3.rs::oc_resolver_lets_azure_cli_requests_past_key_auth :: adapted: an Azure CLI login sends no key; its token is added per request (oc_azure.rs)
 1246,1277 :: design :: platform :: the AI SDK OpenRouter and Mistral packages' own settings (appName, appUrl, extraBody); CodeSmith takes headers and body as given
+
+# --- Automations (tests/oc_automation_backlog3.rs; tests/automation.rs pins
+# runs end to end) ---
+@automation-event.test.ts
+202 :: ported :: tests/automation.rs::event_triggered_runs :: adapted: a program gets each event as input.event and finishes the watch on the last one
+253 :: design :: deliberate :: an automation has one trigger, so a watch takes no timer
+276 :: ported :: tests/automation.rs::event_triggered_runs :: adapted: the default stream sends a nonterminal error after its tickets, and the watch stays on it
+438 :: ported :: tests/automation.rs::event_triggered_runs :: adapted: pause, resume and removal stop and restart the one watch (no restart in place)
+576 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_validates_permission_push_capability_and_arguments
+618 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_prompts_stay_distinct_and_quote_untrusted_fields
+642 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_rejects_an_oversized_rendered_prompt_before_creating_a_child
+662:4 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake :: the malformed, truncated, terminated and no-replay rows; adapted: paused with the reason
+662:1 :: design :: differs :: the permission-revoked row: a watch reads its project's rules when it connects, so a rule denying watch_mcp_event added mid-stream stops it at its next connection, not its next event (pausing or removing the automation stops it at once)
+662:1 :: feature :: Automation Expiry :: an expiry time after which an automation stops (the expired row)
+@automation.test.ts
+328 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_runs_an_at_automation_once :: adapted: claimed at chosen times; a new automation's default target is a child of its session (tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it)
+374 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_parses_at_times_with_offsets_or_in_the_automations_zone
+394 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_creates_lists_pauses_resumes_and_deletes :: a resumed interval was due a whole interval after the resume rather than at its next slot; slots now fall on the interval's grid from its creation (adapted: listed by directory)
+439 :: ported :: tests/automation.rs::scheduled_runs :: adapted: a prompt into an existing session
+488 :: ported :: tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it
+548 :: design :: deliberate :: an automation created in a session runs only as that session's agent or a read-only subagent (automation::check_target), so a restricted agent cannot schedule work for a more capable one
+602 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_runs_without_a_session_in_the_given_directory :: adapted: a prompt always names its target
+652,684 :: feature :: Automation Expiry :: an expiry time after which an automation stops
+735 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase :: an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation
+755 :: design :: storage-model :: there is no inbox of unconsumed prompts: a run's prompt is a turn that runs at once, and a run into a busy session is deferred (tests/automation.rs::a_busy_session_defers_runs_and_a_live_session_catches_up)
+801 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_keeps_automations_when_the_creator_goes_and_pauses_when_the_target_does :: an automation whose target session was deleted failed at every slot and stayed active; it is paused with the reason now
+910 :: design :: storage-model :: no inbox admission to be paused in the middle of
+932 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_does_not_start_timers_that_were_paused_or_deleted :: adapted: there is no rescheduling in place
+972 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_pauses_with_a_reason_when_its_directory_disappears :: an automation whose directory was deleted failed at every slot and stayed active; it is paused with the reason now (adapted: no creation check, the tool creates in the session's folder)
+998 :: design :: deliberate :: the scheduler ticks every 15 seconds rather than sleeping until the next due time
+1037,1254,1293 :: feature :: Automation Failure Handling :: a five-minute backoff after a failed prompt, a pause after three failed programs, a pause on a malformed program result
+1077 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_keeps_cron_at_the_same_wall_clock_time_across_dst
+1187 :: ported :: tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged :: adapted: state across runs, done finishes it, and a run that sends nothing starts no session
+1232 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged
+1316 :: feature :: Automation Durable Handoffs :: pending and terminal sends to the creating session
+1648,1683,1726,1757 :: feature :: Automation Tool Extraction :: the tools a program calls read from it at creation, asked about once, and checked at run time
+@tool-automation.test.ts
+173 :: design :: deliberate :: the creating session is recorded with an automation, not the tool call that created it
+194 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_creates_lists_pauses_resumes_and_deletes
+224 :: feature :: Automation Command :: an /automation command that hands the request to the model
+264 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_rejects_a_malformed_trigger_or_target :: adapted: an empty name is taken from the prompt
+293 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_lists_id_trigger_status_next_run_and_action :: adapted: CodeSmith's listing
+320 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_treats_another_projects_automation_as_missing

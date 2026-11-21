@@ -45,20 +45,24 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
 | Code Mode | 67 | 38 | 8 | 1 | 20 | 0 | 0 |
-| Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
+| Automations | 107 | 26 | 5 | 24 | 52 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 411 | 0 | 24 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2744** | **69** | **47** | **2560** | **168** | **0** |
+| **Total** | **5588** | **2768** | **73** | **59** | **2567** | **121** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
 - `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
+- `automation.test.ts`: "creates, lists, pauses, resumes and deletes" (1 case): a resumed interval was due a whole interval after the resume rather than at its next slot; slots now fall on the interval's grid from its creation (adapted: listed by directory). Pinned by `tests/oc_automation_backlog3.rs::oc_automation_creates_lists_pauses_resumes_and_deletes`.
+- `automation.test.ts`: "runs once after downtime, marked late, and keeps the phase" (1 case): an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation. Pinned by `tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase`.
+- `automation.test.ts`: "keeps automations when their creating Session is deleted, and pauses when a target is gone" (1 case): an automation whose target session was deleted failed at every slot and stayed active; it is paused with the reason now. Pinned by `tests/oc_automation_backlog3.rs::oc_automation_keeps_automations_when_the_creator_goes_and_pauses_when_the_target_does`.
+- `automation.test.ts`: "pauses with a reason when its directory disappears" (1 case): an automation whose directory was deleted failed at every slot and stayed active; it is paused with the reason now (adapted: no creation check, the tool creates in the session's folder). Pinned by `tests/oc_automation_backlog3.rs::oc_automation_pauses_with_a_reason_when_its_directory_disappears`.
 - `config/agent.test.ts`: "matches POSIX paths against home-relative permissions" (1 case): a path rule written from the home folder (`~/p/**`) never matched, as paths are checked absolute, so a deny such as `read ~/.ssh/*` did nothing; it matches the absolute paths now (a shell rule's `~` and `$HOME` stay literal). Pinned by `tests/oc_agents_backlog2.rs::oc_agent_matches_paths_against_home_relative_permissions`.
 - `config/skill.test.ts`: "maps config entry types to skill directories" (1 case): a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories`.
 - `file-access-path.test.ts`: "does not treat a filesystem-root project sentinel as an internal boundary" (1 case): a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary). Pinned by `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary`.
@@ -113,6 +117,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 
 Recorded rather than fixed here; the repro tests are in the files named, `#[ignore]`d where they would fail.
 
+- **Difference to decide**, `automation-event.test.ts` "stops the stream without a wake: ${stop}" (1): the permission-revoked row: a watch reads its project's rules when it connects, so a rule denying watch_mcp_event added mid-stream stops it at its next connection, not its next event (pausing or removing the automation stops it at once).
 - **Difference to decide**, `model-resolver.test.ts` "rejects unresolved variables in constructed provider routes" (1): a configured URL's {env:NAME} with the variable unset is replaced with nothing, as OpenCode's config replaces it, and a catalog URL with an unset variable is not used; neither is refused up front naming the variables.
 - **Difference to decide**, `model-resolver.test.ts` "prefers stored credentials over configured auth" (1): a key in the config wins over one saved with `codesmith auth` (then the key variables, then the saved key), where OpenCode prefers the stored credential.
 - **Difference to decide**, `session-generate.test.ts` "runs generate hooks instead of context hooks" (1): one context hook runs for every request, generations included, told their kind (`generate`), instead of a separate generate hook.
@@ -120,19 +125,23 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (47 cases in 10 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (59 cases in 14 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
-| [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
+| [Automation Durable Handoffs](#automation-durable-handoffs) | 13 | checkpointed handoffs settled across pauses and expiry; pending and terminal sends to the creating session; … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
+| [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
+| [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
+| [Automation Failure Handling](#automation-failure-handling) | 3 | a five-minute backoff after a failed prompt, a pause after three failed programs, a pause on a malformed program result |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Default Model Fallback](#default-model-fallback) | 2 | the newest available model when none is configured, skipping disabled providers (CodeSmith asks for a model) |
 | [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
 | [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
 | [Session Diff Ranges](#session-diff-ranges) | 1 | a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only) |
+| [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
 | [Code Mode Rejection Warnings](#code-mode-rejection-warnings) | 1 | a warning for a promise rejected and never awaited (CodeSmith drops it) |
 
 ### Provider Plugins
@@ -158,11 +167,12 @@ Missing features, by how many OpenCode test cases each would unlock (47 cases in
 
 ### Automation Durable Handoffs
 
-12 cases.
+13 cases.
 
 - `automation-event.test.ts`: settles a durable handoff before expiry: ${outcome} (3 cases)
 - `automation-event.test.ts`: checkpoints an accepted handoff across a ${pause} pause (2 cases)
 - `automation-event.test.ts`: does not checkpoint a rejected handoff or commit its terminal state
+- `automation.test.ts`: stays quiet while pending, then admits both a progress and a terminal send to the creator
 - `automation.test.ts`: hands a failed check to one quiet child with the creator's permissions
 - `automation.test.ts`: keeps the handoff visible and logs within the UTF-8 output budget
 - `automation.test.ts`: bounds failed code output including the pause reason in UTF-8 bytes
@@ -179,6 +189,31 @@ Missing features, by how many OpenCode test cases each would unlock (47 cases in
 - `plugin/provider-chatgpt.test.ts`: selects WebSocket only from explicit policy
 - `plugin/provider-openai.test.ts`: omits the default output limit from OpenAI steps and compaction
 - `plugin/provider-openai.test.ts`: selects WebSocket only from explicit policy
+
+### Automation Tool Extraction
+
+4 cases.
+
+- `automation.test.ts`: extracts tools at creation, asks once without save, and runs unattended after
+- `automation.test.ts`: asks for resource-scoped ask rules at creation, and still needs a person for them at run time
+- `automation.test.ts`: asks for execute when its tools are already allowed
+- `automation.test.ts`: rejects dynamic tool access, unknown tools, shell, recursive automation tools and denied permissions
+
+### Automation Expiry
+
+3 cases.
+
+- `automation-event.test.ts`: stops the stream without a wake: ${stop}
+- `automation.test.ts`: stops at expires
+- `automation.test.ts`: never runs a slot that only comes up after expires, after downtime or on resume
+
+### Automation Failure Handling
+
+3 cases.
+
+- `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
+- `automation.test.ts`: keeps state on failure, retries a minute later, and pauses after 3 failed runs
+- `automation.test.ts`: pauses at once when a run returns an invalid shape
 
 ### Browser Attachment
 
@@ -222,6 +257,12 @@ Missing features, by how many OpenCode test cases each would unlock (47 cases in
 
 - `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
 
+### Automation Command
+
+1 cases.
+
+- `tool-automation.test.ts`: /automation hands the request to the model with the automation instructions
+
 ### Code Mode Rejection Warnings
 
 1 cases.
@@ -230,7 +271,7 @@ Missing features, by how many OpenCode test cases each would unlock (47 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (168 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (121 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### MCP (121)
 
@@ -353,65 +394,18 @@ Tests for behaviour CodeSmith already has but no test pins (168 cases), by area,
   - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
   - `tool-mcp-events.test.ts`: fails for a server that sends no events
 
-### Automations (47)
-
-- MCP event watches: terminal events, timers on a running watch, nonterminal errors, pause/resume/delete, argument and permission validation, quoted untrusted fields, oversized prompts, stop reasons (M) — `tests/automation.rs`
-  - `automation-event.test.ts`: pushes pending then ${terminal} through one automation, with no timer or tool poll (2 cases)
-  - `automation-event.test.ts`: a timer added to a running watch fires without reopening its stream
-  - `automation-event.test.ts`: continues on the same stream after a nonterminal producer error
-  - `automation-event.test.ts`: pause, restart, resume and delete cancel and reacquire exactly one stream
-  - `automation-event.test.ts`: validates permission, push capability and arguments before creating a watch
-  - `automation-event.test.ts`: plain prompt events stay distinct and quote untrusted fields; oversized input does not run
-  - `automation-event.test.ts`: rejects an oversized rendered event prompt before creating a child
-  - `automation-event.test.ts`: stops the stream without a wake: ${stop} (6 cases)
-- at/cron scheduling, zones and DST, create/list/pause/resume/delete, targets, child sessions, expiry, late runs after downtime, skip while unconsumed, backoff, program state, permissions extracted at creation (M) — `tests/automation.rs`
-  - `automation.test.ts`: runs an at automation once, into the creating Session by default
-  - `automation.test.ts`: parses at times with offsets or in the automation's zone
-  - `automation.test.ts`: creates, lists, pauses, resumes and deletes
-  - `automation.test.ts`: sends a prompt to another existing Session
-  - `automation.test.ts`: starts a child of the creating Session with the agent on each run, without waking the parent
-  - `automation.test.ts`: allows any agent that can run as a subagent, and rejects hidden and primary-only agents
-  - `automation.test.ts`: runs without a Session in the given directory, and needs a target for a prompt
-  - `automation.test.ts`: stops at expires
-  - `automation.test.ts`: never runs a slot that only comes up after expires, after downtime or on resume
-  - `automation.test.ts`: runs once after downtime, marked late, and keeps the phase
-  - `automation.test.ts`: skips a run while the previous prompt is unconsumed
-  - `automation.test.ts`: keeps automations when their creating Session is deleted, and pauses when a target is gone
-  - `automation.test.ts`: keeps the run count when paused while a prompt is being admitted
-  - `automation.test.ts`: does not start queued timers that were paused, deleted or rescheduled
-  - `automation.test.ts`: pauses with a reason when its directory disappears
-  - `automation.test.ts`: run sleeps until the next automation is due
-  - `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
-  - `automation.test.ts`: keeps cron at the same wall-clock time across DST changes
-  - `automation.test.ts`: keeps state across runs, stays quiet without a return, and stops when done
-  - `automation.test.ts`: a program that returns nothing leaves state unchanged
-  - `automation.test.ts`: keeps state on failure, retries a minute later, and pauses after 3 failed runs
-  - `automation.test.ts`: pauses at once when a run returns an invalid shape
-  - `automation.test.ts`: stays quiet while pending, then admits both a progress and a terminal send to the creator
-  - `automation.test.ts`: extracts tools at creation, asks once without save, and runs unattended after
-  - `automation.test.ts`: asks for resource-scoped ask rules at creation, and still needs a person for them at run time
-  - `automation.test.ts`: asks for execute when its tools are already allowed
-  - `automation.test.ts`: rejects dynamic tool access, unknown tools, shell, recursive automation tools and denied permissions
-- automation tool: event-watch call, create/list/pause/resume/delete, /automation command, validation, listing text, other projects' automations missing (M) — `tests/automation.rs`
-  - `tool-automation.test.ts`: passes the originating tool call to the service when creating an event watch
-  - `tool-automation.test.ts`: creates, lists, pauses, resumes and deletes this project's automations
-  - `tool-automation.test.ts`: /automation hands the request to the model with the automation instructions
-  - `tool-automation.test.ts`: rejects a malformed trigger, target or empty name
-  - `tool-automation.test.ts`: puts each automation's id, trigger, status, next run and action in the text without Code Mode
-  - `tool-automation.test.ts`: treats another project's automation as missing
-
 ## By design or not applicable
 
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 696 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 677 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 681 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 352 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 98 |
-| Behaviour that differs and is for the maintainer to decide (see above) | 4 |
+| Behaviour that differs and is for the maintainer to decide (see above) | 5 |
 
 ## Per-test inventory
 
@@ -2674,23 +2668,53 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (48 of 107)</summary>
+<details><summary>Automations (83 of 107)</summary>
 
 
 **`automation-event.test.ts`**
 
+- P pushes pending then ${terminal} through one automation, with no timer or tool poll ×2 — `tests/automation.rs::event_triggered_runs` (adapted: a program gets each event as input.event and finishes the watch on the last one)
+- D a timer added to a running watch fires without reopening its stream — deliberate: an automation has one trigger, so a watch takes no timer
+- P continues on the same stream after a nonterminal producer error — `tests/automation.rs::event_triggered_runs` (adapted: the default stream sends a nonterminal error after its tickets, and the watch stays on it)
 - D retains the location only while its quiet subscription is open — client-server: Location retention and prompt-preparation hooks
 - P a broken stream opens on the replacement connection, replaying from the last committed event — `tests/oc_automation_stream.rs::oc_automation_event_a_broken_stream_opens_on_the_replacement_connection_replaying_from_the_last_committed_event` (adapted: a prompt automation; every reconnect connects the server afresh)
 - P reopens after four healthy streams disconnect, each from its last committed cursor — `tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor`
 - F pauses after three consecutive reconnects without confirmed stream output — `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output` (the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever)
+- P pause, restart, resume and delete cancel and reacquire exactly one stream — `tests/automation.rs::event_triggered_runs` (adapted: pause, resume and removal stop and restart the one watch (no restart in place))
 - D pause cancels a prompt still preparing without waiting for its hook or admitting it on resume — client-server: Location retention and prompt-preparation hooks
+- P validates permission, push capability and arguments before creating a watch — `tests/oc_automation_backlog3.rs::oc_automation_event_validates_permission_push_capability_and_arguments`
+- P plain prompt events stay distinct and quote untrusted fields; oversized input does not run — `tests/oc_automation_backlog3.rs::oc_automation_event_prompts_stay_distinct_and_quote_untrusted_fields`
+- P rejects an oversized rendered event prompt before creating a child — `tests/oc_automation_backlog3.rs::oc_automation_event_rejects_an_oversized_rendered_prompt_before_creating_a_child`
+- P stops the stream without a wake: ${stop} ×4 — `tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake` (the malformed, truncated, terminated and no-replay rows; adapted: paused with the reason)
+- D stops the stream without a wake: ${stop} — differs: the permission-revoked row: a watch reads its project's rules when it connects, so a rule denying watch_mcp_event added mid-stream stops it at its next connection, not its next event (pausing or removing the automation stops it at once)
 
 **`automation.test.ts`**
 
+- P runs an at automation once, into the creating Session by default — `tests/oc_automation_backlog3.rs::oc_automation_runs_an_at_automation_once` (adapted: claimed at chosen times; a new automation's default target is a child of its session (tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it))
+- P parses at times with offsets or in the automation's zone — `tests/oc_automation_backlog3.rs::oc_automation_parses_at_times_with_offsets_or_in_the_automations_zone`
+- F creates, lists, pauses, resumes and deletes — `tests/oc_automation_backlog3.rs::oc_automation_creates_lists_pauses_resumes_and_deletes` (a resumed interval was due a whole interval after the resume rather than at its next slot; slots now fall on the interval's grid from its creation (adapted: listed by directory))
 - D rejects tool-created code and child actions if the session switched agents during the model request — storage-model: agent switches during the model request / inbox IDs
-- D adopts the child a crashed run already started · drops a run's result when another process recorded a run meanwhile · does not duplicate a prompt admitted before a crash — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P sends a prompt to another existing Session — `tests/automation.rs::scheduled_runs` (adapted: a prompt into an existing session)
+- P starts a child of the creating Session with the agent on each run, without waking the parent — `tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it`
+- D adopts the child a crashed run already started — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- D allows any agent that can run as a subagent, and rejects hidden and primary-only agents — deliberate: an automation created in a session runs only as that session's agent or a read-only subagent (automation::check_target), so a restricted agent cannot schedule work for a more capable one
+- P runs without a Session in the given directory, and needs a target for a prompt — `tests/oc_automation_backlog3.rs::oc_automation_runs_without_a_session_in_the_given_directory` (adapted: a prompt always names its target)
+- D drops a run's result when another process recorded a run meanwhile — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- F runs once after downtime, marked late, and keeps the phase — `tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase` (an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation)
+- D skips a run while the previous prompt is unconsumed — storage-model: there is no inbox of unconsumed prompts: a run's prompt is a turn that runs at once, and a run into a busy session is deferred (tests/automation.rs::a_busy_session_defers_runs_and_a_live_session_catches_up)
+- D does not duplicate a prompt admitted before a crash — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- F keeps automations when their creating Session is deleted, and pauses when a target is gone — `tests/oc_automation_backlog3.rs::oc_automation_keeps_automations_when_the_creator_goes_and_pauses_when_the_target_does` (an automation whose target session was deleted failed at every slot and stayed active; it is paused with the reason now)
 - D rejects creation when experimental.automations is off · rechecks hourly while its location has the flag off, then catches up once it is on — deliberate: automations are not behind an experimental flag
-- D wakes a Session on start when its automation prompt was never claimed · does not call a tool while another server holds the lease, then takes over when it expires · picks up an automation created by another process sharing the DB while idle · keeps distinct child handoffs pending and rewakes the recorded child on restart — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- D keeps the run count when paused while a prompt is being admitted — storage-model: no inbox admission to be paused in the middle of
+- P does not start queued timers that were paused, deleted or rescheduled — `tests/oc_automation_backlog3.rs::oc_automation_does_not_start_timers_that_were_paused_or_deleted` (adapted: there is no rescheduling in place)
+- F pauses with a reason when its directory disappears — `tests/oc_automation_backlog3.rs::oc_automation_pauses_with_a_reason_when_its_directory_disappears` (an automation whose directory was deleted failed at every slot and stayed active; it is paused with the reason now (adapted: no creation check, the tool creates in the session's folder))
+- D run sleeps until the next automation is due — deliberate: the scheduler ticks every 15 seconds rather than sleeping until the next due time
+- D wakes a Session on start when its automation prompt was never claimed — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P keeps cron at the same wall-clock time across DST changes — `tests/oc_automation_backlog3.rs::oc_automation_keeps_cron_at_the_same_wall_clock_time_across_dst`
+- D does not call a tool while another server holds the lease, then takes over when it expires · picks up an automation created by another process sharing the DB while idle — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- P keeps state across runs, stays quiet without a return, and stops when done — `tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged` (adapted: state across runs, done finishes it, and a run that sends nothing starts no session)
+- P a program that returns nothing leaves state unchanged — `tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged`
+- D keeps distinct child handoffs pending and rewakes the recorded child on restart — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
 - D does not use an inbox ID to override changed authority when retrying an admitted child prompt — storage-model: agent switches during the model request / inbox IDs
 - D reconciles a child handoff already delivered before settlement — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
 - D waits for plugins when authorizing, but counts activation against the run timeout — effect-internal: plugin activation
@@ -2701,7 +2725,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`tool-automation.test.ts`**
 
-- D are absent unless experimental.automations is enabled · rechecks the flag on each call, since a request keeps its tools after config reloads — deliberate: automations are not behind an experimental flag
+- D are absent unless experimental.automations is enabled — deliberate: automations are not behind an experimental flag
+- D passes the originating tool call to the service when creating an event watch — deliberate: the creating session is recorded with an automation, not the tool call that created it
+- P creates, lists, pauses, resumes and deletes this project's automations — `tests/oc_automation_backlog3.rs::oc_tool_automation_creates_lists_pauses_resumes_and_deletes`
+- D rechecks the flag on each call, since a request keeps its tools after config reloads — deliberate: automations are not behind an experimental flag
+- P rejects a malformed trigger, target or empty name — `tests/oc_automation_backlog3.rs::oc_tool_automation_rejects_a_malformed_trigger_or_target` (adapted: an empty name is taken from the prompt)
+- P puts each automation's id, trigger, status, next run and action in the text without Code Mode — `tests/oc_automation_backlog3.rs::oc_tool_automation_lists_id_trigger_status_next_run_and_action` (adapted: CodeSmith's listing)
+- P treats another project's automation as missing — `tests/oc_automation_backlog3.rs::oc_tool_automation_treats_another_projects_automation_as_missing`
 
 </details>
 

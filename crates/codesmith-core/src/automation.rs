@@ -341,6 +341,24 @@ pub fn following(t: &Trigger, now: i64) -> Result<Option<i64>> {
     }
 }
 
+/// The first slot after `now` of an automation created at `created` (None:
+/// it is finished). An interval keeps its phase: its slots fall `every`
+/// apart from the creation time, so a late run, missed slots or a resume
+/// do not shift the ones after it (as OpenCode keeps an interval's phase).
+pub fn next_slot(t: &Trigger, created: i64, now: i64) -> Result<Option<i64>> {
+    match t {
+        Trigger::Every { every, .. } => {
+            let ms = duration(every)?;
+            let k = now.saturating_sub(created).max(0) / ms + 1;
+            ms.checked_mul(k)
+                .and_then(|d| created.checked_add(d))
+                .map(Some)
+                .ok_or_else(|| anyhow!("that time is too far in the future"))
+        }
+        t => following(t, now),
+    }
+}
+
 // ----- storage ---------------------------------------------------------------
 
 fn ensure(c: &Connection) -> Result<()> {
@@ -583,6 +601,7 @@ pub fn set_status(db: &Store, id: &str, status: &str) -> Result<Automation> {
         ("active", Trigger::At { .. }) => {
             Some(a.next_due.ok_or_else(|| anyhow!("{id} already ran"))?)
         }
+        ("active", t @ Trigger::Every { .. }) => next_slot(t, a.created, crate::store::now())?,
         ("active", t) => Some(first_due(t, crate::store::now())?),
         _ => a.next_due,
     };
@@ -705,7 +724,7 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
         let mut out = Vec::new();
         for mut a in due {
             let was_due = a.next_due.unwrap_or(now);
-            let next = following(&a.trigger, now).unwrap_or(None);
+            let next = next_slot(&a.trigger, a.created, now).unwrap_or(None);
             let status = if next.is_none() { "done" } else { "active" };
             tx.execute("UPDATE automation SET runs = runs + 1, next_due = ?2, status = ?3, last_run = ?4 WHERE id = ?1", params![a.id, next, status, now])?;
             a.runs += 1;
@@ -1015,6 +1034,21 @@ impl std::fmt::Display for CreatorGone {
 }
 
 impl std::error::Error for CreatorGone {}
+
+/// What a run needs is gone, so no run can succeed: the session a prompt
+/// continues was deleted, or the automation's directory was. The
+/// automation is paused with the reason (as OpenCode pauses it) rather
+/// than failing at every slot.
+#[derive(Debug)]
+struct Unreachable(String);
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Paused: {}", self.0)
+    }
+}
+
+impl std::error::Error for Unreachable {}
 
 impl std::fmt::Display for TurnFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1343,6 +1377,12 @@ impl Runner {
         let title = run_title(&a.name, crate::store::now());
         let (resume, agent, model, title, parent) = match to {
             Target::Session { session } => {
+                if db.get(session)?.is_none() {
+                    return Err(Unreachable(format!(
+                        "the session this automation sends its prompt to ({session}) no longer exists"
+                    ))
+                    .into());
+                }
                 (Some(session.clone()), None, None, a.name.clone(), None)
             }
             // A child of the creating session while it exists, so it lists
@@ -1445,7 +1485,7 @@ impl Runner {
         }
         let message = format!("{e:#}");
         let _ = finish(&db, a, "failed", None, &message, None, false);
-        if e.downcast_ref::<CreatorGone>().is_some() {
+        if e.downcast_ref::<CreatorGone>().is_some() || e.downcast_ref::<Unreachable>().is_some() {
             let _ = set_status(&db, &a.id, "paused");
         }
         Err(RunError {
@@ -1455,6 +1495,9 @@ impl Runner {
     }
 
     async fn act(&self, db: &Store, a: &Automation, ok: &str, event: Option<&Value>) -> Result<()> {
+        if !Path::new(&a.directory).is_dir() {
+            return Err(Unreachable(format!("Directory no longer exists: {}", a.directory)).into());
+        }
         // Every run is held to the creating session's own rules: those
         // recorded with the automation, recorded now for one stored before
         // they were, while that session exists. With neither, they are
@@ -1867,7 +1910,8 @@ mod tests {
         let a2 = get(&db, &a.id).unwrap().unwrap();
         assert_eq!(
             (a2.runs, a2.status.as_str(), a2.next_due),
-            (1, "active", Some(later + 300_000))
+            (1, "active", Some(a.created + 900_000)),
+            "the next slot of its five-minute phase"
         );
         assert_eq!(
             get(&db, &once.id).unwrap().unwrap().status,
