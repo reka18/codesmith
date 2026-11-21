@@ -64,6 +64,9 @@ pub struct Config {
     pub title: Option<bool>,
     pub default_agent: Option<String>,
     /// Shell for the `shell` tool; defaults to `$SHELL`, then `/bin/sh`.
+    /// Written as a path, or as `{"path": ..., "env": {...}}` where `env`
+    /// is [`ShellEnv`] (which [`load_from`] takes out into `shell_env`).
+    #[serde(deserialize_with = "shell_path")]
     pub shell: Option<String>,
     pub permissions: Vec<Rule>,
     /// Policy statements (OpenCode's `policies`): `tool.use` ones deny
@@ -174,6 +177,77 @@ pub struct Config {
     /// were not in the global config file, as `<id> in <source>`.
     #[serde(skip)]
     pub swap_ignored: Vec<String>,
+
+    /// What the programs CodeSmith starts lose and keep of its
+    /// environment (see [`crate::child_env`]), from every source's
+    /// `shell.env`.
+    #[serde(skip)]
+    pub shell_env: ShellEnv,
+}
+
+/// `shell.env` in codesmith.json (see [`crate::child_env`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShellEnv {
+    /// Variables passed through on purpose. Read only from the global
+    /// config file.
+    pub pass: Vec<String>,
+    /// Further variables to remove (any source may add to it).
+    pub remove: Vec<String>,
+    /// The `{env:NAME}` names the config files use for credentials.
+    pub credentials: Vec<String>,
+    /// `shell.env.pass` lists [`load_from`] dropped because they were not
+    /// in the global config file, as their sources.
+    pub pass_ignored: Vec<String>,
+}
+
+/// `shell`: a path, or an object with an optional `path`.
+fn shell_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => Some(s),
+        Value::Object(o) => o.get("path").and_then(Value::as_str).map(str::to_string),
+        _ => None,
+    })
+}
+
+/// Take `shell.env` out of a config document into `acc`: `pass` only from
+/// the global config file (else noted as ignored), `remove` from any.
+/// The `shell` key is left as its path alone, so a later source's plain
+/// path merges over it.
+pub fn take_shell_env(v: &mut Value, source: &str, global: bool, acc: &mut ShellEnv) {
+    let Some(shell) = v.get_mut("shell") else {
+        return;
+    };
+    let Some(o) = shell.as_object_mut() else {
+        return;
+    };
+    let names = |x: Option<&Value>| -> Vec<String> {
+        x.and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if let Some(env) = o.remove("env") {
+        let pass = names(env.get("pass"));
+        if global {
+            acc.pass.extend(pass);
+        } else if env.get("pass").is_some() {
+            acc.pass_ignored.push(source.to_string());
+        }
+        acc.remove.extend(names(env.get("remove")));
+    }
+    *shell = match o.get("path").and_then(Value::as_str) {
+        Some(p) => Value::String(p.to_string()),
+        None => Value::Null,
+    };
+    if shell.is_null() {
+        if let Some(m) = v.as_object_mut() {
+            m.remove("shell");
+        }
+    }
 }
 
 /// The `experimental` key.
@@ -1020,6 +1094,8 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
     let c = &loaded.config.catalog;
     let options = crate::catalog::Options::resolve(c.fetch, c.url.as_deref());
     loaded.config.models_dev = Some(crate::catalog::ModelsDev::global(options));
+    // What programs CodeSmith starts may see of its environment.
+    crate::child_env::install(&loaded.config);
     Ok(loaded)
 }
 
@@ -1043,6 +1119,7 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut swap_ignored: Vec<String> = Vec::new();
+    let mut shell_env = ShellEnv::default();
     // Only the global config file may set a provider's `swap`.
     let global_dir = (!global_disabled()).then(|| {
         sources
@@ -1082,16 +1159,30 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
         if !global_file {
             strip_swap(&mut v, &path.display().to_string(), &mut swap_ignored);
         }
+        take_shell_env(
+            &mut v,
+            &path.display().to_string(),
+            global_file,
+            &mut shell_env,
+        );
+        shell_env
+            .credentials
+            .extend(crate::child_env::credential_refs(&text));
         merge_layer(&mut merged, v);
         files.push(path);
     }
     if let Some(text) = &sources.content {
         let mut v = parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?;
         strip_swap(&mut v, "$CODESMITH_CONFIG_CONTENT", &mut swap_ignored);
+        take_shell_env(&mut v, "$CODESMITH_CONFIG_CONTENT", false, &mut shell_env);
+        shell_env
+            .credentials
+            .extend(crate::child_env::credential_refs(text));
         merge_layer(&mut merged, v);
     }
     let mut config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
     config.swap_ignored = swap_ignored;
+    config.shell_env = shell_env;
     crate::plugin::active().transform(&mut config);
     Ok(Loaded {
         config,

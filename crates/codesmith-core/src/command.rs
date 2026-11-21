@@ -374,7 +374,7 @@ pub async fn interpolate_shell(text: &str, shell: &str, cwd: &Path) -> anyhow::R
         return Ok(text.to_string());
     }
     let run = |source: String| async move {
-        let out = tokio::process::Command::new(shell)
+        let out = crate::child_env::scrubbed_tokio(shell)
             .args(crate::tool::shell::shell_args(shell))
             .arg(&source)
             .current_dir(cwd)

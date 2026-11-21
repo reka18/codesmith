@@ -5,13 +5,19 @@ use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+/// A hardened git command in `root` (see [`crate::git`]); a diff, show
+/// or log also takes [`crate::git::DIFF_SAFETY`].
 pub fn git(root: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .env_remove(crate::SERVER_TOKEN_VAR)
-        .args(args)
-        .current_dir(root)
-        .output()
-        .context("running git")?;
+    let mut c = crate::git::command(root);
+    match args.first() {
+        Some(&sub) if matches!(sub, "diff" | "show" | "log") => {
+            c.arg(sub).args(crate::git::DIFF_SAFETY).args(&args[1..]);
+        }
+        _ => {
+            c.args(args);
+        }
+    }
+    let out = c.output().context("running git")?;
     if !out.status.success() {
         return Err(anyhow!(
             "git {}: {}",
@@ -130,10 +136,10 @@ fn untracked_diff(root: &Path) -> Result<String> {
     .lines()
     .filter(|l| !l.is_empty())
     {
-        let o = Command::new("git")
-            .env_remove(crate::SERVER_TOKEN_VAR)
-            .args(["diff", "--no-index", "--", "/dev/null", f])
-            .current_dir(root)
+        let o = crate::git::command(root)
+            .arg("diff")
+            .args(crate::git::DIFF_SAFETY)
+            .args(["--no-index", "--", "/dev/null", f])
             .output()?;
         out.push_str(&String::from_utf8_lossy(&o.stdout));
     }
@@ -397,7 +403,7 @@ mod tests {
         let r = d.path();
         let run = |a: &[&str]| {
             assert!(
-                Command::new("git")
+                crate::git::fixture()
                     .args(a)
                     .current_dir(r)
                     .output()

@@ -56,29 +56,21 @@ impl Snapshots {
     }
 
     /// A `git` command on the snapshot repository, set up as every
-    /// snapshot command is (its own git dir and index, the project as the
-    /// work tree, no system config). The diff viewer runs its own diff of
-    /// two trees with it, reading the output in bounded pieces.
+    /// snapshot command is (hardened by [`crate::git::command_in`], its
+    /// own git dir and index, the project as the work tree, no system
+    /// config). The diff viewer runs its own diff of two trees with it,
+    /// reading the output in bounded pieces.
     pub fn command(&self) -> Command {
-        let mut c = Command::new("git");
-        c.env_remove(crate::SERVER_TOKEN_VAR)
-            .arg("--git-dir")
-            .arg(&self.git_dir)
-            .arg("--work-tree")
-            .arg(&self.work_tree)
-            .args([
-                "-c",
-                "core.autocrlf=false",
-                "-c",
-                "core.quotepath=false",
-                "-c",
-                "core.safecrlf=false",
-            ])
-            .current_dir(&self.work_tree)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE");
+        let mut c = crate::git::command_in(&self.work_tree, &self.git_dir, &self.work_tree);
+        c.args([
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotepath=false",
+            "-c",
+            "core.safecrlf=false",
+        ])
+        .env("GIT_CONFIG_NOSYSTEM", "1");
         c
     }
 
@@ -111,8 +103,8 @@ impl Snapshots {
             return Ok(());
         }
         std::fs::create_dir_all(&self.git_dir)?;
-        let out = Command::new("git")
-            .env_remove(crate::SERVER_TOKEN_VAR)
+        let parent = self.git_dir.parent().unwrap_or(&self.git_dir);
+        let out = crate::git::command(parent)
             .arg("init")
             .arg("--quiet")
             .arg("--bare")
@@ -186,7 +178,15 @@ impl Snapshots {
 
     /// Paths that differ between two trees.
     pub fn changes(&self, from: &str, to: &str) -> Result<Vec<Change>> {
-        let out = self.git(&["diff", "--no-renames", "--name-status", "-z", from, to])?;
+        let out = self.git(&[
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--name-status",
+            "-z",
+            from,
+            to,
+        ])?;
         let mut parts = out.split('\0').filter(|s| !s.is_empty());
         let mut changes = Vec::new();
         while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
@@ -200,7 +200,16 @@ impl Snapshots {
 
     /// A unified diff between two trees.
     pub fn diff(&self, from: &str, to: &str) -> Result<String> {
-        self.git(&["diff", "--no-renames", "--no-color", from, to])
+        let [ext, textconv] = crate::git::DIFF_SAFETY;
+        self.git(&[
+            "diff",
+            ext,
+            textconv,
+            "--no-renames",
+            "--no-color",
+            from,
+            to,
+        ])
     }
 
     /// Make the working tree match `tree` for every path changed since, and
@@ -292,7 +301,7 @@ mod tests {
     }
 
     fn git_available() -> bool {
-        Command::new("git")
+        crate::git::fixture()
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -392,7 +401,7 @@ mod tests {
             return;
         }
         let (_d, root, s) = setup();
-        Command::new("git")
+        crate::git::fixture()
             .arg("init")
             .arg("--quiet")
             .arg(&root)
@@ -400,7 +409,7 @@ mod tests {
             .unwrap();
         std::fs::write(root.join("f"), "1").unwrap();
         s.capture().unwrap();
-        let status = Command::new("git")
+        let status = crate::git::fixture()
             .arg("-C")
             .arg(&root)
             .args(["status", "--porcelain"])

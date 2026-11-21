@@ -28,6 +28,21 @@ All notable changes to CodeSmith are listed here. Versions follow
   minutes later, as in OpenCode, rather than a minute later (a program's
   still waits a minute). A run handed off a minute or more after its slot,
   such as that retry, is logged as `late`.
+- **Commands no longer see your credentials:** shell tool commands (local
+  and in the shell daemon), background jobs, `!cmd`, command-template
+  interpolation, MCP stdio servers, language servers, formatters and the
+  worktree start command lose provider keys, configured key variables,
+  `{env:}` credentials and anything named like a key, token, secret or
+  password. Pass one through on purpose with `shell.env.pass` in the
+  global config file; a project config cannot. OpenCode passes the whole
+  environment.
+- **Hardened host git:** every git command CodeSmith runs for itself goes
+  through one builder: no hooks, fsmonitor, pager, external diff or
+  textconv, and a repository's own program-running settings (filters,
+  credential helpers, `core.sshCommand`, ...) are replaced by yours or
+  turned off. Inherited `GIT_DIR`, `GIT_INDEX_FILE` and the other
+  repository variables are cleared. A test fails on any new raw
+  `git` call.
 - **MCP Code Mode defaults for known servers:** without `codemode` set,
   Executor's tools are offered directly (it is a Code Mode server itself),
   and PostHog is asked for its plain tools (`x-posthog-mcp-mode: tools`,

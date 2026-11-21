@@ -765,7 +765,11 @@ fn oc_vcs_does_not_infer_beyond_the_bounded_creation_reflog_window() {
             format!("start\nupdate refs/heads/feature {to}\nprepare\ncommit\n")
         })
         .collect();
-    let mut child = Command::new("git")
+    let mut c = Command::new("git");
+    for v in codesmith_core::git::LOCAL_ENV_VARS {
+        c.env_remove(v);
+    }
+    let mut child = c
         .current_dir(&p)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")

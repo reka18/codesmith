@@ -111,7 +111,7 @@ impl Client {
             .command
             .split_first()
             .ok_or_else(|| anyhow!("empty command"))?;
-        let mut child = tokio::process::Command::new(bin)
+        let mut child = crate::child_env::scrubbed_tokio(bin)
             .env_remove(crate::SERVER_TOKEN_VAR)
             .args(args)
             .current_dir(root)

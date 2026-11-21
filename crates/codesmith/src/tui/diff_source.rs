@@ -236,12 +236,11 @@ pub fn is_image(file: &str) -> bool {
 
 // ----- git ------------------------------------------------------------------
 
+/// A hardened git command in `dir` (see [`codesmith_core::git`]).
 fn git(dir: &Path) -> Command {
-    let mut c = Command::new("git");
-    c.current_dir(dir)
-        .env_remove(codesmith_core::SERVER_TOKEN_VAR)
-        // Reading must not take the index lock a running turn may need.
-        .env("GIT_OPTIONAL_LOCKS", "0")
+    let mut c = codesmith_core::git::command(dir);
+    // Reading must not take the index lock a running turn may need.
+    c.env("GIT_OPTIONAL_LOCKS", "0")
         .args(["-c", "core.quotepath=false", "-c", "color.ui=false"]);
     c
 }
@@ -795,7 +794,7 @@ mod tests {
     }
 
     fn sh(dir: &Path, args: &[&str]) {
-        let s = Command::new("git")
+        let s = codesmith_core::git::fixture()
             .current_dir(dir)
             .args([
                 "-c",
@@ -832,6 +831,126 @@ mod tests {
         std::fs::remove_file(p.join("gone.txt")).unwrap();
         std::fs::write(p.join("untracked.txt"), "u\n").unwrap();
         d
+    }
+
+    /// Plant, in `p`'s own config and hooks, every program git could run
+    /// for the viewer; returns the marker file each would write.
+    fn plant(p: &Path, outside: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let mark = outside.join("MARKER");
+        let evil = outside.join("evil.sh");
+        std::fs::write(
+            &evil,
+            format!("#!/bin/sh\necho \"$0 $*\" >> '{}'\ncat\n", mark.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&evil, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let e = evil.display();
+        for h in [
+            "post-checkout",
+            "post-index-change",
+            "reference-transaction",
+        ] {
+            std::fs::copy(&evil, p.join(".git/hooks").join(h)).unwrap();
+        }
+        std::fs::write(p.join(".gitattributes"), "* filter=evil diff=evil\n").unwrap();
+        let mut cfg = std::fs::read_to_string(p.join(".git/config")).unwrap();
+        cfg.push_str(&format!(
+            "[core]\n\tfsmonitor = {e}\n\tpager = {e}\n[diff]\n\texternal = {e}\n\
+             [diff \"evil\"]\n\ttextconv = {e}\n\tcommand = {e}\n\
+             [filter \"evil\"]\n\tclean = {e}\n\tsmudge = {e}\n\tprocess = {e}\n\
+             [pager]\n\tdiff = {e}\n"
+        ));
+        std::fs::write(p.join(".git/config"), cfg).unwrap();
+        mark
+    }
+
+    // A repository's config and hooks run nothing when the viewer reads
+    // it: hooks, fsmonitor, filters, external diff, textconv and pagers
+    // are all planted, every source still lists the right files.
+    #[test]
+    fn the_viewer_runs_nothing_a_repository_plants() {
+        let d = repo();
+        let p = d.path();
+        let outside = tempfile::tempdir().unwrap();
+        let mark = plant(p, outside.path());
+        let b = base(p).unwrap().unwrap();
+        assert_eq!(b.name, "main");
+        let all = vcs_diff(p, Source::Branch, Some(&b.reference)).unwrap();
+        assert!(
+            names(&all).contains(&("a.txt", Status::Modified)),
+            "{:?}",
+            names(&all)
+        );
+        let a = all.iter().find(|f| f.file == "a.txt").unwrap();
+        assert_eq!((a.additions, a.deletions), (1, 1));
+        vcs_diff(p, Source::Committed, Some(&b.reference)).unwrap();
+        let working = vcs_diff(p, Source::Working, None).unwrap();
+        assert!(names(&working).contains(&("untracked.txt", Status::Added)));
+        assert!(branches(p).unwrap().contains(&"main".to_string()));
+        assert_eq!(current_branch(p).as_deref(), Some("feature"));
+        assert!(
+            !mark.exists(),
+            "the viewer ran a planted program: {}",
+            std::fs::read_to_string(&mark).unwrap_or_default()
+        );
+    }
+
+    const DECOY_CHILD: &str = "CODESMITH_TEST_DECOY_CHILD_REPO";
+
+    // Inside a git hook (a pre-push CI run), GIT_DIR, GIT_WORK_TREE and
+    // GIT_INDEX_FILE name the hook's repository. The viewer's git must
+    // still read the repository it is given, and leave the other alone:
+    // run in a child with those variables pointing at a decoy.
+    #[test]
+    fn the_viewer_ignores_an_inherited_git_dir() {
+        if let Ok(repo) = std::env::var(DECOY_CHILD) {
+            let p = Path::new(&repo);
+            let working = vcs_diff(p, Source::Working, None).unwrap();
+            assert_eq!(
+                names(&working),
+                [
+                    ("a.txt", Status::Modified),
+                    ("gone.txt", Status::Deleted),
+                    ("untracked.txt", Status::Added),
+                ]
+            );
+            assert_eq!(base(p).unwrap().unwrap().name, "main");
+            assert_eq!(current_branch(p).as_deref(), Some("feature"));
+            return;
+        }
+        let d = repo();
+        let decoy = repo();
+        sh(decoy.path(), &["checkout", "-q", "main"]);
+        let before = (
+            std::fs::read(decoy.path().join(".git/config")).unwrap(),
+            std::fs::read(decoy.path().join(".git/index")).unwrap(),
+            std::fs::read(decoy.path().join(".git/HEAD")).unwrap(),
+        );
+        let test = format!(
+            "{}::the_viewer_ignores_an_inherited_git_dir",
+            module_path!().split_once("::").unwrap().1
+        );
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([test.as_str(), "--exact", "--test-threads=1"])
+            .env(DECOY_CHILD, d.path())
+            .env("GIT_DIR", decoy.path().join(".git"))
+            .env("GIT_WORK_TREE", decoy.path())
+            .env("GIT_INDEX_FILE", decoy.path().join(".git/index"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success() && String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let after = (
+            std::fs::read(decoy.path().join(".git/config")).unwrap(),
+            std::fs::read(decoy.path().join(".git/index")).unwrap(),
+            std::fs::read(decoy.path().join(".git/HEAD")).unwrap(),
+        );
+        assert!(before == after, "the decoy repository was touched");
     }
 
     fn names(files: &[FileDiff]) -> Vec<(&str, Status)> {

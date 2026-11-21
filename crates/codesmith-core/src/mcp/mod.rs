@@ -2557,7 +2557,9 @@ async fn connect(
             crate::paths::ensure_parent(&log_dir)?;
             crate::paths::private_dir(&log_dir)?;
             let stderr = crate::paths::create_private(&log)?;
-            let mut cmd = tokio::process::Command::new(prog);
+            // The host's environment without its credentials (see
+            // `crate::child_env`), then exactly the configured `environment`.
+            let mut cmd = crate::child_env::scrubbed_tokio(prog);
             cmd.env_remove(crate::SERVER_TOKEN_VAR)
                 .args(args)
                 .current_dir(dir)

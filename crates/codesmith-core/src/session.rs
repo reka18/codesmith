@@ -780,7 +780,18 @@ impl Session {
             depth: 0,
             todos: Vec::new(),
             skills,
-            jobs: tool::shell::Jobs::default(),
+            jobs: {
+                // The session's own config decides what its commands may
+                // pass through; what any config marked a credential stays
+                // removed.
+                let jobs = tool::shell::Jobs::default();
+                let mut policy = crate::child_env::current();
+                let own = crate::child_env::Policy::from_config(config);
+                policy.known.extend(own.known);
+                policy.pass = own.pass;
+                jobs.set_env_policy(Some(policy));
+                jobs
+            },
             questioner: opts.questioner,
             mcp: opts.mcp.unwrap_or_else(crate::mcp::Mcp::empty),
             format: {

@@ -352,6 +352,9 @@ struct Shared {
     /// The session's environment (OpenCode's `SessionEnvironment`): when
     /// set, commands run with these variables instead of the process's.
     environment: Mutex<Option<BTreeMap<String, String>>>,
+    /// What the session's commands lose of their environment (see
+    /// [`crate::child_env`]); the policy in force when unset.
+    env_policy: Mutex<Option<crate::child_env::Policy>>,
     /// The server's shell daemon, when commands run there.
     #[cfg(unix)]
     daemon: Mutex<Option<DaemonCtx>>,
@@ -732,6 +735,22 @@ impl Jobs {
         *self.shared.environment.lock().unwrap() = variables;
     }
 
+    /// Set which variables the session's commands lose (see
+    /// [`crate::child_env`]): `None` is the policy in force.
+    pub fn set_env_policy(&self, policy: Option<crate::child_env::Policy>) {
+        *self.shared.env_policy.lock().unwrap() = policy;
+    }
+
+    /// The policy the session's commands run with.
+    pub fn env_policy(&self) -> crate::child_env::Policy {
+        self.shared
+            .env_policy
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(crate::child_env::current)
+    }
+
     /// Stop every command still running, background and foreground: SIGTERM
     /// to each process group, then SIGKILL to those still there after
     /// [`KILL_GRACE`]. Returns once the background jobs have ended (or the
@@ -794,7 +813,7 @@ impl Jobs {
                     program: program(shell).display().to_string(),
                     args,
                     cwd: sc.cwd.display().to_string(),
-                    env: command_env(sc, environment),
+                    env: command_env(sc, environment, &self.env_policy()),
                     group_id: ctx.directory.clone(),
                     output_path: file.display().to_string(),
                     metadata: Value::Object(meta.to_map()),
@@ -828,7 +847,7 @@ impl Jobs {
             }
         }
         let _ = &meta;
-        spawn(shell, sc, file, environment).map(Proc::Local)
+        spawn(shell, sc, file, environment, &self.env_policy()).map(Proc::Local)
     }
 
     /// A foreground command ended and its call has its result: the daemon
@@ -1975,6 +1994,7 @@ fn program(shell: &str) -> PathBuf {
 fn command_env(
     sc: &crate::plugin::ShellCommand,
     environment: Option<&BTreeMap<String, String>>,
+    policy: &crate::child_env::Policy,
 ) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = match environment {
         Some(vars) => vars.clone(),
@@ -1982,6 +2002,9 @@ fn command_env(
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect(),
     };
+    // No credential CodeSmith runs with (see `crate::child_env`); the
+    // plugins' own additions below are kept.
+    policy.scrub_map(&mut env);
     let outer = env.get("AI_AGENT").cloned();
     let ai_agent = outer
         .filter(|v| !v.is_empty())
@@ -2045,6 +2068,7 @@ fn spawn(
     sc: &crate::plugin::ShellCommand,
     file: &Path,
     environment: Option<&BTreeMap<String, String>>,
+    policy: &crate::child_env::Policy,
 ) -> Result<tokio::process::Child, String> {
     let out = std::fs::File::create(file)
         .map_err(|e| format!("Unable to create {}: {e}", file.display()))?;
@@ -2069,8 +2093,15 @@ fn spawn(
                 None => std::env::var_os(k).is_some(),
             }
     };
-    if let Some(vars) = environment {
-        cmd.env_clear().envs(vars);
+    // No credential CodeSmith runs with (see `crate::child_env`); the
+    // plugins' own additions below are kept.
+    match environment {
+        Some(vars) => {
+            let mut vars = vars.clone();
+            policy.scrub_map(&mut vars);
+            cmd.env_clear().envs(vars);
+        }
+        None => policy.scrub_command(cmd.as_std_mut()),
     }
     // After `env_clear`, which would drop them.
     for (k, v) in NONINTERACTIVE_ENV {
@@ -2837,7 +2868,7 @@ mod tests {
                 command: String::new(),
                 env: Default::default(),
             };
-            let sent = command_env(&sc, Some(&vars));
+            let sent = command_env(&sc, Some(&vars), &crate::child_env::current());
             let shown: String = [
                 "GIT_TERMINAL_PROMPT",
                 "SSH_ASKPASS_REQUIRE",
@@ -3498,6 +3529,191 @@ mod tests {
         .content;
         // Replaced, not merged: this process's HOME is not passed on.
         assert_eq!(out, "from-session|unset");
+    }
+
+    /// What every credential test's command prints: each variable or
+    /// `unset`.
+    const SHOW_CREDENTIALS: &str = r#"printf '%s|' "${OPENAI_API_KEY-unset}" "${ANTHROPIC_API_KEY-unset}" "${MY_PROVIDER_CRED-unset}" "${SOME_SERVICE_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${CODESMITH_SERVER_TOKEN-unset}" "${FOO-unset}" "${HOME-unset}""#;
+
+    fn credential_env() -> BTreeMap<String, String> {
+        [
+            ("OPENAI_API_KEY", "sk-fake-openai"),
+            ("ANTHROPIC_API_KEY", "sk-fake-anthropic"),
+            ("MY_PROVIDER_CRED", "fake-configured"),
+            ("SOME_SERVICE_TOKEN", "fake-token"),
+            ("GITHUB_TOKEN", "fake-gh"),
+            ("CODESMITH_SERVER_TOKEN", "fake-server"),
+            ("FOO", "bar"),
+            ("HOME", "/fake/home"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+    }
+
+    fn credential_policy(pass: &[&str]) -> crate::child_env::Policy {
+        crate::child_env::Policy {
+            known: ["MY_PROVIDER_CRED".to_string()].into(),
+            pass: pass.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // A command (foreground, background and the user's `!cmd`) never
+    // sees a credential CodeSmith knows of: provider keys, a provider key
+    // variable the config names, `*_TOKEN`, the server token. What tools
+    // need stays. The daemon is sent the same environment.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commands_do_not_see_credentials() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.as_ref().unwrap();
+        jobs.set_environment(Some(credential_env()));
+        jobs.set_env_policy(Some(credential_policy(&[])));
+        let want = "unset|unset|unset|unset|unset|unset|bar|/fake/home|";
+        assert_eq!(sh(&ctx, SHOW_CREDENTIALS).await.unwrap().content, want);
+        // In the background.
+        run(
+            &ctx,
+            &json!({"command": SHOW_CREDENTIALS, "background": true}),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while jobs.running() > 0 {
+                jobs.wait_any().await;
+            }
+        })
+        .await
+        .unwrap();
+        let [job] = jobs.take_finished().try_into().unwrap();
+        assert_eq!(std::fs::read_to_string(&job.file).unwrap(), want);
+        // The user's own `!cmd`.
+        let (_, handle) = start_user(
+            "/bin/sh",
+            "test",
+            &env.root(),
+            SHOW_CREDENTIALS,
+            jobs,
+            ToolOutputConfig::default(),
+        )
+        .await
+        .unwrap();
+        let ran = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ran.output, want);
+        // The daemon's.
+        let sc = crate::plugin::ShellCommand {
+            session_id: "ses_x".into(),
+            cwd: env.root(),
+            command: String::new(),
+            env: Default::default(),
+        };
+        let sent = command_env(&sc, Some(&credential_env()), &credential_policy(&[]));
+        for k in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "MY_PROVIDER_CRED",
+            "SOME_SERVICE_TOKEN",
+            "GITHUB_TOKEN",
+            "CODESMITH_SERVER_TOKEN",
+        ] {
+            assert!(!sent.contains_key(k), "{k} sent to the daemon");
+        }
+        assert_eq!(sent["FOO"], "bar");
+    }
+
+    // A name passed through on purpose reaches the command (and the
+    // daemon), and the server token never does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn passed_variables_reach_commands() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.as_ref().unwrap();
+        jobs.set_environment(Some(credential_env()));
+        jobs.set_env_policy(Some(credential_policy(&[
+            "GITHUB_TOKEN",
+            "MY_PROVIDER_CRED",
+            "CODESMITH_SERVER_TOKEN",
+        ])));
+        assert_eq!(
+            sh(&ctx, SHOW_CREDENTIALS).await.unwrap().content,
+            "unset|unset|fake-configured|unset|fake-gh|unset|bar|/fake/home|"
+        );
+        let sc = crate::plugin::ShellCommand {
+            session_id: "ses_x".into(),
+            cwd: env.root(),
+            command: String::new(),
+            env: Default::default(),
+        };
+        let sent = command_env(
+            &sc,
+            Some(&credential_env()),
+            &credential_policy(&["GITHUB_TOKEN"]),
+        );
+        assert_eq!(sent["GITHUB_TOKEN"], "fake-gh");
+        assert!(!sent.contains_key("OPENAI_API_KEY"));
+    }
+
+    // Without a session environment, this process's own is scrubbed the
+    // same way (a variable only this test sets).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_process_environment_is_scrubbed_too() {
+        // SAFETY: a name no other test reads or writes.
+        unsafe { std::env::set_var("CODESMITH_ENVTEST_SERVICE_TOKEN", "fake") };
+        let env = Env::new();
+        let ctx = env.ctx();
+        let out = sh(
+            &ctx,
+            r#"printf '%s|%s' "${CODESMITH_ENVTEST_SERVICE_TOKEN-unset}" "${PATH:+path}""#,
+        )
+        .await
+        .unwrap()
+        .content;
+        assert_eq!(out, "unset|path");
+        unsafe { std::env::remove_var("CODESMITH_ENVTEST_SERVICE_TOKEN") };
+    }
+
+    // A project config cannot pass a credential through: only the global
+    // config file's `shell.env.pass` counts, end to end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_project_config_cannot_pass_a_credential_through() {
+        let t = tempfile::tempdir().unwrap();
+        let global = t.path().join("global");
+        let project = t.path().join("project");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::write(
+            global.join("codesmith.json"),
+            r#"{"shell": {"env": {"pass": ["GITHUB_TOKEN"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("codesmith.json"),
+            r#"{"shell": {"path": "/bin/sh", "env": {"pass": ["OPENAI_API_KEY", "SOME_SERVICE_TOKEN"], "remove": ["FOO"]}},
+                "providers": {"p": {"env": ["MY_PROVIDER_CRED"]}}}"#,
+        )
+        .unwrap();
+        let sources = crate::config::Sources {
+            global_dir: global.clone(),
+            file: None,
+            content: Some(r#"{"shell": {"env": {"pass": ["ANTHROPIC_API_KEY"]}}}"#.into()),
+            project: true,
+        };
+        let l = crate::config::load_from(&project, &sources).unwrap();
+        assert_eq!(l.config.shell.as_deref(), Some("/bin/sh"));
+        assert_eq!(l.config.shell_env.pass, ["GITHUB_TOKEN"]);
+        assert_eq!(l.config.shell_env.pass_ignored.len(), 2);
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.as_ref().unwrap();
+        jobs.set_environment(Some(credential_env()));
+        jobs.set_env_policy(Some(crate::child_env::Policy::from_config(&l.config)));
+        assert_eq!(
+            sh(&ctx, SHOW_CREDENTIALS).await.unwrap().content,
+            "unset|unset|unset|unset|fake-gh|unset|unset|/fake/home|"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4496,7 +4712,7 @@ mod tests {
             ("x='a[$(touch X)]'; ls $((x))", "X"),
         ] {
             let (env, _rec) = Env::recording(review.permissions.clone());
-            std::process::Command::new("git")
+            crate::git::fixture()
                 .arg("init")
                 .arg("-q")
                 .current_dir(env.root())

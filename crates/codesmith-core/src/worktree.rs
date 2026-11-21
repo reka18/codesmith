@@ -42,10 +42,8 @@ pub fn slug() -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .env_remove(crate::SERVER_TOKEN_VAR)
+    let out = crate::git::command(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .context("running git")?;
     if !out.status.success() {
@@ -172,7 +170,9 @@ pub fn create(cfg: &WorktreeConfig, cwd: &Path, opts: &Create) -> Result<(PathBu
         .map(str::trim)
         .filter(|c| !c.is_empty())
     {
-        let status = Command::new("bash")
+        let mut bash = Command::new("bash");
+        crate::child_env::scrub(&mut bash);
+        let status = bash
             .env_remove(crate::SERVER_TOKEN_VAR)
             .args(["-lc", cmd])
             .current_dir(&dir)

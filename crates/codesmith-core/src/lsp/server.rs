@@ -508,7 +508,7 @@ fn eslint(root: &Path, project: &Path) -> Option<Launch> {
 /// Needs `oxlint` in the project; newer versions serve LSP themselves.
 fn oxlint(root: &Path, project: &Path) -> Option<Launch> {
     if let Some(bin) = node_module(".bin/oxlint", root, project) {
-        let help = std::process::Command::new(&bin)
+        let help = crate::child_env::scrubbed(&bin)
             .env_remove(crate::SERVER_TOKEN_VAR)
             .arg("--help")
             .stdin(std::process::Stdio::null())
@@ -544,7 +544,7 @@ fn sourcekit(_: &Path, _: &Path) -> Option<Launch> {
         return Some(launch(b, &[]));
     }
     which("xcrun")?;
-    let out = std::process::Command::new("xcrun")
+    let out = crate::child_env::scrubbed("xcrun")
         .env_remove(crate::SERVER_TOKEN_VAR)
         .args(["--find", "sourcekit-lsp"])
         .stdin(std::process::Stdio::null())

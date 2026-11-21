@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// A parsed repository reference.
@@ -452,35 +452,15 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     run_git(dir, args, false)
 }
 
-/// Settings every git command here runs with. A checkout's contents come
-/// from a remote CodeSmith does not control, and the agent's tools can
-/// reach the cache, so nothing in a checkout's config may run a program:
-/// no hooks, no fsmonitor, no `ext::` transport, and no `file://`
-/// transport unless the reference itself is a local repository.
-fn hardening(allow_file: bool) -> [String; 8] {
-    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    [
-        "-c".into(),
-        format!("core.hooksPath={null}"),
-        "-c".into(),
-        "core.fsmonitor=false".into(),
-        "-c".into(),
-        "protocol.ext.allow=never".into(),
-        "-c".into(),
-        format!(
-            "protocol.file.allow={}",
-            if allow_file { "always" } else { "never" }
-        ),
-    ]
-}
+// Every git command here is [`crate::git::remote_command`]: a checkout's
+// contents come from a remote CodeSmith does not control, and the agent's
+// tools can reach the cache, so nothing in a checkout's config may run a
+// program (no hooks, no fsmonitor, no `ext::` transport, and no `file://`
+// transport unless the reference itself is a local repository).
 
 fn run_git(dir: &Path, args: &[&str], allow_file: bool) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.args(hardening(allow_file))
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove(crate::SERVER_TOKEN_VAR)
+    let mut cmd = crate::git::remote_command(dir, allow_file);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

@@ -1083,6 +1083,49 @@ async fn oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_
     poll(|| processes(&d.client).is_empty());
 }
 
+/// A daemon-run command loses the credentials CodeSmith runs with, as a
+/// local one does (`codesmith_core::child_env`): the well-known provider
+/// keys, a provider key variable the config names, any `*_TOKEN`; a name
+/// the policy passes through stays, and so does what tools need.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_command_does_not_see_credentials() {
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    let env: std::collections::BTreeMap<String, String> = [
+        ("PATH", "/usr/bin:/bin"),
+        ("OPENAI_API_KEY", "sk-fake-openai"),
+        ("ANTHROPIC_API_KEY", "sk-fake-anthropic"),
+        ("MY_PROVIDER_CRED", "fake-configured"),
+        ("SOME_SERVICE_TOKEN", "fake-token"),
+        ("GITHUB_TOKEN", "fake-gh"),
+        ("FOO", "bar"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    jobs.set_environment(Some(env));
+    jobs.set_env_policy(Some(codesmith_core::child_env::Policy {
+        known: ["MY_PROVIDER_CRED".to_string()].into(),
+        pass: ["GITHUB_TOKEN".to_string()].into(),
+    }));
+    let command = r#"printf '%s|%s|%s|%s|%s|%s|%s' "${OPENAI_API_KEY-unset}" "${ANTHROPIC_API_KEY-unset}" "${MY_PROVIDER_CRED-unset}" "${SOME_SERVICE_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "$FOO" "$PATH""#;
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": command, "background": true, "timeout": 60000}),
+        )
+        .await;
+    assert!(!err, "{out}");
+    settle(&jobs, 10).await;
+    let [job] = jobs.take_finished().try_into().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&job.file).unwrap(),
+        "unset|unset|unset|unset|fake-gh|bar|/usr/bin:/bin"
+    );
+    poll(|| processes(&d.client).is_empty());
+}
+
 /// shell-daemon.test.ts: "records successful and failed exits without signalling a finished command"
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_records_successful_and_failed_exits_without_signalling_a_finished_command() {

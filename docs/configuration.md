@@ -91,7 +91,7 @@ is parsed:
 | `default_agent` | `build` | Primary agent for new sessions. |
 | `small_model` | the session's model | The model that writes session titles, as `provider/model[#variant]`. See [Session titles](#session-titles). |
 | `title` | `true` | `false` names sessions after their first line, with no model request. See [Session titles](#session-titles). |
-| `shell` | `$SHELL`, else `/bin/zsh` on macOS and Bash (else `/bin/sh`) elsewhere | Shell the `shell` tool runs commands with (`<shell> -c`) and terminals start. A bare name is looked up on `PATH`; a shell that cannot be found falls back to the default, and so do Fish and Nushell for the `shell` tool, which needs POSIX `-c` scripts (terminals still start them). |
+| `shell` | `$SHELL`, else `/bin/zsh` on macOS and Bash (else `/bin/sh`) elsewhere | Shell the `shell` tool runs commands with (`<shell> -c`) and terminals start. A bare name is looked up on `PATH`; a shell that cannot be found falls back to the default, and so do Fish and Nushell for the `shell` tool, which needs POSIX `-c` scripts (terminals still start them). Also `{"path": ..., "env": {"pass": [...], "remove": [...]}}`: see [what commands see of your environment](#what-commands-see-of-your-environment). |
 | `providers` | built-ins | Providers and their models. See [Providers and models](#providers-and-models). |
 | `policies` | `[]` | Deny-only `tool.use` statements over the rules; an earlier file has the final say. See [policies](permissions.md#policies). |
 | `agents` | built-ins | Add or override agents. See [agents](agents-and-subagents.md#configuring-agents). |
@@ -1799,6 +1799,67 @@ Idle cost is negligible: on a 100,000-file tree, see
 CodeSmith sets `CODESMITH_SESSION_ID` for commands the `shell` tool runs, and
 `CODESMITH_WORKTREE_BASE` and `CODESMITH_WORKTREE_PATH` for a worktree's
 `start` command.
+
+### What commands see of your environment
+
+The programs CodeSmith starts for the model and the project — `shell` tool
+commands (local or in the shell daemon), background jobs, `!cmd` at the
+prompt, `` !`cmd` `` in command templates, MCP stdio servers, language
+servers, formatters and a worktree's `start` command — get your environment
+**without its credentials**. Removed:
+
+- the key variables of every built-in provider and of the bundled model
+  catalog (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+  `OPENROUTER_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, ...);
+- the variables a configured provider's `env` lists, and every `{env:NAME}`
+  a config file uses for a credential (under `providers`, an MCP server's
+  `headers`, `oauth` or `environment`, or any key named like `apiKey`,
+  `token`, `secret`, `password`, `authorization` or `headers`);
+- any name ending in `_API_KEY`, `_APIKEY`, `_KEY`, `_TOKEN`, `_PASSWD`,
+  `_PWD` or `_PAT`, or containing `SECRET`, `PASSWORD` or `_TOKEN_`, and
+  well-known ones such as `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`,
+  `HF_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_SESSION_TOKEN`, `PGPASSWORD`, `MYSQL_PWD`;
+- CodeSmith's own secrets, such as `CODESMITH_SERVER_TOKEN` (never passed);
+- anything `shell.env.remove` lists (any config file may add to it).
+
+Kept, whatever the patterns say: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+`TERM`, `TMPDIR`, `TZ`, `LANG`, `LC_*`, `XDG_*`, `SSH_AUTH_SOCK`, the proxy
+variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, lowercase
+too), toolchain homes (`CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOROOT`,
+`JAVA_HOME`, ...), certificate paths and `GOOGLE_APPLICATION_CREDENTIALS`
+(a path; the file stays readable). An MCP server's or formatter's or
+language server's own configured `environment` reaches it exactly as
+written. Terminals you open yourself keep your whole environment.
+
+To pass a variable through on purpose, list it in the **global** config
+file (a project config, `$CODESMITH_CONFIG` or
+`$CODESMITH_CONFIG_CONTENT` cannot: their `shell.env.pass` is ignored):
+
+```json
+{
+  "shell": {
+    "path": "/bin/zsh",
+    "env": { "pass": ["GITHUB_TOKEN"], "remove": ["SSH_AUTH_SOCK"] }
+  }
+}
+```
+
+`shell` can still be a plain path; `"path"` is the same setting.
+
+### CodeSmith's own git
+
+CodeSmith runs git itself for snapshots (undo), worktrees, `/review`, the
+diff viewer, project ids and the reference cache. A repository's own config
+and hooks never run a program there: hooks are off, `core.fsmonitor`,
+pagers, external diff and textconv are off, and every setting in the
+repository's own config that names a program (`filter.*`, `diff.*.textconv`,
+`merge.*.driver`, `credential.helper`, `core.sshCommand`, `core.askPass`,
+`gpg.program`, ...) is replaced by your global or system value for it, or
+turned off. Variables git exports to hooks (`GIT_DIR`, `GIT_INDEX_FILE`,
+`GIT_CONFIG_PARAMETERS`, ...) are cleared, so CodeSmith's git acts on the
+folder it was given even inside a git hook. Git the model or you run
+through the `shell` tool is yours and runs as usual.
 
 `codesmith debug paths` shows the config, data, tool-output, scratch and cache
 folders in use.

@@ -360,7 +360,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
         let run = |a: &[&str]| {
-            assert!(std::process::Command::new("git")
+            assert!(crate::git::fixture()
                 .args(a)
                 .current_dir(r)
                 .output()
