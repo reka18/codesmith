@@ -201,7 +201,12 @@ pub trait Plugin: Send + Sync {
         vec![]
     }
 
-    /// Before a tool runs: change its input, or refuse it with a message the model sees.
+    /// Before a tool runs: change its input, send it to another tool by
+    /// changing `call.name`, or refuse it with a message the model sees. A
+    /// renamed call runs as the new tool, through that tool's own input
+    /// check and permissions, and only when the new tool is offered (to a
+    /// Code Mode program: is one of its own built-ins or MCP tools);
+    /// otherwise it runs nothing.
     fn tool_before(&self, _call: &mut ToolCall) -> Result<(), String> {
         Ok(())
     }

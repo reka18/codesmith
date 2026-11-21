@@ -23,7 +23,7 @@ The hooks follow OpenCode's plugin API:
 | `config` | Edit the merged config: add or change agents, commands, providers, MCP servers, formatters, permissions. Receives the plugin's options. |
 | `tools` | Add tools. They are permission-checked by name, like any other tool. |
 | `commands` | Add commands that run as code (OpenCode's callback commands): `/name args` calls the command's `execute` with the session id, folders, arguments and attachments. It returns a prompt to send (`Ok(Some(text))`), nothing (`Ok(None)`), or an error message. A config command of the same name replaces it. |
-| `tool_before` | Change a tool call's input, or refuse it with a message the model sees. |
+| `tool_before` | Change a tool call's input, send it to another tool (set `call.name`), or refuse it with a message the model sees. |
 | `tool_after` | Change what the model sees from a tool call. |
 | `shell_before` | Change a shell command, its folder or its environment. The permission checks run on the result. |
 | `request` | Change the system prompt, messages, tools or body just before a model request. It also runs for compaction summaries (`req.interaction` is `Compaction`), before the summary instructions are added, so a hook that shapes every request alike keeps the summary on the prompt cache. |
@@ -39,12 +39,25 @@ The hooks follow OpenCode's plugin API:
 | `interrupted` | The turn was stopped before it finished (the user interrupted it). |
 | `wants` | Whether a hook has anything to do for a session. CodeSmith builds a hook's input (a copy of the history for `context`, the HTTP bridge, the idle hook's state) only when some plugin wants it, so a build whose plugins use none of these pays nothing for them. The default is yes. |
 
+A call `tool_before` renames runs as the new tool, with the input checked
+against that tool's schema and through that tool's own permission checks;
+`tool_after` sees the new name, and the result still answers the call by the
+name the model used. A direct call can be renamed only to a tool offered in
+that step (under the name it runs as), so never to one the agent's rules
+deny outright, one a `context` hook removed, or one that does not exist: those
+run nothing, and the model gets `Tool is not available for this request:
+NAME`. A rule that denies the new tool for the call's file or command still
+denies it.
+
 `tool_before` and `tool_after` also run for each call a Code Mode program
-makes inside `execute`: a built-in under its own name, a `fetch` under
+makes inside `execute`: a built-in or MCP tool under its own name (renamed,
+it must stay one of the program's own built-ins or MCP tools, never a direct
+tool, `execute`, `fetch` or an OpenAPI operation), a `fetch` under
 `webfetch` (the input is `url`, `method`, `headers` and a base64 `body`; the
 output `tool_after` sees is the response as JSON, with a UTF-8 body as
 `bodyText`), and an OpenAPI call under `openapi` (the input is
-`{"tool": <name>, "input": <input>}`; changing `tool` has no effect). A veto
+`{"tool": <name>, "input": <input>}`; changing `tool` has no effect, and
+neither a `fetch` nor an OpenAPI call can be renamed). A veto
 refuses that call, and the program's promise rejects with its message.
 
 The hooks follow OpenCode's names where it has them: `context` is its session

@@ -1147,6 +1147,17 @@ impl Session {
         (name, offered, ran, input)
     }
 
+    /// The name a tool that runs as `ran` was offered under this step, if
+    /// it was offered: a hook's rename reaches only these, so never a tool
+    /// the agent's rules deny outright or a context hook removed.
+    fn offered_as(&self, ran: &str) -> Option<String> {
+        self.turn
+            .offered
+            .iter()
+            .find(|o| self.turn.renamed.get(*o).map_or(o.as_str(), String::as_str) == ran)
+            .cloned()
+    }
+
     /// Check a call's `input` against the input schema of the tool as
     /// offered (OpenCode decodes it before the tool runs): `None` when it
     /// is valid, with the properties a closed object does not name
@@ -2292,6 +2303,21 @@ impl Session {
                     agent: self.agent.id.clone(),
                 };
                 let refused = plugins.tool_before(&self.loaded.config, &mut call).err();
+                // A hook may send the call to another tool offered this
+                // step (OpenCode's `event.tool`); it then runs as that
+                // tool, through that tool's own permission checks, and a
+                // name not offered (denied, hidden, unknown) runs nothing.
+                let aliased = offered.clone();
+                let (offered, name, refused) = match refused {
+                    None if call.name != name => match self.offered_as(&call.name) {
+                        Some(o) => (o, call.name.clone(), None),
+                        None => (offered, name, Some(runner::not_offered(&call.name))),
+                    },
+                    r => (offered, name, r),
+                };
+                if !runner::read_only_tool(&name) {
+                    self.agent_changed_files = true;
+                }
                 let mut input = call.input.clone();
                 // Checked against the schema as offered once repair and the
                 // plugins' hooks are done, so no tool sees invalid input.
@@ -2430,9 +2456,9 @@ impl Session {
                     self.turn.stopped = Some("you declined a tool call");
                 }
                 plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
-                if called != offered {
+                if called != aliased {
                     content.push_str("\n\n");
-                    content.push_str(&tool::input_repair::alias_note(&called, &offered));
+                    content.push_str(&tool::input_repair::alias_note(&called, &aliased));
                 }
                 let (media, notes) =
                     crate::media::fit_tool_media(media, &self.loaded.config.media.image);
@@ -3103,18 +3129,24 @@ impl Session {
         (hidden, inside)
     }
 
-    /// A built-in run from inside `execute` (inner call `n` of call
-    /// `outer`), with the session's checks and plugins' per-call hooks, as a
-    /// direct call: a `tool_before` veto refuses it, `tool_after` sees (and
-    /// may redact) its output. Returns the files it changed, as a direct
-    /// call's progress reports them, when it succeeded (or was a patch,
-    /// which may fail midway after writing).
-    async fn run_builtin_in_code(
+    /// A built-in or MCP tool called from inside `execute` (inner call `n`
+    /// of call `outer`), with plugins' per-call hooks as a direct call gets
+    /// them: a `tool_before` veto refuses it, and `tool_after` sees (and
+    /// may redact) its output. A hook may send the call to another of the
+    /// program's own tools (`own`, with their input schemas), as OpenCode's
+    /// may: the input is checked against that tool's schema and it runs as
+    /// that tool, through that tool's own permission checks; any other name
+    /// (a direct tool, `execute`, `fetch`, an unknown one) runs nothing.
+    /// Returns the files a built-in changed, as a direct call's progress
+    /// reports them.
+    async fn run_hooked_in_code(
         &self,
         outer: &str,
         n: usize,
         name: &str,
         input: &serde_json::Value,
+        own: &[(&str, &serde_json::Value)],
+        builtins: &[&str],
     ) -> (String, bool, Vec<tool::Before>) {
         let plugins = crate::plugin::active();
         let mut call = crate::plugin::ToolCall {
@@ -3129,6 +3161,37 @@ impl Session {
             plugins.tool_after(&self.loaded.config, &call, &mut content, &mut is_error);
             return (content, true, Vec::new());
         }
+        if call.name != name {
+            let Some((_, schema)) = own.iter().find(|(t, _)| *t == call.name) else {
+                return (runner::not_offered(&call.name), true, Vec::new());
+            };
+            let repaired = tool::input_repair::repair(&call.input, schema);
+            match self.input_schemas.check(&call.name, schema, &repaired) {
+                Ok(checked) => call.input = checked,
+                Err(e) => return (e, true, Vec::new()),
+            }
+        }
+        let (mut text, mut is_error, before) = if builtins.contains(&call.name.as_str()) {
+            self.run_builtin_in_code(&call.name, &call.input).await
+        } else {
+            // Code Mode hands results to code as JSON, so images and PDFs
+            // are noted rather than passed on.
+            let (text, failed, media) = self.run_mcp(&call.name, &call.input).await;
+            let text = crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+            (text, failed, Vec::new())
+        };
+        plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
+        (text, is_error, before)
+    }
+
+    /// A built-in run from inside `execute`, its hooks already run
+    /// ([`Self::run_hooked_in_code`]). Returns the files it changed when it
+    /// succeeded (or was a patch, which may fail midway after writing).
+    async fn run_builtin_in_code(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> (String, bool, Vec<tool::Before>) {
         let (progress, mut updates) = tokio::sync::mpsc::unbounded_channel();
         let ctx = Ctx {
             cwd: self.cwd.clone(),
@@ -3146,7 +3209,7 @@ impl Session {
         };
         let mut before = Vec::new();
         let r = {
-            let run = tool::run(&ctx, name, &call.input);
+            let run = tool::run(&ctx, name, input);
             tokio::pin!(run);
             let r = loop {
                 tokio::select! {
@@ -3163,13 +3226,11 @@ impl Session {
             }
             r
         };
-        let mut text = crate::mcp::with_media_note(r.content, &r.media, "Code Mode returns text");
-        let mut is_error = r.is_error;
-        plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
+        let text = crate::mcp::with_media_note(r.content, &r.media, "Code Mode returns text");
         if r.is_error && name != Tool::Patch.name() {
             before.clear();
         }
-        (text, is_error, before)
+        (text, r.is_error, before)
     }
 
     /// A `fetch` from inside `execute` (inner call `n` of call `outer`),
@@ -3581,6 +3642,15 @@ impl Session {
             .map(|e| (e.tool.as_str(), &e.schema))
             .collect();
         let schemas = &schemas;
+        // The tools a hook may rename a call to: the program's built-ins
+        // and MCP tools (not OpenAPI operations, whose hooks see another
+        // shape, nor `fetch`).
+        let own: Vec<(&str, &serde_json::Value)> = schemas
+            .iter()
+            .copied()
+            .filter(|(t, _)| !crate::codemode::openapi::is_tool(t))
+            .collect();
+        let own = &own;
         let out = crate::codemode::execute(
             code,
             &entries,
@@ -3611,23 +3681,18 @@ impl Session {
                 let (text, failed) = if tool == crate::codemode::fetch::TOOL {
                     let n = calls.fetch_add(1, Ordering::SeqCst);
                     self.run_fetch_in_code(id, n, &args).await
-                } else if builtins.contains(&tool.as_str()) {
-                    let n = calls.fetch_add(1, Ordering::SeqCst);
-                    let (text, failed, before) =
-                        self.run_builtin_in_code(id, n, &tool, &args).await;
-                    changed
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .extend(before);
-                    (text, failed)
                 } else if crate::codemode::openapi::is_tool(&tool) {
                     let n = calls.fetch_add(1, Ordering::SeqCst);
                     self.run_openapi_in_code(id, n, &tool, &args).await
                 } else {
-                    // Code Mode hands results to code as JSON, so images
-                    // and PDFs are noted rather than passed on.
-                    let (text, failed, media) = self.run_mcp(&tool, &args).await;
-                    let text = crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    let (text, failed, before) = self
+                        .run_hooked_in_code(id, n, &tool, &args, own, builtins)
+                        .await;
+                    changed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend(before);
                     (text, failed)
                 };
                 progress.settle(row, !failed);

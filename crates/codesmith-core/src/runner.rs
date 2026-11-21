@@ -140,6 +140,12 @@ pub fn unavailable(name: &str) -> String {
     format!("No tool named \"{name}\" is currently available. Please use a tool from the available tool list.")
 }
 
+/// A call a plugin's `tool_before` hook sent to a tool this request does
+/// not offer (OpenCode's wording): nothing runs.
+pub fn not_offered(name: &str) -> String {
+    format!("Tool is not available for this request: {name}")
+}
+
 /// The result recorded for a call a previous run left without one.
 pub fn interrupted(name: &str) -> String {
     format!("{TOOLS_INTERRUPTED}: {name}")

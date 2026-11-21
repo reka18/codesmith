@@ -32,6 +32,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **Plugin tool renaming:** a plugin's `tool_before` hook can send a call
+  to another tool by setting `call.name`, as OpenCode's can. The call runs
+  as the new tool, its input checked against that tool's schema and through
+  that tool's own permission checks; a name that is not offered that step
+  (denied outright, removed by a `context` hook, unknown) runs nothing and
+  the model is told `Tool is not available for this request: NAME`. Inside a
+  Code Mode program the new tool must be one of the program's own built-ins
+  or MCP tools. MCP tools called from a Code Mode program now get the
+  per-call hooks too, as built-ins there already did.
 - **Signed releases:** the CodeSmith minisign release key
   (`RWTFKe6qhvSs57s1pw5x6aJRK0jdZr42tg1NgNp3a9rAJ3HersFsRoMV`) is pinned in
   `codesmith upgrade` and `install.sh`, so from this release on an upgrade
