@@ -1,0 +1,13 @@
+# The minisign public keys that sign CodeSmith releases. `codesmith upgrade`
+# (compiled in with include_str!) and install.sh (RELEASE_KEYS, which a test
+# keeps equal to this list) trust a release whose SHA256SUMS.minisig verifies
+# with any key listed here. See "Signing the checksums" in RELEASING.md.
+#
+# One key per line: the second line of the key's .pub file (56 characters,
+# starting with RW). Lines starting with # and blank lines are ignored. List
+# two keys while rotating from one to the next.
+#
+# PLACEHOLDER below means no key has been generated yet: upgrades check
+# SHA256SUMS only and say releases aren't signed. Replace that line with the
+# real key; with neither a key nor PLACEHOLDER, upgrades are refused.
+PLACEHOLDER

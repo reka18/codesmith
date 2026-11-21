@@ -3,9 +3,11 @@
 //! is distributed.
 //!
 //! CodeSmith releases are GitHub releases of `reka18/codesmith`: one
-//! `codesmith-<version>-<target>.tar.gz` per target and a `SHA256SUMS`
-//! file. A copy installed from a tarball (`install.sh` or by hand) replaces
-//! itself: the tarball is checked against `SHA256SUMS`, the binary in it
+//! `codesmith-<version>-<target>.tar.gz` per target, a `SHA256SUMS` file
+//! and `SHA256SUMS.minisig`, its minisign signature. A copy installed from a
+//! tarball (`install.sh` or by hand) replaces itself: the signature must
+//! verify with a key compiled in from `release_key.pub` and name the version
+//! asked for, the tarball is checked against `SHA256SUMS`, the binary in it
 //! must report the expected version, and it is renamed over the running
 //! one, so the old binary stays whole until the new one is in place. A copy
 //! a package manager installed (Homebrew, `cargo install`) is never touched:
@@ -27,6 +29,7 @@ pub const RELEASES: &str = "https://github.com/reka18/codesmith/releases";
 const BREW: &str = "brew upgrade reka18/tap/codesmith";
 const CARGO: &str = "cargo install --locked --git https://github.com/reka18/codesmith codesmith";
 const MAX_SUMS: usize = 64 * 1024;
+const MAX_SIGNATURE: usize = 4 * 1024;
 const MAX_TARBALL: usize = 256 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
 
@@ -316,6 +319,88 @@ const SYSTEM_OWNED: &str = "This copy is in a folder a system package manager ow
 const UNKNOWN: &str = "Could not detect the installation method. If a package manager installed this copy, update it with that package manager; if you installed it from a release tarball, pass --method binary.";
 
 // ---------------------------------------------------------------------------
+// Release signatures.
+
+/// The minisign public keys that sign releases (`release_key.pub`).
+const RELEASE_KEYS: &str = include_str!("release_key.pub");
+
+/// Printed by an upgrade while [`RELEASE_KEYS`] is still the placeholder.
+pub(crate) const UNSIGNED: &str =
+    "warning: CodeSmith releases aren't signed yet; checking SHA256SUMS only";
+
+/// Which signatures an upgrade accepts.
+pub(crate) enum Trust {
+    /// No release key has been generated yet: checksums only, as before
+    /// releases were signed.
+    Unsigned,
+    /// `SHA256SUMS.minisig` must verify with one of these keys.
+    Keys(Vec<minisign_verify::PublicKey>),
+}
+
+/// The keys this build trusts.
+pub(crate) fn release_keys() -> Result<Trust> {
+    parse_keys(RELEASE_KEYS)
+}
+
+/// A key file: one base64 minisign public key per line, `#` comments, and
+/// `PLACEHOLDER` alone for "no key yet". Anything else is an error, so a
+/// damaged file refuses upgrades instead of turning signatures off.
+pub(crate) fn parse_keys(text: &str) -> Result<Trust> {
+    let mut keys = Vec::new();
+    let mut placeholder = false;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "PLACEHOLDER" {
+            placeholder = true;
+            continue;
+        }
+        keys.push(
+            minisign_verify::PublicKey::from_base64(line)
+                .map_err(|e| anyhow!("bad release key {line:?}: {e}"))?,
+        );
+    }
+    match (placeholder, keys.is_empty()) {
+        (true, true) => Ok(Trust::Unsigned),
+        (false, false) => Ok(Trust::Keys(keys)),
+        (true, false) => bail!("the release key list has both keys and PLACEHOLDER"),
+        (false, true) => bail!("this build has no release key, so it cannot check a release"),
+    }
+}
+
+/// Check that `signature` (a `.minisig` file) signs `sums` with one of
+/// `keys`, and that its trusted comment, which the signature covers too,
+/// says these are the checksums of `version`: `codesmith <version>
+/// SHA256SUMS`, optionally followed by more words. An older release's
+/// signed `SHA256SUMS` served as another version is refused.
+pub(crate) fn verify_sums(
+    keys: &[minisign_verify::PublicKey],
+    sums: &[u8],
+    signature: &[u8],
+    version: &str,
+) -> Result<()> {
+    const NOTHING: &str = "nothing was changed";
+    let text = std::str::from_utf8(signature)
+        .map_err(|_| anyhow!("SHA256SUMS.minisig is not a minisign signature; {NOTHING}"))?;
+    let signature = minisign_verify::Signature::decode(text)
+        .map_err(|e| anyhow!("SHA256SUMS.minisig is not a minisign signature ({e}); {NOTHING}"))?;
+    // Prehashed (BLAKE2b) signatures only, as minisign makes by default.
+    if !keys
+        .iter()
+        .any(|k| k.verify(sums, &signature, false).is_ok())
+    {
+        bail!("SHA256SUMS is not signed by a CodeSmith release key; {NOTHING}");
+    }
+    let comment = signature.trusted_comment();
+    let expected = format!("codesmith {version} SHA256SUMS");
+    if comment != expected && !comment.starts_with(&format!("{expected} ")) {
+        bail!("the signed SHA256SUMS is for {comment:?}, not codesmith {version}; {NOTHING}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // The command (handlers/upgrade.ts).
 
 /// What the command needs from an updater; [`Github`] is the real one.
@@ -512,7 +597,19 @@ impl Updater for Github {
             .exe
             .clone()
             .ok_or_else(|| anyhow!("could not find the running executable"))?;
-        install(&self.base, &self.current, self.target, &exe, version).await
+        let trust = release_keys()?;
+        if matches!(trust, Trust::Unsigned) {
+            eprintln!("{UNSIGNED}");
+        }
+        install(
+            &trust,
+            &self.base,
+            &self.current,
+            self.target,
+            &exe,
+            version,
+        )
+        .await
     }
 }
 
@@ -527,8 +624,10 @@ impl Drop for Scratch {
 
 /// Download `version` for `target` from `base`, check it, and put it in
 /// place of `exe`. Refuses a copy a package manager owns, whatever method
-/// was asked for.
+/// was asked for. With [`Trust::Keys`], `SHA256SUMS` is used only once its
+/// signature verifies, before the tarball is even downloaded.
 pub(crate) async fn install(
+    trust: &Trust,
     base: &str,
     current: &str,
     target: Option<&str>,
@@ -556,6 +655,15 @@ pub(crate) async fn install(
     let client = client(base, current, true)?;
     let release = format!("{}/download/v{version}", base.trim_end_matches('/'));
     let sums = download(&client, &format!("{release}/SHA256SUMS"), MAX_SUMS).await?;
+    if let Trust::Keys(keys) = trust {
+        let url = format!("{release}/SHA256SUMS.minisig");
+        let signature = download(&client, &url, MAX_SIGNATURE).await.map_err(|e| {
+            anyhow!(
+                "could not get the release signature, SHA256SUMS.minisig ({e:#}); this build installs only signed releases, so nothing was changed"
+            )
+        })?;
+        verify_sums(keys, &sums, &signature, version)?;
+    }
     let expected = String::from_utf8_lossy(&sums)
         .lines()
         .find_map(|line| {

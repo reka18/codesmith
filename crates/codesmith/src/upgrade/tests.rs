@@ -6,7 +6,7 @@ use super::*;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------- updater.test.ts
 
@@ -461,8 +461,107 @@ impl Server {
             .map(str::to_string)
             .unwrap_or_else(|| format!("{sum}  {file}\n0000  codesmith-{version}-other.tar.gz\n"));
         self.route(&format!("{dir}/SHA256SUMS"), 200, &[], sums.as_bytes());
+        let signature =
+            test_key().sign(sums.as_bytes(), &format!("codesmith {version} SHA256SUMS"));
+        self.route(
+            &format!("{dir}/SHA256SUMS.minisig"),
+            200,
+            &[],
+            signature.as_bytes(),
+        );
         file
     }
+}
+
+// ---------------------------------------------------------------- test signing keys
+
+/// A throwaway minisign key pair, generated when a test runs; it signs
+/// nothing but fixtures. Signatures are made independently of the verifier
+/// (ring's Ed25519 over a BLAKE2b-512 prehash, from the `blake2` crate) in
+/// minisign's format: `Ed`/`ED`, an 8-byte key id, then the key or signature,
+/// and a global signature over the signature and the trusted comment.
+struct TestKey {
+    pair: ring::signature::Ed25519KeyPair,
+    id: [u8; 8],
+}
+
+impl TestKey {
+    fn generate() -> TestKey {
+        use ring::rand::SecureRandom;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let mut id = [0u8; 8];
+        rng.fill(&mut id).unwrap();
+        TestKey {
+            pair: ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap(),
+            id,
+        }
+    }
+
+    /// The line a minisign `.pub` file (and `release_key.pub`) holds.
+    fn public_line(&self) -> String {
+        use ring::signature::KeyPair;
+        let mut bin = b"Ed".to_vec();
+        bin.extend_from_slice(&self.id);
+        bin.extend_from_slice(self.pair.public_key().as_ref());
+        b64(&bin)
+    }
+
+    fn trust(&self) -> Trust {
+        Trust::Keys(vec![minisign_verify::PublicKey::from_base64(
+            &self.public_line(),
+        )
+        .unwrap()])
+    }
+
+    /// A `.minisig` for `data`, as `minisign -S -t COMMENT` makes it.
+    fn sign(&self, data: &[u8], comment: &str) -> String {
+        use blake2::Digest as _;
+        self.signature(b"ED", &blake2::Blake2b512::digest(data), comment)
+    }
+
+    /// A legacy (not prehashed) signature, as `minisign -S -l` makes it.
+    fn sign_legacy(&self, data: &[u8], comment: &str) -> String {
+        self.signature(b"Ed", data, comment)
+    }
+
+    fn signature(&self, algorithm: &[u8], signed: &[u8], comment: &str) -> String {
+        let sig = self.pair.sign(signed);
+        let mut bin = algorithm.to_vec();
+        bin.extend_from_slice(&self.id);
+        bin.extend_from_slice(sig.as_ref());
+        let mut global = sig.as_ref().to_vec();
+        global.extend_from_slice(comment.as_bytes());
+        let global = self.pair.sign(&global);
+        format!(
+            "untrusted comment: signature from a CodeSmith test key\n{}\ntrusted comment: {comment}\n{}\n",
+            b64(&bin),
+            b64(global.as_ref())
+        )
+    }
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The key the fixture server signs every release with.
+fn test_key() -> &'static TestKey {
+    static KEY: OnceLock<TestKey> = OnceLock::new();
+    KEY.get_or_init(TestKey::generate)
+}
+
+/// [`super::install`] trusting only [`test_key`], as a build with a real
+/// key pinned would.
+async fn install(
+    base: &str,
+    current: &str,
+    target: Option<&str>,
+    exe: &Path,
+    version: &str,
+) -> Result<()> {
+    super::install(&test_key().trust(), base, current, target, exe, version).await
 }
 
 const T: &str = "aarch64-apple-darwin";
@@ -505,6 +604,7 @@ async fn oc_installs_the_explicit_version_without_a_leading_v() {
         server.requests(),
         [
             "GET /releases/download/v2.3.4-beta.1/SHA256SUMS HTTP/1.1".to_string(),
+            "GET /releases/download/v2.3.4-beta.1/SHA256SUMS.minisig HTTP/1.1".to_string(),
             format!("GET /releases/download/v2.3.4-beta.1/{file} HTTP/1.1"),
         ]
     );
@@ -654,6 +754,256 @@ async fn oc_install_failures_say_what_failed() {
         .await
         .unwrap_err();
     assert!(format!("{e:#}").contains("no CodeSmith releases"), "{e:#}");
+}
+
+// ---------------------------------------------------------------- release signatures
+
+/// Install 2.0.0 trusting `trust`, expecting a refusal: returns the error,
+/// and checks that nothing was written and the tarball never downloaded.
+async fn refused(server: &Server, trust: &Trust) -> String {
+    let (_dir, exe) = installed();
+    let e = super::install(trust, &server.base, "0.1.0", Some(T), &exe, "2.0.0")
+        .await
+        .unwrap_err();
+    assert!(std::fs::read_to_string(&exe).unwrap().contains("0.1.0"));
+    assert!(leftovers(&exe).is_empty(), "{:?}", leftovers(&exe));
+    assert!(
+        !server.requests().iter().any(|r| r.contains(".tar.gz")),
+        "{:?}",
+        server.requests()
+    );
+    let e = format!("{e:#}");
+    assert!(e.contains("nothing was changed"), "{e}");
+    e
+}
+
+fn sign_release(server: &Server, version: &str, signature: &str) {
+    server.route(
+        &format!("/releases/download/v{version}/SHA256SUMS.minisig"),
+        200,
+        &[],
+        signature.as_bytes(),
+    );
+}
+
+fn sums_of(server: &Server, version: &str) -> Vec<u8> {
+    server.routes.lock().unwrap()[&format!("/releases/download/v{version}/SHA256SUMS")]
+        .2
+        .clone()
+}
+
+#[tokio::test]
+async fn a_release_signed_by_a_pinned_key_installs_and_the_signature_is_checked_first() {
+    let server = Server::start();
+    let file = server.publish("2.0.0", T, "2.0.0", None);
+    // A trusted comment may carry more after the version, such as a time.
+    let sums = sums_of(&server, "2.0.0");
+    let signature = test_key().sign(&sums, "codesmith 2.0.0 SHA256SUMS timestamp:1");
+    sign_release(&server, "2.0.0", &signature);
+    let (_dir, exe) = installed();
+    install(&server.base, "0.1.0", Some(T), &exe, "2.0.0")
+        .await
+        .unwrap();
+    assert!(std::fs::read_to_string(&exe).unwrap().contains("2.0.0"));
+    assert_eq!(
+        server.requests(),
+        [
+            "GET /releases/download/v2.0.0/SHA256SUMS HTTP/1.1".to_string(),
+            "GET /releases/download/v2.0.0/SHA256SUMS.minisig HTTP/1.1".to_string(),
+            format!("GET /releases/download/v2.0.0/{file} HTTP/1.1"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_signature_by_a_key_not_pinned_is_refused() {
+    let server = Server::start();
+    server.publish("2.0.0", T, "2.0.0", None);
+    let e = refused(&server, &TestKey::generate().trust()).await;
+    assert!(e.contains("not signed by a CodeSmith release key"), "{e}");
+}
+
+#[tokio::test]
+async fn a_rotated_key_list_accepts_either_key() {
+    let server = Server::start();
+    server.publish("2.0.0", T, "2.0.0", None);
+    let old = TestKey::generate();
+    let text = format!(
+        "# old, then new\n{}\n\n{}\n",
+        old.public_line(),
+        test_key().public_line()
+    );
+    let trust = parse_keys(&text).unwrap();
+    let (_dir, exe) = installed();
+    super::install(&trust, &server.base, "0.1.0", Some(T), &exe, "2.0.0")
+        .await
+        .unwrap();
+    assert!(std::fs::read_to_string(&exe).unwrap().contains("2.0.0"));
+}
+
+#[tokio::test]
+async fn a_tampered_sha256sums_is_refused() {
+    let server = Server::start();
+    server.publish("2.0.0", T, "2.0.0", None);
+    // Signed as published, then a line changed: a matching bad tarball.
+    let sums = String::from_utf8(sums_of(&server, "2.0.0")).unwrap();
+    let evil = format!("{}  codesmith-2.0.0-{T}.tar.gz\n", "ab".repeat(32));
+    server.route(
+        "/releases/download/v2.0.0/SHA256SUMS",
+        200,
+        &[],
+        evil.as_bytes(),
+    );
+    assert_ne!(sums, evil);
+    let e = refused(&server, &test_key().trust()).await;
+    assert!(e.contains("not signed by a CodeSmith release key"), "{e}");
+}
+
+#[tokio::test]
+async fn a_tampered_trusted_comment_is_refused() {
+    let server = Server::start();
+    server.publish("2.0.0", T, "2.0.0", None);
+    // 1.9.0's signed checksums, relabelled 2.0.0 without re-signing: the
+    // file signature still holds, but the comment's global signature fails.
+    let sums = sums_of(&server, "2.0.0");
+    let signature = test_key().sign(&sums, "codesmith 1.9.0 SHA256SUMS");
+    let forged = signature.replace(
+        "trusted comment: codesmith 1.9.0 SHA256SUMS",
+        "trusted comment: codesmith 2.0.0 SHA256SUMS",
+    );
+    assert_ne!(signature, forged);
+    sign_release(&server, "2.0.0", &forged);
+    let e = refused(&server, &test_key().trust()).await;
+    assert!(e.contains("not signed by a CodeSmith release key"), "{e}");
+}
+
+#[tokio::test]
+async fn a_signature_for_another_version_is_refused() {
+    // An older release's genuine signed SHA256SUMS served as 2.0.0 (a
+    // replay or a downgrade) fails on its trusted comment.
+    for comment in [
+        "codesmith 1.9.0 SHA256SUMS",
+        "codesmith 2.0.0-beta.1 SHA256SUMS",
+        "codesmith 2.0.00 SHA256SUMS",
+        "codesmith 2.0.0 homebrew-formula",
+        "codesmith 2.0.0",
+        "codesmith 2.0.0 SHA256SUMSx",
+        "timestamp:1700000000\tfile:SHA256SUMS\thashed",
+        "",
+    ] {
+        let server = Server::start();
+        server.publish("2.0.0", T, "2.0.0", None);
+        let signature = test_key().sign(&sums_of(&server, "2.0.0"), comment);
+        sign_release(&server, "2.0.0", &signature);
+        let e = refused(&server, &test_key().trust()).await;
+        assert!(e.contains("not codesmith 2.0.0"), "{comment:?}: {e}");
+    }
+}
+
+#[tokio::test]
+async fn a_missing_or_malformed_signature_is_refused_when_a_key_is_pinned() {
+    let server = Server::start();
+    server.publish("2.0.0", T, "2.0.0", None);
+    server.route(
+        "/releases/download/v2.0.0/SHA256SUMS.minisig",
+        404,
+        &[],
+        b"",
+    );
+    let e = refused(&server, &test_key().trust()).await;
+    assert!(e.contains("SHA256SUMS.minisig"), "{e}");
+    assert!(e.contains("installs only signed releases"), "{e}");
+
+    let sums = sums_of(&server, "2.0.0");
+    for bad in [
+        "".to_string(),
+        "not a signature".to_string(),
+        test_key().sign_legacy(&sums, "codesmith 2.0.0 SHA256SUMS"),
+    ] {
+        sign_release(&server, "2.0.0", &bad);
+        let e = refused(&server, &test_key().trust()).await;
+        assert!(e.contains("SHA256SUMS"), "{e}");
+    }
+}
+
+#[tokio::test]
+async fn with_the_placeholder_key_upgrades_check_checksums_only() {
+    let server = Server::start();
+    let file = server.publish("2.0.0", T, "2.0.0", None);
+    // Even a bad signature is never fetched: nothing is signed yet.
+    sign_release(&server, "2.0.0", "garbage");
+    let trust = parse_keys("# no key yet\nPLACEHOLDER\n").unwrap();
+    assert!(matches!(trust, Trust::Unsigned));
+    let (_dir, exe) = installed();
+    super::install(&trust, &server.base, "0.1.0", Some(T), &exe, "2.0.0")
+        .await
+        .unwrap();
+    assert!(std::fs::read_to_string(&exe).unwrap().contains("2.0.0"));
+    assert_eq!(
+        server.requests(),
+        [
+            "GET /releases/download/v2.0.0/SHA256SUMS HTTP/1.1".to_string(),
+            format!("GET /releases/download/v2.0.0/{file} HTTP/1.1"),
+        ]
+    );
+    // Checksums are still checked.
+    let (_dir, exe) = installed();
+    server.route(
+        "/releases/download/v2.0.0/SHA256SUMS",
+        200,
+        &[],
+        format!("{}  {file}\n", "ab".repeat(32)).as_bytes(),
+    );
+    let e = super::install(&trust, &server.base, "0.1.0", Some(T), &exe, "2.0.0")
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("checksum mismatch"), "{e:#}");
+    assert!(UNSIGNED.contains("aren't signed yet") && !UNSIGNED.contains('\n'));
+}
+
+#[test]
+fn the_key_file_is_a_placeholder_or_keys_and_nothing_else() {
+    // What this build compiled in parses.
+    release_keys().unwrap();
+    let key = test_key().public_line();
+    assert!(matches!(parse_keys("PLACEHOLDER"), Ok(Trust::Unsigned)));
+    assert!(matches!(parse_keys(&key), Ok(Trust::Keys(k)) if k.len() == 1));
+    assert!(matches!(
+        parse_keys(&format!("  {key}  \r\n# c\n{}\n", TestKey::generate().public_line())),
+        Ok(Trust::Keys(k)) if k.len() == 2
+    ));
+    for bad in [
+        String::new(),
+        "# only comments\n".to_string(),
+        format!("PLACEHOLDER\n{key}"),
+        "RWnotakey".to_string(),
+        format!("{key}x"),
+        "untrusted comment: minisign public key 0123".to_string(),
+    ] {
+        assert!(parse_keys(&bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_signature_made_by_the_minisign_tool_verifies() {
+    // A key pair and signature of b"test" made by the minisign command (the
+    // test vector of the minisign-verify crate, not a CodeSmith key), so the
+    // fixture signer above is not the only source of signatures checked.
+    let keys = match parse_keys("RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3").unwrap()
+    {
+        Trust::Keys(keys) => keys,
+        Trust::Unsigned => unreachable!(),
+    };
+    let signature = "untrusted comment: signature from minisign secret key\n\
+        RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
+        trusted comment: timestamp:1556193335\tfile:test\n\
+        y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==\n";
+    // The signature holds, so only its comment (minisign's default, which
+    // names no version) is refused.
+    let e = verify_sums(&keys, b"test", signature.as_bytes(), "2.0.0").unwrap_err();
+    assert!(e.to_string().contains("not codesmith 2.0.0"), "{e}");
+    let e = verify_sums(&keys, b"tesT", signature.as_bytes(), "2.0.0").unwrap_err();
+    assert!(e.to_string().contains("not signed by"), "{e}");
 }
 
 // "method detection identifies ${method} using the V2 package": by path.
