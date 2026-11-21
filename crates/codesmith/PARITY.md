@@ -85,6 +85,9 @@ Where the tests live:
   `codemode/search.rs` and `codemode/web.rs`: catalog search, nested tool
   paths and their errors (`tool-paths`, `enumeration`), and the web
   globals beyond the extracted programs.
+- `src/upgrade/tests.rs`: `codesmith upgrade` and update checks
+  (`cli/test/upgrade`, `updater-install`, `src/services/updater`), against
+  a local fixture server.
 - `src/acp.rs`: the `oc_acp_*` tests, with the ACP tests not ported listed
   above its test module.
 - `src/tui/parity_form.rs`: the question form (`tui/test/util/form`,
@@ -100,7 +103,7 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet | Deferred |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 40 | 19 | 45 | 165 | 0 | 0 |
+| cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 56 | 3 | 0 | 25 | 21 | 0 |
 | tui: main UI | 1247 | 15 | 460 | 84 | 675 | 13 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
@@ -109,7 +112,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **760** | **678** | **168** | **2344** | **259** | **428** |
+| **Total** | **4637** | **760** | **710** | **125** | **2355** | **259** | **428** |
 
 ## Fixes made while porting
 
@@ -861,6 +864,38 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `cli/test/acp/translate` | replays a compaction as a marker when the client lacks the capability | already passing | oc_acp_compaction_updates |
 | `cli/test/acp/translate` | replays reasoning with the same message IDs as live reasoning ordinals | already passing | oc_acp_prompt_streams_message_ids_and_resolves_with_usage, oc_acp_replay_shape |
 | `cli/test/acp/turn` | streams resumed turns after background shells finish | already passing | oc_acp_background_shell_wakes_the_session |
+| `cli/src/services/updater` | reads update policy from JSONC | after a fix | oc_reads_update_policy_from_jsonc |
+| `cli/src/services/updater` | maps the v1 update policy | after a fix | oc_maps_the_v1_update_policy |
+| `cli/src/services/updater` | reports every available release | after a fix | oc_reports_every_available_release |
+| `cli/src/services/updater` | automatically installs every available release when enabled | after a fix | oc_automatically_installs_every_available_release_when_enabled (`auto` is accepted but CodeSmith only notifies) |
+| `cli/src/services/updater` | skips when updates are disabled | after a fix | oc_skips_when_updates_are_disabled |
+| `cli/src/services/updater` | reports up-to-date only when versions match | after a fix | oc_reports_up_to_date_only_when_versions_match |
+| `cli/src/services/updater` | reports when latest is lower (rollback) | after a fix | oc_reports_when_latest_is_lower |
+| `cli/src/services/updater` | accepts strict release version variants | after a fix | oc_accepts_strict_release_version_variants |
+| `cli/src/services/updater` | preserves strict validity | after a fix | oc_preserves_strict_validity |
+| `cli/src/services/updater` | handles numeric limits without losing precision | after a fix | oc_handles_numeric_limits_without_losing_precision |
+| `cli/src/services/updater` | preserves equality for oversized numeric prerelease identifiers | after a fix | oc_preserves_equality_for_oversized_numeric_prerelease_identifiers |
+| `cli/src/services/updater` | rejects versions longer than semver's limit before trimming | after a fix | oc_rejects_versions_longer_than_semvers_limit_before_trimming |
+| `cli/test/upgrade` | is registered in root help and documents its options | after a fix | oc_upgrade_is_registered_in_root_help_and_documents_its_options (adapted: clap's `[TARGET]`) |
+| `cli/test/upgrade` | detects the installation method and resolves the latest version | after a fix | oc_upgrade_detects_the_installation_method_and_resolves_the_latest_version |
+| `cli/test/upgrade` | resolves the latest version for an explicit method without detection | after a fix | oc_upgrade_resolves_the_latest_version_for_an_explicit_method_without_detection (adapted: `--method binary`) |
+| `cli/test/upgrade` | accepts an explicit version and method without detection or a version lookup | after a fix | oc_upgrade_accepts_an_explicit_version_and_method_without_detection_or_a_lookup |
+| `cli/test/upgrade` | accepts the short method flag and an explicit major upgrade | after a fix | oc_upgrade_accepts_the_short_method_flag_and_an_explicit_major_upgrade |
+| `cli/test/upgrade` | skips the already installed version | after a fix | oc_upgrade_skips_the_already_installed_version |
+| `cli/test/upgrade` | requires an explicit method when detection fails | after a fix | oc_upgrade_requires_an_explicit_method_when_detection_fails |
+| `cli/test/upgrade` | rejects unsupported methods before attempting an upgrade | after a fix | oc_upgrade_rejects_unsupported_methods_before_attempting_an_upgrade |
+| `cli/test/upgrade` | reports version lookup failures without installing | after a fix | oc_upgrade_reports_version_lookup_failures_without_installing |
+| `cli/test/upgrade` | reports installation failures with a nonzero exit code | after a fix | oc_upgrade_reports_installation_failures_with_a_nonzero_exit_code |
+| `cli/test/updater-install` | ${method} installs the explicit V2 package version without a leading v | after a fix | oc_installs_the_explicit_version_without_a_leading_v (adapted: the release tarball) |
+| `cli/test/updater-install` | npm upgrades fail when the running copy keeps its old version | after a fix | oc_upgrades_fail_when_the_new_binary_reports_another_version (adapted: the downloaded binary must report the version before it replaces anything) |
+| `cli/test/updater-install` | ${manager.label} installs print the ${manager.name} command instead of updating in place | after a fix | oc_package_manager_installs_print_their_command_instead_of_updating_in_place (adapted: Homebrew and cargo) |
+| `cli/test/updater-install` | bun isolates and removes its install cache after exit ${exitCode} | after a fix | oc_cleans_its_directory_after_success_and_failure (adapted: the download folder) |
+| `cli/test/updater-install` | curl uses the V2 installer and cleans its directory: ${failure} | after a fix | oc_cleans_its_directory_after_success_and_failure (adapted: success, a failed download, a bad checksum) |
+| `cli/test/updater-install` | invalid version targets never execute a command or create a cache | after a fix | oc_invalid_version_targets_never_make_a_request_or_create_a_folder |
+| `cli/test/updater-install` | install failures expose stderr and process errors do not report success | after a fix | oc_install_failures_say_what_failed (adapted: HTTP status, unlisted tarball) |
+| `cli/test/updater-install` | method detection identifies ${method ?? "an unknown installation"} using the V2 package | after a fix | oc_method_detection_identifies_the_installation (adapted: by path) |
+| `cli/test/updater-install` | Homebrew Core installs check and upgrade the Core formula | after a fix | oc_package_manager_installs_print_their_command_instead_of_updating_in_place (adapted: CodeSmith names `brew upgrade` instead of running it) |
+| `cli/test/updater-install` | Homebrew tap installs of ${formula} use the published tap formula | after a fix | oc_package_manager_installs_print_their_command_instead_of_updating_in_place (adapted: the reka18/tap formula) |
 | `tui/test/app-lifecycle` | ctrl+c dismisses autocomplete and shell mode before exiting | already passing | oc_ctrl_c_dismisses_autocomplete_before_exiting (adapted: no shell mode) |
 | `tui/test/util/model` | splits provider from a nested model identifier | already passing | oc_model_references_carry_nested_ids_and_variants |
 | `tui/test/util/model` | includes the selected variant in model refs | already passing | oc_model_references_carry_nested_ids_and_variants |
@@ -885,12 +920,6 @@ with each (every test for groups up to 30 cases; by file, with examples,
 for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
-
-### cli: self-update (upgrade command, update checks) (43)
-
-- `cli/test/updater-install` (20): e.g. "${method} installs the explicit V2 package version without a leading v"; "npm upgrades fail when the running copy keeps its old version"
-- `cli/src/services/updater` (12): e.g. "reads update policy from JSONC"; "maps the v1 update policy"
-- `cli/test/upgrade` (11): e.g. "is registered in root help and documents its options"; "detects the installation method and resolves the latest version"
 
 ### tui: project, worktree and session browser (43)
 
@@ -1005,6 +1034,7 @@ its remaining work is tracked in
 | cli: runtime internals | n/a | 16 | 7 | Bun/Node runtime, bundling or web UI |
 | cli: cli.json | n/a | 7 | 1 | cli.json schema, migration and file locking |
 | cli: packaging | n/a | 3 | 1 | single-executable asset archive |
+| cli: self-update through package managers | n/a | 11 | 2 | npm, pnpm, bun, yarn, Vite+, WinGet and Node distributions (their detection, prefixes, caches and commands), and `vp` as a method: CodeSmith ships GitHub release tarballs and Homebrew, and never runs a package manager |
 | cli: migrations | n/a | 1 | 1 | credential import from older versions |
 ### Code Mode on Boa
 | acp: compaction replay | by design | 3 | 1 | CodeSmith's history keeps completed compactions only: a failed, cancelled or running compaction leaves nothing to replay |

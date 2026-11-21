@@ -40,6 +40,12 @@ cargo install --locked --git https://github.com/reka18/codesmith codesmith
 cargo install --locked --path crates/codesmith
 ```
 
+**Upgrading.** `codesmith upgrade` upgrades a copy from the install script
+or a tarball, after checking the new tarball against `SHA256SUMS`. Homebrew
+and cargo copies are left to `brew upgrade` and `cargo install`. CodeSmith
+never checks for updates on its own unless you
+[opt in](cli.md#update-checks). See [`codesmith upgrade`](cli.md#codesmith-upgrade).
+
 Maintainers: see [RELEASING.md](../RELEASING.md).
 
 ## Choose a model

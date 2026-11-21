@@ -29,6 +29,11 @@ brew install reka18/tap/codesmith
 cargo install --locked --git https://github.com/reka18/codesmith codesmith
 ```
 
+`codesmith upgrade` updates a copy installed from a release tarball (it
+checks `SHA256SUMS` first); Homebrew and cargo installs update through those
+tools. CodeSmith never checks for updates unless you
+[opt in](docs/cli.md#update-checks).
+
 Release binaries are for macOS (signed and notarized) and Linux (static, any
 distribution). None have been published yet, so build from source for now.
 See [installation](docs/getting-started.md#install) for details and manual

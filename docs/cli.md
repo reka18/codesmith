@@ -19,6 +19,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`acp`](#codesmith-acp) | Agent Client Protocol for editors. |
 | [`serve`](#codesmith-serve) | Local HTTP API. |
 | [`debug`](#codesmith-debug) | Inspect config and internals. |
+| [`upgrade`](#codesmith-upgrade) | Upgrade to the latest or a given release. |
 
 ## `codesmith`
 
@@ -254,3 +255,57 @@ an explicit `--token`. See [local server](local-server.md).
 | `debug plugins` | The plugins compiled into this binary, and whether config turns them off. |
 | `debug model [provider/model[#variant]]` | What a model resolves to: provider, URL, protocol, limits, extra body, provider options (JSON), the selected variant, and every variant with its options. |
 | `debug prompt [-m MODEL] [--agent ID]` | The system prompt an agent would get here. |
+
+## `codesmith upgrade`
+
+```sh
+codesmith upgrade [VERSION] [-m, --method binary|brew|cargo] [--check]
+```
+
+Also `codesmith update`. Without `VERSION` it upgrades to the latest
+published release of [reka18/codesmith](https://github.com/reka18/codesmith/releases)
+(drafts and prereleases are never "latest"); `VERSION` may have a leading
+`v`, and may be older than the running one (a rollback). `--check` only says
+whether another release is out.
+
+How it upgrades depends on where this copy lives:
+
+| Installed with | `codesmith upgrade` |
+|---|---|
+| `install.sh` or a release tarball | Downloads `codesmith-<version>-<target>.tar.gz` and `SHA256SUMS`, checks the tarball against it, checks that the binary in it runs and reports `<version>`, then renames it over the running binary (so a failure at any step leaves the old one untouched). |
+| Homebrew (a `Cellar/codesmith` path) | Changes nothing; tells you to run `brew upgrade reka18/tap/codesmith`. |
+| `cargo install` (`~/.cargo/bin`) | Changes nothing; prints the `cargo install` command. |
+| A source checkout (`target/...`) | Changes nothing. |
+| A system folder (`/usr/bin`, `/usr/lib`, the Nix or Guix store, Snap, Flatpak, MacPorts' `/opt/local`) | Changes nothing; update it with the package manager that owns it. |
+
+A copy found in Homebrew's, cargo's or a system package manager's folders is
+never replaced, whatever `--method` says. If the method can't be detected at
+all, pass `--method binary` for a copy you installed from a tarball. The
+folder holding the binary must be writable: the new binary is written to a
+temporary folder beside it, so the final rename is atomic on one filesystem,
+and that folder is removed however the upgrade ends.
+
+The upgrade makes plain GET requests with a `codesmith/<version>` user agent,
+to `https://github.com/reka18/codesmith/releases/...` only (and the download
+host GitHub redirects to), over HTTPS. `$CODESMITH_RELEASES_URL` points it at
+a mirror with the same layout (`<url>/latest` redirecting to
+`<url>/tag/v<version>`, and `<url>/download/v<version>/<file>`).
+
+### Update checks
+
+Off by default. OpenCode checks for updates on start by default; CodeSmith
+only does if the **global** config (`codesmith.json[c]` in the config folder,
+never a project's) opts in:
+
+```jsonc
+{ "update": "notify" }   // or "disable" (the default); OpenCode's "autoupdate" is read too
+```
+
+With `notify`, the interactive UI checks at most once a day in
+the background, keeps the answer in the cache folder (`update-check.json`),
+and after the UI exits prints a line such as
+`CodeSmith 0.3.0 is available (this is 0.2.0). Run: codesmith upgrade` (or
+the `brew`/`cargo` command for those installs). It never waits for the
+network. `"auto"` is accepted, but CodeSmith never replaces itself unattended:
+it behaves as `notify`. `$CODESMITH_DISABLE_AUTOUPDATE=1` turns checks off
+whatever the config says.

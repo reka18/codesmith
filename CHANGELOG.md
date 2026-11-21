@@ -6,6 +6,16 @@ All notable changes to CodeSmith are listed here. Versions follow
 ## Unreleased
 
 - Mini mode moved out of the main branch to `feature/slim-mode` (#1).
+- `codesmith upgrade` (also `codesmith update`): upgrades a copy installed
+  from a release tarball to the latest or a given release, checking the
+  tarball against `SHA256SUMS` and the new binary's `--version` before it
+  renames it over the old one. Homebrew, `cargo install`, source-checkout
+  and system-package copies are never replaced; it names the package
+  manager's command instead. `--check` only reports.
+- An update check, off by default (OpenCode's is on): `"update": "notify"`
+  in the global config checks at most once a day with one plain GET and
+  prints a line after the UI exits.
+
 
 ## 0.1.0
 

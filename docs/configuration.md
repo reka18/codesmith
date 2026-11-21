@@ -110,6 +110,7 @@ is parsed:
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
+| `update` | `"disable"` | Global config only: `"notify"` checks for a new release once a day and says so after the UI exits. See [update checks](cli.md#update-checks). |
 | `plugins` | all on | `{"<id>": {...options}}`, or `false` to turn a compiled-in plugin off. See [plugins](plugins.md). |
 | `tui` | `{}` | The terminal UI: theme, key bindings, cursor, reasoning display, transcript verbosity and session tabs. See [The terminal UI](#the-terminal-ui-tui). |
 | `watcher` | `{}` | `{"ignore": [...]}`: paths or globs, relative to the project, that are not watched. See [File watching](#file-watching). |
@@ -1525,6 +1526,8 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `XDG_CACHE_HOME` | The cache folder (the models.dev catalog) is `$XDG_CACHE_HOME/codesmith`, else `~/.cache/codesmith`. |
 | `CODESMITH_MODELS_FETCH` | `1`: fetch the [model catalog](#the-model-catalog-modelsdev) in the background (off by default). |
 | `CODESMITH_MODELS_URL` | Where the model catalog is fetched from (default `https://models.dev`); turns fetching on. |
+| `CODESMITH_RELEASES_URL` | Where [`codesmith upgrade`](cli.md#codesmith-upgrade) and the update check look for releases (default `https://github.com/reka18/codesmith/releases`). |
+| `CODESMITH_DISABLE_AUTOUPDATE` | `1` or `true` turns the [update check](cli.md#update-checks) off whatever the config says. |
 | `CODESMITH_MODELS_PATH` | A catalog file read instead of the cached one. |
 | `CODESMITH_DISABLE_MODELS_FETCH` | `1` or `true`: never fetch the catalog, not even with `models --refresh`. |
 | `CODESMITH_SERVER_TOKEN` | The bearer token for [`codesmith serve`](local-server.md). |
