@@ -317,8 +317,20 @@ fn user_processes() -> usize {
 
 /// Ends every process of the case whose session is `session`: those in
 /// the session and every descendant of its leader, stopped first (so none
-/// forks again while the rest are found), then killed.
+/// forks again while the rest are found), then killed. Swept again until a
+/// sweep finds nothing: on Linux a `SIGSTOP` sent to one process does not
+/// cancel a fork already under way, so its child can appear after the last
+/// scan and outlive the kill.
 fn contain(session: i32) {
+    for _ in 0..50 {
+        if !sweep(session) {
+            return;
+        }
+    }
+}
+
+/// One stop-then-kill pass of [`contain`]; false when nothing was found.
+fn sweep(session: i32) -> bool {
     use std::collections::HashSet;
     let me = std::process::id() as i32;
     let mut stopped: HashSet<i32> = HashSet::new();
@@ -357,6 +369,7 @@ fn contain(session: i32) {
             libc::kill(p, libc::SIGKILL);
         }
     }
+    !stopped.is_empty()
 }
 
 /// One isolated place to run inputs: shims logging to `log`, a work dir.
