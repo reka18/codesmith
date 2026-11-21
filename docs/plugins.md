@@ -76,7 +76,8 @@ Tests and embedders with their own store install a host with
 
 ## The goal plugin
 
-Every build has one built-in plugin, `goal` (OpenCode's goal plugin). `/goal
+Every build has two built-in plugins, `goal` and `plan` (OpenCode's goal
+and plan plugins). `/goal
 <objective>` keeps the session working until the objective is met: when the
 session would go idle, a reviewer (a side request with the session's
 context) answers with a verdict, and the session continues with the
@@ -87,6 +88,27 @@ the session fails or is stopped, when nothing ran for 30 minutes while it
 waited on a background shell, and when CodeSmith restarted while it was
 active. `/goal pause`, `/goal resume` and `/goal clear` control it, and
 `/goal` alone shows it. Turn it off with `"plugins": {"goal": false}`.
+
+## The plan plugin
+
+The `plan` plugin runs Plan mode for the [`plan` agent](agents-and-subagents.md).
+When a session's agent is `plan`, a reminder that Plan mode is on, naming
+the Plan directory, joins the conversation before the next prompt; when
+the session switches to another agent, a reminder that it is off. The
+reminders are saved in the session's history, not added to the system
+prompt, so switching agents keeps the provider's prompt cache. If a
+compaction or an undo drops the reminder, the next request adds it again.
+A reminder quoted inside a larger message (a compaction summary, say)
+doesn't count.
+
+The `plan` agent may write plan files only in the Plan directory,
+`~/.local/share/codesmith/plan` (`$XDG_DATA_HOME/codesmith/plan`). Nothing
+creates it until a plan file is written. A write anywhere else fails with
+"Cannot use write to modify files outside the Plan directory: ...".
+
+Turn the plugin off with `"plugins": {"plan": false}`: no reminders, and a
+blocked write reports the plain permission error. The `plan` agent's rules
+stay as they are.
 
 ## Turning plugins on and off
 
@@ -100,7 +122,7 @@ options:
 ```
 
 `codesmith debug plugins` lists the plugins compiled in (the built-in `goal`
-among them), and whether config turns them off.
+and `plan` among them), and whether config turns them off.
 
 ## Example
 

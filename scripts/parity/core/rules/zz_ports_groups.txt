@@ -1,0 +1,16 @@
+# Ports of the roadmap groups: Plan mode plugin (Plan directory), the
+# codesmith self-management tool, provider plugins, OAuth provider logins
+# and the ChatGPT subscription login.
+@plugin/plan.test.ts
+159 :: ported :: src/plugin/plan.rs::oc_plan_injects_enter_and_leave_reminders_on_agent_switches :: adapted: also through a session resumed with another agent (tests/oc_plan_session.rs::oc_plan_session_leaves_plan_mode_when_the_agent_changes)
+171 :: ported :: tests/oc_plan_session.rs::oc_plan_session_saves_the_enter_reminder_before_the_prompt :: adapted: the session saves the reminder in its history before the prompt (also src/plugin/plan.rs::oc_plan_reconciles_a_missing_enter_reminder_into_the_request)
+184 :: ported :: src/plugin/plan.rs::oc_plan_does_nothing_with_a_live_enter_reminder
+195 :: ported :: src/plugin/plan.rs::oc_plan_reconciles_a_stale_enter_reminder_with_a_leave_reminder
+208 :: ported :: src/plugin/plan.rs::oc_plan_does_nothing_for_other_agents_without_plan_history
+218 :: ported :: src/plugin/plan.rs::oc_plan_does_nothing_when_a_leave_reminder_follows_the_enter_reminder
+229 :: ported :: src/plugin/plan.rs::oc_plan_treats_a_quoted_reminder_as_not_live
+243 :: ported :: src/plugin/plan.rs::oc_plan_does_not_create_the_plan_directory_during_activation
+250 :: ported :: src/plugin/plan.rs::oc_plan_allows_edits_only_inside_the_plan_directory :: also through the write tool (tests/oc_plan_session.rs::oc_plan_session_writes_only_plan_files)
+261 :: ported :: src/plugin/plan.rs::oc_plan_allows_the_plan_directory_without_asking :: adapted: the Plan directory needs no prompt; other directories outside the project still ask, as for every CodeSmith agent but explore
+271 :: ported :: src/plugin/plan.rs::oc_plan_rewrites_blocked_mutation_failures_with_the_plan_directory :: adapted: a rule's block is recognized by its permission error
+293 :: ported :: src/plugin/plan.rs::oc_plan_preserves_mutation_failures_unrelated_to_permissions

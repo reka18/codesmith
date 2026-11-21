@@ -58,6 +58,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   movement key) and copied with ctrl+c through the terminal (`OSC 52`);
   typing replaces it. Copies drop NUL characters. The mouse stays the
   terminal's: the UI never captures it.
+- **Plan mode plugin:** the `plan` agent writes plan files in a Plan
+  directory (`~/.local/share/codesmith/plan`) and nowhere else, and a
+  blocked write names that directory. Plan mode is announced by enter and
+  leave reminders saved in the conversation, reconciled with the history
+  before each request, instead of in the system prompt. A new built-in
+  `plan` plugin; `"plugins": {"plan": false}` turns it off.
 
 ## 0.1.0
 

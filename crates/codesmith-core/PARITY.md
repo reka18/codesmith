@@ -39,7 +39,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
-| Agents | 65 | 34 | 0 | 11 | 14 | 6 | 0 |
+| Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
 | Config | 164 | 33 | 0 | 0 | 127 | 4 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1673** | **18** | **102** | **2400** | **1395** | **0** |
+| **Total** | **5588** | **1685** | **18** | **91** | **2400** | **1394** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,7 +83,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (102 cases in 8 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (91 cases in 7 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -91,7 +91,6 @@ Missing features, by how many OpenCode test cases each would unlock (102 cases i
 | [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 17 | GitHub Copilot Auto model router; GitLab Duo |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
-| [Plan Mode Plugin (Plan Directory)](#plan-mode-plugin-plan-directory) | 11 | plan files in a Plan directory, enter/leave reminders reconciled with history |
 | [OpenCode Self-management Tool](#opencode-self-management-tool) | 4 | the `opencode` tool's `models` listing by type; the `opencode` tool (models, worktrees, session moves) |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
@@ -188,22 +187,6 @@ Missing features, by how many OpenCode test cases each would unlock (102 cases i
 - `automation.test.ts`: retries failed admission without committing state or done, then settles the handoff once
 - `automation.test.ts`: pauses on a missing handoff directory without rerunning the check
 
-### Plan Mode Plugin (Plan Directory)
-
-11 cases.
-
-- `plugin/plan.test.ts`: reconciles a missing enter reminder into the request and persists it
-- `plugin/plan.test.ts`: does nothing when the transcript already has a live enter reminder
-- `plugin/plan.test.ts`: reconciles a stale enter reminder with a leave reminder
-- `plugin/plan.test.ts`: does nothing for non-plan sessions without plan history
-- `plugin/plan.test.ts`: does nothing when a leave reminder already follows the enter reminder
-- `plugin/plan.test.ts`: treats reminder text quoted inside a larger message as not live
-- `plugin/plan.test.ts`: does not create the Plan directory during activation
-- `plugin/plan.test.ts`: allows edits only inside the Plan directory
-- `plugin/plan.test.ts`: allows external directories without asking
-- `plugin/plan.test.ts`: rewrites blocked mutation failures with the Plan directory
-- `plugin/plan.test.ts`: preserves mutation failures unrelated to permissions
-
 ### OpenCode Self-management Tool
 
 4 cases.
@@ -231,7 +214,7 @@ Missing features, by how many OpenCode test cases each would unlock (102 cases i
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1394 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -719,7 +702,7 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
 - pending auto-approval skipped after an "always" for a guarded request (S) — `permission`
   - `permission.test.ts`: skips pending auto-approval after always for ${guard} (2 cases)
 
-### Agents (6)
+### Agents (5)
 
 - no custom agents / runtime defaults for created agents (S) — `agent::resolve`
   - `agent.test.ts`: starts without agents
@@ -728,8 +711,6 @@ Tests for behaviour CodeSmith already has but no test pins (1395 cases), by area
   - `agent.test.ts`: lists the selected default agent first
 - home-relative permission paths; global permissions before agent-specific (S) — `agent::resolve`
   - `config/agent.test.ts`: matches POSIX paths against home-relative permissions
-- plan reminder injected on switching to plan (S) — `agent::PLAN_REMINDER`
-  - `plugin/plan.test.ts`: injects enter and leave reminders on agent switches
 - OpenAI Responses verbosity defaults (S) — `codesmith_ai options`
   - `plugin/verbosity.test.ts`: sets known OpenAI Responses defaults without overriding configured or unknown models
 
@@ -2523,7 +2504,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Agents (48 of 65)</summary>
+<details><summary>Agents (60 of 65)</summary>
 
 
 **`agent.test.ts`**
@@ -2559,6 +2540,21 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D allows one model-lab optimization plugin to be enabled independently — deliberate: prompt.rs: the model prompts are built in, not plugins that can be listed or enabled one by one
 - P preserves tools for model aliases and catalog-ID prompt selection by default — `tests/oc_prompts.rs::oc_prompt_selects_by_the_configured_model_id_not_the_api_model` (adapted: CodeSmith reads no model family)
 - D lists models once per step across prompt and identity plugins — effect-internal: one model-catalog lookup per step shared across prompt and identity plugins
+
+**`plugin/plan.test.ts`**
+
+- P injects enter and leave reminders on agent switches — `src/plugin/plan.rs::oc_plan_injects_enter_and_leave_reminders_on_agent_switches` (adapted: also through a session resumed with another agent (tests/oc_plan_session.rs::oc_plan_session_leaves_plan_mode_when_the_agent_changes))
+- P reconciles a missing enter reminder into the request and persists it — `tests/oc_plan_session.rs::oc_plan_session_saves_the_enter_reminder_before_the_prompt` (adapted: the session saves the reminder in its history before the prompt (also src/plugin/plan.rs::oc_plan_reconciles_a_missing_enter_reminder_into_the_request))
+- P does nothing when the transcript already has a live enter reminder — `src/plugin/plan.rs::oc_plan_does_nothing_with_a_live_enter_reminder`
+- P reconciles a stale enter reminder with a leave reminder — `src/plugin/plan.rs::oc_plan_reconciles_a_stale_enter_reminder_with_a_leave_reminder`
+- P does nothing for non-plan sessions without plan history — `src/plugin/plan.rs::oc_plan_does_nothing_for_other_agents_without_plan_history`
+- P does nothing when a leave reminder already follows the enter reminder — `src/plugin/plan.rs::oc_plan_does_nothing_when_a_leave_reminder_follows_the_enter_reminder`
+- P treats reminder text quoted inside a larger message as not live — `src/plugin/plan.rs::oc_plan_treats_a_quoted_reminder_as_not_live`
+- P does not create the Plan directory during activation — `src/plugin/plan.rs::oc_plan_does_not_create_the_plan_directory_during_activation`
+- P allows edits only inside the Plan directory — `src/plugin/plan.rs::oc_plan_allows_edits_only_inside_the_plan_directory` (also through the write tool (tests/oc_plan_session.rs::oc_plan_session_writes_only_plan_files))
+- P allows external directories without asking — `src/plugin/plan.rs::oc_plan_allows_the_plan_directory_without_asking` (adapted: the Plan directory needs no prompt; other directories outside the project still ask, as for every CodeSmith agent but explore)
+- P rewrites blocked mutation failures with the Plan directory — `src/plugin/plan.rs::oc_plan_rewrites_blocked_mutation_failures_with_the_plan_directory` (adapted: a rule's block is recognized by its permission error)
+- P preserves mutation failures unrelated to permissions — `src/plugin/plan.rs::oc_plan_preserves_mutation_failures_unrelated_to_permissions`
 
 </details>
 

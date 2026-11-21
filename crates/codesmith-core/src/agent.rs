@@ -46,7 +46,12 @@ Guidelines:
 
 Complete the user's search request efficiently and report your findings clearly.";
 
-pub const PLAN_REMINDER: &str = "<system-reminder>\nPlan mode is active. You are in a read-only planning phase: investigate, ask questions, and propose a plan. Do not modify files, change configuration, or run commands that change system state. The edit and write tools are disabled.\n</system-reminder>";
+/// The Plan mode reminder for a provider that keeps its own conversation
+/// (Claude Agent), which the history's reminders do not reach: the plan
+/// plugin's enter reminder.
+pub fn plan_reminder() -> String {
+    crate::plugin::plan::enter(&crate::plugin::plan::directory())
+}
 
 /// Shell commands the review agent may run. No `git grep` (`-O<cmd>` runs a
 /// program, and option bundling defeats a pattern for it); `grep` does that.
@@ -172,10 +177,11 @@ fn builtin(id: &str) -> Option<Agent> {
         }
         "plan" => {
             a.name = "Plan".into();
-            a.description = "Read-only planning agent. Investigates and proposes changes without editing files.".into();
+            a.description = "Read-only agent for exploring the codebase and planning work before implementation. Writes only plan files, in the Plan directory.".into();
             a.permissions
                 .push(Rule::new("question", "*", Effect::Allow));
-            a.permissions.push(Rule::new("edit", "*", Effect::Deny));
+            a.permissions
+                .extend(crate::plugin::plan::rules(&crate::plugin::plan::directory()).own);
         }
         "general" => {
             a.name = "General".into();
@@ -304,6 +310,13 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
     };
     let own = std::mem::take(&mut agent.permissions);
     agent.permissions = base_rules();
+    // The plan agent reaches its Plan directory without asking, unless
+    // config says otherwise.
+    if id == crate::plugin::plan::AGENT {
+        agent
+            .permissions
+            .extend(crate::plugin::plan::rules(&crate::plugin::plan::directory()).base);
+    }
     agent.permissions.extend(config.permissions.iter().cloned());
     agent
         .permissions
@@ -771,10 +784,14 @@ mod tests {
                 "lsp"
             ]
         );
+        // Plan writes plan files, so it has the writing tools.
         assert_eq!(
             names(&resolve(&c, "plan").unwrap()),
             vec![
                 "read",
+                "write",
+                "edit",
+                "patch",
                 "glob",
                 "grep",
                 "shell",
@@ -878,8 +895,6 @@ mod tests {
                 }
             });
         }
-        let names = |a: &Agent| tools(a).iter().map(|t| t.name()).collect::<Vec<_>>();
-        assert!(!names(&resolve(&c, "plan").unwrap()).contains(&"edit"));
         let narrow = cfg(json!({"permissions": [
             {"action": "edit", "resource": "docs/*", "effect": "allow"}
         ]}));
@@ -888,8 +903,9 @@ mod tests {
             evaluate("edit", "docs/a.md", &plan.permissions),
             Effect::Deny
         );
+        let names = |a: &Agent| tools(a).iter().map(|t| t.name()).collect::<Vec<_>>();
         assert!(
-            !names(&plan).contains(&"edit"),
+            !names(&resolve(&c, "review").unwrap()).contains(&"edit"),
             "a global allow the built-in deny overrides does not show the tool"
         );
         // The build agent is unrestricted, so global rules still decide.

@@ -220,10 +220,11 @@ async fn custom_commands_expand_and_pick_their_agent() {
     // The command's agent: plan mode tools and rules.
     let sid = out.done()["session"].as_str().unwrap().to_string();
     assert_eq!(e.store().get(&sid).unwrap().unwrap().agent, "plan");
-    assert_eq!(
-        user_texts(&e.history(&sid)),
-        ["Explain add.sh to a new reader."]
-    );
+    // Plan mode is announced before the prompt.
+    let texts = user_texts(&e.history(&sid));
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts[0].contains("You are in Plan mode"), "{texts:?}");
+    assert_eq!(texts[1], "Explain add.sh to a new reader.");
     let out = e.run(&["run", "/greet", "Ada"]).await;
     out.ok();
     assert_eq!(out.stdout.trim(), "Hello, Ada.");

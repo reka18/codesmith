@@ -371,8 +371,9 @@ async fn oc_session_durably_settles_local_tool_failures_before_continuing() {
 /// Fixed: a tool the agent was not offered used to run anyway.
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_session_tools_the_agent_was_not_offered_are_unavailable() {
+    // Explore has no writing tools (plan writes plan files).
     let mut t = start(Setup {
-        agent: Some("plan"),
+        agent: Some("explore"),
         ..Default::default()
     })
     .await;

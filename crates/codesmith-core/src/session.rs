@@ -629,7 +629,7 @@ impl Session {
             }
         };
         // Until the first observation, the base alone.
-        let system = assemble_system(&base_system, "", agent.id == "plan");
+        let system = assemble_system(&base_system, "");
         let shell = crate::shell_select::resolve(
             crate::shell_select::Priority::Compat,
             config.shell.as_deref(),
@@ -687,6 +687,12 @@ impl Session {
         }
         let mut rules = agent.permissions.clone();
         crate::permission::scope_tool_output(&mut rules, &id);
+        crate::plugin::plan::scope_to_root(
+            &agent.id,
+            &mut rules,
+            &loaded.root,
+            &crate::plugin::plan::directory(),
+        );
         let mut gate = Gate::new(rules, watch(asker.clone(), &declined));
         // "Always" answers are kept for the project beside its sessions.
         if let Some(book) = store
@@ -888,6 +894,12 @@ impl Session {
             .extend(rules.into_iter().map(Rule::into_builtin));
         let mut gate_rules = self.agent.permissions.clone();
         crate::permission::scope_tool_output(&mut gate_rules, &self.id);
+        crate::plugin::plan::scope_to_root(
+            &self.agent.id,
+            &mut gate_rules,
+            &self.root,
+            &crate::plugin::plan::directory(),
+        );
         self.gate.set_rules(gate_rules);
         Ok(())
     }
@@ -1462,7 +1474,7 @@ impl Session {
         self.date_note = rendered.iter().find(|r| is_note(r)).map(|r| r.text.clone());
         let rest: Vec<is::Rendered> = rendered.iter().filter(|r| !is_note(r)).cloned().collect();
         let text = is::join(&rest);
-        self.system = assemble_system(&self.base_system, &text, self.agent.id == "plan");
+        self.system = assemble_system(&self.base_system, &text);
         let own: Vec<is::Rendered> = rendered
             .into_iter()
             .filter(|r| !CLAUDE_WRITES.contains(&r.key.as_str()))
@@ -1472,10 +1484,26 @@ impl Session {
             if !claude.is_empty() {
                 claude.push_str("\n\n");
             }
-            claude.push_str(agent::PLAN_REMINDER);
+            claude.push_str(&agent::plan_reminder());
         }
         self.claude_instructions = claude;
         Ok(())
+    }
+
+    /// Save the Plan mode reminder the history lacks for this session's
+    /// agent, if any (the plan plugin's; not for Claude Agent, whose
+    /// instructions carry it).
+    fn reconcile_plan(&mut self) -> Result<()> {
+        if self.model.provider.protocol == codesmith_ai::Protocol::ClaudeAgent
+            || !crate::plugin::active().has(&self.loaded.config, crate::plugin::plan::ID)
+        {
+            return Ok(());
+        }
+        let dir = crate::plugin::plan::directory();
+        match crate::plugin::plan::missing(&self.agent.id, &self.messages, &dir) {
+            Some(text) => self.push(Message::user(text)),
+            None => Ok(()),
+        }
     }
 
     /// Set where the date the session is told comes from (tests pass a
@@ -1810,6 +1838,8 @@ impl Session {
         {
             self.push(Message::user(crate::fork::NOTICE))?;
         }
+        // Plan mode is announced before the prompt (see `plugin::plan`).
+        self.reconcile_plan()?;
         // Mentioned skills' content comes before the prompt's text.
         let mut user = Message {
             role: Role::User,
@@ -1914,6 +1944,15 @@ impl Session {
                 // Tool lists a server announced as changed count already.
                 self.mcp.refresh().await;
                 self.observe_instructions()?;
+            }
+            // A compaction may have dropped the Plan mode reminder; a
+            // prompt or notice at the tail was reconciled before it joined.
+            let prompt_last = self.messages.last().is_some_and(|m| {
+                m.role == Role::User
+                    && !m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. }))
+            });
+            if !prompt_last {
+                self.reconcile_plan()?;
             }
             // The last allowed step must answer in text (OpenCode's MAX_STEPS).
             let final_step = steps + 1 >= max_steps;
@@ -2096,6 +2135,7 @@ impl Session {
                     id: id.clone(),
                     name: name.clone(),
                     input,
+                    agent: self.agent.id.clone(),
                 };
                 let refused = plugins.tool_before(&self.loaded.config, &mut call).err();
                 let input = call.input.clone();
@@ -2537,6 +2577,7 @@ impl Session {
                     .map(|j| Part::text(tool::shell::notification(j, self.limits))),
             )
             .collect();
+        self.reconcile_plan()?;
         self.push(Message {
             role: Role::User,
             parts,
@@ -2879,6 +2920,7 @@ impl Session {
             id: format!("{outer}/{n}"),
             name: name.to_string(),
             input: input.clone(),
+            agent: self.agent.id.clone(),
         };
         if let Err(refused) = plugins.tool_before(&self.loaded.config, &mut call) {
             let (mut content, mut is_error) = (refused, true);
@@ -3689,7 +3731,7 @@ impl Session {
         let o = is::observe(&list, self.instruction.as_ref())?;
         let preview = if o.initial {
             let text = is::join(&is::render_initial(&list, &o.current)?);
-            let system = assemble_system(&self.base_system, &text, self.agent.id == "plan");
+            let system = assemble_system(&self.base_system, &text);
             (Some(system), None)
         } else {
             let text = is::update_text(&list, &o)?;
@@ -4594,8 +4636,6 @@ pub fn turn_diff(db: &Store, id: &str, snaps: &Snapshots) -> Result<Option<Strin
     Ok(Some(snaps.diff(&tree, &now)?))
 }
 
-/// The system prompt: the base, the instruction baseline, and the plan
-/// agent's reminder.
 /// Tells Claude Agent's registry the session stopped running (OpenCode's
 /// `session.execution.*` events).
 struct ClaudeIdle(String);
@@ -4636,13 +4676,10 @@ fn aborted_calls(messages: &[Message]) -> Vec<String> {
         .collect()
 }
 
-fn assemble_system(base: &str, instructions: &str, plan: bool) -> String {
+fn assemble_system(base: &str, instructions: &str) -> String {
     let mut parts = vec![base];
     if !instructions.is_empty() {
         parts.push(instructions);
-    }
-    if plan {
-        parts.push(agent::PLAN_REMINDER);
     }
     parts.join("\n\n")
 }

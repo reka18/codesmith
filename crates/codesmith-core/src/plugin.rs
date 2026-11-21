@@ -15,6 +15,7 @@ mod context;
 pub mod goal;
 pub mod host;
 pub(crate) mod idle;
+pub mod plan;
 mod request;
 
 /// The message types the context hooks take.
@@ -95,6 +96,8 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: Value,
+    /// The id of the agent the session runs.
+    pub agent: String,
 }
 
 /// A shell command about to start (mutable in [`Plugin::shell_before`]).
@@ -349,10 +352,11 @@ pub fn set_host(host: Arc<Host>) {
     *HOST.write().unwrap() = Some(host);
 }
 
-/// The plugins every CodeSmith build has: the goal plugin (`/goal`).
-/// `codesmith::main` installs them before a build's own.
+/// The plugins every CodeSmith build has: the goal plugin (`/goal`) and
+/// the plan plugin (Plan mode). `codesmith::main` installs them before a
+/// build's own.
 pub fn builtin() -> Vec<Arc<dyn Plugin>> {
-    vec![Arc::new(goal::shared().clone())]
+    vec![Arc::new(goal::shared().clone()), Arc::new(plan::PlanPlugin)]
 }
 
 /// Install the plugins for this process (called once at startup).
@@ -474,6 +478,11 @@ impl Registry {
         for p in self.enabled(config) {
             p.event(e);
         }
+    }
+
+    /// Whether plugin `id` is installed and enabled by `config`.
+    pub fn has(&self, config: &Config, id: &str) -> bool {
+        self.enabled(config).any(|p| p.id() == id)
     }
 
     /// Whether any plugin is enabled, so a hook needs its input built.

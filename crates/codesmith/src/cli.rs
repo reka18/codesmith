@@ -1644,9 +1644,6 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             if !text.is_empty() {
                 parts.push(&text);
             }
-            if a.id == "plan" {
-                parts.push(agent::PLAN_REMINDER);
-            }
             println!("{}", parts.join("\n\n"));
         }
     }
