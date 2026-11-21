@@ -479,6 +479,23 @@ pub async fn login(
     open: impl FnOnce(&str),
     pasted: Option<tokio::sync::mpsc::Receiver<String>>,
 ) -> Result<()> {
+    login_with(client, file, e, client_id, open, pasted, |m| {
+        eprintln!("{m}")
+    })
+    .await
+}
+
+/// [`login`], telling `wrong_paste` (not the terminal) about a pasted URL
+/// that is not this login's.
+pub async fn login_with(
+    client: &reqwest::Client,
+    file: &Path,
+    e: &Endpoints,
+    client_id: &str,
+    open: impl FnOnce(&str),
+    pasted: Option<tokio::sync::mpsc::Receiver<String>>,
+    wrong_paste: impl Fn(&str),
+) -> Result<()> {
     let mut cb = Callback::bind("ChatGPT", 0, "/auth/callback").await?;
     let host = host_id(&crate::paths::data_dir().join("chatgpt-agent-host-id"))?;
     let a = Attempt::new(client_id, &host, &cb.redirect);
@@ -497,7 +514,7 @@ pub async fn login(
         }
     };
     let got = cb
-        .wait(check, pasted, |m| eprintln!("{m}"), TIMEOUT)
+        .wait(check, pasted, wrong_paste, TIMEOUT)
         .await
         .map_err(rejected)?;
     let issued = callback_client(&a, got.params.get("client_id").map(String::as_str))

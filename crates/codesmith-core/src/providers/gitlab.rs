@@ -212,8 +212,27 @@ pub async fn start(e: &Endpoints) -> Result<Login> {
 
 pub async fn finish(
     client: &reqwest::Client,
+    login: Login,
+    pasted: Option<tokio::sync::mpsc::Receiver<String>>,
+    timeout: Duration,
+) -> Result<Value> {
+    finish_with(
+        client,
+        login,
+        pasted,
+        |m| eprintln!("{m}; still waiting"),
+        timeout,
+    )
+    .await
+}
+
+/// [`finish`], telling `wrong_paste` (not the terminal) about a pasted URL
+/// that is not this login's.
+pub async fn finish_with(
+    client: &reqwest::Client,
     mut login: Login,
     pasted: Option<tokio::sync::mpsc::Receiver<String>>,
+    wrong_paste: impl Fn(&str),
     timeout: Duration,
 ) -> Result<Value> {
     let state = login.pkce.state.clone();
@@ -222,7 +241,7 @@ pub async fn finish(
         .wait(
             |p| oauth::check(p, &state, "GitLab"),
             pasted,
-            |m| eprintln!("{m}; still waiting"),
+            wrong_paste,
             timeout,
         )
         .await?;
@@ -253,15 +272,25 @@ pub async fn login(
     e: &Endpoints,
     open: impl FnOnce(&str),
 ) -> Result<()> {
+    login_with(client, file, e, open, Some(oauth::stdin_lines()), |m| {
+        eprintln!("{m}; still waiting")
+    })
+    .await
+}
+
+/// [`login`] with redirects pasted through `pasted` and wrong pastes told
+/// to `wrong_paste` (the sign-in picker's, not the terminal's).
+pub async fn login_with(
+    client: &reqwest::Client,
+    file: &std::path::Path,
+    e: &Endpoints,
+    open: impl FnOnce(&str),
+    pasted: Option<tokio::sync::mpsc::Receiver<String>>,
+    wrong_paste: impl Fn(&str),
+) -> Result<()> {
     let l = start(e).await?;
     open(&l.url);
-    let entry = finish(
-        client,
-        l,
-        Some(oauth::stdin_lines()),
-        Duration::from_secs(600),
-    )
-    .await?;
+    let entry = finish_with(client, l, pasted, wrong_paste, Duration::from_secs(600)).await?;
     crate::auth::set_entry_in(file, ID, entry)
 }
 

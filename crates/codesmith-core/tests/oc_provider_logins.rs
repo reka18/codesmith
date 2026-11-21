@@ -1515,3 +1515,117 @@ async fn oc_gitlab_oauth_honors_gitlab_oauth_client_id_for_self_managed_applicat
     done.unwrap();
     assert_eq!(srv.seen()[0].form()["client_id"], "custom-client-id");
 }
+
+// The sign-in picker's logins (`login_with`): the URL goes to its `open`,
+// redirects come from its paste box, and a paste that belongs to another
+// login is told to its callback, never printed. Each wait has a deadline.
+
+/// Run `login`, pasting a foreign redirect, then (once it was refused) the
+/// right one, as the picker would; the refusals reported.
+async fn picker_paste<F, Fut>(login: F) -> (anyhow::Result<()>, Vec<String>)
+where
+    F: FnOnce(
+        Box<dyn FnOnce(&str) + Send>,
+        tokio::sync::mpsc::Receiver<String>,
+        Box<dyn Fn(&str) + Send + Sync>,
+    ) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let (url_tx, url_rx) = tokio::sync::oneshot::channel::<String>();
+    let (paste_tx, paste_rx) = tokio::sync::mpsc::channel(4);
+    let (note_tx, mut note_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let open: Box<dyn FnOnce(&str) + Send> = Box::new(move |u: &str| {
+        let _ = url_tx.send(u.to_string());
+    });
+    let note: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |m: &str| {
+        let _ = note_tx.send(m.to_string());
+    });
+    let run = login(open, paste_rx, note);
+    let paste = async move {
+        let url = tokio::time::timeout(WAIT, url_rx).await.unwrap().unwrap();
+        paste_tx
+            .send(redirect(&url, &[("state", "another-login")]))
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(WAIT, note_rx.recv())
+            .await
+            .expect("the foreign paste was not refused")
+            .unwrap();
+        paste_tx.send(redirect(&url, &[])).await.unwrap();
+        vec![first]
+    };
+    tokio::join!(run, paste)
+}
+
+#[tokio::test]
+async fn the_sign_in_picker_completes_a_poe_login_from_its_paste_box() {
+    let srv = server().await;
+    srv.push(reply(
+        200,
+        json!({"api_key": "poe-picked-key", "api_key_expires_in": 3600}).to_string(),
+    ));
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let e = poe_endpoints(&srv);
+    let client = reqwest::Client::new();
+    let (done, notes) = picker_paste(|open, pasted, note| {
+        let (client, file, e) = (client.clone(), file.clone(), e.clone());
+        async move { poe::login_with(&client, &file, &e, open, Some(pasted), note).await }
+    })
+    .await;
+    done.unwrap();
+    assert_eq!(notes, ["This URL belongs to a different sign-in"]);
+    let saved = codesmith_core::auth::entry_in(&file, "poe").unwrap();
+    assert_eq!(saved["access"], "poe-picked-key");
+    assert_eq!(srv.seen()[0].form()["code"], "auth-code");
+}
+
+#[tokio::test]
+async fn the_sign_in_picker_completes_a_gitlab_login_from_its_paste_box() {
+    let srv = server().await;
+    srv.push(reply(
+        200,
+        json!({"access_token": "gl-access", "refresh_token": "gl-refresh", "expires_in": 3600})
+            .to_string(),
+    ));
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let e = gitlab_endpoints(&srv, "my-gitlab-app");
+    let client = reqwest::Client::new();
+    let (done, notes) = picker_paste(|open, pasted, note| {
+        let (client, file, e) = (client.clone(), file.clone(), e.clone());
+        async move { gitlab::login_with(&client, &file, &e, open, Some(pasted), note).await }
+    })
+    .await;
+    done.unwrap();
+    assert_eq!(notes, ["This URL belongs to a different sign-in"]);
+    let saved = codesmith_core::auth::entry_in(&file, "gitlab").unwrap();
+    assert_eq!(saved["access"], "gl-access");
+    assert_eq!(srv.seen()[0].form()["client_id"], "my-gitlab-app");
+}
+
+#[tokio::test]
+async fn the_sign_in_picker_completes_a_snowflake_login_from_its_paste_box() {
+    let srv = server().await;
+    srv.push(reply(
+        200,
+        json!({"access_token": "sf-access", "refresh_token": "sf-refresh", "expires_in": 600})
+            .to_string(),
+    ));
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("auth.json");
+    let e = snowflake_endpoints(&srv);
+    let client = reqwest::Client::new();
+    let (done, notes) =
+        picker_paste(|open, pasted, note| {
+            let (client, file, e) = (client.clone(), file.clone(), e.clone());
+            async move {
+                snowflake::login_with(&client, &file, &e, None, open, Some(pasted), note).await
+            }
+        })
+        .await;
+    done.unwrap();
+    assert_eq!(notes, ["This URL belongs to a different sign-in"]);
+    let saved = codesmith_core::auth::entry_in(&file, "snowflake-cortex").unwrap();
+    assert_eq!(saved["type"], "oauth");
+}

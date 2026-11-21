@@ -23,6 +23,7 @@ pub mod modal;
 pub mod oauth;
 pub mod poe;
 pub mod sap;
+pub mod signin;
 pub mod snowflake;
 pub mod swap;
 pub mod vertex;

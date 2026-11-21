@@ -193,16 +193,25 @@ pub async fn login(
     open: impl FnOnce(&str),
     pasted: Option<tokio::sync::mpsc::Receiver<String>>,
 ) -> Result<()> {
+    login_with(client, file, e, open, pasted, |m| {
+        eprintln!("{m}; still waiting")
+    })
+    .await
+}
+
+/// [`login`], telling `wrong_paste` (not the terminal) about a pasted URL
+/// that is not this login's.
+pub async fn login_with(
+    client: &reqwest::Client,
+    file: &std::path::Path,
+    e: &Endpoints,
+    open: impl FnOnce(&str),
+    pasted: Option<tokio::sync::mpsc::Receiver<String>>,
+    wrong_paste: impl Fn(&str),
+) -> Result<()> {
     let l = start(e).await?;
     open(&l.url);
-    let entry = finish(
-        client,
-        l,
-        pasted,
-        |m| eprintln!("{m}; still waiting"),
-        Duration::from_secs(600),
-    )
-    .await?;
+    let entry = finish(client, l, pasted, wrong_paste, Duration::from_secs(600)).await?;
     crate::auth::set_entry_in(file, ID, entry)
 }
 
