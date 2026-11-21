@@ -577,7 +577,7 @@ pub(crate) async fn install(
     // Next to the executable, so the final rename stays on one filesystem.
     let scratch = dir.join(format!(".codesmith-upgrade-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir(&scratch).with_context(|| {
+    private_dir(&scratch).with_context(|| {
         format!(
             "cannot write to {}; reinstall to a folder you own, or run the upgrade with permission to write there",
             dir.display()
@@ -586,18 +586,55 @@ pub(crate) async fn install(
     let scratch = Scratch(scratch);
     let new = scratch.0.join("codesmith");
     {
-        let mut f = std::fs::File::create(&new)?;
+        let mut f = private_file(&new)?;
         f.write_all(&binary)?;
         f.sync_all()?;
     }
+    check_version(&new, version)?;
+    // Checked: now readable and runnable by everyone, as an install is.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;
     }
-    check_version(&new, version)?;
     std::fs::rename(&new, exe).with_context(|| format!("could not replace {}", exe.display()))?;
     Ok(())
+}
+
+/// Create `path` as a directory only its owner can use (0700), whatever
+/// the umask; it must not exist yet.
+fn private_dir(path: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        b.mode(0o700);
+        b.create(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        b.create(path)
+    }
+}
+
+/// Create `path` as a new file only its owner can read, write or run
+/// (0700), whatever the umask.
+fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        o.mode(0o700);
+        let f = o.open(path)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        Ok(f)
+    }
+    #[cfg(not(unix))]
+    {
+        o.open(path)
+    }
 }
 
 /// The downloaded binary must run here and call itself `version`.

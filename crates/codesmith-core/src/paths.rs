@@ -31,10 +31,20 @@ fn default_root() -> PathBuf {
     #[cfg(test)]
     {
         static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        // A new folder with a random name, created exclusively (0700), so
+        // another local user cannot plant it in advance; kept for the
+        // process, since every test shares it.
         ROOT.get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("codesmith-unit-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
-            dir
+            let mut b = tempfile::Builder::new();
+            b.prefix("codesmith-unit-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                b.permissions(std::fs::Permissions::from_mode(0o700));
+            }
+            b.tempdir()
+                .expect("a scratch folder for the unit tests")
+                .keep()
         })
         .clone()
     }
@@ -242,6 +252,20 @@ mod tests {
     fn mode(p: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    /// The unit tests' scratch root is the owner's own, under an
+    /// unpredictable name, not `codesmith-unit-<pid>`.
+    #[cfg(unix)]
+    #[test]
+    fn the_unit_test_root_is_private_and_unpredictable() {
+        let root = default_root();
+        assert_eq!(root, default_root(), "one root for the process");
+        assert!(root.is_dir());
+        assert_eq!(mode(&root), 0o700);
+        let name = root.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("codesmith-unit-"), "{name}");
+        assert_ne!(name, format!("codesmith-unit-{}", std::process::id()));
     }
 
     #[cfg(unix)]

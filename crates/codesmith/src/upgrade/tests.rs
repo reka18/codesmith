@@ -827,3 +827,22 @@ fn extract_reads_pax_and_gnu_long_names() {
     assert_eq!(extract(&tgz, "x/codesmith").unwrap(), b"px");
     assert!(extract(&tgz, "short").is_err());
 }
+
+/// The scratch folder and the downloaded binary are the owner's alone
+/// until the binary has been checked, whatever the umask would give.
+#[cfg(unix)]
+#[test]
+fn scratch_files_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let scratch = dir.path().join(".codesmith-upgrade-test");
+    private_dir(&scratch).unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&scratch), 0o700);
+    // Only a new folder: one already there is an error.
+    assert!(private_dir(&scratch).is_err());
+    let file = scratch.join("codesmith");
+    drop(private_file(&file).unwrap());
+    assert_eq!(mode(&file), 0o700);
+    assert!(private_file(&file).is_err(), "only a new file");
+}
