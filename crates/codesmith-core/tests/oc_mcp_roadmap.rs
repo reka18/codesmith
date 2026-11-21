@@ -390,3 +390,194 @@ fn mcp_structured_result() {
     let odd = json!({"structuredContent": [1, "two"]});
     assert_eq!(mcp::structured_result(&odd, true), Some(json!([1, "two"])));
 }
+
+// === MCP Session Recovery ===
+
+/// A server handing out sessions (`Mcp-Session-Id`) that it forgets on
+/// `restart`, answering 404 to a request in a forgotten one. `fail_init`
+/// makes initializing fail after the first; `forgetful` forgets every
+/// session as soon as it is made after the first.
+#[derive(Default)]
+struct Sessions {
+    live: Vec<String>,
+    made: usize,
+    processed: Vec<Value>,
+    fail_init: bool,
+    forgetful: bool,
+}
+
+fn session_server(state: Arc<Mutex<Sessions>>) -> Handler {
+    Arc::new(move |g: &Got| {
+        let mut st = state.lock().unwrap();
+        if g.method() == "initialize" {
+            if st.made > 0 && st.fail_init {
+                return Http::Error(-32603, "cannot start");
+            }
+            st.made += 1;
+            let id = format!("session-{}", st.made);
+            if !(st.forgetful && st.made > 1) {
+                st.live.push(id.clone());
+            }
+            return Http::Headed(
+                vec![("Mcp-Session-Id".into(), id)],
+                init_result(json!({"tools": {}, "resources": {}})),
+            );
+        }
+        match g.header("mcp-session-id") {
+            Some(s) if !st.live.iter().any(|l| l == s) => return Http::Status(404),
+            _ => {}
+        }
+        match g.method() {
+            "tools/list" => Http::Result(
+                json!({"tools": [{"name": "echo", "inputSchema": {"type": "object"}}]}),
+            ),
+            "tools/call" => {
+                st.processed.push(g.msg["params"]["arguments"].clone());
+                Http::Result(json!({"content": [{"type": "text", "text": "echoed"}]}))
+            }
+            "resources/read" => {
+                Http::Result(json!({"contents": [{"uri": "docs://readme", "text": "# Readme"}]}))
+            }
+            _ => Http::Error(-32601, "unknown"),
+        }
+    })
+}
+
+fn restart(state: &Arc<Mutex<Sessions>>) {
+    state.lock().unwrap().live.clear();
+}
+
+// mcp.test.ts: "reconnects and retries a tool call after the MCP session
+// expires"
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_mcp_reconnects_and_retries_a_tool_call_after_the_session_expires() {
+    let state = Arc::new(Mutex::new(Sessions::default()));
+    let server = remote(session_server(state.clone())).await;
+    let m = connect(&server.url, json!({})).await;
+    m.call_raw_for("srv_echo", json!({"n": 1}), None, None)
+        .await
+        .unwrap();
+    assert_eq!(state.lock().unwrap().made, 1);
+    // The restarted server does not know the client's session, so the next
+    // request is answered 404.
+    restart(&state);
+    let r = m
+        .call_raw_for("srv_echo", json!({"n": 2}), None, None)
+        .await
+        .unwrap();
+    assert_eq!(mcp::result_text(&r), ("echoed".into(), false));
+    let st = state.lock().unwrap();
+    assert_eq!(st.processed, [json!({"n": 1}), json!({"n": 2})]);
+    assert_eq!(st.made, 2);
+    assert_eq!(m.statuses()["srv"], mcp::Status::Connected { tools: 1 });
+    // The new session's requests carry its id.
+    let last = server.calls("tools/call").pop().unwrap();
+    assert_eq!(last.header("mcp-session-id"), Some("session-2"));
+}
+
+// Reading a resource recovers the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_session_recovery_covers_resource_reads() {
+    let state = Arc::new(Mutex::new(Sessions::default()));
+    let server = remote(session_server(state.clone())).await;
+    let m = connect(&server.url, json!({})).await;
+    restart(&state);
+    let text = m.read_resource("srv", "docs://readme").await.unwrap();
+    assert_eq!(text, "# Readme");
+    assert_eq!(state.lock().unwrap().made, 2);
+}
+
+// A server that forgets the new session too is tried once more, not again
+// and again; one that cannot start a new session fails the call and is
+// marked failed.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_session_recovery_retries_once() {
+    let state = Arc::new(Mutex::new(Sessions {
+        forgetful: true,
+        ..Default::default()
+    }));
+    let server = remote(session_server(state.clone())).await;
+    let m = connect(&server.url, json!({})).await;
+    restart(&state);
+    let e = m
+        .call_raw_for("srv_echo", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{e:#}").contains("no longer knows this session"),
+        "{e:#}"
+    );
+    assert!(state.lock().unwrap().processed.is_empty());
+    // Initialized twice: the first session, and the one that recovery made
+    // (whose tool list the forgetful server already refused).
+    assert_eq!(state.lock().unwrap().made, 2);
+
+    let state = Arc::new(Mutex::new(Sessions {
+        fail_init: true,
+        ..Default::default()
+    }));
+    let server = remote(session_server(state.clone())).await;
+    let m = connect(&server.url, json!({})).await;
+    restart(&state);
+    let e = m
+        .call_raw_for("srv_echo", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{e:#}").contains("starting a new one failed"),
+        "{e:#}"
+    );
+    assert!(matches!(m.statuses()["srv"], mcp::Status::Failed(_)));
+    assert_eq!(server.calls("initialize").len(), 2);
+}
+
+// Calls that find the session gone at the same time start one new session
+// between them.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_session_recovery_starts_one_session_for_concurrent_calls() {
+    let state = Arc::new(Mutex::new(Sessions::default()));
+    let server = remote(session_server(state.clone())).await;
+    let m = connect(&server.url, json!({})).await;
+    restart(&state);
+    let calls = (0..4).map(|n| {
+        let m = m.clone();
+        tokio::spawn(async move {
+            m.call_raw_for("srv_echo", json!({"n": n}), None, None)
+                .await
+        })
+    });
+    for c in calls {
+        tokio::time::timeout(DEADLINE, c)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+    let st = state.lock().unwrap();
+    assert_eq!(st.made, 2);
+    assert_eq!(st.processed.len(), 4);
+    drop(st);
+    let _ = server;
+}
+
+// A 404 outside a session (a server that never gave one) is not taken for
+// an expired session: nothing is initialized again.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_session_recovery_needs_a_session() {
+    let server = remote(Arc::new(|g: &Got| match g.method() {
+        "tools/call" => Http::Status(404),
+        _ => answer(
+            g,
+            &json!([{"name": "echo", "inputSchema": {"type": "object"}}]),
+        ),
+    }))
+    .await;
+    let m = connect(&server.url, json!({})).await;
+    let e = m
+        .call_raw_for("srv_echo", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("HTTP 404"), "{e:#}");
+    assert_eq!(server.calls("initialize").len(), 1);
+    assert_eq!(server.calls("tools/call").len(), 1);
+}

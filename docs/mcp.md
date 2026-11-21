@@ -60,6 +60,12 @@ stop being offered and calls to them say the server exited. CodeSmith
 starts it again once, on the next call or before the model's next step;
 if that fails too, the server stays unavailable until the session is
 restarted. (OpenCode marks such a server failed without restarting it.)
+A remote server that answers `404` to a request in its session (it
+restarted, or expired the session) gets a new session, as the MCP spec
+asks: CodeSmith initializes again, lists its tools, and sends the tool call
+or resource read once more. That happens once per call; concurrent calls
+share the one new session, and a 404 outside a session is an error like
+any other.
 
 `codesmith mcp list` connects to each server and shows its status and tools.
 

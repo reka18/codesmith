@@ -16,3 +16,4 @@
 @mcp.test.ts
 756 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_retains_output_schemas_across_paginated_discovery
 2824 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_advertises_output_schemas_to_code_mode :: adapted: the catalog in the session's request; a program gets the call's structuredContent as the declared value
+1225 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_reconnects_and_retries_a_tool_call_after_the_session_expires :: adapted: a 404 to a request in a session starts a new one (initialize, tool list) and the call is sent once more

@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP session recovery:** a remote server that forgot its session (it
+  answers 404 to a request carrying the `Mcp-Session-Id`) is initialized
+  again and the tool call or resource read is sent once more.
 - **MCP output schemas:** a tool's `outputSchema` is kept (across paginated
   tool lists) and shown as its result type in the Code Mode catalog, and a
   program calling it gets the call's `structuredContent` as its value.

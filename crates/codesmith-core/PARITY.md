@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 120 | 6 | 6 | 80 | 0 | 0 |
+| MCP | 212 | 121 | 6 | 5 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2891** | **79** | **37** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2892** | **79** | **36** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,7 +131,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (37 cases in 12 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (36 cases in 11 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -142,7 +142,6 @@ Missing features, by how many OpenCode test cases each would unlock (37 cases in
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
-| [MCP Session Recovery](#mcp-session-recovery) | 1 | initializing again and retrying a call when an HTTP server has forgotten the session |
 | [MCP Resource Blobs](#mcp-resource-blobs) | 1 | decoding text blobs and saving binary blobs to files (CodeSmith notes them) |
 | [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
 | [MCP Code Mode Defaults](#mcp-code-mode-defaults) | 1 | Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog |
@@ -214,12 +213,6 @@ Missing features, by how many OpenCode test cases each would unlock (37 cases in
 1 cases.
 
 - `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
-
-### MCP Session Recovery
-
-1 cases.
-
-- `mcp.test.ts`: reconnects and retries a tool call after the MCP session expires
 
 ### MCP Resource Blobs
 
@@ -2397,7 +2390,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (206 of 212)</summary>
+<details><summary>MCP (207 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2527,6 +2520,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P applies configured MCP timeouts to resource operations — `tests/oc_mcp_backlog3.rs::oc_mcp_applies_the_configured_timeouts`
 - P remote MCP code mode preference: ${entry.name} ×4 — `tests/oc_mcp_backlog3.rs::oc_mcp_dials_a_remote_servers_url_as_given_for_its_code_mode_preference` (adapted: the configured URL is dialed as given)
 - P does not retry MCP beyond the query fallback: ${entry.name} ×11 — `tests/oc_mcp_backlog3.rs::oc_mcp_does_not_retry_a_refused_connection` (adapted: there is no query fallback; a 401 is a server needing a login)
+- P reconnects and retries a tool call after the MCP session expires — `tests/oc_mcp_roadmap.rs::oc_mcp_reconnects_and_retries_a_tool_call_after_the_session_expires` (adapted: a 404 to a request in a session starts a new one (initialize, tool list) and the call is sent once more)
 - P exposes every connection operation — `tests/oc_mcp_backlog3.rs::oc_mcp_exposes_every_connection_operation` (adapted: the 2025 protocol; resources are listed afresh, so there are no change notifications to follow)
 - P skips unusable tools and keeps the rest of the server's tools — `tests/oc_mcp_backlog3.rs::oc_mcp_skips_unusable_tools_and_keeps_the_rest` (adapted: a tool without a name is the unusable one)
 - P returns results that miss or break the called tool's output schema — `tests/oc_mcp_backlog3.rs::oc_mcp_returns_results_that_miss_or_break_the_output_schema`

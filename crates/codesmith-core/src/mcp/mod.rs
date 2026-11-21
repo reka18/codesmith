@@ -1060,11 +1060,23 @@ impl Client {
         let Transport::Http { session, .. } = &self.transport else {
             unreachable!()
         };
+        let sent_session = session.lock().unwrap().clone();
         let mut resp = self
             .http_request(msg)
             .send()
             .await
             .context("contacting the MCP server")?;
+        // The server no longer knows the session (it restarted, or expired
+        // it): the spec has the client start a new one.
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            if let Some(old) = sent_session {
+                let mut s = session.lock().unwrap();
+                if s.as_deref() == Some(old.as_str()) {
+                    *s = None;
+                }
+                return Err(SessionExpired.into());
+            }
+        }
         if let Some(s) = resp
             .headers()
             .get("mcp-session-id")
@@ -1394,6 +1406,8 @@ pub struct Mcp {
     next_attach: AtomicU64,
     /// Serializes relisting an attached connection's tools.
     relisting: tokio::sync::Mutex<()>,
+    /// Serializes starting a new session with a server that forgot one.
+    renewing: tokio::sync::Mutex<()>,
     /// A server's name each time the tools under it change (attached
     /// connections only).
     changes: tokio::sync::broadcast::Sender<String>,
@@ -1465,6 +1479,23 @@ impl std::fmt::Display for ToolCallError {
 
 impl std::error::Error for ToolCallError {}
 
+/// An HTTP server answered 404 to a request in its session: it has
+/// forgotten the session, and a new one must be initialized.
+#[derive(Debug)]
+pub struct SessionExpired;
+
+impl std::fmt::Display for SessionExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the MCP server no longer knows this session")
+    }
+}
+
+impl std::error::Error for SessionExpired {}
+
+fn expired(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<SessionExpired>().is_some()
+}
+
 /// Connect to one server and list its tools and prompts.
 async fn start(
     name: &str,
@@ -1510,6 +1541,7 @@ impl Mcp {
             attached: Mutex::new(BTreeMap::new()),
             next_attach: AtomicU64::new(1),
             relisting: tokio::sync::Mutex::new(()),
+            renewing: tokio::sync::Mutex::new(()),
             changes: tokio::sync::broadcast::channel(256).0,
         })
     }
@@ -1857,8 +1889,64 @@ impl Mcp {
             return Err(NotFound(server.to_string()).into());
         }
         let c = self.connected_or_restart(server).await?;
-        let _asking = asker.map(|a| Asking::new(&c.shared, a));
-        c.call_in(tool, args, session).await
+        let first = {
+            let _asking = asker.clone().map(|a| Asking::new(&c.shared, a));
+            c.call_in(tool, args.clone(), session).await
+        };
+        match first {
+            // The server forgot the session before it took the call:
+            // initialize a new one and send the call once more.
+            Err(e) if expired(&e) => {
+                let c = self.renew(server, &c).await?;
+                let _asking = asker.map(|a| Asking::new(&c.shared, a));
+                c.call_in(tool, args, session).await
+            }
+            r => r,
+        }
+    }
+
+    /// Start a new session with `server` in place of `old`, whose session
+    /// the server forgot: connect it again (initialize, list its tools)
+    /// unless a concurrent call already did.
+    async fn renew(&self, server: &str, old: &Arc<Client>) -> Result<Arc<Client>> {
+        let _one = self.renewing.lock().await;
+        if let Some(c) = self.clients.read().unwrap().get(server) {
+            if !Arc::ptr_eq(c, old) {
+                return Ok(c.clone());
+            }
+        }
+        let cfg = self
+            .configs
+            .read()
+            .unwrap()
+            .get(server)
+            .cloned()
+            .ok_or_else(|| anyhow!("MCP server {server} is not configured"))?;
+        let (status, client) = outcome(start(server, &cfg, &self.root, &self.defaults).await);
+        self.statuses
+            .write()
+            .unwrap()
+            .insert(server.to_string(), status.clone());
+        match client {
+            Some(c) => {
+                self.clients
+                    .write()
+                    .unwrap()
+                    .insert(server.to_string(), c.clone());
+                Ok(c)
+            }
+            None => {
+                self.clients.write().unwrap().remove(server);
+                Err(anyhow!(
+                    "MCP server {server} forgot its session, and starting a new one failed: {}",
+                    match status {
+                        Status::Failed(e) => e,
+                        Status::NeedsAuth => "it needs a login".into(),
+                        _ => "it did not connect".into(),
+                    }
+                ))
+            }
+        }
     }
 
     /// A server's client while it is connected (a stdio server that exited
@@ -2159,7 +2247,11 @@ impl Mcp {
         if !c.has_resources() {
             return Err(anyhow!("MCP server {server:?} does not expose resources"));
         }
-        Ok(resource_text(&c.read_resource(uri).await?))
+        let read = match c.read_resource(uri).await {
+            Err(e) if expired(&e) => self.renew(server, &c).await?.read_resource(uri).await,
+            r => r,
+        };
+        Ok(resource_text(&read?))
     }
 
     /// The servers' prompts as slash commands named `server:prompt`.
