@@ -1061,9 +1061,15 @@ pub async fn login_with(
                     readers.spawn(async move { reply(sock, 400, &body).await });
                     continue;
                 }
-                let failed = if q.get("state") != Some(&state) {
-                    Some("the callback's state did not match; try again".to_string())
-                } else if let Some(e) = callback_error(&q) {
+                // Another state (a stale tab, or a page that found the
+                // port) neither completes nor cancels the login: refuse it
+                // and keep waiting for the redirect.
+                if q.get("state") != Some(&state) {
+                    let body = page(server, Some("the callback's state did not match"));
+                    readers.spawn(async move { reply(sock, 400, &body).await });
+                    continue;
+                }
+                let failed = if let Some(e) = callback_error(&q) {
                     Some(e)
                 } else if let Err(e) = check_iss(&q, &ep) {
                     Some(e)

@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP OAuth ignores forged callbacks:** a browser callback whose `state`
+  doesn't match the login is answered 400 and the login keeps waiting,
+  instead of failing, so a stray or forged request can't cancel it.
 - **Swap names can't look like remote paths:** a model name with both `@`
   and `:`, a `:` followed by `/`, or a one-letter head before `:` (`x:y`)
   is refused. Tags like `qwen:7b` still work.

@@ -715,7 +715,10 @@ async fn login_with(
 
 // Negative cases around the callback fix: a callback carrying an error
 // still ends the login (it is the redirect), and one with another state is
-// refused rather than redeemed, so a forged redirect cannot sign in.
+// refused rather than redeemed, so a forged redirect cannot sign in. (Since
+// security review 8 a forged state is answered 400 and the login keeps
+// waiting for the real redirect, rather than failing; see
+// `mcp_oauth_state.rs`.)
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_mcp_oauth_ends_on_an_error_callback_and_refuses_a_forged_state() {
     let (_d, path) = store();
@@ -726,11 +729,15 @@ async fn oc_mcp_oauth_ends_on_an_error_callback_and_refuses_a_forged_state() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("access_denied"), "{e}");
-    let e = login_with(&path, &url, &[("code", "accepted")], Some("forged"))
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("state"), "{e}");
+    let waiting = tokio::time::timeout(
+        Duration::from_secs(2),
+        login_with(&path, &url, &[("code", "accepted")], Some("forged")),
+    )
+    .await;
+    assert!(
+        waiting.is_err(),
+        "a forged state neither completes nor ends it"
+    );
     assert!(server.posts("/token").is_empty(), "no code was redeemed");
     assert_eq!(oauth::load(&path, "srv", &url), None);
 }
