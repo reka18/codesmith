@@ -18,8 +18,9 @@ your platform, checks it against the release's `SHA256SUMS`, and puts
 curl -fsSL https://raw.githubusercontent.com/reka18/codesmith/main/install.sh | sh
 ```
 
-Set `CODESMITH_VERSION=0.1.0` to pick a version, and `CODESMITH_INSTALL_DIR`
-to install somewhere else. You can [read the script](../install.sh) first.
+Set `CODESMITH_VERSION=0.1.0` to pick a version, `CODESMITH_INSTALL_DIR`
+to install somewhere else, and `CODESMITH_BASE_URL` to download the release
+files from a mirror. You can [read the script](../install.sh) first.
 
 **Homebrew**
 
