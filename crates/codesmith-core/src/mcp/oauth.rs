@@ -119,6 +119,10 @@ fn save_locked(path: &Path, server: &str, e: &Entry) -> Result<()> {
 
 pub fn remove(path: &Path, server: &str) -> Result<bool> {
     let _lock = crate::auth::FileLock::acquire(path)?;
+    remove_locked(path, server)
+}
+
+fn remove_locked(path: &Path, server: &str) -> Result<bool> {
     let mut all: BTreeMap<String, Entry> = crate::auth::read_for_update(path)?;
     let had = all.remove(server).is_some();
     if had {
@@ -297,6 +301,19 @@ async fn register(
     ))
 }
 
+/// A token endpoint refused the grant (`invalid_grant`): the refresh token
+/// is spent or revoked, so the login is over.
+#[derive(Debug)]
+struct InvalidGrant;
+
+impl std::fmt::Display for InvalidGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the authorization server refused the grant (invalid_grant)")
+    }
+}
+
+impl std::error::Error for InvalidGrant {}
+
 async fn token_request(
     client: &reqwest::Client,
     endpoint: &str,
@@ -317,6 +334,9 @@ async fn token_request(
         .context("contacting the token endpoint")?;
     let status = r.status();
     let v: Value = r.json().await.unwrap_or_default();
+    if status.is_client_error() && v["error"] == "invalid_grant" {
+        return Err(InvalidGrant.into());
+    }
     if !status.is_success() || v.get("access_token").is_none() {
         return Err(anyhow!(
             "token request failed (HTTP {}): {}",
@@ -349,12 +369,30 @@ fn apply_tokens(e: &mut Entry, v: &Value) {
 }
 
 /// A valid access token for the server: the saved one, refreshed if it is
-/// about to expire. `None` when nothing usable is saved.
+/// about to expire. `None` when nothing usable is saved. A refresh that
+/// fails leaves the saved one to be sent (the server may still take it),
+/// unless the authorization server refused the grant: the login is then
+/// removed, so the server is reported as needing one.
 pub async fn token(
     client: &reqwest::Client,
     path: &Path,
     server: &str,
     url: &str,
+) -> Option<String> {
+    token_within(client, path, server, url, REFRESH_TIMEOUT).await
+}
+
+/// The longest a refresh may take before the saved token is sent instead.
+pub const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// [`token`], giving a refresh at most `limit`: a token endpoint that does
+/// not answer leaves the saved token to be sent, as one that fails does.
+pub async fn token_within(
+    client: &reqwest::Client,
+    path: &Path,
+    server: &str,
+    url: &str,
+    limit: Duration,
 ) -> Option<String> {
     let e = load(path, server, url)?;
     if e.expires_at.is_none_or(|t| t > now() + 60) {
@@ -370,7 +408,10 @@ pub async fn token(
         .ok()?;
     let mut e = load(path, server, url)?;
     if e.expires_at.is_some_and(|t| t <= now() + 60) {
-        let rt = e.refresh_token.clone()?;
+        // Nothing to refresh with: the server decides on the saved one.
+        let Some(rt) = e.refresh_token.clone() else {
+            return Some(e.access_token);
+        };
         let mut form = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", rt.as_str()),
@@ -380,9 +421,21 @@ pub async fn token(
         if let Some(s) = e.client_secret.as_deref() {
             form.push(("client_secret", s));
         }
-        let v = token_request(client, &e.token_endpoint, &form).await.ok()?;
-        apply_tokens(&mut e, &v);
-        let _ = save_locked(path, server, &e);
+        let refreshed =
+            tokio::time::timeout(limit, token_request(client, &e.token_endpoint, &form))
+                .await
+                .unwrap_or_else(|_| Err(anyhow!("the token endpoint did not answer in time")));
+        match refreshed {
+            Ok(v) => {
+                apply_tokens(&mut e, &v);
+                let _ = save_locked(path, server, &e);
+            }
+            Err(err) if err.downcast_ref::<InvalidGrant>().is_some() => {
+                let _ = remove_locked(path, server);
+                return None;
+            }
+            Err(_) => {}
+        }
     }
     Some(e.access_token)
 }
@@ -415,6 +468,16 @@ async fn callback(listener: tokio::net::TcpListener) -> Result<BTreeMap<String, 
             .query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
+        // A request without the redirect's parameters (a prefetch, a probe,
+        // a reload of the bare page) is not the redirect: keep waiting.
+        if !q.contains_key("code") && !q.contains_key("error") {
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            continue;
+        }
         let msg = if q.contains_key("code") {
             "CodeSmith is authorized. You can close this tab."
         } else {

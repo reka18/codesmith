@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
+| MCP | 212 | 105 | 6 | 21 | 80 | 0 | 0 |
 | Code Mode | 67 | 38 | 8 | 1 | 20 | 0 | 0 |
 | Automations | 107 | 26 | 5 | 24 | 52 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2768** | **73** | **59** | **2567** | **121** | **0** |
+| **Total** | **5588** | **2843** | **79** | **80** | **2586** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -70,6 +70,12 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `instruction-discovery.test.ts`: "canonicalizes boundaries and honors project opt-out" (1 case): with `$CODESMITH_DISABLE_PROJECT_CONFIG` set the project's AGENTS.md files were still read (only its config files were skipped), and a working folder outside the project had its AGENTS.md read; neither is read now, as in OpenCode (adapted: the files found, not the walks asked for). Pinned by `tests/oc_instructions_backlog3.rs::oc_instructions_canonicalize_boundaries_and_honor_project_opt_out`.
+- `mcp-oauth.test.ts`: "keeps waiting for the redirect after callback requests without OAuth parameters" (1 case): a request to the loopback callback without the redirect's parameters (a prefetch, a probe) ended the login with a state mismatch; it is answered 400 and the login keeps waiting for the redirect. Pinned by `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`.
+- `mcp-oauth.test.ts`: "sends the current token when the refresh fails" (1 case): a refresh that failed sent no token at all (and a login without a refresh token near expiry none either), so a server that would still take it was reported as needing a login; the saved token is sent. Pinned by `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_the_current_token_and_keeps_the_login_when_the_refresh_fails`.
+- `mcp-oauth.test.ts`: "signs out when the token endpoint answers invalid_grant" (1 case): a refresh the authorization server refused with invalid_grant kept the spent login, so every connection retried it; the login is removed now and the server reported as needing one. Pinned by `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_signs_out_when_the_token_endpoint_answers_invalid_grant`.
+- `mcp-oauth.test.ts`: "keeps the credential when the refresh times out" (1 case): a token endpoint that never answered hung the server's connection, outside its startup timeout; a refresh now gets at most that timeout (30 seconds at most), and the saved token is sent. Pinned by `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_keeps_the_credential_when_the_refresh_times_out`.
+- `mcp-stdio.test.ts`: "resolves cwd from the workspace and expands ~ to the home directory" (1 case): a local server's configured `cwd` of `~` or `~/tools` was a folder named `~` in the project; it is the home folder now. Pinned by `tests/oc_mcp_backlog3.rs::oc_mcp_stdio_resolves_cwd_from_the_workspace_and_expands_home`.
+- `mcp.test.ts`: "terminates MCP descendants after the wrapper exits successfully" (1 case): closing a local server's connection killed only its own process, so a wrapper's descendants (a shell or npx starting the real server) kept running; servers start in a process group of their own, and the group is killed. Pinned by `tests/oc_mcp_backlog3.rs::oc_mcp_terminates_descendants_of_a_stdio_server`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
 - `session-create.test.ts`: "stores a trailing-slash directory in the same session list" (1 case): a session started in `dir/` was stored under `dir/`, so the list for `dir` did not show it. Pinned by `tests/oc_sessions_backlog.rs::oc_session_create_stores_a_trailing_slash_directory_in_the_same_list`.
 - `session-runner-message.test.ts`: "uses materialized image and PDF data as provider media" (1 case): an attachment-only prompt stored an empty text part before its attachments, sent as an empty `input_text` to the Responses API or a leading blank line to Chat Completions; it is left out now. Pinned by `tests/oc_sessions_backlog2.rs::oc_runner_message_omits_empty_prompt_text_before_an_attachment`.
@@ -125,12 +131,13 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (59 cases in 14 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (80 cases in 21 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 13 | checkpointed handoffs settled across pauses and expiry; pending and terminal sends to the creating session; … |
+| [MCP OAuth Login Options](#mcp-oauth-login-options) | 13 | completing a login from a pasted redirect URL; the callback page reporting a token exchange the server rejected (CodeSmith's page reports the redirect, the terminal the exchange); … |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
@@ -138,7 +145,13 @@ Missing features, by how many OpenCode test cases each would unlock (59 cases in
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Default Model Fallback](#default-model-fallback) | 2 | the newest available model when none is configured, skipping disabled providers (CodeSmith asks for a model) |
+| [MCP Output Schemas](#mcp-output-schemas) | 2 | keeping MCP tools' output schemas and showing them in the Code Mode catalog |
+| [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
+| [MCP Session Recovery](#mcp-session-recovery) | 1 | initializing again and retrying a call when an HTTP server has forgotten the session |
+| [MCP Resource Blobs](#mcp-resource-blobs) | 1 | decoding text blobs and saving binary blobs to files (CodeSmith notes them) |
+| [MCP Events over HTTP](#mcp-events-over-http) | 1 | naming the event in an Mcp-Name header on Streamable HTTP event streams |
+| [MCP Code Mode Defaults](#mcp-code-mode-defaults) | 1 | Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog |
 | [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
 | [Session Diff Ranges](#session-diff-ranges) | 1 | a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only) |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
@@ -179,6 +192,24 @@ Missing features, by how many OpenCode test cases each would unlock (59 cases in
 - `automation.test.ts`: bad targets and session or agent policy never deliver or commit the rest of the result
 - `automation.test.ts`: retries failed admission without committing state or done, then settles the handoff once
 - `automation.test.ts`: pauses on a missing handoff directory without rerunning the check
+
+### MCP OAuth Login Options
+
+13 cases.
+
+- `mcp-oauth.test.ts`: completes from a pasted redirect URL and keeps waiting after a wrong paste
+- `mcp-oauth.test.ts`: reports a rejected token exchange on the callback page
+- `mcp-oauth.test.ts`: preserves a configured redirect URL and fixed port
+- `mcp-oauth.test.ts`: rejects an invalid redirect URL
+- `mcp-oauth.test.ts`: uses configured authorization server metadata when the resource publishes none
+- `mcp-oauth.test.ts`: requests offline_access without forcing a consent prompt
+- `mcp-oauth.test.ts`: forwards iss from the redirect so issuer-advertising servers can complete
+- `mcp-oauth.test.ts`: uses the client metadata document when the server supports public CIMD clients
+- `mcp-oauth.test.ts`: redeems the code with the localhost redirect a server sent the browser back to
+- `mcp-oauth.test.ts`: registers dynamically when a custom redirect_uri is configured
+- `mcp-oauth.test.ts`: refreshes a refused token and retries with the new one
+- `mcp-oauth.test.ts`: refreshes through configured authorization server metadata
+- `mcp-oauth.test.ts`: reports needs_auth when the server asks for more scope
 
 ### ChatGPT Subscription Login
 
@@ -238,12 +269,50 @@ Missing features, by how many OpenCode test cases each would unlock (59 cases in
 - `catalog.test.ts`: falls back to newest available model when no default is configured
 - `catalog.test.ts`: ignores a configured default on a disabled provider
 
+### MCP Output Schemas
+
+2 cases.
+
+- `mcp.test.ts`: retains output schemas across paginated MCP discovery
+- `mcp.test.ts`: advertises MCP output schemas to Code Mode
+
+### MCP Events Tool
+
+2 cases.
+
+- `tool-mcp-events.test.ts`: lists one server's push events after asking permission
+- `tool-mcp-events.test.ts`: fails for a server that sends no events
+
 ### Plugin Tool Renaming
 
 2 cases.
 
 - `tool-registry.test.ts`: a hook can rename a call inside a Code Mode program to another of its tools
 - `tool-registry.test.ts`: a call renamed inside a Code Mode program returns the renamed tool's structured output
+
+### MCP Session Recovery
+
+1 cases.
+
+- `mcp.test.ts`: reconnects and retries a tool call after the MCP session expires
+
+### MCP Resource Blobs
+
+1 cases.
+
+- `mcp.test.ts`: decodes text blobs and saves other MCP blobs instead of attaching them
+
+### MCP Events over HTTP
+
+1 cases.
+
+- `mcp.test.ts`: streams a server's events over Streamable HTTP, naming the event in Mcp-Name
+
+### MCP Code Mode Defaults
+
+1 cases.
+
+- `plugin/mcp-codemode-defaults.test.ts`: applies Code Mode defaults for known MCP servers unless codemode is configured
 
 ### OpenAI Verbosity Defaults
 
@@ -271,137 +340,16 @@ Missing features, by how many OpenCode test cases each would unlock (59 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (121 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### MCP (121)
-
-- event extension discovery, ordered streams, termination, cancellation, idle timeout, no events offered (M) — `mcp::events`
-  - `mcp-events.test.ts`: declares the extension and lists every page of event types
-  - `mcp-events.test.ts`: delivers every message of a stream in order and ends when the server closes it
-  - `mcp-events.test.ts`: fails a stream the server terminates, and cancels its request
-  - `mcp-events.test.ts`: routes concurrent streams by subscription id
-  - `mcp-events.test.ts`: cancels the request when the consumer stops reading
-  - `mcp-events.test.ts`: fails a stream that sends nothing for a minute
-  - `mcp-events.test.ts`: offers no events when the server does not, or when the connection does not declare them
-- server instructions rendered; Code Mode vs direct listings (S) — `mcp instructions`
-  - `mcp-instructions.test.ts`: renders instructions for servers with at least one reachable snapshot tool
-  - `mcp-instructions.test.ts`: lists Code Mode servers as direct tools when the snapshot has no Code Mode catalog
-  - `mcp-instructions.test.ts`: keeps MCP instructions when Code Mode is disabled for the server and execute is denied
-  - `mcp-instructions.test.ts`: replaces a server entry when Code Mode is disabled for it
-- loopback callback, pasted redirects, discovery via 401/metadata, CIMD/dynamic registration, refresh and sign-out rules (M) — `mcp::oauth`
-  - `mcp-oauth.test.ts`: completes interactive authorization through the loopback callback
-  - `mcp-oauth.test.ts`: keeps waiting for the redirect after callback requests without OAuth parameters
-  - `mcp-oauth.test.ts`: completes from a pasted redirect URL and keeps waiting after a wrong paste
-  - `mcp-oauth.test.ts`: reports a rejected token exchange on the callback page
-  - `mcp-oauth.test.ts`: generates a loopback redirect URL when none is configured
-  - `mcp-oauth.test.ts`: preserves a configured redirect URL and fixed port
-  - `mcp-oauth.test.ts`: rejects an invalid redirect URL
-  - `mcp-oauth.test.ts`: rejects an authorization endpoint that is not http or https
-  - `mcp-oauth.test.ts`: finds resource metadata through the 401 header when the well-known path is not served
-  - `mcp-oauth.test.ts`: uses configured authorization server metadata when the resource publishes none
-  - `mcp-oauth.test.ts`: requests offline_access without forcing a consent prompt
-  - `mcp-oauth.test.ts`: forwards iss from the redirect so issuer-advertising servers can complete
-  - `mcp-oauth.test.ts`: uses the client metadata document when the server supports public CIMD clients
-  - `mcp-oauth.test.ts`: registers dynamically when the server does not accept public clients
-  - `mcp-oauth.test.ts`: redeems the code with the localhost redirect a server sent the browser back to
-  - `mcp-oauth.test.ts`: reuses the client registered by an earlier login
-  - `mcp-oauth.test.ts`: registers dynamically when a custom redirect_uri is configured
-  - `mcp-oauth.test.ts`: refreshes a refused token and retries with the new one
-  - `mcp-oauth.test.ts`: refreshes a token that expires within 30 seconds with the saved discovery before sending it
-  - `mcp-oauth.test.ts`: sends the current token when the refresh fails
-  - `mcp-oauth.test.ts`: leaves tokens with time left, without a lifetime, or saved without discovery to the 401
-  - `mcp-oauth.test.ts`: refreshes the credential it was made with, not the one signed in since
-  - `mcp-oauth.test.ts`: reports needs_auth for an unauthorized server without a credential or any OAuth request
-  - `mcp-oauth.test.ts`: sends the configured URL when the server publishes no metadata
-  - `mcp-oauth.test.ts`: keeps the configured URL when metadata echoes the dialed query
-  - `mcp-oauth.test.ts`: discovers the resource for a login saved without one
-  - `mcp-oauth.test.ts`: follows the 401 to the resource for a login saved without discovery, and saves it
-  - `mcp-oauth.test.ts`: refreshes through configured authorization server metadata
-  - `mcp-oauth.test.ts`: sends one refresh when two instances refresh the same credential at once
-  - `mcp-oauth.test.ts`: uses the stored tokens instead of spending a refresh token another instance already spent
-  - `mcp-oauth.test.ts`: needs auth without a request when the credential was signed out
-  - `mcp-oauth.test.ts`: fails without signing out when the token endpoint answers 503
-  - `mcp-oauth.test.ts`: fails without signing out when the token endpoint is unreachable
-  - `mcp-oauth.test.ts`: signs out when the token endpoint answers invalid_grant
-  - `mcp-oauth.test.ts`: keeps the credential when the refresh times out
-  - `mcp-oauth.test.ts`: sends nothing to an authorization server other than the one that issued the credential
-  - `mcp-oauth.test.ts`: names only the error code of a token endpoint that answers without an OAuth error
-  - `mcp-oauth.test.ts`: signs out a credential without client information
-  - `mcp-oauth.test.ts`: tries the next metadata URL when one answers 502
-  - `mcp-oauth.test.ts`: reports needs_auth when the server asks for more scope
-- cwd resolved, ~ expanded (S) — `mcp stdio`
-  - `mcp-stdio.test.ts`: resolves cwd from the workspace and expands ~ to the home directory
-- frames up to 16 MiB, CRLF/blank lines/split UTF-8, oversize line closes (S) — `mcp stdio framing`
-  - `mcp-stdio.test.ts`: receives a frame between 10 and 16 MiB split into pipe-sized chunks
-  - `mcp-stdio.test.ts`: frames CRLF, blank lines, several messages per chunk and split UTF-8
-  - `mcp-stdio.test.ts`: accepts a frame of exactly 16 MiB
-  - `mcp-stdio.test.ts`: closes the connection on a line one byte over 16 MiB
-- tool naming, pagination, output schemas, prompts, timeouts, resources, session expiry reconnects, runtime add/disconnect, Code Mode results, isError, media, permissions, events (M) — `mcp`
-  - `mcp.test.ts`: expose useful messages
-  - `mcp.test.ts`: MCP tool names match V1 sanitization
-  - `mcp.test.ts`: passes session IDs as MCP request metadata
-  - `mcp.test.ts`: preserves output schema validation across paginated tool discovery
-  - `mcp.test.ts`: retains output schemas across paginated MCP discovery
-  - `mcp.test.ts`: accepts legacy MCP tools whose output schema is not a root object
-  - `mcp.test.ts`: lists paginated prompts and invokes them through the MCP client
-  - `mcp.test.ts`: rejects sends before the stdio transport is started
-  - `mcp.test.ts`: joins concurrent stdio transport closes
-  - `mcp.test.ts`: terminates MCP descendants after the wrapper exits successfully
-  - `mcp.test.ts`: closes a stdio process that finishes spawning after close
-  - `mcp.test.ts`: falls back to legacy when a stdio server ignores the version probe
-  - `mcp.test.ts`: applies the configured MCP catalog timeout
-  - `mcp.test.ts`: applies the configured MCP execution timeout
-  - `mcp.test.ts`: applies the configured MCP execution timeout to prompts
-  - `mcp.test.ts`: applies configured MCP timeouts to resource operations
-  - `mcp.test.ts`: reconnects and retries a tool call after the MCP session expires
-  - `mcp.test.ts`: exposes every connection operation
-  - `mcp.test.ts`: skips unusable tools and keeps the rest of the server's tools
-  - `mcp.test.ts`: returns results that miss or break the called tool's output schema
-  - `mcp.test.ts`: retries a modern MCP tool call whose listed header declaration went stale
-  - `mcp.test.ts`: lists, reads, and reports MCP resource changes
-  - `mcp.test.ts`: does not reconnect an SSE stream after a JSON-RPC error response
-  - `mcp.test.ts`: skips MCP resource requests when the capability is absent
-  - `mcp.test.ts`: loads and reads MCP resources
-  - `mcp.test.ts`: discovers and reads MCP resources through Code Mode
-  - `mcp.test.ts`: adds, disconnects, and reconnects MCP servers at runtime
-  - `mcp.test.ts`: marks a remote MCP server with an invalid URL as failed
-  - `mcp.test.ts`: merges MCP defaults into the winning configured server without changing runtime overrides
-  - `mcp.test.ts`: flush waits for a server that connects within its startup window
-  - `mcp.test.ts`: flush stops waiting for a hung server when its startup window ends
-  - `mcp.test.ts`: advertises MCP output schemas to Code Mode
-  - `mcp.test.ts`: forwards the invoking session through direct and Code Mode MCP tools
-  - `mcp.test.ts`: returns content-only MCP results through Code Mode
-  - `mcp.test.ts`: parses JSON text results from MCP tools without an output schema
-  - `mcp.test.ts`: advertises MCP tools directly when Code Mode is disabled for the server
-  - `mcp.test.ts`: fails the call when MCP reports isError
-  - `mcp.test.ts`: preserves MCP text and media content for the model
-  - `mcp.test.ts`: decodes text blobs and saves other MCP blobs instead of attaching them
-  - `mcp.test.ts`: waits for permission before calling an MCP tool
-  - `mcp.test.ts`: does not call MCP when permission is blocked
-  - `mcp.test.ts`: returns permission feedback instead of calling MCP
-  - `mcp.test.ts`: streams a server's events over Streamable HTTP, naming the event in Mcp-Name
-  - `mcp.test.ts`: publishes a subscription's events on the bus and follows its status
-  - `mcp.test.ts`: backs off failed opens, resets after active, and resumes with a replay gap once
-  - `mcp.test.ts`: ends a subscription the server terminates or rejects, without reopening it
-  - `mcp.test.ts`: reopens without a replay gap when cursorless, and ends when disabled
-- remote MCP Code Mode preference table (S) — `mcp config`
-  - `mcp.test.ts`: remote MCP code mode preference: ${entry.name} (4 cases)
-- no retry beyond the query fallback (S) — `mcp`
-  - `mcp.test.ts`: does not retry MCP beyond the query fallback: ${entry.name} (11 cases)
-- Code Mode defaults for known servers unless configured (S) — `mcp config`
-  - `plugin/mcp-codemode-defaults.test.ts`: applies Code Mode defaults for known MCP servers unless codemode is configured
-- list a server's push events after permission; fail for a server without events (S) — `mcp events tool`
-  - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
-  - `tool-mcp-events.test.ts`: fails for a server that sends no events
+Tests for behaviour CodeSmith already has but no test pins (0 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ## By design or not applicable
 
 | Reason | Cases |
 |---|---:|
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 696 |
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 696 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 681 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 352 |
-| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 353 |
+| OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 316 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 98 |
@@ -2532,7 +2480,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (91 of 212)</summary>
+<details><summary>MCP (191 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2566,28 +2514,122 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P removes the entry once every stacked connection closes — `tests/oc_mcp_attach.rs::oc_mcp_removes_the_entry_once_every_stacked_connection_closes`
 - P hides attached entries from server status and keeps them across config reconciles — `tests/oc_mcp_attach.rs::oc_mcp_hides_attached_entries_from_server_status_and_keeps_them_across_config_reconciles` (adapted: adding and removing configured servers stands for a reconcile)
 
+**`mcp-events.test.ts`**
+
+- P declares the extension and lists every page of event types — `tests/oc_mcp_backlog3.rs::oc_mcp_events_declare_the_extension_and_list_every_page`
+- P delivers every message of a stream in order and ends when the server closes it — `tests/oc_mcp_backlog3.rs::oc_mcp_events_deliver_every_message_in_order_until_the_server_closes`
+- P fails a stream the server terminates, and cancels its request — `tests/oc_mcp_backlog3.rs::oc_mcp_events_fail_a_stream_the_server_terminates_and_cancel_it`
+- P routes concurrent streams by subscription id — `tests/oc_mcp_backlog3.rs::oc_mcp_events_route_concurrent_streams_and_cancel_when_dropped`
+- P cancels the request when the consumer stops reading — `tests/oc_mcp_backlog3.rs::oc_mcp_events_route_concurrent_streams_and_cancel_when_dropped`
+- D fails a stream that sends nothing for a minute — deliberate: a quiet stream is caught by the watch that follows it (a minute without a message ends the connection, automation.rs's EVENT_IDLE), not by the client's stream
+- P offers no events when the server does not, or when the connection does not declare them — `tests/oc_mcp_backlog3.rs::oc_mcp_events_offers_none_when_the_server_does_not` (adapted: CodeSmith always declares the extension, so only the server's side is checked)
+
 **`mcp-import-boundary.test.ts`**
 
 - D loads the MCP SDK only when connecting or authorizing — effect-internal: lazy SDK import
 
 **`mcp-instructions.test.ts`**
 
+- P renders instructions for servers with at least one reachable snapshot tool — `tests/oc_mcp_backlog3.rs::oc_mcp_instructions_follow_the_reachable_tools` (adapted: the instructions in a session's system prompt)
+- P lists Code Mode servers as direct tools when the snapshot has no Code Mode catalog — `tests/oc_mcp_backlog3.rs::oc_mcp_instructions_follow_the_reachable_tools` (adapted: the instructions in a session's system prompt)
+- P keeps MCP instructions when Code Mode is disabled for the server and execute is denied — `tests/oc_mcp_backlog3.rs::oc_mcp_instructions_follow_the_reachable_tools` (adapted: the instructions in a session's system prompt)
+- D replaces a server entry when Code Mode is disabled for it — deliberate: the MCP server instructions are one instruction source, so a change is sent as that source's update rather than per server entry
 - P renders additions, changes, and removal — `tests/oc_instruction_state.rs::oc_mcp_instructions_render_additions_changes_and_removal` (adapted: from the session's (server, instructions, Code Mode) list)
+
+**`mcp-oauth.test.ts`**
+
+- P completes interactive authorization through the loopback callback — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- F keeps waiting for the redirect after callback requests without OAuth parameters — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback` (a request to the loopback callback without the redirect's parameters (a prefetch, a probe) ended the login with a state mismatch; it is answered 400 and the login keeps waiting for the redirect)
+- P generates a loopback redirect URL when none is configured — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- P rejects an authorization endpoint that is not http or https — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_rejects_an_authorization_endpoint_that_is_not_http_or_https`
+- P finds resource metadata through the 401 header when the well-known path is not served — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_finds_resource_metadata_through_the_401_header`
+- P registers dynamically when the server does not accept public clients — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- P reuses the client registered by an earlier login — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- P refreshes a token that expires within 30 seconds with the saved discovery before sending it — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_refreshes_a_token_about_to_expire_with_the_saved_endpoint` (adapted: within a minute of expiry)
+- F sends the current token when the refresh fails — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_the_current_token_and_keeps_the_login_when_the_refresh_fails` (a refresh that failed sent no token at all (and a login without a refresh token near expiry none either), so a server that would still take it was reported as needing a login; the saved token is sent)
+- P leaves tokens with time left, without a lifetime, or saved without discovery to the 401 — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_leaves_tokens_with_time_left_or_without_a_lifetime_alone` (adapted: a login is always saved with its token endpoint)
+- D refreshes the credential it was made with, not the one signed in since — deliberate: a connection takes the login saved when it connects, refreshing it under the store's lock; it does not hold on to the one it was first made with
+- P reports needs_auth for an unauthorized server without a credential or any OAuth request — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_reports_needs_auth_without_a_credential_or_any_oauth_request`
+- P sends the configured URL when the server publishes no metadata — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_falls_back_to_the_origin_when_the_server_publishes_no_metadata`
+- D keeps the configured URL when metadata echoes the dialed query — deliberate: the configured URL is dialed as given, with no query of its own added, so there is no dialed query for metadata to echo
+- D discovers the resource for a login saved without one · follows the 401 to the resource for a login saved without discovery, and saves it — deliberate: a login is always saved with its URL, token endpoint and client, so there is none saved without discovery, a resource or client information
+- P sends one refresh when two instances refresh the same credential at once — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_one_refresh_when_two_refresh_at_once`
+- P uses the stored tokens instead of spending a refresh token another instance already spent — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_one_refresh_when_two_refresh_at_once`
+- P needs auth without a request when the credential was signed out — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_reports_needs_auth_without_a_credential_or_any_oauth_request`
+- P fails without signing out when the token endpoint answers 503 — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_the_current_token_and_keeps_the_login_when_the_refresh_fails`
+- P fails without signing out when the token endpoint is unreachable — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_keeps_the_login_when_the_token_endpoint_is_unreachable`
+- F signs out when the token endpoint answers invalid_grant — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_signs_out_when_the_token_endpoint_answers_invalid_grant` (a refresh the authorization server refused with invalid_grant kept the spent login, so every connection retried it; the login is removed now and the server reported as needing one)
+- F keeps the credential when the refresh times out — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_keeps_the_credential_when_the_refresh_times_out` (a token endpoint that never answered hung the server's connection, outside its startup timeout; a refresh now gets at most that timeout (30 seconds at most), and the saved token is sent)
+- P sends nothing to an authorization server other than the one that issued the credential — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_refreshes_only_at_the_server_that_issued_the_credential`
+- D names only the error code of a token endpoint that answers without an OAuth error — deliberate: a failed token request is reported with its HTTP status and the endpoint's error description or body
+- D signs out a credential without client information — deliberate: a login is always saved with its URL, token endpoint and client, so there is none saved without discovery, a resource or client information
+- P tries the next metadata URL when one answers 502 — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_tries_the_next_metadata_url_when_one_answers_502`
 
 **`mcp-socket-client.test.ts`**
 
 - D buffers frames that arrive before start · sends one JSON frame per message and delivers inbound frames · reports invalid frames and stays open · fires onclose once when the socket ends · rejects send after close · close() closes the socket with 1000 and fires onclose once · fires onclose when the socket ends before start, then rejects start · close() before start drops buffered frames and rejects start · close() fires onclose and rejects when the socket close throws · keeps FIFO order for frames delivered while flushing the buffer · send resolves to undefined · rejects a second start · rejects send before start · stops flushing buffered frames once closed · carries an MCP session between the SDK client and server — other: OpenCode's WebSocket MCP transport (CodeSmith speaks stdio and Streamable HTTP/SSE)
 
+**`mcp-stdio.test.ts`**
+
+- F resolves cwd from the workspace and expands ~ to the home directory — `tests/oc_mcp_backlog3.rs::oc_mcp_stdio_resolves_cwd_from_the_workspace_and_expands_home` (a local server's configured `cwd` of `~` or `~/tools` was a folder named `~` in the project; it is the home folder now)
+- P receives a frame between 10 and 16 MiB split into pipe-sized chunks — `tests/oc_mcp_backlog3.rs::oc_mcp_stdio_receives_frames_up_to_16_mib`
+- P frames CRLF, blank lines, several messages per chunk and split UTF-8 — `tests/oc_mcp_backlog3.rs::oc_mcp_stdio_frames_crlf_blank_lines_several_messages_and_split_utf8`
+- P accepts a frame of exactly 16 MiB — `tests/oc_mcp_backlog3.rs::oc_mcp_stdio_receives_frames_up_to_16_mib`
+- P closes the connection on a line one byte over 16 MiB — `tests/oc_mcp_backlog3.rs::oc_mcp_stdio_closes_the_connection_on_a_line_over_16_mib`
+
 **`mcp.test.ts`**
 
+- P expose useful messages — `tests/oc_mcp_backlog3.rs::oc_mcp_exposes_useful_messages` (adapted: CodeSmith's wording of the not-found error)
+- P MCP tool names match V1 sanitization — `tests/oc_mcp_backlog3.rs::oc_mcp_tool_names_match_v1_sanitization`
+- P passes session IDs as MCP request metadata — `tests/oc_mcp_backlog3.rs::oc_mcp_passes_session_ids_as_request_metadata` (adapted: no progress token)
+- D preserves output schema validation across paginated tool discovery — deliberate: results are returned as the server sent them, not checked against the tool's output schema (pinned by tests/oc_mcp_backlog3.rs::oc_mcp_returns_results_that_miss_or_break_the_output_schema)
+- P accepts legacy MCP tools whose output schema is not a root object — `tests/oc_mcp_backlog3.rs::oc_mcp_accepts_tools_whose_output_schema_is_not_a_root_object`
+- P lists paginated prompts and invokes them through the MCP client — `tests/oc_mcp_backlog3.rs::oc_mcp_lists_paginated_prompts_and_invokes_them`
 - D spawns local MCP servers through the location environment · reports a local MCP server as failed when the location has no execution plane — client-server: MCP connections pooled across Locations
+- D rejects sends before the stdio transport is started · joins concurrent stdio transport closes — effect-internal: the MCP SDK transport's start, close and spawn ordering
+- F terminates MCP descendants after the wrapper exits successfully — `tests/oc_mcp_backlog3.rs::oc_mcp_terminates_descendants_of_a_stdio_server` (closing a local server's connection killed only its own process, so a wrapper's descendants (a shell or npx starting the real server) kept running; servers start in a process group of their own, and the group is killed)
+- D closes a stdio process that finishes spawning after close — effect-internal: the MCP SDK transport's start, close and spawn ordering
+- D falls back to legacy when a stdio server ignores the version probe — deliberate: CodeSmith speaks one protocol version (2025-06-18) and probes for no other
+- P applies the configured MCP catalog timeout — `tests/oc_mcp_backlog3.rs::oc_mcp_applies_the_configured_timeouts`
+- P applies the configured MCP execution timeout — `tests/oc_mcp_backlog3.rs::oc_mcp_applies_the_configured_timeouts`
+- P applies the configured MCP execution timeout to prompts — `tests/oc_mcp_backlog3.rs::oc_mcp_applies_the_configured_timeouts`
+- P applies configured MCP timeouts to resource operations — `tests/oc_mcp_backlog3.rs::oc_mcp_applies_the_configured_timeouts`
+- P remote MCP code mode preference: ${entry.name} ×4 — `tests/oc_mcp_backlog3.rs::oc_mcp_dials_a_remote_servers_url_as_given_for_its_code_mode_preference` (adapted: the configured URL is dialed as given)
+- P does not retry MCP beyond the query fallback: ${entry.name} ×11 — `tests/oc_mcp_backlog3.rs::oc_mcp_does_not_retry_a_refused_connection` (adapted: there is no query fallback; a 401 is a server needing a login)
+- P exposes every connection operation — `tests/oc_mcp_backlog3.rs::oc_mcp_exposes_every_connection_operation` (adapted: the 2025 protocol; resources are listed afresh, so there are no change notifications to follow)
+- P skips unusable tools and keeps the rest of the server's tools — `tests/oc_mcp_backlog3.rs::oc_mcp_skips_unusable_tools_and_keeps_the_rest` (adapted: a tool without a name is the unusable one)
+- P returns results that miss or break the called tool's output schema — `tests/oc_mcp_backlog3.rs::oc_mcp_returns_results_that_miss_or_break_the_output_schema`
+- D retries a modern MCP tool call whose listed header declaration went stale — deliberate: the 2026 protocol's x-mcp-header parameters are not spoken (see 1038)
+- P lists, reads, and reports MCP resource changes — `tests/oc_mcp_backlog3.rs::oc_mcp_lists_and_reads_resources` (adapted: listed afresh on each call)
+- D does not reconnect an SSE stream after a JSON-RPC error response — deliberate: CodeSmith opens no standalone SSE stream to reconnect: a POST's event stream ends with its reply
+- P skips MCP resource requests when the capability is absent — `tests/oc_mcp_backlog3.rs::oc_mcp_skips_resource_requests_without_the_capability`
 - P accepts empty MCP elicitations without creating forms — `tests/oc_mcp_elicitation.rs::oc_mcp_accepts_empty_elicitations_without_creating_forms`
 - P acknowledges completed MCP URL elicitations without returning internal content — `tests/oc_mcp_elicitation.rs::oc_mcp_acknowledges_completed_url_elicitations`
 - P cancels MCP elicitation forms when the server gives up on them — `tests/oc_mcp_elicitation.rs::oc_mcp_cancels_elicitation_forms_when_the_server_gives_up`
 - P settles modern MCP URL elicitations when the user confirms — `tests/oc_mcp_elicitation.rs::oc_mcp_settles_url_elicitations_when_the_user_confirms` (adapted: a URL elicitation without an elicitationId; no 2026-07-28 input_required retries)
+- P loads and reads MCP resources — `tests/oc_mcp_backlog3.rs::oc_mcp_lists_and_reads_resources` (adapted: listed afresh on each call)
+- D discovers and reads MCP resources through Code Mode — deliberate: list_mcp_resources and read_mcp_resource are direct tools, not offered inside Code Mode (tests/mcp_session.rs::mcp_in_a_session)
+- P adds, disconnects, and reconnects MCP servers at runtime — `tests/oc_mcp_backlog3.rs::oc_mcp_adds_disconnects_and_reconnects_servers_at_runtime` (adapted: disconnecting is configuring the server disabled)
+- P marks a remote MCP server with an invalid URL as failed — `tests/oc_mcp_backlog3.rs::oc_mcp_marks_a_remote_server_with_an_invalid_url_as_failed`
+- D merges MCP defaults into the winning configured server without changing runtime overrides — deliberate: a server's definition merges field by field across config layers (so a project can turn a global server off with {"disabled": true}), where OpenCode replaces it whole
 - D manages live MCP servers entirely through scoped transforms · restores runtime MCP config when a transform is disposed · isolates nested configured MCP mutations and reconciles them · publishes MCP changes while live but not while the location shuts down · batches MCP transforms without connecting intermediate configurations · reconciles only changed MCP server config · keeps MCP config snapshots stable during an in-flight replacement · discards in-flight and queued MCP notifications after its layer closes · is not undone by the queued startup · serializes concurrent MCP lifecycle operations · finishes an MCP connect whose caller is interrupted during the handshake · finishes an MCP disconnect whose caller is interrupted while the session ends · preserves plugin transforms through MCP catalog updates · coalesces queued MCP tool notifications after initial registration — effect-internal: scoped MCP config transforms and lifecycle serialization
+- P flush waits for a server that connects within its startup window — `tests/oc_mcp_backlog3.rs::oc_mcp_waits_for_a_server_that_connects_within_its_startup_window`
+- P flush stops waiting for a hung server when its startup window ends — `src/mcp/mod.rs::startup_timeout` (adapted: past its startup window a server is failed, not pending)
+- P forwards the invoking session through direct and Code Mode MCP tools — `tests/oc_mcp_attach.rs::oc_mcp_attaches_a_client_server_and_routes_its_tools_with_the_session, tests/oc_mcp_backlog3.rs::oc_mcp_passes_session_ids_as_request_metadata` (adapted: the Code Mode path through a session, the direct one through the client)
+- P returns content-only MCP results through Code Mode — `tests/oc_mcp_backlog3.rs::oc_mcp_returns_content_and_parses_json_text_through_code_mode`
+- P parses JSON text results from MCP tools without an output schema — `tests/oc_mcp_backlog3.rs::oc_mcp_returns_content_and_parses_json_text_through_code_mode`
+- P advertises MCP tools directly when Code Mode is disabled for the server — `tests/oc_mcp_backlog3.rs::oc_mcp_advertises_tools_directly_when_code_mode_is_disabled`
+- P fails the call when MCP reports isError — `tests/oc_mcp_backlog3.rs::oc_mcp_fails_on_is_error_and_keeps_text_and_media`
+- P preserves MCP text and media content for the model — `tests/oc_mcp_backlog3.rs::oc_mcp_fails_on_is_error_and_keeps_text_and_media`
+- P waits for permission before calling an MCP tool — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`
+- P does not call MCP when permission is blocked — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`
+- P returns permission feedback instead of calling MCP — `tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused`
 - D integration policy denies MCP startup (${modern ? "modern" : "legacy"}) ×2 · revokes and restores a connected MCP through ${source} policy ×2 — cloud: integration/organization policy
 - D shares one connection and one tool list between Locations · keeps connections apart when the configs differ · keys connections on everything that changes them, and on no secret or name · keeps a server that negotiates legacy private to each Location · connects on its own when a server refuses the pooled handshake · keeps pooling a server that ${what} when first tried ×3 · decides a legacy server is private right after the handshake, before listing its tools · fails a pooled server that can't be spawned after one attempt · connects each Location on its own without pool · closes the shared connection when its last Location lets go · connects with the credential its key was made from, even when a sign-in lands mid-start · registers a server's prompt commands again after reconnecting${shared ? " to a connection another Location holds" : ""} ×2 · routes an elicitation to the Location whose call caused it · asks every holder about an elicitation no request claims, and takes the first answer · fans tool list changes out to every Location · answers no roots on a shared connection · shares a local server across directories only when its cwd is fixed · shares one local process, fails every holder when it dies, and closes it after the last · keeps nothing of a Location that let go of a shared connection — client-server: MCP connections pooled across Locations
+- D publishes a subscription's events on the bus and follows its status — storage-model: subscriptions published on OpenCode's bus
+- P backs off failed opens, resets after active, and resumes with a replay gap once — `tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor, tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output` (adapted: a replay gap pauses the watch rather than resuming once)
+- P ends a subscription the server terminates or rejects, without reopening it — `tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake, tests/automation.rs::event_triggered_runs` (adapted: a terminated or refused stream ends the watch, paused with the reason)
+- D reopens without a replay gap when cursorless, and ends when disabled — deliberate: a watch whose server gives no cursor cannot resume safely, so it is paused rather than reopened from now (events in the gap would go unseen)
 - D refuses to subscribe with the flag off, and ends at a server without events · offers no events with the mcp_events flag off, or from a server without them — deliberate: MCP events are not behind a flag
 
 **`tool-mcp-events.test.ts`**

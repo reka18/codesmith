@@ -16,7 +16,10 @@ exits (a broken stream); without `exit` the stream heartbeats. `"notes":
 subscription's `_meta` (a malformed event, a cursorless `active`, a
 `terminated`). Each
 stream's resume cursor is appended to `<plan>.log`, one JSON value a
-line."""
+line.
+
+With `MCP_RICH_LOG` set, every message the client sends is appended to
+that file, one JSON value a line. `events/list` answers in two pages."""
 import json, os, sys, threading, time
 
 lock = threading.Lock()
@@ -108,6 +111,9 @@ while True:
     if not line:
         break
     m = json.loads(line)
+    if os.environ.get("MCP_RICH_LOG"):
+        with open(os.environ["MCP_RICH_LOG"], "a") as f:
+            f.write(json.dumps(m) + "\n")
     method, mid, params = m.get("method"), m.get("id"), m.get("params") or {}
     if method == "initialize":
         reply(mid, {"protocolVersion": params["protocolVersion"], "serverInfo": {"name": "rich", "version": "1"},
@@ -151,12 +157,14 @@ while True:
             {"role": "user", "content": {"type": "image", "data": "x", "mimeType": "image/png"}},
         ]})
     elif method == "events/list":
-        reply(mid, {"events": [
-            {"name": "ticket.created", "description": "A new ticket", "delivery": ["push"],
-             "inputSchema": {"type": "object", "properties": {"queue": {"type": "string"}, "plan": {"type": "string"}}, "required": ["queue"]},
-             "payloadSchema": {"type": "object", "properties": {"title": {"type": "string"}}}},
-            {"name": "polled", "delivery": ["poll"]},
-        ]})
+        if params.get("cursor") == "page-2":
+            reply(mid, {"events": [{"name": "polled", "delivery": ["poll"]}]})
+        else:
+            reply(mid, {"events": [
+                {"name": "ticket.created", "description": "A new ticket", "delivery": ["push"],
+                 "inputSchema": {"type": "object", "properties": {"queue": {"type": "string"}, "plan": {"type": "string"}}, "required": ["queue"]},
+                 "payloadSchema": {"type": "object", "properties": {"title": {"type": "string"}}}},
+            ], "nextCursor": "page-2"})
     elif method == "events/stream":
         stream(mid, params)
     else:

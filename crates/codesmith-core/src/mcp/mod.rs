@@ -869,7 +869,7 @@ enum Transport {
     /// a client attached ([`Mcp::attach`]).
     Stream {
         writer: tokio::sync::Mutex<Writer>,
-        _child: Option<tokio::process::Child>,
+        _child: Option<Process>,
     },
     Http {
         client: reqwest::Client,
@@ -877,6 +877,28 @@ enum Transport {
         headers: BTreeMap<String, String>,
         session: Mutex<Option<String>>,
     },
+}
+
+/// A local server's process, in a process group of its own: when the
+/// connection goes, the whole group is killed, so a wrapper's descendants
+/// (`npx`, a shell script starting the real server) do not outlive it.
+struct Process {
+    child: tokio::process::Child,
+    group: Option<i32>,
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(g) = self.group.filter(|g| *g > 1) {
+            // SAFETY: kill has no memory preconditions; a negative pid
+            // names the process group the server leads.
+            unsafe {
+                libc::kill(-g, libc::SIGKILL);
+            }
+        }
+        let _ = self.child.start_kill();
+    }
 }
 
 pub struct Client {
@@ -2238,7 +2260,10 @@ async fn connect(
                 .keys()
                 .any(|k| k.eq_ignore_ascii_case("authorization"));
             if !has_auth && oauth::Setting::enabled(setting.as_ref()) {
-                if let Some(tok) = oauth::token(&http, &oauth::store_path(), name, url).await {
+                let limit = Duration::from_millis(startup).min(oauth::REFRESH_TIMEOUT);
+                if let Some(tok) =
+                    oauth::token_within(&http, &oauth::store_path(), name, url, limit).await
+                {
                     headers.insert("Authorization".into(), format!("Bearer {tok}"));
                 }
             }
@@ -2258,35 +2283,32 @@ async fn connect(
             let (prog, args) = command
                 .split_first()
                 .ok_or_else(|| anyhow!("empty command"))?;
-            let dir = cwd
-                .as_deref()
-                .map(|c| {
-                    if Path::new(c).is_absolute() {
-                        c.into()
-                    } else {
-                        root.join(c)
-                    }
-                })
-                .unwrap_or_else(|| root.to_path_buf());
+            let dir = resolve_cwd(root, cwd.as_deref());
             crate::paths::ensure_parent(&log_dir)?;
             crate::paths::private_dir(&log_dir)?;
             let stderr = crate::paths::create_private(&log)?;
-            let mut child = tokio::process::Command::new(prog)
-                .env_remove(crate::SERVER_TOKEN_VAR)
+            let mut cmd = tokio::process::Command::new(prog);
+            cmd.env_remove(crate::SERVER_TOKEN_VAR)
                 .args(args)
                 .current_dir(dir)
                 .envs(environment)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::from(stderr))
-                .kill_on_drop(true)
-                .spawn()
-                .with_context(|| format!("starting {prog}"))?;
+                .kill_on_drop(true);
+            #[cfg(unix)]
+            cmd.process_group(0);
+            let mut child = cmd.spawn().with_context(|| format!("starting {prog}"))?;
+            let group = if cfg!(unix) {
+                child.id().and_then(|p| i32::try_from(p).ok())
+            } else {
+                None
+            };
             let stdout = child.stdout.take().unwrap();
             let stdin = child.stdin.take().unwrap();
             let client = Arc::new(make(Transport::Stream {
                 writer: tokio::sync::Mutex::new(Box::new(stdin)),
-                _child: Some(child),
+                _child: Some(Process { child, group }),
             }));
             read_stream(&client, stdout);
             client
@@ -2294,6 +2316,21 @@ async fn connect(
     };
     handshake(&client, startup).await?;
     Ok(client)
+}
+
+/// A local server's working directory: `cwd` as configured, relative to
+/// the project, with `~` the home folder; the project without one.
+pub fn resolve_cwd(root: &Path, cwd: Option<&str>) -> PathBuf {
+    let home = || dirs::home_dir().unwrap_or_default();
+    match cwd {
+        None => root.to_path_buf(),
+        Some("~") => home(),
+        Some(c) => match c.strip_prefix("~/") {
+            Some(rest) => home().join(rest),
+            None if Path::new(c).is_absolute() => c.into(),
+            None => root.join(c),
+        },
+    }
 }
 
 /// Read a stream transport's messages on a task: replies go to their

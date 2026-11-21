@@ -155,3 +155,94 @@
 264 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_rejects_a_malformed_trigger_or_target :: adapted: an empty name is taken from the prompt
 293 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_lists_id_trigger_status_next_run_and_action :: adapted: CodeSmith's listing
 320 :: ported :: tests/oc_automation_backlog3.rs::oc_tool_automation_treats_another_projects_automation_as_missing
+
+# --- MCP (tests/oc_mcp_*_backlog3.rs) ---
+@mcp-oauth.test.ts
+121,272,395,432 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback
+165 :: fixed :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback :: a request to the loopback callback without the redirect's parameters (a prefetch, a probe) ended the login with a state mismatch; it is answered 400 and the login keeps waiting for the redirect
+201 :: feature :: MCP OAuth Login Options :: completing a login from a pasted redirect URL
+241 :: feature :: MCP OAuth Login Options :: the callback page reporting a token exchange the server rejected (CodeSmith's page reports the redirect, the terminal the exchange)
+276,284,446 :: feature :: MCP OAuth Login Options :: a configured redirect URL (CodeSmith configures only the loopback port)
+288 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_rejects_an_authorization_endpoint_that_is_not_http_or_https
+296 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_finds_resource_metadata_through_the_401_header
+324,842 :: feature :: MCP OAuth Login Options :: configured authorization server metadata
+341 :: feature :: MCP OAuth Login Options :: asking for offline_access
+350 :: feature :: MCP OAuth Login Options :: forwarding the redirect's iss (RFC 9207)
+371 :: feature :: MCP OAuth Login Options :: client ID metadata documents (CIMD) for public clients
+410 :: feature :: MCP OAuth Login Options :: registering and redeeming with the localhost spelling of the loopback redirect
+571 :: feature :: MCP OAuth Login Options :: refreshing a token the server refused and retrying (CodeSmith refreshes before expiry and reports the server as needing a login)
+616 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_refreshes_a_token_about_to_expire_with_the_saved_endpoint :: adapted: within a minute of expiry
+631 :: fixed :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_the_current_token_and_keeps_the_login_when_the_refresh_fails :: a refresh that failed sent no token at all (and a login without a refresh token near expiry none either), so a server that would still take it was reported as needing a login; the saved token is sent
+645 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_leaves_tokens_with_time_left_or_without_a_lifetime_alone :: adapted: a login is always saved with its token endpoint
+661 :: design :: deliberate :: a connection takes the login saved when it connects, refreshing it under the store's lock; it does not hold on to the one it was first made with
+685,937 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_reports_needs_auth_without_a_credential_or_any_oauth_request
+710 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_falls_back_to_the_origin_when_the_server_publishes_no_metadata
+723 :: design :: deliberate :: the configured URL is dialed as given, with no query of its own added, so there is no dialed query for metadata to echo
+765,797,1118 :: design :: deliberate :: a login is always saved with its URL, token endpoint and client, so there is none saved without discovery, a resource or client information
+899,921 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_one_refresh_when_two_refresh_at_once
+956 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_the_current_token_and_keeps_the_login_when_the_refresh_fails
+978 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_keeps_the_login_when_the_token_endpoint_is_unreachable
+997 :: fixed :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_signs_out_when_the_token_endpoint_answers_invalid_grant :: a refresh the authorization server refused with invalid_grant kept the spent login, so every connection retried it; the login is removed now and the server reported as needing one
+1008 :: fixed :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_keeps_the_credential_when_the_refresh_times_out :: a token endpoint that never answered hung the server's connection, outside its startup timeout; a refresh now gets at most that timeout (30 seconds at most), and the saved token is sent
+1047 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_refreshes_only_at_the_server_that_issued_the_credential
+1096 :: design :: deliberate :: a failed token request is reported with its HTTP status and the endpoint's error description or body
+1134 :: ported :: tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_tries_the_next_metadata_url_when_one_answers_502
+1170 :: feature :: MCP OAuth Login Options :: a server asking for more scope (insufficient_scope)
+@mcp-events.test.ts
+91 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_events_declare_the_extension_and_list_every_page
+103 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_events_deliver_every_message_in_order_until_the_server_closes
+142 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_events_fail_a_stream_the_server_terminates_and_cancel_it
+166,185 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_events_route_concurrent_streams_and_cancel_when_dropped
+199 :: design :: deliberate :: a quiet stream is caught by the watch that follows it (a minute without a message ends the connection, automation.rs's EVENT_IDLE), not by the client's stream
+228 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_events_offers_none_when_the_server_does_not :: adapted: CodeSmith always declares the extension, so only the server's side is checked
+@mcp-instructions.test.ts
+46,93,118 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_instructions_follow_the_reachable_tools :: adapted: the instructions in a session's system prompt
+150 :: design :: deliberate :: the MCP server instructions are one instruction source, so a change is sent as that source's update rather than per server entry
+@mcp-stdio.test.ts
+15 :: fixed :: tests/oc_mcp_backlog3.rs::oc_mcp_stdio_resolves_cwd_from_the_workspace_and_expands_home :: a local server's configured `cwd` of `~` or `~/tools` was a folder named `~` in the project; it is the home folder now
+26,57 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_stdio_receives_frames_up_to_16_mib
+35 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_stdio_frames_crlf_blank_lines_several_messages_and_split_utf8
+65 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_stdio_closes_the_connection_on_a_line_over_16_mib
+@mcp.test.ts
+643 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_exposes_useful_messages :: adapted: CodeSmith's wording of the not-found error
+653 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_tool_names_match_v1_sanitization
+658 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_passes_session_ids_as_request_metadata :: adapted: no progress token
+695 :: design :: deliberate :: results are returned as the server sent them, not checked against the tool's output schema (pinned by tests/oc_mcp_backlog3.rs::oc_mcp_returns_results_that_miss_or_break_the_output_schema)
+756,2824 :: feature :: MCP Output Schemas :: keeping MCP tools' output schemas and showing them in the Code Mode catalog
+793 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_accepts_tools_whose_output_schema_is_not_a_root_object
+818 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_lists_paginated_prompts_and_invokes_them
+897,920,980 :: design :: effect-internal :: the MCP SDK transport's start, close and spawn ordering
+941 :: fixed :: tests/oc_mcp_backlog3.rs::oc_mcp_terminates_descendants_of_a_stdio_server :: closing a local server's connection killed only its own process, so a wrapper's descendants (a shell or npx starting the real server) kept running; servers start in a process group of their own, and the group is killed
+1038 :: design :: deliberate :: CodeSmith speaks one protocol version (2025-06-18) and probes for no other
+1062,1084,1105,1126 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_applies_the_configured_timeouts
+1171:4 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_dials_a_remote_servers_url_as_given_for_its_code_mode_preference :: adapted: the configured URL is dialed as given
+1204:11 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_does_not_retry_a_refused_connection :: adapted: there is no query fallback; a 401 is a server needing a login
+1225 :: feature :: MCP Session Recovery :: initializing again and retrying a call when an HTTP server has forgotten the session
+1258 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_exposes_every_connection_operation :: adapted: the 2025 protocol; resources are listed afresh, so there are no change notifications to follow
+1298 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_skips_unusable_tools_and_keeps_the_rest :: adapted: a tool without a name is the unusable one
+1335 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_returns_results_that_miss_or_break_the_output_schema
+1383 :: design :: deliberate :: the 2026 protocol's x-mcp-header parameters are not spoken (see 1038)
+1423,1644 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_lists_and_reads_resources :: adapted: listed afresh on each call
+1472 :: design :: deliberate :: CodeSmith opens no standalone SSE stream to reconnect: a POST's event stream ends with its reply
+1508 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_skips_resource_requests_without_the_capability
+1695 :: design :: deliberate :: list_mcp_resources and read_mcp_resource are direct tools, not offered inside Code Mode (tests/mcp_session.rs::mcp_in_a_session)
+1841 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_adds_disconnects_and_reconnects_servers_at_runtime :: adapted: disconnecting is configuring the server disabled
+1900 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_marks_a_remote_server_with_an_invalid_url_as_failed
+1924 :: design :: deliberate :: a server's definition merges field by field across config layers (so a project can turn a global server off with {"disabled": true}), where OpenCode replaces it whole
+2779 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_waits_for_a_server_that_connects_within_its_startup_window
+2800 :: ported :: src/mcp/mod.rs::startup_timeout :: adapted: past its startup window a server is failed, not pending
+2847 :: ported :: tests/oc_mcp_attach.rs::oc_mcp_attaches_a_client_server_and_routes_its_tools_with_the_session, tests/oc_mcp_backlog3.rs::oc_mcp_passes_session_ids_as_request_metadata :: adapted: the Code Mode path through a session, the direct one through the client
+2897,2926 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_returns_content_and_parses_json_text_through_code_mode
+2959 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_advertises_tools_directly_when_code_mode_is_disabled
+2974,2993 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_fails_on_is_error_and_keeps_text_and_media
+3015 :: feature :: MCP Resource Blobs :: decoding text blobs and saving binary blobs to files (CodeSmith notes them)
+3040,3085,3132 :: ported :: tests/oc_mcp_backlog3.rs::oc_mcp_asks_before_calling_and_calls_nothing_when_refused
+3994 :: feature :: MCP Events over HTTP :: naming the event in an Mcp-Name header on Streamable HTTP event streams
+4110 :: design :: storage-model :: subscriptions published on OpenCode's bus
+4179 :: ported :: tests/oc_automation_stream.rs::oc_automation_event_reopens_after_four_healthy_streams_disconnect_each_from_its_last_committed_cursor, tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output :: adapted: a replay gap pauses the watch rather than resuming once
+4232 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake, tests/automation.rs::event_triggered_runs :: adapted: a terminated or refused stream ends the watch, paused with the reason
+4262 :: design :: deliberate :: a watch whose server gives no cursor cannot resume safely, so it is paused rather than reopened from now (events in the gap would go unseen)
+@plugin/mcp-codemode-defaults.test.ts
+8 :: feature :: MCP Code Mode Defaults :: Code Mode defaults (and headers) for known MCP servers such as Executor and PostHog
+@tool-mcp-events.test.ts
+81,90 :: feature :: MCP Events Tool :: a tool that lists a server's push events
