@@ -79,6 +79,15 @@ pub fn check(params: &Params, state: &str, provider: &str) -> Result<String, Str
     }
 }
 
+/// `url` when it is on `origin` (`https://host`): a login's tokens go only
+/// to the API they were issued for.
+pub fn same_origin(url: &str, origin: &str) -> bool {
+    match (url::Url::parse(url), url::Url::parse(origin)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
 /// The page the browser is shown.
 pub fn page(provider: &str, error: Option<&str>) -> String {
     let body = match error {

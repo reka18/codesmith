@@ -473,6 +473,10 @@ impl Config {
     /// catalog's default price.
     pub fn cost(&self, spec: &str) -> Option<Cost> {
         let (p, m) = split_variant(spec).0.split_once('/')?;
+        // A ChatGPT plan pays, not per token.
+        if p == crate::providers::chatgpt::ID && self.chatgpt() {
+            return Some(Cost::default());
+        }
         let configured = self.provider(p).and_then(|c| c.models.get(m).cloned());
         if let Some(c) = configured.as_ref().and_then(|c| c.cost) {
             return Some(c);
@@ -507,6 +511,23 @@ impl Config {
     /// replaces the catalog's.
     pub fn list_models(&self, provider: &str, types: &[&str]) -> Vec<String> {
         let types: &[&str] = if types.is_empty() { &["chat"] } else { types };
+        let mut out = self.list_models_of(provider, types);
+        // A ChatGPT sign-in serves only ChatGPT's models.
+        if provider == crate::providers::chatgpt::ID && self.chatgpt() {
+            out.retain(|m| crate::providers::chatgpt::MODELS.contains(&m.as_str()));
+        }
+        out
+    }
+
+    /// Whether OpenAI runs on a ChatGPT sign-in (no API key overrides it).
+    pub fn chatgpt(&self) -> bool {
+        let keyed = self
+            .provider(crate::providers::chatgpt::ID)
+            .is_some_and(|p| p.settings.api_key.as_deref().is_some_and(|k| !k.is_empty()));
+        crate::providers::chatgpt::signed_in(keyed)
+    }
+
+    fn list_models_of(&self, provider: &str, types: &[&str]) -> Vec<String> {
         let configured = self
             .provider(provider)
             .map(|p| p.models)
@@ -1728,7 +1749,21 @@ impl Config {
             codesmith_ai::Auth::Dynamic(_) => None,
             _ => websocket_route(pid, protocol, &p.settings, &base_url)?,
         };
-        let native_compaction = native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
+        let mut native_compaction =
+            native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
+        let mut context = context;
+        // A ChatGPT sign-in: summary compaction, and the plan's input window.
+        if matches!(&auth, codesmith_ai::Auth::Dynamic(a) if a.describe() == crate::providers::chatgpt::DESCRIBE)
+        {
+            native_compaction = None;
+            if let Some(c) = context {
+                let out = max_output.unwrap_or(0) as u64;
+                if let Some((ctx, _)) = crate::providers::chatgpt::capped(&wire_model, c, None, out)
+                {
+                    context = Some(ctx);
+                }
+            }
+        }
         // The configured formats, else the catalog's (OpenCode's
         // `mergeCapabilities`).
         let freeform = m

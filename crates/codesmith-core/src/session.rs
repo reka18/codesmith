@@ -4116,7 +4116,21 @@ impl Session {
             match self.attempt(&req, sink).await.and_then(unknown_finish) {
                 Ok(r) => return Ok(r),
                 Err(codesmith_ai::Failure { error: e, partial }) => {
-                    let Some(wait) = policy.next(&e, std::time::Instant::now()) else {
+                    // A ChatGPT sign-in's failures that retrying cannot fix.
+                    let chatgpt = self.model.provider_id == crate::providers::chatgpt::ID
+                        && self.loaded.config.chatgpt();
+                    let text = e.to_string();
+                    let wait = policy
+                        .next(&e, std::time::Instant::now())
+                        .filter(|_| !(chatgpt && crate::providers::chatgpt::is_final(&text)));
+                    let guidance = chatgpt
+                        .then(|| crate::providers::chatgpt::guidance(&text))
+                        .flatten();
+                    let e = match guidance {
+                        Some(g) => anyhow!("{g}\n{text}"),
+                        None => anyhow!(e),
+                    };
+                    let Some(wait) = wait else {
                         let kept = failed_partial(partial.map(|p| p.parts).unwrap_or_default());
                         if !kept.is_empty() {
                             self.push(Message {

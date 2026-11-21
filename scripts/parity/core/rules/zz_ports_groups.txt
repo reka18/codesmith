@@ -48,3 +48,38 @@
 22 :: ported :: tests/oc_oauth_logins.rs::oc_xai_registers_device_oauth_and_api_key_methods :: adapted: the device login takes a user-supplied OAuth client
 39 :: ported :: tests/oc_oauth_logins.rs::oc_xai_migrates_browser_oauth_credentials_to_the_device_method
 71 :: ported :: tests/oc_oauth_logins.rs::oc_xai_enables_responses_websockets
+@plugin/provider-chatgpt.test.ts
+101 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_loads_only_visible_api_supported_models
+164 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_verifies_a_signed_id_token
+241 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_registers_the_oauth_method :: adapted: the sign-in takes a client of the user's own and explains when none is given
+255 :: design :: deliberate :: Codex CLI's browser and headless sign-ins work only as Codex CLI's own OAuth client, which CodeSmith does not borrow
+273 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_stops_retries_only_for_failures_retrying_cannot_fix
+325 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_leaves_api_key_openai_retries_alone :: adapted: the safeguards apply only while no API key overrides the sign-in
+351 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_stops_retries_only_for_failures_retrying_cannot_fix
+399 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_registers_a_new_agent_on_first_sign_in :: adapted: registration runs only when the user gives OpenAI's registration value as the client; the agent is named CodeSmith
+428 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_shows_success_only_once_the_callback_succeeds
+446 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_reauthorizes_with_the_issued_client
+472 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_rejects_a_callback_with_a_different_client
+505 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_moves_only_token_sharing_credentials_and_keeps_their_models
+697 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_routes_over_http_with_only_the_listed_models
+843 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_safeguards_with_an_expired_login :: adapted: nothing is refreshed at load; the safeguards follow the saved login
+877 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key
+915 :: design :: deliberate :: no Codex CLI sign-in to switch to (it works only as Codex CLI's own OAuth client)
+985 :: feature :: ChatGPT Subscription Login :: OpenAI steps and compaction without the default output limit
+1012 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_compacts_by_summary_and_a_key_keeps_native_compaction :: adapted: a ChatGPT sign-in compacts by summary; a key keeps the configured compaction
+1101 :: feature :: ChatGPT Subscription Login :: mid-session reasoning effort switches in the form each backend accepts
+1179 :: feature :: ChatGPT Subscription Login :: Responses WebSocket only from an explicit transport policy
+@plugin/provider-openai-context-caps.test.ts
+54:1 :: ported :: src/providers/chatgpt.rs::oc_chatgpt_caps_openai_models :: the chatgpt-token-sharing case, also through resolve_model (tests/oc_chatgpt.rs::oc_chatgpt_routes_over_http_with_only_the_listed_models)
+54:2 :: design :: deliberate :: chatgpt-browser and chatgpt-headless are Codex CLI's sign-ins, which work only as its own OAuth client
+72 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key
+@plugin/provider-openai.test.ts
+69 :: design :: deliberate :: Codex CLI's browser and headless sign-ins work only as Codex CLI's own OAuth client
+88 :: design :: deliberate :: the Codex-eligible catalog belongs to Codex CLI's sign-in; a ChatGPT token-sharing sign-in lists ChatGPT's models (tests/oc_chatgpt.rs)
+208 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key
+247 :: design :: deliberate :: Codex CLI's sign-in and its chatgpt-account-id header are not offered
+292 :: feature :: ChatGPT Subscription Login :: OpenAI steps and compaction without the default output limit
+317 :: feature :: ChatGPT Subscription Login :: Responses WebSocket only from an explicit transport policy
+@session-error.test.ts
+183 :: ported :: src/providers/chatgpt.rs::oc_chatgpt_types_the_usage_limit_whichever_way_it_arrives :: adapted: the failure's text leads with the guidance (CodeSmith has no typed session errors)
+196 :: ported :: src/providers/chatgpt.rs::oc_chatgpt_types_the_workspace_usage_limit

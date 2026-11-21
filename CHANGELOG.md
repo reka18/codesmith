@@ -82,6 +82,12 @@ All notable changes to CodeSmith are listed here. Versions follow
 - **xAI SuperGrok login:** `codesmith auth login xai --oauth` signs in
   through xAI's device flow with an OAuth client you register (CodeSmith
   ships none); the login is refreshed with that client.
+- **Sign in with ChatGPT:** `codesmith auth login openai --oauth` lets a
+  ChatGPT subscription pay for OpenAI requests (OpenAI token sharing),
+  with an OAuth client of your own or one registered for you through
+  OpenAI's agent registration; CodeSmith ships none. The ID token is
+  verified; requests go over HTTP to ChatGPT's models only, with plan
+  context caps, summary compaction, and no retries for usage limits.
 
 ## 0.1.0
 

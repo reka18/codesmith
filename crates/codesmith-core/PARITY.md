@@ -17,7 +17,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Session runner | 393 | 122 | 9 | 2 | 193 | 67 | 0 |
+| Session runner | 393 | 124 | 9 | 0 | 193 | 67 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
-| Providers, models and credentials | 796 | 369 | 0 | 48 | 344 | 35 | 0 |
+| Providers, models and credentials | 796 | 389 | 0 | 22 | 351 | 34 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1707** | **18** | **68** | **2402** | **1393** | **0** |
+| **Total** | **5588** | **1729** | **18** | **40** | **2409** | **1392** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,48 +83,15 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (68 cases in 5 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (40 cases in 5 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
+| [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-
-### ChatGPT Subscription Login
-
-34 cases.
-
-- `plugin/provider-chatgpt.test.ts`: loads only visible API-supported ChatGPT models
-- `plugin/provider-chatgpt.test.ts`: verifies a signed ID token against OpenAI's issuer, client ID, expiry, and sign-in nonce
-- `plugin/provider-chatgpt.test.ts`: registers the ChatGPT OAuth method
-- `plugin/provider-chatgpt.test.ts`: keeps the Codex browser and headless methods alongside token sharing
-- `plugin/provider-chatgpt.test.ts`: stops retries for ${code} from ${source} failures (3 cases)
-- `plugin/provider-chatgpt.test.ts`: leaves API-key OpenAI retries alone
-- `plugin/provider-chatgpt.test.ts`: stops deterministic ChatGPT stream failures while retrying temporary unavailability
-- `plugin/provider-chatgpt.test.ts`: registers a new ChatGPT agent on first sign-in with a loopback callback
-- `plugin/provider-chatgpt.test.ts`: waits to show browser success until the sign-in callback succeeds
-- `plugin/provider-chatgpt.test.ts`: reauthorizes with the client ID issued to an existing ChatGPT connection
-- `plugin/provider-chatgpt.test.ts`: rejects a reauthorization callback that returns a different client ID
-- `plugin/provider-chatgpt.test.ts`: moves only token-sharing credentials to the new method ID and caches their saved models
-- `plugin/provider-chatgpt.test.ts`: routes ChatGPT over HTTP with only the listed catalog fallback models
-- `plugin/provider-chatgpt.test.ts`: keeps the token-sharing safeguards when the token cannot be refreshed at load
-- `plugin/provider-chatgpt.test.ts`: keeps the full OpenAI catalog under an API key connection
-- `plugin/provider-chatgpt.test.ts`: switches between token-sharing and Codex credentials without mixing their routes
-- `plugin/provider-chatgpt.test.ts`: omits the default output limit from OpenAI steps and compaction
-- `plugin/provider-chatgpt.test.ts`: ${connection} compaction uses plugin defaults but allows later model and variant overrides (2 cases)
-- `plugin/provider-chatgpt.test.ts`: ${connection} sends mid-session reasoning effort switches in a form its backend accepts (2 cases)
-- `plugin/provider-chatgpt.test.ts`: selects WebSocket only from explicit policy
-- `plugin/provider-openai-context-caps.test.ts`: caps OpenAI models under ${methodID} (3 cases)
-- `plugin/provider-openai-context-caps.test.ts`: keeps catalog limits under an API key
-- `plugin/provider-openai.test.ts`: registers browser and headless ChatGPT OAuth methods
-- `plugin/provider-openai.test.ts`: filters the OpenAI catalog to codex-eligible models under a ChatGPT connection
-- `plugin/provider-openai.test.ts`: keeps the full OpenAI catalog under an API key connection
-- `plugin/provider-openai.test.ts`: reloads providers on a switch only when the ChatGPT login changes
-- `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
-- `session-error.test.ts`: types the ChatGPT workspace usage limit
 
 ### Provider Plugins
 
@@ -161,6 +128,16 @@ Missing features, by how many OpenCode test cases each would unlock (68 cases in
 - `automation.test.ts`: retries failed admission without committing state or done, then settles the handoff once
 - `automation.test.ts`: pauses on a missing handoff directory without rerunning the check
 
+### ChatGPT Subscription Login
+
+6 cases.
+
+- `plugin/provider-chatgpt.test.ts`: omits the default output limit from OpenAI steps and compaction
+- `plugin/provider-chatgpt.test.ts`: ${connection} sends mid-session reasoning effort switches in a form its backend accepts (2 cases)
+- `plugin/provider-chatgpt.test.ts`: selects WebSocket only from explicit policy
+- `plugin/provider-openai.test.ts`: omits the default output limit from OpenAI steps and compaction
+- `plugin/provider-openai.test.ts`: selects WebSocket only from explicit policy
+
 ### Browser Attachment
 
 3 cases.
@@ -179,7 +156,7 @@ Missing features, by how many OpenCode test cases each would unlock (68 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1393 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1392 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -964,7 +941,7 @@ Tests for behaviour CodeSmith already has but no test pins (1393 cases), by area
 - the setup (start) command runs with worktree paths (S) — `worktree::create`
   - `worktree.test.ts`: runs the project setup script with worktree paths
 
-### Providers, models and credentials (35)
+### Providers, models and credentials (34)
 
 - default model when none is configured; a disabled provider's default ignored (S) — `config::resolve_model`
   - `catalog.test.ts`: falls back to newest available model when no default is configured
@@ -1010,8 +987,6 @@ Tests for behaviour CodeSmith already has but no test pins (1393 cases), by area
 - OpenRouter / Mistral headers and body (S) — `config providers`
   - `model-resolver.test.ts`: merges mapped OpenRouter headers and body with catalog overlays
   - `model-resolver.test.ts`: merges mapped Mistral headers and body with catalog overlays
-- no default output limit sent to OpenAI (S) — `session request`
-  - `plugin/provider-openai.test.ts`: omits the default output limit from OpenAI steps and compaction
 
 ### Runtime, locations and filesystem (4)
 
@@ -1026,7 +1001,7 @@ Tests for behaviour CodeSmith already has but no test pins (1393 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 686 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 554 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 561 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 340 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
@@ -1038,7 +1013,7 @@ Tests for behaviour CodeSmith already has but no test pins (1393 cases), by area
 
 The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` ported after a fix, `D` by design / n.a., `X` found bug; `×n` is the number of cases. Consecutive by-design tests with the same reason share a line.
 
-<details><summary>Session runner (324 of 393)</summary>
+<details><summary>Session runner (326 of 393)</summary>
 
 
 **`generate.test.ts`**
@@ -1067,6 +1042,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D maps every AI error reason to the open wire type — client-server: maps AI error reasons onto OpenCode's wire error schema
 - P separates the free and Go usage limits from paid rate limits, credit limits, and other providers' 429s — `src/retry.rs::oc_session_error_separates_quota_caps_from_rate_limits` (quota vs rate limit only; the OpenCode Free/Go plan limits are cloud)
 - D tells a budget on the requested model from one pausing all model use — cloud: OpenCode Console model budgets
+- P types the ChatGPT usage limit whichever way the failure arrives — `src/providers/chatgpt.rs::oc_chatgpt_types_the_usage_limit_whichever_way_it_arrives` (adapted: the failure's text leads with the guidance (CodeSmith has no typed session errors))
+- P types the ChatGPT workspace usage limit — `src/providers/chatgpt.rs::oc_chatgpt_types_the_workspace_usage_limit`
 - D preserves the permission rejection type without exposing internal fields · preserves provider HTTP status without exposing runtime diagnostics · preserves provider response body without HTTP status · maps token-sharing failures while preserving HTTP and stream bodies · preserves unresolved provider endpoint errors · preserves provider configuration and initialization errors — client-server: which error fields OpenCode's API exposes
 - P retries rate limits, provider-internal, transport, and unrecognized failures — `src/retry.rs::oc_session_error_retries_rate_limits_provider_internal_transport_and_unrecognized_failures`
 - D honors provider retry header overrides — deliberate: retry.rs: retry-after / x-should-retry headers are not kept, so not honoured
@@ -2992,7 +2969,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (713 of 796)</summary>
+<details><summary>Providers, models and credentials (740 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3201,6 +3178,26 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P ignores non-Cerebras providers — `tests/oc_providers.rs::oc_cerebras_ignores_non_cerebras_providers`
 - P applies the integration header to custom native Cerebras providers — `tests/oc_providers.rs::oc_cerebras_applies_the_integration_header_to_custom_native_cerebras_providers`
 
+**`plugin/provider-chatgpt.test.ts`**
+
+- P loads only visible API-supported ChatGPT models — `tests/oc_chatgpt.rs::oc_chatgpt_loads_only_visible_api_supported_models`
+- P verifies a signed ID token against OpenAI's issuer, client ID, expiry, and sign-in nonce — `tests/oc_chatgpt.rs::oc_chatgpt_verifies_a_signed_id_token`
+- P registers the ChatGPT OAuth method — `tests/oc_chatgpt.rs::oc_chatgpt_registers_the_oauth_method` (adapted: the sign-in takes a client of the user's own and explains when none is given)
+- D keeps the Codex browser and headless methods alongside token sharing — deliberate: Codex CLI's browser and headless sign-ins work only as Codex CLI's own OAuth client, which CodeSmith does not borrow
+- P stops retries for ${code} from ${source} failures ×3 — `tests/oc_chatgpt.rs::oc_chatgpt_stops_retries_only_for_failures_retrying_cannot_fix`
+- P leaves API-key OpenAI retries alone — `tests/oc_chatgpt.rs::oc_chatgpt_leaves_api_key_openai_retries_alone` (adapted: the safeguards apply only while no API key overrides the sign-in)
+- P stops deterministic ChatGPT stream failures while retrying temporary unavailability — `tests/oc_chatgpt.rs::oc_chatgpt_stops_retries_only_for_failures_retrying_cannot_fix`
+- P registers a new ChatGPT agent on first sign-in with a loopback callback — `tests/oc_chatgpt.rs::oc_chatgpt_registers_a_new_agent_on_first_sign_in` (adapted: registration runs only when the user gives OpenAI's registration value as the client; the agent is named CodeSmith)
+- P waits to show browser success until the sign-in callback succeeds — `tests/oc_chatgpt.rs::oc_chatgpt_shows_success_only_once_the_callback_succeeds`
+- P reauthorizes with the client ID issued to an existing ChatGPT connection — `tests/oc_chatgpt.rs::oc_chatgpt_reauthorizes_with_the_issued_client`
+- P rejects a reauthorization callback that returns a different client ID — `tests/oc_chatgpt.rs::oc_chatgpt_rejects_a_callback_with_a_different_client`
+- P moves only token-sharing credentials to the new method ID and caches their saved models — `tests/oc_chatgpt.rs::oc_chatgpt_moves_only_token_sharing_credentials_and_keeps_their_models`
+- P routes ChatGPT over HTTP with only the listed catalog fallback models — `tests/oc_chatgpt.rs::oc_chatgpt_routes_over_http_with_only_the_listed_models`
+- P keeps the token-sharing safeguards when the token cannot be refreshed at load — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_safeguards_with_an_expired_login` (adapted: nothing is refreshed at load; the safeguards follow the saved login)
+- P keeps the full OpenAI catalog under an API key connection — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key`
+- D switches between token-sharing and Codex credentials without mixing their routes — deliberate: no Codex CLI sign-in to switch to (it works only as Codex CLI's own OAuth client)
+- P ${connection} compaction uses plugin defaults but allows later model and variant overrides ×2 — `tests/oc_chatgpt.rs::oc_chatgpt_compacts_by_summary_and_a_key_keeps_native_compaction` (adapted: a ChatGPT sign-in compacts by summary; a key keeps the configured compaction)
+
 **`plugin/provider-cloudflare-ai-gateway.test.ts`**
 
 - P registers account and gateway forms when the environment does not provide them — `tests/oc_providers.rs::oc_cloudflare_gateway_registers_account_and_gateway_forms_when_the_environment_does_not_provide_them` (adapted: `codesmith auth login` asks the fields after the key)
@@ -3344,9 +3341,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P replaces and restores the same-ID Models.dev provider — `tests/oc_local_models.rs::oc_ollama_replaces_and_restores_the_same_id_catalog_provider` (adapted: configured models stay beside the discovered ones)
 - P reloads layered endpoint and bearer authentication settings — `tests/oc_local_models.rs::oc_ollama_reloads_layered_endpoint_and_bearer_authentication_settings`
 
+**`plugin/provider-openai-context-caps.test.ts`**
+
+- P caps OpenAI models under ${methodID} — `src/providers/chatgpt.rs::oc_chatgpt_caps_openai_models` (the chatgpt-token-sharing case, also through resolve_model (tests/oc_chatgpt.rs::oc_chatgpt_routes_over_http_with_only_the_listed_models))
+- D caps OpenAI models under ${methodID} ×2 — deliberate: chatgpt-browser and chatgpt-headless are Codex CLI's sign-ins, which work only as its own OAuth client
+- P keeps catalog limits under an API key — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key`
+
 **`plugin/provider-openai.test.ts`**
 
-- P selects WebSocket only from explicit policy — `tests/websocket_session.rs` (WebSocket only from explicit policy)
+- D registers browser and headless ChatGPT OAuth methods — deliberate: Codex CLI's browser and headless sign-ins work only as Codex CLI's own OAuth client
+- D filters the OpenAI catalog to codex-eligible models under a ChatGPT connection — deliberate: the Codex-eligible catalog belongs to Codex CLI's sign-in; a ChatGPT token-sharing sign-in lists ChatGPT's models (tests/oc_chatgpt.rs)
+- P keeps the full OpenAI catalog under an API key connection — `tests/oc_chatgpt.rs::oc_chatgpt_keeps_the_full_catalog_and_limits_under_an_api_key`
+- D reloads providers on a switch only when the ChatGPT login changes — deliberate: Codex CLI's sign-in and its chatgpt-account-id header are not offered
 
 **`plugin/provider-opencode-artifacts.test.ts`**
 

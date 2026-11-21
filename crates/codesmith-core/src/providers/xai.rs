@@ -373,6 +373,12 @@ pub fn route(input: &Input) -> Result<Route> {
         .unwrap_or(API)
         .trim_end_matches('/')
         .to_string();
+    // The login's token is for the xAI API, and goes nowhere else.
+    if !super::oauth::same_origin(&base_url, API) {
+        return Err(anyhow!(
+            "An xAI login sends its token only to {API}, not to {base_url}: remove the xai provider's baseURL, or use an API key"
+        ));
+    }
     Ok(Route {
         protocol,
         base_url,

@@ -2045,6 +2045,23 @@ async fn browser_login(
             );
             providers::snowflake::login(&client, file, &e, role.as_deref(), open).await?;
         }
+        providers::chatgpt::ID => {
+            let saved = codesmith_core::auth::entry_in(file, provider)
+                .filter(|e| providers::chatgpt::is_login(Some(e)))
+                .and_then(|e| e["metadata"]["clientID"].as_str().map(str::to_string));
+            let id =
+                providers::chatgpt::client_id(saved.as_deref(), client_id, &settings.plugin, &env)?;
+            let e = providers::chatgpt::Endpoints::default();
+            providers::chatgpt::login(
+                &client,
+                file,
+                &e,
+                &id,
+                open,
+                Some(providers::oauth::stdin_lines()),
+            )
+            .await?;
+        }
         providers::xai::ID => {
             let id = providers::xai::client_id(client_id, &settings.plugin, &env)?;
             let e = providers::xai::Endpoints::xai(&id, settings.plugin.oauth_scope.as_deref());
@@ -2063,7 +2080,7 @@ async fn browser_login(
         }
         p => {
             return Err(anyhow!(
-                "{p} has no browser login; --oauth is for poe, gitlab, digitalocean, snowflake-cortex and xai"
+                "{p} has no browser login; --oauth is for openai (Sign in with ChatGPT), poe, gitlab, digitalocean, snowflake-cortex and xai"
             ))
         }
     }

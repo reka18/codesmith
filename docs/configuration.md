@@ -717,6 +717,40 @@ GitLab Duo's models run through GitLab's AI gateway (agentic chat and Duo
 workflows), which CodeSmith does not speak yet, so `gitlab/duo-*` models
 cannot be used for sessions yet; the login is kept for when they can.
 
+### Sign in with ChatGPT
+
+`codesmith auth login openai --oauth` signs in with ChatGPT, so a ChatGPT
+subscription pays for OpenAI requests through OpenAI's token sharing
+instead of an API key. It's OAuth with PKCE in the browser (a redirect to
+`127.0.0.1`; paste the final URL if the browser runs elsewhere), asking for
+the `chatgpt.tokens.use.direct` scope for the OpenAI API.
+
+The sign-in runs as an OAuth client of your own: CodeSmith ships none, and
+never uses another product's (not OpenCode's, not Codex CLI's). Give its id
+with `--client-id`, `settings.clientId` on the `openai` provider, or
+`CODESMITH_CHATGPT_CLIENT_ID`; without one the sign-in stops and says so.
+Giving `dynamic_agent_client` instead uses OpenAI's agent registration: the
+sign-in registers a client owned by you, named CodeSmith, and OpenAI
+returns its id on the callback. Whether OpenAI accepts that registration
+for CodeSmith is up to OpenAI. The client is saved with the login; signing
+in again reuses it, and a callback that names a different client is
+refused. The ID token must be signed by OpenAI's keys, for that client,
+unexpired, and carry the sign-in's nonce.
+
+Signed in (and with no API key, which wins), OpenAI requests go to
+`api.openai.com/v1` over HTTP rather than the Responses WebSocket, with the
+login's access token, refreshed with the same client shortly before it
+expires (a `baseURL` on another host is refused rather than sent the
+token). Only the models ChatGPT serves are listed, at no per-token cost;
+their context is capped as ChatGPT plans cap it (272K of input, 500K from
+gpt-6.1 on, 272K for Astra models); compaction writes a summary rather
+than using OpenAI's native compaction. Failures retrying can't fix (a
+usage limit, an ineligible account, an unsupported request) aren't
+retried, and the error starts with what to do about them.
+
+Codex CLI's own browser and device sign-ins are not offered: they work
+only as Codex CLI's OAuth client.
+
 ### xAI SuperGrok login
 
 `codesmith auth login xai --oauth` signs in with a SuperGrok subscription
@@ -730,8 +764,9 @@ offline_access api:access` unless `settings.oauthScope` says otherwise.
 
 The login is saved with its client id, and its access token is sent as a
 bearer token to the xAI API; it is refreshed at xAI's token endpoint, with
-that same client, shortly before it expires. An API key (`XAI_API_KEY` or a
-saved key) wins over the login. A login saved by an earlier browser method
+that same client, shortly before it expires; a `baseURL` on another host is
+refused rather than sent the token. An API key (`XAI_API_KEY` or a saved
+key) wins over the login. A login saved by an earlier browser method
 is moved to the device method. xAI's Responses steps go over a
 [WebSocket](#responses-over-websocket) by default.
 
@@ -1139,8 +1174,8 @@ they are asked in the terminal after the key, or given with
 saves an [Azure CLI](#azure-openai) login. `--oauth` logs in through a
 provider's browser OAuth instead of a key ([Poe](#poe),
 [DigitalOcean](#digitalocean), [GitLab](#gitlab-sign-in),
-[Snowflake Cortex](#snowflake-cortex), and [xAI](#xai-supergrok-login)'s
-device flow).
+[Snowflake Cortex](#snowflake-cortex), [Sign in with ChatGPT](#sign-in-with-chatgpt)
+for `openai`, and [xAI](#xai-supergrok-login)'s device flow).
 
 A provider can have several saved credentials, one of them active: the
 active one is the provider's entry in `auth.json`, and the others are kept

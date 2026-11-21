@@ -25,6 +25,7 @@ notify.workspace = true
 rand.workspace = true
 url.workspace = true
 sha2.workspace = true
+ring.workspace = true
 similar.workspace = true
 base64.workspace = true
 image.workspace = true

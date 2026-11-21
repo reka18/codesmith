@@ -7,6 +7,7 @@
 
 pub mod azure;
 pub mod bedrock;
+pub mod chatgpt;
 pub mod claude_agent;
 pub mod cloudflare;
 pub mod copilot;
@@ -313,6 +314,9 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
     }
     if xai::owns(input) {
         return xai::route(input).map(Some);
+    }
+    if chatgpt::owns(input) {
+        return chatgpt::route(input).map(Some);
     }
     match input.provider_id {
         gateways::DATABRICKS => return gateways::databricks(input).map(Some),
