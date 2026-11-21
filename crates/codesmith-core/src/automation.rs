@@ -2175,7 +2175,7 @@ impl Runner {
                 name: t.remote,
                 description: t.description,
                 schema: t.schema,
-                output: None,
+                output: t.output_schema,
                 freeform: false,
             })
             .collect();
@@ -2204,7 +2204,7 @@ impl Runner {
                 });
                 async move {
                     allowed.map_err(|e| e.to_string())?;
-                    match mcp.call(&tool, input).await {
+                    match mcp.call_code(&tool, input).await {
                         Ok((text, false)) => Ok(text),
                         Ok((text, true)) => Err(text),
                         Err(e) => Err(format!("{e:#}")),

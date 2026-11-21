@@ -13,3 +13,6 @@
 410 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_redeems_with_the_localhost_redirect_the_browser_came_back_to
 571 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_refreshes_a_refused_token_and_retries_with_the_new_one
 1170 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_reports_needs_auth_when_the_server_asks_for_more_scope
+@mcp.test.ts
+756 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_retains_output_schemas_across_paginated_discovery
+2824 :: ported :: tests/oc_mcp_roadmap.rs::oc_mcp_advertises_output_schemas_to_code_mode :: adapted: the catalog in the session's request; a program gets the call's structuredContent as the declared value

@@ -161,6 +161,14 @@ While a program runs, its `execute` call reports a row for each tool call
 it makes, as OpenCode does (the server's `tool_progress`): at most one
 update per 100 ms, and a failed program's latest rows before its result.
 
+A tool that declares an `outputSchema` is listed with that result type
+(`Promise<{ ok: boolean }>`), and a program calling it gets the call's
+`structuredContent` as its value, as the server sent it (not checked
+against the schema). A failed call, or a result without structured content,
+falls back to the text, as for tools without a schema; called directly, the
+model reads the text. Schemas that are not JSON objects, or larger than
+256 KiB, are left out.
+
 Images in tool results reach the model as images when tools are called
 directly. In Code Mode, whose results are JSON for the program, images are
 replaced by a note.

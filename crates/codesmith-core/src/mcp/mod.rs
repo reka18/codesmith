@@ -132,6 +132,10 @@ pub struct McpTool {
     pub remote: String,
     pub description: String,
     pub schema: Value,
+    /// The tool's `outputSchema`, when it declares one: shown as its result
+    /// type in the Code Mode catalog, whose programs then get the call's
+    /// `structuredContent` as its value.
+    pub output_schema: Option<Value>,
     /// Called through Code Mode rather than directly.
     pub codemode: bool,
 }
@@ -177,6 +181,27 @@ fn input_schema(schema: Option<&Value>) -> Value {
         .filter(|s| serde_json::to_vec(s).is_ok_and(|b| b.len() <= MAX_INPUT_SCHEMA))
         .cloned()
         .unwrap_or_else(|| json!({"type": "object", "properties": {}}))
+}
+
+/// A tool's `outputSchema`, kept when it is a JSON object (any shape, as
+/// OpenCode takes them: `anyOf` unions too) no larger than
+/// [`MAX_INPUT_SCHEMA`].
+fn output_schema(schema: Option<&Value>) -> Option<Value> {
+    schema
+        .filter(|s| s.is_object())
+        .filter(|s| serde_json::to_vec(s).is_ok_and(|b| b.len() <= MAX_INPUT_SCHEMA))
+        .cloned()
+}
+
+/// The value a Code Mode program gets from a call to a tool that declares
+/// an output schema: the result's `structuredContent`, as the server sent
+/// it (not checked against the schema). `None` for a failed call, a tool
+/// without a schema, or a result without structured content.
+pub fn structured_result(result: &Value, declared: bool) -> Option<Value> {
+    if !declared || result["isError"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    result.get("structuredContent").cloned()
 }
 
 fn sanitize(s: &str) -> String {
@@ -1209,6 +1234,7 @@ impl Client {
                     remote: remote.to_string(),
                     description: t["description"].as_str().unwrap_or("").to_string(),
                     schema: input_schema(t.get("inputSchema")),
+                    output_schema: output_schema(t.get("outputSchema")),
                 })
             })
             .collect())
@@ -2006,6 +2032,18 @@ impl Mcp {
         Ok(result_text(&self.call_raw(name, args).await?))
     }
 
+    /// Call a tool from a Code Mode program: its text (media noted), or,
+    /// for a tool that declares an output schema, its structured content as
+    /// the program's value ([`structured_result`]); and whether it failed.
+    pub async fn call_code(&self, name: &str, args: Value) -> Result<(String, bool)> {
+        let declared = self.tool(name).is_some_and(|t| t.output_schema.is_some());
+        let raw = self.call_raw(name, args).await?;
+        Ok(match structured_result(&raw, declared) {
+            Some(v) => (format!("{}{v}", crate::codemode::JSON_RESULT), false),
+            None => result_text(&raw),
+        })
+    }
+
     /// Call a tool: its text, whether it failed, and its images and PDFs.
     pub async fn call_media(
         &self,
@@ -2619,6 +2657,7 @@ mod tests {
             remote: remote.into(),
             description: String::new(),
             schema: json!({}),
+            output_schema: None,
             codemode: false,
         };
         let base = "a".repeat(30);
@@ -2643,6 +2682,7 @@ mod tests {
             remote: remote.into(),
             description: "d".into(),
             schema: json!({}),
+            output_schema: None,
             codemode: false,
         };
         // `x` + `y_z` and `x_y` + `z` are both `x_y_z`; neither keeps it.

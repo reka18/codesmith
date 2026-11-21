@@ -3190,9 +3190,21 @@ impl Session {
             self.run_builtin_in_code(&call.name, &call.input).await
         } else {
             // Code Mode hands results to code as JSON, so images and PDFs
-            // are noted rather than passed on.
-            let (text, failed, media) = self.run_mcp(&call.name, &call.input).await;
-            let text = crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+            // are noted rather than passed on. A tool that declares an
+            // output schema hands over its structured content, the type the
+            // catalog shows.
+            let (text, failed) = match self.call_mcp(&call.name, &call.input).await {
+                Err(e) => (e, true),
+                Ok((raw, declared)) => match crate::mcp::structured_result(&raw, declared) {
+                    Some(v) => (format!("{}{v}", crate::codemode::JSON_RESULT), false),
+                    None => {
+                        let (text, failed, media) = self.mcp_content(&raw);
+                        let text =
+                            crate::mcp::with_media_note(text, &media, "Code Mode returns text");
+                        (text, failed)
+                    }
+                },
+            };
             (text, failed, Vec::new())
         };
         plugins.tool_after(&self.loaded.config, &call, &mut text, &mut is_error);
@@ -3364,7 +3376,7 @@ impl Session {
                 name: t.remote.clone(),
                 description: t.description.clone(),
                 schema: t.schema.clone(),
-                output: None,
+                output: t.output_schema.clone(),
                 freeform: false,
             })
             .chain(builtins)
@@ -3743,38 +3755,49 @@ impl Session {
         name: &str,
         input: &serde_json::Value,
     ) -> (String, bool, Vec<codesmith_ai::Media>) {
+        match self.call_mcp(name, input).await {
+            Ok((raw, _)) => self.mcp_content(&raw),
+            Err(e) => (e, true, vec![]),
+        }
+    }
+
+    /// A `tools/call` result as the model gets it, its text cut to the
+    /// output limits.
+    fn mcp_content(&self, raw: &serde_json::Value) -> (String, bool, Vec<codesmith_ai::Media>) {
+        let (text, is_error, media) = crate::mcp::result_content(raw);
+        (
+            tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
+            is_error,
+            media,
+        )
+    }
+
+    /// Call an MCP tool once its permission is granted: the raw result and
+    /// whether the tool declares an output schema, or the error to report.
+    async fn call_mcp(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<(serde_json::Value, bool), String> {
         let Some(t) = self.permitted_mcp().into_iter().find(|t| t.name == name) else {
-            return (
-                format!("The {name} tool is not available to this agent."),
-                true,
-                vec![],
-            );
+            return Err(format!("The {name} tool is not available to this agent."));
         };
         let shared = t.shared_name();
         if shared != name {
             // Renamed after a collision: a rule denying the shared name
             // (configured or not) still denies it.
-            if let Err(e) = self.gate.assert_not_denied(&shared, &["*".to_string()]) {
-                return (e.to_string(), true, vec![]);
-            }
+            self.gate
+                .assert_not_denied(&shared, &["*".to_string()])
+                .map_err(|e| e.to_string())?;
         }
         let args = tool::repair(&tool::input_repair::repair(input, &t.schema));
         let title = format!("Run MCP tool {name}");
-        if let Err(e) = self.allowed(name, "*", title) {
-            return (e, true, vec![]);
-        }
-        match self
-            .mcp
-            .call_media_for(name, args, self.questioner.clone(), Some(&self.id))
+        self.allowed(name, "*", title)?;
+        self.mcp
+            .call_raw_for(name, args, self.questioner.clone(), Some(&self.id))
             .await
-        {
-            Ok((text, is_error, media)) => (
-                tool::truncate(&text, self.limits, &paths::session_output_dir(&self.id)),
-                is_error,
-                media,
-            ),
-            Err(e) => (format!("MCP tool {name} failed: {e:#}"), true, vec![]),
-        }
+            .map(|raw| (raw, t.output_schema.is_some()))
+            .map_err(|e| format!("MCP tool {name} failed: {e:#}"))
     }
 
     /// A file attached to a prompt by path, as `read` would see it: the path

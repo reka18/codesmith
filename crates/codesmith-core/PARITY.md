@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 118 | 6 | 8 | 80 | 0 | 0 |
+| MCP | 212 | 120 | 6 | 6 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2889** | **79** | **39** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2891** | **79** | **37** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,7 +131,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (39 cases in 13 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (37 cases in 12 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -140,7 +140,6 @@ Missing features, by how many OpenCode test cases each would unlock (39 cases in
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [MCP Output Schemas](#mcp-output-schemas) | 2 | keeping MCP tools' output schemas and showing them in the Code Mode catalog |
 | [MCP Events Tool](#mcp-events-tool) | 2 | a tool that lists a server's push events |
 | [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
 | [MCP Session Recovery](#mcp-session-recovery) | 1 | initializing again and retrying a call when an HTTP server has forgotten the session |
@@ -202,13 +201,6 @@ Missing features, by how many OpenCode test cases each would unlock (39 cases in
 - `voice.test.ts`: uses the first key or env connection Integration lists and never a ChatGPT sign-in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
-
-### MCP Output Schemas
-
-2 cases.
-
-- `mcp.test.ts`: retains output schemas across paginated MCP discovery
-- `mcp.test.ts`: advertises MCP output schemas to Code Mode
 
 ### MCP Events Tool
 
@@ -2405,7 +2397,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (204 of 212)</summary>
+<details><summary>MCP (206 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2521,6 +2513,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P MCP tool names match V1 sanitization — `tests/oc_mcp_backlog3.rs::oc_mcp_tool_names_match_v1_sanitization`
 - P passes session IDs as MCP request metadata — `tests/oc_mcp_backlog3.rs::oc_mcp_passes_session_ids_as_request_metadata` (adapted: no progress token)
 - D preserves output schema validation across paginated tool discovery — deliberate: results are returned as the server sent them, not checked against the tool's output schema (pinned by tests/oc_mcp_backlog3.rs::oc_mcp_returns_results_that_miss_or_break_the_output_schema)
+- P retains output schemas across paginated MCP discovery — `tests/oc_mcp_roadmap.rs::oc_mcp_retains_output_schemas_across_paginated_discovery`
 - P accepts legacy MCP tools whose output schema is not a root object — `tests/oc_mcp_backlog3.rs::oc_mcp_accepts_tools_whose_output_schema_is_not_a_root_object`
 - P lists paginated prompts and invokes them through the MCP client — `tests/oc_mcp_backlog3.rs::oc_mcp_lists_paginated_prompts_and_invokes_them`
 - D spawns local MCP servers through the location environment · reports a local MCP server as failed when the location has no execution plane — client-server: MCP connections pooled across Locations
@@ -2553,6 +2546,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D manages live MCP servers entirely through scoped transforms · restores runtime MCP config when a transform is disposed · isolates nested configured MCP mutations and reconciles them · publishes MCP changes while live but not while the location shuts down · batches MCP transforms without connecting intermediate configurations · reconciles only changed MCP server config · keeps MCP config snapshots stable during an in-flight replacement · discards in-flight and queued MCP notifications after its layer closes · is not undone by the queued startup · serializes concurrent MCP lifecycle operations · finishes an MCP connect whose caller is interrupted during the handshake · finishes an MCP disconnect whose caller is interrupted while the session ends · preserves plugin transforms through MCP catalog updates · coalesces queued MCP tool notifications after initial registration — effect-internal: scoped MCP config transforms and lifecycle serialization
 - P flush waits for a server that connects within its startup window — `tests/oc_mcp_backlog3.rs::oc_mcp_waits_for_a_server_that_connects_within_its_startup_window`
 - P flush stops waiting for a hung server when its startup window ends — `src/mcp/mod.rs::startup_timeout` (adapted: past its startup window a server is failed, not pending)
+- P advertises MCP output schemas to Code Mode — `tests/oc_mcp_roadmap.rs::oc_mcp_advertises_output_schemas_to_code_mode` (adapted: the catalog in the session's request; a program gets the call's structuredContent as the declared value)
 - P forwards the invoking session through direct and Code Mode MCP tools — `tests/oc_mcp_attach.rs::oc_mcp_attaches_a_client_server_and_routes_its_tools_with_the_session, tests/oc_mcp_backlog3.rs::oc_mcp_passes_session_ids_as_request_metadata` (adapted: the Code Mode path through a session, the direct one through the client)
 - P returns content-only MCP results through Code Mode — `tests/oc_mcp_backlog3.rs::oc_mcp_returns_content_and_parses_json_text_through_code_mode`
 - P parses JSON text results from MCP tools without an output schema — `tests/oc_mcp_backlog3.rs::oc_mcp_returns_content_and_parses_json_text_through_code_mode`

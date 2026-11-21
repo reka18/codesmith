@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP output schemas:** a tool's `outputSchema` is kept (across paginated
+  tool lists) and shown as its result type in the Code Mode catalog, and a
+  program calling it gets the call's `structuredContent` as its value.
 - **MCP OAuth login options:** `codesmith mcp auth` takes a redirect URL
   pasted into the terminal (the browser on another machine); one that is not
   the login's redirect address or carries another state is refused and the
