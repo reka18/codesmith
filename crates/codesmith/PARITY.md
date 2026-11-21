@@ -77,13 +77,17 @@ Where the tests live:
 - `codesmith-core/tests/oc_stats.rs`: the `stats` card (`cli/test/stats`);
   `oc_activity_calendar.rs`: its calendar (`util/src/activity-calendar`).
 - `codesmith-core/tests/oc_codemode.rs` with
-  `tests/fixtures/oc_codemode.json`: 1137 assertions from
+  `tests/fixtures/oc_codemode.json`: 1804 assertions from
   `packages/codemode/test` (the programs and the values they expect,
-  extracted as text from the test files; Test262-derived cases under the BSD
-  license in `fixtures/LICENSE.test262`, web-platform-tests-derived ones
-  under `fixtures/LICENSE.wpt`), run through Code Mode on Boa. 1026 pass;
-  the other 111 are listed in the test with their reason, and the test
-  fails if any other case fails or a listed one starts passing.
+  extracted as text from the test files, or, for assertions computed at run
+  time, recorded by running the test files under Node with Code Mode
+  stubbed out; Test262-derived cases under the BSD license in
+  `fixtures/LICENSE.test262`, web-platform-tests-derived ones under
+  `fixtures/LICENSE.wpt`), run through Code Mode on Boa. 1604 pass; the
+  other 200 are listed in the test with their reason, and the test fails if
+  any other case fails or a listed one starts passing. A case can assert on
+  part of a result (a member of the value, the error's message, the logs)
+  or compare with another program's value, as its OpenCode test does.
 - `codesmith-core/src/codemode/signature.rs`: the JSON Schema cases of
   `codemode/test/signature` (the Effect Schema ones have no counterpart);
   `codemode/search.rs` and `codemode/web.rs`: catalog search, nested tool
@@ -117,11 +121,11 @@ Where the tests live:
 | tui: main UI | 1247 | 15 | 519 | 6 | 707 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
-| codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
+| codemode | 1666 | 785 | 218 | 5 | 658 | 0 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **782** | **814** | **8** | **2390** | **215** | **428** |
+| **Total** | **4637** | **920** | **814** | **13** | **2462** | **0** | **428** |
 
 ## Fixes made while porting
 
@@ -377,10 +381,16 @@ None: those the inventory found are fixed above.
 ## Ported tests
 
 Code Mode's ported tests are the passing cases of `oc_codemode.rs`, by
-OpenCode file: Test262 adaptations of arrays, strings, dates, generators,
-promises, `for await`, labels, hoisting, lexical scope, Set methods, JSON
-callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
-`accessors`, `descriptors`, `errors`, `enumeration` and `new-expression`.
+OpenCode file: Test262 adaptations of arrays, strings (search and
+extraction, core methods, RegExp), dates, generators, promises, `for
+await`, labels, hoisting, lexical scope, object coercion, constructors, Set
+methods, JSON callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`,
+`classes`, `accessors`, `descriptors`, `errors`, `enumeration`,
+`new-expression` and `promise` (its tool case is
+`oc_promise_resolve_passes_a_tool_call_through`, adapted: a tool's result
+is its text). OpenCode's checks that a run survives its interpreter's
+snapshot round trip (`accessors`, `classes`) have no counterpart and are
+dropped.
 
 | OpenCode file | Test | Status | CodeSmith test |
 |---|---|---|---|
@@ -1077,6 +1087,18 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
+### codemode: console rendering (5)
+
+CodeSmith's `console` logs each value as its JSON, so it reads getters and
+shows a `Map` or an error as `{}`, and it has no `console.table`;
+OpenCode renders values as Node does.
+
+- `codemode/test/accessors`: enumeration never calls accessors > keys, for...in, in, hasOwnProperty, delete and console.log
+- `codemode/test/accessors`: enumeration never calls accessors > console.table labels accessors, own and inherited
+- `codemode/test/classes`: showing and copying class values > console.log shows the class name
+- `codemode/test/stdlib`: Map > console.log renders map contents for debugging
+- `codemode/test/stdlib`: console.log of errors > prints name and message, nested too
+
 ### tui: per-agent and per-session model selection, the rest (2)
 
 - `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents (the object form of `model` with a variant)
@@ -1107,7 +1129,7 @@ its remaining work is tracked in
 
 | Group | Kind | Cases | Files | Why |
 |---|---|---:|---:|---|
-| codemode: interpreter and host API | by design | 425 | 18 | OpenCode's own VM (bytecode, suspend/resume, snapshots) and Effect host API; CodeSmith runs Boa; assertions on OpenCode's scheduler traces and host gates |
+| codemode: interpreter and host API | by design | 427 | 19 | OpenCode's own VM (bytecode, suspend/resume, snapshots) and Effect host API; CodeSmith runs Boa; assertions on OpenCode's scheduler traces and host gates |
 | session-ui: markdown | by design | 207 | 16 | the web renderer (streaming worker, caching, images); the TUI renders Markdown itself |
 | session-ui: review | by design | 144 | 13 | the web diff and review viewer |
 | plugins: JavaScript plugins | by design | 142 | 15 | plugins are native Rust, compiled in; server plugins; plugin key layers |
@@ -1116,11 +1138,11 @@ its remaining work is tracked in
 | server: managed service | by design | 55 | 6 | QR codes for pairing; no CORS configuration; browsers are refused; no background server service, pairing or remote access |
 | tui: hosted catalog | by design | 54 | 11 | hosted plans and usage limits; integration accounts; integrations, favourites and the hosted model catalog; release highlights, hosted plans or onboarding |
 | cli: client/server frontends | by design | 48 | 7 | run and the UI drive the session in-process, not through a server; run reads the session in-process, not by reconciling server events; sessions are resolved locally, no server locations; subagents run inside the turn |
-| codemode: Boa departures | by design | 39 | 15 | Boa 0.22 departs from the specification here |
+| codemode: Boa departures | by design | 48 | 18 | Boa 0.22 departs from the specification here |
 | tui: client/server state | by design | 39 | 11 | the UI runs the session in-process (and no event stream moves a session the open menu has not read yet) |
-| codemode: OpenCode restrictions and result conversion | by design | 28 | 10 | opaque references, cycles, typed arrays, errors as {name,message}, awaited result promises, UTC dates |
+| codemode: OpenCode restrictions and result conversion | by design | 60 | 12 | opaque references (tool references as callbacks or constructors, and their wrap and await hints), cycles, typed arrays, errors as {name,message}, awaited result promises, UTC dates, `Headers` and iterators at the boundary; class and function features OpenCode's interpreter refuses (private members, static blocks, `new.target`, `extends null`, `new` on a plain function, extending a built-in), which Boa runs |
 | server: auth and transport | by design | 28 | 7 | a bearer token instead of Basic auth, pairing and CORS; browsers are refused |
-| codemode: error wording | by design | 25 | 5 | Boa's messages; OpenCode's error kinds, locations and suggestions |
+| codemode: error wording | by design | 53 | 9 | Boa's messages; OpenCode's error kinds, locations and suggestions |
 | cli: integrations | by design | 24 | 4 | hosted, OAuth and command integrations through a server; integration login URLs; plugin-defined login forms; CodeSmith saves API keys; the /connect integration catalog |
 | tui: transcript rows | by design | 22 | 4 | CodeSmith's tool rows are its own (`⚙ name detail`), not OpenCode's inline tool copy and snapshots; no synthetic-message, retry-footer or compaction-barrier rows; a turn's error is one error row |; a running command's row keeps a 64 KiB tail (the output viewer shows the rest) rather than an expanded 1 MiB one, and a stopped call shows its result as any call's
 | codemode: strict-mode checks | by design | 6 | 3 | Boa's strict mode words frozen-write errors differently, rejects early what OpenCode accepts (`delete` of a variable, a parameter named `arguments`), and misses two read-only writes |
@@ -1142,7 +1164,7 @@ its remaining work is tracked in
 | tui: group disclosure | by design | 3 | 1 | no mouse: ctrl+o opens every group, so the rows above an opened group move when scrolled up |
 | server: API command | by design | 3 | 1 | no `api` command for a server |
 | tui: model notices | by design | 3 | 1 | model switch notices are worded differently |
-| codemode: limits | by design | 3 | 2 | 400 nested calls, 64 MiB buffers |
+| codemode: limits | by design | 4 | 3 | 400 nested calls, 64 MiB buffers |
 | cli: TUI config writes | by design | 2 | 1 | no JSON schema is published, and the UI never writes its config: the theme picked in the UI is kept in a state file |
 | cli: debug config | by design | 2 | 1 | debug config prints a summary without secret values |
 | acp: auth | by design | 2 | 1 | provider 401/403 map to -32000; no auth-required server event |
@@ -1172,16 +1194,17 @@ its remaining work is tracked in
 ### Code Mode on Boa
 | acp: compaction replay | by design | 3 | 1 | CodeSmith's history keeps completed compactions only: a failed, cancelled or running compaction leaves nothing to replay |
 
-Of the 1137 Code Mode assertions run, 111 fail on purpose, by reason (the
+Of the 1804 Code Mode assertions run, 200 fail on purpose, by reason (the
 test names each one):
 
 | Reason | Assertions | Bucket |
 |---|---:|---|
-| OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs) | 43 | by design |
-| Boa 0.22 departs from the specification or lacks a recent addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag, `substr`, `super` in arrows, some TDZ and property-order cases; one labeled `continue` loops forever) | 41 | by design (engine) |
+| OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs, `Headers` at the boundary, syntax OpenCode refuses and Boa runs) | 73 | by design |
+| Boa 0.22 departs from the specification or lacks a recent addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` and `v` flags, `substr`, `super` in arrows, `localeCompare` without collation, some TDZ and property-order cases; one labeled `continue` loops forever) | 55 | by design (engine) |
 | Strict-mode checks where Boa's strict mode still differs from OpenCode's (wording of frozen-write errors, an early `SyntaxError` for `delete` of a variable or a parameter named `arguments`, no `TypeError` writing a named function expression's name or in one frozen-array case) | 6 | by design |
-| Boa's error wording | 16 | by design |
-| CodeSmith's limits (400 nested calls where OpenCode allows 10000, 64 MiB buffers) | 4 | by design |
+| Boa's error wording, and OpenCode's error kinds | 53 | by design |
+| `console` output rendered as JSON (getters read, `Map` and errors as `{}`, no `console.table`) | 7 | roadmap |
+| CodeSmith's limits (400 nested calls where OpenCode allows 10000, 64 MiB buffers) | 5 | by design |
 | Depends on the time zone (passes in UTC, fails in local time), so either outcome is accepted | 1 | by design |
 
 Programs run in strict mode, as OpenCode applies strict-mode checks; one
@@ -1207,26 +1230,4 @@ are counted here with the rest of mini mode.
 
 ## Not ported yet
 
-### codemode: language (computed assertions) (215)
-
-assertions built at run time or calling tools; not extracted some of its assertions are ported; the rest are computed
-
-- `codemode/test/string-search-test262` (90): e.g. "(90 more)"
-- `codemode/test/parity` (28): e.g. "Error values and instanceof > typeof Error is function; an unknown instanceof right-hand s"; "Object.freeze, seal, and preventExtensions > primitives pass through, and Object.assign ho"
-- `codemode/test/stdlib` (26): e.g. "CodeMode values at intra-CodeMode checkpoints > Array.from rejects invalid receivers and g"; "CodeMode values at intra-CodeMode checkpoints > Object enumeration rejects invalid receive"
-- `codemode/test/classes` (24): e.g. "class inheritance > derived constructor return rules"; "classes extending Error > every error type can be subclassed"
-- `codemode/test/accessors` (13): e.g. "reads call the getter > a getter can return a promise, and a long getter is time sliced"; "reads call the getter > a getter that throws is caught in the caller"
-- `codemode/test/promise-test262` (8): e.g. "(8 more)"
-- `codemode/test/callbacks` (6): e.g. "built-in method references as callbacks > promise reactions accept built-in references"; "still-rejected callables get the wrap hint > JSON callbacks use the unified callback gate"
-- `codemode/test/object-coercion-test262` (4): e.g. "(4 more)"
-- `codemode/test/for-await-test262` (3): e.g. "(3 more)"
-- `codemode/test/string-date-methods-test262` (3): e.g. "(3 more)"
-- `codemode/test/new-expression` (2): e.g. "new on a non-constructible callee > non-callable values are not constructors"; "new on a non-constructible callee > user-defined functions explain the documented gap"
-- `codemode/test/constructor-test262` (1): e.g. "(1 more)"
-- `codemode/test/descriptors` (1): e.g. "(1 more)"
-- `codemode/test/enumeration` (1): e.g. "for...in > non-object values enumerate like JS: strings by index, everything else nothing"
-- `codemode/test/generator-test262` (1): e.g. "(1 more)"
-- `codemode/test/labeled-control-test262` (1): e.g. "(1 more)"
-- `codemode/test/promise` (1): e.g. "Promise.resolve / Promise.reject > resolve wraps plain values and passes promises through"
-- `codemode/test/string-core-test262` (1): e.g. "(1 more)"
-- `codemode/test/string-regexp-test262` (1): e.g. "(1 more)"
+None.

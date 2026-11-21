@@ -7,8 +7,12 @@
 //! pin the JavaScript a model's program can rely on: each case is a program
 //! from an OpenCode test and the value (or failure) it expects.
 //! `fixtures/oc_codemode.json` holds the programs and expected values,
-//! extracted as text from the test files; only programs that use no tools and
-//! no OpenCode-specific host API are included. A value crosses back as JSON
+//! extracted as text from the test files, or, where a test computes them,
+//! recorded by running the test file under Node with Code Mode stubbed out
+//! (V8 only steers the tests' helpers; no OpenCode source runs). Only
+//! programs that use no tools and no OpenCode-specific host API are
+//! included. A case with a `path` asserts on part of the result, and an
+//! expected `{"$prog": ...}` is another program's value. A value crosses back as JSON
 //! does in OpenCode's results (`undefined` and non-finite numbers inside it
 //! become `null`, and undefined fields are dropped), except that `-0`
 //! stays distinct.
@@ -80,6 +84,11 @@ const LIMIT: &str = "CodeSmith's limits";
 /// addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag,
 /// `substr`, `super` in arrows, some TDZ and property-order cases, ...).
 const ENGINE: &str = "Boa differs from the specification";
+/// `console` output: CodeSmith logs a value as its JSON (reading its
+/// getters, showing a `Map` or an error as `{}`) and has no
+/// `console.table`; OpenCode renders values as Node does (`[Getter]`,
+/// `Map(1) [...]`, `Error: boom`, class names). On the roadmap.
+const CONSOLE: &str = "console output is rendered as JSON";
 /// Boa's result depends on the local time zone: it passes in UTC (CI) and
 /// fails elsewhere, so either outcome is accepted.
 const TIMEZONE: &str = "Boa's answer depends on the local time zone";
@@ -753,6 +762,540 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         1,
         ENGINE,
     ),
+    (
+        "accessors.test.ts",
+        r#"reads call the getter > a getter that throws is caught in the caller"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"reads call the getter > a recursive getter hits the call depth limit"#,
+        1,
+        LIMIT,
+    ),
+    (
+        "accessors.test.ts",
+        r#"writes call the setter > an inherited setter takes the write; a getter-only accessor refuses it"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"enumeration never calls accessors > keys, for...in, in, hasOwnProperty, delete and console.log"#,
+        2,
+        CONSOLE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"enumeration never calls accessors > keys, for...in, in, hasOwnProperty, delete and console.log"#,
+        3,
+        CONSOLE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"enumeration never calls accessors > console.table labels accessors, own and inherited"#,
+        1,
+        CONSOLE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"enumeration never calls accessors > console.table labels accessors, own and inherited"#,
+        2,
+        CONSOLE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"the iterator protocol > break calls a return getter once, and yield* delegates through getters"#,
+        1,
+        ENGINE,
+    ),
+    (
+        "accessors.test.ts",
+        r#"internal arrays ignore indexed accessors on Object.prototype > assigning a cycle through a data property is still rejected"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"base classes > unsupported class syntax still reports UnsupportedSyntax"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"base classes > unsupported class syntax still reports UnsupportedSyntax"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"base classes > unsupported class syntax still reports UnsupportedSyntax"#,
+        3,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        2,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        3,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        4,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        5,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        6,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        7,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"classes extending Error > every error type can be subclassed"#,
+        8,
+        ENGINE,
+    ),
+    (
+        "classes.test.ts",
+        r#"showing and copying class values > console.log shows the class name"#,
+        1,
+        CONSOLE,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > private fields"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > private methods"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > #x in o"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > static blocks"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > new.target"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > decorators"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > extends null"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > new on a plain function"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > calling a class"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > extending a built-in"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > super() twice"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > super() in an arrow"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > destructuring into super.x"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "classes.test.ts",
+        r#"unsupported features > a static member named prototype"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "for-await-test262.test.ts",
+        r#"Test262 for-await-of adaptations > an awaited rejection exits through normal try/catch"#,
+        3,
+        BOUNDARY,
+    ),
+    (
+        "for-await-test262.test.ts",
+        r#"Test262 for-await-of adaptations > rejects malformed iterator protocol results"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "for-await-test262.test.ts",
+        r#"Test262 for-await-of adaptations > rejects objects without an iterator protocol method"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "generator-test262.test.ts",
+        r#"confined generators > rejects async generators in every synchronous iterable consumer"#,
+        1,
+        ENGINE,
+    ),
+    (
+        "labeled-control-test262.test.ts",
+        r#"Test262 labeled continue adaptations > a label on a non-iteration statement is not a continue target"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"property deletion > rejects deletion from opaque runtime references"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"CodeMode-specific array behavior > splice rejects inserting a container into itself"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"CodeMode-specific array behavior > splice rejects inserting a container into itself"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"compound assignment matches its binary operator > CodeMode Date += concatenates its string form, like d = d + 1"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"compound assignment matches its binary operator > compound assignment through a member target coerces the same way"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"H5: builtin coercion functions work as array callbacks > a non-callable callback is still rejected"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"coercion parity: String method arguments coerce like native JS > opaque runtime references still reject as data errors"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"coercion parity: String method arguments coerce like native JS > opaque runtime references still reject as data errors"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"coercion parity: ++ and -- use CodeMode numeric coercion > opaque runtime references reject with a clear error"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"async function line breaks > a line break between async and function is not an async function"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"String.raw > a template without a raw array is a TypeError"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"Object.freeze, seal, and preventExtensions > primitives pass through, and Object.assign honors the flags"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"ToPrimitive: operators and conversions honor program valueOf and toString > program-installed valueOf and toString on opaque values are ignored at every site"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"computed property keys convert through the object's own toString > a nullish base throws before the key converts, as ToObject precedes ToPropertyKey"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "parity.test.ts",
+        r#"String and Number method arguments convert through ToPrimitive > split, replace, match, and search convert a plain pattern but keep a RegExp as is"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "parity.test.ts",
+        r#"String and Number method arguments convert through ToPrimitive > split, replace, match, and search convert a plain pattern but keep a RegExp as is"#,
+        3,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Number and Math > Number valueOf does not enable boxed numbers"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Number and Math > Number valueOf does not enable boxed numbers"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"RegExp > invalid patterns fail with actionable messages"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"RegExp > invalid patterns fail with actionable messages"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"RegExp > invalid patterns fail with actionable messages"#,
+        3,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"RegExp > invalid patterns fail with actionable messages"#,
+        4,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"RegExp > invalid patterns fail with actionable messages"#,
+        5,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"RegExp > invalid patterns fail with actionable messages"#,
+        6,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Headers > serializes as a name-to-value object at the boundary and in JSON; prints for console"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Headers > serializes as a name-to-value object at the boundary and in JSON; prints for console"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Headers > rejects what it cannot build from, and invalid names and values, with TypeErrors the program can catch"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Map > console.log renders map contents for debugging"#,
+        2,
+        CONSOLE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Uint8Array > from rejects a non-callable mapper even for an empty source"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Uint8Array > from rejects a non-callable mapper even for an empty source"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Uint8Array > from rejects a non-callable mapper even for an empty source"#,
+        3,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Iterator helpers > argument validation"#,
+        1,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Iterator helpers > argument validation"#,
+        2,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Iterator helpers > argument validation"#,
+        3,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Iterator helpers > argument validation"#,
+        4,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Iterator helpers > argument validation"#,
+        5,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Iterator helpers > argument validation"#,
+        6,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"Object.prototype.toString > reports the built-in kind it is inherited by, as JS does through Symbol.toStringTag"#,
+        1,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"console.log of errors > prints name and message, nested too"#,
+        1,
+        CONSOLE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"stdlib integration > new dispatches on the constructor value, not its name"#,
+        4,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"stdlib integration > new dispatches on the constructor value, not its name"#,
+        5,
+        MESSAGE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"stdlib integration > deterministic Math methods match the host runtime"#,
+        1,
+        ENGINE,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"CodeMode values at intra-CodeMode checkpoints > Object enumeration rejects invalid receivers and gives promises an await hint"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"CodeMode values at intra-CodeMode checkpoints > Object enumeration rejects invalid receivers and gives promises an await hint"#,
+        3,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"CodeMode values at intra-CodeMode checkpoints > Array.from rejects invalid receivers and gives promises an await hint"#,
+        2,
+        BOUNDARY,
+    ),
+    (
+        "stdlib.test.ts",
+        r#"CodeMode values at intra-CodeMode checkpoints > Array.from rejects invalid receivers and gives promises an await hint"#,
+        3,
+        BOUNDARY,
+    ),
+    (
+        "string-core-test262.test.ts",
+        r#"Test262-adapted core String behavior > test/built-ins/String/prototype/localeCompare/15.5.4.9_CE.js"#,
+        1,
+        ENGINE,
+    ),
+    (
+        "string-date-methods-test262.test.ts",
+        r#"String.prototype.substr Test262 parity > test/annexB/built-ins/String/prototype/substr/length-falsey.js"#,
+        1,
+        ENGINE,
+    ),
+    (
+        "string-date-methods-test262.test.ts",
+        r#"String.prototype.substr Test262 parity > test/annexB/built-ins/String/prototype/substr/length-negative.js"#,
+        1,
+        ENGINE,
+    ),
+    (
+        "string-regexp-test262.test.ts",
+        r#"Test262-adapted matchAll behavior > test/built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"#,
+        1,
+        ENGINE,
+    ),
 ];
 
 fn is_u(v: &Value) -> bool {
@@ -765,6 +1308,12 @@ fn num(v: &Value) -> Option<f64> {
 
 /// Jest's `toEqual` (`strict`: `toStrictEqual`) on canonical values.
 fn equal(a: &Value, b: &Value, strict: bool) -> bool {
+    if let Some(t) = b.get("$contains").and_then(Value::as_str) {
+        return a.as_str().is_some_and(|s| s.contains(t));
+    }
+    if let Some(m) = b.get("$match") {
+        return matches(a, m);
+    }
     if let Some(t) = b.get("$any").and_then(Value::as_str) {
         return match t {
             "Number" => a.is_number() || a.get("$n").is_some(),
@@ -850,6 +1399,19 @@ fn check(matcher: &str, got: &Value, want: &Value) -> Result<bool, String> {
         "toBeNull" => got.is_null(),
         "toBeNaN" => got == &json!({"$n": "NaN"}),
         "toBeTrue" => got == &json!(true),
+        "toBeDefined" => !is_u(got),
+        "toStartWith" => match (got, want) {
+            (Value::String(s), Value::String(w)) => s.starts_with(w.as_str()),
+            _ => false,
+        },
+        "toEndWith" => match (got, want) {
+            (Value::String(s), Value::String(w)) => s.ends_with(w.as_str()),
+            _ => false,
+        },
+        "toBeGreaterThan" => num(got).zip(num(want)).is_some_and(|(a, b)| a > b),
+        "toBeGreaterThanOrEqual" => num(got).zip(num(want)).is_some_and(|(a, b)| a >= b),
+        "toBeLessThan" => num(got).zip(num(want)).is_some_and(|(a, b)| a < b),
+        "toBeLessThanOrEqual" => num(got).zip(num(want)).is_some_and(|(a, b)| a <= b),
         "toBeFalse" => got == &json!(false),
         m => return Err(format!("unsupported matcher {m}")),
     })
@@ -863,7 +1425,22 @@ async fn run(code: &str) -> Result<Value, String> {
     .result
 }
 
-/// Run one case: `Ok` when it behaves as OpenCode's test expects.
+/// A JavaScript property access for each key of `path`.
+fn projection(path: &[Value]) -> String {
+    path.iter()
+        .map(|k| {
+            format!(
+                "[{}]",
+                serde_json::to_string(k.as_str().unwrap_or_default()).unwrap()
+            )
+        })
+        .collect()
+}
+
+/// Run one case: `Ok` when it behaves as OpenCode's test expects. A case
+/// with a `path` asserts on part of the result, as its OpenCode test reads
+/// it: `["value", ...]` a member of the value, `["error", "message"]` the
+/// failure's message, `["logs", ...]` what the program logged.
 async fn case(c: Value) -> Result<(), String> {
     let code = c["code"].as_str().unwrap();
     let matcher = c["matcher"].as_str().unwrap();
@@ -873,13 +1450,76 @@ async fn case(c: Value) -> Result<(), String> {
             Ok(v) => Err(format!("expected a failure, got {v}")),
         };
     }
-    let program = format!(
-        "{CANON}\nconst __v = await (async () => {{\n{}\n}})();\nreturn __canon(__v);",
-        codemode::program(code)
-    );
-    let got = run(&program).await.map_err(|e| format!("failed: {e}"))?;
-    let want = &c["expected"];
+    if matcher == "succeeds" {
+        return run(code)
+            .await
+            .map(drop)
+            .map_err(|e| format!("failed: {e}"));
+    }
+    let path: Vec<Value> = c["path"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| vec![json!("value")]);
     let not = c["not"] == json!(true);
+    // An expected value OpenCode's test computes by running another program.
+    let computed;
+    let want = match c["expected"].get("$prog").and_then(Value::as_str) {
+        Some(other) => {
+            let at: Vec<Value> = c["expected"]["$path"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let program = format!(
+                "{CANON}\nconst __v = await (async () => {{\n{}\n}})();\nreturn __canon(__v{});",
+                codemode::program(other),
+                projection(&at)
+            );
+            computed = run(&program)
+                .await
+                .map_err(|e| format!("the expected program failed: {e}"))?;
+            &computed
+        }
+        None => &c["expected"],
+    };
+    let got = match path[0].as_str() {
+        Some("value") => {
+            let program = format!(
+                "{CANON}\nconst __v = await (async () => {{\n{}\n}})();\nreturn __canon(__v{});",
+                codemode::program(code),
+                projection(&path[1..])
+            );
+            run(&program).await.map_err(|e| format!("failed: {e}"))?
+        }
+        Some("error") => {
+            let message = match run(code).await {
+                Err(e) => e,
+                Ok(v) => return Err(format!("expected a failure, got {v}")),
+            };
+            match &path[1..] {
+                [m] if m == "message" => json!(message),
+                _ => return Err(format!("no error field {path:?} in CodeSmith")),
+            }
+        }
+        Some("logs") => {
+            let out =
+                codemode::execute_with(None, code, &[], 50, Duration::from_secs(5), |_, _| async {
+                    Err::<String, String>("no tools here".into())
+                })
+                .await;
+            let logs = json!(out.logs);
+            match &path[1..] {
+                [] => logs,
+                [i] => logs[i
+                    .as_str()
+                    .unwrap_or_default()
+                    .parse::<usize>()
+                    .unwrap_or(usize::MAX)]
+                .clone(),
+                _ => return Err(format!("unsupported path {path:?}")),
+            }
+        }
+        _ => return Err(format!("unsupported path {path:?}")),
+    };
     match check(matcher, &got, want)? {
         ok if ok != not => Ok(()),
         _ => Err(format!(
@@ -937,4 +1577,31 @@ async fn oc_codemode_language_cases() {
         fixed.len(),
         fixed.join("\n")
     );
+}
+
+/// promise.test.ts: "resolve wraps plain values and passes promises
+/// through", its assertion with a tool (the others are in the fixture): a
+/// tool call's promise passes through `Promise.resolve`. (adapted: a
+/// CodeSmith tool's result is its text, so the echo is `"3"`.)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_promise_resolve_passes_a_tool_call_through() {
+    let echo = codemode::Entry {
+        tool: "host_echo".into(),
+        namespace: "host".into(),
+        name: "echo".into(),
+        description: "Echo an id".into(),
+        schema: json!({"type": "object", "properties": {"id": {"type": "number"}}}),
+        output: None,
+        freeform: false,
+    };
+    let out = codemode::execute_with(
+        None,
+        "return await Promise.resolve(tools.host.echo({ id: 3 }))",
+        &[echo],
+        50,
+        Duration::from_secs(5),
+        |_, input| async move { Ok::<String, String>(input["id"].to_string()) },
+    )
+    .await;
+    assert_eq!(out.result, Ok(json!("3")));
 }
