@@ -3,12 +3,12 @@
 //! directory names the project, Git winning where a folder has both, and a
 //! Mercurial project's working copy and named branch can be reviewed.
 //!
-//! Every `hg` command runs with `HGPLAIN=1`, no input and the server token
-//! removed; a failing command reads as no output.
+//! Every `hg` command is [`crate::hg::command`]'s: nothing in the
+//! repository's own config runs, and no input is read. A failing command,
+//! or a Mercurial too old to harden, reads as no output.
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 /// The version control of a project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,14 +78,7 @@ pub fn resolve(dir: &Path) -> Project {
 
 /// Run `hg` in `root`: its output, or `None` when it fails or is missing.
 fn hg(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("hg")
-        .args(args)
-        .current_dir(root)
-        .env("HGPLAIN", "1")
-        .env_remove(crate::SERVER_TOKEN_VAR)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+    let out = crate::hg::command(root)?.args(args).output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())

@@ -142,6 +142,13 @@ fn neutral(key: &str) -> &'static str {
 /// Settings the repository set itself, each as the overrides that put the
 /// user's own values (or a neutral one) back in force, read by listing
 /// every scope's dangerous settings.
+///
+/// The listing runs on every command and is not cached: which files git
+/// reads is not knowable from their stamps alone. An `includeIf
+/// "onbranch:..."` file starts applying when only `HEAD` changes, a
+/// `gitdir:` one when the path does, and an included file may be named
+/// relative to another; a cache keyed on the config files would miss
+/// each of those and leave a planted program in force.
 fn overrides(
     dir: &Path,
     git_dir: Option<&Path>,
@@ -324,13 +331,23 @@ mod tests {
     }
 
     /// A `Command::new("git")` anywhere in the workspace's sources outside
-    /// this module bypasses the hardening. Tests build repository fixtures
-    /// with [`fixture`]; a raw one must say `git-guard: test fixture` on
-    /// the line or the one above, and the test-only files listed here are
-    /// fixtures throughout.
+    /// this module, or a raw `hg` command outside [`crate::hg`],
+    /// bypasses the hardening. Tests build repository fixtures with
+    /// [`fixture`]; a raw one must say `git-guard: test fixture` (or
+    /// `hg-guard: test fixture`) on the line or the one above, and the
+    /// test-only files listed here are fixtures throughout.
     #[test]
-    fn every_host_git_command_comes_from_the_hardened_builder() {
+    fn every_host_git_and_hg_command_comes_from_the_hardened_builder() {
         const TEST_ONLY_FILES: &[&str] = &["tui/diff_source_oc.rs", "tui/parity_browser.rs"];
+        // (program, its builder, the fixture marker)
+        const GUARDED: &[(&str, &str, &str)] = &[
+            (
+                "git",
+                "codesmith-core/src/git.rs",
+                "git-guard: test fixture",
+            ),
+            ("hg", "codesmith-core/src/hg.rs", "hg-guard: test fixture"),
+        ];
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let mut offenders = Vec::new();
         let mut stack = vec![crates.to_path_buf()];
@@ -345,35 +362,67 @@ mod tests {
                     continue;
                 }
                 let Some(rel) = p.to_str() else { continue };
-                if !rel.ends_with(".rs") || !rel.contains("/src/") {
-                    continue;
-                }
-                if rel.ends_with("codesmith-core/src/git.rs")
+                if !rel.ends_with(".rs")
+                    || !rel.contains("/src/")
                     || TEST_ONLY_FILES.iter().any(|f| rel.ends_with(f))
                 {
                     continue;
                 }
                 let text = std::fs::read_to_string(&p).unwrap();
-                let lines: Vec<&str> = text.lines().collect();
-                for (i, l) in lines.iter().enumerate() {
-                    let squashed: String = l.chars().filter(|c| !c.is_whitespace()).collect();
-                    if !squashed.contains("Command::new(\"git\"") {
-                        continue;
-                    }
-                    let marked = |j: usize| {
-                        lines
-                            .get(j)
-                            .is_some_and(|x| x.contains("git-guard: test fixture"))
-                    };
-                    if !(marked(i) || (i > 0 && marked(i - 1))) {
-                        offenders.push(format!("{rel}:{}", i + 1));
-                    }
-                }
+                offenders.extend(raw_commands(rel, &text, GUARDED));
             }
         }
         assert!(
             offenders.is_empty(),
-            "run host git through codesmith_core::git::command: {offenders:#?}"
+            "run host git through codesmith_core::git::command and hg through \
+             codesmith_core::hg::command: {offenders:#?}"
+        );
+    }
+
+    /// The unmarked raw `Command::new` of a guarded program in `text`
+    /// (the file `rel`), as `rel:line`.
+    fn raw_commands(rel: &str, text: &str, guarded: &[(&str, &str, &str)]) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut out = Vec::new();
+        for (program, builder, mark) in guarded {
+            if rel.ends_with(builder) {
+                continue;
+            }
+            let needle = format!("Command::new(\"{program}\"");
+            for (i, l) in lines.iter().enumerate() {
+                let squashed: String = l.chars().filter(|c| !c.is_whitespace()).collect();
+                if !squashed.contains(&needle) {
+                    continue;
+                }
+                let marked = |j: usize| lines.get(j).is_some_and(|x| x.contains(mark));
+                if !(marked(i) || (i > 0 && marked(i - 1))) {
+                    out.push(format!("{rel}:{}", i + 1));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_guard_catches_raw_git_and_hg() {
+        let guarded = &[
+            ("git", "src/git.rs", "git-guard: test fixture"),
+            ("hg", "src/hg.rs", "hg-guard: test fixture"),
+        ];
+        let text = concat!(
+            "let a = Command::new(\"hg\");\n",
+            "let b = Command :: new( \"git\" );\n",
+            "// hg-guard: test fixture\n",
+            "let c = Command::new(\"hg\");\n",
+            "let d = Command::new(\"hg\"); // git-guard: test fixture\n",
+        );
+        assert_eq!(
+            raw_commands("x/src/vcs.rs", text, guarded),
+            ["x/src/vcs.rs:2", "x/src/vcs.rs:1", "x/src/vcs.rs:5"]
+        );
+        assert_eq!(
+            raw_commands("x/src/hg.rs", text, guarded),
+            ["x/src/hg.rs:2"]
         );
     }
 }
