@@ -38,7 +38,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 129 | 2 | 0 | 76 | 0 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
-| Permission | 177 | 118 | 2 | 0 | 55 | 2 | 0 |
+| Permission | 177 | 119 | 2 | 0 | 56 | 0 | 0 |
 | Agents | 65 | 48 | 1 | 1 | 15 | 0 | 0 |
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 0 | 0 | 13 | 1 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2712** | **68** | **44** | **2546** | **218** | **0** |
+| **Total** | **5588** | **2713** | **68** | **44** | **2547** | **216** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -212,14 +212,7 @@ Missing features, by how many OpenCode test cases each would unlock (44 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (218 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### Permission (2)
-
-- external directory authorized before the file's own rules; denial stops; first-seen order (S) — `tool external_directory checks`
-  - `file-access.test.ts`: batches external resources in first-seen order and preserves broader repository saves
-- omitted agent uses build's rules; no default agent denies (S) — `permission + agent`
-  - `permission.test.ts`: denies omitted-agent permissions when no primary default agent exists
+Tests for behaviour CodeSmith already has but no test pins (216 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Instructions and references (1)
 
@@ -464,7 +457,7 @@ Tests for behaviour CodeSmith already has but no test pins (218 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 667 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 668 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -2179,7 +2172,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Permission (175 of 177)</summary>
+<details><summary>Permission (177 of 177)</summary>
 
 
 **`config/policy.test.ts`**
@@ -2225,6 +2218,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P propagates ${action} denial without continuing authorization ×2 — `tests/oc_permission_backlog2.rs::oc_file_access_propagates_a_denial_without_continuing`
 - P reuses a sibling's directory approval only for the supplied recovery call — `tests/oc_permission_backlog2.rs::oc_file_access_reuses_a_siblings_directory_approval_only_for_its_recovery` (adapted: the read tool's near-miss recovery)
 - P checks the external directory for a target that is not a sibling — `tests/oc_permission_backlog2.rs::oc_file_access_reuses_a_siblings_directory_approval_only_for_its_recovery` (adapted: the read tool's near-miss recovery)
+- P batches external resources in first-seen order and preserves broader repository saves — `tests/oc_permission_backlog3.rs::oc_file_access_batches_external_resources_in_first_seen_order` (adapted: the folders the paths are in, as the shell tool batches them)
 
 **`permission.test.ts`**
 
@@ -2237,6 +2231,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P matches file rules without case where file systems ignore it by default — `src/permission.rs::oc_permission_matches_file_rules_without_case_where_files_ignore_it`
 - P allows managed output reads without granting external directory access — `src/permission.rs::oc_permission_allows_managed_output_reads_without_external_access`
 - P uses build permissions when the Session agent is omitted — `tests/oc_permission_backlog2.rs::oc_permission_uses_build_permissions_when_the_agent_is_omitted`
+- D denies omitted-agent permissions when no primary default agent exists — deliberate: a session always runs as an agent and the built-in agents always exist, so there is no omitted agent without a default to deny for
 - P evaluates bash with the normal configured-rule semantics — `src/permission.rs::oc_permission_evaluates_shell_with_normal_rule_semantics`
 - P merges session rules after agent rules and before saved approvals — `src/permission.rs::oc_permission_session_rules_after_agent_rules_before_saved_approvals`
 - P uses saved bash approvals while preserving configured deny precedence — `src/permission.rs::oc_permission_saved_approvals_keep_configured_deny_precedence`

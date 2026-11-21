@@ -51,3 +51,9 @@
 @tool-shell.test.ts
 898 :: ported :: tests/oc_shell_backlog3.rs::oc_shell_runs_parallel_code_mode_shells_and_notifies_after_a_shorter_timeout :: adapted: results are text, and the default inside Code Mode stays the shell's two minutes, under the program's three-minute limit
 2535 :: ported :: tests/oc_shell_backlog3.rs::oc_shell_lets_an_after_hook_replace_a_stopped_calls_failure :: adapted: the hook sees the failure's text
+
+# --- Permission (tests/oc_permission_backlog3.rs) ---
+@file-access.test.ts
+137 :: ported :: tests/oc_permission_backlog3.rs::oc_file_access_batches_external_resources_in_first_seen_order :: adapted: the folders the paths are in, as the shell tool batches them
+@permission.test.ts
+244 :: design :: deliberate :: a session always runs as an agent and the built-in agents always exist, so there is no omitted agent without a default to deny for
