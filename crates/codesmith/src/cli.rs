@@ -662,6 +662,10 @@ enum SessionCmd {
     Export {
         /// Session id (see `session list`).
         id: String,
+        /// Replace every text, tool input and output, path and title with
+        /// a marker, keeping the session's shape (OpenCode's `--sanitize`).
+        #[arg(long)]
+        sanitize: bool,
     },
     /// Import a session exported as JSON (a file path, or - for stdin).
     Import {
@@ -2632,8 +2636,18 @@ fn session_cmd(cwd: PathBuf, what: SessionCmd) -> Result<()> {
                 None => println!("No snapshot recorded for {}.", info.id),
             }
         }
-        SessionCmd::Export { id } => {
-            println!("{}", serde_json::to_string_pretty(&db.export(&id)?)?)
+        SessionCmd::Export { id, sanitize } => {
+            let e = db.export(&id)?;
+            let v = if sanitize {
+                codesmith_core::export::sanitized(&e)
+            } else {
+                // The credentials CodeSmith holds never leave in an export.
+                let secrets = config::load(&cwd)
+                    .map(|l| codesmith_core::export::known_secrets(&l.config))
+                    .unwrap_or_default();
+                codesmith_core::export::raw_json(&e, &secrets)
+            };
+            println!("{}", serde_json::to_string_pretty(&v)?)
         }
         SessionCmd::Import { file } => {
             let text = if file == "-" {

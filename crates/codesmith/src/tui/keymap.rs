@@ -158,7 +158,7 @@ pub const DEFINITIONS: &[Def] = &[
     ),
     d("opencode.status", "<leader>s", "View status"),
     d("opencode.debug", "none", "View debug info"),
-    d("session.export", "<leader>x", "Export session to editor"),
+    d("session.export", "<leader>x", "Export session"),
     d("session.copy", "none", "Copy session transcript"),
     d("session.copy.id", "none", "Copy session ID"),
     d("session.move", "none", "Manage workspaces"),

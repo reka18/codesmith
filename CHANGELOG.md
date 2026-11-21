@@ -32,6 +32,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **Export dialog:** `/export` (`session.export`, `<leader>x`, which did
+  nothing before) exports the session as OpenCode's dialog does: a Markdown
+  transcript (thinking and tools optional) or the JSON, raw or sanitized,
+  copied through the terminal or saved to a file you name. A saved file is
+  created 0600 and never replaces one without a `y`.
+  `codesmith session export --sanitize` writes the sanitized JSON (every
+  text, tool input and output, path and title replaced with a marker; it
+  still imports). Every export, raw ones included, has the credentials
+  CodeSmith holds replaced with `[redacted:credential]`.
 - **ChatGPT and OpenAI requests:** the `openai` provider (a key or a
   ChatGPT sign-in) is sent no output limit on session steps and compaction
   summaries, as OpenCode sends none; the ChatGPT backend rejected one. A

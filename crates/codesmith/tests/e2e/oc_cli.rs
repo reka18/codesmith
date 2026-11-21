@@ -91,7 +91,7 @@ async fn one_session(e: &Env) -> String {
 }
 
 // import-export.test.ts: "export is raw by default and supports explicit
-// sanitization" (CodeSmith has no sanitizing export; the raw half) and
+// sanitization" and
 // "import sends the file unchanged to the resolved location" (adapted:
 // imported into a fresh store, it exports the same).
 #[tokio::test(flavor = "multi_thread")]
@@ -110,6 +110,27 @@ async fn oc_export_is_raw_and_import_keeps_it_unchanged() {
     let again = other.run(&["session", "export", &id]).await;
     again.ok();
     assert_eq!(serde_json::from_str::<Value>(&again.stdout).unwrap(), v);
+
+    // --sanitize keeps the shape and none of the content, and still imports.
+    let clean = e.run(&["session", "export", &id, "--sanitize"]).await;
+    clean.ok();
+    assert!(
+        !clean.stdout.contains("hello") && !clean.stdout.contains("Hi."),
+        "{}",
+        clean.stdout
+    );
+    assert!(clean
+        .stdout
+        .contains(&format!("[redacted:session-title:{id}]")));
+    let s: Value = serde_json::from_str(&clean.stdout).unwrap();
+    assert_eq!(s["info"]["id"], json!(id));
+    assert_eq!(
+        s["entries"].as_array().unwrap().len(),
+        v["entries"].as_array().unwrap().len()
+    );
+    let third = Env::new();
+    std::fs::write(third.path("s.json"), &clean.stdout).unwrap();
+    third.run(&["session", "import", "s.json"]).await.ok();
 }
 
 // import-export.test.ts: "import reports an existing session without a stack

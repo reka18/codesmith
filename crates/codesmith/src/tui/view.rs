@@ -1958,6 +1958,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             ("Subagents and shells".into(), lines, p.primary)
         }
         Modal::Mcp(v) => (v.title(), v.lines(&app.keymap), p.primary),
+        Modal::Export(v) => (v.title(), v.lines(), p.primary),
         Modal::Swap(v) => {
             let rows = room.saturating_sub(2).clamp(3, 30);
             let lines = v

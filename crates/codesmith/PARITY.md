@@ -118,17 +118,25 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 0 | 178 | 0 | 0 |
 | cli: ACP | 105 | 72 | 5 | 0 | 28 | 0 | 0 |
-| tui: main UI | 1247 | 16 | 522 | 1 | 708 | 0 | 0 |
+| tui: main UI | 1247 | 16 | 523 | 0 | 708 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 785 | 223 | 0 | 658 | 0 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **921** | **822** | **1** | **2465** | **0** | **428** |
+| **Total** | **4637** | **921** | **823** | **0** | **2465** | **0** | **428** |
 
 ## Fixes made while porting
 
+- **Export dialog** (`tui/test/component/dialog-export-options`):
+  `session.export` (`<leader>x`) did nothing, and `session export` had no
+  sanitizing half. `/export` now opens OpenCode's dialog (Markdown with
+  thinking and tools optional, or JSON raw or sanitized; Copy or Save), a
+  saved file is created 0600 where you name it and replaces nothing
+  without a `y`, and `session export --sanitize` writes the sanitized JSON.
+  Every export has the credentials CodeSmith holds scrubbed
+  (`codesmith_core::export` says what each form keeps).
 - **OpenAPI tools** (`codemode/test/openapi`): CodeSmith had no OpenAPI
   support. Specs named in config (`openapi.<name>`) now become Code Mode
   tools, `tools.<name>.<operation>(input)`, generated and called as
@@ -906,11 +914,11 @@ dropped.
 | `cli/test/flag` | parses $args (9 cases) | already passing | oc_flag_parses_an_optional_worktree_value |
 | `cli/test/flag` | leaves the next flag and its value alone | already passing | oc_flag_leaves_the_next_flag_..., oc_flag_rejects_repeated_flags |
 | `cli/test/flag` | rejects repeated flags: $args (3 cases) | already passing | oc_flag_leaves_the_next_flag_..., oc_flag_rejects_repeated_flags |
-| `cli/test/import-export` | export is raw by default and supports explicit sanitization | already passing | oc_export_* / oc_import_* (the sanitizing export half is a gap) |
-| `cli/test/import-export` | export requires a session outside an interactive terminal | already passing | oc_export_* / oc_import_* (the sanitizing export half is a gap) |
-| `cli/test/import-export` | export reports a missing session without a stack trace | already passing | oc_export_* / oc_import_* (the sanitizing export half is a gap) |
-| `cli/test/import-export` | import sends the file unchanged to the resolved location | already passing | oc_export_* / oc_import_* (the sanitizing export half is a gap) |
-| `cli/test/import-export` | import reports an existing session without a stack trace | already passing | oc_export_* / oc_import_* (the sanitizing export half is a gap) |
+| `cli/test/import-export` | export is raw by default and supports explicit sanitization | already passing | oc_export_* / oc_import_* (`--sanitize` is `codesmith_core::export::sanitized`, pinned in `oc_export_is_raw_and_import_keeps_it_unchanged` and core's `tests/oc_export.rs`) |
+| `cli/test/import-export` | export requires a session outside an interactive terminal | already passing | oc_export_* / oc_import_* (`--sanitize` is `codesmith_core::export::sanitized`, pinned in `oc_export_is_raw_and_import_keeps_it_unchanged` and core's `tests/oc_export.rs`) |
+| `cli/test/import-export` | export reports a missing session without a stack trace | already passing | oc_export_* / oc_import_* (`--sanitize` is `codesmith_core::export::sanitized`, pinned in `oc_export_is_raw_and_import_keeps_it_unchanged` and core's `tests/oc_export.rs`) |
+| `cli/test/import-export` | import sends the file unchanged to the resolved location | already passing | oc_export_* / oc_import_* (`--sanitize` is `codesmith_core::export::sanitized`, pinned in `oc_export_is_raw_and_import_keeps_it_unchanged` and core's `tests/oc_export.rs`) |
+| `cli/test/import-export` | import reports an existing session without a stack trace | already passing | oc_export_* / oc_import_* (`--sanitize` is `codesmith_core::export::sanitized`, pinned in `oc_export_is_raw_and_import_keeps_it_unchanged` and core's `tests/oc_export.rs`) |
 | `cli/test/mini` | uses piped stdin as the initial prompt | already passing | oc_piped_stdin_alone_is_the_prompt |
 | `cli/test/mini` | merges non-interactive argument and stdin input | already passing | run_cli.rs piped_stdin_attached_files_and_titles |
 | `cli/test/mini` | parses model variants from the model reference | already passing | oc_model_references_carry_nested_ids_and_variants |
@@ -965,6 +973,7 @@ dropped.
 | `tui/test/prompt/attachment` | deduplicates identical inline images while preserving other attachments | after a fix | oc_deduplicates_identical_inline_images_while_preserving_other_attachments (adapted: pasted paths) |
 | `tui/test/prompt/attachment` | reuses labels for identical image data | after a fix | oc_reuses_labels_for_identical_image_data (adapted: the same path) |
 | `tui/test/prompt/attachment` | does not reuse a label when attachment metadata differs | after a fix | oc_does_not_reuse_a_label_when_attachment_metadata_differs (adapted: another name) |
+| `tui/test/component/dialog-export-options` | tab and shift+tab move a visible focus through the export options | after a fix | oc_tab_and_shift_tab_move_a_visible_focus_through_the_export_options (in `src/tui/export_view.rs`; adapted: the focus is the accent colour on a field and the selected colours on a button; the dialog is new, as `session.export` did nothing) |
 | `tui/test/component/dialog-shell-output` | shell output opens, follows, scrolls, and survives exit at %s columns (2 cases) | after a fix | oc_shell_output_opens_follows_scrolls_and_survives_exit (adapted: the file is read, not a server; no request counts) |
 | `tui/test/component/dialog-shell-output` | empty output explains redirection, retries errors, and preserves output after removal | after a fix | oc_empty_output_explains_redirection_retries_errors_and_preserves_output_after_removal (adapted: a directory in the file's place fails the read) |
 | `tui/test/component/dialog-shell-output` | mouse-wheel scrolling pauses and resumes output following (2 cases) | after a fix | oc_scrolling_pauses_and_resumes_output_following (adapted: ↑ and ↓ for the wheel) |
@@ -1135,16 +1144,8 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
-### tui: export dialog (1)
-
-The dialog sets the options of the UI's session export (Markdown or JSON,
-thinking, tools, sanitizing; copy or save), which CodeSmith's UI does not
-have: there is only `codesmith session export` (JSON, without the
-sanitizing half), and the `session.export` binding (`<leader>x`) does
-nothing yet. The dialog comes with that feature (a Markdown transcript, the
-sanitized JSON, copy through the terminal and save to a file).
-
-- `tui/test/component/dialog-export-options`: tab and shift+tab move a visible focus through the export options
+Nothing is left here: the export dialog, the last group, is in (see
+its row under the ported tests and `src/tui/export_view.rs`).
 
 ## By design or not applicable
 

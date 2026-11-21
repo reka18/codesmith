@@ -108,7 +108,7 @@ start like a step.
 codesmith session list [--all] [--archived] [--search TEXT] [--json]   # this folder's sessions (--all: every folder; --archived: the archived ones; --search: titles containing TEXT)
 codesmith session archive ID              # keep it, out of lists
 codesmith session unarchive ID
-codesmith session export ID > session.json
+codesmith session export ID [--sanitize] > session.json
 codesmith session import session.json     # or - for stdin
 codesmith session delete ID               # also deletes its subagent sessions
 codesmith session messages [ID]           # its messages, numbered

@@ -308,6 +308,8 @@ pub enum Modal {
     DiffHelp(usize),
     /// A model swap's progress.
     Swap(super::swap::SwapView),
+    /// The export dialog.
+    Export(Box<super::export_view::ExportView>),
 }
 
 /// Where a question form's answer goes.
@@ -372,6 +374,8 @@ pub enum Action {
     /// A command the runner carries out: `theme.switch_mode`,
     /// `theme.mode.lock`, `terminal.suspend`.
     Run(&'static str),
+    /// Make the export the dialog asked for (copy or save it).
+    Export(super::export_view::Outcome),
 }
 
 #[derive(Default)]
@@ -744,6 +748,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "cycle or pick the model variant (reasoning effort)",
     ),
     ("compact", "summarize older history now"),
+    (
+        "export",
+        "export the session as Markdown or JSON: copy or save it",
+    ),
     ("clear", "clear the screen"),
     ("thinking", "show or hide reasoning"),
     (
@@ -1410,6 +1418,13 @@ impl App {
                 | Modal::Swap(_)
                 | Modal::Mcp(_),
             ) => {}
+            // A paste types into the file name being asked for.
+            Some(Modal::Export(v)) => {
+                if let super::export_view::Stage::Path(typed) = &mut v.stage {
+                    let line = s.lines().next().unwrap_or("");
+                    typed.extend(line.chars().filter(|c| !c.is_control()));
+                }
+            }
             None => {
                 // A paste replaces the selected text.
                 self.input.delete_selection();
@@ -1698,6 +1713,7 @@ impl App {
             "session.move" => return Self::slash("worktrees"),
             "session.new" => return Self::slash("new"),
             "session.compact" => return Self::slash("compact"),
+            "session.export" => return Self::slash("export"),
             "session.undo" => return Self::slash("undo"),
             "session.redo" => return Self::slash("redo"),
             "help.show" => return Self::slash("help"),
@@ -2525,6 +2541,15 @@ impl App {
                 return self.preview(before);
             }
             Modal::Panel(_) => return self.panel_key(&k),
+            Modal::Export(v) => {
+                use super::export_view::Outcome;
+                match v.key(&k) {
+                    Outcome::Nothing => {}
+                    Outcome::Close => self.modal = None,
+                    Outcome::CopyPath(path) => self.clipboard = Some(path.display().to_string()),
+                    out => return Some(Action::Export(out)),
+                }
+            }
             Modal::Mcp(v) => {
                 use super::mcp_view::Outcome;
                 match v.key(&k, &km) {
@@ -2843,6 +2868,57 @@ mod tests {
         for c in s.chars() {
             app.on_key(key(KeyCode::Char(c)));
         }
+    }
+
+    // session.export (<leader>x) opens the export dialog through /export;
+    // with it open, keys drive the dialog only, and Copy asks the runner.
+    #[test]
+    fn the_export_binding_opens_the_dialog_and_its_keys_stay_in_it() {
+        let mut a = App::new();
+        assert_eq!(
+            a.run("session.export", true),
+            Some(Some(Action::Slash {
+                name: "export".into(),
+                args: String::new()
+            }))
+        );
+        assert_eq!(super::super::builtin("export", ""), Some("export"));
+        assert_eq!(super::super::builtin("EXPORT", ""), Some("export"));
+        assert_eq!(super::super::builtin("export", "x"), None);
+        assert!(BUILTIN_COMMANDS.iter().any(|(n, _)| *n == "export"));
+        a.modal = Some(Modal::Export(Box::new(
+            super::super::export_view::ExportView::new("ses_1", std::path::Path::new("/w"), false),
+        )));
+        typ(&mut a, "abc");
+        assert!(
+            a.input.is_empty(),
+            "typing goes to the dialog, not the prompt"
+        );
+        for _ in 0..4 {
+            a.on_key(key(KeyCode::Tab));
+        }
+        let Some(Action::Export(super::super::export_view::Outcome::Copy(o))) =
+            a.on_key(key(KeyCode::Enter))
+        else {
+            panic!("copy asks the runner")
+        };
+        assert!(!o.json && !o.thinking && o.tools);
+        // A paste into the file name drops control characters and lines
+        // after the first.
+        if let Some(Modal::Export(v)) = a.modal.as_mut() {
+            v.stage = super::super::export_view::Stage::Path(String::new());
+        }
+        a.on_paste("na\u{1b}me.md\nsecond line");
+        let Some(Modal::Export(v)) = a.modal.as_ref() else {
+            panic!()
+        };
+        assert_eq!(
+            v.stage,
+            super::super::export_view::Stage::Path("name.md".into())
+        );
+        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.modal.is_none());
     }
 
     #[test]

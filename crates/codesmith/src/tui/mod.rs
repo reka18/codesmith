@@ -27,6 +27,7 @@ mod diff_tree;
 mod diff_view;
 mod dirs;
 mod editor;
+mod export_view;
 mod external;
 mod fit;
 mod form;
@@ -604,6 +605,13 @@ impl Runner {
         match name {
             "exit" | "quit" | "q" => self.app.quit = true,
             "help" => self.app.modal = Some(Modal::Help(0)),
+            "export" => {
+                self.app.modal = Some(Modal::Export(Box::new(export_view::ExportView::new(
+                    &self.session_id,
+                    &self.cwd,
+                    self.app.show_reasoning,
+                ))))
+            }
             "themes" | "theme" => self.theme_command(args),
             "clear" => self.app.set_entries(Vec::new()),
             "editor" => self.edit = true,
@@ -1222,6 +1230,77 @@ impl Runner {
         }
     }
 
+    /// Make the export the dialog asked for: the stored session as Markdown
+    /// or JSON (see `codesmith_core::export`), copied through the terminal
+    /// or saved to the file the dialog named. A file already there is
+    /// replaced only once the dialog confirmed it.
+    fn export(&mut self, out: export_view::Outcome) {
+        use export_view::Outcome;
+        let (options, target) = match out {
+            Outcome::Copy(o) => (o, None),
+            Outcome::Save {
+                options,
+                path,
+                overwrite,
+            } => (options, Some((path, overwrite))),
+            _ => return,
+        };
+        let content = match self.export_text(options) {
+            Ok(c) => c,
+            Err(e) => {
+                self.app.modal = None;
+                self.app.error(e);
+                return;
+            }
+        };
+        let Some((path, overwrite)) = target else {
+            self.app.modal = None;
+            self.app.clipboard = Some(content);
+            self.app.toast(toast::Toast::new(
+                toast::Variant::Success,
+                "Copied to clipboard",
+            ));
+            return;
+        };
+        let result = codesmith_core::export::save(&path, &content, overwrite);
+        let Some(Modal::Export(v)) = self.app.modal.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(()) => v.saved(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => v.exists(path),
+            Err(e) => v.failed(&path, format!("Could not save: {e}")),
+        }
+    }
+
+    /// The export's text, credentials scrubbed.
+    fn export_text(&self, o: export_view::Options) -> std::result::Result<String, String> {
+        use codesmith_core::export;
+        let db = open_store().ok_or("the session store is unavailable")?;
+        let e = match db.get(&self.session_id) {
+            Ok(Some(_)) => db.export(&self.session_id).map_err(|e| format!("{e:#}"))?,
+            _ => return Err("Nothing to export yet: the session has no messages".into()),
+        };
+        let secrets = export::known_secrets(&self.loaded.config);
+        Ok(if !o.json {
+            export::markdown(
+                &e,
+                export::Transcript {
+                    thinking: o.thinking,
+                    tools: o.tools,
+                },
+                &secrets,
+            )
+        } else {
+            let v = if o.sanitize {
+                export::sanitized(&e)
+            } else {
+                export::raw_json(&e, &secrets)
+            };
+            serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"
+        })
+    }
+
     /// Start a remote MCP server's OAuth login on a task (the browser
     /// opens on its authorization page); the dialog hears how it ended.
     fn mcp_sign_in(&mut self, name: String) {
@@ -1488,6 +1567,10 @@ impl Runner {
                     }
                     Some(Action::Run(id)) => {
                         self.run_command(id);
+                        Ok(())
+                    }
+                    Some(Action::Export(out)) => {
+                        self.export(out);
                         Ok(())
                     }
                     Some(Action::Open(t)) => self.open_target(t),
@@ -2183,6 +2266,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("undo", false),
     ("redo", false),
     ("compact", false),
+    ("export", false),
     ("agent", true),
     ("model", true),
     ("variant", true),

@@ -147,12 +147,18 @@ commands in their own process, which they end with.
 ```sh
 codesmith session list [--all] [--json]
 codesmith session export ID > session.json
+codesmith session export ID --sanitize       # the shape, no content (OpenCode's --sanitize)
 codesmith session import session.json        # or: ... | codesmith session import -
 codesmith session delete ID                  # and its subagent sessions
 ```
 
 An export is a self-contained JSON file with the session and its messages,
-its media inline. An import (and a fork) stores that media in the blob store
+its media inline, with the credentials CodeSmith holds (provider keys and
+tokens, MCP headers) replaced with `[redacted:credential]`. `--sanitize`
+replaces every text, tool input and output, path and title with a
+`[redacted:…]` marker and keeps the shape, which still imports. The UI's
+`/export` also writes a Markdown transcript; see
+[exporting a session](interactive-ui.md#exporting-a-session). An import (and a fork) stores that media in the blob store
 again (see [media limits](configuration.md#media-limits));
 `codesmith session migrate-media [ID]` does the same for sessions whose
 records still hold their media inline.

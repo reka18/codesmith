@@ -386,6 +386,7 @@ and `opencode` is used.
 | `/model [provider/model]` | Switch model, or pick one. |
 | `/variant [name]` | Switch to the model's next [variant](configuration.md#provider-options-and-variants), or to the one named; `/variant default` drops it. |
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
+| `/export` (**Ctrl+X x**) | [Export the session](#exporting-a-session) as Markdown or JSON: copy it or save it to a file. |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |
 | `/editor` | Edit the prompt in `$VISUAL` or `$EDITOR`. |
@@ -402,6 +403,38 @@ and `opencode` is used.
 Commands that change the session wait until the current turn is finished.
 Press **Esc** first to interrupt it. `/new` and `/sessions` do not wait
 while tabs are on: the running turn goes on in its tab.
+
+## Exporting a session
+
+`/export` (`session.export`, **<leader>x**) opens OpenCode's export dialog:
+**Export as** Markdown or JSON; for Markdown, **Include thinking** (on when
+the transcript shows thinking) and **Include tools**; for JSON, **Sanitize
+sensitive data**; then **Copy** or **Save**. Tab and Shift+Tab (or the
+arrows) move the focus, Enter or Space selects, Esc closes. The keyboard
+does it all; the mouse does nothing in the dialog.
+
+- **Copy** puts the export on the clipboard through the terminal (`OSC 52`),
+  as copying a selection does.
+- **Save** asks for the file, offering `session-<id>.md` (or `.json`) in the
+  working folder; type another path (relative to the working folder, or
+  `~/…`), Ctrl+U clears it. The file is created owner-only (0600) and never
+  replaces anything without asking: a file already there (or a link) is
+  replaced only after you press `y`, and no folder is created. Once saved,
+  `c` copies its path.
+
+What each form leaves out: the Markdown transcript has the prompts and
+replies, thinking and tool calls as chosen, URL query strings in tool input
+and output replaced with `?…`, control characters dropped, and images and
+files only named. Raw JSON is the stored session, as `codesmith session
+export` writes it. Sanitized JSON keeps the session's shape (record kinds,
+roles, ids, tool names, model and agent, times and token counts) and
+replaces every text, tool input and output, reasoning, file change, path
+and title with a `[redacted:…]` marker; it still imports. Every form has the
+credentials CodeSmith holds (provider keys and tokens, their key variables'
+values, MCP headers and environment) replaced with `[redacted:credential]`.
+A secret CodeSmith does not know of, say one a command printed, is not
+recognized: use sanitized JSON, or leave tools out, for a transcript you
+share.
 
 ## Shell commands
 
