@@ -420,17 +420,37 @@ impl Browsers {
     /// Open `url` (http(s) or file://) in the session's browser (OpenCode's
     /// `open`): the session must have one attached, and the gate must allow
     /// `browser` for the URL; an attachment's own grant does, but never
-    /// over a configured or policy deny.
-    pub fn open(&self, gate: &Gate, session: &str, url: &str) -> Result<(), BrowserError> {
-        let lower = url.to_ascii_lowercase();
-        if !["http://", "https://", "file://"]
-            .iter()
-            .any(|p| lower.starts_with(p))
-        {
-            return Err(BrowserError::Invalid(format!(
-                "Not an http(s) or file:// URL: {url}"
-            )));
+    /// over a configured or policy deny. A file:// URL is a file to read,
+    /// so it is checked as the read tool checks a path ([`authorize_file`],
+    /// against the project at `root`): `external_directory` outside the
+    /// project, then `read` with the configured denies and the secret
+    /// guards, none of which the grant lifts. The browser is handed the
+    /// file:// URL of the file's real path.
+    pub fn open(
+        &self,
+        gate: &Gate,
+        session: &str,
+        root: &Path,
+        url: &str,
+    ) -> Result<(), BrowserError> {
+        let invalid = || BrowserError::Invalid(format!("Not an http(s) or file:// URL: {url}"));
+        let parsed = Url::parse(url).map_err(|_| invalid())?;
+        if !matches!(parsed.scheme(), "http" | "https" | "file") {
+            return Err(invalid());
         }
+        self.current(session)?;
+        if parsed.scheme() != "file" {
+            return self.show(gate, session, url);
+        }
+        let path = parsed.to_file_path().map_err(|_| invalid())?;
+        let mut file = authorize_file(gate, session, root, &path, Within::Anywhere)?;
+        file.set_fragment(parsed.fragment());
+        self.show(gate, session, file.as_str())
+    }
+
+    /// Open `url`, checked already as a URL or file a browser may open, once
+    /// the gate allows `browser` for it.
+    fn show(&self, gate: &Gate, session: &str, url: &str) -> Result<(), BrowserError> {
         let id = self.current(session)?;
         assert(gate, ACTION, url)?;
         self.touch(session, id)?;
@@ -465,7 +485,7 @@ impl Browsers {
         }
         self.current(session)?;
         let url = authorize_file(gate, session, root, &root.join(rel), Within::Workspace)?;
-        self.open(gate, session, url.as_str())
+        self.show(gate, session, url.as_str())
     }
 
     /// The id of the session's live attachment.
@@ -485,6 +505,8 @@ impl Browsers {
 enum Within {
     /// Only under the workspace root, symlinks followed.
     Workspace,
+    /// Anywhere, outside the project with `external_directory` approval.
+    Anywhere,
 }
 
 /// The checks the read tool makes before it reads `path` (absolute), for
@@ -912,6 +934,207 @@ mod tests {
         assert!(driver.urls().is_empty(), "{:?}", driver.urls());
     }
 
+    fn open(b: &Browsers, gate: &Gate, f: &Files, url: &str) -> Result<(), BrowserError> {
+        b.open(gate, "s", &f.root, url)
+    }
+
+    fn outside_allowed() -> Vec<Rule> {
+        vec![Rule::new("external_directory", "*", Effect::Allow)]
+    }
+
+    /// A file:// URL to the SSH folder asks for the outside folder and then
+    /// meets the secret guard, grant or no grant; neither reaches the
+    /// driver when declined.
+    #[test]
+    fn a_file_url_to_a_secret_outside_asks_for_the_folder_and_the_guard() {
+        let f = files();
+        let key = f.home.join(".ssh/id_rsa");
+        let url = file_url(&key);
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        assert!(matches!(
+            open(&b, &gate, &f, &url),
+            Err(BrowserError::Denied(_))
+        ));
+        assert_eq!(rec.actions(), ["external_directory"]);
+        let (b, _a, gate, rec, driver2) = attached(&f, outside_allowed());
+        assert!(matches!(
+            open(&b, &gate, &f, &url),
+            Err(BrowserError::Denied(_))
+        ));
+        assert_eq!(
+            rec.requests(),
+            [("read".to_string(), vec![key.display().to_string()])]
+        );
+        assert!(driver.urls().is_empty() && driver2.urls().is_empty());
+    }
+
+    #[test]
+    fn a_file_url_meets_the_env_guard_and_a_project_relative_deny() {
+        let f = files();
+        let deny = vec![Rule::new("read", "secrets/*", Effect::Deny)];
+        let (b, _a, gate, rec, driver) = attached(&f, deny);
+        let root = file_url(&f.root);
+        assert!(matches!(
+            open(&b, &gate, &f, &format!("{root}/.env")),
+            Err(BrowserError::Denied(_))
+        ));
+        assert_eq!(rec.actions(), ["read"]);
+        for rest in [
+            "secrets/key",
+            "secrets/./key",
+            "secrets//key",
+            "secrets/%6Bey",
+            "x/%2e%2e/secrets/key",
+            "x/%2E%2E/secrets/key",
+            "SECRETS/../secrets/key",
+        ] {
+            assert!(
+                matches!(
+                    open(&b, &gate, &f, &format!("{root}/{rest}")),
+                    Err(BrowserError::Denied(_))
+                ),
+                "{rest}"
+            );
+        }
+        assert_eq!(rec.actions(), ["read"], "the deny asks nothing");
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
+    /// `..` in a file:// URL is resolved before the checks, so a URL that
+    /// climbs out of the project is checked (and opened) as the file it
+    /// names.
+    #[test]
+    fn a_file_url_that_climbs_out_is_checked_where_it_lands() {
+        let f = files();
+        let page = f.outside.join("page.html");
+        for url in [
+            format!("{}/../outside/page.html", file_url(&f.root)),
+            format!("{}/%2e%2e/outside/page.html", file_url(&f.root)),
+        ] {
+            let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+            assert!(matches!(
+                open(&b, &gate, &f, &url),
+                Err(BrowserError::Denied(_))
+            ));
+            assert_eq!(
+                rec.requests(),
+                [(
+                    "external_directory".to_string(),
+                    vec![page.display().to_string()]
+                )],
+                "{url}"
+            );
+            assert!(driver.urls().is_empty());
+            let (b, _a, gate, _rec, driver) = attached(&f, outside_allowed());
+            open(&b, &gate, &f, &url).unwrap();
+            assert_eq!(driver.urls(), [file_url(&page)]);
+        }
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        assert!(matches!(
+            open(&b, &gate, &f, "file:///w/../../etc/passwd"),
+            Err(BrowserError::Denied(_))
+        ));
+        assert_eq!(rec.actions(), ["external_directory"]);
+        assert!(driver.urls().is_empty());
+    }
+
+    /// A workspace symlink to the SSH folder is judged by where it points:
+    /// outside the project, and guarded.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_url_through_a_symlink_is_checked_by_its_target() {
+        let f = files();
+        symlink(&f.home.join(".ssh"), &f.root.join("keys"));
+        symlink(&f.outside.join("page.html"), &f.root.join("page.html"));
+        let key = f.home.join(".ssh/id_rsa");
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        for rel in ["keys/id_rsa", "page.html"] {
+            let url = format!("{}/{rel}", file_url(&f.root));
+            assert!(matches!(
+                open(&b, &gate, &f, &url),
+                Err(BrowserError::Denied(_))
+            ));
+        }
+        assert_eq!(rec.actions(), ["external_directory", "external_directory"]);
+        let (b, _a, gate, rec, driver2) = attached(&f, outside_allowed());
+        let url = format!("{}/keys/id_rsa", file_url(&f.root));
+        assert!(matches!(
+            open(&b, &gate, &f, &url),
+            Err(BrowserError::Denied(_))
+        ));
+        let asked = rec.requests();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, "read");
+        assert!(asked[0].1.contains(&key.display().to_string()), "{asked:?}");
+        let page = format!("{}/page.html", file_url(&f.root));
+        open(&b, &gate, &f, &page).unwrap();
+        assert!(driver.urls().is_empty());
+        assert_eq!(driver2.urls(), [file_url(&f.outside.join("page.html"))]);
+    }
+
+    /// The browser is handed the file that was checked, encoded: `#` and
+    /// `?` in a file's name stay part of it, and a URL's own query (which
+    /// a file has none of) is dropped.
+    #[test]
+    fn a_file_url_is_opened_as_the_encoded_real_path() {
+        let f = files();
+        std::fs::write(f.root.join("a#b?c.html"), "x").unwrap();
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        let root = file_url(&f.root);
+        open(&b, &gate, &f, &format!("{root}/a%23b%3Fc.html#top")).unwrap();
+        open(
+            &b,
+            &gate,
+            &f,
+            &format!("{root}/index.html?x=/../../etc/passwd"),
+        )
+        .unwrap();
+        open(
+            &b,
+            &gate,
+            &f,
+            &format!("FILE://{}/index.html", f.root.display()),
+        )
+        .unwrap();
+        open(
+            &b,
+            &gate,
+            &f,
+            &format!("file://localhost{}/index.html", f.root.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            driver.urls(),
+            [
+                format!("{root}/a%23b%3Fc.html#top"),
+                format!("{root}/index.html"),
+                format!("{root}/index.html"),
+                format!("{root}/index.html"),
+            ]
+        );
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+    }
+
+    #[test]
+    fn a_file_url_that_names_no_local_file_is_refused() {
+        let f = files();
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        let root = file_url(&f.root);
+        for url in [
+            "file://evil.test/etc/passwd".to_string(),
+            format!("{root}/index%00.html"),
+            format!("{root}/%FF.html"),
+            "file://evil.test/".to_string(),
+        ] {
+            assert!(
+                matches!(open(&b, &gate, &f, &url), Err(BrowserError::Invalid(_))),
+                "{url}"
+            );
+        }
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
     #[test]
     fn a_grant_is_only_allows() {
         assert!(rules()
@@ -938,7 +1161,7 @@ mod tests {
         gate.set_granted(Some(b.grants_for("s")));
         let _a = b.attach("s", "c").unwrap();
         assert_eq!(
-            b.open(&gate, "s", "https://example.test/"),
+            b.open(&gate, "s", Path::new("/"), "https://example.test/"),
             Err(BrowserError::Driver(NO_DRIVER.into()))
         );
     }

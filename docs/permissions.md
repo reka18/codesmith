@@ -394,8 +394,14 @@ is disposed. A replaced attachment's revoke never removes its
 replacement's rules, and another session never sees them. They are judged
 like saved approvals, so they never override a configured `deny`, a
 built-in agent's own rules, a [policy](#policies) or a [secret
-guard](#secret-files): opening a workspace file in the browser also needs
-`read` for it.
+guard](#secret-files). Opening a file in the browser, as a workspace path
+or a `file://` URL, is checked as the read tool checks a file: the path is
+resolved (`..` and symlinks followed), a file outside the project needs
+`external_directory`, and it needs `read` under its project-relative, as
+named and real names, which the attachment's rules don't grant. A
+workspace path must not be absolute, contain `.`, `..`, `%`, `#` or `?`, or
+lead out of the workspace through a symlink. The browser is handed the
+`file://` URL of the file's real path.
 
 CodeSmith has no browser of its own, so no browser driver is built in:
 `codesmith_core::plugin::browser` provides the attachment lifecycle and

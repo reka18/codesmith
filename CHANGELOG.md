@@ -19,6 +19,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   `secrets//key` meet a `secrets/*` deny, a symlink out of the workspace
   is refused, names with `%`, `#` or `?` are refused, and the browser is
   handed the percent-encoded file:// URL of the real path.
+- **A file:// URL a browser opens is checked as a file read:** `open`
+  turns it into a path and checks it as `read` does, so a URL to `~/.ssh`
+  asks for the outside folder and meets the secret guard, a `.env` asks,
+  and `file:///w/../../etc/passwd` is checked as `/etc/passwd`, where it
+  used to need only `browser`, which an attachment grants. `open` now
+  takes the project root.
 - **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
   backend reached through GitLab's unpublished Duo workflow and
   agentic-chat SDK protocols; porting it would mean reimplementing a

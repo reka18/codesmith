@@ -25,6 +25,11 @@ use std::time::Duration;
 const TTL: Duration = Duration::from_secs(60);
 const URL: &str = "https://example.test/";
 
+/// The project root `open` is given; these tests open no file:// URLs.
+fn no_files() -> &'static std::path::Path {
+    std::path::Path::new("/nonexistent-project")
+}
+
 /// A driver that records what it opened.
 #[derive(Default)]
 struct Recorder(Mutex<Vec<String>>);
@@ -232,11 +237,12 @@ fn a_browser_grant_never_lifts_a_configured_deny() {
     let (g, asked) = gate(&f.browsers, "ses_deny", rules, Reply::Once);
     let _a = f.browsers.attach("ses_deny", "conn").unwrap();
     assert!(matches!(
-        f.browsers.open(&g, "ses_deny", "https://blocked.test/x"),
+        f.browsers
+            .open(&g, "ses_deny", no_files(), "https://blocked.test/x"),
         Err(BrowserError::Denied(_))
     ));
     assert!(!allowed(&g, "browser", "https://blocked.test/x"));
-    f.browsers.open(&g, "ses_deny", URL).unwrap();
+    f.browsers.open(&g, "ses_deny", no_files(), URL).unwrap();
     assert_eq!(asked.load(Ordering::SeqCst), 0);
     assert_eq!(*f.driver.0.lock().unwrap(), vec![format!("ses_deny {URL}")]);
 }
@@ -253,7 +259,7 @@ fn a_browser_grant_never_lifts_a_built_in_or_policy_deny() {
         let (g, asked) = gate(&f.browsers, &id, rules, Reply::Once);
         let _a = f.browsers.attach(&id, "conn").unwrap();
         assert!(matches!(
-            f.browsers.open(&g, &id, URL),
+            f.browsers.open(&g, &id, no_files(), URL),
             Err(BrowserError::Denied(_))
         ));
         assert_eq!(asked.load(Ordering::SeqCst), 0);
@@ -267,12 +273,12 @@ fn a_browser_grant_replaces_a_configured_ask_only_while_attached() {
     let rules = vec![Rule::new("browser", "*", Effect::Ask)];
     let (g, asked) = gate(&f.browsers, "ses_ask", rules, Reply::Reject(None));
     let a = f.browsers.attach("ses_ask", "conn").unwrap();
-    f.browsers.open(&g, "ses_ask", URL).unwrap();
+    f.browsers.open(&g, "ses_ask", no_files(), URL).unwrap();
     assert_eq!(asked.load(Ordering::SeqCst), 0);
     drop(a);
     let _b = f.browsers.attach("ses_other", "conn").unwrap();
     assert!(matches!(
-        f.browsers.open(&g, "ses_ask", URL),
+        f.browsers.open(&g, "ses_ask", no_files(), URL),
         Err(BrowserError::NotAttached(_))
     ));
     assert!(!allowed(&g, "browser", URL));
@@ -427,7 +433,7 @@ fn two_sessions_are_isolated() {
     assert!(allowed(&g1, "browser", URL));
     assert!(!allowed(&g2, "browser", URL));
     assert!(matches!(
-        f.browsers.open(&g2, "ses_two", URL),
+        f.browsers.open(&g2, "ses_two", no_files(), URL),
         Err(BrowserError::NotAttached(_))
     ));
     let two = f.browsers.attach("ses_two", "conn").unwrap();
@@ -466,7 +472,7 @@ fn disposing_twice_is_safe_and_ends_every_session() {
     assert!(f.browsers.granted("ses_a").is_empty());
     let (g, _) = gate(&f.browsers, "ses_a", vec![], Reply::Once);
     assert_eq!(
-        f.browsers.open(&g, "ses_a", URL),
+        f.browsers.open(&g, "ses_a", no_files(), URL),
         Err(BrowserError::Unavailable)
     );
     drop((a, b));
@@ -485,7 +491,7 @@ fn only_http_and_file_urls_open() {
         "ftp://x",
     ] {
         assert!(matches!(
-            f.browsers.open(&g, "ses_u", bad),
+            f.browsers.open(&g, "ses_u", no_files(), bad),
             Err(BrowserError::Invalid(_))
         ));
     }
