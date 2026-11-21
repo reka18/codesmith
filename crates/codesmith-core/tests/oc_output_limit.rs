@@ -47,6 +47,7 @@ async fn bodies(provider: &str) -> Vec<Value> {
             parent: None,
             questioner: None,
             mcp: None,
+            id: None,
         },
         Arc::new(Fixed(Reply::Always)),
         Some(codesmith_core::store::Store::open(&db).unwrap()),

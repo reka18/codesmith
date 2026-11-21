@@ -205,6 +205,7 @@ fn session(v: Value) -> anyhow::Result<Session> {
             parent: None,
             questioner: None,
             mcp: None,
+            id: None,
         },
         Arc::new(Fixed(Reply::Always)),
         None,
