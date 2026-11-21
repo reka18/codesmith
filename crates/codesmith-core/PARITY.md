@@ -41,7 +41,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Permission | 177 | 119 | 2 | 0 | 56 | 0 | 0 |
 | Agents | 65 | 48 | 1 | 1 | 15 | 0 | 0 |
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
-| Instructions and references | 78 | 64 | 0 | 0 | 13 | 1 | 0 |
+| Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
 | Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2713** | **68** | **44** | **2547** | **216** | **0** |
+| **Total** | **5588** | **2713** | **69** | **44** | **2547** | **215** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -65,6 +65,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `file-access-path.test.ts`: "expands a leading tilde against the home directory" (1 case): a bare `~` was a file named `~` in the working folder; it is the home folder now. Pinned by `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`.
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
+- `instruction-discovery.test.ts`: "canonicalizes boundaries and honors project opt-out" (1 case): with `$CODESMITH_DISABLE_PROJECT_CONFIG` set the project's AGENTS.md files were still read (only its config files were skipped), and a working folder outside the project had its AGENTS.md read; neither is read now, as in OpenCode (adapted: the files found, not the walks asked for). Pinned by `tests/oc_instructions_backlog3.rs::oc_instructions_canonicalize_boundaries_and_honor_project_opt_out`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
 - `session-create.test.ts`: "stores a trailing-slash directory in the same session list" (1 case): a session started in `dir/` was stored under `dir/`, so the list for `dir` did not show it. Pinned by `tests/oc_sessions_backlog.rs::oc_session_create_stores_a_trailing_slash_directory_in_the_same_list`.
 - `session-runner-message.test.ts`: "uses materialized image and PDF data as provider media" (1 case): an attachment-only prompt stored an empty text part before its attachments, sent as an empty `input_text` to the Responses API or a leading blank line to Chat Completions; it is left out now. Pinned by `tests/oc_sessions_backlog2.rs::oc_runner_message_omits_empty_prompt_text_before_an_attachment`.
@@ -212,12 +213,7 @@ Missing features, by how many OpenCode test cases each would unlock (44 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (216 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
-
-### Instructions and references (1)
-
-- canonical boundaries and project opt-out (S) — `instructions::load`
-  - `instruction-discovery.test.ts`: canonicalizes boundaries and honors project opt-out
+Tests for behaviour CodeSmith already has but no test pins (215 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### MCP (121)
 
@@ -2387,7 +2383,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Instructions and references (77 of 78)</summary>
+<details><summary>Instructions and references (78 of 78)</summary>
 
 
 **`instruction-discovery.test.ts`**
@@ -2406,6 +2402,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P isolates source failure without failing activation — `tests/oc_agents_backlog2.rs::oc_instructions_isolate_a_source_failure` (adapted: an unreadable discovered file leaves the source unavailable, so its stored value stands)
 - P marks a discovered file that disappears before read as unavailable — `tests/oc_instruction_state.rs::oc_instruction_files_that_vanish_before_the_read_are_unavailable`
 - D skips discovered files a sandbox denies and keeps the rest available — client-server: sandbox-denied files
+- F canonicalizes boundaries and honors project opt-out — `tests/oc_instructions_backlog3.rs::oc_instructions_canonicalize_boundaries_and_honor_project_opt_out` (with `$CODESMITH_DISABLE_PROJECT_CONFIG` set the project's AGENTS.md files were still read (only its config files were skipped), and a working folder outside the project had its AGENTS.md read; neither is read now, as in OpenCode (adapted: the files found, not the walks asked for))
 
 **`instruction-state.test.ts`**
 

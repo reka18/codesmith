@@ -8,6 +8,8 @@
 //!   2. from the working directory up, nearest first, each folder's
 //!      `AGENTS.md`, else its `CLAUDE.md`; the walk ends at the home folder
 //!      when the working directory is inside it, else at the project root
+//!      (none for a working directory outside the project, or when
+//!      `$CODESMITH_DISABLE_PROJECT_CONFIG` turns project config off)
 //!   3. each configured path or glob in order (matches sorted): `~/` is the
 //!      home folder, a relative one is looked for in every folder from the
 //!      working directory up to the project root
@@ -79,7 +81,15 @@ fn walk(
         add(claude_global);
     }
     let stop = if cwd.starts_with(home) { home } else { root };
-    for d in cwd.ancestors() {
+    // The project's own files: none when project config is turned off (as
+    // OpenCode's `project: false`), or for a folder outside the project.
+    let project = std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_none();
+    let walked = if project && cwd.starts_with(stop) {
+        cwd.ancestors().collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+    for d in walked {
         // The home and global folders are global sources.
         let skip = !global_on && crate::config::global_source(d, global_dir, home);
         if let Some(f) = in_dir(d).filter(|_| !skip) {

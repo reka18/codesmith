@@ -57,3 +57,7 @@
 137 :: ported :: tests/oc_permission_backlog3.rs::oc_file_access_batches_external_resources_in_first_seen_order :: adapted: the folders the paths are in, as the shell tool batches them
 @permission.test.ts
 244 :: design :: deliberate :: a session always runs as an agent and the built-in agents always exist, so there is no omitted agent without a default to deny for
+
+# --- Instructions and references (tests/oc_instructions_backlog3.rs) ---
+@instruction-discovery.test.ts
+743 :: fixed :: tests/oc_instructions_backlog3.rs::oc_instructions_canonicalize_boundaries_and_honor_project_opt_out :: with `$CODESMITH_DISABLE_PROJECT_CONFIG` set the project's AGENTS.md files were still read (only its config files were skipped), and a working folder outside the project had its AGENTS.md read; neither is read now, as in OpenCode (adapted: the files found, not the walks asked for)
