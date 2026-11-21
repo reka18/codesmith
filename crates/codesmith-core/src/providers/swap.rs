@@ -26,7 +26,10 @@
 //!   reported id is ignored, with a warning.
 //! - Only a person starts a swap: the model picker and `codesmith models
 //!   swap`. It is not a tool, and neither automations nor `run`, `serve` or
-//!   ACP sessions reach it. [`guard`] refuses inside a CodeSmith shell tool.
+//!   ACP sessions reach it. [`guard`] refuses inside a CodeSmith shell tool,
+//!   and [`shell_rules`] make running `codesmith models swap` from one ask.
+//!   Neither is a security boundary: the model's shell can run the
+//!   commands themselves, and only `shell` rules govern that.
 //! - Output lines have control characters, escape sequences and Unicode
 //!   format characters removed, and are read in bounded chunks: a line is
 //!   kept up to [`LINE_MAX`] characters (the rest, up to its newline, is
@@ -246,8 +249,25 @@ pub fn parse_list(out: &str) -> Vec<SwapModel> {
     v
 }
 
+/// Built-in `shell` rules for every agent: running `codesmith models swap`
+/// (by name or by a path to the binary) asks. They are
+/// [`crate::permission::Rule::builtin`], so a broad configured allow does
+/// not lift them; a rule configured for the agent, or an "always" answer,
+/// does. [`guard`] refuses inside a session's shell anyway; this makes the
+/// attempt visible first. Neither is a security boundary: the model's shell
+/// could run the `swap` commands (`ssh host tblink use …`) themselves, which
+/// only the `shell` rules govern.
+pub fn shell_rules() -> Vec<crate::permission::Rule> {
+    use crate::permission::{Effect, Rule};
+    ["codesmith models swap*", "*/codesmith models swap*"]
+        .iter()
+        .map(|p| Rule::new("shell", p, Effect::Ask).into_builtin())
+        .collect()
+}
+
 /// Refuse when running inside a CodeSmith session's shell tool, so the
-/// model cannot start a swap through `codesmith models swap`.
+/// model cannot start a swap through `codesmith models swap`. Not a
+/// security boundary (see [`shell_rules`]).
 pub fn guard() -> Result<()> {
     guard_with(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
 }

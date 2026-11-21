@@ -524,10 +524,22 @@ How CodeSmith runs them:
   It is not a tool, so the model cannot call it; `codesmith run`,
   automations, `codesmith serve` and ACP sessions never start one; and
   `codesmith models swap` refuses to run without a terminal or inside a
-  CodeSmith session's shell (`$CODESMITH` or `$CODESMITH_SESSION_ID` set).
-  The model's shell tool could still run the `ssh` command itself, as it
-  could any command; [permission rules](permissions.md) for `shell` govern
-  that.
+  CodeSmith session's shell (`$CODESMITH` or `$CODESMITH_SESSION_ID` set),
+  and every agent asks before its shell runs `codesmith models swap` (a
+  built-in rule that a broad allow doesn't lift).
+
+  **These are not a security boundary.** The model's shell tool can still
+  run the `list` and `use` commands themselves (`ssh stable tblink use
+  MODEL`), as it can any command, and only your [permission
+  rules](permissions.md) for `shell` govern that. To keep the model from
+  swapping on its own, deny those commands, for example:
+
+  ```jsonc
+  "permissions": [
+    { "action": "shell", "resource": "ssh stable *", "effect": "deny" },
+    { "action": "shell", "resource": "*tblink use*", "effect": "deny" }
+  ]
+  ```
 - **Output** lines are shown with escape sequences and control characters
   removed. Output is read in bounded chunks: a line is kept up to 2000
   characters (the rest of it, up to its newline, is dropped), each stream

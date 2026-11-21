@@ -221,6 +221,8 @@ fn oc_agent_loads_legacy_file_based_agents_from_config_directories() {
     write(&dir.join("modes/plan.md"), "Make a plan.");
     let c = load_dir(dir);
     let mut own = base_rules();
+    // Every agent's built-in ask before `codesmith models swap`.
+    own.extend(codesmith_core::providers::swap::shell_rules());
     own.push(rule("edit", "*", Effect::Deny));
 
     let reviewer = agent::resolve(&c, "reviewer").unwrap();
@@ -274,6 +276,8 @@ fn oc_agent_reads_agent_files_that_use_v2_fields_as_v2() {
     );
     let c = load_dir(dir);
     let mut own = base_rules();
+    // Every agent's built-in ask before `codesmith models swap`.
+    own.extend(codesmith_core::providers::swap::shell_rules());
     own.push(rule("edit", "*", Effect::Deny));
     let named = agent::resolve(&c, "named").unwrap();
     assert_eq!(named.description, "Named reviewer");

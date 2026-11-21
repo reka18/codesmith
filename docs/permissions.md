@@ -179,6 +179,13 @@ run. When the project itself is inside a guarded folder (a repository at
 don't apply to them. Under `--auto`, which answers every question with
 "once", guarded reads go through.
 
+Every agent also asks before its shell runs `codesmith models swap` (by
+name or by path), however broadly the config allows shell commands; a
+`shell` rule under `agents.<id>.permissions` can lift it. That is a
+prompt, not a security boundary: see
+[swap](configuration.md#swapping-the-servers-model-swap) for denying the
+commands a swap runs.
+
 Shell commands are allowed by default for `build`. If you want to be asked,
 add a rule such as `{"action": "shell", "resource": "*", "effect": "ask"}`
 and then allow the commands you trust after it.

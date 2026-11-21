@@ -318,6 +318,12 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
             .extend(crate::plugin::plan::rules(&crate::plugin::plan::directory()).base);
     }
     agent.permissions.extend(config.permissions.iter().cloned());
+    // Starting a model swap from the shell asks (see `swap::shell_rules`):
+    // built-in, so the config's rules above cannot widen it, and before
+    // the agent's own rules, so a read-only agent's deny still wins.
+    agent
+        .permissions
+        .extend(crate::providers::swap::shell_rules());
     agent
         .permissions
         .extend(own.into_iter().map(Rule::into_builtin));
@@ -346,6 +352,7 @@ pub fn resolve(config: &Config, id: &str) -> Option<Agent> {
     if config.builtin_skills {
         agent.permissions.extend(crate::skill::builtin_rules());
     }
+
     // Policies deny whatever the rules say; they travel with the rules.
     agent
         .permissions
@@ -961,6 +968,93 @@ mod tests {
         let b = resolve(&c, "build").unwrap();
         assert_eq!(evaluate("read", "src/a.rs", &b.permissions), Effect::Allow);
         assert_eq!(evaluate("read", ".env", &b.permissions), Effect::Ask);
+    }
+
+    /// Security review 8, finding 6: starting a model swap from the shell
+    /// asks for every agent (the read-only ones deny all shell anyway),
+    /// whatever a broad configured allow says; only a rule for the agent
+    /// itself lifts it.
+    #[test]
+    fn starting_a_model_swap_from_the_shell_asks() {
+        let swaps = [
+            "codesmith models swap stable big",
+            "codesmith models swap",
+            "/usr/local/bin/codesmith models swap stable big",
+            "./target/debug/codesmith models swap stable q:7b",
+            "~/.local/bin/codesmith models swap stable modèle",
+        ];
+        let others = [
+            "codesmith models stable",
+            "codesmith models",
+            "codesmith run hi",
+            "echo codesmith models swap",
+            "mycodesmith models swap x",
+        ];
+        for c in [
+            cfg(json!({})),
+            cfg(json!({"permissions": [{"action": "shell", "resource": "*", "effect": "allow"}]})),
+            cfg(json!({"permissions": [{"action": "*", "resource": "*", "effect": "allow"}]})),
+        ] {
+            for id in BUILTIN {
+                let a = resolve(&c, id).unwrap();
+                for cmd in swaps {
+                    let e = evaluate("shell", cmd, &a.permissions);
+                    let want = if matches!(id, "explore" | "review") {
+                        Effect::Deny
+                    } else {
+                        Effect::Ask
+                    };
+                    assert_eq!(e, want, "{id} {cmd}");
+                }
+                if matches!(id, "build" | "plan" | "general") {
+                    for cmd in others {
+                        assert_eq!(
+                            evaluate("shell", cmd, &a.permissions),
+                            Effect::Allow,
+                            "{id} {cmd}"
+                        );
+                    }
+                }
+            }
+        }
+        // Wrapped: the scanner checks the command a wrapper runs too.
+        let b = resolve(&cfg(json!({})), "build").unwrap();
+        for line in [
+            "env codesmith models swap stable big",
+            "sh -c 'codesmith models swap stable big'",
+            "true && /opt/codesmith models swap s m",
+        ] {
+            let a = crate::tool::shell_scan::analyze(line, std::path::Path::new("/tmp")).unwrap();
+            let all: Vec<String> = a
+                .commands
+                .iter()
+                .chain(&a.delegated)
+                .map(|(r, _)| r.clone())
+                .collect();
+            assert_eq!(
+                crate::permission::evaluate_all("shell", &all, &b.permissions),
+                Effect::Ask,
+                "{line}: {all:?}"
+            );
+        }
+        // The user's own rule for the agent lifts it.
+        let own = cfg(json!({"agents": {"build": {"permissions": [
+            {"action": "shell", "resource": "codesmith models swap*", "effect": "allow"}
+        ]}}}));
+        let b = resolve(&own, "build").unwrap();
+        assert_eq!(
+            evaluate("shell", "codesmith models swap stable big", &b.permissions),
+            Effect::Allow
+        );
+        // A user's deny still denies.
+        let deny = cfg(json!({"permissions": [
+            {"action": "shell", "resource": "*codesmith models swap*", "effect": "deny"}
+        ]}));
+        let b = resolve(&deny, "build").unwrap();
+        assert_eq!(
+            evaluate("shell", "codesmith models swap stable big", &b.permissions),
+            Effect::Deny
+        );
     }
 
     #[test]

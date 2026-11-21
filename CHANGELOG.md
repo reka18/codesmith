@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Starting a model swap from the shell asks:** every agent asks before
+  its shell runs `codesmith models swap`, even with a broad `shell` allow.
+  The swap docs now say plainly that this and the session check are not a
+  security boundary, and show `shell` deny rules for the swap commands.
 - **A swap selects only a listed model:** when a swap's `use` command
   reports a `model_id` that is neither the requested model nor one `list`
   offered, CodeSmith keeps the requested model and shows a warning.
