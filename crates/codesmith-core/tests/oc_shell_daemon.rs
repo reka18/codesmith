@@ -1572,3 +1572,114 @@ fn a_cleared_title_crosses_the_wire() {
         }
     );
 }
+
+/// A command the daemon starts leads a session of its own (and the
+/// process group a stop signals) with no controlling terminal, even when
+/// the daemon has one (here it runs in the test process), and gets the
+/// non-interactive defaults unless its environment sets them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_command_has_no_terminal_and_does_not_prompt() {
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": "echo pid=$$; ps -o pgid=,stat=,tty= -p $$", "description": "x"}),
+        )
+        .await;
+    assert!(!err, "{out}");
+    let mut lines = out.lines();
+    let pid = lines.next().unwrap().strip_prefix("pid=").unwrap();
+    let fields: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+    let [pgid, stat, tty] = fields[..] else {
+        panic!("{out}");
+    };
+    assert_eq!(pgid, pid, "its own group: {out}");
+    assert!(stat.contains('s'), "a session leader: {out}");
+    assert!(tty.chars().all(|c| c == '?'), "no terminal: {out}");
+
+    let reads = "if read x < /dev/tty; then echo got-\"\"tty; else echo tty-refused; fi";
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": reads, "description": "x", "timeout": 5000}),
+        )
+        .await;
+    assert!(!err && out.contains("tty-refused"), "{out}");
+
+    let show = r#"printf '%s;' "$GIT_TERMINAL_PROMPT" "$SSH_ASKPASS_REQUIRE" "$GCM_INTERACTIVE" "$DEBIAN_FRONTEND""#;
+    let base: std::collections::BTreeMap<String, String> =
+        [("PATH".to_string(), "/usr/bin:/bin".to_string())].into();
+    jobs.set_environment(Some(base.clone()));
+    let (out, _) = p
+        .shell(&jobs, json!({"command": show, "description": "x"}))
+        .await;
+    assert_eq!(out, "0;never;never;noninteractive;");
+    let mut mine = base;
+    mine.insert("GIT_TERMINAL_PROMPT".into(), "1".into());
+    mine.insert("DEBIAN_FRONTEND".into(), "readline".into());
+    jobs.set_environment(Some(mine));
+    let (out, _) = p
+        .shell(&jobs, json!({"command": show, "description": "x"}))
+        .await;
+    assert_eq!(out, "1;never;never;readline;", "the user's own values win");
+}
+
+/// A stop through the daemon still reaches everything the command
+/// started, now that the command leads its own session: a `&` job and a
+/// grandchild in a subshell, both ignoring SIGTERM, so SIGKILL is sent to
+/// the group after the grace period.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_stop_still_kills_the_whole_group() {
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    let (job, nested) = (p.root().join("job"), p.root().join("nested"));
+    let command = format!(
+        "trap '' TERM; sleep 30 & echo $! > '{}'; \
+         sh -c 'trap \"\" TERM; sleep 30 & echo $! > \"{}\"; wait' & wait",
+        job.display(),
+        nested.display()
+    );
+    let (out, err) = p
+        .shell(
+            &jobs,
+            json!({"command": command, "background": true, "timeout": 300}),
+        )
+        .await;
+    assert!(!err, "{out}");
+    let pid_in = |f: &Path| {
+        let read = || {
+            std::fs::read_to_string(f)
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        };
+        poll(|| !read().is_empty());
+        read()
+    };
+    let pids = [pid_in(&job), pid_in(&nested)];
+    settle(&jobs, 15).await;
+    let alive = |pid: &str| {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    // The group is gone by the time the leader is reported; allow a moment
+    // for the kernel to reap the last members.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while pids.iter().any(|p| alive(p)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let survivors: Vec<&String> = pids.iter().filter(|p| alive(p)).collect();
+    for p in &survivors {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-9", p])
+            .status();
+    }
+    assert!(survivors.is_empty(), "survived the stop: {survivors:?}");
+}

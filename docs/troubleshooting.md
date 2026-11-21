@@ -45,13 +45,19 @@ on its own; to stay on HTTP from the start, set
 `"settings": {"transport": "http"}` on the provider (see
 [Responses over WebSocket](configuration.md#responses-over-websocket)).
 
-**`git push` or `git fetch` hangs or fails asking for a passphrase or
-password.** Commands run without a terminal to answer on, and CodeSmith
-does not relay git's or ssh's prompts to the UI (an answer there could be
-read by the model, which runs the commands; see
-[PARITY.md](../crates/codesmith/PARITY.md#ssh-askpass)). Load the key into
-`ssh-agent` (`ssh-add`) before starting CodeSmith, and use a git credential
-helper for HTTPS remotes, so nothing asks.
+**`git push` or `git fetch` fails asking for a passphrase or password.**
+Commands run without a terminal to answer on, and CodeSmith does not relay
+git's or ssh's prompts to the UI (an answer there could be read by the
+model, which runs the commands; see
+[PARITY.md](../crates/codesmith/PARITY.md#ssh-askpass)). A prompt for
+credentials fails at once rather than waiting: git says `terminal prompts
+disabled` (CodeSmith sets `GIT_TERMINAL_PROMPT=0` unless you set it), and
+ssh, `sudo` or anything else that opens `/dev/tty` gets `Device not
+configured` or `No such device or address`. Load the key into `ssh-agent`
+(`ssh-add`) before starting CodeSmith, and use a git credential helper
+(`git config --global credential.helper osxkeychain`, `libsecret`, `store`
+or Git Credential Manager) for HTTPS remotes, so nothing asks. Run a
+command that needs you to type in your own terminal. See [shell](tools.md#shell) for the variables CodeSmith sets.
 
 **A config file is rejected.** CodeSmith stops on any file that doesn't
 parse, and names it, rather than skip it and maybe drop a `deny` rule. JSONC

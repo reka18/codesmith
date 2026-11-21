@@ -14,6 +14,15 @@ All notable changes to CodeSmith are listed here. Versions follow
   notarizes the macOS binaries and no longer runs minisign, then
   `scripts/sign-release.sh TAG` checks the draft's final `SHA256SUMS`
   against its tarballs, signs it and uploads the signature (RELEASING.md).
+- **Shell commands without a terminal:** commands the `shell` tool and
+  `!command` run start a session of their own (as OpenCode's do), with no
+  controlling terminal, so a prompt that opens `/dev/tty` (git or ssh
+  asking for a password, `sudo`, `read < /dev/tty`) fails at once instead
+  of stopping the command as a background job of the UI's terminal or
+  drawing over the UI. Stopping a command still stops everything it
+  started. Unless already set, `GIT_TERMINAL_PROMPT=0`,
+  `SSH_ASKPASS_REQUIRE=never`, `GCM_INTERACTIVE=never` and
+  `DEBIAN_FRONTEND=noninteractive` are set for those commands.
 - **ChatGPT agent registration opt-in:** `codesmith auth login openai
   --oauth --register`, or `settings.register: true` on the `openai`
   provider, signs in with OpenAI's agent registration as OpenCode does

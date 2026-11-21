@@ -1221,3 +1221,89 @@ async fn the_external_editor_edits_the_prompt() {
     ui.quit().await;
     m.assert_done();
 }
+
+/// A command that reads the terminal: it must fail at once (no
+/// controlling terminal, so `/dev/tty` does not open) rather than stop
+/// as a background job of the UI's terminal or wait for a key.
+const READS_TTY: &str =
+    "if read x < /dev/tty; then echo got-\"\"tty; else echo tty-refused; fi; echo > /dev/tty || echo tty-unwritable";
+
+// A command the model runs has no controlling terminal: reading or
+// writing `/dev/tty` fails at once, so a credential prompt (git, ssh,
+// sudo) cannot stop the command or draw over the UI. Without its own
+// session the command is a background job of the UI's terminal and is
+// stopped (SIGTTIN) until the call's timeout moves it to the background.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_that_reads_the_terminal_fails_at_once() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .titled("Tty")
+            .then(
+                "run",
+                M::tools().and(M::prompt("read the tty")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": READS_TTY, "description": "read tty", "timeout": 8000}),
+                ),
+            )
+            .then(
+                "answer",
+                M::tools().and(M::prompt("read the tty")).and(M::step(1)),
+                Reply::text("The terminal answered."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "--auto --prompt 'read the tty'") else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    ui.wait_for("The terminal answered.").await;
+    let took = started.elapsed();
+    ui.quit().await;
+    m.assert_done();
+    let id = e.store().list(None, false).unwrap()[0].id.clone();
+    let results = crate::harness::tool_results(&e.history(&id));
+    let out = results
+        .iter()
+        .map(|r| r.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        out.contains("tty-refused") && out.contains("tty-unwritable"),
+        "{out}"
+    );
+    assert!(!out.contains("got-tty"), "{out}");
+    assert!(took < Duration::from_secs(8), "took {took:?}: {out}");
+}
+
+// A `!command` is run the same way: its output goes to the session, not
+// the terminal, so it is not interactive either, and a prompt for the
+// terminal fails at once instead of fighting the UI for the keyboard.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bang_command_that_reads_the_terminal_fails_at_once() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, &format!("--prompt '!{}'", READS_TTY.replace('\'', "")))
+    else {
+        return;
+    };
+    ui.wait_for("1 command").await;
+    ui.send(b"\x0f").await;
+    ui.wait_for("tty-refused").await;
+    ui.quit().await;
+    let id = e.store().list(None, false).unwrap()[0].id.clone();
+    let h = e
+        .history(&id)
+        .iter()
+        .map(|m| m.to_string())
+        .collect::<String>();
+    assert!(
+        h.contains("tty-refused") && h.contains("tty-unwritable"),
+        "{h}"
+    );
+    // The command line itself spells it `got-""tty`.
+    assert!(!h.contains("got-tty"), "{h}");
+}

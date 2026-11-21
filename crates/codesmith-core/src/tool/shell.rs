@@ -1998,7 +1998,44 @@ fn command_env(
     env.insert("CODESMITH".into(), "1".into());
     env.insert("AI_AGENT".into(), ai_agent);
     env.insert("CODESMITH_SESSION_ID".into(), sc.session_id.clone());
+    for (k, v) in NONINTERACTIVE_ENV {
+        env.entry(k.to_string()).or_insert_with(|| v.to_string());
+    }
     env
+}
+
+/// Defaults that make a command fail rather than wait for an answer
+/// nobody can give (a command runs without a terminal, see
+/// [`own_session`]): git does not fall back to asking on the terminal,
+/// ssh never runs an askpass program, Git Credential Manager does not
+/// start an interactive sign-in, and Debian's package tools take their
+/// defaults. Each is set only when the command's environment (the
+/// session's or this process's, with the plugins' additions) does not
+/// already set it, even to an empty value: a user's own setting wins.
+/// `GIT_ASKPASS` is left alone: set empty it would also override a
+/// `core.askPass` in the user's git config.
+pub(crate) const NONINTERACTIVE_ENV: &[(&str, &str)] = &[
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("SSH_ASKPASS_REQUIRE", "never"),
+    ("GCM_INTERACTIVE", "never"),
+    ("DEBIAN_FRONTEND", "noninteractive"),
+];
+
+/// Make the child that is about to `exec` the leader of a new session
+/// (and so of a new process group, with the same ID as its PID), with no
+/// controlling terminal: opening `/dev/tty` then fails at once (ENXIO)
+/// instead of stopping the command as a background job of the UI's
+/// terminal (SIGTTIN, SIGTTOU) or drawing over the UI. The group is what
+/// a stop signals, so it still reaches everything the command starts.
+/// Called between `fork` and `exec`, where only async-signal-safe calls
+/// may run: `setsid` is one.
+#[cfg(unix)]
+pub(crate) fn own_session() -> std::io::Result<()> {
+    // SAFETY: setsid takes no pointers and touches no Rust state.
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Start the command under `shell -c` with stdout and stderr appended to
@@ -2024,8 +2061,22 @@ fn spawn(
         .filter(|v| !v.is_empty())
         .or_else(|| sc.env.get("AI_AGENT").filter(|v| !v.is_empty()).cloned())
         .unwrap_or_else(|| "codesmith".into());
+    // A user's own setting of a non-interactive default wins.
+    let set_already = |k: &str| {
+        sc.env.contains_key(k)
+            || match environment {
+                Some(vars) => vars.contains_key(k),
+                None => std::env::var_os(k).is_some(),
+            }
+    };
     if let Some(vars) = environment {
         cmd.env_clear().envs(vars);
+    }
+    // After `env_clear`, which would drop them.
+    for (k, v) in NONINTERACTIVE_ENV {
+        if !set_already(k) {
+            cmd.env(k, v);
+        }
     }
     cmd.args(shell_args(shell))
         .arg(&sc.command)
@@ -2045,8 +2096,14 @@ fn spawn(
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
         .kill_on_drop(true);
+    // Its own session, not just its own process group: no controlling
+    // terminal (see `own_session`). Not `process_group(0)` as well: a
+    // group leader cannot start a session.
     #[cfg(unix)]
-    cmd.process_group(0);
+    // SAFETY: `own_session` only calls setsid, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(own_session);
+    }
     cmd.spawn()
         .map_err(|e| format!("Unable to run {shell}: {e}"))
 }
@@ -2415,6 +2472,430 @@ mod tests {
             jobs.take_finished()[0].ending,
             Some(Ending::Signaled(_))
         ));
+    }
+
+    // ---------------------------------------------------------------------
+    // No terminal for a command: it runs in a session of its own, so a
+    // prompt that opens `/dev/tty` (git, ssh, sudo, `read < /dev/tty`)
+    // fails at once instead of stopping the command as a background job
+    // of the UI's terminal (SIGTTIN) or drawing over the UI. The commands
+    // are trivial and bounded; every wait has a deadline.
+    // ---------------------------------------------------------------------
+
+    /// The POSIX-compatible shells installed here.
+    #[cfg(unix)]
+    fn installed_shells() -> Vec<String> {
+        let mut found = vec!["/bin/sh".to_string()];
+        for name in ["bash", "zsh", "dash"] {
+            if let Some(p) = crate::shell_select::executable(name) {
+                found.push(p);
+            }
+        }
+        found
+    }
+
+    /// Set in a test binary that [`on_a_terminal`] started.
+    #[cfg(unix)]
+    const ON_A_TERMINAL: &str = "CODESMITH_TEST_ON_A_TERMINAL";
+
+    /// Run the test `name` (in this module) again in a child of this test
+    /// binary that leads a new session on a new pseudo-terminal, its
+    /// controlling terminal, in its foreground group: as the UI runs. A
+    /// command started there without a session of its own would be a
+    /// background job of that terminal. Fails unless the child passes
+    /// within `deadline`; it is killed (its whole group) at the deadline.
+    /// Returns false in the child, which then runs the test's body.
+    #[cfg(unix)]
+    fn on_a_terminal(name: &str, deadline: Duration) -> bool {
+        use std::io::Read;
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        if std::env::var_os(ON_A_TERMINAL).is_some() {
+            return false;
+        }
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: openpty writes the two descriptors; the other pointers
+        // may be null.
+        let r = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(r, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: openpty just returned them; nothing else owns them.
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let test = format!("{}::{name}", module_path!().split_once("::").unwrap().1);
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(ON_A_TERMINAL, "1")
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave.try_clone().unwrap()))
+            .stderr(Stdio::from(slave));
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().unwrap();
+        drop(cmd);
+        let pid = child.id() as i32;
+        let mut reader = std::fs::File::from(master);
+        let output = std::thread::spawn(move || {
+            let mut all = Vec::new();
+            let mut buf = [0u8; 4096];
+            // EOF, or EIO once the terminal's last user is gone.
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                all.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8_lossy(&all).into_owned()
+        });
+        let until = std::time::Instant::now() + deadline;
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break Some(s);
+            }
+            if std::time::Instant::now() >= until {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        // Whatever it left in its group goes too, passed or not.
+        // SAFETY: plain signal delivery to the child's own group.
+        unsafe { libc::killpg(pid, libc::SIGKILL) };
+        let status = status.or_else(|| {
+            let _ = child.kill();
+            child.wait().ok();
+            None
+        });
+        let text = output.join().unwrap();
+        match status {
+            Some(s) => assert!(s.success(), "{test} failed on a terminal:\n{text}"),
+            None => panic!("{test} did not finish within {deadline:?} on a terminal:\n{text}"),
+        }
+        assert!(text.contains("1 passed"), "{test} did not run:\n{text}");
+        true
+    }
+
+    /// Reads and writes the terminal, saying how each went.
+    #[cfg(unix)]
+    const USES_THE_TERMINAL: &str = "if read x < /dev/tty; then echo got-\"\"tty; \
+        else echo tty-refused; fi; echo drawn > /dev/tty || echo tty-unwritable";
+
+    /// Fixed: a command was only in a process group of its own, so on the
+    /// UI's terminal it was a background job: reading `/dev/tty` stopped
+    /// it (SIGTTIN) until the call's timeout, and writing drew over the UI.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_cannot_use_the_terminal_in_any_shell() {
+        if on_a_terminal(
+            "a_command_cannot_use_the_terminal_in_any_shell",
+            Duration::from_secs(60),
+        ) {
+            return;
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            for shell in installed_shells() {
+                let env = Env::new();
+                let mut ctx = env.ctx();
+                ctx.shell = shell.clone();
+                let started = std::time::Instant::now();
+                let out = run(
+                    &ctx,
+                    &json!({"command": USES_THE_TERMINAL, "description": "x", "timeout": 5000}),
+                )
+                .await
+                .unwrap()
+                .content;
+                let took = started.elapsed();
+                assert!(
+                    out.contains("tty-refused") && out.contains("tty-unwritable"),
+                    "{shell}: {out}"
+                );
+                assert!(!out.contains("got-tty"), "{shell}: {out}");
+                assert!(took < Duration::from_secs(4), "{shell} took {took:?}");
+            }
+        });
+    }
+
+    /// As above, for a command the user runs (`!command`): its output goes
+    /// to the session, so it is not interactive either.
+    #[cfg(unix)]
+    #[test]
+    fn a_users_command_cannot_use_the_terminal() {
+        if on_a_terminal(
+            "a_users_command_cannot_use_the_terminal",
+            Duration::from_secs(30),
+        ) {
+            return;
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let env = Env::new();
+            let jobs = Jobs::default();
+            let session = format!("ses_tty_{}", super::super::unique_id());
+            let (_, handle) = start_user(
+                "/bin/sh",
+                &session,
+                &env.root(),
+                USES_THE_TERMINAL,
+                &jobs,
+                ToolOutputConfig::default(),
+            )
+            .await
+            .unwrap();
+            let ran = tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .expect("the user's command did not finish")
+                .unwrap();
+            let _ = std::fs::remove_dir_all(crate::paths::session_output_dir(&session));
+            let out = &ran.output;
+            assert!(
+                out.contains("tty-refused") && out.contains("tty-unwritable"),
+                "{out}"
+            );
+            assert!(!out.contains("got-tty"), "{out}");
+        });
+    }
+
+    /// git asking for a username and password: no network (the host is
+    /// never contacted before a credential is needed, and `credential
+    /// fill` only asks), no credential helper, no git config of the user.
+    #[cfg(unix)]
+    fn git_asks(home: &Path) -> String {
+        format!(
+            "unset GIT_ASKPASS SSH_ASKPASS; export HOME='{}' GIT_CONFIG_NOSYSTEM=1 \
+             GIT_CONFIG_GLOBAL=/dev/null; printf 'protocol=https\\nhost=example.invalid\\n\\n' \
+             | git -c credential.helper= credential fill; echo git-exit=$?",
+            home.display()
+        )
+    }
+
+    /// The process environment without the variables under test (nor an
+    /// askpass program), with `extra` on top, as a session environment.
+    #[cfg(unix)]
+    fn process_env_with(extra: &[(&str, &str)]) -> BTreeMap<String, String> {
+        let mut vars: BTreeMap<String, String> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .filter(|(k, _)| {
+                !NONINTERACTIVE_ENV.iter().any(|(d, _)| d == k)
+                    && k != "GIT_ASKPASS"
+                    && k != "SSH_ASKPASS"
+            })
+            .collect();
+        vars.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        vars
+    }
+
+    /// Fixed: git asked for a username on the UI's terminal and the
+    /// command stopped. Now git does not ask (`GIT_TERMINAL_PROMPT=0`),
+    /// and with prompts turned back on by the user it still cannot open
+    /// the terminal: either way it fails at once.
+    #[cfg(unix)]
+    #[test]
+    fn git_asking_for_a_password_fails_at_once() {
+        if crate::shell_select::executable("git").is_none() {
+            eprintln!("skipped: git is not installed");
+            return;
+        }
+        if on_a_terminal(
+            "git_asking_for_a_password_fails_at_once",
+            Duration::from_secs(60),
+        ) {
+            return;
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            for (user, disabled) in [(None, true), (Some("1"), false)] {
+                let env = Env::new();
+                let ctx = env.ctx();
+                let extra: Vec<(&str, &str)> = user
+                    .map(|v| ("GIT_TERMINAL_PROMPT", v))
+                    .into_iter()
+                    .collect();
+                ctx.jobs
+                    .as_ref()
+                    .unwrap()
+                    .set_environment(Some(process_env_with(&extra)));
+                let started = std::time::Instant::now();
+                let out = run(
+                    &ctx,
+                    &json!({"command": git_asks(&env.root()), "description": "x", "timeout": 5000}),
+                )
+                .await
+                .unwrap()
+                .content;
+                let took = started.elapsed();
+                assert!(out.contains("git-exit=128"), "{user:?}: {out}");
+                assert_eq!(
+                    out.contains("terminal prompts disabled"),
+                    disabled,
+                    "{user:?}: {out}"
+                );
+                assert!(!out.contains("password="), "{user:?}: {out}");
+                assert!(took < Duration::from_secs(4), "{user:?} took {took:?}");
+            }
+        });
+    }
+
+    /// A command leads its own session and process group (the group a
+    /// stop signals has its pid as ID) and has no controlling terminal, in
+    /// every shell. Holds whether or not the tests have a terminal.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_command_leads_a_session_without_a_terminal() {
+        for shell in installed_shells() {
+            let env = Env::new();
+            let mut ctx = env.ctx();
+            ctx.shell = shell.clone();
+            let out = run(
+                &ctx,
+                &json!({"command": "echo pid=$$; ps -o pgid=,stat=,tty= -p $$", "description": "x"}),
+            )
+            .await
+            .unwrap()
+            .content;
+            let mut lines = out.lines();
+            let pid = lines.next().unwrap().strip_prefix("pid=").unwrap();
+            let fields: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+            let [pgid, stat, tty] = fields[..] else {
+                panic!("{shell}: {out}");
+            };
+            assert_eq!(pgid, pid, "{shell}: its own group: {out}");
+            assert!(stat.contains('s'), "{shell}: a session leader: {out}");
+            assert!(tty.chars().all(|c| c == '?'), "{shell}: no terminal: {out}");
+        }
+    }
+
+    /// The non-interactive defaults are set where the command's
+    /// environment does not set them, and a value the user set (even an
+    /// empty one) is kept. `GIT_ASKPASS` is never set.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_interactive_defaults_yield_to_the_users_own() {
+        let show = r#"printf '%s;' "GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT-unset}" "SSH_ASKPASS_REQUIRE=${SSH_ASKPASS_REQUIRE-unset}" "GCM_INTERACTIVE=${GCM_INTERACTIVE-unset}" "DEBIAN_FRONTEND=${DEBIAN_FRONTEND-unset}" "GIT_ASKPASS=${GIT_ASKPASS-unset}""#;
+        let cases: &[(&[(&str, &str)], &str)] = &[
+            (
+                &[],
+                "GIT_TERMINAL_PROMPT=0;SSH_ASKPASS_REQUIRE=never;GCM_INTERACTIVE=never;\
+                 DEBIAN_FRONTEND=noninteractive;GIT_ASKPASS=unset;",
+            ),
+            (
+                &[
+                    ("GIT_TERMINAL_PROMPT", "1"),
+                    ("SSH_ASKPASS_REQUIRE", "prefer"),
+                    ("GCM_INTERACTIVE", ""),
+                    ("GIT_ASKPASS", "/usr/bin/true"),
+                ],
+                "GIT_TERMINAL_PROMPT=1;SSH_ASKPASS_REQUIRE=prefer;GCM_INTERACTIVE=;\
+                 DEBIAN_FRONTEND=noninteractive;GIT_ASKPASS=/usr/bin/true;",
+            ),
+        ];
+        for (user, want) in cases {
+            let env = Env::new();
+            let ctx = env.ctx();
+            let vars = process_env_with(user);
+            ctx.jobs
+                .as_ref()
+                .unwrap()
+                .set_environment(Some(vars.clone()));
+            let out = run(&ctx, &json!({"command": show, "description": "x"}))
+                .await
+                .unwrap()
+                .content;
+            assert_eq!(out, *want, "{user:?}");
+            // The daemon is sent the same environment.
+            let sc = crate::plugin::ShellCommand {
+                session_id: "ses_x".into(),
+                cwd: env.root(),
+                command: String::new(),
+                env: Default::default(),
+            };
+            let sent = command_env(&sc, Some(&vars));
+            let shown: String = [
+                "GIT_TERMINAL_PROMPT",
+                "SSH_ASKPASS_REQUIRE",
+                "GCM_INTERACTIVE",
+                "DEBIAN_FRONTEND",
+                "GIT_ASKPASS",
+            ]
+            .iter()
+            .map(|k| format!("{k}={};", sent.get(*k).map_or("unset", |v| v.as_str())))
+            .collect();
+            assert_eq!(shown, *want, "{user:?} (daemon)");
+        }
+        // Without a session environment, this process's own counts.
+        let env = Env::new();
+        let out = run(
+            &env.ctx(),
+            &json!({"command": "printf %s \"$GIT_TERMINAL_PROMPT\"", "description": "x"}),
+        )
+        .await
+        .unwrap()
+        .content;
+        let mine = std::env::var("GIT_TERMINAL_PROMPT").unwrap_or_else(|_| "0".into());
+        assert_eq!(
+            out,
+            if mine.is_empty() {
+                "(no output)"
+            } else {
+                mine.as_str()
+            }
+        );
+    }
+
+    /// Fixed alongside: the command's own session is its process group
+    /// too, so a stop still reaches what it started: a `&` job and a
+    /// grandchild in a subshell, of a background command stopped by its
+    /// timeout after ignoring SIGTERM (so SIGKILL is sent to the group).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_still_kills_the_whole_group() {
+        let env = Env::new();
+        let ctx = env.ctx();
+        let jobs = ctx.jobs.clone().unwrap();
+        let (job, nested) = (env.root().join("job"), env.root().join("nested"));
+        let command = format!(
+            "trap '' TERM; sleep 30 & echo $! > '{}'; \
+             sh -c 'trap \"\" TERM; sleep 30 & echo $! > \"{}\"; wait' & wait",
+            job.display(),
+            nested.display()
+        );
+        run(
+            &ctx,
+            &json!({"command": command, "background": true, "timeout": 300}),
+        )
+        .await
+        .unwrap();
+        let ((p1, s1), (p2, s2)) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(
+                outlives(&job, KILL_GRACE + Duration::from_secs(5)),
+                outlives(&nested, KILL_GRACE + Duration::from_secs(5)),
+            )
+        })
+        .await
+        .expect("the stop did not finish");
+        assert!(!s1, "the `&` job {p1} survived the stop");
+        assert!(!s2, "the grandchild {p2} survived the stop");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while jobs.running() > 0 {
+                jobs.wait_any().await;
+            }
+        })
+        .await
+        .expect("the job did not end");
     }
 
     // ---------------------------------------------------------------------

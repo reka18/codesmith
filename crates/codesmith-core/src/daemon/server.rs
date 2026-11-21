@@ -934,16 +934,23 @@ fn create_pipe(shared: &Arc<Shared>, spec: PipeSpec) -> Response {
             Ok(w) => w,
             Err(e) => return Response::error(e.to_string()),
         };
-        std::process::Command::new(&spec.program)
-            .args(&spec.args)
+        let mut cmd = std::process::Command::new(&spec.program);
+        cmd.args(&spec.args)
             .env_clear()
             .envs(&spec.env)
             .current_dir(&spec.cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(write))
-            .stderr(std::process::Stdio::from(err))
-            .process_group(0)
-            .spawn()
+            .stderr(std::process::Stdio::from(err));
+        // Its own session (and so its own process group, which `signal`
+        // reaches), with no controlling terminal: the daemon has none
+        // either, but a command must not depend on how it was started.
+        // SAFETY: `own_session` only calls setsid, which is
+        // async-signal-safe.
+        unsafe {
+            cmd.pre_exec(crate::tool::shell::own_session);
+        }
+        cmd.spawn()
     };
     let child = match child {
         Ok(c) => c,

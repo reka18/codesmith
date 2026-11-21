@@ -99,6 +99,22 @@ last step, the model has to answer in text.
   else `$SHELL`, else the platform default (`/bin/zsh` on macOS, Bash
   elsewhere). Fish and Nushell, and a shell that cannot be found, fall back
   to that default. `$CODESMITH_SESSION_ID` is set.
+- Commands run without a terminal: each starts a session of its own (as
+  OpenCode's do), with no controlling terminal and stdin closed, so a
+  prompt that opens `/dev/tty` (git or ssh asking for a password, `sudo`,
+  gpg's pinentry, `read < /dev/tty`) fails at once instead of stopping the
+  command or drawing over the UI. `!command` at the prompt runs the same
+  way: its output goes to the session, not the terminal. Run a program
+  that needs a terminal in your own terminal, or in a terminal of
+  [`codesmith serve`](local-server.md), which has one of its own.
+- Unless the command's environment already sets them (even to an empty
+  value), CodeSmith also sets `GIT_TERMINAL_PROMPT=0`,
+  `SSH_ASKPASS_REQUIRE=never`, `GCM_INTERACTIVE=never` and
+  `DEBIAN_FRONTEND=noninteractive`, so git, ssh, Git Credential Manager and
+  Debian's package tools give up instead of asking. Set one in your shell
+  or the [session environment](local-server.md#session-environment) to
+  keep your own value. `GIT_ASKPASS` is left as it is: set empty, it would
+  also override a `core.askPass` in your git config.
 - Each command in a shell line is checked separately, including wrapped
   commands and redirect targets. See [shell commands](permissions.md#shell-commands).
 - The default timeout is two minutes. A command that outlives its timeout,
