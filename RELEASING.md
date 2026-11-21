@@ -127,7 +127,16 @@ Linux binaries are only checked with `file`; the script says which checks it
 skipped. `CODESMITH_SKIP_DOCKER=1` skips the containers on purpose. `--draft-upload` also needs a clean tree
 at the tag `v<version>`, pushed (`--verify-tag`), and runs
 `gh release create v<version> --draft --verify-tag --generate-notes` with the
-tarballs and `SHA256SUMS`.
+tarballs, `SHA256SUMS` and `BUILT-SHA256SUMS`.
+
+`BUILT-SHA256SUMS` is the manifest of what this Mac built: each tarball's
+hash, and for the macOS tarballs every member with its file's hash. The
+script ends by printing the manifest's own SHA-256 (`BUILT-SHA256SUMS
+sha256: ...`). **Write that hash down and carry it to the signing Macs
+yourself** (a note, a message to yourself: not the draft). The draft is not
+trusted: anyone who can change it could swap a tarball and rewrite
+`SHA256SUMS` to match, so both signing scripts check the draft against the
+manifest, and the manifest against that hash.
 
 `--draft-upload` refuses while `crates/codesmith/src/release_key.pub` holds
 no release key (only `PLACEHOLDER`), since such a release could not be
@@ -140,18 +149,25 @@ unsigned and stays a draft until `sign-release.sh` has uploaded
 The Developer ID private key never leaves skeptic-macmini.
 `scripts/sign-macos.sh` runs there once the draft release exists. It:
 
-1. refuses unless the release is still a draft;
-2. downloads the draft release's macOS tarballs and `SHA256SUMS` with `gh`, and
-   refuses to continue unless they match;
-3. signs each binary with `codesign --options runtime --timestamp` (hardened
+1. refuses unless `CODESMITH_BUILT_SUMS_SHA256` is set (the hash
+   `release.sh` printed) and the release is still a draft;
+2. downloads the draft's tarballs and `BUILT-SHA256SUMS` with `gh`, and
+   refuses to continue unless the manifest has that hash and every tarball,
+   Linux and macOS, matches it (the draft's `SHA256SUMS` is not used);
+3. refuses a macOS tarball holding anything but plain files and folders
+   under `codesmith-<version>-<target>/` (no symlinks or hardlinks, nothing
+   outside that folder), and extracts only its `codesmith` binary into a
+   folder of its own;
+4. signs each binary with `codesign --options runtime --timestamp` (hardened
    runtime and secure timestamp, both required for notarization);
-4. zips each signed binary with `ditto` and submits it with
+5. zips each signed binary with `ditto` and submits it with
    `xcrun notarytool submit --wait`;
-5. re-tars the signed binary and rewrites the macOS lines of `SHA256SUMS`;
-6. uploads the tarballs and `SHA256SUMS` with `gh release upload --clobber`,
+6. re-tars the signed binary with the tarball's other files and writes
+   `SHA256SUMS` from the manifest's Linux lines and the new macOS tarballs;
+7. uploads the tarballs and `SHA256SUMS` with `gh release upload --clobber`,
    and deletes a `SHA256SUMS.minisig` left on the draft by an earlier run
    (it would sign the old `SHA256SUMS`);
-7. prints the next step: run `scripts/sign-release.sh vX.Y.Z` on the
+8. prints the next step: run `scripts/sign-release.sh vX.Y.Z` on the
    minisign Mac.
 
 It does not need or run minisign. After it, the draft's `SHA256SUMS` is
@@ -188,7 +204,8 @@ repository; only the public key (the second line of
 another pins the key itself, so a changed key never slips through.
 
 ```sh
-scripts/sign-release.sh v0.2.0          # check the draft, sign, upload SHA256SUMS.minisig
+CODESMITH_BUILT_SUMS_SHA256=<hash> CODESMITH_TEAM_ID=<team> \
+  scripts/sign-release.sh v0.2.0        # check the draft, sign, upload SHA256SUMS.minisig
 scripts/sign-release.sh --check         # only check minisign, the key and a pinned key
 CODESMITH_DRY_RUN=1 scripts/sign-release.sh v0.2.0   # everything but the upload
 ```
@@ -196,15 +213,22 @@ CODESMITH_DRY_RUN=1 scripts/sign-release.sh v0.2.0   # everything but the upload
 Run it from a checkout of the tag: it trusts that checkout's
 `release_key.pub`. For `v0.2.0` it:
 
-1. refuses unless the release is still a draft;
-2. downloads the draft's `SHA256SUMS` (the one the mini rewrote) and its
-   tarballs, and refuses unless `SHA256SUMS` lists exactly the four
+1. refuses unless `CODESMITH_BUILT_SUMS_SHA256` (the hash `release.sh`
+   printed) and `CODESMITH_TEAM_ID` (your Apple Team ID) are set, and the
+   release is still a draft;
+2. downloads the draft's `SHA256SUMS` (the one the mini rewrote),
+   `BUILT-SHA256SUMS` and its tarballs, refuses unless the manifest has the
+   pinned hash, and refuses unless `SHA256SUMS` lists exactly the four
    `codesmith-0.2.0-*` tarballs and each tarball on the draft has the hash
    it lists. A mismatch on a macOS line means `sign-macos.sh` hasn't run,
    didn't finish uploading, or something else changed the draft;
-3. refuses unless both macOS binaries pass `codesign --verify --strict` with
-   a `Developer ID Application` authority, so it never signs checksums of
-   CI's unsigned builds;
+3. refuses unless the Linux lines of `SHA256SUMS` are the manifest's, each
+   macOS tarball holds only plain files and folders, exactly the members the
+   manifest lists, each file but the binary as built, and both macOS
+   binaries pass `codesign --verify --strict` with a `Developer ID
+   Application` authority and `TeamIdentifier` equal to `CODESMITH_TEAM_ID`,
+   so it never signs checksums of unsigned builds, of another team's, or of
+   anything else put on the draft;
 4. runs `minisign -S` with the trusted comment `codesmith 0.2.0 SHA256SUMS
    timestamp:<UTC time>` (minisign asks for the key's password);
 5. checks what `codesmith upgrade` checks: the signature is prehashed
@@ -326,16 +350,20 @@ in step 8, after both signing steps.
    release").
 4. **Build and upload the draft** (the build Mac):
    `scripts/release.sh 0.2.0 --draft-upload`. The draft has the four
-   tarballs and CI's `SHA256SUMS`, unsigned.
+   tarballs, `SHA256SUMS` and `BUILT-SHA256SUMS`, unsigned. **Copy the
+   `BUILT-SHA256SUMS sha256` it prints** and take it to both signing Macs
+   yourself, not through the draft.
 5. **Sign and notarize the macOS binaries on skeptic-macmini**, at a
    checkout of the tag:
 
    ```sh
+   CODESMITH_BUILT_SUMS_SHA256=<the hash from step 4> \
    CODESMITH_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
    CODESMITH_NOTARY_PROFILE=codesmith-notary \
    scripts/sign-macos.sh v0.2.0
    ```
 
+   It refuses unless every tarball on the draft is the one built in step 4.
    This signs and notarizes the macOS binaries, rewrites `SHA256SUMS` and
    uploads the tarballs and `SHA256SUMS`. It ends with: run
    `scripts/sign-release.sh v0.2.0` on the minisign Mac.
@@ -343,11 +371,14 @@ in step 8, after both signing steps.
 
    ```sh
    git fetch --tags && git checkout v0.2.0
+   CODESMITH_BUILT_SUMS_SHA256=<the hash from step 4> \
+   CODESMITH_TEAM_ID=<your Team ID> \
    scripts/sign-release.sh v0.2.0
    ```
 
-   It checks the draft's final `SHA256SUMS` against the macOS tarballs
-   (and the Linux ones), signs it (minisign asks for the key's password),
+   It checks the draft's final `SHA256SUMS` against the tarballs, the Linux
+   tarballs and the macOS tarballs' other files against the build manifest,
+   and the macOS binaries' Team ID, then signs it (minisign asks for the key's password),
    verifies the signature against `release_key.pub` and uploads
    `SHA256SUMS.minisig`.
 7. **Check the signature** on the draft (Skeptic-Mac) before publishing:

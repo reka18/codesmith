@@ -71,7 +71,9 @@ const CODESIGN: &str = r#"#!/bin/sh
 echo "codesign $*" >> "$STUB_LOG"
 case "$1" in
     --verify) exit "${STUB_CODESIGN_VERIFY:-0}" ;;
-    -dv) echo "Authority=${STUB_AUTHORITY:-Developer ID Application: Test (TEAMID)}" >&2 ;;
+    -dv)
+        echo "Authority=${STUB_AUTHORITY:-Developer ID Application: Test (TEAMID1234)}" >&2
+        echo "TeamIdentifier=${STUB_TEAM-TEAMID1234}" >&2 ;;
 esac
 "#;
 
@@ -85,8 +87,39 @@ esac
 
 const DITTO: &str = "#!/bin/sh\necho \"ditto $*\" >> \"$STUB_LOG\"\n";
 
+/// The Team ID the stand-in `codesign` reports, and the tests pin.
+const TEAM: &str = "TEAMID1234";
+
+/// release.sh's BUILT-SHA256SUMS, made the same way from the tarballs in
+/// `$1` (the draft): each tarball's hash, and for the macOS ones each
+/// member as tar lists it with its file's hash (64 dashes for a folder).
+const MANIFEST: &str = r#"
+set -eu
+cd "$1"
+x=$(mktemp -d)
+for t in codesmith-*.tar.gz; do
+    shasum -a 256 "$t"
+    case "$t" in
+        *apple-darwin.tar.gz)
+            rm -rf "$x"/*
+            tar -xzf "$t" -C "$x"
+            tar -tzf "$t" | LC_ALL=C sort | while IFS= read -r m; do
+                case "$m" in
+                    */) h=$(printf '%064d' 0 | tr 0 -) ;;
+                    *) h=$(shasum -a 256 "$x/$m" 2>/dev/null | cut -c1-64) ;;
+                esac
+                printf '%s  %s//%s
+' "$h" "$t" "$m"
+            done ;;
+    esac
+done | LC_ALL=C sort -k 2 > BUILT-SHA256SUMS
+rm -rf "$x"
+"#;
+
 struct World {
     dir: tempfile::TempDir,
+    /// The BUILT-SHA256SUMS hash release.sh "printed".
+    pin: std::cell::RefCell<String>,
 }
 
 impl World {
@@ -97,6 +130,7 @@ impl World {
     fn new(script: &str) -> World {
         let w = World {
             dir: tempfile::tempdir().unwrap(),
+            pin: Default::default(),
         };
         let repo = w.repo();
         fs::create_dir_all(repo.join("scripts")).unwrap();
@@ -161,6 +195,7 @@ impl World {
             let name = format!("codesmith-{VERSION}-{t}");
             fs::create_dir_all(stage.join(&name)).unwrap();
             fs::write(stage.join(&name).join("codesmith"), format!("binary {t}\n")).unwrap();
+            fs::write(stage.join(&name).join("LICENSE"), "MIT\n").unwrap();
             let ok = Command::new("/usr/bin/tar")
                 .env("COPYFILE_DISABLE", "1")
                 .arg("-C")
@@ -180,6 +215,66 @@ impl World {
             .output()
             .unwrap();
         assert!(out.status.success());
+        fs::write(self.draft().join("SHA256SUMS"), out.stdout).unwrap();
+        self.built();
+    }
+
+    /// Make BUILT-SHA256SUMS from the draft's tarballs as they are now (as
+    /// if release.sh had built them), and pin its hash.
+    fn built(&self) {
+        let ok = Command::new("/bin/sh")
+            .args(["-c", MANIFEST, "manifest"])
+            .arg(self.draft())
+            .env("TMPDIR", self.dir.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        *self.pin.borrow_mut() = sha256(&self.draft().join("BUILT-SHA256SUMS"));
+    }
+
+    /// Replace the draft tarball for `target` with one of `members`
+    /// (`(path under the stage, contents)`; a `->` in contents makes a
+    /// symlink to the rest), as tar packs them from `name`.
+    fn retar(&self, target: &str, members: &[(&str, &str)], top: &[&str]) {
+        let name = format!("codesmith-{VERSION}-{target}");
+        let stage = self.path(&format!("restage-{target}"));
+        let _ = fs::remove_dir_all(&stage);
+        fs::create_dir_all(stage.join(&name)).unwrap();
+        for (rel, body) in members {
+            let p = stage.join(&name).join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            match body.strip_prefix("->") {
+                Some(to) => std::os::unix::fs::symlink(to, &p).unwrap(),
+                None => fs::write(&p, body).unwrap(),
+            }
+        }
+        for t in top {
+            fs::write(stage.join(t), "evil\n").unwrap();
+        }
+        let ok = Command::new("/usr/bin/tar")
+            .env("COPYFILE_DISABLE", "1")
+            .arg("-C")
+            .arg(&stage)
+            .arg("-czf")
+            .arg(self.draft().join(format!("{name}.tar.gz")))
+            .arg(&name)
+            .args(top)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+    }
+
+    /// Rewrite the draft's SHA256SUMS to match its tarballs, as an attacker
+    /// who changed one would.
+    fn resum(&self) {
+        let out = Command::new("/usr/bin/shasum")
+            .current_dir(self.draft())
+            .args(["-a", "256"])
+            .args(TARGETS.map(|t| format!("codesmith-{VERSION}-{t}.tar.gz")))
+            .output()
+            .unwrap();
         fs::write(self.draft().join("SHA256SUMS"), out.stdout).unwrap();
     }
 
@@ -201,6 +296,8 @@ impl World {
             .env("STUB_LOG", self.path("log"))
             .env("DRAFT", self.draft())
             .env("CODESMITH_MINISIGN_KEY", self.key())
+            .env("CODESMITH_BUILT_SUMS_SHA256", self.pin.borrow().as_str())
+            .env("CODESMITH_TEAM_ID", TEAM)
             .stdin(std::process::Stdio::null());
         cmd
     }
@@ -236,6 +333,12 @@ impl World {
     fn signed(&self) -> bool {
         self.log().lines().any(|l| l.starts_with("minisign -S"))
     }
+}
+
+fn sha256(p: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(fs::read(p).unwrap());
+    d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +573,173 @@ fn sign_release_refuses_a_bad_signature_and_uploads_nothing() {
     }
 }
 
+/// Finding 2 of security review 8: a Linux tarball swapped on the draft,
+/// with SHA256SUMS rewritten to match, is refused: it is not in the manifest.
+#[test]
+fn sign_release_refuses_a_swapped_linux_tarball() {
+    if !have_system_tools() {
+        return;
+    }
+    let w = World::new("sign-release.sh");
+    w.retar(
+        "aarch64-unknown-linux-musl",
+        &[("codesmith", "evil\n")],
+        &[],
+    );
+    w.resum();
+    let (ok, out) = w.run("sign-release.sh", &[TAG], &[]);
+    assert!(
+        !ok && out.contains("is not the one release.sh built"),
+        "{out}"
+    );
+    assert!(!w.signed() && w.uploads().is_empty(), "{}", w.log());
+}
+
+#[test]
+fn sign_release_refuses_a_foreign_team_or_no_pinned_team() {
+    if !have_system_tools() {
+        return;
+    }
+    let w = World::new("sign-release.sh");
+    let (ok, out) = w.run("sign-release.sh", &[TAG], &[("STUB_TEAM", "EVILTEAM99")]);
+    assert!(
+        !ok && out.contains("signed by team EVILTEAM99, not TEAMID1234"),
+        "{out}"
+    );
+    assert!(!w.signed() && w.uploads().is_empty());
+    // No TeamIdentifier at all (ad hoc), or another team with a Developer
+    // ID authority naming ours.
+    let w = World::new("sign-release.sh");
+    let (ok, out) = w.run("sign-release.sh", &[TAG], &[("STUB_TEAM", "")]);
+    assert!(!ok && out.contains("not TEAMID1234"), "{out}");
+    assert!(!w.signed());
+    for team in ["", "teamid1234", "TEAM ID", "TEAM;ID"] {
+        let w = World::new("sign-release.sh");
+        let (ok, out) = w.run("sign-release.sh", &[TAG], &[("CODESMITH_TEAM_ID", team)]);
+        assert!(
+            !ok && out.contains("set CODESMITH_TEAM_ID"),
+            "{team:?}: {out}"
+        );
+        assert!(
+            !w.signed() && !w.log().contains("release download"),
+            "{team:?}"
+        );
+    }
+}
+
+/// The macOS tarballs must hold what was built, but for the binary: an
+/// extra member (a `SHA256SUMS` inside the folder), a changed file, a
+/// missing one, or a symlink is refused, even with SHA256SUMS rewritten.
+#[test]
+fn sign_release_refuses_macos_tarballs_with_other_contents() {
+    if !have_system_tools() {
+        return;
+    }
+    type Case<'a> = (&'a [(&'a str, &'a str)], &'a [&'a str], &'a str);
+    let cases: [Case; 6] = [
+        (
+            &[
+                ("codesmith", "signed\n"),
+                ("LICENSE", "MIT\n"),
+                ("SHA256SUMS", "x\n"),
+            ],
+            &[],
+            "holds other files than release.sh built",
+        ),
+        (
+            &[("codesmith", "signed\n"), ("LICENSE", "GPL\n")],
+            &[],
+            "holds other files than release.sh built",
+        ),
+        (
+            &[("codesmith", "signed\n")],
+            &[],
+            "holds other files than release.sh built",
+        ),
+        (
+            &[("codesmith", "signed\n"), ("LICENSE", "->/etc/passwd")],
+            &[],
+            "has a link",
+        ),
+        (
+            &[("codesmith", "->/bin/sh"), ("LICENSE", "MIT\n")],
+            &[],
+            "has a link",
+        ),
+        (
+            &[("codesmith", "signed\n"), ("LICENSE", "MIT\n")],
+            &["SHA256SUMS"],
+            "outside",
+        ),
+    ];
+    for (members, top, expect) in cases {
+        let w = World::new("sign-release.sh");
+        w.retar("x86_64-apple-darwin", members, top);
+        w.resum();
+        let (ok, out) = w.run("sign-release.sh", &[TAG], &[]);
+        assert!(!ok && out.contains(expect), "{members:?} {top:?}: {out}");
+        assert!(!w.signed() && w.uploads().is_empty(), "{members:?}");
+    }
+    // Only the binary may differ from the build: a re-signed binary passes.
+    let w = World::new("sign-release.sh");
+    w.retar(
+        "x86_64-apple-darwin",
+        &[("codesmith", "signed by the mini\n"), ("LICENSE", "MIT\n")],
+        &[],
+    );
+    w.resum();
+    let (ok, out) = w.run("sign-release.sh", &[TAG], &[]);
+    assert!(ok, "{out}");
+    assert!(w.signed());
+}
+
+#[test]
+fn sign_release_refuses_a_manifest_without_the_printed_hash() {
+    if !have_system_tools() {
+        return;
+    }
+    let w = World::new("sign-release.sh");
+    let pin = w.pin.borrow().clone();
+    w.retar(
+        "aarch64-unknown-linux-musl",
+        &[("codesmith", "evil\n")],
+        &[],
+    );
+    w.resum();
+    w.built();
+    *w.pin.borrow_mut() = pin;
+    let (ok, out) = w.run("sign-release.sh", &[TAG], &[]);
+    assert!(
+        !ok && out.contains("does not have the hash release.sh printed"),
+        "{out}"
+    );
+    assert!(!w.signed() && w.uploads().is_empty());
+    for pin in ["", "0", &"A".repeat(64)] {
+        let w = World::new("sign-release.sh");
+        let (ok, out) = w.run(
+            "sign-release.sh",
+            &[TAG],
+            &[("CODESMITH_BUILT_SUMS_SHA256", pin)],
+        );
+        assert!(
+            !ok && out.contains("CODESMITH_BUILT_SUMS_SHA256"),
+            "{pin:?}: {out}"
+        );
+        assert!(!w.signed() && !w.log().contains("release download"));
+    }
+    // --check needs neither.
+    let w = World::new("sign-release.sh");
+    let (ok, out) = w.run(
+        "sign-release.sh",
+        &["--check"],
+        &[
+            ("CODESMITH_BUILT_SUMS_SHA256", ""),
+            ("CODESMITH_TEAM_ID", ""),
+        ],
+    );
+    assert!(ok, "{out}");
+}
+
 #[test]
 fn sign_release_refuses_while_no_key_is_pinned() {
     if !have_system_tools() {
@@ -597,9 +867,234 @@ fn sign_macos_refuses_a_published_release_or_mismatched_tarballs() {
     bytes.extend_from_slice(b"changed");
     fs::write(&tarball, bytes).unwrap();
     let (ok, out) = w.run("sign-macos.sh", &[TAG], &sign_macos_env());
-    assert!(!ok && out.contains("do not match SHA256SUMS"), "{out}");
+    assert!(
+        !ok && out.contains("does not match BUILT-SHA256SUMS"),
+        "{out}"
+    );
     assert!(w.uploads().is_empty());
     assert!(!w.log().contains("codesign --force"));
+}
+
+/// Finding 2 of security review 8: the draft is not trusted. A tarball
+/// swapped on the draft, with SHA256SUMS rewritten to match it, used to be
+/// signed; now each must match the manifest whose hash release.sh printed.
+#[cfg(target_os = "macos")]
+#[test]
+fn sign_macos_refuses_a_swapped_tarball_even_with_matching_sums() {
+    if !have_system_tools() {
+        return;
+    }
+    for target in ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"] {
+        let w = World::new("sign-macos.sh");
+        w.retar(
+            target,
+            &[("codesmith", "evil binary\n"), ("LICENSE", "MIT\n")],
+            &[],
+        );
+        w.resum();
+        let (ok, out) = w.run("sign-macos.sh", &[TAG], &sign_macos_env());
+        assert!(
+            !ok && out.contains("does not match BUILT-SHA256SUMS"),
+            "{target}: {out}"
+        );
+        assert!(w.uploads().is_empty(), "{target}");
+        assert!(!w.log().contains("codesign --force"), "{target}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sign_macos_refuses_a_manifest_without_the_printed_hash() {
+    if !have_system_tools() {
+        return;
+    }
+    // The draft's manifest rewritten along with a swapped tarball.
+    let w = World::new("sign-macos.sh");
+    let pin = w.pin.borrow().clone();
+    w.retar("aarch64-apple-darwin", &[("codesmith", "evil\n")], &[]);
+    w.built();
+    *w.pin.borrow_mut() = pin;
+    let (ok, out) = w.run("sign-macos.sh", &[TAG], &sign_macos_env());
+    assert!(
+        !ok && out.contains("does not have the hash release.sh printed"),
+        "{out}"
+    );
+    assert!(w.uploads().is_empty() && !w.log().contains("codesign --force"));
+    // No hash, a malformed one, or no manifest on the draft.
+    for (pin, expect) in [
+        ("", "set CODESMITH_BUILT_SUMS_SHA256"),
+        ("ABC", "set CODESMITH_BUILT_SUMS_SHA256"),
+        ("abc", "must be 64 lowercase hex digits"),
+    ] {
+        let w = World::new("sign-macos.sh");
+        let mut env = sign_macos_env().to_vec();
+        env.push(("CODESMITH_BUILT_SUMS_SHA256", pin));
+        let (ok, out) = w.run("sign-macos.sh", &[TAG], &env);
+        assert!(!ok && out.contains(expect), "{pin:?}: {out}");
+        assert_eq!(w.log(), "", "{pin:?}");
+    }
+    let w = World::new("sign-macos.sh");
+    fs::remove_file(w.draft().join("BUILT-SHA256SUMS")).unwrap();
+    let (ok, out) = w.run("sign-macos.sh", &[TAG], &sign_macos_env());
+    assert!(!ok && out.contains("has no BUILT-SHA256SUMS"), "{out}");
+    assert!(w.uploads().is_empty());
+}
+
+/// A macOS tarball with a symlink, a hardlink-free but unsafe layout, or a
+/// member outside its folder (a top-level `SHA256SUMS` that unpacking used
+/// to drop over the work folder's) is refused before signing, even when
+/// the manifest lists it.
+#[cfg(target_os = "macos")]
+#[test]
+fn sign_macos_refuses_tarballs_with_links_or_members_outside_their_folder() {
+    if !have_system_tools() {
+        return;
+    }
+    type Case<'a> = (&'a [(&'a str, &'a str)], &'a [&'a str], &'a str);
+    let cases: [Case; 4] = [
+        (&[("codesmith", "->/etc/passwd")], &[], "has a link"),
+        (
+            &[
+                ("codesmith", "bin\n"),
+                ("docs/x.md", "->../../../SHA256SUMS"),
+            ],
+            &[],
+            "has a link",
+        ),
+        (&[("codesmith", "bin\n")], &["SHA256SUMS"], "outside"),
+        (&[("codesmith", "bin\n")], &["BUILT-SHA256SUMS"], "outside"),
+    ];
+    for (members, top, expect) in cases {
+        let w = World::new("sign-macos.sh");
+        w.retar("aarch64-apple-darwin", members, top);
+        w.built();
+        let (ok, out) = w.run("sign-macos.sh", &[TAG], &sign_macos_env());
+        assert!(!ok && out.contains(expect), "{members:?} {top:?}: {out}");
+        assert!(w.uploads().is_empty());
+        assert!(!w.log().contains("codesign --force"), "{}", w.log());
+    }
+}
+
+/// Only the binary is unpacked to be signed, and the final SHA256SUMS
+/// takes the Linux lines from the manifest, not from the draft's SHA256SUMS.
+#[cfg(target_os = "macos")]
+#[test]
+fn sign_macos_signs_only_the_binary_and_takes_linux_lines_from_the_manifest() {
+    if !have_system_tools() {
+        return;
+    }
+    let w = World::new("sign-macos.sh");
+    let built = fs::read_to_string(w.draft().join("BUILT-SHA256SUMS")).unwrap();
+    // A forged Linux line in the draft's SHA256SUMS is never used.
+    fs::write(
+        w.draft().join("SHA256SUMS"),
+        format!(
+            "{}  codesmith-2.0.0-x86_64-unknown-linux-musl.tar.gz\n",
+            "0".repeat(64)
+        ),
+    )
+    .unwrap();
+    let (ok, out) = w.run(
+        "sign-macos.sh",
+        &[TAG],
+        &[sign_macos_env()[0], ("CODESMITH_DRY_RUN", "1")],
+    );
+    assert!(ok, "{out}");
+    let sums = fs::read_to_string(w.path("cwd/codesmith-signed-2.0.0/SHA256SUMS")).unwrap();
+    assert_eq!(sums.lines().count(), 4, "{sums}");
+    for line in built
+        .lines()
+        .filter(|l| l.contains("linux") && !l.contains("//"))
+    {
+        assert!(sums.contains(line), "{sums}");
+    }
+    assert!(!sums.contains(&"0".repeat(64)), "{sums}");
+    let log = w.log();
+    let signs: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("codesign --force"))
+        .map(|l| l.rsplit(' ').next().unwrap())
+        .collect();
+    assert_eq!(signs.len(), 2);
+    for s in signs {
+        assert!(s.ends_with("/codesmith") && s.contains("/bin-"), "{s}");
+    }
+    // The re-tarred tarball keeps the other members as built.
+    let tarball = w.path("cwd/codesmith-signed-2.0.0/codesmith-2.0.0-aarch64-apple-darwin.tar.gz");
+    let out = Command::new("/usr/bin/tar")
+        .arg("-tzf")
+        .arg(&tarball)
+        .output()
+        .unwrap();
+    let mut names: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "codesmith-2.0.0-aarch64-apple-darwin/",
+            "codesmith-2.0.0-aarch64-apple-darwin/LICENSE",
+            "codesmith-2.0.0-aarch64-apple-darwin/codesmith",
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// release.sh's BUILT-SHA256SUMS
+
+/// The part of release.sh that writes BUILT-SHA256SUMS, run on the draft's
+/// tarballs, writes what the signing scripts expect (the tests' own
+/// manifest), and prints its hash.
+#[test]
+fn release_sh_writes_the_manifest_the_signing_scripts_check() {
+    if !have_system_tools() {
+        return;
+    }
+    let w = World::new("sign-release.sh");
+    let script = fs::read_to_string(repo_root().join("scripts/release.sh")).unwrap();
+    let start = script.find("# >>> built manifest").unwrap();
+    let end = script.find("# <<< built manifest").unwrap();
+    let part = &script[start..end];
+    let dist = w.path("dist");
+    fs::create_dir_all(&dist).unwrap();
+    for t in TARGETS {
+        let n = format!("codesmith-{VERSION}-{t}.tar.gz");
+        fs::copy(w.draft().join(&n), dist.join(&n)).unwrap();
+    }
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("set -eu\n{part}\nprintf '%s\\n' \"$built_sha\""))
+        .env("dist", &dist)
+        .env("version", VERSION)
+        .env("targets", TARGETS.join(" "))
+        .env("TMPDIR", w.dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let theirs = fs::read_to_string(dist.join("BUILT-SHA256SUMS")).unwrap();
+    let ours = fs::read_to_string(w.draft().join("BUILT-SHA256SUMS")).unwrap();
+    assert_eq!(theirs, ours);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        sha256(&dist.join("BUILT-SHA256SUMS"))
+    );
+    // Four tarball lines, and every macOS member with its hash.
+    assert_eq!(theirs.lines().filter(|l| !l.contains("//")).count(), 4);
+    let mac = format!("codesmith-{VERSION}-aarch64-apple-darwin");
+    for m in ["/", "/LICENSE", "/codesmith"] {
+        assert!(
+            theirs.contains(&format!("  {mac}.tar.gz//{mac}{m}\n")),
+            "{m}: {theirs}"
+        );
+    }
+    assert!(!theirs.contains("linux-musl.tar.gz//"), "{theirs}");
+    assert!(!dist.join("BUILT-SHA256SUMS.tmp").exists());
 }
 
 // ---------------------------------------------------------------------------

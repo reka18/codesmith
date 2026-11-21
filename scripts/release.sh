@@ -15,7 +15,9 @@
 #
 # Results go to dist/<version>/: codesmith-<version>-<target>.tar.gz, each
 # holding codesmith-<version>-<target>/ with the binary, LICENSE, README.md,
-# CHANGELOG.md and docs/, plus SHA256SUMS and the rendered Homebrew formula.
+# CHANGELOG.md and docs/, plus SHA256SUMS, BUILT-SHA256SUMS (the manifest the
+# signing scripts check the draft against; its SHA-256 is printed at the end)
+# and the rendered Homebrew formula.
 # The text files and docs/ come from HEAD (git archive), so only committed,
 # tracked files ship: nothing ignored or uncommitted in the working tree.
 #
@@ -23,7 +25,7 @@
 #                   instead of running it. Never talks to GitHub. (Default;
 #                   it also overrides --draft-upload.)
 #   --draft-upload  also run `gh release create vVERSION --draft --verify-tag`
-#                   with the tarballs and SHA256SUMS. Needs a clean tree at
+#                   with the tarballs, SHA256SUMS and BUILT-SHA256SUMS. Needs a clean tree at
 #                   the pushed tag vVERSION, and a release key in
 #                   crates/codesmith/src/release_key.pub. The draft stays
 #                   a draft: scripts/sign-macos.sh signs its macOS binaries
@@ -233,6 +235,39 @@ for t in $targets; do
         | grep -qx "codesmith-${version}-${t}/codesmith" || die "the ${t} tarball has no binary"
 done
 
+# BUILT-SHA256SUMS: what this Mac built, for the signing Macs to check the
+# draft against (the draft itself is not trusted). Each tarball's hash, and
+# for the macOS ones each member as tar lists it, with its file's hash (a
+# folder gets 64 dashes): sign-macos.sh replaces only the binary, so
+# sign-release.sh can check that nothing else changed. Its own SHA-256 is
+# printed below and must reach the signing Macs another way than the draft
+# (RELEASING.md, "Checklist").
+# >>> built manifest (tests run this part on its own)
+built="${dist}/BUILT-SHA256SUMS"
+: > "${built}.tmp"
+for t in $targets; do
+    name="codesmith-${version}-${t}"
+    (cd "$dist" && shasum -a 256 "${name}.tar.gz") >> "${built}.tmp"
+    case "$t" in
+        *apple-darwin)
+            x=$(mktemp -d)
+            tar -xzf "${dist}/${name}.tar.gz" -C "$x"
+            tar -tzf "${dist}/${name}.tar.gz" | LC_ALL=C sort | while IFS= read -r m; do
+                case "$m" in
+                    */) h=$(printf '%064d' 0 | tr 0 -) ;;
+                    *) h=$(shasum -a 256 "$x/$m" | cut -c1-64) ;;
+                esac
+                printf '%s  %s.tar.gz//%s\n' "$h" "$name" "$m"
+            done >> "${built}.tmp"
+            rm -rf "$x"
+            ;;
+    esac
+done
+LC_ALL=C sort -k 2 "${built}.tmp" > "$built"
+rm -f "${built}.tmp"
+built_sha=$(shasum -a 256 "$built" | cut -c1-64)
+# <<< built manifest
+
 # The formula and install.sh must work with what was built.
 if [ "$targets" = "$all" ]; then
     [ "$count" -eq 4 ] || die "expected 4 tarballs, found $count"
@@ -252,12 +287,18 @@ esac
 
 # ---------------------------------------------------------------- release
 
-set -- "${dist}"/codesmith-*.tar.gz "${dist}/SHA256SUMS"
+set -- "${dist}"/codesmith-*.tar.gz "${dist}/SHA256SUMS" "$built"
+built_note() {
+    printf '\nBUILT-SHA256SUMS sha256: %s\n' "$built_sha" >&2
+    printf '  Give this hash to the signing Macs yourself (not through the draft):\n' >&2
+    printf '  CODESMITH_BUILT_SUMS_SHA256=%s\n' "$built_sha" >&2
+}
 if [ "$mode" = dry-run ]; then
     say "dry run: not creating a release. With --draft-upload this runs:"
     printf '  gh release create %s --repo %s --draft --verify-tag --title "CodeSmith %s" --generate-notes \\\n' \
         "$tag" "$repo" "$tag" >&2
     for f in "$@"; do printf '    %s\n' "${f#"${root}/"}" >&2; done
+    built_note
     exit 0
 fi
 
@@ -265,6 +306,7 @@ say "create the draft release ${tag}"
 gh release create "$tag" "$@" --repo "$repo" --draft --verify-tag \
     --title "CodeSmith ${tag}" --generate-notes
 say "done: the draft ${tag} is NOT signed yet, and stays a draft. Next:"
-printf '  1. on skeptic-macmini: scripts/sign-macos.sh %s   (Developer ID, notarization, final SHA256SUMS)\n' "$tag" >&2
-printf '  2. on Skeptic-Mac:     scripts/sign-release.sh %s (minisign: uploads SHA256SUMS.minisig)\n' "$tag" >&2
+printf '  1. on skeptic-macmini: CODESMITH_BUILT_SUMS_SHA256=%s scripts/sign-macos.sh %s   (Developer ID, notarization, final SHA256SUMS)\n' "$built_sha" "$tag" >&2
+printf '  2. on Skeptic-Mac:     CODESMITH_BUILT_SUMS_SHA256=%s CODESMITH_TEAM_ID=<team> scripts/sign-release.sh %s (minisign: uploads SHA256SUMS.minisig)\n' "$built_sha" "$tag" >&2
 printf '  3. check and publish (RELEASING.md, "Checklist")\n' >&2
+built_note

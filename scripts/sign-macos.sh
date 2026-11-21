@@ -10,11 +10,24 @@
 # draft; publish it only after sign-release.sh has uploaded
 # SHA256SUMS.minisig (RELEASING.md).
 #
+#   CODESMITH_BUILT_SUMS_SHA256=<hash release.sh printed> \
 #   CODESMITH_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
 #   CODESMITH_NOTARY_PROFILE=codesmith-notary \
 #   scripts/sign-macos.sh v0.1.0
 #
+# The draft is not trusted: release.sh uploads BUILT-SHA256SUMS, the
+# manifest of what it built, and prints that file's SHA-256, which you bring
+# here yourself (CODESMITH_BUILT_SUMS_SHA256). This refuses unless the
+# draft's manifest has that hash and every tarball on the draft, Linux and
+# macOS, matches it, before anything is signed. Each macOS tarball must hold
+# only plain files and folders under codesmith-<version>-<target>/; only its
+# binary is extracted to be signed, in a folder of its own. The new
+# SHA256SUMS is made from the manifest's Linux lines and the re-tarred macOS
+# tarballs, never from the draft's SHA256SUMS.
+#
 # Environment:
+#   CODESMITH_BUILT_SUMS_SHA256  SHA-256 of BUILT-SHA256SUMS, as release.sh
+#                             printed it (required)
 #   CODESMITH_SIGN_IDENTITY   codesign identity (see `security find-identity -v -p codesigning`)
 #   CODESMITH_NOTARY_PROFILE  notarytool keychain profile, created once with
 #                             `xcrun notarytool store-credentials`
@@ -43,7 +56,13 @@ profile="${CODESMITH_NOTARY_PROFILE:-}"
 dry="${CODESMITH_DRY_RUN:-0}"
 bundle_id="${CODESMITH_BUNDLE_ID:-codesmith}"
 
+pinned="${CODESMITH_BUILT_SUMS_SHA256:-}"
+
 [ "$(uname -s)" = Darwin ] || die "run this on macOS"
+case "$pinned" in
+    *[!0-9a-f]*|"") die "set CODESMITH_BUILT_SUMS_SHA256 to the BUILT-SHA256SUMS hash release.sh printed (64 lowercase hex digits)" ;;
+esac
+[ "${#pinned}" = 64 ] || die "CODESMITH_BUILT_SUMS_SHA256 must be 64 lowercase hex digits"
 [ -n "$identity" ] || die "set CODESMITH_SIGN_IDENTITY"
 [ "$dry" = 1 ] || [ -n "$profile" ] || die "set CODESMITH_NOTARY_PROFILE"
 for c in gh codesign xcrun ditto shasum tar; do
@@ -63,24 +82,62 @@ trap 'exit 1' INT TERM
 say "working in $work"
 
 gh release download "$tag" --repo "$repo" --dir "$work" \
-    --pattern SHA256SUMS --pattern 'codesmith-*-apple-darwin.tar.gz'
-[ -f "$work/SHA256SUMS" ] || die "release $tag has no SHA256SUMS"
+    --pattern BUILT-SHA256SUMS --pattern 'codesmith-*.tar.gz'
+built="$work/BUILT-SHA256SUMS"
+[ -f "$built" ] || die "release $tag has no BUILT-SHA256SUMS (made by release.sh)"
+[ "$(shasum -a 256 "$built" | cut -c1-64)" = "$pinned" ] \
+    || die "the draft's BUILT-SHA256SUMS does not have the hash release.sh printed; the draft was changed, or the hash is wrong"
 
-# Refuse to sign anything that doesn't match what CI built.
-(cd "$work" && grep -- '-apple-darwin\.tar\.gz$' SHA256SUMS | shasum -a 256 -c -) \
-    || die "downloaded tarballs do not match SHA256SUMS"
+# Every tarball on the draft must be the one release.sh built.
+for target in aarch64-apple-darwin x86_64-apple-darwin \
+    aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+    name="codesmith-${version}-${target}.tar.gz"
+    line=$(grep "^[0-9a-f]\{64\}  ${name}\$" "$built" || true)
+    [ -n "$line" ] && [ "$(printf '%s\n' "$line" | grep -c .)" = 1 ] \
+        || die "BUILT-SHA256SUMS does not list $name exactly once"
+    [ -f "$work/$name" ] || die "missing $name on release $tag"
+    (cd "$work" && printf '%s\n' "$line" | shasum -a 256 -c - >/dev/null 2>&1) \
+        || die "$name on the draft does not match BUILT-SHA256SUMS: it is not what release.sh built"
+done
+
+# check_members TARBALL NAME: refuse a tarball holding anything but plain
+# files and folders under NAME/ (no links, devices or FIFOs, no absolute
+# or `..` paths).
+check_members() {
+    tar -tvzf "$1" > "$work/listing" || die "cannot list $1"
+    while IFS= read -r l; do
+        case "$l" in
+            l*|h*|-*" -> "*|-*" link to "*) die "$(basename "$1") has a link: $l" ;;
+            -*|d*) ;;
+            *) die "$(basename "$1") has a member that is not a plain file or folder: $l" ;;
+        esac
+    done < "$work/listing"
+    tar -tzf "$1" > "$work/names" || die "cannot list $1"
+    while IFS= read -r m; do
+        case "$m" in
+            "$2/"|"$2/"*) ;;
+            *) die "$(basename "$1") has a member outside $2/: $m" ;;
+        esac
+        case "/${m%/}/" in
+            */../*|*/./*|*//*) die "$(basename "$1") has an unsafe member name: $m" ;;
+        esac
+    done < "$work/names"
+}
 
 signed=""
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
     name="codesmith-${version}-${target}"
     tarball="$work/${name}.tar.gz"
-    [ -f "$tarball" ] || die "missing ${name}.tar.gz on release $tag"
+    check_members "$tarball" "$name"
 
-    say "unpacking $name"
-    rm -rf "${work:?}/$name"
-    tar -xzf "$tarball" -C "$work"
-    bin="$work/$name/codesmith"
-    [ -f "$bin" ] || die "$name.tar.gz has no codesmith binary"
+    say "unpacking the binary of $name"
+    bindir="$work/bin-$target"
+    rm -rf "$bindir"
+    mkdir "$bindir"
+    tar -xzf "$tarball" -C "$bindir" "${name}/codesmith" \
+        || die "$name.tar.gz has no codesmith binary"
+    bin="$bindir/$name/codesmith"
+    [ -f "$bin" ] && [ ! -L "$bin" ] || die "$name.tar.gz has no codesmith binary"
 
     say "signing $name"
     # --options runtime: hardened runtime, required for notarization.
@@ -107,14 +164,25 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
     fi
 
     say "repacking $name"
+    # The rest of the tarball (checked above, and matching what release.sh
+    # built), with the signed binary in place of the unsigned one.
+    tree="$work/tree-$target"
+    rm -rf "$tree"
+    mkdir "$tree"
+    tar -xzf "$tarball" -C "$tree"
+    rm -f "$tree/$name/codesmith"
+    cp "$bin" "$tree/$name/codesmith"
     rm -f "$tarball"
     # COPYFILE_DISABLE keeps macOS from adding ._ AppleDouble files.
-    COPYFILE_DISABLE=1 tar -C "$work" -czf "$tarball" "$name"
+    COPYFILE_DISABLE=1 tar -C "$tree" --no-xattrs --no-mac-metadata \
+        --uid 0 --gid 0 --uname root --gname root -czf "$tarball" "$name"
     signed="$signed $tarball"
 done
 
-# Rewrite the macOS lines of SHA256SUMS, keeping the Linux lines as CI made them.
-grep -v -- '-apple-darwin\.tar\.gz$' "$work/SHA256SUMS" > "$work/SHA256SUMS.new" || true
+# The final SHA256SUMS: the Linux lines as release.sh built them, and the
+# re-tarred macOS tarballs.
+grep "^[0-9a-f]\{64\}  codesmith-${version}-[a-z0-9_-]*-linux-musl\.tar\.gz\$" "$built" \
+    > "$work/SHA256SUMS.new" || die "BUILT-SHA256SUMS has no Linux lines"
 for t in $signed; do
     (cd "$work" && shasum -a 256 "$(basename "$t")") >> "$work/SHA256SUMS.new"
 done

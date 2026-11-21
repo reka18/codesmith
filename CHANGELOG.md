@@ -5,6 +5,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Release signing checks the draft against the build:** `release.sh`
+  writes `BUILT-SHA256SUMS`, a manifest of the tarballs it built (and of
+  each macOS tarball's files), uploads it with the draft and prints its
+  SHA-256. `sign-macos.sh` and `sign-release.sh` take that hash
+  (`CODESMITH_BUILT_SUMS_SHA256`) and refuse a draft whose tarballs don't
+  match the manifest. `sign-macos.sh` extracts only the binary, and refuses
+  tarballs with links or members outside their folder; `sign-release.sh`
+  also requires the macOS binaries' `TeamIdentifier` to be
+  `CODESMITH_TEAM_ID`. See [RELEASING.md](RELEASING.md).
 - **Secret files ask, for every agent:** reading `.env` files,
   `.git-credentials`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.minisign`,
   `~/.netrc`, the GitHub CLI's `hosts.yml`, Docker and Kubernetes
