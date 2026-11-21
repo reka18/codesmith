@@ -359,7 +359,11 @@ Where the tests live:
   `session/prompt` could arrive while the prompt was still being set up
   (its content read, the session taken), find no turn to stop, and be
   lost: the turn ran on. A prompt now notes the cancels that came after
-  it, and stops its turn as soon as it starts, answering `cancelled`.
+  it, and stops its turn as soon as it starts, answering `cancelled`. A
+  cancel that came just before the turn asked a permission also hung: the
+  request, made after the cancel withdrew the pending ones, blocked the
+  turn's thread for good. Such requests are now withdrawn too until the
+  turn has stopped.
 - **The configured model's object form** (`context/local-selection`):
   agents and commands took a model as `{"providerID", "model",
   "variant"}`, but the top-level `model` only as a string, so a config

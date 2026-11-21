@@ -2909,12 +2909,20 @@ impl Agent {
         // so that turn is the one stopped here.
         drop(slot.session.lock().await);
         let task = slot.task.lock().unwrap().take();
-        if let Some(task) = task {
+        if let Some(mut task) = task {
             let running = slot.running.lock().unwrap().take();
             task.abort();
-            // Unblocks a tool waiting on the client; the abort lands at its next await.
+            // Unblocks a tool waiting on the client; the abort lands at its
+            // next await. A request the turn makes after this (it was about
+            // to ask when the cancel came) blocks its thread, so the abort
+            // cannot land: withdraw those too until the turn has stopped.
             self.conn.drop_pending(sid);
-            let _ = task.await;
+            loop {
+                tokio::select! {
+                    _ = &mut task => break,
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => self.conn.drop_pending(sid),
+                }
+            }
             // `None`: the turn had already ended (and answered).
             if let Some(running) = running {
                 self.cancelled(sid, slot, running, reload).await;
