@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 54 | 6 | 0 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
-| Providers, models and credentials | 796 | 419 | 0 | 16 | 361 | 0 | 0 |
+| Providers, models and credentials | 796 | 419 | 0 | 0 | 377 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2905** | **80** | **22** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2905** | **80** | **6** | **2597** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -132,34 +132,12 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (22 cases in 3 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (6 cases in 2 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
-| [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-
-### Provider Plugins
-
-16 cases.
-
-- `plugin/provider-gitlab.test.ts`: discovers workflow models for the location and exposes their refs in the model registry
-- `plugin/provider-gitlab.test.ts`: uses OAuth access tokens for discovery
-- `plugin/provider-gitlab.test.ts`: sends requests to the instance an OAuth login was issued against
-- `plugin/provider-gitlab.test.ts`: does not discover with only an ambient GITLAB_TOKEN or configured apiKey
-- `plugin/provider-gitlab.test.ts`: discovers with a stored login without replacing configured model definitions
-- `plugin/provider-gitlab.test.ts`: scopes the SDK discovery cache to the active account
-- `plugin/provider-gitlab.test.ts`: gives up on unresponsive discovery so later account switches still load
-- `plugin/provider-gitlab.test.ts`: skips unauthenticated discovery and refreshes after credential changes, including failures
-- `plugin/provider-gitlab.test.ts`: creates SDKs with legacy default instance URL, token env, headers, and feature flags
-- `plugin/provider-gitlab.test.ts`: uses GITLAB_INSTANCE_URL when instanceUrl is not configured
-- `plugin/provider-gitlab.test.ts`: keeps configured instance URL, apiKey, aiGatewayHeaders, and featureFlags over env/defaults
-- `plugin/provider-gitlab.test.ts`: ignores non-GitLab SDK packages
-- `plugin/provider-gitlab.test.ts`: uses workflowChat for duo workflow models and preserves selectedModelRef
-- `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
-- `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
-- `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
 
 ### Browser Attachment
 
@@ -192,6 +170,7 @@ Tests for behaviour CodeSmith already has but no test pins (0 cases), by area, w
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 98 |
+| declined | 16 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 5 |
 
 ## Per-test inventory
@@ -2786,7 +2765,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (780 of 796)</summary>
+<details><summary>Providers, models and credentials (796 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3145,6 +3124,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P preserves the active connection after a failed token exchange (${response.status}) ×3 — `tests/oc_provider_logins.rs::oc_gitlab_oauth_preserves_the_active_connection_after_a_failed_token_exchange`
 - P reports EADDRINUSE with a clear message when the callback port is occupied — `tests/oc_provider_logins.rs::oc_gitlab_oauth_reports_eaddrinuse_with_a_clear_message_when_the_callback_port_is_occupied`
 - P honors GITLAB_OAUTH_CLIENT_ID for self-managed applications — `tests/oc_provider_logins.rs::oc_gitlab_oauth_honors_gitlab_oauth_client_id_for_self_managed_applications`
+
+**`plugin/provider-gitlab.test.ts`**
+
+- D discovers workflow models for the location and exposes their refs in the model registry · uses OAuth access tokens for discovery · sends requests to the instance an OAuth login was issued against · does not discover with only an ambient GITLAB_TOKEN or configured apiKey · discovers with a stored login without replacing configured model definitions · scopes the SDK discovery cache to the active account · gives up on unresponsive discovery so later account switches still load · skips unauthenticated discovery and refreshes after credential changes, including failures · creates SDKs with legacy default instance URL, token env, headers, and feature flags · uses GITLAB_INSTANCE_URL when instanceUrl is not configured · keeps configured instance URL, apiKey, aiGatewayHeaders, and featureFlags over env/defaults · ignores non-GitLab SDK packages · uses workflowChat for duo workflow models and preserves selectedModelRef · uses exact static workflow model ids when the provider recognizes them · uses provider feature flags instead of model settings feature flags · uses agenticChat with provider aiGatewayHeaders and feature flags for normal models — declined: GitLab Duo (see zz_ports_groups): declined; request with an issue
 
 **`plugin/provider-google-vertex.test.ts`**
 

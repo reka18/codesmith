@@ -132,9 +132,9 @@
 @plugin/provider-github-copilot.test.ts
 * :: feature :: Provider Plugins :: GitHub Copilot
 @plugin/provider-gitlab.test.ts
-* :: feature :: Provider Plugins :: GitLab Duo
+* :: design :: declined :: GitLab Duo (see zz_ports_groups): declined; request with an issue
 @plugin/provider-gitlab-oauth.test.ts
-* :: feature :: Provider Plugins :: GitLab Duo OAuth
+* :: design :: declined :: GitLab Duo OAuth: declined with GitLab Duo; request with an issue
 @plugin/provider-amazon-bedrock.test.ts
 * :: feature :: Provider Plugins :: Amazon Bedrock
 @plugin/provider-google-vertex.test.ts

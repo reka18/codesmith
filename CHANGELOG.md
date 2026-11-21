@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
+  backend reached through GitLab's unpublished Duo workflow and
+  agentic-chat SDK protocols; porting it would mean reimplementing a
+  proprietary protocol with no spec, for a narrow audience. Open an issue
+  to request it.
 - **`codesmith upgrade` never downgrades unasked:** with no version named,
   it refuses when the latest release is older than the running copy, and
   the update notice stays quiet. Name the version to roll back.

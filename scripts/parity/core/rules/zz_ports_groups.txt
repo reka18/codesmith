@@ -23,7 +23,7 @@
 @plugin/provider-github-copilot.test.ts
 662 :: ported :: tests/oc_copilot_auto.rs::oc_copilot_routes_auto_through_the_router_and_keeps_the_pick_until_compaction :: adapted: the router module driven directly; a session on github-copilot/auto routes each step through it
 @plugin/provider-gitlab.test.ts
-* :: feature :: Provider Plugins :: GitLab Duo chat (OpenCode drives it through the gitlab-ai-provider SDK's Duo workflow and agentic chat protocols, which CodeSmith would have to reimplement without a published spec)
+* :: design :: declined :: GitLab Duo: a GitLab-subscription-only backend reached through GitLab's unpublished Duo workflow and agentic-chat SDK protocols; declined (narrow audience, no published spec, high maintenance). Request it with an issue.
 @credential-refresh.test.ts
 22 :: ported :: src/providers/credentials.rs::oc_credential_refresh_saves_the_refreshed_value
 32 :: ported :: src/providers/credentials.rs::oc_credential_refresh_returns_the_stored_row_when_not_stale
