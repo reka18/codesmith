@@ -1598,9 +1598,18 @@ impl Runner {
 
     fn reconcile_watches(&self, db: &Store) -> Result<()> {
         let active: std::collections::HashSet<String> = active_watches(db)?.into_iter().collect();
+        // A watch in the middle of a run is not stopped: the run's handoff
+        // may already be accepted, and the watch stops itself after it.
+        let busy: std::collections::HashSet<String> = self
+            .inflight
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
         let mut w = self.watches.lock().unwrap();
         w.retain(|id, h| {
-            let keep = active.contains(id) && !h.is_finished();
+            let keep = (active.contains(id) || busy.contains(id)) && !h.is_finished();
             if !keep {
                 h.abort();
             }
@@ -1833,6 +1842,13 @@ impl Runner {
                     if e.fatal {
                         return Err(Watch::Fatal(e.message));
                     }
+                }
+                // Paused or removed while it ran: the watch ends here.
+                if get(db, id)
+                    .map_err(fatal)?
+                    .is_none_or(|a| a.status != "active")
+                {
+                    return Ok(());
                 }
                 continue;
             } else {
@@ -3192,6 +3208,285 @@ mod tests {
         })
         .unwrap();
         assert_eq!(get(&db, "aut_1").unwrap().unwrap().event, None);
+    }
+
+    #[test]
+    fn a_database_from_before_handoffs_migrates_with_its_runs_settled() {
+        let db = Store::memory().unwrap();
+        db.with_conn(|c| {
+            c.execute_batch("CREATE TABLE automation (id TEXT PRIMARY KEY, name TEXT NOT NULL, directory TEXT NOT NULL, session_id TEXT, trigger TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, next_due INTEGER, runs INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'null', last_outcome TEXT, last_run INTEGER, last_error TEXT, created INTEGER NOT NULL, event_position TEXT, session_rules TEXT);
+             CREATE TABLE automation_run (automation_id TEXT NOT NULL, run INTEGER NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, session_id TEXT, detail TEXT NOT NULL DEFAULT '', PRIMARY KEY (automation_id, run));
+             CREATE TABLE automation_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires INTEGER NOT NULL);
+             INSERT INTO automation (id, name, directory, trigger, action, status, next_due, runs, state, created) VALUES ('aut_1', 'n', '/p', '{\"type\":\"every\",\"every\":\"5 minutes\"}', '{\"type\":\"prompt\",\"prompt\":\"p\",\"to\":{\"subagent\":\"build\"}}', 'active', 0, 2, '{\"n\":2}', 0);
+             INSERT INTO automation_run VALUES ('aut_1', 1, 10, 'fired', 'ses_a', 'one');
+             INSERT INTO automation_run VALUES ('aut_1', 2, 20, 'failed', NULL, 'two');")?;
+            Ok(())
+        })
+        .unwrap();
+        let a = get(&db, "aut_1").unwrap().unwrap();
+        assert_eq!(
+            (a.runs, a.failures, a.retry_at, a.state.clone()),
+            (2, 0, None, json!({"n": 2}))
+        );
+        let r = runs(&db, "aut_1").unwrap();
+        assert_eq!(
+            r.iter()
+                .map(|r| (r.run, r.outcome.as_str(), r.detail.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "fired", "one"), (2, "failed", "two")],
+            "existing runs read as finished"
+        );
+        assert!(pending(&db, "aut_1").unwrap().is_empty());
+        assert!(stale_runs(&db, i64::MAX, i64::MAX).unwrap().is_empty());
+        // Migrating again is a no-op, and the next run claims as usual.
+        list(&db, None).unwrap();
+        let due = claim_due(&db, crate::store::now()).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(pending(&db, "aut_1").unwrap()[0].run, 3);
+    }
+
+    fn claimed(db: &Store) -> Automation {
+        create(
+            db,
+            new(
+                Trigger::Every {
+                    every: "5 minutes".into(),
+                    tz: None,
+                },
+                Action::Code {
+                    code: "1".into(),
+                    args: None,
+                },
+            ),
+        )
+        .unwrap();
+        let later = crate::store::now() + 10 * 60_000;
+        claim_due(db, later).unwrap().pop().unwrap().0
+    }
+
+    fn phase_of(db: &Store, id: &str, run: u64) -> String {
+        db.with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT phase FROM automation_run WHERE automation_id = ?1 AND run = ?2",
+                params![id, run as i64],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_claim_waits_for_the_last_run_to_settle() {
+        let db = Store::memory().unwrap();
+        let a = claimed(&db);
+        let far = crate::store::now() + 86_400_000;
+        assert!(
+            claim_due(&db, far).unwrap().is_empty(),
+            "an unsettled run blocks the next claim"
+        );
+        fail_run(&db, &a.id, a.runs, "x", None).unwrap();
+        assert_eq!(claim_due(&db, far).unwrap().len(), 1);
+        // A handoff waiting for its retry blocks it too.
+        db.with_conn(|c| Ok(c.execute("UPDATE automation_run SET phase = 'failed'", [])?))
+            .unwrap();
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation SET retry_at = ?2 WHERE id = ?1",
+                params![a.id, far + 600_001],
+            )?)
+        })
+        .unwrap();
+        assert!(
+            claim_due(&db, far + 600_000).unwrap().is_empty(),
+            "not before retry_at"
+        );
+        assert_eq!(claim_due(&db, far + 600_001).unwrap().len(), 1, "but at it");
+    }
+
+    #[test]
+    fn an_event_claim_is_a_compare_and_set_on_the_run_count() {
+        let db = Store::memory().unwrap();
+        let t: Trigger =
+            serde_json::from_value(json!({"type": "event", "server": "gh", "event": "push"}))
+                .unwrap();
+        let a = create(
+            &db,
+            new(
+                t,
+                Action::Code {
+                    code: "1".into(),
+                    args: None,
+                },
+            ),
+        )
+        .unwrap();
+        let p = EventPosition {
+            opened: true,
+            cursor: Some("c1".into()),
+            id: Some("e1".into()),
+        };
+        let run = claim_event(&db, &a, 1, &p, None).unwrap().unwrap();
+        assert_eq!(run.runs, 1);
+        // The position waits for the handoff.
+        assert_eq!(
+            get(&db, &a.id).unwrap().unwrap().event,
+            Some(EventPosition::default())
+        );
+        assert!(event_claimed(&db, &a.id, "e1").unwrap());
+        assert!(
+            claim_event(&db, &run, 2, &p, None).unwrap().is_none(),
+            "not while the first is unsettled"
+        );
+        fail_run(&db, &a.id, 1, "refused", None).unwrap();
+        assert!(
+            !event_claimed(&db, &a.id, "e1").unwrap(),
+            "a refused event replays"
+        );
+        assert!(
+            claim_event(&db, &a, 3, &p, None).unwrap().is_none(),
+            "a stale run count claims nothing"
+        );
+        assert!(claim_event(&db, &run, 3, &p, None).unwrap().is_some());
+    }
+
+    #[test]
+    fn each_phase_moves_only_from_the_phase_before_it() {
+        let db = Store::memory().unwrap();
+        let a = claimed(&db);
+        let r = a.runs;
+        let check = Checked {
+            state: Some(json!(1)),
+            ..Default::default()
+        };
+        // claimed -> checked, once.
+        assert!(save_check(&db, &a.id, r, &check).unwrap());
+        assert!(!save_check(&db, &a.id, r, &check).unwrap());
+        assert_eq!(phase_of(&db, &a.id, r), CHECKED);
+        // settle needs admitted.
+        settle(&db, &a.id, r, "fired", "ses_x", "d").unwrap();
+        assert_eq!(phase_of(&db, &a.id, r), CHECKED);
+        // checked -> admitted, once; the state comes with it.
+        let state = json!(1);
+        let v = Commit {
+            state: Some(&state),
+            done: false,
+            position: None,
+            label: "fired",
+        };
+        let admit = |db: &Store| {
+            db.with_conn(|c| commit_run(c, &a.id, r, Some(("ses_x", "m")), &v, None))
+                .unwrap()
+        };
+        assert!(admit(&db));
+        assert!(!admit(&db), "admitted once");
+        assert_eq!(phase_of(&db, &a.id, r), ADMITTED);
+        assert_eq!(get(&db, &a.id).unwrap().unwrap().state, json!(1));
+        // A deferral cannot undo an admitted run.
+        defer(&db, &a).unwrap();
+        assert_eq!(get(&db, &a.id).unwrap().unwrap().runs, r);
+        // admitted -> settled, once; failing a settled run changes nothing.
+        settle(&db, &a.id, r, "fired", "ses_x", "ok").unwrap();
+        settle(&db, &a.id, r, "failed", "ses_x", "late").unwrap();
+        fail_run(&db, &a.id, r, "later", None).unwrap();
+        let done = runs(&db, &a.id).unwrap();
+        assert_eq!(
+            (done[0].outcome.as_str(), done[0].detail.as_str()),
+            ("fired", "ok")
+        );
+        assert_eq!(phase_of(&db, &a.id, r), SETTLED);
+    }
+
+    #[test]
+    fn an_admission_is_refused_once_paused_or_overtaken() {
+        let db = Store::memory().unwrap();
+        let a = claimed(&db);
+        let state = json!("new");
+        let v = Commit {
+            state: Some(&state),
+            done: true,
+            position: None,
+            label: "fired",
+        };
+        let admit = |db: &Store, run: u64| {
+            db.with_conn(|c| {
+                let tx = c.unchecked_transaction()?;
+                let ok = commit_run(&tx, &a.id, run, Some(("ses_x", "m")), &v, None)?;
+                if ok {
+                    tx.commit()?;
+                }
+                Ok(ok)
+            })
+            .unwrap()
+        };
+        set_status(&db, &a.id, "paused").unwrap();
+        assert!(
+            !admit(&db, a.runs),
+            "a pause wins over a handoff not yet made"
+        );
+        assert_eq!(phase_of(&db, &a.id, a.runs), CLAIMED);
+        let b = get(&db, &a.id).unwrap().unwrap();
+        assert_eq!((b.state, b.status.as_str()), (Value::Null, "paused"));
+        set_status(&db, &a.id, "active").unwrap();
+        assert!(
+            !admit(&db, a.runs + 1),
+            "another run's count does not match"
+        );
+        assert!(admit(&db, a.runs));
+        let b = get(&db, &a.id).unwrap().unwrap();
+        assert_eq!((b.state, b.status.as_str()), (json!("new"), "done"));
+    }
+
+    #[test]
+    fn strikes_pause_on_the_third_and_handoffs_retry_then_pause() {
+        let db = Store::memory().unwrap();
+        let a = claimed(&db);
+        for n in 1..=3 {
+            let run = get(&db, &a.id).unwrap().unwrap().runs;
+            strike(&db, &a.id, run, "boom", false).unwrap();
+            let b = get(&db, &a.id).unwrap().unwrap();
+            assert_eq!(b.failures, n);
+            assert_eq!(b.status, if n == 3 { "paused" } else { "active" });
+            if n < 3 {
+                db.with_conn(|c| Ok(c.execute("UPDATE automation SET next_due = 0", [])?))
+                    .unwrap();
+                claim_due(&db, crate::store::now()).unwrap();
+            }
+        }
+        assert_eq!(
+            get(&db, &a.id).unwrap().unwrap().last_error.as_deref(),
+            Some("Paused after 3 failed runs: boom")
+        );
+        // Resuming starts the strikes over.
+        assert_eq!(set_status(&db, &a.id, "active").unwrap().failures, 0);
+
+        let b = claimed(&db);
+        for n in 1..=3 {
+            handoff_failed(&db, &b.id, b.runs, "db down").unwrap();
+            let c = get(&db, &b.id).unwrap().unwrap();
+            if n < 3 {
+                assert_eq!(phase_of(&db, &b.id, b.runs), CLAIMED);
+                assert!(c.retry_at.is_some());
+                assert_eq!(c.status, "active");
+            } else {
+                assert_eq!(phase_of(&db, &b.id, b.runs), FAILED);
+                assert_eq!(c.status, "paused");
+                assert_eq!(
+                    c.last_error.as_deref(),
+                    Some("Paused after 3 failed handoffs: db down")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn output_is_capped_on_a_character_boundary() {
+        assert_eq!(cap("short", 10), "short");
+        let s = "界".repeat(20);
+        let c = cap(&s, 10);
+        assert!(c.len() <= 10, "{c}");
+        assert_eq!(c, "界界…");
+        assert_eq!(cap("abcdef", 4), "a…");
+        assert!(cap(&"🧪".repeat(9000), OUTPUT_BUDGET).len() <= OUTPUT_BUDGET);
     }
 
     #[test]

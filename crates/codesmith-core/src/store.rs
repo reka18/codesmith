@@ -1680,6 +1680,65 @@ mod tests {
     }
 
     #[test]
+    fn an_admission_writes_its_prompt_once_and_only_with_its_commit() {
+        let db = Store::memory().unwrap();
+        let child = info("c", "/p", 1);
+        let prompt = Message::user("run 1");
+        let meta = serde_json::json!({"automation": {"id": "aut_1", "run": 1}});
+        // A refused commit writes nothing, not even the session.
+        assert_eq!(
+            db.admit(Some(&child), "c", &prompt, "auto_1", meta.clone(), |_| Ok(
+                false
+            ))
+            .unwrap(),
+            None
+        );
+        assert!(db.get("c").unwrap().is_none());
+        // A commit that fails rolls the session and prompt back.
+        assert!(db
+            .admit(Some(&child), "c", &prompt, "auto_1", meta.clone(), |_| Err(
+                anyhow!("x")
+            ))
+            .is_err());
+        assert!(db.get("c").unwrap().is_none());
+        let seq = db
+            .admit(Some(&child), "c", &prompt, "auto_1", meta.clone(), |_| {
+                Ok(true)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(db.tagged_message("c", "auto_1").unwrap(), Some(seq));
+        // Admitting the same key again adopts the message.
+        let again = db
+            .admit(Some(&child), "c", &prompt, "auto_1", meta, |_| Ok(true))
+            .unwrap();
+        assert_eq!(again, Some(seq));
+        assert_eq!(db.history("c").unwrap(), vec![prompt.clone()]);
+        assert!(!db.replied_after("c", seq).unwrap());
+        let call = Message {
+            role: codesmith_ai::Role::Assistant,
+            parts: vec![codesmith_ai::Part::ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                input: serde_json::json!({}),
+                meta: None,
+            }],
+        };
+        db.append("c", &Record::Message { message: call }).unwrap();
+        assert!(
+            !db.replied_after("c", seq).unwrap(),
+            "a tool call is not an answer"
+        );
+        let answer = Message {
+            role: codesmith_ai::Role::Assistant,
+            parts: vec![codesmith_ai::Part::text("done")],
+        };
+        db.append("c", &Record::Message { message: answer })
+            .unwrap();
+        assert!(db.replied_after("c", seq).unwrap());
+    }
+
+    #[test]
     fn session_turn_leases() {
         let db = Store::memory().unwrap();
         assert_eq!(db.session_holder("s").unwrap(), None);
