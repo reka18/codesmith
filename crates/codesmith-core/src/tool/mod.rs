@@ -8,6 +8,7 @@ mod grep;
 pub mod html_markdown;
 pub mod image_generate;
 pub mod input_repair;
+pub mod input_schema;
 mod lsp;
 pub mod patch;
 pub(crate) mod read;

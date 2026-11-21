@@ -33,7 +33,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
-| Tool registry, schemas, placement | 100 | 30 | 0 | 3 | 58 | 9 | 0 |
+| Tool registry, schemas, placement | 100 | 34 | 0 | 0 | 57 | 9 | 0 |
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2462** | **44** | **45** | **2502** | **535** | **0** |
+| **Total** | **5588** | **2466** | **44** | **42** | **2501** | **535** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -103,7 +103,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (45 cases in 7 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (42 cases in 6 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -111,7 +111,6 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
-| [Tool Input Validation](#tool-input-validation) | 3 | validating a tool's input against its JSON Schema before running it (CodeSmith repairs the input, then the tool or MCP server reports what is wrong) |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Context-Tier Pricing](#context-tier-pricing) | 2 | pricing a step at the catalog tier its context size reaches (CodeSmith prices every step at the base price, and a model with only tiered prices at none) |
 
@@ -167,14 +166,6 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 - `browser-attach.test.ts`: a replaced attachment's revoke never removes its replacement's grant
 - `browser-attach.test.ts`: disposing the plugin revokes the browser rules before the location finishes closing
 - `browser-idle.test.ts`: idle eviction ends the browser attachment and permits a fresh attachment
-
-### Tool Input Validation
-
-3 cases.
-
-- `tool-schema.test.ts`: input error prompts limit normalized issues
-- `tool-schema.test.ts`: raw JSON schemas validate and decode tool input
-- `tool-schema.test.ts`: raw JSON schemas resolve draft-07 definitions
 
 ### Voice
 
@@ -807,7 +798,7 @@ Tests for behaviour CodeSmith already has but no test pins (535 cases), by area,
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 97 |
+| Other (each says why) | 96 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
@@ -1892,7 +1883,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool registry, schemas, placement (88 of 100)</summary>
+<details><summary>Tool registry, schemas, placement (91 of 100)</summary>
 
 
 **`plugin/tool-input-repair-integration.test.ts`**
@@ -1949,8 +1940,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D portable schemas validate and describe typed tools — platform: Standard Schema validators are JavaScript's interface for typed tools; CodeSmith's tools take JSON Schema
 - D Zod schemas validate, transform, and describe typed tools — effect-internal: Effect/Zod schema projection
 - D portable schema failures become tool failures — platform: Standard Schema validators are JavaScript's interface for typed tools; CodeSmith's tools take JSON Schema
-- D Effect schema failures use normalized input issues · canonical results carry metadata with typed output — effect-internal: Effect/Zod schema projection
-- D raw JSON schemas pass input through when they cannot be imported — other: CodeSmith does not validate tool input against its schema, so every input passes through (after repair)
+- D Effect schema failures use normalized input issues — effect-internal: Effect/Zod schema projection
+- P input error prompts limit normalized issues — `src/tool/input_schema.rs::oc_tool_schema_input_error_prompts_limit_normalized_issues`
+- D canonical results carry metadata with typed output — effect-internal: Effect/Zod schema projection
+- P raw JSON schemas validate and decode tool input — `src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_validate_and_decode_tool_input` (adapted: issues and the echoed arguments come in property name order (CodeSmith's JSON maps are sorted). In a session: tests/oc_tool_input_validation.rs (built-in, MCP, Code Mode and plugin tools))
+- P raw JSON schemas resolve draft-07 definitions — `src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_resolve_draft_07_definitions` (adapted: the issue names what the reference expects ("Expected string" where OpenCode says "Expected value"))
+- P raw JSON schemas pass input through when they cannot be imported — `src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_pass_input_through_when_they_cannot_be_imported`
 - D raw JSON schema validation does not keep the caller alive — effect-internal: Effect/Zod schema projection
 
 </details>

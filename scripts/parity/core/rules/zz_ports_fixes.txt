@@ -2,3 +2,9 @@
 
 @session-runner.test.ts
 7605 :: fixed :: tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted :: an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step
+
+@tool-schema.test.ts
+389 :: ported :: src/tool/input_schema.rs::oc_tool_schema_input_error_prompts_limit_normalized_issues
+436 :: ported :: src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_validate_and_decode_tool_input :: adapted: issues and the echoed arguments come in property name order (CodeSmith's JSON maps are sorted). In a session: tests/oc_tool_input_validation.rs (built-in, MCP, Code Mode and plugin tools)
+494 :: ported :: src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_resolve_draft_07_definitions :: adapted: the issue names what the reference expects ("Expected string" where OpenCode says "Expected value")
+518 :: ported :: src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_pass_input_through_when_they_cannot_be_imported

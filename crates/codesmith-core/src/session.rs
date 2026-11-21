@@ -335,6 +335,9 @@ pub struct Session {
     /// message, and its store sequence number when it was recorded then.
     /// The next turn takes it into the history (see [`Streamed`]).
     interrupted: InterruptedSlot,
+    /// Tools' input schemas, compiled once each (see
+    /// [`tool::input_schema`]).
+    input_schemas: tool::input_schema::Cache,
     title_task: Option<TitleTask>,
     /// A title waiting for the turn's first response: its first message
     /// and how it is made (see [`TitlePlan::defer`]).
@@ -752,6 +755,7 @@ impl Session {
             store: store.map(Arc::new),
             stored,
             interrupted: Arc::default(),
+            input_schemas: Default::default(),
             title_task: None,
             title_pending: None,
             loaded: loaded.clone(),
@@ -1116,6 +1120,31 @@ impl Session {
             _ => input,
         };
         (name, offered, ran, input)
+    }
+
+    /// Check a call's `input` against the input schema of the tool as
+    /// offered (OpenCode decodes it before the tool runs): `None` when it
+    /// is valid, with the properties a closed object does not name
+    /// dropped, or else the error the model gets to call again with.
+    /// Code Mode's `execute` checks its own input; the calls its program
+    /// makes are checked as they run.
+    fn check_input(
+        &self,
+        offered: &str,
+        ran: &str,
+        input: &mut serde_json::Value,
+    ) -> Option<String> {
+        if ran == crate::codemode::TOOL {
+            return None;
+        }
+        let (_, schema) = self.turn.schemas.iter().find(|(n, _)| n == offered)?;
+        match self.input_schemas.check(offered, schema, input) {
+            Ok(checked) => {
+                *input = checked;
+                None
+            }
+            Err(e) => Some(e),
+        }
     }
 
     /// After a step's tool results: the instruction files its reads bring
@@ -2229,7 +2258,13 @@ impl Session {
                     agent: self.agent.id.clone(),
                 };
                 let refused = plugins.tool_before(&self.loaded.config, &mut call).err();
-                let input = call.input.clone();
+                let mut input = call.input.clone();
+                // Checked against the schema as offered once repair and the
+                // plugins' hooks are done, so no tool sees invalid input.
+                let invalid = match runner::invalid_json(&input) {
+                    None => self.check_input(&offered, &name, &mut input),
+                    Some(_) => None,
+                };
                 let started = std::time::Instant::now();
                 let verdict = repeats.check(&name, &input);
                 if verdict == Repeat::Abort {
@@ -2264,6 +2299,7 @@ impl Session {
                         runner::invalid_input(runner::invalid_json(&input).unwrap_or(""), length),
                         true,
                     ),
+                    _ if invalid.is_some() => (invalid.clone().unwrap_or_default(), true),
                     _ if verdict == Repeat::Refuse => (RepeatGuard::refusal(&name), true),
                     _ if refused.is_some() => (refused.clone().unwrap_or_default(), true),
                     _ if name == crate::codemode::TOOL && !self.code_entries().is_empty() => {
@@ -3466,12 +3502,33 @@ impl Session {
             .map(|e| e.tool.as_str())
             .collect();
         let builtins = &builtins;
+        let schemas: Vec<(&str, &serde_json::Value)> = entries
+            .iter()
+            .map(|e| (e.tool.as_str(), &e.schema))
+            .collect();
+        let schemas = &schemas;
         let out = crate::codemode::execute(
             code,
             &entries,
             crate::codemode::MAX_TOOL_CALLS,
             crate::codemode::TIMEOUT,
-            |tool, args| async move {
+            |tool, mut args| async move {
+                // A call repaired and checked against the schema the
+                // program was shown.
+                if tool != crate::codemode::fetch::TOOL {
+                    let schema = schemas.iter().find(|(t, _)| *t == tool).map(|(_, s)| *s);
+                    if let Some(schema) = schema {
+                        let repaired = tool::input_repair::repair(&args, schema);
+                        match self.input_schemas.check(&tool, schema, &repaired) {
+                            Ok(checked) => args = checked,
+                            Err(e) => {
+                                let row = progress.start(&tool, Some(&args));
+                                progress.settle(row, false);
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
                 let row = if tool == crate::codemode::fetch::TOOL {
                     progress.start("fetch", Some(&crate::codemode::fetch::display(&args)))
                 } else {

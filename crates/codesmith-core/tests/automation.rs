@@ -1158,7 +1158,8 @@ async fn runs_start_a_child_of_the_creating_session_unless_told_to_continue_it()
     assert_eq!(r.session_id.as_deref(), Some(s.id.as_str()));
     assert_eq!(texts(&db, &s.id).len(), own + 2);
 
-    // `agent` can't go with target "session"; an unknown target is refused.
+    // `agent` can't go with target "session"; an unknown target fails the
+    // tool's schema before the tool runs.
     for (bad, want) in [
         (
             json!({"action": "create", "prompt": "x", "agent": "plan", "target": "session", "trigger": {"type": "every", "every": "1 hour"}}),
@@ -1166,7 +1167,7 @@ async fn runs_start_a_child_of_the_creating_session_unless_told_to_continue_it()
         ),
         (
             json!({"action": "create", "prompt": "x", "target": "elsewhere", "trigger": {"type": "every", "every": "1 hour"}}),
-            "unknown target",
+            "- target: Expected \"child\" | \"session\"",
         ),
     ] {
         let mut out = Collect(String::new());

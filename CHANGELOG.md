@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Tool input validation:** a call's input is checked against the tool's
+  JSON Schema after repair, as OpenCode checks it. Input that does not fit
+  never reaches the tool: the call fails with the issues (up to five) and
+  the arguments, for the model to call again. Built-in, MCP and plugin
+  tools, and calls from Code Mode programs. Each schema is compiled once.
 - An interrupted turn (**Esc**) keeps the text and reasoning the model had
   streamed, as a failed stream does: they are saved at once and replayed in
   the next turn, without the step's unfinished calls or provider state.

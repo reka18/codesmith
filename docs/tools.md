@@ -48,6 +48,34 @@ allows none. MCP tools called from Code Mode are repaired the same way. A
 call to `bash` when no tool has that name runs as `shell`, and its result
 tells the model to call `shell` next time.
 
+Then the input is checked against that schema, as OpenCode checks it: input
+that still does not fit (a wrong type, a missing required field, a value out
+of range or not among the allowed ones) never reaches the tool. The call
+fails with what is wrong, up to five issues, and the arguments as given, so
+the model can call again:
+
+```text
+Invalid arguments for tool "write":
+- content: Expected string
+
+Arguments provided:
+{
+  "content": 5,
+  "path": "out.txt"
+}
+
+Update the arguments and call the tool again.
+```
+
+This covers built-in, MCP and plugin tools, and the calls a Code Mode
+program makes (the program gets the error). Fields an object that allows no
+extras does not name are dropped. The check covers the parts of JSON Schema
+tool schemas use (`type`, `enum`, `const`, bounds, lengths, `pattern`,
+`items`, `properties`, `required`, `additionalProperties`, `allOf`/`anyOf`/
+`oneOf` and local `$ref`s) and ignores the rest (`format`, `not`, ...); a
+schema with a `$ref` it cannot resolve checks nothing. Each schema is
+compiled once.
+
 ### Freeform tools
 
 As in OpenCode, `execute` and `patch` can take their one input as raw text
