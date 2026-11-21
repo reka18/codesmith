@@ -16,6 +16,8 @@
 # Results go to dist/<version>/: codesmith-<version>-<target>.tar.gz, each
 # holding codesmith-<version>-<target>/ with the binary, LICENSE, README.md,
 # CHANGELOG.md and docs/, plus SHA256SUMS and the rendered Homebrew formula.
+# The text files and docs/ come from HEAD (git archive), so only committed,
+# tracked files ship: nothing ignored or uncommitted in the working tree.
 #
 #   --dry-run       build, smoke-test and package, then print the gh command
 #                   instead of running it. Never talks to GitHub. (Default;
@@ -101,6 +103,7 @@ need cargo "install Rust with rustup (https://rustup.rs)"
 need rustup "install Rust with rustup (https://rustup.rs)"
 need xcrun "install Xcode or run: xcode-select --install"
 need shasum "part of macOS"
+need git "install Xcode or run: xcode-select --install"
 case "$targets" in
     *linux*)
         need zig "brew install zig"
@@ -196,9 +199,11 @@ mkdir -p "$dist"
 for t in $targets; do
     name="codesmith-${version}-${t}"
     mkdir "${dist}/${name}"
-    cp "${target_dir}/${t}/release/codesmith" LICENSE README.md CHANGELOG.md "${dist}/${name}/"
-    # The README links into docs/, so ship the guide too.
-    cp -R docs "${dist}/${name}/docs"
+    cp "${target_dir}/${t}/release/codesmith" "${dist}/${name}/"
+    # The README links into docs/, so ship the guide too. Only what HEAD
+    # tracks: an ignored or untracked file under docs/ never ships.
+    git archive --format=tar HEAD LICENSE README.md CHANGELOG.md docs \
+        | tar -x -C "${dist}/${name}"
     # No AppleDouble files, extended attributes or local user names.
     COPYFILE_DISABLE=1 tar -C "$dist" --no-xattrs --no-mac-metadata \
         --uid 0 --gid 0 --uname root --gname root \

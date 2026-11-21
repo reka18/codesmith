@@ -47,6 +47,15 @@ work, but zig is one formula for both architectures and needs no per-target
 Each build is packaged as `codesmith-<version>-<target>.tar.gz`, containing a
 `codesmith-<version>-<target>/` directory with the binary, `LICENSE`,
 `README.md`, `CHANGELOG.md` and the `docs/` guide, plus a `SHA256SUMS` file.
+The text files and `docs/` are taken from `HEAD` with `git archive`, so only
+committed, tracked files ship; an ignored or uncommitted file in the working
+tree never does (a dry run with local edits packages the committed docs).
+
+**Known limitation:** `SHA256SUMS` is not signed. It comes from the same
+release as the tarballs, so it catches a corrupt download but not a release
+whose tarballs and checksums were both replaced; `codesmith upgrade`, the
+Homebrew formula and `install.sh` trust it the same way. Signing it needs a
+key-management decision that has not been made.
 Releases are created as **drafts** with `gh release create --draft` and stay
 drafts until the macOS binaries are signed, so nobody downloads an unsigned
 build from `/releases/latest` (which is also what `codesmith upgrade` reads).
