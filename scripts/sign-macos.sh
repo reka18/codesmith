@@ -1,9 +1,14 @@
 #!/bin/sh
-# Sign and notarize the macOS binaries of a CodeSmith release, rewrite
-# SHA256SUMS, sign it with minisign (scripts/sign-release.sh), then replace
-# them on the GitHub Release and add SHA256SUMS.minisig. Run this on the Mac
-# that holds the Developer ID key and the minisign secret key; nothing here
+# Sign and notarize the macOS binaries of a CodeSmith draft release, rewrite
+# the macOS lines of SHA256SUMS, and replace both on the draft. Run this on
+# skeptic-macmini, the Mac that holds the Developer ID key; nothing here
 # needs (or should be given) CI secrets.
+#
+# It does not run minisign: the minisign key lives on another Mac
+# (Skeptic-Mac). Afterwards the draft's SHA256SUMS is final but unsigned, and
+# the next step is scripts/sign-release.sh TAG on that Mac. The draft stays a
+# draft; publish it only after sign-release.sh has uploaded
+# SHA256SUMS.minisig (RELEASING.md).
 #
 #   CODESMITH_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
 #   CODESMITH_NOTARY_PROFILE=codesmith-notary \
@@ -15,7 +20,6 @@
 #                             `xcrun notarytool store-credentials`
 #   CODESMITH_REPO            GitHub repo (default reka18/codesmith)
 #   CODESMITH_BUNDLE_ID       code-signing identifier (default codesmith)
-#   CODESMITH_MINISIGN_KEY    minisign secret key (default ~/.minisign/codesmith.key)
 #   CODESMITH_DRY_RUN=1       do everything except notarize and upload
 #
 # Notarization and stapling: a bare Mach-O executable cannot carry a stapled
@@ -45,11 +49,15 @@ bundle_id="${CODESMITH_BUNDLE_ID:-codesmith}"
 for c in gh codesign xcrun ditto shasum tar; do
     command -v "$c" >/dev/null 2>&1 || die "need $c"
 done
-here=$(cd "$(dirname "$0")" && pwd)
-# Before minutes of notarizing: minisign, its secret key and a pinned key.
-"$here/sign-release.sh" --check
+# Only a draft: a published release would be live, and unsigned, until
+# sign-release.sh runs.
+if [ "$dry" != 1 ]; then
+    draft=$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft) \
+        || die "no release $tag on $repo"
+    [ "$draft" = true ] || die "release $tag is already published; sign a draft (RELEASING.md)"
+fi
 
-work=$(mktemp -d -t codesmith-sign)
+work=$(mktemp -d "${TMPDIR:-/tmp}/codesmith-sign.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 trap 'exit 1' INT TERM
 say "working in $work"
@@ -114,20 +122,25 @@ sort -k 2 "$work/SHA256SUMS.new" > "$work/SHA256SUMS"
 say "new SHA256SUMS:"
 cat "$work/SHA256SUMS" >&2
 
-# Sign the final SHA256SUMS; codesmith upgrade refuses it unsigned.
-"$here/sign-release.sh" "$tag" "$work/SHA256SUMS"
-
 if [ "$dry" = 1 ]; then
     out="./codesmith-signed-$version"
     rm -rf "$out"
     mkdir -p "$out"
     # shellcheck disable=SC2086 # $signed is a space-separated list of paths without spaces
-    cp $signed "$work/SHA256SUMS" "$work/SHA256SUMS.minisig" "$out/"
+    cp $signed "$work/SHA256SUMS" "$out/"
     say "dry run: signed files left in $out, nothing uploaded"
     exit 0
 fi
 
 say "uploading to release $tag"
 # shellcheck disable=SC2086
-gh release upload "$tag" --repo "$repo" --clobber $signed "$work/SHA256SUMS" "$work/SHA256SUMS.minisig"
-say "done. Check the release, then publish it: gh release edit $tag --repo $repo --draft=false"
+gh release upload "$tag" --repo "$repo" --clobber $signed "$work/SHA256SUMS"
+# A signature from an earlier run signs the old SHA256SUMS; drop it so the
+# draft never carries a .minisig that doesn't match.
+if gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' \
+    | grep -qx 'SHA256SUMS\.minisig'; then
+    say "removing the stale SHA256SUMS.minisig"
+    gh release delete-asset "$tag" SHA256SUMS.minisig --repo "$repo" --yes
+fi
+say "done: the draft $tag has the signed macOS tarballs and the final SHA256SUMS, still unsigned."
+say "next: run \`scripts/sign-release.sh $tag\` on the minisign Mac (Skeptic-Mac); publish only after that"

@@ -2,8 +2,8 @@
 
 There is no hosted CI and no GitHub Actions: everything is built and checked
 on our own machines, and GitHub only hosts the code and the release page.
-`install.sh` and Homebrew download the tarballs from that page, and macOS
-signing happens on the owner's own Mac.
+`install.sh` and Homebrew download the tarballs from that page, and all
+signing happens on the owner's own two Macs (see "Two Macs").
 
 ## Checks before every push
 
@@ -52,24 +52,44 @@ committed, tracked files ship; an ignored or uncommitted file in the working
 tree never does (a dry run with local edits packages the committed docs).
 
 `SHA256SUMS` is signed with [minisign](https://jedisct1.github.io/minisign/)
-on the signing Mac (`SHA256SUMS.minisig`, see "Signing the checksums"), and
-`codesmith upgrade` checks that signature against a public key compiled into
-the binary before it uses any checksum. Without the signature, `SHA256SUMS`
-would come from the same release as the tarballs, so anyone able to replace
-both could ship a bad binary with a matching checksum.
+(`SHA256SUMS.minisig`, see "Signing the checksums"), and `codesmith upgrade`
+checks that signature against the public key compiled into the binary
+(`crates/codesmith/src/release_key.pub`) before it uses any checksum.
+`install.sh` pins the same key. Without the signature, `SHA256SUMS` would
+come from the same release as the tarballs, so anyone able to replace both
+could ship a bad binary with a matching checksum.
 
 **Known limitations:** the signature proves a release was signed with the
-key on the signing Mac; it can't help if that key is stolen (rotate it,
+minisign key on Skeptic-Mac; it can't help if that key is stolen (rotate it,
 below). `install.sh` checks it only when `minisign` is installed on the
 user's machine, and fetches its keys from the same repository it is served
 from. The Homebrew formula pins the sha256 values `update-homebrew.sh` copied
 from the signed `SHA256SUMS` (check the signature before running it), and
-Homebrew checks those, not the signature. Builds from before the first key
-was generated check checksums only, and upgrade the same way into the first
-signed release.
+Homebrew checks those, not the signature. Builds from before signing began
+(their `release_key.pub` held only `PLACEHOLDER`) check checksums only, and
+upgrade that way once, into a signed release; from then on they check the
+signature.
+
 Releases are created as **drafts** with `gh release create --draft` and stay
-drafts until the macOS binaries are signed, so nobody downloads an unsigned
-build from `/releases/latest` (which is also what `codesmith upgrade` reads).
+drafts until both signing steps are done (the macOS binaries on the mini,
+then `SHA256SUMS.minisig` on Skeptic-Mac), so nobody downloads an unsigned
+build from `/releases/latest` (which is also what `codesmith upgrade` reads),
+and a build that pins the key never sees a release it would refuse. Neither
+signing script publishes; both refuse a release that is no longer a draft.
+
+## Two Macs
+
+Signing is split across two Macs, and each key stays on its own Mac:
+
+| Mac | Holds | Runs |
+|---|---|---|
+| **skeptic-macmini** | the Developer ID Application key, the `codesmith-notary` notarytool profile | `scripts/sign-macos.sh`: codesign, notarize, rewrite `SHA256SUMS`, upload |
+| **Skeptic-Mac** | the minisign secret key `~/.minisign/codesmith.key` | `scripts/sign-release.sh`: check the draft, sign `SHA256SUMS`, upload `SHA256SUMS.minisig` |
+
+`scripts/release.sh` (build and draft upload) runs on either; both are Apple
+Silicon Macs with the build setup below. The order matters: the mini changes
+the macOS tarballs and so `SHA256SUMS`, so the minisign signature can only be
+made after the mini has uploaded them.
 
 ## Building a release
 
@@ -110,29 +130,32 @@ at the tag `v<version>`, pushed (`--verify-tag`), and runs
 tarballs and `SHA256SUMS`.
 
 `--draft-upload` refuses while `crates/codesmith/src/release_key.pub` holds
-no release key (only `PLACEHOLDER`): a draft is uploaded only when it can be
-signed, and it stays an unsigned draft until `sign-macos.sh` has signed it.
-A dry run only notes the missing key.
+no release key (only `PLACEHOLDER`), since such a release could not be
+signed. With the CodeSmith key pinned it proceeds; the draft it creates is
+unsigned and stays a draft until `sign-release.sh` has uploaded
+`SHA256SUMS.minisig`.
 
-## Signing the macOS binaries
+## Signing the macOS binaries (skeptic-macmini)
 
-The Developer ID private key never leaves the signing Mac. `scripts/sign-macos.sh`
-runs on that Mac once the draft release exists. It:
+The Developer ID private key never leaves skeptic-macmini.
+`scripts/sign-macos.sh` runs there once the draft release exists. It:
 
-1. downloads the draft release's macOS tarballs and `SHA256SUMS` with `gh`, and
+1. refuses unless the release is still a draft;
+2. downloads the draft release's macOS tarballs and `SHA256SUMS` with `gh`, and
    refuses to continue unless they match;
-2. signs each binary with `codesign --options runtime --timestamp` (hardened
+3. signs each binary with `codesign --options runtime --timestamp` (hardened
    runtime and secure timestamp, both required for notarization);
-3. zips each signed binary with `ditto` and submits it with
+4. zips each signed binary with `ditto` and submits it with
    `xcrun notarytool submit --wait`;
-4. re-tars the signed binary and rewrites the macOS lines of `SHA256SUMS`;
-5. signs the final `SHA256SUMS` with minisign (`scripts/sign-release.sh`,
-   below), and checks the signature against `release_key.pub`;
-6. uploads the tarballs, `SHA256SUMS` and `SHA256SUMS.minisig` together with
-   `gh release upload --clobber`.
+5. re-tars the signed binary and rewrites the macOS lines of `SHA256SUMS`;
+6. uploads the tarballs and `SHA256SUMS` with `gh release upload --clobber`,
+   and deletes a `SHA256SUMS.minisig` left on the draft by an earlier run
+   (it would sign the old `SHA256SUMS`);
+7. prints the next step: run `scripts/sign-release.sh vX.Y.Z` on the
+   minisign Mac.
 
-It checks for minisign and the secret key before it starts, so a missing key
-fails before minutes of notarizing, not after.
+It does not need or run minisign. After it, the draft's `SHA256SUMS` is
+final but unsigned.
 
 There is nothing to staple: `stapler` only handles `.app`, `.pkg` and `.dmg`,
 not a bare executable, and the zip is only a vehicle for submission. Gatekeeper
@@ -140,7 +163,7 @@ looks the ticket up online the first time it checks a quarantined copy.
 Downloads through `curl`, `install.sh` and Homebrew aren't quarantined, so for
 them the signature is what matters.
 
-One-time setup on the signing Mac:
+One-time setup on skeptic-macmini:
 
 ```sh
 # The Developer ID Application identity must be in the login keychain:
@@ -149,42 +172,85 @@ security find-identity -v -p codesigning
 xcrun notarytool store-credentials codesmith-notary \
   --apple-id you@example.com --team-id TEAMID
 gh auth login   # with write access to reka18/codesmith
-brew install minisign   # and generate the key: "Generating the key (once)"
 ```
 
 `CODESMITH_DRY_RUN=1` signs without notarizing or uploading and leaves the
-results in `./codesmith-signed-<version>/` (with `SHA256SUMS.minisig`),
-which is handy for checking the identity and the minisign key work.
+results in `./codesmith-signed-<version>/`, which is handy for checking the
+identity works.
 
-## Signing the checksums
+## Signing the checksums (Skeptic-Mac)
 
-The minisign secret key, like the Developer ID key, never leaves the signing
-Mac. It is a password-protected file there, outside every repository; only
-the public key is committed.
-
-`scripts/sign-release.sh` signs a `SHA256SUMS`:
+The minisign secret key never leaves Skeptic-Mac. It is the
+password-protected file `~/.minisign/codesmith.key` there, outside every
+repository; only the public key (the second line of
+`~/.minisign/codesmith.pub`) is committed, in `release_key.pub` and as
+`RELEASE_KEYS` in `install.sh`. A test fails unless the two lists match, and
+another pins the key itself, so a changed key never slips through.
 
 ```sh
-scripts/sign-release.sh v0.2.0 path/to/SHA256SUMS   # writes SHA256SUMS.minisig next to it
-scripts/sign-release.sh v0.2.0                       # downloads the draft's SHA256SUMS, signs, uploads the .minisig
+scripts/sign-release.sh v0.2.0          # check the draft, sign, upload SHA256SUMS.minisig
+scripts/sign-release.sh --check         # only check minisign, the key and a pinned key
+CODESMITH_DRY_RUN=1 scripts/sign-release.sh v0.2.0   # everything but the upload
 ```
 
-`sign-macos.sh` runs the first form itself, so a normal release needs nothing
-more. The second form is for re-signing a draft whose `SHA256SUMS` is final.
-It runs `minisign -S` with the trusted comment `codesmith <version>
-SHA256SUMS timestamp:<UTC time>` (minisign asks for the key's password),
-then checks what `codesmith upgrade` checks: the signature is prehashed
-(minisign's default), verifies with a key in `release_key.pub`, and its
-trusted comment names the version. minisign signs the trusted comment as
-well, and `codesmith upgrade` and `install.sh` refuse a comment that names
-another version, so an older release's signed `SHA256SUMS` can't be replayed
-as a newer or older one. The key defaults to `~/.minisign/codesmith.key`;
-set `CODESMITH_MINISIGN_KEY` for another path. The script refuses a key
-inside the repository.
+Run it from a checkout of the tag: it trusts that checkout's
+`release_key.pub`. For `v0.2.0` it:
 
-### Generating the key (once)
+1. refuses unless the release is still a draft;
+2. downloads the draft's `SHA256SUMS` (the one the mini rewrote) and its
+   tarballs, and refuses unless `SHA256SUMS` lists exactly the four
+   `codesmith-0.2.0-*` tarballs and each tarball on the draft has the hash
+   it lists. A mismatch on a macOS line means `sign-macos.sh` hasn't run,
+   didn't finish uploading, or something else changed the draft;
+3. refuses unless both macOS binaries pass `codesign --verify --strict` with
+   a `Developer ID Application` authority, so it never signs checksums of
+   CI's unsigned builds;
+4. runs `minisign -S` with the trusted comment `codesmith 0.2.0 SHA256SUMS
+   timestamp:<UTC time>` (minisign asks for the key's password);
+5. checks what `codesmith upgrade` checks: the signature is prehashed
+   (minisign's default), verifies with a key in `release_key.pub`, and its
+   trusted comment names the version;
+6. uploads `SHA256SUMS.minisig` to the draft, and prints the publish command.
 
-On the signing Mac:
+minisign signs the trusted comment as well, and `codesmith upgrade` and
+`install.sh` refuse a comment that names another version, so an older
+release's signed `SHA256SUMS` can't be replayed as a newer or older one. The
+key defaults to `~/.minisign/codesmith.key`; set `CODESMITH_MINISIGN_KEY`
+for another path. The script refuses a key inside the repository (also
+through a symlink).
+
+One-time setup on Skeptic-Mac:
+
+```sh
+brew install minisign gh && gh auth login   # with write access to reka18/codesmith
+```
+
+### Backing up the key
+
+Keep an **encrypted offline copy** of `~/.minisign/codesmith.key` and,
+separately, its password (the password manager entry). Without both,
+releases can't be signed for builds that trust only this key, and their
+users would have to reinstall with `install.sh`. For example, an encrypted
+disk image on a USB drive kept off-site:
+
+```sh
+hdiutil create -size 10m -fs APFS -encryption AES-256 -volname codesmith-key \
+  ~/codesmith-key.dmg            # asks for the image's own password
+hdiutil attach ~/codesmith-key.dmg
+cp ~/.minisign/codesmith.key ~/.minisign/codesmith.pub /Volumes/codesmith-key/
+hdiutil detach /Volumes/codesmith-key
+# move codesmith-key.dmg to the offline drive, then delete the local copy
+```
+
+The key file is already encrypted with its minisign password; the disk
+image is a second layer. Check the backup once by restoring it and running
+`scripts/sign-release.sh --check` with `CODESMITH_MINISIGN_KEY` pointing at
+the restored copy. If Skeptic-Mac is replaced, restore the key to
+`~/.minisign/` on the new Mac (`chmod 700 ~/.minisign`, `chmod 600` the key).
+
+### Generating a key
+
+The CodeSmith key was generated on Skeptic-Mac with:
 
 ```sh
 brew install minisign
@@ -195,52 +261,44 @@ chmod 600 ~/.minisign/codesmith.key
 
 `minisign -G` asks for a password for the secret key: use a strong one and
 keep it in a password manager. Don't pass `-W`, which leaves the key
-unencrypted. Keep an encrypted offline backup of `codesmith.key` (and the
-password) somewhere safe: without it, releases can't be signed for builds
-that trust only this key (see "Rotating the key").
+unencrypted. Use the same steps, with another file name, for a new key when
+rotating.
 
-Then put the public key in the repo. It is the second line of
-`codesmith.pub` (56 characters starting with `RW`):
+### Builds from before signing
 
-1. In `crates/codesmith/src/release_key.pub`, replace the `PLACEHOLDER` line
-   with that line.
-2. In `install.sh`, set `RELEASE_KEYS="<that line>"`.
-3. Run `scripts/ci.sh`; a test fails unless the two lists match, and another
-   unless every line of `release_key.pub` is a valid key.
-4. Commit and push. Builds from then on refuse an unsigned release.
-
-### The transition to signed releases
-
-While `release_key.pub` holds `PLACEHOLDER`, builds check `SHA256SUMS` only
-and `codesmith upgrade` prints `warning: CodeSmith releases aren't signed
-yet; checking SHA256SUMS only`; `install.sh` says the same. Once a real key
-is compiled in, a build refuses any release whose `SHA256SUMS.minisig` is
-missing, doesn't verify, or names another version, and there is no flag to
-override that. So:
-
-- Generate the key and commit its public key before the release that should
-  be the first signed one; `release.sh --draft-upload` refuses until then.
-- Builds made before the key (with `PLACEHOLDER`) upgrade into a signed
-  release with checksums only; their next upgrade checks the signature.
-- A signed build refuses to roll back to a release from before signing
-  began, since it has no signature; install that one with `install.sh` or by
-  hand.
+Builds made while `release_key.pub` held `PLACEHOLDER` check `SHA256SUMS`
+only, and print `warning: CodeSmith releases aren't signed yet; checking
+SHA256SUMS only`. They upgrade into a signed release on checksums once;
+that release pins the key, so their next upgrade checks the signature. A
+build that pins the key refuses any release whose `SHA256SUMS.minisig` is
+missing, doesn't verify, or names another version, with no flag to override
+that, and so refuses to roll back to a release from before signing began;
+install that one with `install.sh` or by hand.
 
 ### Rotating the key
 
 A build trusts the keys it was compiled with, and a release carries one
-signature. To move to a new key:
+signature. To move to a new key, all on Skeptic-Mac unless it says otherwise:
 
-1. Generate the new key as above, under another name
-   (`~/.minisign/codesmith-2.key`).
-2. Add its public key as a second line of `release_key.pub` and to
-   `RELEASE_KEYS` in `install.sh` (space-separated), and release as usual,
-   still signing with the old key. That release trusts both.
-3. After that release has been out long enough that users have it, sign
-   with the new key (`CODESMITH_MINISIGN_KEY=~/.minisign/codesmith-2.key`)
-   and, in a later release, drop the old key from both lists.
+1. **Generate** the new key ("Generating a key") as
+   `~/.minisign/codesmith-2.key` / `codesmith-2.pub`, and **back it up**
+   ("Backing up the key") before it signs anything.
+2. **Pin both keys:** add the new public key (the second line of
+   `codesmith-2.pub`) as a second key line in `release_key.pub`, update the
+   comment there, and add it to `RELEASE_KEYS` in `install.sh`,
+   space-separated, in the same order. Update `CODESMITH_KEY` in the test
+   that pins the key (`crates/codesmith/src/upgrade/tests.rs`) to list both.
+   Run `scripts/ci.sh`, commit and push.
+3. **Release with both pinned, still signing with the old key** (the normal
+   checklist). That release trusts both keys.
+4. Once that release has been out long enough that users have it, **sign
+   with the new key**:
+   `CODESMITH_MINISIGN_KEY=~/.minisign/codesmith-2.key scripts/sign-release.sh vX.Y.Z`.
+5. **Drop the old key** from `release_key.pub`, `install.sh` and the test, in
+   a later release. Keep the old key's backup until no supported build
+   trusts it, then destroy it.
 
-A build older than step 2 trusts only the old key and refuses releases
+A build older than step 3 trusts only the old key and refuses releases
 signed with the new one; its users reinstall with `install.sh`. If the old
 key is compromised, skip the overlap: remove it from both lists at once,
 sign with the new key, and tell users to reinstall, since builds that trust
@@ -248,16 +306,15 @@ the old key can't tell its signatures from yours.
 
 ## Checklist
 
-In this order. A release is a draft, and unsigned, from step 4 until step 5
-finishes; it is published only in step 7.
+In this order. Each step says which Mac it runs on. The release is a draft
+from step 4 until step 8, unsigned until step 6 finishes, and published only
+in step 8, after both signing steps.
 
-0. **Once:** generate the minisign key and commit its public key
-   ("Generating the key"). `release.sh --draft-upload` refuses without it.
-1. **Bump the version** in `[workspace.package]` in `Cargo.toml` (and the
-   `version` on the `codesmith-ai`/`codesmith-core` entries under
-   `[workspace.dependencies]`), then run `cargo check` so `Cargo.lock` follows.
-   Run `scripts/ci.sh`. Add the release's section to `CHANGELOG.md`.
-   Commit: `Release 0.2.0`.
+1. **Bump the version** (any Mac with a clone) in `[workspace.package]` in
+   `Cargo.toml` (and the `version` on the `codesmith-ai`/`codesmith-core`
+   entries under `[workspace.dependencies]`), then run `cargo check` so
+   `Cargo.lock` follows. Run `scripts/ci.sh`. Add the release's section to
+   `CHANGELOG.md`. Commit: `Release 0.2.0`.
 2. **Tag and push.** Check that the tag matches the version.
 
    ```sh
@@ -265,11 +322,13 @@ finishes; it is published only in step 7.
    git push origin main v0.2.0
    ```
 
-3. **Dry run:** `scripts/release.sh 0.2.0` (see "Building a release").
-4. **Build and upload the draft:** `scripts/release.sh 0.2.0 --draft-upload`.
-   The draft has the tarballs and an unsigned `SHA256SUMS`.
-5. **Sign on the signing Mac**, at a checkout of the tag (the script checks
-   the signature against that checkout's `release_key.pub`):
+3. **Dry run** (the build Mac): `scripts/release.sh 0.2.0` (see "Building a
+   release").
+4. **Build and upload the draft** (the build Mac):
+   `scripts/release.sh 0.2.0 --draft-upload`. The draft has the four
+   tarballs and CI's `SHA256SUMS`, unsigned.
+5. **Sign and notarize the macOS binaries on skeptic-macmini**, at a
+   checkout of the tag:
 
    ```sh
    CODESMITH_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
@@ -277,10 +336,21 @@ finishes; it is published only in step 7.
    scripts/sign-macos.sh v0.2.0
    ```
 
-   This signs and notarizes the macOS binaries, rewrites `SHA256SUMS`, signs
-   it (minisign asks for the key's password) and uploads the tarballs,
-   `SHA256SUMS` and `SHA256SUMS.minisig`.
-6. **Check the signature** on the draft before publishing:
+   This signs and notarizes the macOS binaries, rewrites `SHA256SUMS` and
+   uploads the tarballs and `SHA256SUMS`. It ends with: run
+   `scripts/sign-release.sh v0.2.0` on the minisign Mac.
+6. **Sign the checksums on Skeptic-Mac**, at a checkout of the tag:
+
+   ```sh
+   git fetch --tags && git checkout v0.2.0
+   scripts/sign-release.sh v0.2.0
+   ```
+
+   It checks the draft's final `SHA256SUMS` against the macOS tarballs
+   (and the Linux ones), signs it (minisign asks for the key's password),
+   verifies the signature against `release_key.pub` and uploads
+   `SHA256SUMS.minisig`.
+7. **Check the signature** on the draft (Skeptic-Mac) before publishing:
 
    ```sh
    gh release download v0.2.0 --repo reka18/codesmith --dir /tmp/v0.2.0 \
@@ -289,16 +359,16 @@ finishes; it is published only in step 7.
    ```
 
    The trusted comment it prints must be `codesmith 0.2.0 SHA256SUMS ...`.
-7. **Review and publish** the draft: edit the generated notes, then
-   `gh release edit v0.2.0 --draft=false`.
-8. **Check an install:** `CODESMITH_VERSION=0.2.0 sh install.sh` on a Mac and a
+8. **Review and publish** the draft: edit the generated notes, then
+   `gh release edit v0.2.0 --repo reka18/codesmith --draft=false`.
+9. **Check an install:** `CODESMITH_VERSION=0.2.0 sh install.sh` on a Mac and a
    Linux box, with minisign installed (it should print `signature ok`); on the
    Mac, `codesign -dv --verbose=2 ~/.local/bin/codesmith`
-   should show your Developer ID and `flags=0x10000(runtime)`, and
-   `xcrun notarytool history --keychain-profile codesmith-notary` should list
-   both submissions as Accepted. From an older install, `codesmith upgrade
-   0.2.0` should succeed.
-9. **Update the Homebrew tap** (below).
+   should show your Developer ID and `flags=0x10000(runtime)`, and on
+   skeptic-macmini `xcrun notarytool history --keychain-profile
+   codesmith-notary` should list both submissions as Accepted. From an older
+   install, `codesmith upgrade 0.2.0` should succeed.
+10. **Update the Homebrew tap** (below).
 
 ## Homebrew tap
 

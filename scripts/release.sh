@@ -25,9 +25,11 @@
 #   --draft-upload  also run `gh release create vVERSION --draft --verify-tag`
 #                   with the tarballs and SHA256SUMS. Needs a clean tree at
 #                   the pushed tag vVERSION, and a release key in
-#                   crates/codesmith/src/release_key.pub: the draft is
-#                   unsigned until scripts/sign-macos.sh signs it, and is
-#                   only published after that.
+#                   crates/codesmith/src/release_key.pub. The draft stays
+#                   a draft: scripts/sign-macos.sh signs its macOS binaries
+#                   on skeptic-macmini, scripts/sign-release.sh adds
+#                   SHA256SUMS.minisig on Skeptic-Mac, and only then is it
+#                   published.
 #   --targets "..." build only these targets (smoke tests and packaging too);
 #                   only allowed with --dry-run.
 #
@@ -123,8 +125,8 @@ done
 [ -z "$missing" ] || die "missing tools (one-time setup):${missing}"
 
 # A draft is uploaded only when the signing step can follow: the binaries
-# pin a release key (release_key.pub) and sign-macos.sh signs SHA256SUMS
-# with it. Before the first key exists there is nothing to sign with.
+# pin a release key (release_key.pub) and sign-release.sh signs SHA256SUMS
+# with it. Without a pinned key there would be nothing to sign with.
 keys=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' -e '^PLACEHOLDER$' \
     crates/codesmith/src/release_key.pub || true)
 if [ -z "$keys" ]; then
@@ -262,4 +264,7 @@ fi
 say "create the draft release ${tag}"
 gh release create "$tag" "$@" --repo "$repo" --draft --verify-tag \
     --title "CodeSmith ${tag}" --generate-notes
-say "done: the draft ${tag} is NOT signed yet. Next, on the signing Mac: scripts/sign-macos.sh ${tag}, which signs the macOS binaries and SHA256SUMS; publish only after that (RELEASING.md)"
+say "done: the draft ${tag} is NOT signed yet, and stays a draft. Next:"
+printf '  1. on skeptic-macmini: scripts/sign-macos.sh %s   (Developer ID, notarization, final SHA256SUMS)\n' "$tag" >&2
+printf '  2. on Skeptic-Mac:     scripts/sign-release.sh %s (minisign: uploads SHA256SUMS.minisig)\n' "$tag" >&2
+printf '  3. check and publish (RELEASING.md, "Checklist")\n' >&2

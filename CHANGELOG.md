@@ -5,6 +5,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Signed releases:** the CodeSmith minisign release key
+  (`RWTFKe6qhvSs57s1pw5x6aJRK0jdZr42tg1NgNp3a9rAJ3HersFsRoMV`) is pinned in
+  `codesmith upgrade` and `install.sh`, so from this release on an upgrade
+  refuses a release whose `SHA256SUMS.minisig` is missing or doesn't
+  verify. Builds from before this upgrade into it on checksums once.
+  Signing is two steps on two Macs: `scripts/sign-macos.sh` signs and
+  notarizes the macOS binaries and no longer runs minisign, then
+  `scripts/sign-release.sh TAG` checks the draft's final `SHA256SUMS`
+  against its tarballs, signs it and uploads the signature (RELEASING.md).
 - **ChatGPT agent registration opt-in:** `codesmith auth login openai
   --oauth --register`, or `settings.register: true` on the `openai`
   provider, signs in with OpenAI's agent registration as OpenCode does
