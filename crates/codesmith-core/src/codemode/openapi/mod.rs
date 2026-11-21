@@ -9,9 +9,11 @@
 //! that method on that origin). Credentials (`auth`, `headers`) come from
 //! config, usually as `{env:VAR}`; they need `base_url` and are sent only
 //! to its origin. Redirects are followed by hand, each target checked
-//! against the deny rules; once one leaves the origin, credentials and
-//! configured headers are dropped for the rest of the chain. Responses
-//! are capped at [`MAX_RESPONSE_BYTES`].
+//! against the deny rules; one to another origin asks the permission for
+//! its target like the first call (OpenCode does not ask), and a public
+//! host may not redirect to a local or private address. Once a redirect
+//! leaves the origin, credentials and configured headers are dropped for
+//! the rest of the chain. Responses are capped at [`MAX_RESPONSE_BYTES`].
 
 pub mod runtime;
 pub mod spec;
@@ -429,6 +431,33 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
             }
             gate.assert_not_denied(ACTION, &deny_forms(&prepared.method, &next, &hidden))
                 .map_err(|e| e.to_string())?;
+            crate::tool::webfetch::check_redirect_target(&prepared.url, &next)
+                .await
+                .map_err(|e| format!("{label}: redirect refused: {e}"))?;
+            if next.origin() != prepared.url.origin() {
+                // A request to another origin, perhaps with the body
+                // (307/308): asked like the first one.
+                let shown = resource(&prepared.method, &next, &hidden);
+                ask(
+                    gate,
+                    &Request {
+                        action: ACTION.into(),
+                        resources: vec![shown.clone()],
+                        save: vec![format!(
+                            "{} {}/*",
+                            prepared.method,
+                            next.origin().ascii_serialization()
+                        )],
+                        title: format!(
+                            "Call {}.{}: {shown} (redirected from {})",
+                            api.name,
+                            tool.dotted(),
+                            prepared.url.origin().ascii_serialization()
+                        ),
+                    },
+                )
+                .map_err(|e| redact(e, &secrets))?;
+            }
             prepared.url = next;
             hops += 1;
             continue;

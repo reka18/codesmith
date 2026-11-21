@@ -10,12 +10,15 @@
 //!   (OpenCode saves `*`, any URL).
 //! - Redirects are followed by hand: each target must pass the same URL
 //!   checks and no rule may deny fetching it. A redirect to another origin
-//!   drops the `authorization`, `cookie` and `proxy-authorization`
-//!   headers, as a browser does.
+//!   is asked as the `webfetch` permission like the first URL (it may keep
+//!   the method and body), and drops the `authorization`, `cookie` and
+//!   `proxy-authorization` headers, as a browser does. OpenCode asks only
+//!   for the first URL. A public host may not redirect to a local or
+//!   private address.
 //! - CodeSmith adds no credentials of its own and keeps no cookies.
 //! - A response is read whole, up to the webfetch limit
 //!   ([`webfetch::MAX_BYTES`](crate::tool::webfetch::MAX_BYTES)), within
-//!   [`TIMEOUT`].
+//!   [`TIMEOUT`] (time spent answering a redirect's question not counted).
 //!
 //! The program side is `fetch.js`: it encodes the request, calls
 //! [`TOOL`] through the same channel as tool calls, and wraps the result
@@ -197,20 +200,38 @@ pub async fn run(gate: &Gate, input: &Value) -> Result<Value, String> {
         save: webfetch::save_patterns(&parsed),
         title,
     };
-    tokio::task::block_in_place(|| gate.assert(&asked)).map_err(|e| match e {
+    ask(gate, &asked, &url)?;
+    send(gate, parsed, req, &url).await
+}
+
+/// Ask `gate` for `req` (the user may be prompted) about `url`.
+fn ask(gate: &Gate, req: &Request, url: &str) -> Result<(), String> {
+    tokio::task::block_in_place(|| gate.assert(req)).map_err(|e| match e {
         // The feedback is the user talking to the model: it is the message.
         Denied::Declined { feedback: Some(fb) } => {
             format!("The user rejected fetching {url}: {fb}")
         }
         e => e.to_string(),
-    })?;
-    tokio::time::timeout(TIMEOUT, send(gate, parsed, req))
-        .await
-        .map_err(|_| format!("fetch {url} timed out after {} seconds.", TIMEOUT.as_secs()))?
+    })
 }
 
-async fn send(gate: &Gate, mut current: url::Url, mut req: Req) -> Result<Value, String> {
+/// Send `req` to `current`, following redirects. The request may take
+/// [`TIMEOUT`], not counting the time the user takes to answer a redirect's
+/// question.
+async fn send(
+    gate: &Gate,
+    mut current: url::Url,
+    mut req: Req,
+    first: &str,
+) -> Result<Value, String> {
     let client = client()?;
+    let mut deadline = tokio::time::Instant::now() + TIMEOUT;
+    let timed_out = || {
+        format!(
+            "fetch {first} timed out after {} seconds.",
+            TIMEOUT.as_secs()
+        )
+    };
     let mut redirects = 0;
     let resp = loop {
         let method = reqwest::Method::from_bytes(req.method.as_bytes())
@@ -222,9 +243,9 @@ async fn send(gate: &Gate, mut current: url::Url, mut req: Req) -> Result<Value,
         if let Some(b) = &req.body {
             rb = rb.body(b.clone());
         }
-        let resp = rb
-            .send()
+        let resp = tokio::time::timeout_at(deadline, rb.send())
             .await
+            .map_err(|_| timed_out())?
             .map_err(|e| format!("fetch failed: {}", e.without_url()))?;
         let status = resp.status().as_u16();
         let location = resp
@@ -258,7 +279,28 @@ async fn send(gate: &Gate, mut current: url::Url, mut req: Req) -> Result<Value,
         next.set_fragment(None);
         gate.assert_not_denied(ACTION, &webfetch::deny_forms(None, &next))
             .map_err(|e| e.to_string())?;
+        tokio::time::timeout_at(deadline, webfetch::check_redirect_target(&current, &next))
+            .await
+            .map_err(|_| timed_out())??;
         req = redirected(req, status, &current, &next);
+        if next.origin() != current.origin() {
+            // Another origin is a request the user has not approved: it
+            // may carry the program's method, body and headers (307/308).
+            let shown = next.to_string();
+            let asked = Request {
+                action: ACTION.into(),
+                resources: vec![shown.clone()],
+                save: webfetch::save_patterns(&next),
+                title: format!(
+                    "Fetch {shown} ({}, redirected from {})",
+                    req.method,
+                    current.origin().ascii_serialization()
+                ),
+            };
+            let started = tokio::time::Instant::now();
+            ask(gate, &asked, &shown)?;
+            deadline += started.elapsed();
+        }
         current = next;
         redirects += 1;
     };
@@ -282,7 +324,10 @@ async fn send(gate: &Gate, mut current: url::Url, mut req: Req) -> Result<Value,
     }
     let mut body = Vec::new();
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = tokio::time::timeout_at(deadline, stream.next())
+        .await
+        .map_err(|_| timed_out())?
+    {
         let chunk = chunk.map_err(|e| format!("fetch failed: {}", e.without_url()))?;
         if body.len() + chunk.len() > webfetch::MAX_BYTES {
             return Err(too_large());

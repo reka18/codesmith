@@ -1502,6 +1502,38 @@ async fn redirect_targets_are_checked() {
     assert_eq!(seen, ["GET /test", "POST /test"]);
 }
 
+/// A redirect to another origin asks the `openapi` permission for its
+/// target; declining stops the call before the target is requested.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cross_origin_redirect_asks_for_its_target() {
+    let (other, other_log) = serve(|_| Answer::json(json!({"ok": true}))).await;
+    let to = format!("{other}/elsewhere");
+    let (base, _) = serve(move |_| Answer::redirect(307, &to)).await;
+    let api = api_at(&secured(json!([]), json!({})), &base, None);
+    let rules = vec![Rule::new(ACTION, &format!("POST {base}/*"), Effect::Allow)];
+    let (g, asked) = gate(rules.clone(), Reply::Reject(None));
+    let e = call(&api, tool(&api.generated, "make"), &json!({}), &g)
+        .await
+        .unwrap_err();
+    assert!(e.contains("declined"), "{e}");
+    assert!(other_log.lock().unwrap().is_empty());
+    let resources: Vec<Vec<String>> = asked
+        .asked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.resources.clone())
+        .collect();
+    assert_eq!(resources, [vec![format!("POST {other}/elsewhere")]]);
+
+    let (g, asked) = gate(rules, Reply::Once);
+    call(&api, tool(&api.generated, "make"), &json!({}), &g)
+        .await
+        .unwrap();
+    assert_eq!(asked.asked.lock().unwrap().len(), 1);
+    assert_eq!(last(&other_log).method, "POST");
+}
+
 /// A deny rule holds for a percent-encoded spelling of the URL it names.
 #[tokio::test(flavor = "multi_thread")]
 async fn deny_rules_match_percent_decoded_urls() {

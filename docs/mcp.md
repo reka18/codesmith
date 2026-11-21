@@ -168,9 +168,13 @@ return res.ok ? await res.json() : res.status;
   URL as OpenCode does.
 - Redirects are followed one hop at a time, at most 10; each target must
   be `http(s)` without credentials, and is checked against `webfetch` deny
-  rules. A redirect to another origin drops the `Authorization`, `Cookie`
-  and `Proxy-Authorization` headers; a 303, or a 301 or 302 after a POST,
-  becomes a GET without a body.
+  rules. A redirect to another origin asks the `webfetch` permission for
+  its target, like the first URL, since a 307 or 308 keeps the method and
+  body (OpenCode does not ask); it drops the `Authorization`, `Cookie`
+  and `Proxy-Authorization` headers. A 303, or a 301 or 302 after a POST,
+  becomes a GET without a body. A public host may not redirect to
+  `localhost` or a loopback, private or link-local address. The time spent
+  answering does not count toward the 30 seconds.
 - CodeSmith adds no credentials and keeps no cookies. Its own User-Agent is
   `codesmith`.
 - A response is read whole, at most 5 MiB, within 30 seconds; `fetch`
@@ -219,7 +223,9 @@ const invoice = await tools.billing.invoices.get({ invoiceId: "inv_42" });
   alternative the spec allows is tried. Credentials are applied last, so a
   header parameter cannot replace them.
 - Redirects are followed one hop at a time, at most 10, each target
-  checked against `openapi` deny rules. Once a redirect leaves the
+  checked against `openapi` deny rules. A redirect to another origin asks
+  the `openapi` permission for its target, and a public host may not
+  redirect to a local or private address. Once a redirect leaves the
   origin, credentials and configured headers are dropped for the rest of
   the chain, even if it comes back.
 - Responses are capped at 10 MiB. A non-2xx status fails the call with the

@@ -181,6 +181,51 @@ pub(crate) fn authorize(ctx: &Ctx<'_>, raw: &str) -> Result<reqwest::Url, String
     Ok(url)
 }
 
+/// Whether `url`'s host is local: `localhost` (or a name under it), an
+/// address that is not public (loopback, private, link-local, unique-local
+/// and the like; see [`codesmith_ai::generation::public_ip`]), or a name
+/// with such an address among those it resolves to. A name that does not
+/// resolve is not local.
+pub(crate) async fn is_local(url: &reqwest::Url) -> bool {
+    use codesmith_ai::generation::public_ip;
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => !public_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => !public_ip(ip.into()),
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.');
+            if d == "localhost" || d.ends_with(".localhost") {
+                return true;
+            }
+            let port = url.port_or_known_default().unwrap_or(443);
+            match tokio::net::lookup_host((d, port)).await {
+                Ok(mut addrs) => addrs.any(|a| !public_ip(a.ip())),
+                Err(_) => false,
+            }
+        }
+        None => false,
+    }
+}
+
+/// Refuse a redirect from a host that is not local to one that is
+/// ([`is_local`]): a public site must not steer a request to the machine
+/// or its network. Local to local (a dev server) is fine.
+///
+/// The target's name is resolved here and again when connecting, so a
+/// name that changes its address in between is not caught.
+pub(crate) async fn check_redirect_target(
+    from: &reqwest::Url,
+    to: &reqwest::Url,
+) -> Result<(), String> {
+    if is_local(to).await && !is_local(from).await {
+        return Err(format!(
+            "Refusing a redirect from {} to {}, a local or private address",
+            from.origin().ascii_serialization(),
+            to.host_str().unwrap_or("")
+        ));
+    }
+    Ok(())
+}
+
 /// The client webfetch uses. It never follows redirects itself: each hop is
 /// followed by hand so its target is checked against the rules (a client
 /// with reqwest's default policy would follow up to ten hops unchecked).
@@ -266,7 +311,10 @@ async fn fetch(
 }
 
 /// GET `url` (already checked and approved), following redirects by hand:
-/// each target must pass [`check_url`] and no rule may deny fetching it.
+/// each target must pass [`check_url`], no rule may deny fetching it, and
+/// a public host may not redirect to a local one
+/// ([`check_redirect_target`]). Another origin is not asked about, as in
+/// OpenCode: the request is a GET without a body or credentials.
 /// `build` adds headers to each hop's request. The final, non-redirect
 /// response is returned whatever its status.
 pub(crate) async fn get_following(
@@ -299,6 +347,7 @@ pub(crate) async fn get_following(
         check_url(&next)?;
         next.set_fragment(None);
         ctx.check_not_denied("webfetch", &deny_forms(None, &next))?;
+        check_redirect_target(&current, &next).await?;
         current = next;
         redirects += 1;
     }
@@ -410,6 +459,47 @@ mod tests {
             saves("HTTPS://Example.COM:443/a"),
             ["https://example.com", "https://example.com/*"]
         );
+    }
+
+    /// A public host may not redirect to a local or private one; local to
+    /// local, and anything to a public host, is fine. (IP literals and
+    /// `localhost` only: nothing is looked up.)
+    #[tokio::test]
+    async fn public_hosts_may_not_redirect_to_local_ones() {
+        let u = |s: &str| reqwest::Url::parse(s).unwrap();
+        for to in [
+            "http://127.0.0.1:8080/",
+            "http://localhost/",
+            "http://app.localhost/",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/",
+            "http://0.0.0.0/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://[fd00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ] {
+            let err = check_redirect_target(&u("https://93.184.216.34/x"), &u(to))
+                .await
+                .unwrap_err();
+            assert!(err.contains("local or private address"), "{to}: {err}");
+            // From a local host it is allowed.
+            check_redirect_target(&u("http://127.0.0.1:3000/"), &u(to))
+                .await
+                .unwrap();
+            check_redirect_target(&u("http://192.168.0.2/"), &u(to))
+                .await
+                .unwrap();
+        }
+        check_redirect_target(&u("http://127.0.0.1/"), &u("https://93.184.216.34/"))
+            .await
+            .unwrap();
+        check_redirect_target(&u("https://8.8.8.8/"), &u("https://93.184.216.34/"))
+            .await
+            .unwrap();
     }
 
     /// The rules see the URL as it is requested, whatever the spelling.

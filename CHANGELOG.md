@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- Code Mode `fetch` and OpenAPI calls ask the permission again when a
+  redirect leaves the origin (a 307 or 308 keeps the method and body), and
+  `webfetch`, `fetch`, OpenAPI and image input downloads refuse a redirect
+  from a public host to a local or private address.
 - URL permission rules (`webfetch`, Code Mode `fetch`, `openapi`, image
   and video input URLs) match the URL as it is requested, not as written:
   `HTTPS://Internal.Corp:443/x`, a tab in the host or a `%XX` escape no

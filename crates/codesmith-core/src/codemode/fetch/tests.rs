@@ -583,3 +583,68 @@ async fn a_wildcard_host_is_refused_and_never_saved() {
         assert!(!g.allows(ACTION, &[other.to_string()]), "{other}");
     }
 }
+
+/// A redirect to another origin asks for its target, like the first URL:
+/// a 307 keeps the method and body, so the user decides. Declining stops
+/// the chain before the target is requested. (Security review 7: a
+/// cross-origin 307 POST went out without asking.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cross_origin_redirect_asks_for_its_target() {
+    let (inner, inner_hits) = serve(|_| Answer::new(200, "text/plain", "internal ok")).await;
+    let target = format!("{inner}/admin");
+    let (outer, _) = serve(move |_| Answer::redirect(307, &target)).await;
+    let rules = vec![Rule::new("webfetch", &format!("{outer}*"), Effect::Allow)];
+    let code = format!(
+        r#"try {{ return await (await fetch("{outer}/r", {{ method: "POST", body: "payload", headers: {{ "x-thing": "1" }} }})).text() }} catch (e) {{ return e.message }}"#
+    );
+    let (g, asked) = gate(rules.clone(), Reply::Reject(None));
+    let out = program(&g, &code).await;
+    let msg = out.result.unwrap();
+    assert!(msg.as_str().unwrap().contains("declined"), "{msg}");
+    assert!(inner_hits.lock().unwrap().is_empty());
+    let asked_for: Vec<(Vec<String>, String)> = asked
+        .asked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| (r.resources.clone(), r.title.clone()))
+        .collect();
+    assert_eq!(asked_for.len(), 1);
+    assert_eq!(asked_for[0].0, vec![format!("{inner}/admin")]);
+    assert!(asked_for[0].1.contains("POST"), "{}", asked_for[0].1);
+
+    // Approved, the redirect is followed with the method and body.
+    let (g, asked) = gate(rules, Reply::Once);
+    let out = program(&g, &code).await;
+    assert_eq!(out.result, Ok(json!("internal ok")));
+    assert_eq!(asked.asked.lock().unwrap().len(), 1);
+    let hits = inner_hits.lock().unwrap();
+    assert_eq!(
+        (
+            hits[0].method.as_str(),
+            hits[0].path(),
+            hits[0].body.as_slice()
+        ),
+        ("POST", "/admin", &b"payload"[..])
+    );
+}
+
+/// A redirect within the origin is not asked about.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_same_origin_redirect_is_not_asked() {
+    let (base, hits) = serve(|s| match s.path() {
+        "/r" => Answer::redirect(307, "/end"),
+        _ => Answer::new(200, "text/plain", "ok"),
+    })
+    .await;
+    let rules = vec![Rule::new("webfetch", &format!("{base}/r"), Effect::Allow)];
+    let (g, asked) = gate(rules, Reply::Reject(None));
+    let out = program(
+        &g,
+        &format!(r#"return await (await fetch("{base}/r")).text()"#),
+    )
+    .await;
+    assert_eq!(out.result, Ok(json!("ok")));
+    assert!(asked.asked.lock().unwrap().is_empty());
+    assert_eq!(hits.lock().unwrap().len(), 2);
+}
