@@ -23,7 +23,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
 | Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 1 | 0 | 0 | 3 | 11 | 0 |
-| Sessions and their store | 308 | 78 | 0 | 0 | 179 | 51 | 0 |
+| Sessions and their store | 308 | 91 | 2 | 0 | 191 | 24 | 0 |
 | Tool: read | 82 | 65 | 0 | 0 | 1 | 16 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
 | Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1759** | **29** | **42** | **2418** | **1337** | **3** |
+| **Total** | **5588** | **1772** | **31** | **42** | **2430** | **1310** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -62,6 +62,8 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
+- `session-create.test.ts`: "stores a trailing-slash directory in the same session list" (1 case): a session started in `dir/` was stored under `dir/`, so the list for `dir` did not show it. Pinned by `tests/oc_sessions_backlog.rs::oc_session_create_stores_a_trailing_slash_directory_in_the_same_list`.
+- `session-runner-retry.test.ts`: "names the network when the provider's host can't be reached" (1 case): an unreachable host failed the turn with reqwest's text; the error now names the host and the network (a refused connection keeps its own text). Pinned by `src/retry.rs::oc_session_runner_retry_names_the_network_when_the_providers_host_cant_be_reached`.
 - `session-runner.test.ts`: "uses the selected model family prompt when the agent system override is empty" (1 case): an agent's empty `system` replaced the model's prompt with nothing; it now keeps the default. Pinned by `tests/oc_runner_backlog.rs::oc_session_uses_the_model_family_prompt_when_the_agent_override_is_empty`.
 - `session-runner.test.ts`: "explains a compaction blocked by the provider" (1 case): a blocked summary was nudged and retried; it now fails as blocked (adapted: no refusal category). Pinned by `tests/oc_compaction.rs::oc_compaction_explains_a_compaction_blocked_by_the_provider`.
 - `session-runner.test.ts`: "rejects compaction ${response} without retrying or committing its draft" (2 cases): the summary's finish reason was ignored, so a summary cut off by the output limit or a content filter replaced the history. Pinned by `tests/oc_compaction.rs::oc_compaction_rejects_a_cut_short_summary_without_retrying_or_committing_it`.
@@ -176,7 +178,7 @@ Missing features, by how many OpenCode test cases each would unlock (42 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1337 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1310 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -258,37 +260,10 @@ Tests for behaviour CodeSmith already has but no test pins (1337 cases), by area
   - `snapshot.test.ts`: restores and diffs a selection too long for one command line
   - `snapshot.test.ts`: isolates snapshot indexes by canonical Git worktree
 
-### Sessions and their store (51)
+### Sessions and their store (24)
 
-- a missing title stays unset until generated or supplied (S) — `store::Store`
-  - `session-create.test.ts`: persists a missing title until one is generated or supplied
-- fresh ID when omitted; a retried ID returns the original (S) — `store::Store::create`
-  - `session-create.test.ts`: creates a fresh projected session when the ID is omitted
-  - `session-create.test.ts`: returns the original session when the ID is retried
-  - `session-create.test.ts`: returns the existing Session when one ID is reused with different create arguments
-  - `session-create.test.ts`: returns one recorded session to concurrent exact retries
-- a trailing-slash directory lists with the same sessions (S) — `store::Store::list`
-  - `session-create.test.ts`: stores a trailing-slash directory in the same session list
-- children inherit the parent's directory; a missing parent is rejected (S) — `store::Store`
-  - `session-create.test.ts`: inherits location from an existing parent when omitted
-  - `session-create.test.ts`: rejects child creation when the parent does not exist
 - root sessions filtered before the page limit; direct children by parent (S) — `store::Store::list`
-  - `session-create.test.ts`: filters root sessions before applying the page limit
   - `session-create.test.ts`: filters direct child sessions by parent ID
-- sessions ordered by latest activity (S) — `store::Store::list`
-  - `session-create.test.ts`: orders sessions by their latest prompt
-- agent/model switches stored; unchanged model ignored; missing session rejected (S) — `store::Store::set_selection`
-  - `session-create.test.ts`: switches the selected agent through the durable Session event
-  - `session-create.test.ts`: rejects an agent switch for a missing Session
-  - `session-create.test.ts`: switches the selected model through the durable Session event
-  - `session-create.test.ts`: ignores a model switch when the selected model is unchanged
-  - `session-create.test.ts`: treats an omitted variant as the default variant
-  - `session-create.test.ts`: rejects a model switch for a missing Session
-- only settled messages exported and imported (S) — `store::Store::export / import`
-  - `session-create.test.ts`: exports only settled projected messages
-  - `session-create.test.ts`: imports only settled projected messages
-- importing over an existing session ID is rejected without changing it (S) — `store::Store::import`
-  - `session-create.test.ts`: rejects an existing session ID without changing its transcript
 - instructions load without any read (S) — `instructions::load`
   - `session-instructions.test.ts`: loads instructions directly without a read
 - a new prompt after undo drops the undone turns (M) — `tests/runner_parity.rs`
@@ -309,10 +284,6 @@ Tests for behaviour CodeSmith already has but no test pins (1337 cases), by area
   - `session-prompt.test.ts`: rejects oversized inline attachments without echoing their bytes
 - prompting an unknown session fails (S) — `session`
   - `session-prompt.test.ts`: fails for an unknown session
-- deleting a session removes its children (S) — `store::Store::delete`
-  - `session-remove.test.ts`: removes a session and its children
-- deleting a missing session reports it (S) — `store::Store::delete`
-  - `session-remove.test.ts`: fails when the session does not exist
 - text attachments follow the prompt in one user message, order kept, empty prompt text omitted (S) — `session prompt with attachments`
   - `session-runner-message.test.ts`: lowers text attachments after the prompt in one user message
   - `session-runner-message.test.ts`: preserves attachment order after the prompt
@@ -324,20 +295,10 @@ Tests for behaviour CodeSmith already has but no test pins (1337 cases), by area
   - `session-runner-message.test.ts`: replays durable tool media into canonical tool messages without structured base64
 - OpenAI encrypted reasoning metadata replayed on the next request (M) — `runner history`
   - `session-runner-message.test.ts`: restores OpenAI encrypted reasoning metadata
-- the error names the network when the host is unreachable (S) — `retry::message`
-  - `session-runner-retry.test.ts`: names the network when the provider's host can't be reached
 - tool media serialized once (S) — `tests/media_session.rs`
   - `session-runner-tool-events.test.ts`: local tool success serializes media base64 once through canonical content
-- an interrupted subagent's failure names its child session; other tools' progress IDs are not exposed (M) — `tests/runner_parity.rs`
-  - `session-runner-tool-events.test.ts`: interrupted subagent failures expose their existing child session to the model
-  - `session-runner-tool-events.test.ts`: interrupted non-subagent failures do not expose their progress session IDs
-- a content-filter finish keeps the partial text and fails the step (S) — `tests/runner_parity.rs`
-  - `session-runner-tool-events.test.ts`: content-filter finish retains failure evidence until step closeout
-  - `session-runner-tool-events.test.ts`: content-filter finish preserves partial streamed text and never ends the step successfully
 - activity and tool reliability aggregated over a range (M) — `stats`
   - `session-stats.test.ts`: aggregates activity and tool reliability without reading message payloads outside the range
-- renders the default system prompt (S) — `prompt::system`
-  - `session-system-prompt.test.ts`: renders the default system prompt instructions
 
 ### Tool: read (16)
 
@@ -946,10 +907,10 @@ Tests for behaviour CodeSmith already has but no test pins (1337 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 566 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 344 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 568 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
-| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
+| OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
 | Other (each says why) | 96 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
@@ -1389,7 +1350,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Sessions and their store (257 of 308)</summary>
+<details><summary>Sessions and their store (284 of 308)</summary>
 
 
 **`bus-session-routing.test.ts`**
@@ -1429,8 +1390,16 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`session-create.test.ts`**
 
 - D preserves the project canonical directory when creating a session in another clone · repeat Session.create on the same location spawns no git · follows the directory's project identity established after creation · does not adopt nested repositories or sessions in another workspace — client-server: project identity across clones/workspaces
+- P persists a missing title until one is generated or supplied — `tests/oc_sessions_backlog.rs::oc_session_create_keeps_a_missing_title_unset_until_one_is_supplied` (adapted: store rows, no create event)
+- P creates a fresh projected session when the ID is omitted — `tests/oc_sessions_backlog.rs::oc_session_create_makes_a_fresh_session_each_time`
+- F stores a trailing-slash directory in the same session list — `tests/oc_sessions_backlog.rs::oc_session_create_stores_a_trailing_slash_directory_in_the_same_list` (a session started in `dir/` was stored under `dir/`, so the list for `dir` did not show it)
+- D returns the original session when the ID is retried — client-server: sessions are created by the process that runs them, with a fresh ID; no client retries a create with its own ID
 - D stores supplied immutable create attributes · stores creation metadata and inherits it through children and forks — storage-model: immutable create attributes and creation metadata
 - P stores permission rules, inherits them through children and forks, and replaces them — `tests/oc_session_permissions.rs::oc_session_stores_permission_rules_inherits_them_through_children_and_forks_and_replaces_them` (adapted: kept as session meta; the rules only restrict)
+- P inherits location from an existing parent when omitted — `tests/oc_sessions_backlog.rs::oc_session_create_gives_a_child_its_parents_directory` (adapted: a subagent's child session)
+- D rejects child creation when the parent does not exist — client-server: child sessions are created only by the subagent tool of a running parent, so there is no create call naming a missing parent
+- P filters root sessions before applying the page limit — `tests/oc_sessions_backlog.rs::oc_session_list_filters_root_sessions_before_the_newest` (adapted: the list has no page limit; roots are filtered in the query)
+- P orders sessions by their latest prompt — `tests/oc_sessions_backlog.rs::oc_session_list_orders_sessions_by_their_latest_prompt`
 - P filters project sessions by subpath — `tests/oc_session_list.rs::oc_session_filters_project_sessions_by_subpath` (adapted: the subpath is the folder under the project root a session started in)
 - P forks a session by replaying a durable fork event into copied projected rows — `tests/oc_session_fork.rs::oc_session_forks_a_session_into_copied_history` (adapted: records copied, not an event replayed)
 - P queues a fork notice after copied history and before the first prompt — `tests/oc_session_fork.rs::oc_session_queues_a_fork_notice_before_the_first_prompt`
@@ -1441,10 +1410,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P copies only settled shell messages into forks — `tests/oc_session_shell.rs::oc_session_copies_only_settled_shell_messages_into_forks` (a running command is not in the log yet)
 - P rejects forking an empty session — `tests/oc_session_fork.rs::oc_session_rejects_forking_an_empty_session`
 - P forks before the selected boundary message — `tests/oc_session_fork.rs::oc_session_forks_before_the_selected_boundary_message` (a message is its record sequence number)
+- D returns the existing Session when one ID is reused with different create arguments · returns one recorded session to concurrent exact retries — client-server: sessions are created by the process that runs them, with a fresh ID; no client retries a create with its own ID
 - D returns the current Session projection after updates · persists creation through the current created event · persists caller-ID creation through the existing created event · includes current creation rows in the Session event stream · replays one prompt lifecycle into a fresh target database · does not mask unrelated created projector defects — storage-model: projector created events and replay
 - P runs a shell command and projects the started/ended shell message — `tests/oc_session_shell.rs::oc_session_runs_a_shell_command_in_the_session_environment` (adapted: the notification, not a projected shell message)
 - P still emits shell ended for a failing command — `tests/oc_session_shell.rs::oc_session_still_records_a_failing_command`
-- D imports projected messages and reserves their aggregate sequence · clamps imported busy and viewed watermarks to their idle transition · imports a long transcript in statements under 100 bound parameters — storage-model: aggregate sequences, watermarks and bound-parameter limits
+- P switches the selected agent through the durable Session event — `tests/oc_sessions_backlog.rs::oc_session_switches_keep_the_selected_agent_and_model` (adapted: the stored selection; no switch event or message)
+- D rejects an agent switch for a missing Session — storage-model: a session's row is written with its first message; a switch before then stays with the live session, so a switch names no stored session to reject
+- P switches the selected model through the durable Session event — `tests/oc_sessions_backlog.rs::oc_session_switches_keep_the_selected_agent_and_model` (adapted: the stored selection; no switch event or message)
+- D ignores a model switch when the selected model is unchanged · treats an omitted variant as the default variant — storage-model: a switch rewrites the stored selection; there are no switch events to deduplicate
+- D rejects a model switch for a missing Session — storage-model: a session's row is written with its first message; a switch before then stays with the live session, so a switch names no stored session to reject
+- D exports only settled projected messages · imports only settled projected messages — storage-model: only settled records are ever stored (a step is recorded once its stream ends), so export and import carry nothing unsettled
+- D imports projected messages and reserves their aggregate sequence — storage-model: aggregate sequences, watermarks and bound-parameter limits
+- P rejects an existing session ID without changing its transcript — `tests/oc_sessions_backlog.rs::oc_session_import_rejects_an_existing_id_without_changing_it`
+- D clamps imported busy and viewed watermarks to their idle transition · imports a long transcript in statements under 100 bound parameters — storage-model: aggregate sequences, watermarks and bound-parameter limits
 
 **`session-environment.test.ts`**
 
@@ -1518,7 +1496,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-remove.test.ts`**
 
+- P removes a session and its children — `tests/oc_sessions_backlog.rs::oc_session_remove_removes_a_session_and_its_children` (adapted: the store's rows, metadata (the environment) included)
 - D removes unloaded sessions and children without initializing an instance — client-server: removal without an instance
+- P fails when the session does not exist — `tests/oc_sessions_backlog.rs::oc_session_remove_reports_a_missing_session` (adapted: `delete` reports that it removed nothing)
 
 **`session-runner-message.test.ts`**
 
@@ -1558,11 +1538,14 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P keeps a refused connection on the general allowance — `src/retry.rs::oc_session_retry_keeps_a_refused_connection_on_the_general_allowance`
 - P doesn't spend the general allowance on an unreachable host — `src/retry.rs::oc_session_retry_doesnt_spend_the_general_allowance_on_an_unreachable_host`
 - P doesn't replay a call whose response was cut off by the network going down — `src/retry.rs::oc_model_retry_one_shot_doesnt_replay_a_call_cut_off_by_the_network_going_down`
+- F names the network when the provider's host can't be reached — `src/retry.rs::oc_session_runner_retry_names_the_network_when_the_providers_host_cant_be_reached` (an unreachable host failed the turn with reqwest's text; the error now names the host and the network (a refused connection keeps its own text))
 
 **`session-runner-tool-events.test.ts`**
 
 - D provider-executed success derives content and retains provider result state · commits a hosted tool result when cancellation races with the aggregate lock — storage-model: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
-- D interrupted progress metadata remains in the terminal failure snapshot · local failure metadata completes the progress snapshot · failure snapshot retains canonical progress above the default byte limit · failure before progress omits partial output fields — storage-model: progress/failure snapshots of OpenCode's tool parts
+- D interrupted progress metadata remains in the terminal failure snapshot — storage-model: progress/failure snapshots of OpenCode's tool parts
+- D interrupted subagent failures expose their existing child session to the model · interrupted non-subagent failures do not expose their progress session IDs — deliberate: subagents run to completion inside the tool call and an interrupt drops the turn, so no interrupted subagent result is recorded
+- D local failure metadata completes the progress snapshot · failure snapshot retains canonical progress above the default byte limit · failure before progress omits partial output fields — storage-model: progress/failure snapshots of OpenCode's tool parts
 - D provider metadata is flattened using the route key · reasoning state from start, empty delta, and end is merged — storage-model: provider metadata flattening and reasoning-state merging in event rows
 - D publishes the trailing ${kind} chunk while the provider is paused ×2 · batches text deltas and flushes pending text before the terminal event · publishes batched deltas before the next block starts · retains new chunks and orders text-end behind an in-flight timer publication · batches reasoning deltas and flushes pending reasoning before the terminal event — storage-model: event batching/publishing order of the projector
 - D authoritative end values replace accumulated deltas in the durable ended events — storage-model: provider metadata flattening and reasoning-state merging in event rows
@@ -1571,6 +1554,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D binary failure emits no success event — storage-model: binary failure events
 - D success event data can carry provider-executed native data — storage-model: OpenCode's tool event publisher and projector; CodeSmith stores a hosted call and its result as one part carrying the provider's payload
 - D step start waits for the pending start snapshot · step finish records settlement without publishing step ended — storage-model: event batching/publishing order of the projector
+- P content-filter finish retains failure evidence until step closeout — `tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure` (adapted: the tool's result is kept and the step fails)
+- P content-filter finish preserves partial streamed text and never ends the step successfully — `tests/oc_sessions_backlog.rs::oc_session_content_filter_keeps_partial_text_and_fails_the_step`
 - P content-filter failure explains the refusal when the provider gives a reason — `src/runner.rs::oc_content_filter_failure_explains_the_refusal`
 
 **`session-stats.test.ts`**
@@ -1582,6 +1567,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D lists by updated time and ID with exclusive two-item pages in either direction — storage-model: OpenCode's message paging and part-row hydration
 - P searches titles case-insensitively beyond ASCII and keeps LIKE wildcard semantics — `tests/oc_session_list.rs::oc_session_searches_titles_case_insensitively_beyond_ascii_and_keeps_like_wildcard_semantics`
 - D pages messages by durable sequence, not timestamp or ID, and scopes cursor lookup · hydrates and settles assistant messages across session_part rows and legacy inline content rows · lastAssistantAfter returns the newest completed error-free assistant after the boundary with parts hydrated · lastAssistantAfter pages past more than twenty incomplete or errored assistant messages · lastAssistantAfter returns undefined without a qualifying assistant after the boundary — storage-model: OpenCode's message paging and part-row hydration
+
+**`session-system-prompt.test.ts`**
+
+- P renders the default system prompt instructions — `tests/oc_sessions_backlog.rs::oc_session_system_prompt_renders_the_default_instructions`
 
 **`session-usage.test.ts`**
 

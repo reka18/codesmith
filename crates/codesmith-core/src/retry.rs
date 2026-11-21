@@ -277,6 +277,28 @@ pub fn is_unreachable(e: &Error) -> bool {
     .any(|p| m.contains(p))
 }
 
+/// A provider failure as the session reports it. An unreachable host names
+/// the network as the problem (OpenCode's `toSessionError`), so a DNS
+/// outage does not read like a broken model or provider; anything else is
+/// the error's own text.
+pub fn message(e: &Error) -> String {
+    match e {
+        Error::Transport(m) if is_unreachable(e) => {
+            // reqwest names the URL as "... for url (https://host/...)".
+            let host = m
+                .split_once("for url (")
+                .and_then(|(_, rest)| rest.split(')').next())
+                .and_then(|u| reqwest::Url::parse(u).ok())
+                .and_then(|u| u.host_str().map(str::to_string));
+            format!(
+                "Can't reach {}. Check the network connection. ({m})",
+                host.as_deref().unwrap_or("the provider")
+            )
+        }
+        _ => e.to_string(),
+    }
+}
+
 /// Retries within one model step.
 pub const MAX_RETRIES: u32 = 10;
 /// Timed-out attempts already waited minutes, so they get fewer retries.
@@ -411,6 +433,29 @@ mod tests {
     }
 
     // session-runner-retry.test.ts
+
+    #[test]
+    fn oc_session_runner_retry_names_the_network_when_the_providers_host_cant_be_reached() {
+        let dns = Error::Transport("error sending request for url (https://opencode.ai/zen/v1/responses): client error (Connect): dns error: failed to lookup address information: nodename nor servname provided, or not known".into());
+        assert_eq!(
+            message(&dns),
+            format!(
+                "Can't reach opencode.ai. Check the network connection. ({})",
+                match &dns {
+                    Error::Transport(m) => m,
+                    _ => unreachable!(),
+                }
+            )
+        );
+        // Without a URL it names the provider.
+        let bare = Error::Transport("dns error: failed to lookup address information".into());
+        assert!(
+            message(&bare).starts_with("Can't reach the provider. Check the network connection. (")
+        );
+        // A refused connection reached something: its own text.
+        let refused = Error::Transport("error sending request for url (http://127.0.0.1:9/v1): client error (Connect): tcp connect error: Connection refused (os error 61)".into());
+        assert_eq!(message(&refused), refused.to_string());
+    }
 
     #[test]
     fn oc_session_retry_stops_retrying_transport_timeouts_after_three_attempts() {

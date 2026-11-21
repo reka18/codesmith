@@ -66,3 +66,30 @@
 15 :: ported :: tests/oc_runner_backlog.rs::oc_session_prices_the_tokens_when_the_endpoint_reports_no_cost
 19 :: ported :: tests/oc_runner_backlog.rs::oc_session_records_the_cost_the_endpoint_reports_over_the_catalog_price
 25 :: ported :: tests/oc_runner_backlog.rs::oc_session_keeps_a_reported_zero_cost
+
+# --- Sessions and their store (tests/oc_sessions_backlog.rs) ---
+@session-create.test.ts
+346 :: ported :: tests/oc_sessions_backlog.rs::oc_session_create_keeps_a_missing_title_unset_until_one_is_supplied :: adapted: store rows, no create event
+367 :: ported :: tests/oc_sessions_backlog.rs::oc_session_create_makes_a_fresh_session_each_time
+379 :: fixed :: tests/oc_sessions_backlog.rs::oc_session_create_stores_a_trailing_slash_directory_in_the_same_list :: a session started in `dir/` was stored under `dir/`, so the list for `dir` did not show it
+390,981,1002 :: design :: client-server :: sessions are created by the process that runs them, with a fresh ID; no client retries a create with its own ID
+503 :: ported :: tests/oc_sessions_backlog.rs::oc_session_create_gives_a_child_its_parents_directory :: adapted: a subagent's child session
+513 :: design :: client-server :: child sessions are created only by the subagent tool of a running parent, so there is no create call naming a missing parent
+524 :: ported :: tests/oc_sessions_backlog.rs::oc_session_list_filters_root_sessions_before_the_newest :: adapted: the list has no page limit; roots are filtered in the query
+558 :: ported :: tests/oc_sessions_backlog.rs::oc_session_list_orders_sessions_by_their_latest_prompt
+1222,1253 :: ported :: tests/oc_sessions_backlog.rs::oc_session_switches_keep_the_selected_agent_and_model :: adapted: the stored selection; no switch event or message
+1239,1317 :: design :: storage-model :: a session's row is written with its first message; a switch before then stays with the live session, so a switch names no stored session to reject
+1282,1299 :: design :: storage-model :: a switch rewrites the stored selection; there are no switch events to deduplicate
+1338,1376 :: design :: storage-model :: only settled records are ever stored (a step is recorded once its stream ends), so export and import carry nothing unsettled
+1577 :: ported :: tests/oc_sessions_backlog.rs::oc_session_import_rejects_an_existing_id_without_changing_it
+@session-remove.test.ts
+60 :: ported :: tests/oc_sessions_backlog.rs::oc_session_remove_removes_a_session_and_its_children :: adapted: the store's rows, metadata (the environment) included
+106 :: ported :: tests/oc_sessions_backlog.rs::oc_session_remove_reports_a_missing_session :: adapted: `delete` reports that it removed nothing
+@session-runner-retry.test.ts
+123 :: fixed :: src/retry.rs::oc_session_runner_retry_names_the_network_when_the_providers_host_cant_be_reached :: an unreachable host failed the turn with reqwest's text; the error now names the host and the network (a refused connection keeps its own text)
+@session-runner-tool-events.test.ts
+614 :: ported :: tests/oc_runner.rs::oc_session_settles_a_local_tool_before_a_content_filter_failure :: adapted: the tool's result is kept and the step fails
+670 :: ported :: tests/oc_sessions_backlog.rs::oc_session_content_filter_keeps_partial_text_and_fails_the_step
+235,252 :: design :: deliberate :: subagents run to completion inside the tool call and an interrupt drops the turn, so no interrupted subagent result is recorded
+@session-system-prompt.test.ts
+4 :: ported :: tests/oc_sessions_backlog.rs::oc_session_system_prompt_renders_the_default_instructions

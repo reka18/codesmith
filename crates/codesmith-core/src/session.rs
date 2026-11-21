@@ -532,6 +532,8 @@ impl Session {
         asker: Arc<dyn Asker>,
         store: Option<Store>,
     ) -> Result<Session> {
+        // `dir/` and `dir` are one directory, listed together.
+        let cwd: PathBuf = cwd.components().collect();
         let config = &loaded.config;
         if let Some(s) = &store {
             s.set_media_blob(config.media.blob.unwrap_or(true));
@@ -4139,7 +4141,7 @@ impl Session {
                         .flatten();
                     let e = match guidance {
                         Some(g) => anyhow!("{g}\n{text}"),
-                        None => anyhow!(e),
+                        None => anyhow!("{}", retry::message(&e)),
                     };
                     let Some(wait) = wait else {
                         let kept = failed_partial(partial.map(|p| p.parts).unwrap_or_default());
@@ -4149,7 +4151,7 @@ impl Session {
                                 parts: kept,
                             })?;
                         }
-                        return Err(anyhow!("{e}"));
+                        return Err(e);
                     };
                     attempt += 1;
                     let wait = wait.mul_f64(self.turn.retry_scale);
