@@ -93,3 +93,15 @@
 235,252 :: design :: deliberate :: subagents run to completion inside the tool call and an interrupt drops the turn, so no interrupted subagent result is recorded
 @session-system-prompt.test.ts
 4 :: ported :: tests/oc_sessions_backlog.rs::oc_session_system_prompt_renders_the_default_instructions
+
+# --- Tool registry, schemas, placement (tests/oc_tools_backlog.rs) ---
+@tool-registry.test.ts
+96 :: ported :: tests/oc_tools_backlog.rs::oc_registry_code_mode_programs_have_no_path_or_bun :: adapted: Boa has neither, with full_codemode or without
+102 :: design :: platform :: Bun/Node globals (CodeSmith's Code Mode runs in Boa without them)
+742 :: design :: deliberate :: `execute` is offered only when it has tools to call (see tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode, which pins the deny half)
+1011 :: ported :: tests/oc_tools_backlog.rs::oc_registry_filters_disabled_tools_with_edit_aliases_and_ordered_wildcards
+@tool-schema.test.ts
+245,330 :: design :: platform :: Standard Schema validators are JavaScript's interface for typed tools; CodeSmith's tools take JSON Schema
+389,436,494 :: feature :: Tool Input Validation :: validating a tool's input against its JSON Schema before running it (CodeSmith repairs the input, then the tool or MCP server reports what is wrong)
+518 :: design :: other :: CodeSmith does not validate tool input against its schema, so every input passes through (after repair)
+

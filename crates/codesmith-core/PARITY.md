@@ -33,7 +33,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
 | Tools: question, todo, skill | 9 | 0 | 0 | 0 | 2 | 7 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
-| Tool registry, schemas, placement | 100 | 28 | 0 | 0 | 53 | 19 | 0 |
+| Tool registry, schemas, placement | 100 | 30 | 0 | 3 | 58 | 9 | 0 |
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1772** | **31** | **42** | **2430** | **1310** | **3** |
+| **Total** | **5588** | **1774** | **31** | **45** | **2435** | **1300** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -97,7 +97,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (42 cases in 6 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (45 cases in 7 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -105,6 +105,7 @@ Missing features, by how many OpenCode test cases each would unlock (42 cases in
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 6 | OpenAI steps and compaction without the default output limit; mid-session reasoning effort switches in the form each backend accepts; … |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
+| [Tool Input Validation](#tool-input-validation) | 3 | validating a tool's input against its JSON Schema before running it (CodeSmith repairs the input, then the tool or MCP server reports what is wrong) |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Context-Tier Pricing](#context-tier-pricing) | 2 | pricing a step at the catalog tier its context size reaches (CodeSmith prices every step at the base price, and a model with only tiered prices at none) |
 
@@ -161,6 +162,14 @@ Missing features, by how many OpenCode test cases each would unlock (42 cases in
 - `browser-attach.test.ts`: disposing the plugin revokes the browser rules before the location finishes closing
 - `browser-idle.test.ts`: idle eviction ends the browser attachment and permits a fresh attachment
 
+### Tool Input Validation
+
+3 cases.
+
+- `tool-schema.test.ts`: input error prompts limit normalized issues
+- `tool-schema.test.ts`: raw JSON schemas validate and decode tool input
+- `tool-schema.test.ts`: raw JSON schemas resolve draft-07 definitions
+
 ### Voice
 
 3 cases.
@@ -178,7 +187,7 @@ Missing features, by how many OpenCode test cases each would unlock (42 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1310 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1300 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -366,27 +375,16 @@ Tests for behaviour CodeSmith already has but no test pins (1310 cases), by area
 - todowrite summarizes the update (S) — `tool::todo`
   - `tool-todo.test.ts`: registers todowrite on the native tool list and summarizes the update
 
-### Tool registry, schemas, placement (19)
+### Tool registry, schemas, placement (9)
 
 - execute offered only with Code Mode; tools direct when execute is denied (S) — `tool registry + codemode`
-  - `tool-registry.test.ts`: are not available without full_codemode
-  - `tool-registry.test.ts`: are available with full_codemode
-  - `tool-registry.test.ts`: keeps execute available without Code Mode tools unless explicitly denied
   - `tool-registry.test.ts`: exposes Code Mode tools directly when execute is denied
-- disabled tools with edit aliases and ordered wildcard precedence (S) — `tool registry`
-  - `tool-registry.test.ts`: filters disabled tools with edit aliases and ordered wildcard precedence
 - a hook renaming a call, including inside Code Mode (M) — `plugin::Plugin::tool_before`
   - `tool-registry.test.ts`: normalizes ${input.name} after the final tool hook (4 cases)
   - `tool-registry.test.ts`: a hook can rename a call inside a Code Mode program to another of its tools
   - `tool-registry.test.ts`: a call renamed inside a Code Mode program returns the renamed tool's structured output
   - `tool-registry.test.ts`: hooks see one ID per call inside a Code Mode program
 - JSON-schema validation of tool input and readable failures (S) — `tool schema validation`
-  - `tool-schema.test.ts`: portable schemas validate and describe typed tools
-  - `tool-schema.test.ts`: portable schema failures become tool failures
-  - `tool-schema.test.ts`: input error prompts limit normalized issues
-  - `tool-schema.test.ts`: raw JSON schemas validate and decode tool input
-  - `tool-schema.test.ts`: raw JSON schemas resolve draft-07 definitions
-  - `tool-schema.test.ts`: raw JSON schemas pass input through when they cannot be imported
   - `tool-schema.test.ts`: missing external input schemas fall back to an empty schema
 
 ### Media tools (6)
@@ -906,13 +904,13 @@ Tests for behaviour CodeSmith already has but no test pins (1310 cases), by area
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 684 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 568 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 687 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 569 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 96 |
+| Other (each says why) | 97 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
@@ -1969,7 +1967,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool registry, schemas, placement (81 of 100)</summary>
+<details><summary>Tool registry, schemas, placement (88 of 100)</summary>
 
 
 **`plugin/tool-input-repair-integration.test.ts`**
@@ -2010,13 +2008,25 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`tool-registry.test.ts`**
 
-- D reads the current editor tools by effective name · replays mutations on refreshed sources and restores tools on disposal and scope cleanup · updates schemas and executors without renaming tools and applies removal in order · converts schemas at registration and reuses them in every snapshot · skips invalid updates without dropping the existing definition · replays empty sources on reload and keeps advertised snapshots · disposes overlays once and replays remaining transforms in order · reads pending tools inside a batch and suppresses terminal teardown replay · uses the last valid addition on replay and restores earlier transforms on disposal · logs and skips invalid dotted namespaces · skips invalid and reserved names while letting the last normalized name win · executes native tools without requiring letter-leading names or namespace segments · executes Code Mode tools without requiring letter-leading names or namespace segments · keeps healthy tools when another namespace is invalid · keeps namespace descriptions beside catalog tools · retains namespace descriptions in executable snapshots after appended transforms · preserves a top-level tool that also has child tools · logs invalid tool definitions without dropping healthy tools · skipped registrations leave existing tools and scoped cleanup intact · canonicalizes effective definitions and keeps Code Mode last · snapshots external tools with missing input schemas · places tools with options.codemode overrides in Code Mode by default, honors direct policy demotion, and resolves pinned · caches the 5 most recently used Code Mode catalogs and invalidates on registry changes · keeps permission options isolated between registrations · removes a scoped registration · preserves an interrupted registration until its scope closes · returns model errors without swallowing interruption or defects · exposes execution only through a snapshot · passes complete call identity to tool execution · lists registered tools by effective name — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
+- P are not available without full_codemode — `tests/oc_tools_backlog.rs::oc_registry_code_mode_programs_have_no_path_or_bun` (adapted: Boa has neither, with full_codemode or without)
+- D are available with full_codemode — platform: Bun/Node globals (CodeSmith's Code Mode runs in Boa without them)
+- D reads the current editor tools by effective name · replays mutations on refreshed sources and restores tools on disposal and scope cleanup · updates schemas and executors without renaming tools and applies removal in order · converts schemas at registration and reuses them in every snapshot · skips invalid updates without dropping the existing definition · replays empty sources on reload and keeps advertised snapshots · disposes overlays once and replays remaining transforms in order · reads pending tools inside a batch and suppresses terminal teardown replay · uses the last valid addition on replay and restores earlier transforms on disposal · logs and skips invalid dotted namespaces · skips invalid and reserved names while letting the last normalized name win · executes native tools without requiring letter-leading names or namespace segments · executes Code Mode tools without requiring letter-leading names or namespace segments · keeps healthy tools when another namespace is invalid · keeps namespace descriptions beside catalog tools · retains namespace descriptions in executable snapshots after appended transforms · preserves a top-level tool that also has child tools · logs invalid tool definitions without dropping healthy tools · skipped registrations leave existing tools and scoped cleanup intact · canonicalizes effective definitions and keeps Code Mode last · snapshots external tools with missing input schemas — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
+- D keeps execute available without Code Mode tools unless explicitly denied — deliberate: `execute` is offered only when it has tools to call (see tests/oc_tool_placement.rs::oc_select_places_tools_per_model_under_full_codemode, which pins the deny half)
+- D places tools with options.codemode overrides in Code Mode by default, honors direct policy demotion, and resolves pinned · caches the 5 most recently used Code Mode catalogs and invalidates on registry changes — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
+- P filters disabled tools with edit aliases and ordered wildcard precedence — `tests/oc_tools_backlog.rs::oc_registry_filters_disabled_tools_with_edit_aliases_and_ordered_wildcards`
+- D keeps permission options isolated between registrations · removes a scoped registration · preserves an interrupted registration until its scope closes · returns model errors without swallowing interruption or defects · exposes execution only through a snapshot · passes complete call identity to tool execution · lists registered tools by effective name — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
 - P normalizes image tool output once and drops unresizable images — `src/tool/read.rs::oc_read_drops_undecodable_image_data` (image normalization through read)
 - D publishes progress metadata unchanged · enforces transformed codecs at execution and projection boundaries · registers, advertises, and executes a Zod tool · executes the tool advertised in a model request · reveals the previous registration after an overlay closes · executes and reports progress for codemode tools advertised in a model request — effect-internal: OpenCode's tool registry overlays, transforms, scopes and codecs
 
 **`tool-schema.test.ts`**
 
-- D tools are structural values · Effect tool schemas use exact optional keys and flatten compatible constraints · empty $name Effect input structs describe callable object parameters ×2 · empty input normalization preserves explicit Effect overrides and raw JSON schemas · Effect inputs delegate empty-input projection to the shared helper · empty input normalization leaves nested empty structs unchanged · Effect tool schemas inline named child schemas · Effect tool schemas resolve escaped definition names · definitions keep their pinned serialization · Effect tool schemas inline URI-encoded definition %s ×3 · Zod schemas validate, transform, and describe typed tools · Effect schema failures use normalized input issues · canonical results carry metadata with typed output · raw JSON schema validation does not keep the caller alive — effect-internal: Effect/Zod schema projection
+- D tools are structural values · Effect tool schemas use exact optional keys and flatten compatible constraints · empty $name Effect input structs describe callable object parameters ×2 · empty input normalization preserves explicit Effect overrides and raw JSON schemas · Effect inputs delegate empty-input projection to the shared helper · empty input normalization leaves nested empty structs unchanged · Effect tool schemas inline named child schemas · Effect tool schemas resolve escaped definition names · definitions keep their pinned serialization · Effect tool schemas inline URI-encoded definition %s ×3 — effect-internal: Effect/Zod schema projection
+- D portable schemas validate and describe typed tools — platform: Standard Schema validators are JavaScript's interface for typed tools; CodeSmith's tools take JSON Schema
+- D Zod schemas validate, transform, and describe typed tools — effect-internal: Effect/Zod schema projection
+- D portable schema failures become tool failures — platform: Standard Schema validators are JavaScript's interface for typed tools; CodeSmith's tools take JSON Schema
+- D Effect schema failures use normalized input issues · canonical results carry metadata with typed output — effect-internal: Effect/Zod schema projection
+- D raw JSON schemas pass input through when they cannot be imported — other: CodeSmith does not validate tool input against its schema, so every input passes through (after repair)
+- D raw JSON schema validation does not keep the caller alive — effect-internal: Effect/Zod schema projection
 
 </details>
 
