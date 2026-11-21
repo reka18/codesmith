@@ -393,7 +393,7 @@ idle for its time to live (30 minutes by default) and when the registry
 is disposed. A replaced attachment's revoke never removes its
 replacement's rules, and another session never sees them. They are judged
 like saved approvals, so they never override a configured `deny`, a
-built-in agent's own rules, a [policy](#policies) or a [secret
+built-in agent's own `deny`, a [policy](#policies) or a [secret
 guard](#secret-files). Opening a file in the browser, as a workspace path
 or a `file://` URL, is checked as the read tool checks a file: the path is
 resolved (`..` and symlinks followed), a file outside the project needs
@@ -404,12 +404,25 @@ lead out of the workspace through a symlink. The browser is handed the
 `file://` URL of the file's real path.
 
 A `browser` rule matches a URL as it would be requested, as for
-[webfetch](#actions-and-resources): the scheme and host lowercased, a default port
-dropped, `.` segments resolved, and trailing dots dropped from the host,
-so `browser https://evil.test/* deny` also covers `HTTPS://EVIL.test.:443/x`.
+[webfetch](#actions-and-resources): the scheme and host lowercased, a
+default port dropped, `.` segments resolved, and trailing dots dropped
+from the host, so `browser https://evil.test/* deny` also covers
+`HTTPS://EVIL.test.:443/x`.
 Its written and percent-decoded forms must pass the deny rules too. A URL
 with credentials (`https://user@host/`) is refused, and so is any scheme
 but `http`, `https` and `file`.
+
+Because they are judged like saved approvals, they answer an `ask` the way
+an "always" approval does: while a browser is attached, a configured
+`browser` `ask` (yours, the project's, or a built-in agent's) is allowed
+for that session without a prompt, and asks again once the attachment
+ends. To forbid opening a URL even with a browser attached, write `deny`:
+
+```jsonc
+{ "action": "browser", "resource": "https://intranet.example/*", "effect": "deny" }
+```
+
+The secret guards are not asks of this kind and still ask.
 
 CodeSmith has no browser of its own, so no browser driver is built in:
 `codesmith_core::plugin::browser` provides the attachment lifecycle and

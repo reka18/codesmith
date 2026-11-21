@@ -1265,6 +1265,33 @@ mod tests {
         assert!(rec.requests().is_empty(), "{:?}", rec.requests());
     }
 
+    /// Like an "always" approval, an attachment turns a configured or
+    /// built-in `browser` ask into an allow while it lasts (documented in
+    /// docs/permissions.md); a `deny` is what forbids.
+    #[test]
+    fn an_attachment_answers_a_browser_ask_as_a_saved_approval_would() {
+        let f = files();
+        let url = "https://good.test/";
+        for rule in [
+            Rule::new(ACTION, "*", Effect::Ask),
+            Rule::new(ACTION, "*", Effect::Ask).into_builtin(),
+        ] {
+            let (b, a, gate, rec, driver) = attached(&f, vec![rule.clone()]);
+            open(&b, &gate, &f, url).unwrap();
+            assert!(rec.requests().is_empty(), "{rule:?}");
+            assert_eq!(driver.urls(), [url]);
+            drop(a);
+            assert!(!gate.allows(ACTION, &[url.to_string()]), "{rule:?}");
+        }
+        let deny = vec![Rule::new(ACTION, "*", Effect::Deny)];
+        let (b, _a, gate, rec, driver) = attached(&f, deny);
+        assert!(matches!(
+            open(&b, &gate, &f, url),
+            Err(BrowserError::Denied(_))
+        ));
+        assert!(rec.requests().is_empty() && driver.urls().is_empty());
+    }
+
     #[test]
     fn a_grant_is_only_allows() {
         assert!(rules()

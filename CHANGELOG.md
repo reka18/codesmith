@@ -33,6 +33,9 @@ All notable changes to CodeSmith are listed here. Versions follow
   must pass the denies too. A URL with credentials is refused, as are
   schemes other than http, https and file. The browser is handed the URL
   the rules saw.
+- **Documented: a browser attachment answers a `browser` ask** as an
+  "always" approval would, for the attached session only; write `deny`
+  to forbid a URL even with a browser attached.
 - **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
   backend reached through GitLab's unpublished Duo workflow and
   agentic-chat SDK protocols; porting it would mean reimplementing a
