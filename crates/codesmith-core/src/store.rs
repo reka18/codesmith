@@ -366,9 +366,23 @@ impl TurnLease {
         loop {
             let taken = {
                 let st = store.clone();
-                let (id, holder) = (id.to_string(), holder.to_string());
-                tokio::task::spawn_blocking(move || st.lease_session(&id, &holder, TURN_LEASE_MS))
-                    .await??
+                let (sid, who) = (id.to_string(), holder.to_string());
+                let job = tokio::task::spawn_blocking(move || {
+                    st.lease_session(&sid, &who, TURN_LEASE_MS)
+                });
+                // A turn cancelled while this runs drops the wait, not the
+                // job: the lease it then takes would have no holder left to
+                // release it, and the session's next turn would wait out
+                // its expiry. Release it once the job is done.
+                let mut guard = InFlight {
+                    job: Some(job),
+                    store: store.clone(),
+                    id: id.to_string(),
+                    holder: holder.to_string(),
+                };
+                let r = guard.job.as_mut().expect("just set").await;
+                guard.job = None;
+                r??
             };
             if taken {
                 break;
@@ -404,6 +418,30 @@ impl TurnLease {
             holder: holder.to_string(),
             renew,
         })
+    }
+}
+
+/// A lease being taken; see [`TurnLease::acquire`].
+struct InFlight {
+    job: Option<tokio::task::JoinHandle<Result<bool>>>,
+    store: std::sync::Arc<Store>,
+    id: String,
+    holder: String,
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let Some(job) = self.job.take() else { return };
+        let (store, id, holder) = (self.store.clone(), self.id.clone(), self.holder.clone());
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                if let Ok(Ok(true)) = job.await {
+                    let _ =
+                        tokio::task::spawn_blocking(move || store.release_session(&id, &holder))
+                            .await;
+                }
+            });
+        }
     }
 }
 
@@ -1562,6 +1600,33 @@ mod tests {
         let _b = TurnLease::acquire(&path, "s", "b", false, || {})
             .await
             .unwrap();
+    }
+
+    /// Regression: a turn cancelled while its lease was being taken (an ACP
+    /// `session/cancel` right after the prompt) left the lease taken with
+    /// no one to release it, so the session's next turn waited 30 seconds
+    /// for it to expire.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lease_taken_by_a_cancelled_acquire_is_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        drop(Store::open(&path).unwrap());
+        for _ in 0..20 {
+            {
+                let acquire = TurnLease::acquire(&path, "s", "a", false, || {});
+                tokio::pin!(acquire);
+                // Started (the lease is being taken), then cancelled.
+                let _ = futures_util::poll!(acquire.as_mut());
+            }
+            // The next turn gets it well before the 30-second expiry.
+            let next = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                TurnLease::acquire(&path, "s", "b", true, || {}),
+            )
+            .await
+            .expect("the lease was never released");
+            drop(next.unwrap());
+        }
     }
 
     /// Regression: a second process opening a new database while the first

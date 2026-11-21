@@ -363,7 +363,11 @@ Where the tests live:
   cancel that came just before the turn asked a permission also hung: the
   request, made after the cancel withdrew the pending ones, blocked the
   turn's thread for good. Such requests are now withdrawn too until the
-  turn has stopped.
+  turn has stopped. And a turn cancelled while it was taking the session's
+  turn lease (taken on a blocking thread, which the cancel does not stop)
+  left the lease taken with no one to release it: the session's next
+  prompt waited 30 seconds for it to expire. A lease taken for a cancelled
+  turn is now released as soon as it is taken.
 - **The configured model's object form** (`context/local-selection`):
   agents and commands took a model as `{"providerID", "model",
   "variant"}`, but the top-level `model` only as a string, so a config
