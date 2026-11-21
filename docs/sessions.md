@@ -221,3 +221,7 @@ like `swift-otter`. As in OpenCode, the name needs the `=`: in
 
 Manage them with `codesmith worktree list`, `worktree create [NAME] [--from
 REF] [-b BRANCH]` and `worktree remove NAME_OR_PATH [--force]`.
+In the UI, `/worktrees` opens, makes and removes them and moves the session
+to one, and the [open menu](interactive-ui.md#projects-worktrees-and-other-folders)
+lists each project's worktrees. The model can list, create and remove them
+too, with the [`codesmith` tool](tools.md#codesmith).
