@@ -66,6 +66,14 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `scripts/ci-linux.sh` runs local CI (fmt, clippy, tests, shellcheck) in a
   Linux container, arm64 or `--amd64`; the pre-push hook adds it with
   `CODESMITH_CI_LINUX=1`.
+- **Shell permission fixes:** arithmetic the scan did not see is flagged
+  as dynamic now: Zsh evaluates the operands of `shift`, `exit`, `return`,
+  `break`, `continue`, `repeat` and `printf`'s numeric conversions as
+  arithmetic, and Bash and Zsh a value assigned to `RANDOM`, `OPTIND` (and
+  Zsh's `SECONDS`, `LINES`...), where an array subscript runs its command
+  substitutions, so `shift 'a[$(rm -rf x)]'` ran `rm` but was checked as
+  `shift`. A declaration (`export NULLCMD=rm`, `typeset ...`) is checked as
+  a plain assignment is.
 - **Shell permission fixes:** Bash 5.3's `${ cmd; }` and `${| cmd; }`
   command substitutions were read as parameter expansions, so the command
   inside was never checked (`echo "${ rm -rf x; }"` passed as `echo`); they

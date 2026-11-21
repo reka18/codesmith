@@ -130,6 +130,39 @@ fn integer_literal(raw: &str) -> bool {
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
+/// An operand a shell evaluating it as arithmetic reads as a plain number:
+/// a literal integer, or a special parameter that is always one.
+fn numeric_operand(raw: &str) -> bool {
+    integer_literal(raw)
+        || matches!(
+            raw,
+            "$?" | "\"$?\"" | "$#" | "\"$#\"" | "$$" | "\"$$\"" | "$!" | "\"$!\""
+        )
+        || arithmetic_only(raw)
+}
+
+/// A `printf` format with no conversion that reads a number: only `%s`,
+/// `%b`, `%q` and `%%`, without a `*` width or precision, and static.
+fn numeric_free_format(w: &Word) -> bool {
+    if w.raw.contains(['$', '`']) {
+        return false;
+    }
+    let mut chars = w.value.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            continue;
+        }
+        loop {
+            match chars.next() {
+                Some('s' | 'b' | 'q' | '%') => break,
+                Some('-' | '+' | ' ' | '#' | '0'..='9' | '.') => {}
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
 /// `$((i + 1))`: a word that is one arithmetic expansion, so a number.
 fn arithmetic_only(raw: &str) -> bool {
     raw.starts_with("$((")
@@ -373,6 +406,40 @@ const SHELL_EVALUATED: [&str; 21] = [
     "RPS1",
     "SPROMPT",
     "FCEDIT",
+];
+
+/// Integer variables the shell evaluates an assigned value as arithmetic
+/// for, whatever their attributes (`RANDOM='a[$(rm x)]'` runs `rm x` in
+/// Bash and Zsh, `SECONDS=...` in Zsh).
+const INTEGER_SPECIALS: [&str; 28] = [
+    "RANDOM",
+    "SRANDOM",
+    "OPTIND",
+    "HISTCMD",
+    "SECONDS",
+    "HISTSIZE",
+    "SAVEHIST",
+    "LINES",
+    "COLUMNS",
+    "KEYTIMEOUT",
+    "LISTMAX",
+    "MAILCHECK",
+    "ERRNO",
+    "TRY_BLOCK_ERROR",
+    "TRY_BLOCK_INTERRUPT",
+    "SHLVL",
+    "ZLE_RPROMPT_INDENT",
+    "EUID",
+    "UID",
+    "GID",
+    "EGID",
+    "TMOUT",
+    "PERIOD",
+    "DIRSTACKSIZE",
+    "LINENO",
+    "HISTFILESIZE",
+    "OPTERR",
+    "FUNCNEST",
 ];
 
 /// Variables `cd` resolves against: `CDPATH=/etc cd ssh` leaves the project.
@@ -2262,7 +2329,9 @@ impl<'a> Scanner<'a> {
         if CD_CONTEXT.contains(&name.split('[').next().unwrap_or(name)) {
             self.flags.cd_context = true;
         }
-        if SHELL_EVALUATED.contains(&name) {
+        if SHELL_EVALUATED.contains(&name)
+            || (INTEGER_SPECIALS.contains(&name) && !numeric_operand(value))
+        {
             self.flags.sink = true;
         }
         if shell_table(name.split('[').next().unwrap_or(name)) {
@@ -2291,10 +2360,24 @@ impl<'a> Scanner<'a> {
     /// Flags for builtins that bind, read or evaluate text.
     fn builtin_flags(&mut self, words: &[Word]) {
         let mut i = 0;
-        while i < words.len() && matches!(words[i].value.as_str(), "command" | "builtin" | "exec") {
-            i += 1;
-            while i < words.len() && words[i].value.starts_with('-') {
-                i += 1;
+        loop {
+            match words.get(i).map(|w| w.value.as_str()) {
+                Some("command" | "builtin" | "exec") => {
+                    i += 1;
+                    while i < words.len() && words[i].value.starts_with('-') {
+                        i += 1;
+                    }
+                }
+                // Zsh's precommand modifiers.
+                Some("noglob" | "nocorrect" | "-") => i += 1,
+                // Zsh's `repeat N cmd` evaluates N as arithmetic.
+                Some("repeat") => {
+                    if words.get(i + 1).is_some_and(|w| !numeric_operand(&w.raw)) {
+                        self.flags.sink = true;
+                    }
+                    i += 2;
+                }
+                _ => break,
             }
         }
         let Some(name) = words.get(i).map(|w| w.value.as_str()) else {
@@ -2309,6 +2392,11 @@ impl<'a> Scanner<'a> {
             | "env" => {
                 for w in args.iter().filter(|w| !w.value.starts_with(['-', '+'])) {
                     if w.value.contains('=') {
+                        // As a plain assignment does: `export NULLCMD=rm`.
+                        // (`env`'s own words are flagged below.)
+                        if name != "env" {
+                            self.assignment_flags(&w.value);
+                        }
                         self.bind_assignment(&w.raw);
                         self.note_command_var(&w.raw, &w.value);
                     }
@@ -2412,6 +2500,38 @@ impl<'a> Scanner<'a> {
                 }
             }
             "let" => self.flags.sink = true,
+            // Zsh evaluates these operands as arithmetic, where a subscript
+            // runs its command substitutions: with `a=(1)`, `shift
+            // 'a[$(rm x)]'` runs `rm x`.
+            "shift" | "exit" | "return" | "break" | "continue" | "logout" | "bye"
+                if args.iter().any(|w| !numeric_operand(&w.raw)) =>
+            {
+                self.flags.sink = true
+            }
+            _ => {}
+        }
+        // Zsh's `printf` (and `print -f`) evaluates the operands of numeric
+        // conversions and `*` widths as arithmetic, as above.
+        let format = match name {
+            "printf" => args
+                .iter()
+                .position(|w| !w.value.starts_with('-') || w.value == "--"),
+            "print" => args.iter().position(|w| w.value == "-f").map(|i| i + 1),
+            _ => None,
+        };
+        if let Some(mut f) = format {
+            if name == "printf" && args[f].value == "--" {
+                f += 1;
+            }
+            if let Some(fmt) = args.get(f) {
+                if !numeric_free_format(fmt)
+                    && args[f + 1..].iter().any(|w| !numeric_operand(&w.raw))
+                {
+                    self.flags.sink = true;
+                }
+            }
+        }
+        match name {
             "env" => {
                 for w in args
                     .iter()

@@ -1,0 +1,44 @@
+# Ports from the second pass over PARITY.md's porting backlog, and the
+# backlog cases they showed to be by design or missing features.
+
+# --- Shell scan and parse (tests/oc_shell_scan_backlog2.rs) ---
+# CodeSmith's scanner reads one POSIX grammar, so a row OpenCode runs for
+# Bash and for Zsh is one check here, counted for both; the real-shell rows
+# run under each installed shell.
+@shell-parse-compatibility.test.ts
+284 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_derives_the_prefix_for_long_argument_lists
+427:6 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_handles_the_former_tree_sitter_gaps :: POSIX rows
+427:5 :: design :: platform :: PowerShell rows
+435:2 :: design :: deliberate :: `chdir` changes directory as in OpenCode, but `set-location` and `push-location` are PowerShell's names; under a POSIX shell they are commands looked up on PATH, so they are checked as commands; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_retains_the_shared_directory_command_set
+435:1 :: design :: platform :: PowerShell row
+@shell-parse-parity.test.ts
+8 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_scans_generated_supported_syntax_with_valid_saved_prefixes :: the POSIX half of the generator
+66 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_retains_commandless_redirects_with_matching_saved_prefixes
+@shell-parse-syntax.test.ts
+72 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_does_not_invent_commands_from_a_quoted_second_heredoc_body
+84 :: design :: deliberate :: a heredoc's owner's resource runs from its first word to the end of its body, so rules see what is fed to it, and so takes in the rest of its line; every other command on the line is still a resource of its own, in order; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_heredoc_and_here_string_commands_in_order
+134 :: design :: deliberate :: a Zsh glob qualifier (`*(N)`, a syntax error in Bash) is refused as unanalyzable, the code-running ones included, rather than read with one shell's grammar; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_refuses_zsh_glob_qualifiers_including_code_qualifiers
+169 :: fixed :: tests/oc_shell_scan_backlog2.rs::oc_scan_rejects_variable_sinks_when_a_substitution_can_build_the_subscript :: these rows passed (adapted: flagged dynamic, so asked about and refused under any deny rule), but porting them against real shells showed more arithmetic the scan did not see: Zsh evaluates the operands of `shift`, `exit`, `return`, `break`, `continue`, `repeat` and of `printf`'s numeric conversions as arithmetic, and Bash and Zsh evaluate a value assigned to `RANDOM`, `OPTIND` (and Zsh's `SECONDS`, `LINES`...), where a subscript runs its substitutions (with `a=(1)`, `shift 'a[$(rm x)]'` runs `rm x` but was checked as `shift`); these are sinks now, and `export`/`typeset` assignments are flagged as plain ones are (`export NULLCMD=rm; >f` ran `rm` in Zsh)
+@shell-scan/adversarial.test.ts
+80 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_scans_repeated_zsh_q_flags_in_bounded_time
+@shell-scan/arithmetic.test.ts
+119 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_arithmetic_agrees_with_real_shells
+@shell-scan/bash-safety.test.ts
+24 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_command_syntax_is_visible
+234 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_names_every_probe_the_shell_runs_in_every_context
+259 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_preserves_commands_around_redirect_only_syntax
+@shell-scan/bash-syntax.test.ts
+112 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_finds_only_the_probes_the_shell_runs
+286 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_real_bash_agrees_with_delimiter_quoting
+@shell-scan/compound-parity.test.ts
+37:3 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_compound_function_bodies_inside_command_substitutions
+37:1 :: design :: deliberate :: an unparenthesized `case` inside a quoted substitution is refused as unanalyzable, which asks; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_compound_function_bodies_inside_command_substitutions
+80 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_reads_zsh_short_for_loops_as_their_long_form
+86 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_retains_commands_in_nested_shorthand_loops
+107 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_real_shells_run_compound_function_bodies :: adapted: the `case` body inside a substitution is refused (see above)
+@shell-scan/generated.test.ts
+11 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_decomposes_every_combination_of_static_commands_and_separators
+29 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_quoted_and_escaped_separators_in_arguments
+45 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_fails_closed_when_valid_commands_are_mutated_with_malformed_syntax
+62 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_retains_generated_dynamic_command_heads_without_resolving_them
+77 :: ported :: tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_wrappers_and_shell_evaluators_at_their_delegated_boundary

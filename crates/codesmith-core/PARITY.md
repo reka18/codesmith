@@ -37,7 +37,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
-| Shell scan and parse | 1465 | 838 | 8 | 0 | 498 | 121 | 0 |
+| Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
 | Permission | 177 | 101 | 1 | 0 | 50 | 25 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2468** | **45** | **40** | **2501** | **534** | **0** |
+| **Total** | **5588** | **2573** | **50** | **40** | **2512** | **413** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -75,6 +75,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner.test.ts`: "retries an unknown finish before output" (1 case): an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output`.
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
 - `session-runner.test.ts`: "durably closes partial ${kind} when the provider stream is interrupted" (3 cases): an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step. Pinned by `tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted`.
+- `shell-parse-syntax.test.ts`: "%s rejects variable sinks when a substitution can build the subscript: %s" (5 cases): these rows passed (adapted: flagged dynamic, so asked about and refused under any deny rule), but porting them against real shells showed more arithmetic the scan did not see: Zsh evaluates the operands of `shift`, `exit`, `return`, `break`, `continue`, `repeat` and of `printf`'s numeric conversions as arithmetic, and Bash and Zsh evaluate a value assigned to `RANDOM`, `OPTIND` (and Zsh's `SECONDS`, `LINES`...), where a subscript runs its substitutions (with `a=(1)`, `shift 'a[$(rm x)]'` runs `rm x` but was checked as `shift`); these are sinks now, and `export`/`typeset` assignments are flagged as plain ones are (`export NULLCMD=rm; >f` ran `rm` in Zsh). Pinned by `tests/oc_shell_scan_backlog2.rs::oc_scan_rejects_variable_sinks_when_a_substitution_can_build_the_subscript`.
 - `shell-scan/bash-safety.test.ts`: "still requires redirect targets: %s" (1 case): `X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets`.
 - `shell-scan/bash-safety.test.ts`: "does not invent redirect commands for pure group descriptor duplications: %s" (3 cases): a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications`.
 - `shell-scan/bash-syntax.test.ts`: "rejects ANSI-C escapes whose value differs between shells in %s: %s" (2 cases): `$'a\0b'` was read as `ab` where Bash ends the word at the NUL (so `$'curl\0z'` runs `curl` but was checked as `curlz`), and `\cX` was decoded although the shells read it differently; both are refused now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells`.
@@ -177,7 +178,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (534 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (413 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -359,49 +360,6 @@ Tests for behaviour CodeSmith already has but no test pins (534 cases), by area,
   - `tool-shell.test.ts`: runs parallel Code Mode shells with the long default and notifies after a shorter timeout
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
-
-### Shell scan and parse (121)
-
-- prefix for long argument lists (S) — `shell_scan::scan`
-  - `shell-parse-compatibility.test.ts`: derives the prefix for long argument lists
-- former tree-sitter gaps table (S) — `shell_scan::scan`
-  - `shell-parse-compatibility.test.ts`: {fixture.name} (11 cases)
-- the shared directory command set (S) — `shell_scan::scan`
-  - `shell-parse-compatibility.test.ts`: retains the shared directory command set: %s (3 cases)
-- generated supported syntax has valid saved prefixes (M) — `shell_scan::scan`
-  - `shell-parse-parity.test.ts`: scans generated supported syntax with valid saved prefixes and no fallback
-- commandless redirects keep matching saved prefixes (S) — `shell_scan::scan`
-  - `shell-parse-parity.test.ts`: retains commandless redirects with matching saved prefixes: %s (2 cases)
-- heredoc bodies and spans stay with their commands (S) — `shell_scan::scan`
-  - `shell-parse-syntax.test.ts`: does not invent commands from a quoted second heredoc body
-  - `shell-parse-syntax.test.ts`: keeps heredoc and here-string spans attached to their own commands across lists and pipelines
-- zsh glob qualifiers / parameter flags / disown; code qualifiers rejected (S) — `shell_scan::scan`
-  - `shell-parse-syntax.test.ts`: scans Zsh glob qualifiers, indirect parameter flags, and disown operators while rejecting code qualifiers
-- variable sinks with substitution-built subscripts rejected (S) — `shell_scan::scan`
-  - `shell-parse-syntax.test.ts`: %s rejects variable sinks when a substitution can build the subscript: %s (5 cases)
-- repeated zsh q flags in bounded time (S) — `shell_scan::scan`
-  - `shell-scan/adversarial.test.ts`: scans repeated zsh q flags in bounded time
-- arithmetic rows checked against real bash/zsh (M) — `tests/shell_differential.rs`
-  - `shell-scan/arithmetic.test.ts`: ${shell} evaluates %s independently (20 cases)
-- Bash safety tables: whitespace, fd prefixes, commandless redirects, group redirects, delimiter confusion (M) — `shell_scan::scan`
-  - `shell-scan/bash-safety.test.ts`: ${shell} command syntax is visible: %s (2 cases)
-  - `shell-scan/bash-safety.test.ts`: ${shell}: %s (3 cases)
-  - `shell-scan/bash-safety.test.ts`: ${shell} preserves commands around redirect-only syntax: %s (12 cases)
-- the fixtures run in real bash/zsh (add them to the differential corpus) (M) — `tests/shell_differential.rs`
-  - `shell-scan/bash-syntax.test.ts`: ${shell} runs only the explicitly found probes: %s (22 cases)
-  - `shell-scan/bash-syntax.test.ts`: real Bash agrees with delimiter quoting: %s (8 cases)
-- function bodies and shorthand loops in every context (M) — `shell_scan::scan`
-  - `shell-scan/compound-parity.test.ts`: keeps compound function bodies inside command substitutions: %s (4 cases)
-  - `shell-scan/compound-parity.test.ts`: {source} (5 cases)
-  - `shell-scan/compound-parity.test.ts`: retains commands in nested shorthand loops: %s (7 cases)
-- loops checked against real bash/zsh (M) — `tests/shell_differential.rs`
-  - `shell-scan/compound-parity.test.ts`: ${shell}: %s (6 cases)
-- generated combinations of commands and separators; malformed mutations fail closed (M) — `shell_scan::scan`
-  - `shell-scan/generated.test.ts`: decomposes every combination of static commands and separators
-  - `shell-scan/generated.test.ts`: keeps quoted and escaped separators in arguments
-  - `shell-scan/generated.test.ts`: fails closed when valid commands are mutated with malformed syntax
-  - `shell-scan/generated.test.ts`: retains generated dynamic command heads without resolving them
-  - `shell-scan/generated.test.ts`: keeps wrappers and shell evaluators at their delegated boundary
 
 ### Permission (25)
 
@@ -784,8 +742,8 @@ Tests for behaviour CodeSmith already has but no test pins (534 cases), by area,
 
 | Reason | Cases |
 |---|---:|
-| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 688 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 635 |
+| Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 640 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -2187,7 +2145,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell scan and parse (1344 of 1465)</summary>
+<details><summary>Shell scan and parse (1465 of 1465)</summary>
 
 
 **`shell-parse-compatibility.test.ts`**
@@ -2195,13 +2153,20 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P extracts resources, saved prefixes, and directories: %s %s %j ×25 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_resources_saved_prefixes_and_directories` (POSIX rows)
 - D extracts resources, saved prefixes, and directories: %s %s %j ×3 — deliberate: a bare `cd` is the home directory (unknown, so asked, when the script changes HOME), not a `cd *` command, and a quoted `~` is checked both as written and expanded; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_resources_saved_prefixes_and_directories
 - D extracts resources, saved prefixes, and directories: %s %s %j ×10 — platform: PowerShell rows
+- P derives the prefix for long argument lists — `tests/oc_shell_scan_backlog2.rs::oc_scan_derives_the_prefix_for_long_argument_lists`
 - D extracts inline PowerShell directory flags with case-insensitive names and quoted values · retains statement-head ForEach-Object cmdlet calls when non-scriptblock parameters are present — platform: PowerShell
+- P {fixture.name} ×6 — `tests/oc_shell_scan_backlog2.rs::oc_scan_handles_the_former_tree_sitter_gaps` (POSIX rows)
+- D {fixture.name} ×5 — platform: PowerShell rows
+- D retains the shared directory command set: %s ×2 — deliberate: `chdir` changes directory as in OpenCode, but `set-location` and `push-location` are PowerShell's names; under a POSIX shell they are commands looked up on PATH, so they are checked as commands; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_retains_the_shared_directory_command_set
+- D retains the shared directory command set: %s — platform: PowerShell row
 
 **`shell-parse-parity.test.ts`**
 
+- P scans generated supported syntax with valid saved prefixes and no fallback — `tests/oc_shell_scan_backlog2.rs::oc_scan_scans_generated_supported_syntax_with_valid_saved_prefixes` (the POSIX half of the generator)
 - P extracts resources, saved prefixes, and directories in %s: %s ×22 — `tests/oc_shell_scan_backlog.rs::oc_scan_scans_the_native_parity_commands` (POSIX rows)
 - D extracts resources, saved prefixes, and directories in %s: %s ×5 — platform: PowerShell rows
 - P returns an explicit empty result for pure variable assignments without redirects — `src/tool/shell_scan.rs::oc_scan_assignment_only_input_has_no_command`
+- P retains commandless redirects with matching saved prefixes: %s ×2 — `tests/oc_shell_scan_backlog2.rs::oc_scan_retains_commandless_redirects_with_matching_saved_prefixes`
 - P fails explicitly for malformed %s syntax: %s ×6 — `src/tool/shell_scan.rs::oc_scan_malformed_structure_is_opaque` (POSIX rows)
 - D fails explicitly for malformed %s syntax: %s ×3 — platform: PowerShell rows
 
@@ -2209,6 +2174,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D PowerShell invocation approvals include the operator instead of saving an ineffective prefix · PowerShell scriptblock callers preserve permission resources and usable approvals: %s ×8 — platform: PowerShell
 - P ${shell} extracts commands without rejecting ordinary syntax: %s ×70 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_commands_without_rejecting_ordinary_syntax` (the Bash and Zsh rows, one check each)
+- P does not invent commands from a quoted second heredoc body — `tests/oc_shell_scan_backlog2.rs::oc_scan_does_not_invent_commands_from_a_quoted_second_heredoc_body`
+- D keeps heredoc and here-string spans attached to their own commands across lists and pipelines — deliberate: a heredoc's owner's resource runs from its first word to the end of its body, so rules see what is fed to it, and so takes in the rest of its line; every other command on the line is still a resource of its own, in order; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_heredoc_and_here_string_commands_in_order
+- D scans Zsh glob qualifiers, indirect parameter flags, and disown operators while rejecting code qualifiers — deliberate: a Zsh glob qualifier (`*(N)`, a syntax error in Bash) is refused as unanalyzable, the code-running ones included, rather than read with one shell's grammar; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_refuses_zsh_glob_qualifiers_including_code_qualifiers
+- F %s rejects variable sinks when a substitution can build the subscript: %s ×5 — `tests/oc_shell_scan_backlog2.rs::oc_scan_rejects_variable_sinks_when_a_substitution_can_build_the_subscript` (these rows passed (adapted: flagged dynamic, so asked about and refused under any deny rule), but porting them against real shells showed more arithmetic the scan did not see: Zsh evaluates the operands of `shift`, `exit`, `return`, `break`, `continue`, `repeat` and of `printf`'s numeric conversions as arithmetic, and Bash and Zsh evaluate a value assigned to `RANDOM`, `OPTIND` (and Zsh's `SECONDS`, `LINES`...), where a subscript runs its substitutions (with `a=(1)`, `shift 'a[$(rm x)]'` runs `rm x` but was checked as `shift`); these are sinks now, and `export`/`typeset` assignments are flagged as plain ones are (`export NULLCMD=rm; >f` ran `rm` in Zsh))
 - D PowerShell extracts commands without rejecting ordinary syntax: %s ×14 — platform: PowerShell
 
 **`shell-parse.test.ts`**
@@ -2233,6 +2202,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P scans subscript-shaped text outside shell sinks: %s ×9 — `src/tool/shell_scan.rs::oc_scan_adversarial_subscript_text_outside_sinks`
 - P keeps structurally uncertain Bash input opaque: %s ×4 — `src/tool/shell_scan.rs::oc_scan_adversarial_uncertain_input_is_opaque`
 - P scans adversarial Bash input in bounded time: %s ×6 — `src/tool/shell_scan.rs::oc_scan_adversarial_input_in_bounded_time`
+- P scans repeated zsh q flags in bounded time — `tests/oc_shell_scan_backlog2.rs::oc_scan_scans_repeated_zsh_q_flags_in_bounded_time`
 - D scans visible PowerShell command positions: %s ×14 · reports incomplete PowerShell input: %s ×2 — platform: PowerShell
 
 **`shell-scan/arithmetic.test.ts`**
@@ -2244,9 +2214,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P rejects malformed arithmetic syntax: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_malformed_arithmetic_syntax`
 - D rejects malformed arithmetic syntax: %s — deliberate: `$((1; printf 2))` is read as an arithmetic expansion that names no command (every shell fails it as arithmetic when it runs); pinned by tests/oc_shell_scan_backlog.rs::oc_scan_rejects_malformed_arithmetic_syntax
 - P bounds arithmetic nesting, input size, and repeated conditional work — `tests/oc_shell_scan_backlog.rs::oc_scan_bounds_arithmetic_nesting_input_size_and_repeated_work` (adapted: deep parentheses in one expansion scan (they name no command); conditionals around substitutions are refused past eleven levels, not sixteen)
+- P ${shell} evaluates %s independently ×20 — `tests/oc_shell_scan_backlog2.rs::oc_scan_arithmetic_agrees_with_real_shells`
 
 **`shell-scan/bash-safety.test.ts`**
 
+- P ${shell} command syntax is visible: %s ×2 — `tests/oc_shell_scan_backlog2.rs::oc_scan_command_syntax_is_visible`
 - P rejects malformed command positions: %s ×7 — `src/tool/shell_scan.rs::oc_scan_adversarial_command_positions`
 - P recognizes shell whitespace %j ×2 — `tests/oc_shell_scan_backlog.rs::oc_scan_recognizes_shell_whitespace`
 - D does not normalize non-shell whitespace %j ×5 — deliberate: a non-shell space (CR, VT, FF, NBSP, BOM) is refused or kept in its word, as the shell reads it (`printf\rok` is checked as that name), rather than always refused; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_normalize_non_shell_whitespace
@@ -2263,12 +2235,15 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P does not repeatedly rescan nested conditionals — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_repeatedly_rescan_nested_conditionals` (adapted: eleven levels (deeper ones are refused))
 - P does not lose commands through delimiter or quote confusion: %s ×3 — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion`
 - D does not lose commands through delimiter or quote confusion: %s — deliberate: a quoted `)` in a substitution nested in a quoted one is refused as unanalyzable, which asks rather than guesses; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion
+- P ${shell}: %s ×3 — `tests/oc_shell_scan_backlog2.rs::oc_scan_names_every_probe_the_shell_runs_in_every_context`
+- P ${shell} preserves commands around redirect-only syntax: %s ×12 — `tests/oc_shell_scan_backlog2.rs::oc_scan_preserves_commands_around_redirect_only_syntax`
 
 **`shell-scan/bash-syntax.test.ts`**
 
 - P extracts actual command nodes: %s ×62 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes`
 - D extracts actual command nodes: %s ×8 — deliberate: valid syntax the scanner refuses as unanalyzable (an unparenthesized case or a heredoc inside a quoted substitution, a delimiter split by a line continuation, `time` before `[[`/`!`), so it is asked about rather than guessed at, and an arithmetic command or subscript assignment kept as a command of its own; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
 - P ${shell} accepts the source grammar: ${source} ×140 — `tests/oc_shell_scan_backlog.rs::oc_scan_fixtures_are_accepted_by_bash_and_zsh`
+- P ${shell} runs only the explicitly found probes: %s ×22 — `tests/oc_shell_scan_backlog2.rs::oc_scan_finds_only_the_probes_the_shell_runs`
 - P rejects incomplete syntax: %s ×7 — `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_incomplete_syntax`
 - D scans a Zsh brace group closed after a redirect — deliberate: `}` right after a redirect closes a group only in Zsh, so the scan refuses `{ a && >f }` rather than pick a reading; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_refuses_a_brace_group_closed_after_a_redirect
 - P preserves raw lexical spelling of ANSI-C and locale quoted words — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_the_raw_spelling_of_ansi_c_and_locale_quoted_words`
@@ -2281,6 +2256,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P preserves heredoc permission resources and saved prefixes: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_heredoc_permission_resources_and_saved_prefixes`
 - P does not reinterpret the tail of a here-string operator: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_reinterpret_the_tail_of_a_here_string_operator`
 - P uses identical delimiter decoding in every command context: %j ×12 — `tests/oc_shell_scan_backlog.rs::oc_scan_uses_identical_delimiter_decoding_in_every_context` (adapted: an empty delimiter's line stays in the cat command's resource)
+- P real Bash agrees with delimiter quoting: %s ×8 — `tests/oc_shell_scan_backlog2.rs::oc_scan_real_bash_agrees_with_delimiter_quoting`
 - D posix reports both readings of a double parenthesis · reads Bash and Zsh syntax precisely where Dash diverges: %s ×2 · reads a reserved word after a redirect as a Zsh keyword · scans safe Zsh parameter flags, Zsh repeat loops, and Bash extglob arguments · derives the dialect from the shell executable: %s ×5 — deliberate: CodeSmith reads one grammar for every POSIX shell, whatever the executable; a reading only some shells give is kept as an alternate, checked against deny rules
 
 **`shell-scan/closure.test.ts`**
@@ -2292,9 +2268,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`shell-scan/compound-parity.test.ts`**
 
 - P ${shell}: ${source} ×160 — `tests/oc_shell_scan_backlog.rs::oc_scan_accepts_compound_function_bodies_as_braced_ones`
+- P keeps compound function bodies inside command substitutions: %s ×3 — `tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_compound_function_bodies_inside_command_substitutions`
+- D keeps compound function bodies inside command substitutions: %s — deliberate: an unparenthesized `case` inside a quoted substitution is refused as unanalyzable, which asks; pinned by tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_compound_function_bodies_inside_command_substitutions
+- P {source} ×5 — `tests/oc_shell_scan_backlog2.rs::oc_scan_reads_zsh_short_for_loops_as_their_long_form`
+- P retains commands in nested shorthand loops: %s ×7 — `tests/oc_shell_scan_backlog2.rs::oc_scan_retains_commands_in_nested_shorthand_loops`
+- P ${shell}: %s ×6 — `tests/oc_shell_scan_backlog2.rs::oc_scan_real_shells_run_compound_function_bodies` (adapted: the `case` body inside a substitution is refused (see above))
 
 **`shell-scan/generated.test.ts`**
 
+- P decomposes every combination of static commands and separators — `tests/oc_shell_scan_backlog2.rs::oc_scan_decomposes_every_combination_of_static_commands_and_separators`
+- P keeps quoted and escaped separators in arguments — `tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_quoted_and_escaped_separators_in_arguments`
+- P fails closed when valid commands are mutated with malformed syntax — `tests/oc_shell_scan_backlog2.rs::oc_scan_fails_closed_when_valid_commands_are_mutated_with_malformed_syntax`
+- P retains generated dynamic command heads without resolving them — `tests/oc_shell_scan_backlog2.rs::oc_scan_retains_generated_dynamic_command_heads_without_resolving_them`
+- P keeps wrappers and shell evaluators at their delegated boundary — `tests/oc_shell_scan_backlog2.rs::oc_scan_keeps_wrappers_and_shell_evaluators_at_their_delegated_boundary`
 - D decomposes every combination of static commands and separators · keeps quoted and escaped separators in arguments · fails closed when valid commands are mutated with malformed syntax · distinguishes variable expressions from delegated execution · extracts nested commands in directory expressions without evaluating variables — platform: PowerShell
 
 **`shell-scan/mutation.test.ts`**
