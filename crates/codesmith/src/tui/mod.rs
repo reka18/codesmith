@@ -34,6 +34,7 @@ mod form;
 mod group;
 mod history;
 pub(crate) mod keymap;
+mod login_view;
 mod markdown;
 mod mcp_view;
 mod mention;
@@ -178,6 +179,15 @@ struct Runner {
     new_inherit: bool,
     /// The next `/new` starts here (the open menu chose this folder).
     new_here: bool,
+    /// The sign-in picker's running login: its number, its task, and
+    /// where redirects pasted into the picker go.
+    login: Option<(
+        u64,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::mpsc::Sender<String>,
+    )>,
+    /// The number the next login gets.
+    login_seq: u64,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -613,6 +623,7 @@ impl Runner {
                 ))))
             }
             "themes" | "theme" => self.theme_command(args),
+            "login" => self.open_login(),
             "clear" => self.app.set_entries(Vec::new()),
             "editor" => self.edit = true,
             "diff" => {
@@ -1354,6 +1365,110 @@ impl Runner {
         });
     }
 
+    /// Open the sign-in picker (`/login`).
+    fn open_login(&mut self) {
+        let (choices, help) = login_view::load(
+            &self.loaded.config,
+            &codesmith_core::paths::auth_file(),
+            &codesmith_core::providers::process_env(),
+        );
+        self.app.modal = Some(Modal::Login(Box::new(login_view::LoginView::new(
+            choices, help,
+        ))));
+    }
+
+    /// The sign-in picker's states again, after a sign-in or out.
+    fn refresh_login(&mut self) {
+        if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
+            let (choices, help) = login_view::load(
+                &self.loaded.config,
+                &codesmith_core::paths::auth_file(),
+                &codesmith_core::providers::process_env(),
+            );
+            v.refresh(choices, help);
+        }
+    }
+
+    /// Carry out what the sign-in picker asked for.
+    fn login_action(&mut self, out: login_view::Outcome) {
+        use login_view::Outcome;
+        match out {
+            Outcome::Login(req) => self.start_login(req),
+            Outcome::Logout(id) => {
+                let r = crate::cli::logout(&codesmith_core::paths::auth_file(), &id)
+                    .map_err(|e| format!("{e:#}"));
+                self.refresh_login();
+                if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
+                    v.signed_out(r);
+                }
+            }
+            // Only http(s) pages open (see `open_browser`).
+            Outcome::OpenUrl(url) => codesmith_core::mcp::oauth::open_browser(&url),
+            Outcome::Paste(s) => {
+                if let Some((_, _, tx)) = &self.login {
+                    let _ = tx.try_send(s.0);
+                }
+            }
+            Outcome::Cancel => {
+                // Dropping the login closes its callback listener.
+                if let Some((_, task, _)) = self.login.take() {
+                    task.abort();
+                }
+            }
+            Outcome::Nothing | Outcome::Close => {}
+        }
+    }
+
+    /// Run a sign-in from the picker on its own task: what it would print
+    /// comes back as `Ev::Login`, the browser opens as from the terminal,
+    /// and nothing reads the terminal.
+    fn start_login(&mut self, req: crate::cli::LoginRequest) {
+        use login_view::LoginEv;
+        if let Some((_, task, _)) = self.login.take() {
+            task.abort();
+        }
+        self.login_seq += 1;
+        let n = self.login_seq;
+        let (paste_tx, paste_rx) = tokio::sync::mpsc::channel(4);
+        let tx = self.tx.clone();
+        let send = move |e: LoginEv| {
+            let _ = tx.send(Ev::Login(n, e));
+        };
+        let io = crate::cli::LoginIo {
+            open: Arc::new({
+                let send = send.clone();
+                move |url: &str, _paste: bool| {
+                    send(LoginEv::Url(url.to_string()));
+                    codesmith_core::mcp::oauth::open_browser(url);
+                }
+            }),
+            device: Arc::new({
+                let send = send.clone();
+                move |uri: &str, code: &str, complete: Option<&str>| {
+                    send(LoginEv::Device {
+                        uri: uri.to_string(),
+                        code: code.to_string(),
+                    });
+                    codesmith_core::mcp::oauth::open_browser(complete.unwrap_or(uri));
+                }
+            }),
+            note: Arc::new({
+                let send = send.clone();
+                move |m: &str| send(LoginEv::Note(m.to_string()))
+            }),
+            pasted: crate::cli::Pasted::Channel(paste_rx),
+            terminal: false,
+        };
+        let (file, cwd) = (codesmith_core::paths::auth_file(), self.cwd.clone());
+        let task = tokio::spawn(async move {
+            let r = crate::cli::run_login(&file, &cwd, req, io)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            send(LoginEv::Done(r));
+        });
+        self.login = Some((n, task, paste_tx));
+    }
+
     /// Edit the prompt in the external editor, the terminal handed to it
     /// and taken back after.
     async fn edit_prompt(
@@ -1553,6 +1668,10 @@ impl Runner {
                         self.mcp_sign_in(name);
                         Ok(())
                     }
+                    Some(Action::Login(out)) => {
+                        self.login_action(out);
+                        Ok(())
+                    }
                     Some(Action::Investigate(prompt)) => self.slash("new", "").map(|()| {
                         self.app.restore_prompt(&prompt);
                     }),
@@ -1601,6 +1720,20 @@ impl Runner {
             Ev::Hangup => self.app.quit = true,
             Ev::Files(f) => {
                 self.app.set_files(f);
+            }
+            Ev::Login(n, e) => {
+                if self.login.as_ref().is_some_and(|l| l.0 == n) {
+                    let done = matches!(e, login_view::LoginEv::Done(_));
+                    if done {
+                        self.login = None;
+                    }
+                    if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
+                        v.event(e);
+                    }
+                    if done {
+                        self.refresh_login();
+                    }
+                }
             }
             Ev::Swap(swap::Progress::Line(l)) => {
                 if let Some(Modal::Swap(v)) = self.app.modal.as_mut() {
@@ -2034,6 +2167,8 @@ async fn run_in(
         launch: launch.to_path_buf(),
         new_inherit: tui.new_inherit,
         new_here: false,
+        login: None,
+        login_seq: 0,
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),
@@ -2270,6 +2405,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("redo", false),
     ("compact", false),
     ("export", false),
+    ("login", false),
     ("agent", true),
     ("model", true),
     ("variant", true),

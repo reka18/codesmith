@@ -120,18 +120,25 @@ fn oc_auth_registers_its_commands() {
     for sub in ["login", "list", "logout"] {
         assert!(h.contains(sub), "{h}");
     }
-    assert!(help(&["auth", "login"]).contains("<PROVIDER>"));
+    assert!(help(&["auth", "login"]).contains("[PROVIDER]"));
     assert!(help(&["auth", "logout"]).contains("<PROVIDER>"));
 }
 
 // auth.test.ts: "requires a target outside an interactive terminal" (the
-// `acp --login` half is a gap: CodeSmith has no terminal auth).
+// `acp --login` half is a gap). A provider may be left out: in a terminal
+// the sign-in picker asks for one; without one, `auth login` prints the
+// providers and fails (e2e `oc_cli::auth_login_without_a_provider_or_terminal_prints_how_to_sign_in`).
 #[test]
 fn oc_auth_login_requires_a_target() {
-    let e = Cli::try_parse_from(["codesmith", "auth", "login"])
-        .err()
-        .expect("a provider is required");
-    assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    let Some(Command::Auth {
+        what: AuthCmd::Login { provider, .. },
+    }) = Cli::try_parse_from(["codesmith", "auth", "login"])
+        .expect("the provider is optional")
+        .command
+    else {
+        panic!("not auth login")
+    };
+    assert_eq!(provider, None);
 }
 
 // import-export.test.ts: "export requires a session outside an interactive

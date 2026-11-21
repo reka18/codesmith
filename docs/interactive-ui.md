@@ -386,6 +386,7 @@ and `opencode` is used.
 | `/model [provider/model]` | Switch model, or pick one. |
 | `/variant [name]` | Switch to the model's next [variant](configuration.md#provider-options-and-variants), or to the one named; `/variant default` drops it. |
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
+| `/login` | [Sign in](#signing-in-to-providers) to a provider, or sign out. |
 | `/export` (**Ctrl+X x**) | [Export the session](#exporting-a-session) as Markdown or JSON: copy it or save it to a file. |
 | `/clear` | Clear the screen. The session is kept. |
 | `/thinking` | Show or hide reasoning. |
@@ -508,6 +509,33 @@ dialog waits, then comes back to the list, and the server reconnects
 with its new sign-in (its tools are offered from the next model step). On one that failed it shows the error;
 **i** then opens a new session with a prompt to investigate it, to edit
 and send.
+
+## Signing in to providers
+
+`/login` opens the sign-in picker: every provider with where its login
+stands (`signed in · …` with a dot, `key from $VAR`, `key in config`, `not
+signed in`). Type to filter, **↑/↓** to move, **Enter** to choose, **Esc**
+to go back or close. A provider's menu lists its ways in, first the usual
+one, then *Open the API key page* where one is known, then *Sign out* when
+a login is saved:
+
+- **A browser login** opens the browser and waits. The dialog shows the
+  URL (to open by hand or on another machine) and a paste box: paste the
+  URL the browser ends up on and press **Enter**. A paste that belongs to
+  another sign-in is refused and the login keeps waiting. **Esc** stops it.
+- **A device login** shows the code to enter and the page to enter it on.
+- **A key** is typed or pasted into a masked field (one `•` a character);
+  the key is saved to `auth.json` and is never drawn, put in the prompt or
+  history, or shown to the model.
+- **Claude Pro/Max: use your Claude Code login** runs the `claude-agent`
+  check (no key is stored) and shows Claude Code's version and models, or
+  what to run when it is missing or signed out.
+
+When a provider's browser or device login has no client id configured,
+the dialog shows where to register an OAuth app and the redirect URL to
+give it, then asks for the client id. Everything drawn has its control
+characters escaped. The picker is keyboard-only. See
+[signing in](getting-started.md#signing-in).
 
 ## Autocomplete and `@` mentions
 

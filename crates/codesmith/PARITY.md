@@ -907,7 +907,7 @@ dropped.
 | `cli/test/auth` | registers authentication commands | already passing | oc_auth_registers_its_commands (adapted) |
 | `cli/test/auth` | lists stored and environment connections | already passing | oc_auth_list_shows_stored_and_environment_keys (adapted) |
 | `cli/test/auth` | removes a selected stored credential | already passing | oc_auth_logout_removes_a_stored_key |
-| `cli/test/auth` | requires a target outside an interactive terminal, including through acp --login | already passing | oc_auth_login_requires_a_target (the acp --login half is a gap) |
+| `cli/test/auth` | requires a target outside an interactive terminal, including through acp --login | already passing | oc_auth_login_requires_a_target, e2e oc_cli::auth_login_without_a_provider_or_terminal_prints_how_to_sign_in (the acp --login half is a gap) |
 | `cli/test/debug-config` | is included in troubleshooting help | already passing | oc_debug_paths_and_config_are_in_the_debug_help |
 | `cli/test/debug-paths` | is included in troubleshooting help | already passing | oc_debug_paths_and_config_are_in_the_debug_help |
 | `cli/test/debug-paths` | prints resolved global paths without starting a server | already passing | oc_debug_paths_prints_the_resolved_folders |

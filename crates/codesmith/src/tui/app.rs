@@ -300,6 +300,8 @@ pub enum Modal {
     Panel(super::panel::Panel),
     /// The MCP servers.
     Mcp(super::mcp_view::McpView),
+    /// The sign-in picker (`/login`).
+    Login(Box<super::login_view::LoginView>),
     /// A background command's output.
     ShellOutput(Box<super::panel::ShellView>),
     /// The help, scrolled this many rows.
@@ -357,6 +359,9 @@ pub enum Action {
     Favorite(String),
     /// Start the MCP server's OAuth login.
     McpSignIn(String),
+    /// What the sign-in picker asked for: a login, a sign-out, a page to
+    /// open, a pasted redirect or a cancel.
+    Login(super::login_view::Outcome),
     /// Open a new session with this prompt to send.
     Investigate(String),
     /// Stop the background command (the shell panel's kill).
@@ -748,6 +753,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "cycle or pick the model variant (reasoning effort)",
     ),
     ("compact", "summarize older history now"),
+    (
+        "login",
+        "sign in to a provider: browser, API key or Claude Code login",
+    ),
     (
         "export",
         "export the session as Markdown or JSON: copy or save it",
@@ -1307,6 +1316,7 @@ impl App {
             | Ev::Done { .. }
             | Ev::Stopped
             | Ev::Background
+            | Ev::Login(..)
             | Ev::Tab(..) => {}
         }
     }
@@ -1410,6 +1420,8 @@ impl App {
                 p.filter.push_str(s.lines().next().unwrap_or(""));
                 p.refilter();
             }
+            // A key or redirect pasted into the sign-in picker.
+            Some(Modal::Login(v)) => v.paste(&strip_escapes(s)),
             Some(
                 Modal::Help(_)
                 | Modal::DiffHelp(_)
@@ -2560,6 +2572,14 @@ impl App {
                         self.modal = None;
                         return Some(Action::Investigate(prompt));
                     }
+                }
+            }
+            Modal::Login(v) => {
+                use super::login_view::Outcome;
+                match v.key(&k, &km) {
+                    Outcome::Nothing => {}
+                    Outcome::Close => self.modal = None,
+                    out => return Some(Action::Login(out)),
                 }
             }
             Modal::ShellOutput(v) => {

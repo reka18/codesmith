@@ -1337,3 +1337,122 @@ async fn a_bang_command_that_reads_the_terminal_fails_at_once() {
     // The command line itself spells it `got-""tty`.
     assert!(!h.contains("got-tty"), "{h}");
 }
+
+/// No `claude` where the sign-in tests look (they must never run a real
+/// one): `PATH` is only the system folders.
+fn no_claude_path() -> Option<(&'static str, &'static str)> {
+    let dirs = ["/usr/bin", "/bin"];
+    if dirs
+        .iter()
+        .any(|d| std::path::Path::new(d).join("claude").exists())
+    {
+        eprintln!("skipped: a claude binary is in the system folders");
+        return None;
+    }
+    Some(("PATH", "/usr/bin:/bin"))
+}
+
+const PICKED_KEY: &str = "fw-picker-secret-7f3a9c";
+
+// `/login`: a key typed into the sign-in picker is saved to the auth store
+// (owner-only) and never drawn; the provider then shows as signed in, and
+// signing out removes the saved key.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sign_in_picker_saves_a_masked_key_and_signs_out() {
+    let Some(path) = no_claude_path() else {
+        return;
+    };
+    let e = Env::new();
+    e.config("http://127.0.0.1:9/v1", json!({}));
+    let Some(mut ui) = Ui::start_with(&e, "", &[path]) else {
+        return;
+    };
+    ui.wait_for("fake/m").await;
+    ui.send(b"/login\r").await;
+    ui.wait_for("type to filter").await;
+    ui.send(b"fireworks").await;
+    ui.wait_for("Fireworks AI not signed in").await;
+    ui.send(b"\r").await;
+    ui.wait_for("Paste an API key").await;
+    ui.send(b"\r").await;
+    ui.wait_for("API key for Fireworks AI").await;
+    ui.send(PICKED_KEY.as_bytes()).await;
+    ui.send(b"\r").await;
+    ui.wait_for("Saved a key for fireworks").await;
+    let auth = e.data.join("codesmith/auth.json");
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(saved["fireworks"]["key"], PICKED_KEY);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&auth).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    ui.send(b"\r").await;
+    ui.wait_for("signed in · saved key").await;
+    ui.send(b"\r").await;
+    ui.wait_for("Sign out").await;
+    // Down twice: past the key page to signing out.
+    ui.send(b"\x1b[B\x1b[B\r").await;
+    ui.wait_for("Removed the saved key for fireworks").await;
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&auth).unwrap()).unwrap();
+    assert!(saved.get("fireworks").is_none(), "{saved}");
+    assert!(!ui.screen.contains(PICKED_KEY), "the key was drawn");
+    assert!(!ui.term.screen().contents().contains(PICKED_KEY));
+    // Dropping the UI hangs up its terminal, which closes it.
+}
+
+// The sign-in picker's Claude Code entry runs the claude-agent check; with
+// no Claude Code installed it says what to install and run.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sign_in_picker_reports_a_missing_claude_code() {
+    let Some(path) = no_claude_path() else {
+        return;
+    };
+    let e = Env::new();
+    e.config("http://127.0.0.1:9/v1", json!({}));
+    let Some(mut ui) = Ui::start_with(&e, "", &[path]) else {
+        return;
+    };
+    ui.wait_for("fake/m").await;
+    ui.send(b"/login\r").await;
+    ui.wait_for("type to filter").await;
+    ui.send(b"claude").await;
+    ui.wait_for("Claude Pro/Max (Claude Code)").await;
+    ui.send(b"\r").await;
+    ui.wait_for("use your Claude Code login").await;
+    ui.send(b"\r").await;
+    ui.wait_for("Claude Code is not installed").await;
+    ui.wait_for("claude auth login").await;
+}
+
+// `codesmith auth login` in a terminal, without a provider: the numbered
+// list, then the provider's key read without echo.
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_login_without_a_provider_picks_one_in_the_terminal() {
+    let Some(path) = no_claude_path() else {
+        return;
+    };
+    let e = Env::new();
+    let Some(mut ui) = Ui::start_with(&e, "auth login", &[path]) else {
+        return;
+    };
+    ui.wait_for("Provider to sign in to").await;
+    ui.send(b"fireworks\r").await;
+    ui.wait_for("Create a key at https://fireworks.ai/account/api-keys")
+        .await;
+    ui.wait_for("Open it in the browser?").await;
+    ui.send(b"n\r").await;
+    ui.wait_for("API key for fireworks:").await;
+    ui.send(PICKED_KEY.as_bytes()).await;
+    ui.send(b"\r").await;
+    ui.wait_for("Saved a key for fireworks").await;
+    ui.read_to_end().await;
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(e.data.join("codesmith/auth.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["fireworks"]["key"], PICKED_KEY);
+    assert!(!ui.screen.contains(PICKED_KEY), "the key was echoed");
+}

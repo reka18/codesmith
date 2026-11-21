@@ -70,6 +70,9 @@ export ANTHROPIC_API_KEY=...          # or: codesmith auth login anthropic
 codesmith -m anthropic/claude-sonnet-4-5
 ```
 
+Or [sign in](#signing-in) from a list: `/login` in the UI, or
+`codesmith auth login` alone.
+
 The built-in providers are `anthropic`, `openai`, `google`, `azure`,
 `openrouter`, `groq`, `deepseek`, `mistral`, `xai`, `together`, `fireworks`
 and `cerebras`. See [providers](configuration.md#built-in-providers) for their
@@ -174,6 +177,43 @@ to, and `codesmith models local` asks the server which models it has.
 [Using a local server](configuration.md#using-a-local-server-omlx-lm-studio-llamacpp-ollama)
 has the recommended settings: thinking, context limits, session titles and
 keeping the prompt cached.
+
+## Signing in
+
+One place signs in to any provider: `/login` in the interactive UI, or
+`codesmith auth login` with no provider in a terminal. It lists the
+providers with where each one's login stands (signed in, a key from an
+environment variable or config, or not signed in), and picks the way in
+for the one you choose:
+
+- **A browser login** (Sign in with ChatGPT for `openai`, `poe`, `gitlab`,
+  `digitalocean`, `snowflake-cortex`): the browser opens at the
+  provider's sign-in page, and the login finishes when the provider sends
+  it back. Over SSH, or with the browser on another machine, paste the
+  URL the browser ends up on into the dialog (all but DigitalOcean, whose
+  sign-in comes back only to a browser on this machine).
+- **A device code** (`xai`'s SuperGrok login, `github-copilot`): a code
+  is shown to enter on the provider's page, on any device.
+- **An API key**: typed or pasted into a masked field and saved to the
+  data folder's `auth.json` (readable only by you). For providers with a
+  well-known key page (Anthropic, OpenAI, Google, OpenRouter, Groq,
+  Mistral, DeepSeek, Fireworks, Poe) the dialog offers to open it.
+- **Claude Pro/Max, through your Claude Code login**: listed under
+  Anthropic and as *Claude Pro/Max (Claude Code)*. It checks that
+  [Claude Code](https://code.claude.com/docs/en/setup) is installed and
+  signed in, and saves the models it lists; CodeSmith stores no key for
+  it and never signs in as Claude Code. When Claude Code is missing or
+  signed out it says what to run (install it, then `claude auth login`).
+- An AWS profile (`amazon-bedrock`), a Google Cloud project
+  (`google-vertex`) or the Azure CLI (`azure`).
+
+A browser or device login runs as an OAuth application of your own:
+CodeSmith ships no client id. When none is configured, the dialog says
+where to register one and the redirect URL to give it, and asks for its
+client id. A provider with a saved login also offers **Sign out**. Keys and
+pasted URLs never reach the prompt, the model or the transcript, and are
+never drawn. Without a terminal, `codesmith auth login` prints the list and
+the command for each provider instead (see [`codesmith auth`](cli.md#codesmith-auth)).
 
 ## First session
 

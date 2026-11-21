@@ -19,6 +19,21 @@ All notable changes to CodeSmith are listed here. Versions follow
   session, history control, model and effort. A process's slot is now
   given back only once it has exited. See
   [Claude Code processes](docs/configuration.md#claude-code-processes-claude_agent).
+- **One place to sign in:** `/login` in the UI, and `codesmith auth login`
+  with no provider in a terminal, list every provider with where its login
+  stands and run the right login for it: the browser OAuth login (with a
+  paste box for the URL the browser ends up on, for SSH or another
+  machine), a device code, a masked API key (offering the provider's key
+  page where it is well known), an AWS profile, a Vertex project, the
+  Azure CLI, or Claude Pro/Max through the existing Claude Code login
+  check, plus signing out of a saved login. A login with no client id
+  configured says where to register an OAuth app and its redirect URL,
+  then asks for the client id; none is built in. Keys and pasted URLs are
+  never drawn or sent to the model. Without a terminal, `auth login`
+  prints the providers and how to sign in to each, and fails without
+  asking. See [signing in](docs/getting-started.md#signing-in).
+- **A key read without echo is no longer echoed when typed the moment the
+  prompt appears:** `auth login` turns echo off before showing the prompt.
 - **A trailing dot in a URL host no longer dodges a deny.** `https://host./` resolves to the same server as `https://host/` but parsed as a distinct host, so a `webfetch`/`fetch`/OpenAPI deny on the host could be bypassed; the dot is now stripped before allow/deny matching.
 - **Browser attachments** (OpenCode's browser plugin): a browser attached
   to a session grants it `browser *` and the `browser` skill while the

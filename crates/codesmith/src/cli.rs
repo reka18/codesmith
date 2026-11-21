@@ -613,10 +613,13 @@ fn enter_worktree(cwd: &std::path::Path, name: &str) -> Result<PathBuf> {
 
 #[derive(Subcommand)]
 enum AuthCmd {
-    /// Save an API key for a provider (read from the terminal without echo, or from stdin).
+    /// Sign in to a provider: save an API key (read from the terminal without echo, or from stdin), or run its browser, device or Claude Code login.
     Login {
-        /// Provider id, such as anthropic, openai, amazon-bedrock or github-copilot.
-        provider: String,
+        /// Provider id, such as anthropic, openai, amazon-bedrock or
+        /// github-copilot. Left out: pick one from a list of providers
+        /// with how each signs in (in a terminal; without one, the list
+        /// is printed).
+        provider: Option<String>,
         /// amazon-bedrock: sign with this AWS profile (SSO or named) instead of saving a key.
         #[arg(long)]
         profile: Option<String>,
@@ -1861,13 +1864,15 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
 fn read_secret(prompt: &str) -> Result<String> {
     let mut line = String::new();
     if std::io::stdin().is_terminal() {
-        eprint!("{prompt}");
-        std::io::stderr().flush()?;
+        // Echo goes off before the prompt shows, so a key typed or pasted
+        // the moment it does is not echoed.
         let _ = std::process::Command::new("stty")
             .env_remove(codesmith_core::SERVER_TOKEN_VAR)
             .arg("-echo")
             .stdin(std::process::Stdio::inherit())
             .status();
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
         let r = std::io::stdin().read_line(&mut line);
         let _ = std::process::Command::new("stty")
             .env_remove(codesmith_core::SERVER_TOKEN_VAR)
@@ -1884,6 +1889,7 @@ fn read_secret(prompt: &str) -> Result<String> {
 
 /// Logins that are not an API key: an AWS profile for Bedrock, GitHub's
 /// device flow for Copilot. `None` for a provider that takes a key.
+#[derive(Default)]
 struct PluginLogin {
     profile: Option<String>,
     enterprise: Option<String>,
@@ -1897,10 +1903,109 @@ struct PluginLogin {
     cwd: PathBuf,
 }
 
+/// A key or code typed into a login: never shown, logged or printed with
+/// `{:?}`.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+/// Redirects pasted back into a browser login.
+pub(crate) enum Pasted {
+    /// Lines typed in the terminal (read only once the login waits, so a
+    /// question asked before it gets its own answer).
+    Stdin,
+    /// The sign-in picker's paste box.
+    Channel(tokio::sync::mpsc::Receiver<String>),
+    None,
+}
+
+impl Pasted {
+    fn take(&mut self) -> Option<tokio::sync::mpsc::Receiver<String>> {
+        match std::mem::replace(self, Pasted::None) {
+            Pasted::Stdin => Some(codesmith_core::providers::oauth::stdin_lines()),
+            Pasted::Channel(rx) => Some(rx),
+            Pasted::None => None,
+        }
+    }
+}
+
+/// Shows the URL to sign in at, and opens it; the flag says whether a
+/// pasted redirect completes the login.
+pub(crate) type OpenUrl = Arc<dyn Fn(&str, bool) + Send + Sync>;
+/// Shows a device code with its page (and a link with the code filled in).
+pub(crate) type ShowCode = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
+
+/// How a login talks to the person: in the terminal (`codesmith auth
+/// login`), or through the sign-in picker of the interactive UI, which
+/// must not write to the terminal or read from it.
+pub(crate) struct LoginIo {
+    /// Show the URL to sign in at, and open it. The flag: whether a
+    /// redirect pasted back completes the login.
+    pub open: OpenUrl,
+    /// Show a device code and the page to enter it on (and open the page,
+    /// with the code filled in when the provider gives such a link).
+    pub device: ShowCode,
+    /// Say something while the login runs.
+    pub note: Arc<dyn Fn(&str) + Send + Sync>,
+    pub pasted: Pasted,
+    /// Whether what the flags left out may be asked in the terminal.
+    pub terminal: bool,
+}
+
+impl LoginIo {
+    /// The terminal's: messages on stderr, pastes and answers from stdin.
+    pub(crate) fn terminal() -> LoginIo {
+        LoginIo {
+            open: Arc::new(|url, paste| {
+                let tail = if paste {
+                    " If it runs on another machine, paste the URL it ends up on here."
+                } else {
+                    ""
+                };
+                eprintln!(
+                    "Open this URL to log in (it should open by itself):\n{url}\nWaiting for the browser…{tail}"
+                );
+                codesmith_core::mcp::oauth::open_browser(url);
+            }),
+            device: Arc::new(|uri, code, complete| {
+                eprintln!(
+                    "Open {uri} on any device and enter the code {code}\nWaiting for authorization…"
+                );
+                codesmith_core::mcp::oauth::open_browser(complete.unwrap_or(uri));
+            }),
+            note: Arc::new(|m| eprintln!("{m}")),
+            pasted: Pasted::Stdin,
+            terminal: true,
+        }
+    }
+
+    fn read_line(&self, prompt: &str) -> Result<Option<String>> {
+        if self.terminal {
+            read_line(prompt)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 async fn plugin_login(
     file: &std::path::Path,
     provider: &str,
     login: PluginLogin,
+) -> Result<Option<String>> {
+    plugin_login_with(file, provider, login, LoginIo::terminal()).await
+}
+
+async fn plugin_login_with(
+    file: &std::path::Path,
+    provider: &str,
+    login: PluginLogin,
+    io: LoginIo,
 ) -> Result<Option<String>> {
     use codesmith_core::providers;
     let PluginLogin {
@@ -1943,10 +2048,12 @@ async fn plugin_login(
         let resource = match answers
             .remove("resourceName")
             .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|r| !r.is_empty())
         {
             Some(r) => Some(r),
             None if providers::azure::key_form(&settings).fields.is_empty() => None,
-            None => read_line("Azure resource (your Azure OpenAI or AI Services resource name): ")?
+            None => io
+                .read_line("Azure resource (your Azure OpenAI or AI Services resource name): ")?
                 .filter(|r| !r.is_empty()),
         };
         providers::azure::save_cli_login(file, resource.as_deref())?;
@@ -1964,6 +2071,7 @@ async fn plugin_login(
             register,
             &fields,
             &cwd,
+            io,
         )
         .await
         .map(Some);
@@ -2004,14 +2112,14 @@ async fn plugin_login(
         }
         let known = codesmith_ai::aws::profiles(&providers::process_env());
         if !known.contains(&profile) {
-            eprintln!(
+            (io.note)(&format!(
                 "note: no profile {profile:?} in your AWS configuration ({})",
                 if known.is_empty() {
                     "none found".to_string()
                 } else {
                     known.join(", ")
                 }
-            );
+            ));
         }
         providers::bedrock::save_profile(file, &profile)?;
         return Ok(Some(format!(
@@ -2032,18 +2140,13 @@ async fn plugin_login(
             &settings,
             &providers::process_env(),
         )?;
+        let device = io.device.clone();
         providers::copilot::login(
             &reqwest::Client::new(),
             file,
             &id,
             enterprise.as_deref(),
-            |code| {
-                eprintln!(
-                    "Open {} and enter the code {}\nWaiting for authorization…",
-                    code.verification_uri, code.user_code
-                );
-                codesmith_core::mcp::oauth::open_browser(&code.verification_uri);
-            },
+            |code| device(&code.verification_uri, &code.user_code, None),
         )
         .await?;
         return Ok(Some(format!(
@@ -2066,6 +2169,7 @@ async fn browser_login(
     register: bool,
     fields: &[String],
     cwd: &std::path::Path,
+    mut io: LoginIo,
 ) -> Result<String> {
     if register && provider != codesmith_core::providers::chatgpt::ID {
         return Err(anyhow!("--register is for openai (Sign in with ChatGPT)"));
@@ -2074,9 +2178,11 @@ async fn browser_login(
     let answers = parse_fields(fields)?;
     let answer = |key: &str, title: &str| -> Result<Option<String>> {
         if let Some(v) = answers.get(key).and_then(|v| v.as_str()) {
-            return Ok(Some(v.to_string()));
+            return Ok(Some(v.to_string()).filter(|v| !v.is_empty()));
         }
-        Ok(read_line(&format!("{title}: "))?.filter(|a| !a.is_empty()))
+        Ok(io
+            .read_line(&format!("{title}: "))?
+            .filter(|a| !a.is_empty()))
     };
     let loaded = config::load(cwd)?;
     let settings = loaded
@@ -2085,26 +2191,20 @@ async fn browser_login(
         .unwrap_or_default()
         .settings;
     let env = providers::process_env();
-    let open = |url: &str| {
-        eprintln!(
-            "Open this URL to log in (it should open by itself):\n{url}\n\
-             Waiting for the browser… If it runs on another machine, paste the URL it ends up on here."
-        );
-        codesmith_core::mcp::oauth::open_browser(url);
+    let opener = io.open.clone();
+    let open = |paste: bool| {
+        let opener = opener.clone();
+        move |url: &str| opener(url, paste)
     };
+    let note = io.note.clone();
+    let wrong_paste = |m: &str| note(&format!("{m}; still waiting"));
     let client = reqwest::Client::new();
     match provider {
         providers::poe::ID => {
             let id = providers::poe::client_id(client_id, &settings.plugin, &env)?;
             let e = providers::poe::Endpoints::poe(&id);
-            providers::poe::login(
-                &client,
-                file,
-                &e,
-                open,
-                Some(providers::oauth::stdin_lines()),
-            )
-            .await?;
+            let pasted = io.pasted.take();
+            providers::poe::login_with(&client, file, &e, open(true), pasted, wrong_paste).await?;
         }
         providers::gitlab::ID => {
             let instance = providers::gitlab::normalize_instance(
@@ -2117,13 +2217,17 @@ async fn browser_login(
                 client_id: id,
                 port: providers::gitlab::PORT,
             };
-            providers::gitlab::login(&client, file, &e, open).await?;
+            let pasted = io.pasted.take();
+            providers::gitlab::login_with(&client, file, &e, open(true), pasted, wrong_paste)
+                .await?;
         }
         providers::digitalocean::ID => {
             let id = providers::digitalocean::client_id(client_id, &settings.plugin, &env)?;
             let e = providers::digitalocean::Endpoints::digitalocean(&id);
-            if let Some(found) = providers::digitalocean::login(&client, file, &e, open).await? {
-                eprintln!("Found {found} for the account.");
+            if let Some(found) =
+                providers::digitalocean::login(&client, file, &e, open(false)).await?
+            {
+                (io.note)(&format!("Found {found} for the account."));
             }
         }
         providers::snowflake::ID => {
@@ -2136,7 +2240,17 @@ async fn browser_login(
                 &account,
                 client_id.or(settings.plugin.client_id.as_deref()),
             );
-            providers::snowflake::login(&client, file, &e, role.as_deref(), open).await?;
+            let pasted = io.pasted.take();
+            providers::snowflake::login_with(
+                &client,
+                file,
+                &e,
+                role.as_deref(),
+                open(true),
+                pasted,
+                wrong_paste,
+            )
+            .await?;
         }
         providers::chatgpt::ID => {
             let saved = codesmith_core::auth::entry_in(file, provider)
@@ -2150,32 +2264,31 @@ async fn browser_login(
                 &env,
             )?;
             if providers::chatgpt::registers(&id) {
-                eprintln!("{}", providers::chatgpt::REGISTER_NOTICE);
+                (io.note)(providers::chatgpt::REGISTER_NOTICE);
             }
             let e = providers::chatgpt::Endpoints::default();
-            providers::chatgpt::login(
+            let pasted = io.pasted.take();
+            providers::chatgpt::login_with(
                 &client,
                 file,
                 &e,
                 &id,
-                open,
-                Some(providers::oauth::stdin_lines()),
+                open(true),
+                pasted,
+                |m: &str| note(m),
             )
             .await?;
         }
         providers::xai::ID => {
             let id = providers::xai::client_id(client_id, &settings.plugin, &env)?;
             let e = providers::xai::Endpoints::xai(&id, settings.plugin.oauth_scope.as_deref());
+            let device = io.device.clone();
             providers::xai::login(&client, file, &e, |code| {
-                let url = code
-                    .verification_uri_complete
-                    .as_deref()
-                    .unwrap_or(&code.verification_uri);
-                eprintln!(
-                    "Open {} on any device and enter the code {}\nWaiting for authorization…",
-                    code.verification_uri, code.user_code
-                );
-                codesmith_core::mcp::oauth::open_browser(url);
+                device(
+                    &code.verification_uri,
+                    &code.user_code,
+                    code.verification_uri_complete.as_deref(),
+                )
             })
             .await?;
         }
@@ -2191,12 +2304,357 @@ async fn browser_login(
     ))
 }
 
+/// Save `key` for `provider` with its key form's answers: those `given`,
+/// the rest asked in the terminal when `terminal` (else a required one
+/// left out is an error).
+fn save_key_login(
+    file: &std::path::Path,
+    loaded: &config::Loaded,
+    provider: &str,
+    key: &str,
+    mut given: serde_json::Map<String, serde_json::Value>,
+    terminal: bool,
+) -> Result<String> {
+    use codesmith_core::auth;
+    if key.is_empty() {
+        return Err(anyhow!("no key entered"));
+    }
+    let form = codesmith_core::providers::key_form(
+        provider,
+        &loaded
+            .config
+            .provider(provider)
+            .unwrap_or_default()
+            .settings,
+        &codesmith_core::providers::process_env(),
+    );
+    given.retain(|_, v| v.as_str().is_none_or(|s| !s.is_empty()));
+    match form {
+        Some(form) => {
+            for field in &form.fields {
+                if given.contains_key(field.key) {
+                    continue;
+                }
+                let answer = if terminal {
+                    read_line(&format!("{} ({}): ", field.title, field.placeholder))?
+                } else {
+                    None
+                };
+                match answer {
+                    Some(a) if !a.is_empty() => {
+                        given.insert(field.key.to_string(), a.into());
+                    }
+                    _ if field.required => {
+                        return Err(anyhow!(
+                            "{provider} needs {}: pass --field {}=…",
+                            field.key,
+                            field.key
+                        ))
+                    }
+                    _ => {}
+                }
+            }
+            codesmith_core::providers::save_key(file, provider, key, given)?;
+        }
+        None if !given.is_empty() => {
+            return Err(anyhow!(
+                "{provider}'s login asks for nothing beside the key"
+            ))
+        }
+        None => auth::set_in(file, provider, key)?,
+    }
+    let mut done = format!("Saved a key for {provider} in {}", file.display());
+    if loaded.config.provider(provider).is_none() {
+        done.push_str(&format!("\nnote: {provider} is not a built-in provider; add it under \"providers\" in codesmith.json to use it"));
+    }
+    Ok(done)
+}
+
+/// A sign-in the picker asks for.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LoginRequest {
+    pub provider: String,
+    pub kind: codesmith_core::providers::signin::Kind,
+    /// The key, for [`Kind::Key`](codesmith_core::providers::signin::Kind::Key).
+    pub key: Option<Secret>,
+    /// The method's other answers, by field key.
+    pub answers: std::collections::BTreeMap<String, String>,
+    /// The client id of the person's own OAuth app, when typed in.
+    pub client_id: Option<String>,
+}
+
+/// Run a sign-in the picker asked for, through the same logins as
+/// `codesmith auth login`; what it says when done.
+pub(crate) async fn run_login(
+    file: &std::path::Path,
+    cwd: &std::path::Path,
+    req: LoginRequest,
+    io: LoginIo,
+) -> Result<String> {
+    use codesmith_core::providers::{self, signin::Kind};
+    let LoginRequest {
+        provider,
+        kind,
+        key,
+        mut answers,
+        client_id,
+    } = req;
+    let fields = |answers: &std::collections::BTreeMap<String, String>| -> Vec<String> {
+        answers
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect()
+    };
+    let base = PluginLogin {
+        cwd: cwd.to_path_buf(),
+        ..Default::default()
+    };
+    let login = match kind {
+        Kind::Key => {
+            let key = key.ok_or_else(|| anyhow!("no key entered"))?;
+            let loaded = config::load(cwd)?;
+            let given = answers
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
+            return save_key_login(file, &loaded, &provider, key.0.trim(), given, io.terminal);
+        }
+        Kind::ClaudeCode => {
+            return plugin_login_with(file, providers::claude_agent::ID, base, io)
+                .await?
+                .ok_or_else(|| anyhow!("Claude Code could not be checked"));
+        }
+        Kind::Browser { .. } | Kind::Device if provider == providers::copilot::ID => {
+            PluginLogin { client_id, ..base }
+        }
+        Kind::Browser { .. } | Kind::Device => PluginLogin {
+            client_id,
+            oauth: true,
+            fields: fields(&answers),
+            ..base
+        },
+        Kind::AwsProfile => PluginLogin {
+            profile: answers.remove("profile").filter(|p| !p.is_empty()),
+            ..base
+        },
+        Kind::VertexProject => PluginLogin {
+            project: answers.remove("project").filter(|p| !p.is_empty()),
+            location: answers.remove("location").filter(|p| !p.is_empty()),
+            ..base
+        },
+        Kind::AzureCli => PluginLogin {
+            cli: true,
+            fields: fields(&answers),
+            ..base
+        },
+    };
+    plugin_login_with(file, &provider, login, io)
+        .await?
+        .ok_or_else(|| anyhow!("{provider} has no such login"))
+}
+
+/// Sign out of `provider`: its saved login removed.
+pub(crate) fn logout(file: &std::path::Path, provider: &str) -> Result<String> {
+    Ok(if codesmith_core::auth::remove_in(file, provider)? {
+        format!("Removed the saved key for {provider}")
+    } else {
+        format!("No saved key for {provider}")
+    })
+}
+
+/// Text from outside (a provider name, an error) made safe to print:
+/// control characters, escape sequences included, are dropped.
+fn printable(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect()
+}
+
+/// The providers and how to sign in to each, for `codesmith auth login`
+/// without a provider: printed when there is no terminal to ask in.
+pub(crate) fn login_guidance(choices: &[codesmith_core::providers::signin::Choice]) -> String {
+    use codesmith_core::providers::signin::Kind;
+    let mut out = String::from("Providers you can sign in to:\n");
+    for c in choices {
+        let how: Vec<String> = c
+            .methods
+            .iter()
+            .map(|m| match m.kind {
+                Kind::Key => format!("codesmith auth login {}", c.id),
+                Kind::Browser { .. } | Kind::Device if c.id == "github-copilot" => {
+                    format!("codesmith auth login {}", c.id)
+                }
+                Kind::Browser { .. } | Kind::Device => {
+                    format!("codesmith auth login {} --oauth", c.id)
+                }
+                Kind::ClaudeCode => "codesmith auth login claude-agent".into(),
+                Kind::AwsProfile => format!("codesmith auth login {} --profile <name>", c.id),
+                Kind::VertexProject => {
+                    format!("codesmith auth login {} --project <id>", c.id)
+                }
+                Kind::AzureCli => format!("codesmith auth login {} --cli", c.id),
+            })
+            .collect();
+        let how = if how.is_empty() {
+            c.note.clone().unwrap_or_default()
+        } else {
+            how.join("  |  ")
+        };
+        out.push_str(&format!(
+            "  {:<24} {:<34} {}\n",
+            printable(&c.id),
+            printable(&c.state.describe()),
+            printable(&how)
+        ));
+    }
+    out.push_str(
+        "Run `codesmith auth login` in a terminal to pick one, or one of the commands above.",
+    );
+    out
+}
+
+/// A number or an id typed at a numbered list.
+fn pick_index(answer: &str, ids: &[&str]) -> Option<usize> {
+    let a = answer.trim();
+    a.parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .filter(|i| *i < ids.len())
+        .or_else(|| ids.iter().position(|id| id.eq_ignore_ascii_case(a)))
+}
+
+/// `codesmith auth login` without a provider: the sign-in picker in the
+/// terminal (a numbered list), or the list and how to sign in when there
+/// is no terminal to ask in.
+async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<()> {
+    use codesmith_core::providers::{self, signin};
+    let loaded = config::load(cwd)?;
+    let env = providers::process_env();
+    let choices = signin::choices(&loaded.config, file, &env);
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        println!("{}", login_guidance(&choices));
+        return Err(anyhow!(
+            "Pass a provider id when running without an interactive terminal"
+        ));
+    }
+    for (i, c) in choices.iter().enumerate() {
+        eprintln!(
+            "  {:>2}. {:<30} {}",
+            i + 1,
+            printable(&c.name),
+            printable(&c.state.describe())
+        );
+    }
+    let ids: Vec<&str> = choices.iter().map(|c| c.id.as_str()).collect();
+    let answer = read_line("Provider to sign in to (number or id): ")?.unwrap_or_default();
+    let c = pick_index(&answer, &ids)
+        .map(|i| &choices[i])
+        .ok_or_else(|| anyhow!("no provider {:?}", printable(&answer)))?;
+    if c.methods.is_empty() {
+        return Err(anyhow!(
+            "{}",
+            c.note
+                .clone()
+                .unwrap_or_else(|| "nothing to sign in to".into())
+        ));
+    }
+    // The ways in, then signing out when a login is saved.
+    let mut rows: Vec<String> = c.methods.iter().map(|m| m.label.clone()).collect();
+    if c.state.saved() {
+        rows.push("Sign out".into());
+    }
+    let pick = if rows.len() == 1 {
+        0
+    } else {
+        for (i, r) in rows.iter().enumerate() {
+            eprintln!("  {}. {r}", i + 1);
+        }
+        let answer = read_line("How (number): ")?.unwrap_or_default();
+        let labels: Vec<&str> = rows.iter().map(String::as_str).collect();
+        pick_index(&answer, &labels).ok_or_else(|| anyhow!("no choice {:?}", printable(&answer)))?
+    };
+    if pick == c.methods.len() {
+        println!("{}", logout(file, &c.id)?);
+        return Ok(());
+    }
+    let m = &c.methods[pick];
+    let p = loaded.config.provider(&c.id).unwrap_or_default();
+    let mut client_id = None;
+    if matches!(m.kind, signin::Kind::Browser { .. } | signin::Kind::Device) {
+        if let Some(why) = signin::client_id_missing(&c.id, &p, file, &env) {
+            eprintln!("{}", printable(&why));
+            client_id = read_line("Client id of your OAuth app (empty to cancel): ")?
+                .filter(|s| !s.is_empty());
+            if client_id.is_none() {
+                return Err(anyhow!("no client id entered"));
+            }
+        }
+    }
+    let mut answers = std::collections::BTreeMap::new();
+    for f in &m.fields {
+        let a = read_line(&format!("{} ({}): ", f.title, f.placeholder))?.unwrap_or_default();
+        if a.is_empty() && f.required {
+            return Err(anyhow!("{} is required", f.title));
+        }
+        answers.insert(f.key.to_string(), a);
+    }
+    let key = match m.kind {
+        signin::Kind::Key => {
+            if let Some(url) = c.key_page {
+                eprintln!("Create a key at {url}");
+                let open = read_line("Open it in the browser? [y/N] ")?.unwrap_or_default();
+                if open.eq_ignore_ascii_case("y") || open.eq_ignore_ascii_case("yes") {
+                    codesmith_core::mcp::oauth::open_browser(url);
+                }
+            }
+            Some(Secret(read_secret(&format!("API key for {}: ", c.id))?))
+        }
+        _ => None,
+    };
+    let req = LoginRequest {
+        provider: c.id.clone(),
+        kind: m.kind,
+        key,
+        answers,
+        client_id,
+    };
+    println!("{}", run_login(file, cwd, req, LoginIo::terminal()).await?);
+    Ok(())
+}
+
 async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
     use codesmith_core::auth;
     let file = paths::auth_file();
     match what {
         AuthCmd::Login {
-            provider,
+            provider: None,
+            profile,
+            enterprise,
+            project,
+            location,
+            client_id,
+            oauth,
+            register,
+            cli,
+            fields,
+        } => {
+            let flagged = profile.is_some()
+                || enterprise.is_some()
+                || project.is_some()
+                || location.is_some()
+                || client_id.is_some()
+                || oauth
+                || register
+                || cli
+                || !fields.is_empty();
+            if flagged {
+                return Err(anyhow!("name the provider these options are for"));
+            }
+            login_picker(cwd, &file).await?;
+        }
+        AuthCmd::Login {
+            provider: Some(provider),
             profile,
             enterprise,
             project,
@@ -2233,7 +2691,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                     .settings,
                 &codesmith_core::providers::process_env(),
             );
-            let mut given = parse_fields(&fields)?;
+            let given = parse_fields(&fields)?;
             if form.is_none() && !given.is_empty() {
                 return Err(anyhow!(
                     "{provider}'s login asks for nothing beside the key"
@@ -2241,39 +2699,10 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             }
             let label = form.as_ref().map_or("API key", |f| f.label);
             let key = read_secret(&format!("{label} for {provider}: "))?;
-            if key.is_empty() {
-                return Err(anyhow!("no key entered"));
-            }
-            match form {
-                Some(form) => {
-                    for field in &form.fields {
-                        if given.contains_key(field.key) {
-                            continue;
-                        }
-                        let answer =
-                            read_line(&format!("{} ({}): ", field.title, field.placeholder))?;
-                        match answer {
-                            Some(a) if !a.is_empty() => {
-                                given.insert(field.key.to_string(), a.into());
-                            }
-                            _ if field.required => {
-                                return Err(anyhow!(
-                                    "{provider} needs {}: pass --field {}=…",
-                                    field.key,
-                                    field.key
-                                ))
-                            }
-                            _ => {}
-                        }
-                    }
-                    codesmith_core::providers::save_key(&file, &provider, &key, given)?;
-                }
-                None => auth::set_in(&file, &provider, &key)?,
-            }
-            println!("Saved a key for {provider} in {}", file.display());
-            if loaded.config.provider(&provider).is_none() {
-                println!("note: {provider} is not a built-in provider; add it under \"providers\" in codesmith.json to use it");
-            }
+            println!(
+                "{}",
+                save_key_login(&file, &loaded, &provider, &key, given, true)?
+            );
         }
         AuthCmd::List => {
             let loaded = config::load(cwd)?;
@@ -2321,11 +2750,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             }
         }
         AuthCmd::Logout { provider } => {
-            if auth::remove_in(&file, &provider)? {
-                println!("Removed the saved key for {provider}");
-            } else {
-                println!("No saved key for {provider}");
-            }
+            println!("{}", logout(&file, &provider)?);
         }
     }
     Ok(())
@@ -3498,6 +3923,92 @@ mod tests {
             permission_answer("use cargo"),
             Some(Reply::Reject(Some("use cargo".into())))
         );
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use codesmith_core::providers::signin;
+
+    fn env(pairs: &[(&str, &str)]) -> codesmith_core::providers::Env {
+        let m: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Arc::new(move |k| m.get(k).cloned())
+    }
+
+    #[test]
+    fn the_guidance_lists_each_provider_with_how_to_sign_in_and_no_key() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("auth.json");
+        codesmith_core::auth::set_in(&file, "groq", "gsk-guidance-secret-1").unwrap();
+        let c = signin::choices(&config::Config::default(), &file, &env(&[]));
+        let g = login_guidance(&c);
+        let line = |id: &str| {
+            g.lines()
+                .find(|l| l.split_whitespace().next() == Some(id))
+                .unwrap_or_else(|| panic!("no {id} in {g}"))
+                .to_string()
+        };
+        assert!(line("groq").contains("signed in · saved key"), "{g}");
+        assert!(line("groq").contains("codesmith auth login groq"), "{g}");
+        assert!(
+            line("openai").contains("codesmith auth login openai --oauth"),
+            "{g}"
+        );
+        assert!(
+            line("anthropic").contains("codesmith auth login claude-agent"),
+            "{g}"
+        );
+        assert!(line("amazon-bedrock").contains("--profile <name>"), "{g}");
+        assert!(line("github-copilot").contains("codesmith auth login github-copilot"));
+        assert!(!line("github-copilot").contains("--oauth"), "{g}");
+        assert!(line("sap-ai-core").contains("AICORE_SERVICE_KEY"), "{g}");
+        assert!(!g.contains("gsk-guidance-secret"), "{g}");
+    }
+
+    #[test]
+    fn a_pick_is_a_number_or_an_id() {
+        let ids = ["anthropic", "openai"];
+        assert_eq!(pick_index("2", &ids), Some(1));
+        assert_eq!(pick_index(" OpenAI ", &ids), Some(1));
+        assert_eq!(pick_index("0", &ids), None);
+        assert_eq!(pick_index("3", &ids), None);
+        assert_eq!(pick_index("groq", &ids), None);
+    }
+
+    #[test]
+    fn signing_out_removes_the_saved_login() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("auth.json");
+        codesmith_core::auth::set_in(&file, "groq", "gsk-x-123456789").unwrap();
+        assert_eq!(
+            logout(&file, "groq").unwrap(),
+            "Removed the saved key for groq"
+        );
+        assert_eq!(codesmith_core::auth::entry_in(&file, "groq"), None);
+        assert_eq!(logout(&file, "groq").unwrap(), "No saved key for groq");
+    }
+
+    #[test]
+    fn a_secret_is_kept_out_of_debug_output() {
+        let s = Secret("sk-very-secret".into());
+        assert_eq!(format!("{s:?}"), "Secret(<redacted>)");
+        let req = LoginRequest {
+            provider: "openai".into(),
+            kind: signin::Kind::Key,
+            key: Some(s),
+            answers: Default::default(),
+            client_id: None,
+        };
+        assert!(!format!("{req:?}").contains("sk-very-secret"));
+    }
+
+    #[test]
+    fn printed_text_drops_control_characters() {
+        assert_eq!(printable("a\x1b[2Jb\x07c\nd"), "a[2Jbc\nd");
     }
 }
 

@@ -11,7 +11,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`permissions`](#codesmith-permissions) | List, edit or remove saved approvals. |
 | [`trust`](#codesmith-trust) | Trust a project's config, or list and revoke the answers. |
 | [`models`](#codesmith-models) | List providers and models. |
-| [`auth`](#codesmith-auth) | Save, list or remove API keys. |
+| [`auth`](#codesmith-auth) | Sign in to providers (keys, browser and device logins), list or remove logins. |
 | [`commands`](#codesmith-commands) | List commands. |
 | [`review`, `calibrate`](#codesmith-review-and-calibrate) | Code review. |
 | [`stats`](#codesmith-stats) | Usage statistics. |
@@ -184,10 +184,19 @@ global config. It does not change your default model: use `--model` or
 ## `codesmith auth`
 
 ```sh
+codesmith auth login             # pick a provider from a list (in a terminal)
 codesmith auth login PROVIDER    # prompts without echo, or reads stdin
 codesmith auth list              # where each provider's key comes from
 codesmith auth logout PROVIDER
 ```
+
+Without a provider, `auth login` is the [sign-in picker](getting-started.md#signing-in)
+in the terminal: a numbered list of providers with their state, then the
+provider's ways in (a browser or device login, a key read without echo,
+Claude Code's login, …) and **Sign out** for a saved login. Without an
+interactive terminal it asks nothing: it prints each provider with its
+state and the command that signs in to it, and exits with an error. Flags
+need a provider.
 
 | `auth login` flag | Meaning |
 |---|---|

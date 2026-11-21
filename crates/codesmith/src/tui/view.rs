@@ -1958,6 +1958,10 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             ("Subagents and shells".into(), lines, p.primary)
         }
         Modal::Mcp(v) => (v.title(), v.lines(&app.keymap), p.primary),
+        Modal::Login(v) => {
+            let rows = room.saturating_sub(6).clamp(3, 20);
+            (v.title(), v.lines(rows), p.primary)
+        }
         Modal::Export(v) => (v.title(), v.lines(), p.primary),
         Modal::Swap(v) => {
             let rows = room.saturating_sub(2).clamp(3, 30);
@@ -2036,7 +2040,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
     };
     // A form's lines wrap: it is as tall as their rows.
     let rows = match m {
-        Modal::Question { .. } => {
+        Modal::Question { .. } | Modal::Login(_) => {
             let width = MODAL_WIDTH
                 .min(area.width.saturating_sub(2))
                 .saturating_sub(2);

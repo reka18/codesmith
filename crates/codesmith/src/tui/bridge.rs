@@ -105,6 +105,9 @@ pub enum Ev {
         server: String,
         result: Result<(), String>,
     },
+    /// A sign-in picker login's progress or end, with the number the
+    /// runner gave that login (a cancelled one's late word is dropped).
+    Login(u64, super::login_view::LoginEv),
     /// A whole form to answer (an MCP server's elicitation).
     Form(
         codesmith_core::form::Info,

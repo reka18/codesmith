@@ -459,3 +459,85 @@ async fn oc_run_archived_archives_the_new_session_before_its_prompt() {
         .unwrap()
         .is_empty());
 }
+
+// `codesmith auth login` without a provider and without a terminal: the
+// providers, their states and how to sign in to each, and an error, at
+// once (nothing is asked). A saved key is not shown.
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_login_without_a_provider_or_terminal_prints_how_to_sign_in() {
+    let e = Env::new();
+    run_env(
+        &e,
+        &["auth", "login", "groq"],
+        &[],
+        Some("gsk-noninteractive-secret\n"),
+    )
+    .await
+    .ok();
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        run_env(&e, &["auth", "login"], &[], Some("")),
+    )
+    .await
+    .expect("auth login waited for input");
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(
+        out.stdout.contains("Providers you can sign in to"),
+        "{}",
+        out.both()
+    );
+    let line = |id: &str| {
+        out.stdout
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(id))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(line("groq").contains("signed in"), "{}", out.both());
+    assert!(
+        line("openai").contains("codesmith auth login openai --oauth"),
+        "{}",
+        out.both()
+    );
+    assert!(
+        line("anthropic").contains("codesmith auth login claude-agent"),
+        "{}",
+        out.both()
+    );
+    assert!(out.stderr.contains("Pass a provider id"), "{}", out.both());
+    assert!(!out.both().contains("gsk-noninteractive-secret"));
+    // Options with no provider to go with are refused.
+    let out = e.run(&["auth", "login", "--oauth"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(out.stderr.contains("name the provider"), "{}", out.both());
+}
+
+// `codesmith auth login claude-agent` (the sign-in picker's Claude Code
+// entry) with no Claude Code installed: what to install and run, and
+// nothing saved.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_code_login_reports_a_missing_claude_code() {
+    if ["/usr/bin", "/bin"]
+        .iter()
+        .any(|d| std::path::Path::new(d).join("claude").exists())
+    {
+        eprintln!("skipped: a claude binary is in the system folders");
+        return;
+    }
+    let e = Env::new();
+    let out = run_env(
+        &e,
+        &["auth", "login", "claude-agent"],
+        &[("PATH", "/usr/bin:/bin")],
+        None,
+    )
+    .await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(
+        out.stderr.contains("Claude Code is not installed")
+            && out.stderr.contains("claude auth login"),
+        "{}",
+        out.both()
+    );
+    assert!(!e.data.join("codesmith/auth.json").exists());
+}
