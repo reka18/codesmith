@@ -75,6 +75,13 @@ All notable changes to CodeSmith are listed here. Versions follow
   session token, sent only with that model's requests) until the token
   nears expiry, the session is compacted, or the account changes; the
   account's chat fallback serves while the router fails.
+- **Provider credentials:** several saved credentials per provider, one
+  active (the others kept in `auth.json` beside it), and OAuth logins
+  refreshed once per expiry for every request that needs them, keeping a
+  login another process refreshed meanwhile.
+- **xAI SuperGrok login:** `codesmith auth login xai --oauth` signs in
+  through xAI's device flow with an OAuth client you register (CodeSmith
+  ships none); the login is refreshed with that client.
 
 ## 0.1.0
 

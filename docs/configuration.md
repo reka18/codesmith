@@ -717,6 +717,24 @@ GitLab Duo's models run through GitLab's AI gateway (agentic chat and Duo
 workflows), which CodeSmith does not speak yet, so `gitlab/duo-*` models
 cannot be used for sessions yet; the login is kept for when they can.
 
+### xAI SuperGrok login
+
+`codesmith auth login xai --oauth` signs in with a SuperGrok subscription
+through xAI's OAuth device flow (open the URL it shows on any device and
+enter the code); `codesmith auth login xai` saves an API key instead. The
+device flow runs as an OAuth client you register with xAI: CodeSmith ships
+none and never borrows another product's. Give its id with `--client-id`,
+`settings.clientId` on the `xai` provider, or `XAI_OAUTH_CLIENT_ID`; without
+one the login stops and says so. The login asks for `openid profile email
+offline_access api:access` unless `settings.oauthScope` says otherwise.
+
+The login is saved with its client id, and its access token is sent as a
+bearer token to the xAI API; it is refreshed at xAI's token endpoint, with
+that same client, shortly before it expires. An API key (`XAI_API_KEY` or a
+saved key) wins over the login. A login saved by an earlier browser method
+is moved to the device method. xAI's Responses steps go over a
+[WebSocket](#responses-over-websocket) by default.
+
 ### Snowflake Cortex
 
 `snowflake-cortex` uses the account's Cortex REST API
@@ -1121,7 +1139,22 @@ they are asked in the terminal after the key, or given with
 saves an [Azure CLI](#azure-openai) login. `--oauth` logs in through a
 provider's browser OAuth instead of a key ([Poe](#poe),
 [DigitalOcean](#digitalocean), [GitLab](#gitlab-sign-in),
-[Snowflake Cortex](#snowflake-cortex)).
+[Snowflake Cortex](#snowflake-cortex), and [xAI](#xai-supergrok-login)'s
+device flow).
+
+A provider can have several saved credentials, one of them active: the
+active one is the provider's entry in `auth.json`, and the others are kept
+beside it under `$credentials`, each with an id, a label and the order they
+were saved in. A new login (such as an [xAI](#xai-supergrok-login) one)
+becomes active and keeps the one it replaced; removing the active one makes
+the newest remaining one active. Plugins and embedders manage them with
+`codesmith_core::providers::credentials` (`list_in`, `create_in`,
+`activate_in`, `update_in`, `remove_in`). OAuth logins are refreshed when
+they are within five minutes of expiry, once for every request that needs
+it: a refresh another process already made, or a login replaced meanwhile,
+is kept rather than overwritten. Credentials are never logged, and a
+login's tokens go only to the service that issued it and the API it is
+for.
 
 ## Session titles
 

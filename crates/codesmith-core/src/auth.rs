@@ -146,8 +146,14 @@ pub fn entry(provider: &str) -> Option<Value> {
     entry_in(&crate::paths::auth_file(), provider)
 }
 
+/// The providers with a saved entry (not the bookkeeping kept beside them,
+/// under keys starting with `$`).
 pub fn providers_in(path: &Path) -> Vec<String> {
-    read(path).keys().cloned().collect()
+    read(path)
+        .keys()
+        .filter(|k| !k.starts_with('$'))
+        .cloned()
+        .collect()
 }
 
 pub fn key(provider: &str) -> Option<String> {

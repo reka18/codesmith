@@ -24,3 +24,27 @@
 662 :: ported :: tests/oc_copilot_auto.rs::oc_copilot_routes_auto_through_the_router_and_keeps_the_pick_until_compaction :: adapted: the router module driven directly; a session on github-copilot/auto routes each step through it
 @plugin/provider-gitlab.test.ts
 * :: feature :: Provider Plugins :: GitLab Duo chat (OpenCode drives it through the gitlab-ai-provider SDK's Duo workflow and agentic chat protocols, which CodeSmith would have to reimplement without a published spec)
+@credential-refresh.test.ts
+22 :: ported :: src/providers/credentials.rs::oc_credential_refresh_saves_the_refreshed_value
+32 :: ported :: src/providers/credentials.rs::oc_credential_refresh_returns_the_stored_row_when_not_stale
+46 :: ported :: src/providers/credentials.rs::oc_credential_refresh_keeps_a_row_that_changed_while_it_ran
+61 :: ported :: src/providers/credentials.rs::oc_credential_refresh_resolves_none_for_a_missing_credential
+72 :: ported :: src/providers/credentials.rs::oc_credential_refresh_shares_failures_but_allows_a_later_refresh
+106 :: ported :: src/providers/credentials.rs::oc_credential_is_due_within_five_minutes_of_expiry
+110 :: ported :: src/providers/credentials.rs::oc_credential_never_expires_a_token_without_a_lifetime
+@credential.test.ts
+20 :: ported :: src/providers/credentials.rs::oc_credential_stores_updates_lists_and_removes
+51 :: ported :: src/providers/credentials.rs::oc_credential_reads_legacy_configuration_as_metadata
+75 :: design :: storage-model :: CodeSmith keeps credentials in auth.json and publishes no credential events; the mutations themselves are pinned by the other credential ports
+140 :: ported :: src/providers/credentials.rs::oc_credential_promotes_the_newest_remaining_when_the_active_one_is_removed
+188 :: ported :: src/providers/credentials.rs::oc_credential_activates_older_credentials_without_affecting_others
+227 :: ported :: src/providers/credentials.rs::oc_credential_creates_with_a_requested_id_without_taking_over :: adapted: with nothing active, an inactive create still becomes the active credential (there is no unselected state)
+@oauth-page.test.ts
+5 :: ported :: src/providers/oauth.rs::oc_oauth_page_escapes_what_it_embeds :: adapted: CodeSmith's callback page has no inline script; the provider and error it embeds are escaped
+@plugin.test.ts
+604 :: ported :: tests/oc_oauth_logins.rs::oc_refreshes_expired_oauth_credentials_before_they_are_used :: adapted: the login's authorizer refreshes it through the credential store before the request; plugins call the same public store
+674 :: ported :: tests/oc_oauth_logins.rs::oc_activates_a_saved_credential :: adapted: through the public credential store, which plugins call
+@plugin/provider-xai.test.ts
+22 :: ported :: tests/oc_oauth_logins.rs::oc_xai_registers_device_oauth_and_api_key_methods :: adapted: the device login takes a user-supplied OAuth client
+39 :: ported :: tests/oc_oauth_logins.rs::oc_xai_migrates_browser_oauth_credentials_to_the_device_method
+71 :: ported :: tests/oc_oauth_logins.rs::oc_xai_enables_responses_websockets

@@ -48,11 +48,11 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
-| Providers, models and credentials | 796 | 353 | 0 | 64 | 343 | 36 | 0 |
-| Plugins | 90 | 19 | 0 | 2 | 69 | 0 | 0 |
+| Providers, models and credentials | 796 | 369 | 0 | 48 | 344 | 35 | 0 |
+| Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1689** | **18** | **86** | **2401** | **1394** | **0** |
+| **Total** | **5588** | **1707** | **18** | **68** | **2402** | **1393** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -83,12 +83,11 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (86 cases in 6 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (68 cases in 5 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [ChatGPT Subscription Login](#chatgpt-subscription-login) | 34 | ChatGPT provider; ChatGPT context caps; … |
-| [OAuth Provider Logins](#oauth-provider-logins) | 18 | refreshable provider credentials; multiple credentials per integration; … |
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Automation Durable Handoffs](#automation-durable-handoffs) | 12 | checkpointed handoffs settled across pauses and expiry; failed checks handed to a quiet child |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
@@ -126,29 +125,6 @@ Missing features, by how many OpenCode test cases each would unlock (86 cases in
 - `plugin/provider-openai.test.ts`: reloads providers on a switch only when the ChatGPT login changes
 - `session-error.test.ts`: types the ChatGPT usage limit whichever way the failure arrives
 - `session-error.test.ts`: types the ChatGPT workspace usage limit
-
-### OAuth Provider Logins
-
-18 cases.
-
-- `credential-refresh.test.ts`: saves the refreshed value
-- `credential-refresh.test.ts`: returns the stored row when another caller already refreshed it
-- `credential-refresh.test.ts`: keeps a row that changed while the refresh ran
-- `credential-refresh.test.ts`: resolves undefined for a missing credential
-- `credential-refresh.test.ts`: shares failures but allows a later refresh
-- `credential-refresh.test.ts`: is due within five minutes of expiry
-- `credential-refresh.test.ts`: never expires a token without a lifetime
-- `credential.test.ts`: reads key form answers stored in configuration before v2.1 as metadata
-- `credential.test.ts`: publishes global events only for observable credential mutations
-- `credential.test.ts`: promotes the newest remaining legacy credential when the effective selection is removed
-- `credential.test.ts`: activates older credentials without affecting other integrations
-- `credential.test.ts`: creates credentials with a requested ID without taking over the current selection
-- `oauth-page.test.ts`: escapes bootstrap options embedded in the inline script
-- `plugin.test.ts`: refreshes expired OAuth credentials through the context during activation
-- `plugin.test.ts`: activates a saved credential through the context
-- `plugin/provider-xai.test.ts`: registers device OAuth and API key methods
-- `plugin/provider-xai.test.ts`: migrates browser OAuth credentials to the device method
-- `plugin/provider-xai.test.ts`: enables xAI Responses WebSockets
 
 ### Provider Plugins
 
@@ -203,7 +179,7 @@ Missing features, by how many OpenCode test cases each would unlock (86 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1394 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1393 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (67)
 
@@ -988,7 +964,7 @@ Tests for behaviour CodeSmith already has but no test pins (1394 cases), by area
 - the setup (start) command runs with worktree paths (S) — `worktree::create`
   - `worktree.test.ts`: runs the project setup script with worktree paths
 
-### Providers, models and credentials (36)
+### Providers, models and credentials (35)
 
 - default model when none is configured; a disabled provider's default ignored (S) — `config::resolve_model`
   - `catalog.test.ts`: falls back to newest available model when no default is configured
@@ -1014,8 +990,6 @@ Tests for behaviour CodeSmith already has but no test pins (1394 cases), by area
 - configured variant bodies kept unchanged (S) — `config variants`
   - `config/provider.test.ts`: keeps configured model variant bodies unchanged
   - `config/provider.test.ts`: keeps layered model variant bodies unchanged
-- store, update, list and remove saved keys (S) — `auth`
-  - `credential.test.ts`: stores, updates, lists, and removes credentials
 - Azure deployment routing (S) — `config providers (azure)`
   - `model-resolver.test.ts`: constructs native Azure requests with deployment IDs and projected resource URLs
   - `model-resolver.test.ts`: lets Azure CLI requests past package auth for the Azure plugin to authorize
@@ -1053,7 +1027,7 @@ Tests for behaviour CodeSmith already has but no test pins (1394 cases), by area
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 686 |
 | Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 554 |
-| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 339 |
+| OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 340 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 253 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
@@ -3018,7 +2992,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Providers, models and credentials (696 of 796)</summary>
+<details><summary>Providers, models and credentials (713 of 796)</summary>
 
 
 **`aisdk-native.test.ts`**
@@ -3058,6 +3032,25 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - P accepts boolean enablement — `src/warming.rs::oc_warming_config_accepts_boolean_enablement`
 - P decodes custom durations — `src/warming.rs::oc_warming_config_decodes_custom_durations`
+
+**`credential-refresh.test.ts`**
+
+- P saves the refreshed value — `src/providers/credentials.rs::oc_credential_refresh_saves_the_refreshed_value`
+- P returns the stored row when another caller already refreshed it — `src/providers/credentials.rs::oc_credential_refresh_returns_the_stored_row_when_not_stale`
+- P keeps a row that changed while the refresh ran — `src/providers/credentials.rs::oc_credential_refresh_keeps_a_row_that_changed_while_it_ran`
+- P resolves undefined for a missing credential — `src/providers/credentials.rs::oc_credential_refresh_resolves_none_for_a_missing_credential`
+- P shares failures but allows a later refresh — `src/providers/credentials.rs::oc_credential_refresh_shares_failures_but_allows_a_later_refresh`
+- P is due within five minutes of expiry — `src/providers/credentials.rs::oc_credential_is_due_within_five_minutes_of_expiry`
+- P never expires a token without a lifetime — `src/providers/credentials.rs::oc_credential_never_expires_a_token_without_a_lifetime`
+
+**`credential.test.ts`**
+
+- P stores, updates, lists, and removes credentials — `src/providers/credentials.rs::oc_credential_stores_updates_lists_and_removes`
+- P reads key form answers stored in configuration before v2.1 as metadata — `src/providers/credentials.rs::oc_credential_reads_legacy_configuration_as_metadata`
+- D publishes global events only for observable credential mutations — storage-model: CodeSmith keeps credentials in auth.json and publishes no credential events; the mutations themselves are pinned by the other credential ports
+- P promotes the newest remaining legacy credential when the effective selection is removed — `src/providers/credentials.rs::oc_credential_promotes_the_newest_remaining_when_the_active_one_is_removed`
+- P activates older credentials without affecting other integrations — `src/providers/credentials.rs::oc_credential_activates_older_credentials_without_affecting_others`
+- P creates credentials with a requested ID without taking over the current selection — `src/providers/credentials.rs::oc_credential_creates_with_a_requested_id_without_taking_over` (adapted: with nothing active, an inactive create still becomes the active credential (there is no unselected state))
 
 **`github-copilot/models.test.ts`**
 
@@ -3144,6 +3137,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`npm.test.ts`**
 
 - D keeps normal scoped package specs unchanged · handles git https specs · accepts registry packages and rejects unsupported install targets · accepts registry and npm-compatible Git specs · canonicalizes registry keys and hashes Git specs · locates cached scoped package specs without reifying · reifies when package cache directory exists without the package installed · installs and locates %s Git packages with dependencies ×2 · installs a Git package from an npm ::path: subdirectory at a %s ×2 · checks and updates mutable Git packages without changing pinned installs · rejects only the newest installed version, keeping its files for what still runs it · reports Git's own error when a Git package cannot be fetched · records Git revisions when the cache directory is reached through a symlink · locates a cached package without installing it · installs and updates without requesting registry audits · checks a mutable registry target without mutation and explicitly updates it · never reports a pinned registry target as outdated — platform: npm package installs
+
+**`oauth-page.test.ts`**
+
+- P escapes bootstrap options embedded in the inline script — `src/providers/oauth.rs::oc_oauth_page_escapes_what_it_embeds` (adapted: CodeSmith's callback page has no inline script; the provider and error it embeds are escaped)
 
 **`plugin/models-dev.test.ts`**
 
@@ -3407,6 +3404,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P replaces and restores same-ID Models.dev entries after an empty success — `tests/oc_local_models.rs::oc_lmstudio_replaces_the_models_dev_catalog_when_discovery_succeeds` (adapted: the same kept-list rule for every local provider)
 - P reloads layered custom endpoint and bearer authentication settings — `tests/oc_local_models.rs::oc_vllm_reloads_layered_custom_endpoint_and_bearer_authentication_settings`
 
+**`plugin/provider-xai.test.ts`**
+
+- P registers device OAuth and API key methods — `tests/oc_oauth_logins.rs::oc_xai_registers_device_oauth_and_api_key_methods` (adapted: the device login takes a user-supplied OAuth client)
+- P migrates browser OAuth credentials to the device method — `tests/oc_oauth_logins.rs::oc_xai_migrates_browser_oauth_credentials_to_the_device_method`
+- P enables xAI Responses WebSockets — `tests/oc_oauth_logins.rs::oc_xai_enables_responses_websockets`
+
 **`plugin/provider-zenmux.test.ts`**
 
 - D is registered so legacy referer headers can be applied — deliberate: plugin.rs: provider plugins are compiled in
@@ -3566,7 +3569,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Plugins (88 of 90)</summary>
+<details><summary>Plugins (90 of 90)</summary>
 
 
 **`plugin-failure.test.ts`**
@@ -3577,7 +3580,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - D {scenario.name} ×4 · updates inventory metadata without restarting an unchanged generation · loads a local plugin with its configured options · serves a local plugin's GUI bundle, and reloads it alone when only the bundle changes · unloading a plugin removes its commands and runs cleanup · reports a failed plugin without blocking a healthy plugin · disables a plugin whose transform fails after setup without publishing its partial edits · keeps the suffix after a failed plugin alive across identical activations · attributes replay failure to the broken plugin rather than a later plugin reading the registry · disables plugins after runtime reload failures without retrying an unchanged generation · disables plugins after replay failures discovered during setup without restoring the old generation · does not let asynchronous plugin cleanup block recovered registry readiness · retains Promise plugin groups for later registrations and ignores a disabled group's attempts · normalizes Promise plugin API inputs through JSON — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
 - P creates child sessions from a plugin at the parent's location — `tests/oc_plugin_session.rs::oc_creates_child_sessions_from_a_plugin_at_the_parents_location` (adapted: `plugin::Host::create`; the child takes the parent's folder, agent and model (sessions have no metadata))
-- D reloading a plugin replaces its command implementation · host event subscriptions deliver requested rpc types and ignore unknown types · unknown event type warnings name the subscribing plugin — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
+- D reloading a plugin replaces its command implementation — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
+- P refreshes expired OAuth credentials through the context during activation — `tests/oc_oauth_logins.rs::oc_refreshes_expired_oauth_credentials_before_they_are_used` (adapted: the login's authorizer refreshes it through the credential store before the request; plugins call the same public store)
+- P activates a saved credential through the context — `tests/oc_oauth_logins.rs::oc_activates_a_saved_credential` (adapted: through the public credential store, which plugins call)
+- D host event subscriptions deliver requested rpc types and ignore unknown types · unknown event type warnings name the subscribing plugin — deliberate: plugin.rs: native plugins compiled into the binary (no loading, reloading, GUI bundles or Promise groups)
 
 **`plugin/goal-watchdog.test.ts`**
 

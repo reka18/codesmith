@@ -12,6 +12,7 @@ pub mod cloudflare;
 pub mod copilot;
 pub mod copilot_auto;
 pub mod copilot_models;
+pub mod credentials;
 pub mod digitalocean;
 pub mod gateways;
 pub mod gitlab;
@@ -23,6 +24,7 @@ pub mod poe;
 pub mod sap;
 pub mod snowflake;
 pub mod vertex;
+pub mod xai;
 
 use codesmith_ai::{Auth, Protocol};
 use serde::Deserialize;
@@ -87,6 +89,9 @@ pub struct Settings {
     /// milliseconds (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`).
     #[serde(alias = "chunkTimeout")]
     pub chunk_timeout: Option<u64>,
+    /// xAI: the OAuth scopes the SuperGrok login asks for.
+    #[serde(alias = "oauthScope")]
+    pub oauth_scope: Option<String>,
 }
 
 /// What a provider plugin is given.
@@ -306,6 +311,9 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
     if copilot::owns(input) {
         return copilot::route(input).map(Some);
     }
+    if xai::owns(input) {
+        return xai::route(input).map(Some);
+    }
     match input.provider_id {
         gateways::DATABRICKS => return gateways::databricks(input).map(Some),
         cloudflare::GATEWAY => return cloudflare::gateway(input).map(Some),
@@ -332,7 +340,9 @@ pub fn available(id: &str, settings: &Settings, env: &Env) -> bool {
         vertex::ID | vertex::ANTHROPIC_ID => {
             vertex::available(settings, crate::auth::entry(vertex::ID).as_ref(), env)
         }
-        poe::ID | digitalocean::ID => crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth"),
+        poe::ID | digitalocean::ID | xai::ID => {
+            crate::auth::entry(id).is_some_and(|e| e["type"] == "oauth")
+        }
         sap::ID => env(sap::KEY_VAR).is_some() || set(&settings.service_key).is_some(),
         claude_agent::ID => claude_agent::available(env),
         snowflake::ID => {

@@ -82,7 +82,10 @@ pub fn check(params: &Params, state: &str, provider: &str) -> Result<String, Str
 /// The page the browser is shown.
 pub fn page(provider: &str, error: Option<&str>) -> String {
     let body = match error {
-        None => format!("Authorization successful. {provider} is connected to CodeSmith; you can close this tab."),
+        None => format!(
+            "Authorization successful. {} is connected to CodeSmith; you can close this tab.",
+            html_escape(provider)
+        ),
         Some(e) => format!("Authorization failed: {}", html_escape(e)),
     };
     format!("<!doctype html><meta charset=utf-8><title>CodeSmith</title><p style=\"font-family:system-ui;margin:3em\">{body}</p>")
@@ -93,6 +96,7 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 async fn reply(mut sock: TcpStream, status: u16, body: &str) {
@@ -406,4 +410,21 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // oauth-page.test.ts: "escapes bootstrap options embedded in the inline
+    // script" (adapted: the page has no script; what it embeds is escaped)
+    #[test]
+    fn oc_oauth_page_escapes_what_it_embeds() {
+        let ok = page(r#"xAI</script><script>alert("provider")</script>"#, None);
+        assert!(!ok.contains("<script>"), "{ok}");
+        assert!(ok.contains("xAI&lt;/script&gt;&lt;script&gt;alert(&quot;provider&quot;)"));
+        let failed = page("xai", Some("</p><img src=x onerror='1'>"));
+        assert!(!failed.contains("<img"), "{failed}");
+        assert!(failed.contains("&lt;img src=x onerror=&#39;1&#39;&gt;"));
+    }
 }

@@ -2045,9 +2045,25 @@ async fn browser_login(
             );
             providers::snowflake::login(&client, file, &e, role.as_deref(), open).await?;
         }
+        providers::xai::ID => {
+            let id = providers::xai::client_id(client_id, &settings.plugin, &env)?;
+            let e = providers::xai::Endpoints::xai(&id, settings.plugin.oauth_scope.as_deref());
+            providers::xai::login(&client, file, &e, |code| {
+                let url = code
+                    .verification_uri_complete
+                    .as_deref()
+                    .unwrap_or(&code.verification_uri);
+                eprintln!(
+                    "Open {} on any device and enter the code {}\nWaiting for authorization…",
+                    code.verification_uri, code.user_code
+                );
+                codesmith_core::mcp::oauth::open_browser(url);
+            })
+            .await?;
+        }
         p => {
             return Err(anyhow!(
-                "{p} has no browser login; --oauth is for poe, gitlab, digitalocean and snowflake-cortex"
+                "{p} has no browser login; --oauth is for poe, gitlab, digitalocean, snowflake-cortex and xai"
             ))
         }
     }
