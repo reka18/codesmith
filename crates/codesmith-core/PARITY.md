@@ -37,7 +37,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
-| Shell scan and parse | 1465 | 702 | 4 | 0 | 462 | 297 | 0 |
+| Shell scan and parse | 1465 | 807 | 8 | 0 | 482 | 168 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2326** | **37** | **45** | **2466** | **711** | **3** |
+| **Total** | **5588** | **2431** | **41** | **45** | **2486** | **582** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -75,6 +75,8 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
 - `shell-scan/bash-safety.test.ts`: "still requires redirect targets: %s" (1 case): `X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets`.
 - `shell-scan/bash-safety.test.ts`: "does not invent redirect commands for pure group descriptor duplications: %s" (3 cases): a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications`.
+- `shell-scan/bash-syntax.test.ts`: "rejects ANSI-C escapes whose value differs between shells in %s: %s" (2 cases): `$'a\0b'` was read as `ab` where Bash ends the word at the NUL (so `$'curl\0z'` runs `curl` but was checked as `curlz`), and `\cX` was decoded although the shells read it differently; both are refused now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells`.
+- `shell-scan/bash-syntax.test.ts`: "retains explicit substitutions without evaluating expressions: %s" (2 cases): Bash 5.3's `${ cmd; }` and `${| cmd; }` run `cmd` in the current shell, but the scan read them as parameter expansions and saw no command, so `echo "${ rm -rf x; }"` was checked as `echo` alone and passed a deny rule on `rm`; they are refused as unanalyzable now (OpenCode reads the commands inside). Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_retains_explicit_substitutions_without_evaluating_expressions`.
 - `shell.test.ts`: "builds command args per shell family" (1 case): POSIX families; Zsh now gets `+o nomatch`. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `shell.test.ts`: "passes an unmatched zsh glob through to the command" (1 case): an unmatched glob failed the whole Zsh line. Pinned by `tests/oc_tools.rs::oc_shell_passes_an_unmatched_zsh_glob_through_to_the_command`.
 - `snapshot.test.ts`: "recovers from a corrupt index and ignores a stale index lock" (1 case): a lock left by a killed capture failed every later capture and undo, and a corrupt index failed capture; captures now write a temporary index and rename it into place, rebuilding an unreadable one, and restores check out through their own. Pinned by `tests/oc_snapshot_backlog.rs::oc_snapshot_recovers_from_a_corrupt_index_and_a_stale_lock`.
@@ -191,7 +193,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (711 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (582 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -374,7 +376,7 @@ Tests for behaviour CodeSmith already has but no test pins (711 cases), by area,
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
 
-### Shell scan and parse (297)
+### Shell scan and parse (168)
 
 - prefix for long argument lists (S) — `shell_scan::scan`
   - `shell-parse-compatibility.test.ts`: derives the prefix for long argument lists
@@ -386,8 +388,6 @@ Tests for behaviour CodeSmith already has but no test pins (711 cases), by area,
   - `shell-parse-parity.test.ts`: scans generated supported syntax with valid saved prefixes and no fallback
 - commandless redirects keep matching saved prefixes (S) — `shell_scan::scan`
   - `shell-parse-parity.test.ts`: retains commandless redirects with matching saved prefixes: %s (2 cases)
-- bash/zsh ordinary syntax table extracts commands (M) — `shell_scan::scan`
-  - `shell-parse-syntax.test.ts`: ${shell} extracts commands without rejecting ordinary syntax: %s (70 cases)
 - heredoc bodies and spans stay with their commands (S) — `shell_scan::scan`
   - `shell-parse-syntax.test.ts`: does not invent commands from a quoted second heredoc body
   - `shell-parse-syntax.test.ts`: keeps heredoc and here-string spans attached to their own commands across lists and pipelines
@@ -406,22 +406,6 @@ Tests for behaviour CodeSmith already has but no test pins (711 cases), by area,
 - the fixtures run in real bash/zsh (add them to the differential corpus) (M) — `tests/shell_differential.rs`
   - `shell-scan/bash-syntax.test.ts`: ${shell} runs only the explicitly found probes: %s (22 cases)
   - `shell-scan/bash-syntax.test.ts`: real Bash agrees with delimiter quoting: %s (8 cases)
-- Bash/Zsh syntax tables: command nodes, ANSI-C quoting, heredoc delimiters, dialect differences (M) — `shell_scan::scan`
-  - `shell-scan/bash-syntax.test.ts`: rejects incomplete syntax: %s (7 cases)
-  - `shell-scan/bash-syntax.test.ts`: scans a Zsh brace group closed after a redirect
-  - `shell-scan/bash-syntax.test.ts`: preserves raw lexical spelling of ANSI-C and locale quoted words
-  - `shell-scan/bash-syntax.test.ts`: decodes unknown ANSI-C escapes like %s: %s (6 cases)
-  - `shell-scan/bash-syntax.test.ts`: decodes unknown escapes in ANSI-C heredoc delimiters like each dialect
-  - `shell-scan/bash-syntax.test.ts`: rejects ANSI-C escapes whose value differs between shells in %s: %s (7 cases)
-  - `shell-scan/bash-syntax.test.ts`: retains explicit substitutions without evaluating expressions: %s (6 cases)
-  - `shell-scan/bash-syntax.test.ts`: preserves heredoc permission resources and saved prefixes: %s (4 cases)
-  - `shell-scan/bash-syntax.test.ts`: does not reinterpret the tail of a here-string operator: %s (4 cases)
-  - `shell-scan/bash-syntax.test.ts`: uses identical delimiter decoding in every command context: %j (12 cases)
-  - `shell-scan/bash-syntax.test.ts`: posix reports both readings of a double parenthesis
-  - `shell-scan/bash-syntax.test.ts`: reads Bash and Zsh syntax precisely where Dash diverges: %s (2 cases)
-  - `shell-scan/bash-syntax.test.ts`: reads a reserved word after a redirect as a Zsh keyword
-  - `shell-scan/bash-syntax.test.ts`: scans safe Zsh parameter flags, Zsh repeat loops, and Bash extglob arguments
-  - `shell-scan/bash-syntax.test.ts`: derives the dialect from the shell executable: %s (5 cases)
 - function bodies and shorthand loops in every context (M) — `shell_scan::scan`
   - `shell-scan/compound-parity.test.ts`: keeps compound function bodies inside command substitutions: %s (4 cases)
   - `shell-scan/compound-parity.test.ts`: {source} (5 cases)
@@ -829,7 +813,7 @@ Tests for behaviour CodeSmith already has but no test pins (711 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 688 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 599 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 619 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -2225,7 +2209,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell scan and parse (1168 of 1465)</summary>
+<details><summary>Shell scan and parse (1297 of 1465)</summary>
 
 
 **`shell-parse-compatibility.test.ts`**
@@ -2245,7 +2229,9 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`shell-parse-syntax.test.ts`**
 
-- D PowerShell invocation approvals include the operator instead of saving an ineffective prefix · PowerShell scriptblock callers preserve permission resources and usable approvals: %s ×8 · PowerShell extracts commands without rejecting ordinary syntax: %s ×14 — platform: PowerShell
+- D PowerShell invocation approvals include the operator instead of saving an ineffective prefix · PowerShell scriptblock callers preserve permission resources and usable approvals: %s ×8 — platform: PowerShell
+- P ${shell} extracts commands without rejecting ordinary syntax: %s ×70 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_commands_without_rejecting_ordinary_syntax` (the Bash and Zsh rows, one check each)
+- D PowerShell extracts commands without rejecting ordinary syntax: %s ×14 — platform: PowerShell
 
 **`shell-parse.test.ts`**
 
@@ -2305,6 +2291,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P extracts actual command nodes: %s ×62 — `tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes`
 - D extracts actual command nodes: %s ×8 — deliberate: valid syntax the scanner refuses as unanalyzable (an unparenthesized case or a heredoc inside a quoted substitution, a delimiter split by a line continuation, `time` before `[[`/`!`), so it is asked about rather than guessed at, and an arithmetic command or subscript assignment kept as a command of its own; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
 - P ${shell} accepts the source grammar: ${source} ×140 — `tests/oc_shell_scan_backlog.rs::oc_scan_fixtures_are_accepted_by_bash_and_zsh`
+- P rejects incomplete syntax: %s ×7 — `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_incomplete_syntax`
+- D scans a Zsh brace group closed after a redirect — deliberate: `}` right after a redirect closes a group only in Zsh, so the scan refuses `{ a && >f }` rather than pick a reading; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_refuses_a_brace_group_closed_after_a_redirect
+- P preserves raw lexical spelling of ANSI-C and locale quoted words — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_the_raw_spelling_of_ansi_c_and_locale_quoted_words`
+- D decodes unknown ANSI-C escapes like %s: %s ×6 · decodes unknown escapes in ANSI-C heredoc delimiters like each dialect — deliberate: CodeSmith reads one grammar for every POSIX shell and refuses an ANSI-C escape the shells decode differently, rather than decoding it per dialect
+- P rejects ANSI-C escapes whose value differs between shells in %s: %s ×5 — `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells`
+- F rejects ANSI-C escapes whose value differs between shells in %s: %s ×2 — `tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells` (`$'a\0b'` was read as `ab` where Bash ends the word at the NUL (so `$'curl\0z'` runs `curl` but was checked as `curlz`), and `\cX` was decoded although the shells read it differently; both are refused now)
+- P retains explicit substitutions without evaluating expressions: %s ×2 — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_explicit_substitutions_without_evaluating_expressions`
+- F retains explicit substitutions without evaluating expressions: %s ×2 — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_explicit_substitutions_without_evaluating_expressions` (Bash 5.3's `${ cmd; }` and `${| cmd; }` run `cmd` in the current shell, but the scan read them as parameter expansions and saw no command, so `echo "${ rm -rf x; }"` was checked as `echo` alone and passed a deny rule on `rm`; they are refused as unanalyzable now (OpenCode reads the commands inside))
+- D retains explicit substitutions without evaluating expressions: %s ×2 — deliberate: a named `coproc` with a compound body and an extglob pattern in `case` are refused as unanalyzable, which asks rather than guesses
+- P preserves heredoc permission resources and saved prefixes: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_heredoc_permission_resources_and_saved_prefixes`
+- P does not reinterpret the tail of a here-string operator: %s ×4 — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_reinterpret_the_tail_of_a_here_string_operator`
+- P uses identical delimiter decoding in every command context: %j ×12 — `tests/oc_shell_scan_backlog.rs::oc_scan_uses_identical_delimiter_decoding_in_every_context` (adapted: an empty delimiter's line stays in the cat command's resource)
+- D posix reports both readings of a double parenthesis · reads Bash and Zsh syntax precisely where Dash diverges: %s ×2 · reads a reserved word after a redirect as a Zsh keyword · scans safe Zsh parameter flags, Zsh repeat loops, and Bash extglob arguments · derives the dialect from the shell executable: %s ×5 — deliberate: CodeSmith reads one grammar for every POSIX shell, whatever the executable; a reading only some shells give is kept as an alternate, checked against deny rules
 
 **`shell-scan/closure.test.ts`**
 

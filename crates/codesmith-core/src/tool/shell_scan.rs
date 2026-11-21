@@ -1219,25 +1219,19 @@ impl<'a> Scanner<'a> {
                                         } else {
                                             match char::from_u32(code) {
                                                 Some(ch) if code != 0 => decoded.push(ch),
-                                                // A NUL ends the string in Bash.
-                                                Some(_) => {}
+                                                // A NUL ends the string in Bash
+                                                // and stays in it in Zsh: `$'rm\0x'`
+                                                // is `rm` to one, `rm\0x` to the other.
+                                                Some(_) => return Err("ansi-c-escape"),
                                                 None => return Err("invalid-structure"),
                                             }
                                             i = j;
                                         }
                                         continue;
                                     }
-                                    'c' if self
-                                        .at(i + 2)
-                                        .is_some_and(|x| x.is_ascii_alphabetic()) =>
-                                    {
-                                        // `\cX`: a control character.
-                                        let x = self.at(i + 2).ok_or("unterminated-quote")?;
-                                        decoded
-                                            .push(char::from_u32(x as u32 & 0x1f).unwrap_or('?'));
-                                        i += 3;
-                                        continue;
-                                    }
+                                    // `\cX` (a control character) is read
+                                    // differently by Bash and Zsh, like
+                                    // the unknown escapes below.
                                     _ => {
                                         // Bash keeps an unknown escape, Zsh
                                         // drops the `\`: `$'r\m'` is `rm` in Zsh.
@@ -1306,6 +1300,12 @@ impl<'a> Scanner<'a> {
                     if !output_is_known(&nested[before..]) {
                         self.flags.payload = true;
                     }
+                }
+                // Bash 5.3 runs `${ cmd; }` and `${| cmd; }` as command
+                // substitutions in the current shell: refused, as their
+                // commands are not read.
+                Some('{') if matches!(self.at(start + 2), Some(' ' | '\t' | '\n' | '|')) => {
+                    return Err("command-substitution");
                 }
                 Some('{') => {
                     self.pos = start + 2;

@@ -1819,3 +1819,15 @@ arch --arch arm64 touch G
 (( $unset rm F ))
 %%
 sed -i.bak 's//y/' f1
+%% ---- Bash 5.3 command substitutions in the current shell (`${ cmd; }`, `${| cmd; }`)
+echo "${ rm F; }"
+%%
+echo ${ touch G; }
+%%
+echo "${|rm F; }"
+%%
+cat <<EOF
+${ rm F; }
+EOF
+%% ---- ANSI-C NUL: Bash ends the word there
+$'touch\0x' G

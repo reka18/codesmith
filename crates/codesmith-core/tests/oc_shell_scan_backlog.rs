@@ -1202,3 +1202,251 @@ fn oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion() {
         );
     }
 }
+
+/// "${shell} extracts commands without rejecting ordinary syntax: %s"
+/// (`shell-parse-syntax.test.ts`, the Bash and Zsh rows)
+#[test]
+fn oc_scan_extracts_commands_without_rejecting_ordinary_syntax() {
+    let mut failed = Vec::new();
+    for command in [
+        "cat <<'EOF'\n$(not_a_command)\nEOF",
+        "cat <<EOF\n$(printf hello)\nEOF",
+        "cat <<-EOF\n\thello\n\tEOF",
+        "cat <<EOF\nhello\nEOF\nprintf done",
+        "cat <<< \"$(printf hello)\"",
+        "for file in a b; do printf '%s' \"$file\"; done",
+        "for file in $(printf file); do printf '%s' \"$file\"; done",
+        "for file in a b; do if test -n \"$file\"; then printf '%s' \"$file\"; fi; done",
+        "while IFS= read -r file; do printf '%s' \"$file\"; done < input",
+        "until test -f ready; do sleep 1; done",
+        "if true; then if false; then printf no; else printf yes; fi; fi",
+        "if true; then :; X=$(printf value); fi",
+        "case \"$target\" in *.ts) printf typescript;; *) printf other;; esac",
+        "greet() { printf hello; }; greet",
+        "function greet { printf hello; }; greet",
+        "printf before; { printf grouped; }; (printf subshell)",
+        "time git status",
+        "time -p git status",
+        "coproc git status",
+        "if [[ -f file ]]; then cat file; fi",
+        "[[ $(printf yes) = yes ]]",
+        "echo ${value:-default}",
+        "echo \"${value:-$(printf fallback)}\"",
+        "echo ${value//before/after}",
+        "echo ${arr[$(printf index)]}",
+        "printf '%s' $'line1\\nline2'",
+        "printf '%s' $'\\u2713\\U0001f642'",
+        "printf \"%s\" $\"hello\"",
+        "echo $((1 + ${value:-2}))",
+        "echo $((array[$(printf 0)]))",
+        "echo $[1 + 2]",
+        "((count++))",
+        "for ((i=0; i<2; i++)); do printf ok; done",
+        "echo `printf \\2`",
+        "F='$HOME/bin'; SIZE=4096; N=$(( (SIZE + 1023) / 1024 )); echo $N",
+    ] {
+        if let Err(e) = shell_scan::analyze(command, Path::new("/workspace")) {
+            failed.push(format!("{command:?}: {e}"));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+// --- More of bash-syntax.test.ts ---
+
+fn heads_of(source: &str) -> Result<Vec<String>, &'static str> {
+    shell_scan::scan(source).map(|c| {
+        c.into_iter()
+            .map(|c| c.words.first().cloned().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// "rejects incomplete syntax: %s"
+#[test]
+fn oc_scan_rejects_incomplete_syntax() {
+    for source in [
+        "for value in one; do",
+        "while true; done",
+        "case value in x) echo ok",
+        "cat <<EOF\nunclosed",
+        "echo ${missing",
+        "echo $'missing",
+        "case $r in a) ls |;; esac",
+    ] {
+        assert!(shell_scan::scan(source).is_err(), "{source:?}");
+    }
+}
+
+/// "scans a Zsh brace group closed after a redirect". Differs on purpose:
+/// `}` right after a redirect closes the group only in Zsh, so the scan
+/// refuses it rather than pick a reading.
+#[test]
+fn oc_scan_refuses_a_brace_group_closed_after_a_redirect() {
+    assert!(shell_scan::scan("{ a && >f }").is_err());
+}
+
+/// "preserves raw lexical spelling of ANSI-C and locale quoted words"
+#[test]
+fn oc_scan_preserves_the_raw_spelling_of_ansi_c_and_locale_quoted_words() {
+    let c = shell_scan::scan("$'pri\\x6etf' $'line\\n' $\"text\"").unwrap();
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].words, ["printf", "line\n", "text"]);
+    assert_eq!(c[0].raw_words, ["$'pri\\x6etf'", "$'line\\n'", "$\"text\""]);
+}
+
+/// "rejects ANSI-C escapes whose value differs between shells in %s: %s".
+/// Fixed: `$'a\0b'` read as `ab`, where Bash ends the word at the NUL
+/// (`$'curl\0z'` runs `curl` but was checked as `curlz`), and `\cX` was
+/// decoded although the shells read it differently.
+#[test]
+fn oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells() {
+    for word in [
+        "$'\\['", "$'\\cA'", "$'a\\0b'", "$'\\C-a'", "$'\\M-a'", "$'\\xg'", "$'\\u'",
+    ] {
+        let source = format!("printf '%s' {word}");
+        assert!(
+            shell_scan::scan(&source).is_err(),
+            "{source:?}: {:?}",
+            shell_scan::scan(&source)
+        );
+    }
+}
+
+/// "retains explicit substitutions without evaluating expressions: %s".
+/// Fixed: Bash 5.3's `${ cmd; }` and `${| cmd; }` run `cmd` in the current
+/// shell, but the scan read them as parameter expansions and saw no
+/// command, so `echo "${ rm -rf x; }"` passed as `echo`; they are now
+/// refused as unanalyzable (OpenCode reads the commands inside). A named
+/// `coproc` with a compound body and an extglob case pattern are refused
+/// too, on purpose.
+#[test]
+fn oc_scan_retains_explicit_substitutions_without_evaluating_expressions() {
+    for (source, names) in [
+        (
+            "printf '%s' $((1 + '$(scan_probe)'))",
+            &["printf", "scan_probe"],
+        ),
+        (
+            "printf '%s' $(((1 + '$(scan_probe)')))",
+            &["printf", "scan_probe"],
+        ),
+    ] {
+        assert_eq!(heads_of(source), Ok(owned(names)), "{source:?}");
+    }
+    for source in [
+        "printf %s \"${ scan_probe; }\"",
+        "printf %s \"${|scan_probe; }\"",
+        "printf %s ${ scan_probe; }",
+        "echo ${\nscan_probe\n}",
+        "cat <<EOF\n${ scan_probe; }\nEOF",
+        "coproc job { scan_probe; }",
+        "case x in @(one|$(scan_probe))) ;; esac",
+    ] {
+        assert!(
+            shell_scan::scan(source).is_err(),
+            "{source:?}: {:?}",
+            shell_scan::scan(source)
+        );
+    }
+    // Quoted, it is text.
+    assert_eq!(
+        heads_of("cat <<'EOF'\n${ scan_probe; }\nEOF"),
+        Ok(owned(&["cat"]))
+    );
+    assert_eq!(heads_of("echo '${ scan_probe; }'"), Ok(owned(&["echo"])));
+}
+
+/// "preserves heredoc permission resources and saved prefixes: %s"
+#[test]
+fn oc_scan_preserves_heredoc_permission_resources_and_saved_prefixes() {
+    for source in [
+        "(cat <<\"E\\OF\"\nhello\nE\\OF\n)",
+        "cat <<\"E\\$OF\"\nhello\nE$OF",
+        "(cat <<\"E\\$OF\"\nhello\nE$OF\n)",
+        "(cat <<-\"E\\OF\"\n\thello\n\tE\\OF\n)",
+    ] {
+        let a = shell_scan::analyze(source, Path::new("/workspace")).unwrap();
+        assert_eq!(a.commands[0].1, "cat *", "{source:?}");
+    }
+}
+
+/// "does not reinterpret the tail of a here-string operator: %s"
+#[test]
+fn oc_scan_does_not_reinterpret_the_tail_of_a_here_string_operator() {
+    for (source, names) in [
+        ("cat <<< hello\nprintf done", &["cat", "printf"][..]),
+        ("(cat <<< hello\nprintf done)", &["cat", "printf"]),
+        (
+            "printf %s \"$(cat <<< hello\nprintf done)\"",
+            &["printf", "cat", "printf"],
+        ),
+        (
+            "(cat <<< \"$(printf hello)\"\nprintf done)",
+            &["cat", "printf", "printf"],
+        ),
+    ] {
+        assert_eq!(heads_of(source), Ok(owned(names)), "{source:?}");
+        let a = shell_scan::analyze(source, Path::new("/workspace")).unwrap();
+        assert_eq!(a.commands.len(), names.len(), "{source:?}");
+    }
+}
+
+/// "uses identical delimiter decoding in every command context: %j"
+#[test]
+fn oc_scan_uses_identical_delimiter_decoding_in_every_context() {
+    let mut failed = Vec::new();
+    for (header, delimiter, quoted, tabs) in [
+        ("<<\"E\\OF\"", "E\\OF", true, false),
+        ("<<\"E\\$OF\"", "E$OF", true, false),
+        ("<<\"E\\`OF\"", "E`OF", true, false),
+        ("<<\"E\\\"OF\"", "E\"OF", true, false),
+        ("<<\"E\\\\OF\"", "E\\OF", true, false),
+        ("<<'E\\OF'", "E\\OF", true, false),
+        ("<<E\\OF", "EOF", true, false),
+        ("<<''", "", true, false),
+        ("<<$'E\\x4fF'", "EOF", true, false),
+        ("<<EO\\\nF", "EOF", false, false),
+        ("<<-EOF", "EOF", false, true),
+        ("<<-\"E\\OF\"", "E\\OF", true, true),
+    ] {
+        let tab = if tabs { "\t" } else { "" };
+        let body = format!("cat {header}\n{tab}$(printf probe)\n{tab}{delimiter}");
+        for source in [
+            format!("{body}\nprintf done"),
+            format!("({body}\nprintf done)"),
+            format!("printf %s \"$({body}\nprintf done)\""),
+        ] {
+            let mut want: Vec<&str> = Vec::new();
+            if source.starts_with("printf") {
+                want.push("printf");
+            }
+            want.push("cat");
+            if !quoted {
+                want.push("printf");
+            }
+            want.push("printf");
+            let ok = shell_scan::scan(&source).is_ok_and(|c| {
+                let heads: Vec<&str> = c.iter().map(|c| c.words[0].as_str()).collect();
+                let cat = c.iter().find(|c| c.words[0] == "cat");
+                heads == want
+                    && cat.is_some_and(|c| {
+                        // Adapted: an empty delimiter's line stays in the resource.
+                        c.resource.trim_end() == body.trim()
+                            && c.words == ["cat"]
+                            && c.raw_words == ["cat"]
+                    })
+                    && (quoted || c.iter().any(|c| c.resource == "printf probe"))
+            });
+            if !ok {
+                failed.push(format!("{source:?}: {:?}", shell_scan::scan(&source)));
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} failed:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+}

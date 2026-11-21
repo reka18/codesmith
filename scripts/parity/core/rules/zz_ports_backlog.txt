@@ -153,6 +153,19 @@
 80:62 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
 80:8 :: design :: deliberate :: valid syntax the scanner refuses as unanalyzable (an unparenthesized case or a heredoc inside a quoted substitution, a delimiter split by a line continuation, `time` before `[[`/`!`), so it is asked about rather than guessed at, and an arithmetic command or subscript assignment kept as a command of its own; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_extracts_actual_command_nodes
 94 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_fixtures_are_accepted_by_bash_and_zsh
+146 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_rejects_incomplete_syntax
+158 :: design :: deliberate :: `}` right after a redirect closes a group only in Zsh, so the scan refuses `{ a && >f }` rather than pick a reading; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_refuses_a_brace_group_closed_after_a_redirect
+165 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_the_raw_spelling_of_ansi_c_and_locale_quoted_words
+173,187 :: design :: deliberate :: CodeSmith reads one grammar for every POSIX shell and refuses an ANSI-C escape the shells decode differently, rather than decoding it per dialect
+199:5 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells
+199:2 :: fixed :: tests/oc_shell_scan_backlog.rs::oc_scan_rejects_ansi_c_escapes_whose_value_differs_between_shells :: `$'a\0b'` was read as `ab` where Bash ends the word at the NUL (so `$'curl\0z'` runs `curl` but was checked as `curlz`), and `\cX` was decoded although the shells read it differently; both are refused now
+211:2 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_explicit_substitutions_without_evaluating_expressions
+211:2 :: fixed :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_explicit_substitutions_without_evaluating_expressions :: Bash 5.3's `${ cmd; }` and `${| cmd; }` run `cmd` in the current shell, but the scan read them as parameter expansions and saw no command, so `echo "${ rm -rf x; }"` was checked as `echo` alone and passed a deny rule on `rm`; they are refused as unanalyzable now (OpenCode reads the commands inside)
+211:2 :: design :: deliberate :: a named `coproc` with a compound body and an extglob pattern in `case` are refused as unanalyzable, which asks rather than guesses
+227 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_heredoc_permission_resources_and_saved_prefixes
+237 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_reinterpret_the_tail_of_a_here_string_operator
+251 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_uses_identical_delimiter_decoding_in_every_context :: adapted: an empty delimiter's line stays in the cat command's resource
+316,325,334,341,351 :: design :: deliberate :: CodeSmith reads one grammar for every POSIX shell, whatever the executable; a reading only some shells give is kept as an alternate, checked against deny rules
 @shell-scan/compound-parity.test.ts
 28 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_accepts_compound_function_bodies_as_braced_ones
 @shell-scan/adversarial.test.ts
@@ -191,3 +204,5 @@
 170 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_repeatedly_rescan_nested_conditionals :: adapted: eleven levels (deeper ones are refused)
 186:3 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion
 186:1 :: design :: deliberate :: a quoted `)` in a substitution nested in a quoted one is refused as unanalyzable, which asks rather than guesses; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion
+@shell-parse-syntax.test.ts
+30 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_extracts_commands_without_rejecting_ordinary_syntax :: the Bash and Zsh rows, one check each
