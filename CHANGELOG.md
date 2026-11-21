@@ -5,6 +5,22 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP OAuth login options:** `codesmith mcp auth` takes a redirect URL
+  pasted into the terminal (the browser on another machine); one that is not
+  the login's redirect address or carries another state is refused and the
+  login keeps waiting. New `oauth` settings: `redirectUri` (a fixed redirect,
+  registered dynamically), `authServerMetadataUrl` (metadata instead of
+  discovery, also used to refresh) and `clientMetadataUrl` (a client ID
+  metadata document you host, used with servers that accept them from public
+  clients). The login asks for `offline_access` where offered, checks the
+  redirect's `iss` against the issuer (RFC 9207), registers and redeems the
+  `localhost` spelling of the loopback redirect, and its browser page reports
+  a token exchange the server refused. A connection whose saved token is
+  refused refreshes it once and retries; a `403` asking for more scope shows
+  the server as needing a login, and the next login asks for that scope.
+  OAuth requests go only to `https` (or loopback `http`) URLs, follow no
+  redirects, read at most 1 MiB, and refuse metadata naming another issuer;
+  server-sent error text is shown without control characters.
 - **Automation runs survive restarts:** a run is saved as it goes (claimed,
   a Code Mode program's result, the prompt handed to its session, then the
   outcome), and the process holding the scheduler lease next picks up one

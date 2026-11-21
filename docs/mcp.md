@@ -288,16 +288,55 @@ no way to refresh them) and asks for one; without a terminal it needs the
 name.
 
 This follows the MCP authorization spec: discovery, dynamic client
-registration and PKCE, with the callback on `127.0.0.1:19876`. Tokens are
-saved in the data folder's `mcp-auth.json` (readable only by you), are only
-ever sent to the URL they were issued for, and are refreshed automatically.
+registration and PKCE, with the callback on `127.0.0.1:19876` (both
+`127.0.0.1` and `localhost` are registered, since some servers send the
+browser back to the other spelling, and both loopback addresses are
+listened on). If the browser runs on another machine, paste the URL it ends
+up on into the terminal: it must be this login's redirect address with this
+login's `state`, or it is refused and the login keeps waiting. The
+browser's page says whether the login worked only once the code has been
+redeemed.
 
-To use a pre-registered client, or a different callback port:
+Tokens are saved in the data folder's `mcp-auth.json` (readable only by
+you), are only ever sent to the URL they were issued for, and are refreshed
+at the token endpoint that issued them: shortly before they expire, and
+once when the server refuses one with time left. A server that answers
+`403` asking for more scope (`insufficient_scope`) shows as needing
+authorization; the next login asks for the scope it named.
+
+Where OAuth requests go: discovery, metadata, client documents, tokens and
+registrations are fetched from or sent to `https` URLs only (or plain
+`http` to localhost), redirects are not followed, and responses are capped
+at 1 MiB. Authorization server metadata must name the issuer it was found
+for, and a redirect's `iss` (RFC 9207) must name that issuer; one from a
+server that says it sends `iss` must carry it. `offline_access` is asked for
+when the server offers it, without forcing a consent prompt. What a server
+says in an error is shown without control characters.
+
+To use a pre-registered client, a different callback port, or a fixed
+redirect URL:
 
 ```jsonc
 "docs": { "type": "remote", "url": "https://mcp.example.com/mcp",
           "oauth": { "clientId": "...", "clientSecret": "{env:DOCS_SECRET}", "scope": "read", "port": 19876 } }
 ```
+
+Other `oauth` settings:
+
+- `redirectUri`: the redirect URL to register and send, for an OAuth app
+  registered with a fixed one (`http` or `https`). The login listens on its
+  path, and on its port when it is a loopback URL (`port` still wins). With
+  one set, a client is always registered (or `clientId` used).
+- `authServerMetadataUrl`: an authorization server metadata document to
+  use instead of discovery, for a server that publishes no
+  protected-resource metadata. It must load; the login uses its endpoints
+  and refreshes at its token endpoint.
+- `clientMetadataUrl`: a client ID metadata document you host (an `https`
+  URL with a path). When the authorization server accepts such documents
+  from public clients (`client_id_metadata_document_supported` and the
+  `none` auth method), its URL is the client ID instead of registering a
+  client. CodeSmith publishes no document of its own and never uses another
+  application's client ID; without this setting it registers a client.
 
 `"oauth": false` turns OAuth off for a server.
 

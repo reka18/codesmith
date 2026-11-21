@@ -1048,13 +1048,17 @@ impl Client {
             *session.lock().unwrap() = Some(s.to_string());
         }
         let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             let www = resp
                 .headers()
                 .get("www-authenticate")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
-            return Err(oauth::Unauthorized(www).into());
+            let refused = oauth::Unauthorized(www);
+            // A 403 is a login matter only when it asks for more scope.
+            if status == reqwest::StatusCode::UNAUTHORIZED || refused.insufficient_scope() {
+                return Err(refused.into());
+            }
         }
         if !status.is_success() {
             let body: String = resp
@@ -2255,24 +2259,50 @@ async fn connect(
             ..
         } => {
             let http = reqwest::Client::new();
-            let mut headers = headers.clone();
             let has_auth = headers
                 .keys()
                 .any(|k| k.eq_ignore_ascii_case("authorization"));
+            let store = oauth::store_path();
+            let limit = Duration::from_millis(startup).min(oauth::REFRESH_TIMEOUT);
+            let mut token = None;
             if !has_auth && oauth::Setting::enabled(setting.as_ref()) {
-                let limit = Duration::from_millis(startup).min(oauth::REFRESH_TIMEOUT);
-                if let Some(tok) =
-                    oauth::token_within(&http, &oauth::store_path(), name, url, limit).await
-                {
+                token = oauth::token_within(&http, &store, name, url, limit).await;
+            }
+            let mut retried = false;
+            loop {
+                let mut headers = headers.clone();
+                if let Some(tok) = &token {
                     headers.insert("Authorization".into(), format!("Bearer {tok}"));
                 }
+                let client = Arc::new(make(Transport::Http {
+                    client: http.clone(),
+                    url: url.clone(),
+                    headers,
+                    session: Mutex::new(None),
+                }));
+                match handshake(&client, startup).await {
+                    Ok(()) => return Ok(client),
+                    // The server refused a saved token it should have
+                    // taken (revoked, or rotated early): refresh it once
+                    // and try again with the new one. A server wanting
+                    // more scope needs a new login instead.
+                    Err(e)
+                        if !retried
+                            && e.downcast_ref::<oauth::Unauthorized>()
+                                .is_some_and(|u| !u.insufficient_scope()) =>
+                    {
+                        let Some(sent) = token.take() else {
+                            return Err(e);
+                        };
+                        retried = true;
+                        match oauth::refresh_refused(&store, name, url, &sent, limit).await {
+                            Some(new) => token = Some(new),
+                            None => return Err(e),
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            Arc::new(make(Transport::Http {
-                client: http,
-                url: url.clone(),
-                headers,
-                session: Mutex::new(None),
-            }))
         }
         ServerConfig::Local {
             command,

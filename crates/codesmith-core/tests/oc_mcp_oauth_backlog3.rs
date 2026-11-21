@@ -299,7 +299,10 @@ async fn oc_mcp_oauth_completes_authorization_through_the_loopback_callback() {
     let registrations = server.posts("/register");
     assert_eq!(registrations.len(), 1);
     let reg: Value = serde_json::from_str(&registrations[0].body).unwrap();
-    assert_eq!(reg["redirect_uris"], json!([q["redirect_uri"]]));
+    // Both spellings of the loopback redirect are registered (some servers
+    // rewrite one to the other); the login is sent with 127.0.0.1.
+    let localhost = q["redirect_uri"].replace("127.0.0.1", "localhost");
+    assert_eq!(reg["redirect_uris"], json!([q["redirect_uri"], localhost]));
     let token = server.posts("/token")[0].form();
     assert_eq!(token["grant_type"], "authorization_code");
     assert_eq!(token["code"], "accepted");

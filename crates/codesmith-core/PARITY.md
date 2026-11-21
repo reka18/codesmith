@@ -43,7 +43,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
-| MCP | 212 | 105 | 6 | 21 | 80 | 0 | 0 |
+| MCP | 212 | 118 | 6 | 8 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
 | Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2876** | **79** | **52** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2889** | **79** | **39** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -131,12 +131,11 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (52 cases in 14 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (39 cases in 13 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
-| [MCP OAuth Login Options](#mcp-oauth-login-options) | 13 | completing a login from a pasted redirect URL; the callback page reporting a token exchange the server rejected (CodeSmith's page reports the redirect, the terminal the exchange); … |
 | [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
@@ -170,24 +169,6 @@ Missing features, by how many OpenCode test cases each would unlock (52 cases in
 - `plugin/provider-gitlab.test.ts`: uses exact static workflow model ids when the provider recognizes them
 - `plugin/provider-gitlab.test.ts`: uses provider feature flags instead of model settings feature flags
 - `plugin/provider-gitlab.test.ts`: uses agenticChat with provider aiGatewayHeaders and feature flags for normal models
-
-### MCP OAuth Login Options
-
-13 cases.
-
-- `mcp-oauth.test.ts`: completes from a pasted redirect URL and keeps waiting after a wrong paste
-- `mcp-oauth.test.ts`: reports a rejected token exchange on the callback page
-- `mcp-oauth.test.ts`: preserves a configured redirect URL and fixed port
-- `mcp-oauth.test.ts`: rejects an invalid redirect URL
-- `mcp-oauth.test.ts`: uses configured authorization server metadata when the resource publishes none
-- `mcp-oauth.test.ts`: requests offline_access without forcing a consent prompt
-- `mcp-oauth.test.ts`: forwards iss from the redirect so issuer-advertising servers can complete
-- `mcp-oauth.test.ts`: uses the client metadata document when the server supports public CIMD clients
-- `mcp-oauth.test.ts`: redeems the code with the localhost redirect a server sent the browser back to
-- `mcp-oauth.test.ts`: registers dynamically when a custom redirect_uri is configured
-- `mcp-oauth.test.ts`: refreshes a refused token and retries with the new one
-- `mcp-oauth.test.ts`: refreshes through configured authorization server metadata
-- `mcp-oauth.test.ts`: reports needs_auth when the server asks for more scope
 
 ### Automation Tool Extraction
 
@@ -2424,7 +2405,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>MCP (191 of 212)</summary>
+<details><summary>MCP (204 of 212)</summary>
 
 
 **`form.test.ts`**
@@ -2484,11 +2465,22 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 - P completes interactive authorization through the loopback callback — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
 - F keeps waiting for the redirect after callback requests without OAuth parameters — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback` (a request to the loopback callback without the redirect's parameters (a prefetch, a probe) ended the login with a state mismatch; it is answered 400 and the login keeps waiting for the redirect)
+- P completes from a pasted redirect URL and keeps waiting after a wrong paste — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_completes_from_a_pasted_redirect_url_and_keeps_waiting_after_a_wrong_paste` (adapted: a paste must also go to the login's redirect address; CodeSmith's notices)
+- P reports a rejected token exchange on the callback page — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_reports_a_rejected_token_exchange_on_the_callback_page`
 - P generates a loopback redirect URL when none is configured — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- P preserves a configured redirect URL and fixed port — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_preserves_a_configured_redirect_url_and_fixed_port` (adapted: redirectUri in the oauth setting)
+- P rejects an invalid redirect URL — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_rejects_an_invalid_redirect_url` (adapted: only http and https redirects are taken)
 - P rejects an authorization endpoint that is not http or https — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_rejects_an_authorization_endpoint_that_is_not_http_or_https`
 - P finds resource metadata through the 401 header when the well-known path is not served — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_finds_resource_metadata_through_the_401_header`
+- P uses configured authorization server metadata when the resource publishes none — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_uses_and_refreshes_through_configured_authorization_server_metadata` (adapted: the login saves the configured server's token endpoint, which refreshes use)
+- P requests offline_access without forcing a consent prompt — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_requests_offline_access_without_forcing_a_consent_prompt`
+- P forwards iss from the redirect so issuer-advertising servers can complete — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_accepts_the_iss_of_an_issuer_advertising_server` (adapted: CodeSmith checks the iss against the issuer itself (RFC 9207))
+- P uses the client metadata document when the server supports public CIMD clients — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_uses_a_configured_client_metadata_document_with_public_cimd_servers` (adapted: the document is one the user hosts (clientMetadataUrl); CodeSmith publishes none)
 - P registers dynamically when the server does not accept public clients — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- P redeems the code with the localhost redirect a server sent the browser back to — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_redeems_with_the_localhost_redirect_the_browser_came_back_to`
 - P reuses the client registered by an earlier login — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_completes_authorization_through_the_loopback_callback`
+- P registers dynamically when a custom redirect_uri is configured — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_preserves_a_configured_redirect_url_and_fixed_port` (adapted: redirectUri in the oauth setting)
+- P refreshes a refused token and retries with the new one — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_refreshes_a_refused_token_and_retries_with_the_new_one`
 - P refreshes a token that expires within 30 seconds with the saved discovery before sending it — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_refreshes_a_token_about_to_expire_with_the_saved_endpoint` (adapted: within a minute of expiry)
 - F sends the current token when the refresh fails — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_the_current_token_and_keeps_the_login_when_the_refresh_fails` (a refresh that failed sent no token at all (and a login without a refresh token near expiry none either), so a server that would still take it was reported as needing a login; the saved token is sent)
 - P leaves tokens with time left, without a lifetime, or saved without discovery to the 401 — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_leaves_tokens_with_time_left_or_without_a_lifetime_alone` (adapted: a login is always saved with its token endpoint)
@@ -2497,6 +2489,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P sends the configured URL when the server publishes no metadata — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_falls_back_to_the_origin_when_the_server_publishes_no_metadata`
 - D keeps the configured URL when metadata echoes the dialed query — deliberate: the configured URL is dialed as given, with no query of its own added, so there is no dialed query for metadata to echo
 - D discovers the resource for a login saved without one · follows the 401 to the resource for a login saved without discovery, and saves it — deliberate: a login is always saved with its URL, token endpoint and client, so there is none saved without discovery, a resource or client information
+- P refreshes through configured authorization server metadata — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_uses_and_refreshes_through_configured_authorization_server_metadata` (adapted: the login saves the configured server's token endpoint, which refreshes use)
 - P sends one refresh when two instances refresh the same credential at once — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_one_refresh_when_two_refresh_at_once`
 - P uses the stored tokens instead of spending a refresh token another instance already spent — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_sends_one_refresh_when_two_refresh_at_once`
 - P needs auth without a request when the credential was signed out — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_reports_needs_auth_without_a_credential_or_any_oauth_request`
@@ -2508,6 +2501,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D names only the error code of a token endpoint that answers without an OAuth error — deliberate: a failed token request is reported with its HTTP status and the endpoint's error description or body
 - D signs out a credential without client information — deliberate: a login is always saved with its URL, token endpoint and client, so there is none saved without discovery, a resource or client information
 - P tries the next metadata URL when one answers 502 — `tests/oc_mcp_oauth_backlog3.rs::oc_mcp_oauth_tries_the_next_metadata_url_when_one_answers_502`
+- P reports needs_auth when the server asks for more scope — `tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_reports_needs_auth_when_the_server_asks_for_more_scope`
 
 **`mcp-socket-client.test.ts`**
 

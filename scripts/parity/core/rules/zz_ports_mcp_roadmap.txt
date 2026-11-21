@@ -1,0 +1,15 @@
+# The MCP roadmap groups, closed: OAuth login options, output schemas,
+# session recovery, resource blobs, events over HTTP, the events tool and
+# Code Mode defaults.
+@mcp-oauth.test.ts
+201 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_completes_from_a_pasted_redirect_url_and_keeps_waiting_after_a_wrong_paste :: adapted: a paste must also go to the login's redirect address; CodeSmith's notices
+241 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_reports_a_rejected_token_exchange_on_the_callback_page
+276,446 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_preserves_a_configured_redirect_url_and_fixed_port :: adapted: redirectUri in the oauth setting
+284 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_rejects_an_invalid_redirect_url :: adapted: only http and https redirects are taken
+324,842 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_uses_and_refreshes_through_configured_authorization_server_metadata :: adapted: the login saves the configured server's token endpoint, which refreshes use
+341 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_requests_offline_access_without_forcing_a_consent_prompt
+350 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_accepts_the_iss_of_an_issuer_advertising_server :: adapted: CodeSmith checks the iss against the issuer itself (RFC 9207)
+371 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_uses_a_configured_client_metadata_document_with_public_cimd_servers :: adapted: the document is one the user hosts (clientMetadataUrl); CodeSmith publishes none
+410 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_redeems_with_the_localhost_redirect_the_browser_came_back_to
+571 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_refreshes_a_refused_token_and_retries_with_the_new_one
+1170 :: ported :: tests/oc_mcp_roadmap_oauth.rs::oc_mcp_oauth_reports_needs_auth_when_the_server_asks_for_more_scope

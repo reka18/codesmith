@@ -1032,10 +1032,22 @@ async fn run(cli: Cli) -> Result<()> {
                 return Err(anyhow!("OAuth is turned off for {name} (\"oauth\": false)"));
             }
             use codesmith_core::mcp::oauth;
-            let e = oauth::login(&reqwest::Client::new(), &oauth::store_path(), &name, url, oauth.as_ref(), |u| {
-                eprintln!("Opening the browser to authorize {name}. If it doesn't open, visit:\n{u}\n");
-                oauth::open_browser(u);
-            })
+            let e = oauth::login_with(
+                &reqwest::Client::new(),
+                &oauth::store_path(),
+                &name,
+                url,
+                oauth.as_ref(),
+                |u| {
+                    eprintln!(
+                        "Opening the browser to authorize {name}. If it doesn't open, visit:\n{u}\n\
+                         Waiting for the browser… If it runs on another machine, paste the URL it ends up on here."
+                    );
+                    oauth::open_browser(u);
+                },
+                Some(codesmith_core::providers::oauth::stdin_lines()),
+                |why| eprintln!("{why}"),
+            )
             .await?;
             println!(
                 "Authorized {name}{}",
