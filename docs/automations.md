@@ -9,6 +9,7 @@ tool, or use the CLI:
 codesmith automation add --name standup --cron "0 9 * * 1-5" --tz Europe/Paris \
   --prompt "Summarize yesterday's commits in three bullets"
 codesmith automation add --name tidy --every "1 day" --agent explore --prompt "List stale TODOs"
+codesmith automation add --name poll --every "10 minutes" --expires "in 8 hours" --prompt "Is the deploy done?"
 codesmith automation add --name once --at "in 30 minutes" --session ses_... --prompt "Check the deploy"
 codesmith automation add --name ping --every "1 hour" --session ses_... --in-session --prompt "Any news?"
 codesmith automation add --name tickets --event tracker:ticket.created \
@@ -28,6 +29,26 @@ Each automation has exactly one trigger:
 | `--event SERVER:EVENT` | Once for each event an MCP server pushes. See [MCP events](#mcp-events). |
 
 `--tz` sets an IANA time zone for `--cron` and `--at` (default: local time).
+
+### Expiry
+
+`--expires T` (the tool's `expires`) stops an automation at `T`: an
+instant, a wall-clock time in the trigger's zone, or `"in 8 hours"`, as
+`--at` takes. As in OpenCode:
+
+- A slot at or before the expiry runs; the last one before it marks the
+  automation `done`. Creating one whose first run comes after its expiry
+  is refused.
+- A slot that only comes up a minute or more after the expiry (after
+  downtime, or a retry waiting out its backoff) never runs: the
+  automation is marked `done`, last outcome `expired`. A run picked up
+  after the expiry that had not been handed off yet fails, without its
+  program running again; one already handed off finishes.
+- Resuming one that has expired, or whose next slot comes after its
+  expiry, marks it `done` instead.
+- An event watch ends at its expiry, though never in the middle of a
+  delivery, and one that expired while no CodeSmith ran ends without
+  opening its stream.
 
 ## Actions
 

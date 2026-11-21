@@ -5,6 +5,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Automation expiry:** `codesmith automation add --expires "in 8 hours"`
+  (and the tool's `expires`) stops an automation at a time, as in OpenCode.
+  No slot after it runs, including one that only comes up after downtime,
+  a restart or a backoff; resuming an expired one finishes it; an event
+  watch ends at its expiry. `automation list` shows it.
 - **Automation backoff:** a prompt whose handoff fails is retried five
   minutes later, as in OpenCode, rather than a minute later (a program's
   still waits a minute). A run handed off a minute or more after its slot,

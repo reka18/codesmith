@@ -491,6 +491,9 @@ struct Mode {
     prompt: bool,
     /// Refuse the handoff's writes at random, so failed handoffs back off.
     refuse: bool,
+    /// Let the automation expire part way through: from then on nothing
+    /// may be handed off, and it ends done.
+    expire: bool,
 }
 
 /// Kill the runner (or, with `pair`, one or both of two runners) at
@@ -517,6 +520,11 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
     let backoff = if mode.prompt { 5 * 60_000 } else { 60_000 };
     let mut rng = Lcg(seed);
     let mut backoffs = 0;
+    // The iteration the automation expires at, and the runs admitted by then.
+    let expiry_at = mode
+        .expire
+        .then(|| iterations / 3 + rng.next() % (iterations / 3).max(1));
+    let mut admitted_before: Option<Vec<u64>> = None;
     let end = Instant::now() + Duration::from_secs(300);
     let revive = |w: &World| {
         if w.get(&id).status == "paused" {
@@ -532,8 +540,27 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
             );
         }
     };
-    for _ in 0..iterations {
+    for i in 0..iterations {
         assert!(Instant::now() < end, "the kill loop ran out of time");
+        if expiry_at == Some(i) {
+            admitted_before = Some(admitted_runs(&w, &id));
+            w.sql(
+                "UPDATE automation SET expires = ?2 WHERE id = ?1",
+                rusqlite::params![id, codesmith_core::store::now() - 1],
+            );
+        }
+        if admitted_before.is_some() {
+            // Every slot and every unsettled run comes up late, after it.
+            let late = codesmith_core::store::now() - 2 * 60_000;
+            w.sql(
+                "UPDATE automation SET next_due = ?2 WHERE id = ?1 AND next_due IS NOT NULL",
+                rusqlite::params![id, late],
+            );
+            w.sql(
+                "UPDATE automation_run SET due = ?2 WHERE automation_id = ?1",
+                rusqlite::params![id, late],
+            );
+        }
         revive(&w);
         // Time passes: a backoff from an earlier iteration is over.
         if w.get(&id).retry_at.is_some() {
@@ -543,7 +570,7 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
             );
         }
         refuse(&w, mode.refuse && rng.next().is_multiple_of(3));
-        if au::pending(&w.db, &id).unwrap().is_empty() {
+        if au::pending(&w.db, &id).unwrap().is_empty() && admitted_before.is_none() {
             w.due_now(&id);
         }
         let started = codesmith_core::store::now();
@@ -628,6 +655,35 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
     );
     assert_eq!(mode.refuse, backoffs > 0, "the seed hits a failed handoff");
     check_invariants(&w, &id, mode);
+    if let Some(before) = admitted_before {
+        // Nothing was handed off after the expiry, and it ended there.
+        assert_eq!(admitted_runs(&w, &id), before, "handed off after expiry");
+        w.due_now(&id);
+        w.sql(
+            "UPDATE automation SET next_due = ?2 WHERE id = ?1 AND next_due IS NOT NULL",
+            rusqlite::params![id, codesmith_core::store::now() - 2 * 60_000],
+        );
+        runner.tick().await.unwrap();
+        let a = w.get(&id);
+        assert_eq!(
+            (a.status.as_str(), a.last_outcome.as_deref()),
+            ("done", Some("expired")),
+            "{a:?}"
+        );
+        assert_eq!(a.runs as usize, w.phases(&id).len());
+    }
+}
+
+/// The runs of `id` whose prompt was handed off.
+fn admitted_runs(w: &World, id: &str) -> Vec<u64> {
+    w.db.with_conn(|c| {
+        let mut st = c.prepare(
+            "SELECT run FROM automation_run WHERE automation_id = ?1 AND message_id IS NOT NULL ORDER BY run",
+        )?;
+        let r = st.query_map([id], |r| Ok(r.get::<_, i64>(0)? as u64))?;
+        Ok(r.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .unwrap()
 }
 
 fn check_invariants(w: &World, id: &str, mode: Mode) {
@@ -693,6 +749,7 @@ async fn random_kills_with_failed_prompt_handoffs_back_off_five_minutes_and_stay
     let mode = Mode {
         prompt: true,
         refuse: true,
+        expire: false,
     };
     random_kills(0x5eed_0003, false, mode).await;
 }
@@ -702,8 +759,29 @@ async fn random_kills_of_two_runners_with_failed_program_handoffs_back_off_and_s
     let mode = Mode {
         prompt: false,
         refuse: true,
+        expire: false,
     };
     random_kills(0x5eed_0004, true, mode).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn random_kills_with_backoffs_and_an_expiry_never_hand_off_after_it() {
+    let mode = Mode {
+        prompt: true,
+        refuse: true,
+        expire: true,
+    };
+    random_kills(0x5eed_0005, false, mode).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn random_kills_of_two_runners_with_an_expiring_program_never_hand_off_after_it() {
+    let mode = Mode {
+        prompt: false,
+        refuse: true,
+        expire: true,
+    };
+    random_kills(0x5eed_0006, true, mode).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

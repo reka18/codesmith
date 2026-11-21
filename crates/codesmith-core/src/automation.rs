@@ -158,6 +158,8 @@ pub struct Automation {
     /// A run whose prompt could not be handed off is retried no earlier
     /// than this (ms).
     pub retry_at: Option<i64>,
+    /// When it stops (ms): no slot after it is run, and a watch ends then.
+    pub expires: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -398,6 +400,8 @@ fn ensure(c: &Connection) -> Result<()> {
         &[
             ("failures", "INTEGER NOT NULL DEFAULT 0"),
             ("retry_at", "INTEGER"),
+            // Added with expiry.
+            ("expires", "INTEGER"),
         ],
     )?;
     add_columns(
@@ -436,7 +440,7 @@ fn add_columns(c: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<
     Ok(())
 }
 
-const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules, failures, retry_at";
+const COLS: &str = "id, name, directory, session_id, trigger, action, status, next_due, runs, state, last_outcome, last_run, last_error, created, event_position, session_rules, failures, retry_at, expires";
 
 fn row(
     r: &rusqlite::Row,
@@ -471,6 +475,7 @@ fn row(
             session_rules: None,
             failures: r.get::<_, i64>(16)? as u32,
             retry_at: r.get(17)?,
+            expires: r.get(18)?,
         },
         r.get(4)?,
         r.get(5)?,
@@ -566,9 +571,47 @@ pub struct New {
     pub action: Action,
 }
 
+/// What a new automation may have besides [`New`].
+#[derive(Clone, Debug, Default)]
+pub struct Opts {
+    /// When it stops: an instant, a wall-clock time in the trigger's zone,
+    /// or "in 8 hours" (as `at` takes).
+    pub expires: Option<String>,
+}
+
 pub fn create(db: &Store, n: New) -> Result<Automation> {
+    create_with(db, n, &Opts::default())
+}
+
+/// Whether `a` has expired by `now` (OpenCode's `expired`).
+fn expired(a: &Automation, now: i64) -> bool {
+    a.expires.is_some_and(|e| now > e)
+}
+
+/// Whether a slot at `next` comes after `a` expires, so it never runs
+/// (OpenCode's `finished`).
+fn past_expiry(a: &Automation, next: i64) -> bool {
+    a.expires.is_some_and(|e| next > e)
+}
+
+pub fn create_with(db: &Store, n: New, o: &Opts) -> Result<Automation> {
     let now = crate::store::now();
     let due = due(&n.trigger, now)?;
+    let expires = match &o.expires {
+        Some(e) => {
+            let tz = match &n.trigger {
+                Trigger::At { tz, .. } | Trigger::Every { tz, .. } | Trigger::Cron { tz, .. } => {
+                    tz.as_deref()
+                }
+                Trigger::Event { .. } => None,
+            };
+            Some(parse_at(e, zone(tz)?, now).map_err(|err| anyhow!("expires: {err:#}"))?)
+        }
+        None => None,
+    };
+    if expires.is_some_and(|e| due.unwrap_or(now) > e) {
+        return Err(anyhow!("The automation expires before it first runs"));
+    }
     let event = matches!(n.trigger, Trigger::Event { .. }).then(EventPosition::default);
     if let Action::Code { code, .. } = &n.action {
         if code.trim().is_empty() {
@@ -594,6 +637,7 @@ pub fn create(db: &Store, n: New) -> Result<Automation> {
         session_rules: None,
         failures: 0,
         retry_at: None,
+        expires,
     };
     let mut a = a;
     if let Some(c) = creator(&a) {
@@ -608,8 +652,8 @@ pub fn create(db: &Store, n: New) -> Result<Automation> {
     db.with_conn(|c| {
         ensure(c)?;
         c.execute(
-            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11, 0, NULL)"),
-            params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position, rules],
+            &format!("INSERT INTO automation ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 'null', NULL, NULL, NULL, ?9, ?10, ?11, 0, NULL, ?12)"),
+            params![a.id, a.name, a.directory, a.session_id, serde_json::to_string(&a.trigger)?, serde_json::to_string(&a.action)?, a.status, a.next_due, a.created, position, rules, a.expires],
         )?;
         Ok(())
     })?;
@@ -646,23 +690,39 @@ pub fn get(db: &Store, id: &str) -> Result<Option<Automation>> {
 /// Pause, resume (recomputing the due time) or remove. A resumed event
 /// watch picks up from its saved cursor, so events it missed still run.
 pub fn set_status(db: &Store, id: &str, status: &str) -> Result<Automation> {
+    set_status_at(db, id, status, crate::store::now())
+}
+
+/// [`set_status`] at `now`. Resuming one that has expired, or whose next
+/// slot comes after it expires, finishes it instead (`done`, last outcome
+/// `expired`), as OpenCode's resume does.
+pub fn set_status_at(db: &Store, id: &str, status: &str, now: i64) -> Result<Automation> {
     let a = get(db, id)?.ok_or_else(|| anyhow!("no automation {id}"))?;
     let next = match (status, &a.trigger) {
         (_, Trigger::Event { .. }) => None,
         ("active", Trigger::At { .. }) => {
             Some(a.next_due.ok_or_else(|| anyhow!("{id} already ran"))?)
         }
-        ("active", t @ Trigger::Every { .. }) => next_slot(t, a.created, crate::store::now())?,
-        ("active", t) => Some(first_due(t, crate::store::now())?),
+        ("active", t @ Trigger::Every { .. }) => next_slot(t, a.created, now)?,
+        ("active", t) => Some(first_due(t, now)?),
         _ => a.next_due,
+    };
+    let over = status == "active"
+        && (expired(&a, now)
+            || (!matches!(a.trigger, Trigger::Event { .. })
+                && next.is_some_and(|n| past_expiry(&a, n))));
+    let (status, next, outcome) = if over {
+        ("done", None, Some("expired"))
+    } else {
+        (status, next, None)
     };
     db.with_conn(|c| {
         // Resuming starts the strikes and retries over, as in OpenCode.
         Ok(c.execute(
-            "UPDATE automation SET status = ?2, next_due = ?3,
+            "UPDATE automation SET status = ?2, next_due = ?3, last_outcome = COALESCE(?4, last_outcome),
              failures = CASE WHEN ?2 = 'active' THEN 0 ELSE failures END,
              retry_at = CASE WHEN ?2 = 'active' THEN NULL ELSE retry_at END WHERE id = ?1",
-            params![id, status, next],
+            params![id, status, next, outcome],
         )?)
     })?;
     get(db, id)?.ok_or_else(|| anyhow!("no automation {id}"))
@@ -692,6 +752,18 @@ pub fn set_position(db: &Store, id: &str, p: &EventPosition) -> Result<()> {
         Ok(c.execute(
             "UPDATE automation SET event_position = ?2 WHERE id = ?1",
             params![id, p],
+        )?)
+    })?;
+    Ok(())
+}
+
+/// Finish `id` because it expired (unless it was paused meanwhile).
+fn expire(db: &Store, id: &str) -> Result<()> {
+    db.with_conn(|c| {
+        Ok(c.execute(
+            "UPDATE automation SET status = 'done', next_due = NULL, last_outcome = 'expired', retry_at = NULL
+             WHERE id = ?1 AND status != 'paused'",
+            [id],
         )?)
     })?;
     Ok(())
@@ -773,7 +845,20 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
         let mut out = Vec::new();
         for mut a in due {
             let was_due = a.next_due.unwrap_or(now);
-            let next = next_slot(&a.trigger, a.created, now).unwrap_or(None);
+            // A slot that only comes up late, after the automation
+            // expired (downtime), never runs: it is finished instead.
+            if expired(&a, now) && is_late(now, was_due) {
+                tx.execute(
+                    "UPDATE automation SET status = 'done', next_due = NULL, last_outcome = 'expired', retry_at = NULL
+                     WHERE id = ?1 AND runs = ?2 AND status = 'active'",
+                    params![a.id, a.runs as i64],
+                )?;
+                continue;
+            }
+            // The slot after one past the expiry is not run: this is the last.
+            let next = next_slot(&a.trigger, a.created, now)
+                .unwrap_or(None)
+                .filter(|n| !past_expiry(&a, *n));
             let status = if next.is_none() { "done" } else { "active" };
             if !claim_one(&tx, &a, next, status, now)? {
                 continue;
@@ -1729,6 +1814,10 @@ impl Runner {
         if a.status != "active" {
             return Ok(());
         }
+        // An expired watch ends without opening its stream.
+        if a.expires.is_some_and(|e| crate::store::now() >= e) {
+            return expire(db, id).map_err(fatal);
+        }
         let pos = a.event.clone().unwrap_or_default();
         if pos.opened && pos.cursor.is_none() {
             return Err(Watch::Fatal(NO_CURSOR.into()));
@@ -1770,8 +1859,23 @@ impl Runner {
             };
             set_position(db, id, &opened).map_err(fatal)?;
         }
+        // The watch ends when it expires, though not in the middle of a
+        // delivery: a run's handoff finishes, and the next message is not run.
+        let until_expiry = || async move {
+            match a.expires {
+                Some(e) => {
+                    let left = e.saturating_sub(crate::store::now()).max(0) as u64;
+                    tokio::time::sleep(Duration::from_millis(left)).await
+                }
+                None => std::future::pending().await,
+            }
+        };
         loop {
-            let msg = match tokio::time::timeout(EVENT_IDLE, stream.next()).await {
+            let next = tokio::select! {
+                n = tokio::time::timeout(EVENT_IDLE, stream.next()) => n,
+                _ = until_expiry() => return expire(db, id).map_err(fatal),
+            };
+            let msg = match next {
                 Err(_) => {
                     return Err(Watch::Broken(format!(
                         "MCP server {server} sent nothing on the event stream for 60 seconds"
@@ -1806,6 +1910,9 @@ impl Runner {
             };
             if current.status != "active" || !lease(db, &self.holder, LEASE_MS).map_err(fatal)? {
                 return Ok(());
+            }
+            if current.expires.is_some_and(|e| crate::store::now() >= e) {
+                return expire(db, id).map_err(fatal);
             }
             check_watch(&loaded, &server).map_err(Watch::Fatal)?;
             let mut p = current.event.clone().unwrap_or_default();
@@ -2080,9 +2187,22 @@ impl Runner {
                 return Err(Invalid(format!("loading config in {}: {e:#}", a.directory)).into())
             }
         };
+        let now = crate::store::now();
+        // A run picked up again after the automation expired (a retry
+        // after its backoff, a restart) is not handed off, as OpenCode
+        // never runs a slot that only comes up after expiry. An admitted
+        // one was handed off already, and finishes.
+        if resumed
+            && p.phase != ADMITTED
+            && expired(a, now)
+            && p.due.is_none_or(|d| is_late(now, d))
+        {
+            fail_run(db, &a.id, p.run, EXPIRED, None)?;
+            return expire(db, &a.id);
+        }
         // A run handed off a minute or more after its slot (a retry after
         // its backoff, a restart) is late, as OpenCode labels it.
-        if p.phase != ADMITTED && p.due.is_some_and(|d| is_late(crate::store::now(), d)) {
+        if p.phase != ADMITTED && p.due.is_some_and(|d| is_late(now, d)) {
             p.label = "late".into();
         }
         if p.phase == CLAIMED {
@@ -2578,6 +2698,7 @@ pub fn run_session_id(id: &str, run: u64) -> String {
 }
 
 const HALTED: &str = "The automation was paused or removed before its prompt was delivered";
+const EXPIRED: &str = "The automation expired before its prompt was delivered";
 const INTERRUPTED_CHECK: &str = "Interrupted before its check finished; the check is not run again, since its tool calls may already have had effects";
 const INTERRUPTED_TWICE: &str =
     "Interrupted again after it was resumed once; it is not resumed again";
@@ -2832,6 +2953,7 @@ pub fn tool_spec() -> (String, Value) {
             "prompt": {"type": "string", "description": "What to do on each run (create)"},
             "target": {"type": "string", "enum": ["child", "session"], "description": "Where each run goes (create): \"child\" (default) starts a new child session of this session with this session's agent and model; \"session\" continues this session itself"},
             "agent": {"type": "string", "description": "Run each time in a new session with this agent instead: this session's own agent or a read-only subagent (create; not with target \"session\")"},
+            "expires": {"type": "string", "description": "When it stops (create): an instant, a wall-clock time in the trigger's zone, or \"in 8 hours\"; no slot after it runs, and an event watch ends then"},
             "id": {"type": "string", "description": "The automation (pause, resume, remove)"}
         },
         "required": ["action"]
@@ -2859,10 +2981,13 @@ pub fn table(list: &[Automation]) -> String {
                 ),
                 Action::Code { .. } => "Code Mode program".into(),
             };
-            let next = match a.trigger {
-                Trigger::Event { .. } => "on each event".into(),
+            let mut next = match a.trigger {
+                Trigger::Event { .. } => "on each event".to_string(),
                 _ => format!("next {}", when(a.next_due)),
             };
+            if a.expires.is_some() {
+                next.push_str(&format!(", until {}", when(a.expires)));
+            }
             // Why the scheduler paused it, if it did.
             let why = a
                 .last_error

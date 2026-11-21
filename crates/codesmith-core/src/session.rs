@@ -3618,7 +3618,11 @@ impl Session {
                 };
                 let name = s("name").unwrap_or_else(|| prompt.chars().take(40).collect());
                 let action = au::Action::Prompt { prompt, to };
-                let title = au::create_title(&name, &trigger, &action);
+                let expires = s("expires");
+                let mut title = au::create_title(&name, &trigger, &action);
+                if let Some(e) = &expires {
+                    title.push_str(&format!("\nIt stops at {}.", au::quote(e, 200)));
+                }
                 explicit(au::TOOL, "create", title).map_err(|e| anyhow!(e))?;
                 if let au::Trigger::Event {
                     server,
@@ -3638,7 +3642,7 @@ impl Session {
                     );
                     explicit(au::WATCH_EVENT, server, title).map_err(|e| anyhow!(e))?;
                 }
-                let a = au::create(
+                let a = au::create_with(
                     db,
                     au::New {
                         name,
@@ -3647,6 +3651,7 @@ impl Session {
                         trigger,
                         action,
                     },
+                    &au::Opts { expires },
                 )?;
                 let first = match a.next_due {
                     Some(_) => format!("first run {}", au::when(a.next_due)),

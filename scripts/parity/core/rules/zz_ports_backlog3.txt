@@ -123,9 +123,6 @@
 576 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_validates_permission_push_capability_and_arguments
 618 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_prompts_stay_distinct_and_quote_untrusted_fields
 642 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_rejects_an_oversized_rendered_prompt_before_creating_a_child
-662:4 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake :: the malformed, truncated, terminated and no-replay rows; adapted: paused with the reason
-662:1 :: design :: differs :: the permission-revoked row: a watch reads its project's rules when it connects, so a rule denying watch_mcp_event added mid-stream stops it at its next connection, not its next event (pausing or removing the automation stops it at once)
-662:1 :: feature :: Automation Expiry :: an expiry time after which an automation stops (the expired row)
 @automation.test.ts
 328 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_runs_an_at_automation_once :: adapted: claimed at chosen times; a new automation's default target is a child of its session (tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it)
 374 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_parses_at_times_with_offsets_or_in_the_automations_zone
@@ -134,7 +131,6 @@
 488 :: ported :: tests/automation.rs::runs_start_a_child_of_the_creating_session_unless_told_to_continue_it
 548 :: design :: deliberate :: an automation created in a session runs only as that session's agent or a read-only subagent (automation::check_target), so a restricted agent cannot schedule work for a more capable one
 602 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_runs_without_a_session_in_the_given_directory :: adapted: a prompt always names its target
-652,684 :: feature :: Automation Expiry :: an expiry time after which an automation stops
 735 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase :: an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation
 755 :: design :: storage-model :: there is no inbox of unconsumed prompts: a run's prompt is a turn that runs at once, and a run into a busy session is deferred (tests/automation.rs::a_busy_session_defers_runs_and_a_live_session_catches_up)
 801 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_keeps_automations_when_the_creator_goes_and_pauses_when_the_target_does :: an automation whose target session was deleted failed at every slot and stayed active; it is paused with the reason now

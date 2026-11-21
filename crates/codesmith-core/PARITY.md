@@ -45,14 +45,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 126 | 6 | 0 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
-| Automations | 107 | 46 | 6 | 8 | 47 | 0 | 0 |
+| Automations | 107 | 49 | 6 | 5 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 419 | 0 | 16 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2897** | **80** | **30** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2900** | **80** | **27** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -132,13 +132,12 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (30 cases in 6 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (27 cases in 5 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
 | [Provider Plugins](#provider-plugins) | 16 | GitLab Duo |
 | [Automation Tool Extraction](#automation-tool-extraction) | 4 | the tools a program calls read from it at creation, asked about once, and checked at run time |
-| [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
@@ -172,14 +171,6 @@ Missing features, by how many OpenCode test cases each would unlock (30 cases in
 - `automation.test.ts`: asks for resource-scoped ask rules at creation, and still needs a person for them at run time
 - `automation.test.ts`: asks for execute when its tools are already allowed
 - `automation.test.ts`: rejects dynamic tool access, unknown tools, shell, recursive automation tools and denied permissions
-
-### Automation Expiry
-
-3 cases.
-
-- `automation-event.test.ts`: stops the stream without a wake: ${stop}
-- `automation.test.ts`: stops at expires
-- `automation.test.ts`: never runs a slot that only comes up after expires, after downtime or on resume
 
 ### Browser Attachment
 
@@ -2610,7 +2601,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (99 of 107)</summary>
+<details><summary>Automations (102 of 107)</summary>
 
 
 **`automation-event.test.ts`**
@@ -2619,7 +2610,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D a timer added to a running watch fires without reopening its stream — deliberate: an automation has one trigger, so a watch takes no timer
 - P continues on the same stream after a nonterminal producer error — `tests/automation.rs::event_triggered_runs` (adapted: the default stream sends a nonterminal error after its tickets, and the watch stays on it)
 - D retains the location only while its quiet subscription is open — client-server: Location retention and prompt-preparation hooks
-- P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_continue` (adapted: CodeSmith automations have no expiry; the run continues)
+- P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_continue` (adapted: the run continues; an expiry ends a watch only between deliveries, never in the middle of one)
 - P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_done`
 - P settles a durable handoff before expiry: ${outcome} — `tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_reject` (adapted: the handoff's write is refused (OpenCode's wake fails before commit))
 - P a broken stream opens on the replacement connection, replaying from the last committed event — `tests/oc_automation_stream.rs::oc_automation_event_a_broken_stream_opens_on_the_replacement_connection_replaying_from_the_last_committed_event` (adapted: a prompt automation; every reconnect connects the server afresh)
@@ -2635,6 +2626,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P rejects an oversized rendered event prompt before creating a child — `tests/oc_automation_backlog3.rs::oc_automation_event_rejects_an_oversized_rendered_prompt_before_creating_a_child`
 - P stops the stream without a wake: ${stop} ×4 — `tests/oc_automation_backlog3.rs::oc_automation_event_stops_the_stream_without_a_wake` (the malformed, truncated, terminated and no-replay rows; adapted: paused with the reason)
 - D stops the stream without a wake: ${stop} — differs: the permission-revoked row: a watch reads its project's rules when it connects, so a rule denying watch_mcp_event added mid-stream stops it at its next connection, not its next event (pausing or removing the automation stops it at once)
+- P stops the stream without a wake: ${stop} — `tests/oc_automation_roadmap.rs::oc_automation_event_stops_the_stream_without_a_wake_when_it_expires` (the expired row; adapted: the expiry is moved to now once the stream is open)
 
 **`automation.test.ts`**
 
@@ -2647,6 +2639,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P adopts the child a crashed run already started — `tests/automation_handoffs.rs::restart_after_checked_admits_the_saved_result_once` (adapted: the stopped run's recorded child or session is adopted on resume)
 - D allows any agent that can run as a subagent, and rejects hidden and primary-only agents — deliberate: an automation created in a session runs only as that session's agent or a read-only subagent (automation::check_target), so a restricted agent cannot schedule work for a more capable one
 - P runs without a Session in the given directory, and needs a target for a prompt — `tests/oc_automation_backlog3.rs::oc_automation_runs_without_a_session_in_the_given_directory` (adapted: a prompt always names its target)
+- P stops at expires — `tests/oc_automation_roadmap.rs::oc_automation_stops_at_expires` (adapted: claimed at chosen times)
+- P never runs a slot that only comes up after expires, after downtime or on resume — `tests/oc_automation_roadmap.rs::oc_automation_never_runs_a_slot_that_only_comes_up_after_expires` (adapted: claimed and resumed at chosen times)
 - P drops a run's result when another process recorded a run meanwhile — `src/automation.rs::an_admission_is_refused_once_paused_or_overtaken` (adapted: the admission's compare-and-set on the run count)
 - F runs once after downtime, marked late, and keeps the phase — `tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase` (an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation)
 - D skips a run while the previous prompt is unconsumed — storage-model: there is no inbox of unconsumed prompts: a run's prompt is a turn that runs at once, and a run into a busy session is deferred (tests/automation.rs::a_busy_session_defers_runs_and_a_live_session_catches_up)

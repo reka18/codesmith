@@ -331,6 +331,10 @@ enum AutomationCmd {
         /// Agent for new sessions (default: the --session's agent, else build).
         #[arg(long)]
         agent: Option<String>,
+        /// Stop at this time ("in 8 hours", "2026-10-27T18:00"): no slot
+        /// after it runs, and an event watch ends then.
+        #[arg(long)]
+        expires: Option<String>,
     },
     /// Pause an automation; it keeps its schedule but does not run.
     Pause {
@@ -412,6 +416,7 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
             session,
             in_session,
             agent,
+            expires,
         } => {
             let trigger = match (every, cron, at, event) {
                 (Some(every), ..) => au::Trigger::Every { every, tz },
@@ -484,7 +489,7 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
                 },
                 _ => return Err(anyhow!("give --prompt or --code-file")),
             };
-            let a = au::create(
+            let a = au::create_with(
                 &db,
                 au::New {
                     name,
@@ -493,6 +498,7 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
                     trigger,
                     action,
                 },
+                &au::Opts { expires },
             )?;
             match a.next_due {
                 Some(_) => println!(
@@ -515,6 +521,7 @@ async fn automation_cmd(cwd: &std::path::Path, what: AutomationCmd) -> Result<()
         AutomationCmd::Resume { id } => {
             let a = au::set_status(&db, &id, "active")?;
             match a.trigger {
+                _ if a.status == "done" => println!("{id} has expired, so it is done"),
                 au::Trigger::Event { .. } => {
                     println!("{id} is active; it resumes from its saved event cursor")
                 }

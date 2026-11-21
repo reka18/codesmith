@@ -1,7 +1,7 @@
 # Ports of the Automation Durable Handoffs group (and the crash-adoption
 # tests it made portable): runs saved by phase and resumed after a restart.
 @automation-event.test.ts
-314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_continue :: adapted: CodeSmith automations have no expiry; the run continues
+314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_continue :: adapted: the run continues; an expiry ends a watch only between deliveries, never in the middle of one
 314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_done
 314:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_settles_a_durable_handoff_reject :: adapted: the handoff's write is refused (OpenCode's wake fails before commit)
 469:1 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_event_checkpoints_an_accepted_handoff_across_a_local_pause

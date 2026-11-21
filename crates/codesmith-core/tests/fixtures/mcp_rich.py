@@ -11,7 +11,8 @@ so the client must skip what already ran.
 
 A plan is a JSON list, one entry per connection, in order: `{"events":
 [[id, cursor, title], ...], "exit": true}` sends those events and then
-exits (a broken stream); without `exit` the stream heartbeats. `"notes":
+exits (a broken stream); without `exit` the stream heartbeats, unless
+`"quiet": true` (then it sends nothing more). `"notes":
 [[method, params], ...]` are sent after the events, each with the
 subscription's `_meta` (a malformed event, a cursorless `active`, a
 `terminated`). Each
@@ -94,6 +95,8 @@ def planned(mid, params, meta, cursor):
     if step.get("exit"):
         time.sleep(0.2)
         os._exit(0)
+    if step.get("quiet"):
+        return
 
     def beat():
         while mid not in cancelled:
