@@ -484,10 +484,19 @@ impl Lcg {
     }
 }
 
+/// What a kill loop runs besides the kills.
+#[derive(Clone, Copy, Default)]
+struct Mode {
+    /// A prompt automation rather than a Code Mode program.
+    prompt: bool,
+    /// Refuse the handoff's writes at random, so failed handoffs back off.
+    refuse: bool,
+}
+
 /// Kill the runner (or, with `pair`, one or both of two runners) at
 /// random points of a run over many iterations, finish what is left, and
 /// check what must hold whatever the kills hit.
-async fn random_kills(seed: u64, pair: bool) {
+async fn random_kills(seed: u64, pair: bool, mode: Mode) {
     let Some(w) = World::new(json!({})).await else {
         return;
     };
@@ -495,24 +504,49 @@ async fn random_kills(seed: u64, pair: bool) {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
-    let id = w.code(
-        None,
-        "await tools.counter.post({ text: 'run ' + input.runs }); return { state: (input.state || 0) + 1, send: { prompt: 'run ' + input.runs, to: { subagent: 'helper' } } }",
-        None,
-    );
+    let id = if mode.prompt {
+        w.prompt(None, "check the build", helper())
+    } else {
+        w.code(
+            None,
+            "await tools.counter.post({ text: 'run ' + input.runs }); return { state: (input.state || 0) + 1, send: { prompt: 'run ' + input.runs, to: { subagent: 'helper' } } }",
+            None,
+        )
+    };
+    // A failed handoff waits five minutes for a prompt, one for a program.
+    let backoff = if mode.prompt { 5 * 60_000 } else { 60_000 };
     let mut rng = Lcg(seed);
+    let mut backoffs = 0;
     let end = Instant::now() + Duration::from_secs(300);
     let revive = |w: &World| {
         if w.get(&id).status == "paused" {
             au::set_status(&w.db, &id, "active").unwrap();
         }
     };
+    let refuse = |w: &World, on: bool| {
+        w.sql("DROP TRIGGER IF EXISTS refuse_runs", []);
+        if on {
+            w.sql(
+                &format!("CREATE TRIGGER refuse_runs BEFORE INSERT ON record WHEN NEW.session_id LIKE 'ses_{id}_%' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END"),
+                [],
+            );
+        }
+    };
     for _ in 0..iterations {
         assert!(Instant::now() < end, "the kill loop ran out of time");
         revive(&w);
+        // Time passes: a backoff from an earlier iteration is over.
+        if w.get(&id).retry_at.is_some() {
+            w.sql(
+                "UPDATE automation SET retry_at = ?2 WHERE id = ?1",
+                rusqlite::params![id, codesmith_core::store::now() - 1],
+            );
+        }
+        refuse(&w, mode.refuse && rng.next().is_multiple_of(3));
         if au::pending(&w.db, &id).unwrap().is_empty() {
             w.due_now(&id);
         }
+        let started = codesmith_core::store::now();
         let first = spawn_tick(w.runner());
         let second = pair.then(|| spawn_tick(w.runner()));
         // Mostly within a run's first moments, where its phases change.
@@ -541,6 +575,33 @@ async fn random_kills(seed: u64, pair: bool) {
             }
             (None, _) => first.kill(&w.db).await,
         }
+        let ended = codesmith_core::store::now();
+        refuse(&w, false);
+        if let Some(retry) = w.get(&id).retry_at.filter(|r| *r > ended) {
+            // A handoff failed in this iteration: it backs off for its
+            // whole delay, and nothing hands it off before then.
+            backoffs += 1;
+            assert!(
+                retry >= started + backoff && retry <= ended + backoff,
+                "backed off {} ms, not {backoff}",
+                retry - started
+            );
+            let before: Vec<i64> = au::pending(&w.db, &id)
+                .unwrap()
+                .iter()
+                .map(|p| w.tagged(&au::message_id(&id, p.run)))
+                .collect();
+            let phases = w.phases(&id);
+            w.stale();
+            spawn_tick(w.runner()).join(&w.db).await;
+            assert_eq!(w.phases(&id), phases, "nothing ran during the backoff");
+            let after: Vec<i64> = au::pending(&w.db, &id)
+                .unwrap()
+                .iter()
+                .map(|p| w.tagged(&au::message_id(&id, p.run)))
+                .collect();
+            assert_eq!(before, after);
+        }
         w.stale();
     }
     // Let one runner finish whatever is left.
@@ -548,6 +609,10 @@ async fn random_kills(seed: u64, pair: bool) {
     loop {
         assert!(Instant::now() < end, "draining ran out of time");
         revive(&w);
+        w.sql(
+            "UPDATE automation SET retry_at = NULL WHERE id = ?1",
+            rusqlite::params![id],
+        );
         w.stale();
         runner.tick().await.unwrap();
         if au::pending(&w.db, &id).unwrap().is_empty() {
@@ -556,15 +621,16 @@ async fn random_kills(seed: u64, pair: bool) {
     }
     let phases = w.phases(&id);
     eprintln!(
-        "{} runs: {} settled, {} failed",
+        "{} runs: {} settled, {} failed; {backoffs} backoffs",
         phases.len(),
         phases.iter().filter(|(_, p)| p == au::SETTLED).count(),
         phases.iter().filter(|(_, p)| p == au::FAILED).count()
     );
-    check_invariants(&w, &id);
+    assert_eq!(mode.refuse, backoffs > 0, "the seed hits a failed handoff");
+    check_invariants(&w, &id, mode);
 }
 
-fn check_invariants(w: &World, id: &str) {
+fn check_invariants(w: &World, id: &str, mode: Mode) {
     let a = w.get(id);
     let rows: Vec<(u64, String, Option<String>)> = w
         .db
@@ -599,21 +665,45 @@ fn check_invariants(w: &World, id: &str) {
         assert!(n <= 1, "run {run} answered {n} times");
         if phase == au::SETTLED {
             assert_eq!(n, 1, "settled run {run} has its answer");
-            assert!(posts.contains(&format!("run {run}")), "run {run}");
+            if !mode.prompt {
+                assert!(posts.contains(&format!("run {run}")), "run {run}");
+            }
         }
     }
-    // State is committed exactly with each admission.
-    assert_eq!(a.state, json!(admitted), "{rows:?}");
+    if mode.prompt {
+        assert!(posts.is_empty());
+    } else {
+        // State is committed exactly with each admission.
+        assert_eq!(a.state, json!(admitted), "{rows:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn random_kills_keep_runs_messages_and_state_consistent() {
-    random_kills(0x5eed_0001, false).await;
+    random_kills(0x5eed_0001, false, Mode::default()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn random_kills_of_two_runners_keep_runs_messages_and_state_consistent() {
-    random_kills(0x5eed_0002, true).await;
+    random_kills(0x5eed_0002, true, Mode::default()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn random_kills_with_failed_prompt_handoffs_back_off_five_minutes_and_stay_consistent() {
+    let mode = Mode {
+        prompt: true,
+        refuse: true,
+    };
+    random_kills(0x5eed_0003, false, mode).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn random_kills_of_two_runners_with_failed_program_handoffs_back_off_and_stay_consistent() {
+    let mode = Mode {
+        prompt: false,
+        refuse: true,
+    };
+    random_kills(0x5eed_0004, true, mode).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

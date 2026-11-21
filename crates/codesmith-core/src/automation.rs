@@ -781,7 +781,11 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
             a.runs += 1;
             a.next_due = next;
             a.status = status.into();
-            let label = if now - was_due > 60_000 { "late" } else { "fired" };
+            let label = if is_late(now, was_due) {
+                "late"
+            } else {
+                "fired"
+            };
             let prompt = match &a.action {
                 Action::Prompt { prompt, .. } => Some(prompt.as_str()),
                 Action::Code { .. } => None,
@@ -1091,9 +1095,9 @@ fn commit_run(
     }
     let n = match (to, detail) {
         (Some((session, message)), _) => c.execute(
-            "UPDATE automation_run SET phase = 'admitted', target_session = ?3, message_id = ?4, attempts = 1, updated = ?5
-             WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
-            params![id, run as i64, session, message, now],
+            "UPDATE automation_run SET phase = 'admitted', target_session = ?3, message_id = ?4, attempts = 1, updated = ?5,
+             outcome = ?6 WHERE automation_id = ?1 AND run = ?2 AND phase IN ('claimed', 'checked')",
+            params![id, run as i64, session, message, now, v.label],
         )?,
         (None, detail) => c.execute(
             "UPDATE automation_run SET phase = 'settled', outcome = ?3, detail = ?4, at = ?5, updated = ?5
@@ -1198,9 +1202,10 @@ fn strike(db: &Store, id: &str, run: u64, reason: &str, invalid: bool) -> Result
 }
 
 /// A handoff of run `run` failed (the database, a lost connection): its
-/// check's result is kept and the handoff retried in a minute; the third
+/// check's result is kept and the handoff retried `retry` ms later (a
+/// minute for a program's, five for a prompt's, as in OpenCode); the third
 /// failure in a row fails the run and pauses the automation.
-fn handoff_failed(db: &Store, id: &str, run: u64, reason: &str) -> Result<()> {
+fn handoff_failed(db: &Store, id: &str, run: u64, reason: &str, retry: i64) -> Result<()> {
     let now = crate::store::now();
     let attempts: i64 = db.with_conn(|c| {
         c.execute(
@@ -1230,7 +1235,7 @@ fn handoff_failed(db: &Store, id: &str, run: u64, reason: &str) -> Result<()> {
     db.with_conn(|c| {
         c.execute(
             "UPDATE automation SET last_outcome = 'failed', last_error = ?2, retry_at = ?3 WHERE id = ?1",
-            params![id, reason, now + HANDOFF_RETRY_MS],
+            params![id, reason, now + retry],
         )?;
         Ok(())
     })
@@ -1243,8 +1248,20 @@ const STALE_MS: i64 = crate::store::TURN_LEASE_MS;
 const MAX_CODE_FAILURES: i64 = 3;
 /// Failed handoffs of one run that fail it and pause the automation.
 const MAX_HANDOFF_FAILURES: i64 = 3;
-/// How long a failed handoff waits before it is retried.
+/// How long a program's failed handoff waits before it is retried
+/// (OpenCode's `CODE_FAILED_RETRY`).
 const HANDOFF_RETRY_MS: i64 = 60_000;
+/// How long a prompt whose handoff failed waits before it is retried
+/// (OpenCode's `FAILED_RETRY`): not on every tick.
+const PROMPT_RETRY_MS: i64 = 5 * 60_000;
+/// A run that starts this long after its slot is `late`.
+const LATE_MS: i64 = 60_000;
+
+/// Whether a run at `now` of a slot due at `due` is late (OpenCode's
+/// `now - dueAt >= LATE_AFTER`).
+fn is_late(now: i64, due: i64) -> bool {
+    now.saturating_sub(due) >= LATE_MS
+}
 /// The most a run's detail, an error or a pause reason keeps, in UTF-8 bytes.
 pub const OUTPUT_BUDGET: usize = 32 * 1024;
 
@@ -2022,7 +2039,11 @@ impl Runner {
         if watch {
             return fatal(&db, &message);
         }
-        let _ = handoff_failed(&db, &a.id, run, &message);
+        let retry = match a.action {
+            Action::Prompt { .. } => PROMPT_RETRY_MS,
+            Action::Code { .. } => HANDOFF_RETRY_MS,
+        };
+        let _ = handoff_failed(&db, &a.id, run, &message, retry);
         Err(RunError {
             message,
             fatal: false,
@@ -2059,6 +2080,11 @@ impl Runner {
                 return Err(Invalid(format!("loading config in {}: {e:#}", a.directory)).into())
             }
         };
+        // A run handed off a minute or more after its slot (a retry after
+        // its backoff, a restart) is late, as OpenCode labels it.
+        if p.phase != ADMITTED && p.due.is_some_and(|d| is_late(crate::store::now(), d)) {
+            p.label = "late".into();
+        }
         if p.phase == CLAIMED {
             if let Action::Code { code, args } = &a.action {
                 // Its tool calls may have had effects: never run it twice.
@@ -3534,7 +3560,7 @@ mod tests {
 
         let b = claimed(&db);
         for n in 1..=3 {
-            handoff_failed(&db, &b.id, b.runs, "db down").unwrap();
+            handoff_failed(&db, &b.id, b.runs, "db down", HANDOFF_RETRY_MS).unwrap();
             let c = get(&db, &b.id).unwrap().unwrap();
             if n < 3 {
                 assert_eq!(phase_of(&db, &b.id, b.runs), CLAIMED);

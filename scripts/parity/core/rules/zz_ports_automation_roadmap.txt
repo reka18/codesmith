@@ -1,0 +1,4 @@
+# Ports of the automation roadmap groups: the backoff after a failed
+# prompt, expiry, the tools a program calls, and the /automation command.
+@automation.test.ts
+1037 :: fixed :: tests/oc_automation_roadmap.rs::oc_automation_backs_off_for_five_minutes_when_a_prompt_fails_then_runs_once :: a prompt whose handoff failed was retried a minute later and kept the label of its claim; it waits five minutes and is late when handed off a minute or more after its slot (adapted: counted at claim, so the retry is the same run)

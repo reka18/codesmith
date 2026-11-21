@@ -24,4 +24,3 @@
 1254 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_keeps_state_on_failure_and_pauses_after_3_failed_runs :: adapted: a failed run counts at claim and the next slot retries it
 1293 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_pauses_at_once_when_a_run_returns_an_invalid_shape :: adapted: the refused run counts at claim
 1316 :: ported :: tests/oc_automation_handoffs.rs::oc_automation_stays_quiet_while_pending_then_admits_both_a_progress_and_a_terminal_send_to_the_creator
-1037 :: feature :: Automation Failure Handling :: a five-minute backoff after a failed prompt

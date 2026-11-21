@@ -45,14 +45,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 126 | 6 | 0 | 80 | 0 | 0 |
 | Code Mode | 67 | 39 | 8 | 0 | 20 | 0 | 0 |
-| Automations | 107 | 46 | 5 | 9 | 47 | 0 | 0 |
+| Automations | 107 | 46 | 6 | 8 | 47 | 0 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
 | Providers, models and credentials | 796 | 419 | 0 | 16 | 361 | 0 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2897** | **79** | **31** | **2581** | **0** | **0** |
+| **Total** | **5588** | **2897** | **80** | **30** | **2581** | **0** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -63,6 +63,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `automation.test.ts`: "runs once after downtime, marked late, and keeps the phase" (1 case): an interval's next run was counted from when the last one ran, so a late run, a downtime or a resume shifted every later slot; slots now fall on the interval's grid from its creation. Pinned by `tests/oc_automation_backlog3.rs::oc_automation_runs_once_after_downtime_marked_late_and_keeps_the_phase`.
 - `automation.test.ts`: "keeps automations when their creating Session is deleted, and pauses when a target is gone" (1 case): an automation whose target session was deleted failed at every slot and stayed active; it is paused with the reason now. Pinned by `tests/oc_automation_backlog3.rs::oc_automation_keeps_automations_when_the_creator_goes_and_pauses_when_the_target_does`.
 - `automation.test.ts`: "pauses with a reason when its directory disappears" (1 case): an automation whose directory was deleted failed at every slot and stayed active; it is paused with the reason now (adapted: no creation check, the tool creates in the session's folder). Pinned by `tests/oc_automation_backlog3.rs::oc_automation_pauses_with_a_reason_when_its_directory_disappears`.
+- `automation.test.ts`: "backs off for five minutes when a prompt fails, then runs once" (1 case): a prompt whose handoff failed was retried a minute later and kept the label of its claim; it waits five minutes and is late when handed off a minute or more after its slot (adapted: counted at claim, so the retry is the same run). Pinned by `tests/oc_automation_roadmap.rs::oc_automation_backs_off_for_five_minutes_when_a_prompt_fails_then_runs_once`.
 - `config/agent.test.ts`: "matches POSIX paths against home-relative permissions" (1 case): a path rule written from the home folder (`~/p/**`) never matched, as paths are checked absolute, so a deny such as `read ~/.ssh/*` did nothing; it matches the absolute paths now (a shell rule's `~` and `$HOME` stay literal). Pinned by `tests/oc_agents_backlog2.rs::oc_agent_matches_paths_against_home_relative_permissions`.
 - `config/skill.test.ts`: "maps config entry types to skill directories" (1 case): a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories`.
 - `file-access-path.test.ts`: "does not treat a filesystem-root project sentinel as an internal boundary" (1 case): a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary). Pinned by `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary`.
@@ -131,7 +132,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (31 cases in 7 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (30 cases in 6 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -140,7 +141,6 @@ Missing features, by how many OpenCode test cases each would unlock (31 cases in
 | [Automation Expiry](#automation-expiry) | 3 | an expiry time after which an automation stops (the expired row); an expiry time after which an automation stops |
 | [Browser Attachment](#browser-attachment) | 3 | attaching a browser to a session |
 | [Voice](#voice) | 3 | voice models / GPT-Live |
-| [Automation Failure Handling](#automation-failure-handling) | 1 | a five-minute backoff after a failed prompt |
 | [Automation Command](#automation-command) | 1 | an /automation command that hands the request to the model |
 
 ### Provider Plugins
@@ -196,12 +196,6 @@ Missing features, by how many OpenCode test cases each would unlock (31 cases in
 - `voice.test.ts`: uses the first key or env connection Integration lists and never a ChatGPT sign-in
 - `voice.test.ts`: starts GPT-Live on OpenCode's hosted endpoint with an OpenCode Console connection only without an OpenAI key
 - `voice.test.ts`: lists voice models with availability and default without resolving credentials
-
-### Automation Failure Handling
-
-1 cases.
-
-- `automation.test.ts`: backs off for five minutes when a prompt fails, then runs once
 
 ### Automation Command
 
@@ -2616,7 +2610,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Automations (98 of 107)</summary>
+<details><summary>Automations (99 of 107)</summary>
 
 
 **`automation-event.test.ts`**
@@ -2664,6 +2658,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - F pauses with a reason when its directory disappears — `tests/oc_automation_backlog3.rs::oc_automation_pauses_with_a_reason_when_its_directory_disappears` (an automation whose directory was deleted failed at every slot and stayed active; it is paused with the reason now (adapted: no creation check, the tool creates in the session's folder))
 - D run sleeps until the next automation is due — deliberate: the scheduler ticks every 15 seconds rather than sleeping until the next due time
 - D wakes a Session on start when its automation prompt was never claimed — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
+- F backs off for five minutes when a prompt fails, then runs once — `tests/oc_automation_roadmap.rs::oc_automation_backs_off_for_five_minutes_when_a_prompt_fails_then_runs_once` (a prompt whose handoff failed was retried a minute later and kept the label of its claim; it waits five minutes and is late when handed off a minute or more after its slot (adapted: counted at claim, so the retry is the same run))
 - P keeps cron at the same wall-clock time across DST changes — `tests/oc_automation_backlog3.rs::oc_automation_keeps_cron_at_the_same_wall_clock_time_across_dst`
 - D does not call a tool while another server holds the lease, then takes over when it expires · picks up an automation created by another process sharing the DB while idle — deliberate: automation.rs: a lease keeps processes apart; no crash adoption or inbox replay
 - P keeps state across runs, stays quiet without a return, and stops when done — `tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged` (adapted: state across runs, done finishes it, and a run that sends nothing starts no session)

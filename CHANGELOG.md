@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Automation backoff:** a prompt whose handoff fails is retried five
+  minutes later, as in OpenCode, rather than a minute later (a program's
+  still waits a minute). A run handed off a minute or more after its slot,
+  such as that retry, is logged as `late`.
 - **MCP Code Mode defaults for known servers:** without `codemode` set,
   Executor's tools are offered directly (it is a Code Mode server itself),
   and PostHog is asked for its plain tools (`x-posthog-mcp-mode: tools`,

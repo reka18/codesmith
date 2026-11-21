@@ -142,7 +142,7 @@
 932 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_does_not_start_timers_that_were_paused_or_deleted :: adapted: there is no rescheduling in place
 972 :: fixed :: tests/oc_automation_backlog3.rs::oc_automation_pauses_with_a_reason_when_its_directory_disappears :: an automation whose directory was deleted failed at every slot and stayed active; it is paused with the reason now (adapted: no creation check, the tool creates in the session's folder)
 998 :: design :: deliberate :: the scheduler ticks every 15 seconds rather than sleeping until the next due time
-1037,1254,1293 :: feature :: Automation Failure Handling :: a five-minute backoff after a failed prompt, a pause after three failed programs, a pause on a malformed program result
+1254,1293 :: feature :: Automation Failure Handling :: a five-minute backoff after a failed prompt, a pause after three failed programs, a pause on a malformed program result
 1077 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_keeps_cron_at_the_same_wall_clock_time_across_dst
 1187 :: ported :: tests/automation.rs::scheduled_runs, tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged :: adapted: state across runs, done finishes it, and a run that sends nothing starts no session
 1232 :: ported :: tests/oc_automation_backlog3.rs::oc_automation_a_program_that_returns_nothing_leaves_state_unchanged

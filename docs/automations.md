@@ -145,8 +145,11 @@ until that turn ends.
   that returns something other than nothing or `{state, done, send}` pauses
   it at once.
 - **A handoff that can't be written** (a database error) keeps the
-  program's result and is retried a minute later. After three failures in
-  a row the run fails and the automation pauses.
+  program's result and is retried a minute later; a prompt's is retried
+  five minutes later, as in OpenCode, not on every tick. The retry is the
+  same run, so it isn't counted again, and one handed off a minute or more
+  after its slot is logged as `late`. After three failures in a row the
+  run fails and the automation pauses.
 - **A target that can't take the run** pauses the automation at once, with
   nothing of the run committed: a session that no longer exists, a missing
   directory, an agent that doesn't exist, or a `send.to.subagent` the
