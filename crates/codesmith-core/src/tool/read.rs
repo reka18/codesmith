@@ -119,7 +119,7 @@ pub fn directory_listing(dir: &Path) -> Result<String, String> {
     Ok(out.join("\n"))
 }
 
-fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> {
+pub(crate) fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> {
     ctx.ask(Request {
         action: "read".into(),
         resources: target.resources.clone(),

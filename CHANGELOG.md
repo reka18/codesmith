@@ -5,6 +5,17 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Secret files ask, for every agent:** reading `.env` files,
+  `.git-credentials`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.minisign`,
+  `~/.netrc`, the GitHub CLI's `hosts.yml`, Docker and Kubernetes
+  credentials, `~/.npmrc`, `~/.pypirc`, and CodeSmith's own `auth.json`,
+  `mcp-auth.json` and global config file now asks, under `plan` too (which
+  still reads other outside files without asking, as in OpenCode). A
+  blanket allow, a saved approval or "always" no longer lifts these asks;
+  only a configured allow naming the path does. `grep`, `glob`, folder
+  listings, Code Mode's built-ins and shell commands that name such a file
+  (`cat ~/.ssh/id_ed25519`) ask too. See
+  [Permissions](docs/permissions.md#secret-files).
 - **`/automation [request]`**, as in OpenCode: hands the request to the
   model with how to manage automations through the `automation` tool. It
   is only a prompt, so creating or changing one still asks (or follows the

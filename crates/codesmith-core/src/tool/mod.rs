@@ -776,8 +776,12 @@ impl Ctx<'_> {
             .map_err(|e| e.to_string())
     }
 
-    pub fn ask(&self, req: Request) -> Result<(), String> {
+    pub fn ask(&self, mut req: Request) -> Result<(), String> {
         let gate = self.gate;
+        // A secret guard is never lifted by "always": say it saves nothing.
+        if gate.guarded(&req.action, &req.resources) {
+            req.save.clear();
+        }
         tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e: Denied| e.to_string())
     }
 
@@ -1195,6 +1199,9 @@ pub(crate) mod testing {
         }
     }
 }
+
+#[cfg(test)]
+mod secret_guard_tests;
 
 #[cfg(test)]
 mod tests {

@@ -30,6 +30,15 @@ pub struct Rule {
     /// or written to config.
     #[serde(skip)]
     pub builtin: bool,
+    /// A built-in secret guard ([`secret_guards`]): a floor under every
+    /// other rule and saved approval. Guards are judged among themselves
+    /// (the last matching guard decides), and when that is stricter than
+    /// what the other rules give, it wins, unless the last matching
+    /// configured rule is an allow that names the path itself (see
+    /// [`evaluate`]). A guard's action is literal (no wildcard). Not read
+    /// from or written to config.
+    #[serde(skip)]
+    pub guard: bool,
     /// A `tool.use` policy statement (see [`Policy`]): `resource` is an
     /// `action:resource` pattern, and the statement can deny but never
     /// grant. Not read from or written to config as a rule.
@@ -44,6 +53,7 @@ impl Rule {
             resource: resource.into(),
             effect,
             builtin: false,
+            guard: false,
             policy: None,
         }
     }
@@ -51,6 +61,12 @@ impl Rule {
     /// This rule marked as a built-in agent rule ([`Rule::builtin`]).
     pub fn into_builtin(mut self) -> Self {
         self.builtin = true;
+        self
+    }
+
+    /// This rule marked as a secret guard ([`Rule::guard`]).
+    pub fn into_guard(mut self) -> Self {
+        self.guard = true;
         self
     }
 }
@@ -104,6 +120,7 @@ impl Policy {
                 PolicyEffect::Deny => Effect::Deny,
             },
             builtin: false,
+            guard: false,
             policy: Some(self.message.as_deref().unwrap_or(POLICY_MESSAGE).into()),
         })
     }
@@ -184,13 +201,17 @@ fn ignores_case(action: &str) -> bool {
 
 /// The effect of the last rule matching `action` and `resource`; `Ask` if
 /// none. When built-in agent rules are present, the stricter of that and
-/// the same evaluation without them. Policy statements are not rules:
+/// the same evaluation without them. Secret guards ([`Rule::guard`]) are
+/// then a floor (see [`evaluate_layers`]). Policy statements are not rules:
 /// [`Gate`] checks them first.
 pub fn evaluate(action: &str, resource: &str, rules: &[Rule]) -> Effect {
     evaluate_layers(action, resource, &[rules])
 }
 
 /// `evaluate` over `layers` concatenated in order, without copying them.
+/// The first layer holds the configured rules; later ones (saved
+/// approvals) can never lift a secret guard: only a configured allow that
+/// names the path itself does (see [`explicit_for`]).
 fn evaluate_layers(action: &str, resource: &str, layers: &[&[Rule]]) -> Effect {
     let ic = ignores_case(action);
     // A path rule written from the home folder (`~/notes/**`) matches the
@@ -208,12 +229,13 @@ fn evaluate_layers(action: &str, resource: &str, layers: &[&[Rule]]) -> Effect {
             None => (pattern == "~").then(|| home.to_string()),
         }
     };
-    let hit = |r: &&Rule| {
+    let matches_rule = |r: &Rule| {
         r.policy.is_none()
             && wildcard::matches(action, &r.action, false)
             && (wildcard::matches(resource, &r.resource, ic)
                 || from_home(&r.resource).is_some_and(|p| wildcard::matches(resource, &p, ic)))
     };
+    let hit = |r: &&Rule| !r.guard && matches_rule(r);
     let newest_first = || layers.iter().rev().flat_map(|l| l.iter().rev());
     let all = newest_first()
         .find(hit)
@@ -221,19 +243,73 @@ fn evaluate_layers(action: &str, resource: &str, layers: &[&[Rule]]) -> Effect {
         .unwrap_or(Effect::Ask);
     // Built-in agent rules only restrict: take the stricter of the result
     // with them and without them.
-    if !layers.iter().any(|l| l.iter().any(|r| r.builtin)) {
-        return all;
-    }
-    let others = newest_first()
-        .filter(|r| !r.builtin)
-        .find(hit)
-        .map(|r| r.effect)
-        .unwrap_or(Effect::Ask);
-    if strictness(others) > strictness(all) {
-        others
-    } else {
+    let judged = if !layers.iter().any(|l| l.iter().any(|r| r.builtin)) {
         all
+    } else {
+        let others = newest_first()
+            .filter(|r| !r.builtin)
+            .find(hit)
+            .map(|r| r.effect)
+            .unwrap_or(Effect::Ask);
+        if strictness(others) > strictness(all) {
+            others
+        } else {
+            all
+        }
+    };
+    // Secret guards: the last matching one is a floor.
+    // Guards name their action literally, so most rules and every other
+    // action are passed over without a pattern match.
+    let Some(guard) = newest_first().find(|r| r.guard && r.action == action && matches_rule(r))
+    else {
+        return judged;
+    };
+    if strictness(guard.effect) <= strictness(judged) {
+        return judged;
     }
+    // Lifted only by the user's own configured allow naming the path (or
+    // the guard's own pattern), when it is the last configured match.
+    let configured = layers
+        .first()
+        .and_then(|l| l.iter().rev().filter(|r| !r.builtin).find(hit));
+    let lifted = configured.is_some_and(|r| {
+        r.effect == Effect::Allow && {
+            let written = from_home(&r.resource).unwrap_or_else(|| r.resource.clone());
+            explicit_for(&written, layers, &matches_rule)
+        }
+    });
+    if lifted {
+        judged
+    } else {
+        guard.effect
+    }
+}
+
+/// Whether a configured allow written as `pattern` names a guarded path
+/// explicitly: it has no wildcard (one path), or it is, letter for letter,
+/// the pattern of a guard matching the request (`~/.ssh/*` written by
+/// hand). `read * allow` or `read ~/* allow` is neither.
+fn explicit_for(pattern: &str, layers: &[&[Rule]], matches_rule: &dyn Fn(&Rule) -> bool) -> bool {
+    !pattern.contains(['*', '?'])
+        || layers
+            .iter()
+            .flat_map(|l| l.iter())
+            .any(|g| g.guard && g.resource == pattern && matches_rule(g))
+}
+
+/// Whether a secret guard ([`Rule::guard`]) applies to `action` on any of
+/// `resources`: the last guard matching it asks or denies. "Always" saves
+/// nothing for such a request, since no saved approval can lift a guard.
+pub fn guarded(action: &str, resources: &[String], rules: &[Rule]) -> bool {
+    let ic = ignores_case(action);
+    resources.iter().any(|res| {
+        rules
+            .iter()
+            .rev()
+            .filter(|r| r.guard && r.action == action)
+            .find(|r| wildcard::matches(res, &r.resource, ic))
+            .is_some_and(|r| r.effect != Effect::Allow)
+    })
 }
 
 /// Combined effect for a request over several resources: any deny denies,
@@ -413,6 +489,11 @@ impl Gate {
         all
     }
 
+    /// Whether a secret guard applies to the request (see [`guarded`]).
+    pub fn guarded(&self, action: &str, resources: &[String]) -> bool {
+        guarded(action, resources, &self.rules)
+    }
+
     /// The configured rules (agent, config, session), without saved approvals.
     pub fn configured(&self) -> &[Rule] {
         &self.rules
@@ -492,7 +573,16 @@ impl Gate {
                 });
             }
         }
-        match evaluate_all(&req.action, &req.resources, &self.rules()) {
+        let durable = self.durable_rules();
+        let effect = {
+            let saved = self.saved.lock().unwrap();
+            evaluate_all_layers(
+                &req.action,
+                &req.resources,
+                &[&self.rules, &saved, &durable],
+            )
+        };
+        match effect {
             Effect::Allow => Ok(()),
             Effect::Deny => Err(Denied::Blocked {
                 action: req.action.clone(),
@@ -504,7 +594,12 @@ impl Gate {
             {
                 Reply::Once => Ok(()),
                 Reply::Always => {
-                    let saves = safe_saves(req);
+                    // No saved approval lifts a secret guard: save nothing.
+                    let saves = if self.guarded(&req.action, &req.resources) {
+                        Vec::new()
+                    } else {
+                        safe_saves(req)
+                    };
                     // Kept for the project when there is a database; else
                     // for this session. A failed write keeps it for the
                     // session.
@@ -683,10 +778,8 @@ pub fn base_rules() -> Vec<Rule> {
             Effect::Allow,
         ));
     }
+    rules.extend(secret_guards());
     rules.extend([
-        Rule::new("read", "*.env", Effect::Ask),
-        Rule::new("read", "*.env.*", Effect::Ask),
-        Rule::new("read", "*.env.example", Effect::Allow),
         // Generating images and videos spends money with the provider: ask.
         Rule::new("experimental_image_generate", "*", Effect::Ask),
         Rule::new("experimental_video_generate", "*", Effect::Ask),
@@ -698,6 +791,107 @@ pub fn base_rules() -> Vec<Rule> {
         rules.push(Rule::new("edit", &format!("{dir}/*"), Effect::Deny));
     }
     rules
+}
+
+/// Built-in `read` guards on files that hold secrets, for every agent
+/// ([`Rule::guard`]): reading them asks, whatever the other rules say, and
+/// no saved approval or "always" answer lifts that; only a configured allow
+/// naming the path does. `.env` files (not `.env.example`), Git
+/// credentials anywhere, and in the home folder `~/.ssh`, `~/.aws`,
+/// `~/.gnupg`, `~/.minisign`, `~/.netrc`, GitHub CLI, Docker and
+/// Kubernetes credentials, `~/.npmrc` and `~/.pypirc`; and CodeSmith's own
+/// saved keys (`auth.json`, `mcp-auth.json`) and global config file. Each
+/// folder is named as written and as resolved, so a symlink to it, or a
+/// path through one, is caught by its real name.
+pub fn secret_guards() -> Vec<Rule> {
+    let resolved = |dirs: Vec<std::path::PathBuf>| -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for d in dirs {
+            let real = d.canonicalize().ok();
+            for d in std::iter::once(d).chain(real) {
+                if !out.contains(&d) {
+                    out.push(d);
+                }
+            }
+        }
+        out
+    };
+    let mut homes: Vec<std::path::PathBuf> = dirs::home_dir().into_iter().collect();
+    homes = resolved(homes);
+    let mut configs = vec![crate::paths::config_dir()];
+    // The GitHub CLI keeps its token under the XDG config folder.
+    let gh: Vec<std::path::PathBuf> = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(|v| std::path::PathBuf::from(v).join("gh"))
+        .into_iter()
+        .collect();
+    configs = resolved(configs);
+    secret_guards_for(
+        &homes,
+        &resolved(vec![crate::paths::data_dir()]),
+        &configs,
+        &resolved(gh),
+    )
+}
+
+/// [`secret_guards`] for the given home, data, config and extra GitHub CLI
+/// folders (each as written and resolved).
+pub fn secret_guards_for(
+    homes: &[std::path::PathBuf],
+    data: &[std::path::PathBuf],
+    config: &[std::path::PathBuf],
+    gh: &[std::path::PathBuf],
+) -> Vec<Rule> {
+    let ask = |r: &str| Rule::new("read", r, Effect::Ask).into_guard();
+    let shown = |p: &std::path::Path| p.display().to_string().trim_end_matches('/').to_string();
+    // `.env.example` is the one carve-out; folder guards come after it, so
+    // `~/.ssh/x.env.example` still asks.
+    let mut rules = vec![
+        ask("*.env"),
+        ask("*.env.*"),
+        Rule::new("read", "*.env.example", Effect::Allow).into_guard(),
+        ask(".git-credentials"),
+        ask("*/.git-credentials"),
+    ];
+    for h in homes {
+        let h = shown(h);
+        for dir in [".ssh", ".aws", ".gnupg", ".minisign"] {
+            rules.push(ask(&format!("{h}/{dir}")));
+            rules.push(ask(&format!("{h}/{dir}/*")));
+        }
+        for file in [
+            ".netrc",
+            ".config/gh/hosts.yml",
+            ".docker/config.json",
+            ".kube/config",
+            ".npmrc",
+            ".pypirc",
+        ] {
+            rules.push(ask(&format!("{h}/{file}")));
+        }
+    }
+    for g in gh {
+        rules.push(ask(&format!("{}/hosts.yml", shown(g))));
+    }
+    for d in data {
+        let d = shown(d);
+        // `*` after the name: the `.bak` copies and lock files too.
+        rules.push(ask(&format!("{d}/auth.json*")));
+        rules.push(ask(&format!("{d}/mcp-auth.json*")));
+    }
+    for c in config {
+        let c = shown(c);
+        for name in crate::config::NAMES {
+            rules.push(ask(&format!("{c}/{name}")));
+        }
+    }
+    let mut out: Vec<Rule> = Vec::new();
+    for r in rules {
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
 }
 
 /// The reference checkout cache and its state, as written and resolved.

@@ -956,9 +956,11 @@ mod tests {
             !names(&resolve(&c, "review").unwrap()).contains(&"edit"),
             "a global allow the built-in deny overrides does not show the tool"
         );
-        // The build agent is unrestricted, so global rules still decide.
+        // The build agent is unrestricted, so global rules still decide,
+        // except over the secret guards: a blanket allow does not lift them.
         let b = resolve(&c, "build").unwrap();
-        assert_eq!(evaluate("read", ".env", &b.permissions), Effect::Allow);
+        assert_eq!(evaluate("read", "src/a.rs", &b.permissions), Effect::Allow);
+        assert_eq!(evaluate("read", ".env", &b.permissions), Effect::Ask);
     }
 
     #[test]

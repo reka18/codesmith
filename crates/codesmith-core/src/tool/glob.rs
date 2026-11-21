@@ -162,8 +162,14 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     })?;
     // The read rules apply to the directory searched, and files they deny
     // are left out. (OpenCode checks only `glob` and `external_directory`.)
+    // A folder a secret guard covers (`~/.ssh`) asks like a read, and
+    // guarded files found from elsewhere are left out unless it did.
+    let guarded_dir = ctx.gate.guarded("read", &target.resources);
     if path.is_some() {
         ctx.check_not_denied("read", &target.resources)?;
+    }
+    if guarded_dir {
+        super::read::ask_read(ctx, &target)?;
     }
     if !target.absolute.exists() {
         return Err(format!(
@@ -182,6 +188,9 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     let listable = |p: &Path| {
         let t = ctx.resolve_walked(&roots, &target, p, false);
         ctx.check_not_denied("read", &t.resources).is_ok()
+            && (guarded_dir
+                || !ctx.gate.guarded("read", &t.resources)
+                || ctx.read_effect(&t.resources) == crate::permission::Effect::Allow)
     };
     let (found, truncated) = search(&target.absolute, pattern, hidden, limit, &listable)?;
     let shown: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();

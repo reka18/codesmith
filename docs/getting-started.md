@@ -185,7 +185,8 @@ codesmith
 
 Type a request and press **Enter**. The agent reads, searches, edits and runs
 commands to do it. Everything inside the project is allowed by default,
-except reading `.env` files and anything outside the project, which ask
+except reading secret files (`.env`, `~/.ssh`, saved keys) and anything
+outside the project, which ask
 first. To be asked before shell commands too, add a rule (see
 [permissions](permissions.md)):
 

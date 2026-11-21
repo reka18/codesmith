@@ -107,9 +107,12 @@ Every agent starts from these rules, in this order:
   // CodeSmith's own scratch and tool-output folders stay allowed
   { "action": "external_directory", "resource": "<data>/tmp/*", "effect": "allow" },
   { "action": "external_directory", "resource": "<data>/tool-output/*", "effect": "allow" },
+  // secret guards (see below): reading these asks, whatever else allows it
   { "action": "read", "resource": "*.env", "effect": "ask" },
   { "action": "read", "resource": "*.env.*", "effect": "ask" },
   { "action": "read", "resource": "*.env.example", "effect": "allow" },
+  { "action": "read", "resource": "~/.ssh/*", "effect": "ask" },
+  // ... and the other guarded files listed below
   // generating images and videos costs money
   { "action": "experimental_image_generate", "resource": "*", "effect": "ask" },
   { "action": "experimental_video_generate", "resource": "*", "effect": "ask" },
@@ -120,7 +123,7 @@ Every agent starts from these rules, in this order:
 ```
 
 So by default everything inside the project is allowed, except reading
-`.env` files and generating images or videos, which ask. Anything outside the project asks. Tools can never
+secret files (below) and generating images or videos, which ask. Anything outside the project asks. Tools can never
 write into the cache of [reference](configuration.md#references) checkouts, where
 CodeSmith runs git itself (without hooks, fsmonitor or the `ext` and `file`
 transports). Each built-in
@@ -133,6 +136,48 @@ agent then adds its own rules on top:
 | `general` | `question` and `subagent` denied. |
 | `explore` | Everything denied, then `read`, `grep`, `glob`, `webfetch`, `websearch` allowed (`.env` asks), files outside the project allowed, and a list of read-only shell commands (`git diff/show/log/status/...`, `ls`, `cat`, `grep`, `rg`, `find`, ...) allowed, with options that run programs or write files (`find -exec`, `git --output`, `rg --pre`, `sort -o`, and others) denied. |
 | `review` | Everything denied, then `read` (`.env` denied), `grep`, `glob` and read-only git commands allowed, and files outside the project denied. |
+
+### Secret files
+
+Every agent, built-in or your own, asks before it reads a file that
+usually holds credentials:
+
+- `.env` and `.env.*` files anywhere (not `.env.example`), and
+  `.git-credentials` anywhere;
+- in the home folder: everything under `~/.ssh`, `~/.aws`, `~/.gnupg` and
+  `~/.minisign`, and `~/.netrc`, `~/.config/gh/hosts.yml` (and
+  `$XDG_CONFIG_HOME/gh/hosts.yml`), `~/.docker/config.json`,
+  `~/.kube/config`, `~/.npmrc` and `~/.pypirc`;
+- CodeSmith's own saved keys, `auth.json` and `mcp-auth.json` (and their
+  backups) in the data folder, and the global `codesmith.json` or
+  `codesmith.jsonc`.
+
+These guards are a floor under every other rule. A blanket allow (`read
+*`, `* *`, `~/*`), whether in the config, an agent's rules or an
+automation's, does not lift them, and neither does a saved approval or an
+"always" answer: answering "always" to such a read saves nothing, and the
+next read asks again. A deny still denies. To let tools read one of these
+files without asking, write an allow rule in your config that names the
+path itself, such as `{"action": "read", "resource": "~/.ssh/config",
+"effect": "allow"}`, or that is the guard's own pattern
+(`~/.ssh/*`); it has to be the last configured rule matching that path.
+
+The guards cover the `read` tool (files and folder listings), `grep`,
+`glob` (guarded files are left out of a search from elsewhere, and
+searching a guarded folder asks first), files attached to a prompt, and the
+same tools run from Code Mode. Paths are judged by where they really are, so
+a symlink to `~/.ssh/id_ed25519`, or a path through `..`, asks too. A shell
+command that names a guarded file as a word asks for a `read` of it first:
+`cat ~/.ssh/id_ed25519`, `cp "$HOME/.aws/credentials" x`, `wc < ~/.netrc`,
+`ls ~/.ssh/*`, or a symlink to one. The shell check is best effort: it does
+not see a path the command computes (`$(...)`, a variable other than
+`HOME`), one hidden behind a glob (`~/.s*h/id`), or files a program opens
+on its own (`ssh` reads `~/.ssh`, `aws` reads `~/.aws`). Those are governed
+by your `shell` rules alone; deny or ask for the commands you don't want
+run. When the project itself is inside a guarded folder (a repository at
+`~/.ssh`), its files are named relative to the project and the guards
+don't apply to them. Under `--auto`, which answers every question with
+"once", guarded reads go through.
 
 Shell commands are allowed by default for `build`. If you want to be asked,
 add a rule such as `{"action": "shell", "resource": "*", "effect": "ask"}`

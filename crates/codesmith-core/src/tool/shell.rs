@@ -1521,6 +1521,177 @@ fn physical(path: &Path) -> PathBuf {
     out
 }
 
+/// The paths a command's words name that a secret guard covers (see
+/// [`crate::permission::secret_guards`]), resolved like the read tool's:
+/// `cat ~/.ssh/id_ed25519`, `cp "$HOME/.aws/credentials" x`, `<
+/// ~/.netrc`, `--file=~/.npmrc`, a symlink to one, or a glob whose fixed
+/// part is a guarded folder (`~/.ssh/*`). Each word of each command and of
+/// the other spellings the scan found is tried, so a guarded file named
+/// anywhere in the command asks, whatever the program.
+///
+/// Not seen: a path the run computes (`$(…)`, a variable other than
+/// `HOME`), one split by a glob before the guarded part (`~/.s*h/id`),
+/// one with a space in it, and files a program opens by itself (`ssh`
+/// reads `~/.ssh`): those are governed by the `shell` rules alone.
+pub(crate) fn secret_reads(
+    ctx: &Ctx<'_>,
+    dir: &Path,
+    analysis: &shell_scan::Analysis,
+) -> Vec<super::Target> {
+    let home = dirs::home_dir().map(|h| h.display().to_string());
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<super::Target> = Vec::new();
+    let texts = analysis
+        .commands
+        .iter()
+        .chain(&analysis.delegated)
+        .chain(&analysis.deny_only)
+        .map(|(r, _)| r.as_str());
+    for text in texts {
+        for word in shell_words(text) {
+            for path in path_forms(&word, home.as_deref()) {
+                if seen.contains(&path) {
+                    continue;
+                }
+                seen.push(path.clone());
+                let p = Path::new(&path);
+                let abs = if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    dir.join(p)
+                };
+                let t = ctx.resolve(&abs.display().to_string());
+                if ctx.gate.guarded("read", &t.resources) && !out.iter().any(|o| o.real == t.real) {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The words of a command's text as the shell splits them: unquoted
+/// blanks and operators (`|;&<>()`) end a word, quotes and backslashes are
+/// removed. Expansions are left as written.
+fn shell_words(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            (None, c) if c.is_whitespace() || "|;&<>()".contains(c) => {
+                if !word.is_empty() {
+                    out.push(std::mem::take(&mut word));
+                }
+            }
+            (None, c) => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
+/// The path spellings one shell word may name: itself and, after a
+/// `--option=` head, its value; `~`, `$HOME` and `${HOME}` expanded, and a
+/// glob cut to its fixed folder.
+fn path_forms(word: &str, home: Option<&str>) -> Vec<String> {
+    let mut forms = vec![word.to_string()];
+    if let Some((_, v)) = word.split_once('=') {
+        forms.push(v.to_string());
+    }
+    let mut out = Vec::new();
+    for f in forms {
+        let f = match home {
+            Some(h) => {
+                let h = h.trim_end_matches('/');
+                if f == "~" || f == "$HOME" || f == "${HOME}" {
+                    h.to_string()
+                } else if let Some(rest) = f
+                    .strip_prefix("~/")
+                    .or_else(|| f.strip_prefix("$HOME/"))
+                    .or_else(|| f.strip_prefix("${HOME}/"))
+                {
+                    format!("{h}/{rest}")
+                } else {
+                    f
+                }
+            }
+            None => f,
+        };
+        // A glob: its fixed head, up to the last `/` before the wildcard.
+        let f = match f.find(['*', '?', '[']) {
+            Some(i) => match f[..i].rfind('/') {
+                Some(0) => "/".to_string(),
+                Some(j) => f[..j].to_string(),
+                None => continue,
+            },
+            None => f,
+        };
+        if !f.is_empty() && !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn path_forms_for_test(text: &str, home: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    for w in shell_words(text) {
+        for f in path_forms(&w, home) {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+/// Ask before a command that names a guarded secret file runs (see
+/// [`secret_reads`]), as a `read` of it.
+fn authorize_secret_reads(
+    ctx: &Ctx<'_>,
+    dir: &Path,
+    analysis: &shell_scan::Analysis,
+    command: &str,
+) -> Result<(), String> {
+    let found = secret_reads(ctx, dir, analysis);
+    if found.is_empty() {
+        return Ok(());
+    }
+    let mut resources: Vec<String> = Vec::new();
+    for t in &found {
+        for r in &t.resources {
+            if !resources.contains(r) {
+                resources.push(r.clone());
+            }
+        }
+    }
+    let shown: Vec<&str> = found.iter().map(|t| t.resource.as_str()).collect();
+    ctx.ask(Request {
+        action: "read".into(),
+        resources,
+        save: Vec::new(),
+        title: format!("$ {command} (reads {})", shown.join(", ")),
+    })
+}
+
 /// Resolve `dir` (as written in a `cd`) against the working directory.
 fn resolve_dir(workdir: &Path, dir: &str) -> PathBuf {
     let p = Path::new(dir);
@@ -1613,6 +1784,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             title: format!("$ {}", sc.command),
         })?;
     }
+    authorize_secret_reads(ctx, &dir, &analysis, &sc.command)?;
     if let Some(reason) = &analysis.dynamic {
         authorize_unknown(
             ctx,

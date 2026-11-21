@@ -192,8 +192,8 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     // Grep shows file contents, so the read rules apply: a file named by
     // `path` is approved like a read, and a directory a rule denies is not
     // searched. (OpenCode checks only `grep` and `external_directory`.)
-    if path.is_some() {
-        if target.absolute.is_file() {
+    if path.is_some() || ctx.gate.guarded("read", &target.resources) {
+        if target.absolute.is_file() || ctx.gate.guarded("read", &target.resources) {
             ctx.ask(Request {
                 action: "read".into(),
                 resources: target.resources.clone(),
