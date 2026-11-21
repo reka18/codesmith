@@ -238,7 +238,7 @@ struct RunArgs {
     /// Model as provider/model.
     #[arg(short, long)]
     model: Option<String>,
-    /// Agent to use (default: build).
+    /// Agent to use (default: `default_agent`, else build).
     #[arg(long)]
     agent: Option<String>,
     /// Attach a file (repeatable): text is added to the message, images,
@@ -579,8 +579,8 @@ enum AuthCmd {
         /// enabled), or a provider's browser login with --oauth.
         #[arg(long)]
         client_id: Option<String>,
-        /// Log in through the provider's browser OAuth instead of pasting a
-        /// key (poe, gitlab, digitalocean, snowflake-cortex).
+        /// Log in through the provider's OAuth instead of pasting a key
+        /// (openai, xai, poe, gitlab, digitalocean, snowflake-cortex).
         #[arg(long)]
         oauth: bool,
         /// azure: sign requests with Microsoft Entra ID tokens from the
