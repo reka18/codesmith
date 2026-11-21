@@ -44,7 +44,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Instructions and references | 78 | 64 | 1 | 0 | 13 | 0 | 0 |
 | Config | 164 | 37 | 0 | 0 | 127 | 0 | 0 |
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
-| Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
+| Code Mode | 67 | 38 | 8 | 1 | 20 | 0 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
 | Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 42 | 1 | 0 | 115 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2713** | **69** | **44** | **2547** | **215** | **0** |
+| **Total** | **5588** | **2722** | **69** | **45** | **2550** | **202** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -118,7 +118,7 @@ Recorded rather than fixed here; the repro tests are in the files named, `#[igno
 
 ## Roadmap
 
-Missing features, by how many OpenCode test cases each would unlock (44 cases in 8 groups). Each group lists its tests as `file`: name.
+Missing features, by how many OpenCode test cases each would unlock (45 cases in 9 groups). Each group lists its tests as `file`: name.
 
 | Feature | Cases | What is missing |
 |---|---:|---|
@@ -130,6 +130,7 @@ Missing features, by how many OpenCode test cases each would unlock (44 cases in
 | [Plugin Tool Renaming](#plugin-tool-renaming) | 2 | a plugin's tool_before hook sending a call to another tool (CodeSmith's can rewrite the input or veto the call) |
 | [OpenAI Verbosity Defaults](#openai-verbosity-defaults) | 1 | default text verbosity for known OpenAI Responses models (CodeSmith sends `textVerbosity` only when configured) |
 | [Session Diff Ranges](#session-diff-ranges) | 1 | a diff between chosen messages of a session, by busy period (CodeSmith diffs the last turn only) |
+| [Code Mode Rejection Warnings](#code-mode-rejection-warnings) | 1 | a warning for a promise rejected and never awaited (CodeSmith drops it) |
 
 ### Provider Plugins
 
@@ -211,9 +212,15 @@ Missing features, by how many OpenCode test cases each would unlock (44 cases in
 
 - `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
 
+### Code Mode Rejection Warnings
+
+1 cases.
+
+- `tool-execute.test.ts`: a program that only warns shows just its warnings
+
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (215 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (202 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### MCP (121)
 
@@ -336,24 +343,6 @@ Tests for behaviour CodeSmith already has but no test pins (215 cases), by area,
   - `tool-mcp-events.test.ts`: lists one server's push events after asking permission
   - `tool-mcp-events.test.ts`: fails for a server that sends no events
 
-### Code Mode (13)
-
-- a nested call's stop does not replace the execute result (S) — `codemode::execute`
-  - `codemode.test.ts`: never hands a stop to a nested call, so its error cannot replace the execute call's result
-- Code Mode program semantics: description, typed outputs, failures, denied permissions, log/warn/result output, interrupting a pending fetch, namespaces, nested call IDs (M) — `codemode::execute`
-  - `tool-execute.test.ts`: execute describes invariant Code Mode behavior
-  - `tool-execute.test.ts`: canonical execution distinguishes declared, model-only, and raw schema outputs
-  - `tool-execute.test.ts`: declared outputs cannot bypass validation and raw outputs stay JSON-compatible
-  - `tool-execute.test.ts`: foreign typed failures settle as Tool.Error at the untrusted boundary
-  - `tool-execute.test.ts`: a denied permission reaches the program and changes nothing
-  - `tool-execute.test.ts`: a program that only logs shows just its logs
-  - `tool-execute.test.ts`: a program that only warns shows just its warnings
-  - `tool-execute.test.ts`: a null result with nothing else still shows null
-  - `tool-execute.test.ts`: a returned value keeps its line before the logs
-  - `tool-execute.test.ts`: interrupting execute aborts a pending request
-  - `tool-execute.test.ts`: execute supports callable namespace tools
-  - `tool-execute.test.ts`: each call in a program gets its own ID and is marked as nested in execute
-
 ### Automations (47)
 
 - MCP event watches: terminal events, timers on a running watch, nonterminal errors, pause/resume/delete, argument and permission validation, quoted untrusted fields, oversized prompts, stop reasons (M) — `tests/automation.rs`
@@ -453,7 +442,7 @@ Tests for behaviour CodeSmith already has but no test pins (215 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 668 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 671 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -2650,12 +2639,13 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Code Mode (54 of 67)</summary>
+<details><summary>Code Mode (66 of 67)</summary>
 
 
 **`codemode.test.ts`**
 
 - D owns registrations, execute, and catalog materialization — effect-internal: registration ownership
+- D never hands a stop to a nested call, so its error cannot replace the execute call's result — deliberate: a stop drops the execute call and every nested call with it; no cancel signal is handed to a nested call, so none can fail into the execute call's result
 - D renders Effect numbers in built-in tool signatures as number — effect-internal: Effect number rendering
 
 **`codemode/catalog.test.ts`**
@@ -2694,9 +2684,18 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`tool-execute.test.ts`**
 
 - P execute takes raw code as freeform text, and Code Mode calls freeform tools with a string — `tests/oc_freeform.rs::oc_tool_execute_takes_raw_code_as_freeform_text_and_code_mode_calls_freeform_tools_with_a_string` (adapted: results are Promise<unknown> (no output schemas); execute's own freeform format is pinned by the session test)
+- P execute describes invariant Code Mode behavior — `tests/oc_codemode_backlog3.rs::oc_execute_describes_invariant_code_mode_behavior` (adapted: CodeSmith's wording of the same rules)
 - D with full_codemode, execute names Bun's file APIs instead of ruling out filesystem access — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+- D canonical execution distinguishes declared, model-only, and raw schema outputs · declared outputs cannot bypass validation and raw outputs stay JSON-compatible — deliberate: tool results are text (parsed as JSON in the program when they are JSON); there are no declared output schemas to encode, validate or bypass
+- P foreign typed failures settle as Tool.Error at the untrusted boundary — `tests/oc_codemode_backlog3.rs::oc_execute_settles_tool_failures_as_errors_in_the_program` (adapted: any tool failure reaches the program as an Error with its message)
 - F execute rejects filesystem fetches — `src/codemode/fetch/tests.rs::oc_execute_rejects_filesystem_fetches` (Code Mode had no `fetch` global, so with `full_codemode` (which hides webfetch) a program could not fetch a page; it now has one, with the webfetch tool's checks)
-- D without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask · reads the first chunk before EOF: %s ×3 — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+- D without the experimental flag there is no path · path is the host's path module, resolving against the session's directory · the other platform's flavour resolves from its own root, not the server's working directory · path is importable by its Node module names · Bun and the bun module exist only with the experimental flag · Bun.file reads a file, a slice of it, and fails on a missing one with a Node-shaped error · Bun.write writes text, bytes and copies, and a writer replaces then appends · Bun.Glob scans for files, with dot files, folders and absolute paths on request · Bun asks the permissions the file tools ask — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+- P a denied permission reaches the program and changes nothing — `tests/oc_codemode_backlog3.rs::oc_execute_a_denied_permission_reaches_the_program_and_changes_nothing` (adapted: the built-ins called inside execute, not Bun's file APIs)
+- P a program that only logs shows just its logs — `tests/oc_codemode_backlog3.rs::oc_execute_a_program_that_only_logs_shows_its_logs` (adapted: checked as the outcome's result and logs)
+- P a null result with nothing else still shows null — `tests/oc_codemode_backlog3.rs::oc_execute_a_null_result_with_nothing_else_still_shows_null`
+- P a returned value keeps its line before the logs — `tests/oc_codemode_backlog3.rs::oc_execute_a_returned_value_keeps_its_line_before_the_logs`
+- D reads the first chunk before EOF: %s ×3 — platform: Bun/Node globals and live fetch bodies (CodeSmith's Code Mode runs in Boa without them, and `fetch` reads a response whole)
+- P interrupting execute aborts a pending request — `tests/oc_codemode_backlog3.rs::oc_execute_interrupting_execute_aborts_a_pending_request` (adapted: the stop drops the turn)
 - F whole-body methods share consumption and expose Bun's empty body — `src/codemode/fetch/tests.rs::oc_whole_body_methods_share_consumption_and_expose_an_empty_body` (as above (adapted: the server's content type))
 - F discards a redirect body before reading the destination — `src/codemode/fetch/tests.rs::oc_discards_a_redirect_body_before_reading_the_destination` (as above (adapted: the body arrives whole))
 - F fetch asks the webfetch permission for its URL as the execute call — `src/codemode/fetch/tests.rs::oc_fetch_asks_the_webfetch_permission_for_its_url_as_the_execute_call` (as above (adapted: "always" saves the origin, not `*`))
@@ -2704,6 +2703,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - F fetch matches rules without the fragment and rejects credentials in the URL — `src/codemode/fetch/tests.rs::oc_fetch_matches_rules_without_the_fragment_and_rejects_credentials_in_the_url` (as above)
 - F a rejection with feedback reaches the program as the error message — `src/codemode/fetch/tests.rs::oc_a_rejection_with_feedback_reaches_the_program_as_the_error_message` (as above)
 - F a URL denied for webfetch is never requested and rejects like a failed fetch — `src/codemode/fetch/tests.rs::oc_a_url_denied_for_webfetch_is_never_requested_and_rejects_like_a_failed_fetch` (as above)
+- P execute supports callable namespace tools — `tests/oc_codemode_backlog3.rs::oc_execute_supports_callable_namespace_tools`
+- P each call in a program gets its own ID and is marked as nested in execute — `tests/oc_tools_backlog3.rs::oc_tool_registry_hooks_see_one_id_per_call_inside_a_code_mode_program` (adapted: the IDs plugins' hooks see, each under the execute call's)
 - D executions share the prepared runtime of an inventory while keeping per-call state — effect-internal: shared prepared runtime
 - P execute sends at most one progress update per 100 ms with the latest rows — `tests/oc_codemode_progress.rs::oc_execute_sends_at_most_one_progress_update_per_100_ms_with_the_latest_rows` (adapted: the row throttle driven directly; the session sends the rows as `tool_progress`)
 - P interrupted execute sends its latest progress rows before it settles — `tests/oc_codemode_progress.rs::oc_execute_interrupted_sends_its_latest_progress_rows_before_it_settles` (adapted: a stopped turn drops the program; the rows go out from the drop)

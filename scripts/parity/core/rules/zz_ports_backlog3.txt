@@ -61,3 +61,19 @@
 # --- Instructions and references (tests/oc_instructions_backlog3.rs) ---
 @instruction-discovery.test.ts
 743 :: fixed :: tests/oc_instructions_backlog3.rs::oc_instructions_canonicalize_boundaries_and_honor_project_opt_out :: with `$CODESMITH_DISABLE_PROJECT_CONFIG` set the project's AGENTS.md files were still read (only its config files were skipped), and a working folder outside the project had its AGENTS.md read; neither is read now, as in OpenCode (adapted: the files found, not the walks asked for)
+
+# --- Code Mode (tests/oc_codemode_backlog3.rs) ---
+@codemode.test.ts
+55 :: design :: deliberate :: a stop drops the execute call and every nested call with it; no cancel signal is handed to a nested call, so none can fail into the execute call's result
+@tool-execute.test.ts
+61 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_describes_invariant_code_mode_behavior :: adapted: CodeSmith's wording of the same rules
+83,121 :: design :: deliberate :: tool results are text (parsed as JSON in the program when they are JSON); there are no declared output schemas to encode, validate or bypass
+145 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_settles_tool_failures_as_errors_in_the_program :: adapted: any tool failure reaches the program as an Error with its message
+342 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_a_denied_permission_reaches_the_program_and_changes_nothing :: adapted: the built-ins called inside execute, not Bun's file APIs
+368 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_a_program_that_only_logs_shows_its_logs :: adapted: checked as the outcome's result and logs
+372 :: feature :: Code Mode Rejection Warnings :: a warning for a promise rejected and never awaited (CodeSmith drops it)
+378 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_a_null_result_with_nothing_else_still_shows_null
+382 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_a_returned_value_keeps_its_line_before_the_logs
+424 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_interrupting_execute_aborts_a_pending_request :: adapted: the stop drops the turn
+617 :: ported :: tests/oc_codemode_backlog3.rs::oc_execute_supports_callable_namespace_tools
+653 :: ported :: tests/oc_tools_backlog3.rs::oc_tool_registry_hooks_see_one_id_per_call_inside_a_code_mode_program :: adapted: the IDs plugins' hooks see, each under the execute call's
