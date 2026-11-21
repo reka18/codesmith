@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- A project root of `/` or the home folder no longer puts every path inside
+  the project: the working directory is the boundary then (OpenCode does
+  this for `/`), and a session working in `/` or `~` itself has none, so
+  reading `~/.ssh` there asks for `external_directory` first.
 - **Context-tier pricing:** a step whose prompt passes one of the catalog's
   context tiers (such as over 200k tokens) is priced at that tier, as
   OpenCode prices it, for the session cost and `codesmith stats`. Every step

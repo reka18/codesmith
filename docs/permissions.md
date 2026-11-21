@@ -202,6 +202,12 @@ searching there, or `cd`-ing there needs `external_directory` approval first,
 and then the tool's own permission. Symlinks are resolved first, so a link
 inside the project that points outside it counts as outside.
 
+A project at `/` or at your home folder (a dotfiles repository, say) is too
+broad to count: the working directory is the project's boundary instead, so
+`~/.ssh` is still outside it. OpenCode does the same for `/`. A session
+started in `/` or in your home folder itself has no boundary at all: every
+path outside CodeSmith's scratch folder needs `external_directory` approval.
+
 `external_directory` asks by default. To allow a folder permanently:
 
 ```jsonc

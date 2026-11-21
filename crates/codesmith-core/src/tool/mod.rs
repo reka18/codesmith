@@ -546,7 +546,17 @@ fn relative_to(p: &Path, root: &Path) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct Roots {
     root: PathBuf,
+    /// Where paths are inside the project ([`Ctx::boundary`]).
+    boundary: Option<PathBuf>,
     tmp: PathBuf,
+}
+
+/// Whether `dir` is too broad to be the project's boundary: `/` (a drive
+/// root) or the home folder, where everything, `~/.ssh` included, would be
+/// inside the project.
+fn too_broad(dir: &Path) -> bool {
+    dir.parent().is_none()
+        || dirs::home_dir().is_some_and(|h| h == dir || real_path(&h) == real_path(dir))
 }
 
 impl Ctx<'_> {
@@ -554,8 +564,21 @@ impl Ctx<'_> {
     pub fn roots(&self) -> Roots {
         Roots {
             root: real_path(&self.root),
+            boundary: self.boundary().map(|b| real_path(&b)),
             tmp: real_path(&paths::tmp_dir()),
         }
+    }
+
+    /// The folder paths are inside the project under, needing no
+    /// `external_directory` approval: the project root. A root of `/` or
+    /// the home folder is no boundary (OpenCode treats a `/` project the
+    /// same way); the working directory is then, unless it is as broad,
+    /// and with neither every path but the scratch directory is outside.
+    pub fn boundary(&self) -> Option<PathBuf> {
+        if !too_broad(&self.root) {
+            return Some(self.root.clone());
+        }
+        (!too_broad(&self.cwd)).then(|| self.cwd.clone())
     }
 
     pub fn resolve(&self, path: &str) -> Target {
@@ -608,7 +631,8 @@ impl Ctx<'_> {
         let root = &roots.root;
         let lexical = relative_to(&absolute, &self.root);
         let real_rel = relative_to(&real, root);
-        let external = !(real.starts_with(root) || real.starts_with(&roots.tmp));
+        let external = !(roots.boundary.as_ref().is_some_and(|b| real.starts_with(b))
+            || real.starts_with(&roots.tmp));
         let lexical_name = lexical
             .clone()
             .unwrap_or_else(|| absolute.display().to_string());
@@ -641,8 +665,8 @@ impl Ctx<'_> {
     /// one, and the one as named when that is also outside the project.
     fn external_names(&self, t: &Target, dir: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
         let mut out = vec![dir(&t.real)];
-        let lexical_outside =
-            !t.absolute.starts_with(&self.root) && !t.absolute.starts_with(paths::tmp_dir());
+        let lexical_outside = !self.boundary().is_some_and(|b| t.absolute.starts_with(b))
+            && !t.absolute.starts_with(paths::tmp_dir());
         if lexical_outside && !out.contains(&dir(&t.absolute)) {
             out.push(dir(&t.absolute));
         }

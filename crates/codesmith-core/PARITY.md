@@ -38,7 +38,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
 | Shell scan and parse | 1465 | 838 | 8 | 0 | 498 | 121 | 0 |
-| Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
+| Permission | 177 | 101 | 1 | 0 | 50 | 25 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
@@ -52,13 +52,14 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2468** | **44** | **40** | **2501** | **535** | **0** |
+| **Total** | **5588** | **2468** | **45** | **40** | **2501** | **534** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
 ## Fixes made while porting
 
 - `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
+- `file-access-path.test.ts`: "does not treat a filesystem-root project sentinel as an internal boundary" (1 case): a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary). Pinned by `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary`.
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
@@ -176,7 +177,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (535 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (534 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -402,14 +403,13 @@ Tests for behaviour CodeSmith already has but no test pins (535 cases), by area,
   - `shell-scan/generated.test.ts`: retains generated dynamic command heads without resolving them
   - `shell-scan/generated.test.ts`: keeps wrappers and shell evaluators at their delegated boundary
 
-### Permission (26)
+### Permission (25)
 
 - path resolution (relative, prospective, symlinked, tilde) and which targets need external_directory (S) — `tool read/write/edit external_directory checks`
   - `file-access-path.test.ts`: resolves an active relative existing file target
   - `file-access-path.test.ts`: resolves an active relative prospective file target
   - `file-access-path.test.ts`: requires external-directory authorization for a relative lexical escape
   - `file-access-path.test.ts`: allows a relative path outside the Location but inside the project worktree
-  - `file-access-path.test.ts`: does not treat a filesystem-root project sentinel as an internal boundary
   - `file-access-path.test.ts`: resolves a prospective target below an external symlink lexically
   - `file-access-path.test.ts`: follows an in-location symlink using ordinary filesystem semantics
   - `file-access-path.test.ts`: accepts an explicit absolute in-location target without external approval
@@ -2384,7 +2384,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Permission (151 of 177)</summary>
+<details><summary>Permission (152 of 177)</summary>
 
 
 **`config/policy.test.ts`**
@@ -2403,6 +2403,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`file-access-path.test.ts`**
 
+- F does not treat a filesystem-root project sentinel as an internal boundary — `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary` (a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary))
 - P saves external approval at the enclosing repository on the host filesystem — `tests/oc_external_approvals.rs::oc_file_access_saves_external_approval_at_the_enclosing_repository_on_the_host_filesystem`
 - D stats and finds the repository through the Location's Environment driver — client-server: Location Environment driver
 - D ignores unknown path input fields — effect-internal: schema input decoding

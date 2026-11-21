@@ -10,3 +10,6 @@
 436 :: ported :: src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_validate_and_decode_tool_input :: adapted: issues and the echoed arguments come in property name order (CodeSmith's JSON maps are sorted). In a session: tests/oc_tool_input_validation.rs (built-in, MCP, Code Mode and plugin tools)
 494 :: ported :: src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_resolve_draft_07_definitions :: adapted: the issue names what the reference expects ("Expected string" where OpenCode says "Expected value")
 518 :: ported :: src/tool/input_schema.rs::oc_tool_schema_raw_json_schemas_pass_input_through_when_they_cannot_be_imported
+
+@file-access-path.test.ts
+114 :: fixed :: tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary :: a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary)
