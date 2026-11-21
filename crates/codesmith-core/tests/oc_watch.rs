@@ -32,6 +32,12 @@ async fn settle() {
     }
 }
 
+/// Upper bound, in seconds, on waiting for a native file event. Events
+/// normally arrive within milliseconds and the waits return then; on a
+/// heavily loaded machine macOS can hold FSEvents back for several seconds,
+/// so the bound is generous. A watcher that never fires still fails.
+const WAIT: u64 = 30;
+
 /// Poll `f` until it holds, for up to `secs` seconds.
 async fn until(secs: u64, mut f: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
@@ -154,7 +160,7 @@ async fn oc_file_watch_publishes_filesystem_changed_on_the_watchs_location() {
     std::fs::write(&target, "a").unwrap();
     let mut rx = events.subscribe();
     fw.watch(tmp.path(), &target).unwrap();
-    until(5, || native.active() == 1).await;
+    until(WAIT, || native.active() == 1).await;
     native.emit(Update::new(&target, Kind::Update));
     let first = rx.recv().await.unwrap();
     std::fs::remove_file(&target).unwrap();
@@ -188,12 +194,12 @@ async fn oc_file_watch_starts_a_new_watch_when_the_previous_one_ended() {
     let native = Arc::new(Ended::default());
     let fw = FileWatch::new(Watcher::new(native.clone()), Events::new());
     fw.watch(&project(), &file("a.ts")).unwrap();
-    until(5, || {
+    until(WAIT, || {
         native.0.load(Ordering::SeqCst) == 1 && fw.watched(&project()).is_empty()
     })
     .await;
     fw.watch(&project(), &file("a.ts")).unwrap();
-    until(5, || native.0.load(Ordering::SeqCst) == 2).await;
+    until(WAIT, || native.0.load(Ordering::SeqCst) == 2).await;
 }
 
 /// A native watch that fails outright.
@@ -213,12 +219,12 @@ async fn oc_file_watch_starts_a_new_watch_when_the_previous_one_failed() {
     let native = Arc::new(Failing::default());
     let fw = FileWatch::new(Watcher::new(native.clone()), Events::new());
     fw.watch(&project(), &file("a.ts")).unwrap();
-    until(5, || {
+    until(WAIT, || {
         native.0.load(Ordering::SeqCst) == 1 && fw.watched(&project()).is_empty()
     })
     .await;
     fw.watch(&project(), &file("a.ts")).unwrap();
-    until(5, || native.0.load(Ordering::SeqCst) == 2).await;
+    until(WAIT, || native.0.load(Ordering::SeqCst) == 2).await;
 }
 
 /// "fails watch requests" (FileWatch disabled)
@@ -242,7 +248,7 @@ async fn oc_file_watch_native_reports_in_place_edits_and_atomic_saves() {
 
     async fn changed(events: &Events, target: &Path, write: impl Fn()) {
         let mut rx = events.subscribe();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(WAIT);
         // Native watches arm asynchronously, so repeat the write until one is seen.
         loop {
             write();
@@ -478,7 +484,7 @@ async fn oc_watcher_watches_only_named_immediate_entries_including_missing_direc
     std::fs::write(dir.join("nested/opencode.json"), "ignored").unwrap();
     std::fs::write(dir.join("opencode.jsonc"), "ignored").unwrap();
     std::fs::write(dir.join("opencode.json"), "first").unwrap();
-    until(5, || !events.lock().unwrap().is_empty()).await;
+    until(WAIT, || !events.lock().unwrap().is_empty()).await;
     assert!(events
         .lock()
         .unwrap()
@@ -486,7 +492,7 @@ async fn oc_watcher_watches_only_named_immediate_entries_including_missing_direc
         .all(|u| u.path == dir.join("opencode.json")));
     tokio::time::sleep(Duration::from_millis(10)).await;
     std::fs::create_dir(dir.join(".opencode")).unwrap();
-    until(5, || {
+    until(WAIT, || {
         events
             .lock()
             .unwrap()
@@ -547,7 +553,7 @@ async fn oc_watcher_interrupting_a_consumer_interrupts_a_pending_acquisition() {
     native.started.notified().await;
     consumer.abort();
     let _ = consumer.await;
-    tokio::time::timeout(Duration::from_secs(5), native.interrupted.notified())
+    tokio::time::timeout(Duration::from_secs(WAIT), native.interrupted.notified())
         .await
         .expect("the acquisition was not interrupted");
     assert_eq!(ready.load(Ordering::SeqCst), 0);
@@ -680,7 +686,7 @@ impl Located {
 async fn oc_location_watcher_watches_only_exact_git_branch_metadata() {
     let l = located("git");
     let _w = l.start(None);
-    until(5, || !l.native.subscriptions().is_empty()).await;
+    until(WAIT, || !l.native.subscriptions().is_empty()).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert_eq!(
         l.native.subscriptions(),
@@ -693,7 +699,7 @@ async fn oc_location_watcher_watches_only_exact_git_branch_metadata() {
 async fn oc_location_watcher_watches_only_exact_hg_branch_metadata() {
     let l = located("hg");
     let _w = l.start(None);
-    until(5, || !l.native.subscriptions().is_empty()).await;
+    until(WAIT, || !l.native.subscriptions().is_empty()).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert_eq!(
         l.native.subscriptions(),
@@ -708,7 +714,7 @@ async fn oc_location_watcher_reconciles_config_without_duplicate_subscriptions()
     let l = located("git");
     let entries: Arc<Mutex<Vec<String>>> = Arc::default();
     let w = l.start(None);
-    until(5, || l.native.subscriptions().len() == 1).await;
+    until(WAIT, || l.native.subscriptions().len() == 1).await;
     assert_eq!(l.native.active(), 1);
 
     *entries.lock().unwrap() = vec![".git".into()];
@@ -717,12 +723,12 @@ async fn oc_location_watcher_reconciles_config_without_duplicate_subscriptions()
         l.policy
             .transform(move |e| e.add(entries.lock().unwrap().iter()))
     };
-    until(5, || l.native.active() == 0).await;
+    until(WAIT, || l.native.active() == 0).await;
     assert_eq!(l.native.subscriptions().len(), 1);
 
     entries.lock().unwrap().clear();
     l.policy.reload();
-    until(5, || l.native.subscriptions().len() == 2).await;
+    until(WAIT, || l.native.subscriptions().len() == 2).await;
     assert_eq!(l.native.active(), 1);
 
     l.policy.reload();
@@ -732,7 +738,7 @@ async fn oc_location_watcher_reconciles_config_without_duplicate_subscriptions()
 
     w.stop().await;
     drop(w);
-    until(5, || l.native.active() == 0).await;
+    until(WAIT, || l.native.active() == 0).await;
     // Released twice in all: once for the ignore, once at the end.
     assert_eq!(l.native.subscriptions().len(), 2);
     drop(config);
@@ -771,7 +777,7 @@ async fn oc_location_watcher_uses_the_policy_changed_while_target_discovery_was_
     assert!(l.native.subscriptions().is_empty());
 
     registration.dispose();
-    until(5, || l.native.active() == 1).await;
+    until(WAIT, || l.native.active() == 1).await;
     l.policy.reload();
     settle().await;
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -781,7 +787,7 @@ async fn oc_location_watcher_uses_the_policy_changed_while_target_discovery_was_
     );
     assert_eq!(l.native.active(), 1);
     drop(w);
-    until(5, || l.native.active() == 0).await;
+    until(WAIT, || l.native.active() == 0).await;
 }
 
 /// "does not start before configured policy is ready"
@@ -806,7 +812,7 @@ async fn oc_location_watcher_does_not_start_before_configured_policy_is_ready() 
 /// asynchronously.
 async fn eventually(events: &Events, want: impl Fn(&Changed) -> bool, write: impl Fn()) -> Changed {
     let mut rx = events.subscribe();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(WAIT);
     loop {
         write();
         let got = tokio::time::timeout(Duration::from_millis(250), async {
@@ -920,7 +926,7 @@ async fn oc_location_watcher_native_limits_file_watches_to_the_exact_target() {
             }
         })
     };
-    let got = tokio::time::timeout(Duration::from_secs(5), first)
+    let got = tokio::time::timeout(Duration::from_secs(WAIT), first)
         .await
         .unwrap()
         .unwrap();
@@ -945,7 +951,7 @@ async fn oc_location_watcher_native_detects_creation_of_a_missing_directory_targ
             }
         })
     };
-    let got = tokio::time::timeout(Duration::from_secs(5), first)
+    let got = tokio::time::timeout(Duration::from_secs(WAIT), first)
         .await
         .unwrap()
         .unwrap();
@@ -987,7 +993,7 @@ async fn watch_tree_respects_ignores_and_follows_new_directories() {
         };
         // Arm: write until the first event shows up.
         let probe = root.join("src/probe.rs");
-        until(5, || {
+        until(WAIT, || {
             std::fs::write(&probe, rand_suffix().to_string()).unwrap();
             std::thread::sleep(Duration::from_millis(20));
             !seen.lock().unwrap().is_empty()
@@ -1005,7 +1011,7 @@ async fn watch_tree_respects_ignores_and_follows_new_directories() {
         }
         std::fs::create_dir_all(root.join("later/deeper")).unwrap();
         let late = root.join("later/deeper/new.rs");
-        until(5, || {
+        until(WAIT, || {
             std::fs::write(&late, rand_suffix().to_string()).unwrap();
             std::thread::sleep(Duration::from_millis(20));
             seen.lock().unwrap().contains(&late)
