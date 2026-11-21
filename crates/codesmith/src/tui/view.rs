@@ -1597,7 +1597,21 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .skip(top)
         .take(height)
-        .map(|(s, e)| Line::from(text[*s..*e].to_string()))
+        .map(|&(s, e)| match app.input.selection() {
+            // The selected part of the row, highlighted.
+            Some((a, b)) if a < e && b > s => {
+                let (a, b) = (a.max(s), b.min(e));
+                Line::from(vec![
+                    Span::raw(text[s..a].to_string()),
+                    Span::styled(
+                        text[a..b].to_string(),
+                        Style::default().fg(p.selected_fg).bg(p.selected_bg),
+                    ),
+                    Span::raw(text[b..e].to_string()),
+                ])
+            }
+            _ => Line::from(text[s..e].to_string()),
+        })
         .collect();
     if !text.is_empty() {
         f.render_widget(Paragraph::new(shown).style(fg(p.text)), inner);

@@ -1426,6 +1426,10 @@ theme):
 | `diffs.single` | `false` | Show one file at a time. |
 | `diffs.fullscreen` | `false` | Open the viewer full screen rather than docked beside the session. |
 
+OpenCode's `terminal.copy` (copy on a mouse selection) has no
+counterpart: CodeSmith never captures the mouse, so selecting and copying
+with it is the terminal's own (see [keys](interactive-ui.md#editing-the-prompt)).
+
 ### Session tabs: `tui.tabs`
 
 The [session tabs](interactive-ui.md#session-tabs), as OpenCode's `tabs`

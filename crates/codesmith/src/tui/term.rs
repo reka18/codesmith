@@ -48,9 +48,12 @@ pub fn set_title(title: &str) -> String {
     format!("\x1b]0;{}\x07", clean(title))
 }
 
-/// The escape sequence that puts `text` on the clipboard (`OSC 52`).
+/// The escape sequence that puts `text` on the clipboard (`OSC 52`),
+/// without NUL characters (which end a string in most clipboards), as
+/// OpenCode writes it.
 pub fn copy(text: &str) -> String {
     use base64::Engine;
+    let text = text.replace('\0', "");
     let b64 = base64::engine::general_purpose::STANDARD.encode(text);
     format!("\x1b]52;c;{b64}\x07")
 }

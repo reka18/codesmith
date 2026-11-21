@@ -231,6 +231,92 @@ fn mentions_list_skills_and_subagents_before_files() {
     assert!(frame(&a, 60, 20).contains("mentions"));
 }
 
+// ----- tui/test/util/selection-keys, tui/test/clipboard ---------------------
+
+// selection-keys.test.ts: "$kind selections can be copied and edited in
+// $mode mode" (4 cases: textarea and input, manual and select copy;
+// adapted: CodeSmith's prompt is its one editor and the mouse selects
+// nothing, so both modes are the keyboard's; the second copy is Ctrl+C
+// again, as crossterm reports a Ctrl+C typed on another layout).
+#[test]
+fn oc_selections_can_be_copied_and_edited() {
+    for case in [
+        "textarea, manual",
+        "textarea, select",
+        "input, manual",
+        "input, select",
+    ] {
+        let mut a = App::new();
+        // Set with the cursor at the end (CodeSmith's End follows the
+        // transcript).
+        a.input.set("draft");
+        let mut writes: Vec<String> = Vec::new();
+        a.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        for _ in 0..2 {
+            assert_eq!(a.on_key(with('c', KeyModifiers::CONTROL)), None, "{case}");
+            writes.extend(a.clipboard.take());
+        }
+        assert_eq!(writes, ["t", "t"], "{case}");
+        assert_eq!(a.input.selected(), Some("t"));
+        assert_eq!(a.input.text(), "draft");
+        assert!(!a.quit, "{case}: copying does not quit");
+        a.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(a.input.selected(), Some("ft"));
+        a.on_key(key(KeyCode::Char('x')));
+        assert_eq!(a.input.text(), "drax", "{case}");
+        assert_eq!(a.input.selection(), None);
+        writes.extend(a.clipboard.take());
+        assert_eq!(writes, ["t", "t"], "{case}");
+    }
+}
+
+// clipboard.test.ts: "removes NUL characters before writing"
+#[test]
+fn oc_removes_nul_characters_before_writing() {
+    assert_eq!(
+        super::term::copy("before\0after"),
+        super::term::copy("beforeafter")
+    );
+    assert_eq!(super::term::copy("clean"), "\x1b]52;c;Y2xlYW4=\x07");
+}
+
+// (not in OpenCode's tests) Escape drops the selection and keeps the
+// text; Backspace deletes the selection; a paste replaces it; plain
+// movement drops it; the selection is drawn highlighted.
+#[test]
+fn a_prompt_selection_is_dropped_deleted_or_replaced() {
+    let shift = |c| KeyEvent::new(c, KeyModifiers::SHIFT);
+    let mut a = App::new();
+    a.input.set("hello world");
+    a.on_key(shift(KeyCode::Left));
+    a.on_key(shift(KeyCode::Left));
+    assert_eq!(a.input.selected(), Some("ld"));
+    a.on_key(key(KeyCode::Esc));
+    assert_eq!((a.input.text(), a.input.selection()), ("hello world", None));
+    a.input.end();
+    a.on_key(shift(KeyCode::Home));
+    assert_eq!(a.input.selected(), Some("hello world"));
+    let f = frame(&a, 60, 20);
+    assert!(f.contains("hello world"));
+    a.on_key(key(KeyCode::Backspace));
+    assert_eq!(a.input.text(), "");
+    a.input.set("one two");
+    a.on_key(shift(KeyCode::Left));
+    a.on_key(shift(KeyCode::Left));
+    a.on_key(shift(KeyCode::Left));
+    a.on_paste("six");
+    assert_eq!(a.input.text(), "one six");
+    a.on_key(shift(KeyCode::Left));
+    a.on_key(key(KeyCode::Left));
+    assert_eq!(a.input.selection(), None);
+    assert_eq!(a.input.text(), "one six");
+    // Undo takes the paste out, then brings the selected text back.
+    a.on_key(with('z', KeyModifiers::SUPER));
+    assert_eq!(a.input.text(), "one ");
+    a.on_key(with('z', KeyModifiers::SUPER));
+    assert_eq!(a.input.text(), "one two");
+}
+
 // (not in OpenCode's test) Redo undoes the undo; typing a word is one step.
 #[test]
 fn redo_and_typing_runs() {

@@ -1395,6 +1395,8 @@ impl App {
                 | Modal::Mcp(_),
             ) => {}
             None => {
+                // A paste replaces the selected text.
+                self.input.delete_selection();
                 if let Some(files) = super::attach::pasted_files(s, &self.cwd) {
                     for path in files {
                         let label = super::attach::label(&self.attachments, &path);
@@ -1789,6 +1791,28 @@ impl App {
             "input.undo" => {
                 self.input.undo();
             }
+            "input.select.left" => self.input.select(Editor::left),
+            "input.select.right" => self.input.select(Editor::right),
+            "input.select.up" => self.input.select(|e| {
+                e.up();
+            }),
+            "input.select.down" => self.input.select(|e| {
+                e.down();
+            }),
+            "input.select.line.home" | "input.select.visual.line.home" => {
+                self.input.select(Editor::home)
+            }
+            "input.select.line.end" | "input.select.visual.line.end" => {
+                self.input.select(Editor::end)
+            }
+            "input.select.buffer.home" => self.input.select(Editor::buffer_home),
+            "input.select.buffer.end" => self.input.select(Editor::buffer_end),
+            "input.select.word.forward" => self.input.select(Editor::word_right),
+            "input.select.word.backward" => self.input.select(Editor::word_left),
+            "input.select.all" if !empty => {
+                self.input.buffer_end();
+                self.input.select(Editor::buffer_home);
+            }
             "input.redo" => {
                 self.input.redo();
             }
@@ -1866,6 +1890,11 @@ impl App {
             self.pending.clear();
         }
         self.pending_at = None;
+        if self.pending.is_empty() && self.input.selection().is_some() {
+            if let Some(out) = self.selection_key(&k, &stroke) {
+                return out;
+            }
+        }
         let mut seq = std::mem::take(&mut self.pending);
         let continued = !seq.is_empty();
         seq.push(stroke);
@@ -1920,6 +1949,54 @@ impl App {
                 self.after_edit(browsing);
             }
             _ => {}
+        }
+        None
+    }
+
+    /// A key while text in the prompt is selected, as OpenCode's
+    /// `handleSelectionKey`: Ctrl+C (or Super+C) copies it to the
+    /// clipboard through the terminal (`OSC 52`) and keeps it selected,
+    /// Escape drops it, typing or a paste replaces it, Backspace and Delete
+    /// delete it, and any other key drops it before doing what it does.
+    /// `None` lets the key go on.
+    fn selection_key(&mut self, k: &KeyEvent, stroke: &Stroke) -> Option<Option<Action>> {
+        let ids = self
+            .keymap
+            .lookup(scope::PROMPT, std::slice::from_ref(stroke))
+            .exact;
+        if ids.iter().any(|id| id.starts_with("input.select.")) {
+            return None;
+        }
+        let copy = k.code == KeyCode::Char('c')
+            && (k.modifiers == KeyModifiers::CONTROL || k.modifiers == KeyModifiers::SUPER);
+        if copy {
+            self.clipboard = self.input.selected().map(str::to_string);
+            self.toast(super::toast::Toast::new(
+                super::toast::Variant::Success,
+                "Copied to clipboard",
+            ));
+            return Some(None);
+        }
+        if k.code == KeyCode::Esc {
+            self.input.deselect();
+            return Some(None);
+        }
+        if ids
+            .iter()
+            .any(|id| matches!(*id, "input.backspace" | "input.delete"))
+        {
+            self.input.delete_selection();
+            self.edited();
+            return Some(None);
+        }
+        let typed = matches!(k.code, KeyCode::Char(_))
+            && !k
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+        if typed {
+            self.input.delete_selection();
+        } else {
+            self.input.deselect();
         }
         None
     }

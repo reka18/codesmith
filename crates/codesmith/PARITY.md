@@ -98,8 +98,9 @@ Where the tests live:
 - `src/tui/parity_form.rs`: the question form (`tui/test/util/form`,
   `cli/tui/form`); `src/tui/form.rs` is the form itself.
 - `src/tui/parity_prompt.rs`: paste chips, prompt undo, attachment labels
-  (`tui/test/prompt-paste`, `prompt/attachment`) and the prompt groups after
-  them.
+  (`tui/test/prompt-paste`, `prompt/attachment`), `@` mentions of skills
+  and subagents, keyboard selection and copy (`util/selection-keys`,
+  `clipboard`) and the prompt groups after them.
 - `src/tui/parity_panel.rs`: the subagent and shell panel and the output
   viewer (`cli/tui/composer-keymap`, `util/session`,
   `session-subagent-navigation`, `component/dialog-shell-output`).
@@ -110,14 +111,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
-| tui: main UI | 1247 | 15 | 505 | 38 | 676 | 13 | 0 |
+| tui: main UI | 1247 | 15 | 508 | 6 | 705 | 13 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **759** | **795** | **40** | **2356** | **259** | **428** |
+| **Total** | **4637** | **759** | **798** | **8** | **2385** | **259** | **428** |
 
 ## Fixes made while porting
 
@@ -857,6 +858,8 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/prompt-paste` | %s grows the prompt in the first frame that shows it (2 cases) | after a fix | oc_text_grows_the_prompt_in_the_first_frame_that_shows_it (adapted: no server route appends to the prompt; a restored prompt) |
 | `tui/test/prompt-paste` | undo submits the restored %s chip with its attachment (files) | after a fix | oc_undo_submits_the_restored_file_chip_with_its_attachment |
 | `tui/test/prompt-paste` | undo submits the restored %s chip with its attachment (agents, skills: 2 cases) | after a fix | oc_undo_submits_the_restored_agent_and_skill_chips_with_their_attachments (adapted: the mention in the text sent is the attachment) |
+| `tui/test/util/selection-keys` | $kind selections can be copied and edited in $mode mode (2 cases) | after a fix | oc_selections_can_be_copied_and_edited (adapted: a keyboard selection in the prompt, both modes the keyboard's; the second copy is Ctrl+C again) |
+| `tui/test/clipboard` | removes NUL characters before writing | after a fix | oc_removes_nul_characters_before_writing |
 | `tui/test/prompt-offset` | an agent mention after a tab replaces only the mention | after a fix | oc_an_agent_mention_after_a_tab_replaces_only_the_mention (adapted: a byte range, not an extmark) |
 | `tui/test/prompt/attachment` | deduplicates identical inline images while preserving other attachments | after a fix | oc_deduplicates_identical_inline_images_while_preserving_other_attachments (adapted: pasted paths) |
 | `tui/test/prompt/attachment` | reuses labels for identical image data | after a fix | oc_reuses_labels_for_identical_image_data (adapted: the same path) |
@@ -1011,17 +1014,6 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
-### tui: mouse selection and copy (32)
-
-- `tui/test/util/selection` (8): e.g. "copy writes selected text without clearing the highlight"; "copy-on-select ignores a later non-drag release"
-- `tui/test/util/selection-keys` (7): e.g. "terminal selections retain repeated copies until Escape or typing dismisses them"; "copy-on-select forwards Ctrl+C without recopying the selection"
-- `tui/test/ui/session-link` (6): e.g. "session links in markdown"; "a wrapped title opens its session from either row, and plain text does not"
-- `tui/test/clipboard` (5): e.g. "adapts OpenTUI image and text reads"; "uses all available routes but skips the process host remotely"
-- `tui/test/cli/tui/dialog-select` (2): e.g. "Escape clears text selection before invoking a custom back action"; "ctrl+c clears a dialog text selection before closing the dialog"
-- `tui/test/util/selection-copy-on-select` (2): e.g. "copy-on-select preserves multi-clicks at column $column"
-- `tui/test/ui/link` (1): e.g. "plain clicks on any row of a wrapped Markdown link resolve the full URL"
-- `tui/test/config-v2` (1): e.g. "validates terminal copy behavior"
-
 ### tui: per-agent and per-session model selection, the rest (2)
 
 - `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents (the object form of `model` with a variant)
@@ -1080,6 +1072,7 @@ its remaining work is tracked in
 | util: titles | by design | 4 | 1 | CodeSmith keeps untitled sessions untitled until a title is generated |
 | tui: diff viewer: mouse, images and routes | by design | 33 | 5 | no mouse: OpenCode's right-click file menu, clicked folders and source label; no image previews in the terminal; the viewer is always a session's panel (no standalone route, session tabs or plugin to disable, one kind of panel); the file tree's unused list layout, and its loading and empty states, which the viewer never shows |
 | tui: terminal pane | by design | 3 | 1 | no terminal pane whose palette follows the theme; commands run through the shell tool |
+| tui: mouse selection, copy and links | by design | 29 | 8 | a mouse has no effect in CodeSmith other than the terminal's own copy and paste from the host clipboard: the UI never captures the mouse, so there are no drag, click or multi-click selections, no copy-on-select or `terminal.copy` setting, no selection for Escape or Ctrl+C to clear in a dialog or an embedded terminal, and no clicked session or Markdown links; the clipboard is written only through the terminal (`OSC 52`), never a host process, which reports no failure, and is never read (a paste comes from the terminal) |
 | tui: toasts and completion notices | by design | 6 | 2 | no mouse: a toast is not clicked to run its action or dismissed early, nor paused while hovered; completion notices are not clicked (subagents run inside the turn, so no background subagent sends one) |
 | tui: settings dialog | by design | 1 | 1 | no settings dialog to search from the palette: the UI never writes the config; settings it can change are commands (`app.toggle.paste_summary`, the theme mode), which the palette lists |
 | tui: group disclosure | by design | 3 | 1 | no mouse: ctrl+o opens every group, so the rows above an opened group move when scrolled up |

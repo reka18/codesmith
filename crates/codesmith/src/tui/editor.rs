@@ -18,6 +18,9 @@ pub struct Editor {
     /// Where the cursor was after the last typed character, while typing
     /// goes on there (a run of typing is one undo step).
     typed_at: Option<usize>,
+    /// Where a keyboard selection (shift and a movement key) started; the
+    /// cursor is its other end.
+    anchor: Option<usize>,
 }
 
 /// Most undo steps kept.
@@ -40,6 +43,46 @@ impl Editor {
         self.text.is_empty()
     }
 
+    /// The selected byte range, when something is selected.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?;
+        let (s, e) = (a.min(self.cursor), a.max(self.cursor));
+        (s < e && e <= self.text.len()).then_some((s, e))
+    }
+
+    /// The selected text.
+    pub fn selected(&self) -> Option<&str> {
+        self.selection().map(|(s, e)| &self.text[s..e])
+    }
+
+    /// Extend the selection with a movement (`left`, `word_right`, …),
+    /// starting one at the cursor when there is none.
+    pub fn select(&mut self, motion: impl FnOnce(&mut Self)) {
+        let anchor = self.anchor.unwrap_or(self.cursor);
+        motion(self);
+        self.anchor = Some(anchor);
+    }
+
+    /// Drop the selection; the text stays.
+    pub fn deselect(&mut self) {
+        self.anchor = None;
+    }
+
+    /// Delete the selected text (it can be undone). False when nothing is
+    /// selected.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((s, e)) = self.selection() else {
+            self.anchor = None;
+            return false;
+        };
+        self.save(false);
+        self.text.replace_range(s..e, "");
+        self.cursor = s;
+        self.goal = None;
+        self.anchor = None;
+        true
+    }
+
     /// Replace the whole text, cursor at the end, as a new buffer (no
     /// undo history).
     pub fn set(&mut self, s: impl Into<String>) {
@@ -49,10 +92,12 @@ impl Editor {
         self.undo.clear();
         self.redo.clear();
         self.typed_at = None;
+        self.anchor = None;
     }
 
     /// Replace the whole text as an edit (it can be undone).
     pub fn replace_all(&mut self, s: impl Into<String>) {
+        self.anchor = None;
         self.save(false);
         self.text = s.into();
         self.cursor = self.text.len();
@@ -88,6 +133,7 @@ impl Editor {
         let Some((t, c)) = self.undo.pop() else {
             return false;
         };
+        self.anchor = None;
         let now = (std::mem::replace(&mut self.text, t), self.cursor);
         self.redo.push(now);
         self.cursor = c;
@@ -101,6 +147,7 @@ impl Editor {
         let Some((t, c)) = self.redo.pop() else {
             return false;
         };
+        self.anchor = None;
         let now = (std::mem::replace(&mut self.text, t), self.cursor);
         self.undo.push(now);
         self.cursor = c;

@@ -54,6 +54,10 @@ All notable changes to CodeSmith are listed here. Versions follow
   `tui.session.new_location` chooses where `/new` goes back to.
 - Typing `@` offers the skills and subagents before the files, as
   OpenCode does.
+- Text in the prompt can be selected from the keyboard (shift and a
+  movement key) and copied with ctrl+c through the terminal (`OSC 52`);
+  typing replaces it. Copies drop NUL characters. The mouse stays the
+  terminal's: the UI never captures it.
 
 ## 0.1.0
 

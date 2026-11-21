@@ -85,8 +85,22 @@ bindings](#key-bindings)), and `/help` lists the bindings in effect.
 | **alt+d**, **alt+delete**, **ctrl+delete** | Delete the next word. |
 | **ctrl+k** / **ctrl+u** | Delete to the end / the start of the line. |
 | **ctrl+shift+d** | Delete the line. |
-| **ctrl+c** | Clear the prompt. |
+| **ctrl+c** | Clear the prompt (copy the selection, when text is selected). |
+| **shift+←/→/↑/↓**, **shift+home/end**, **alt+shift+←/→**, **ctrl+shift+a/e**, **super+a** | Select text in the prompt (by character, line, to the start or end, by word, to the line's ends, all). |
 | **leader e** | Edit the prompt in `$VISUAL` or `$EDITOR` (`/editor` too). |
+
+Selected text in the prompt is highlighted. **ctrl+c** (or **super+c**,
+where the terminal passes it on) copies it to the clipboard through the
+terminal (`OSC 52`, NUL characters dropped), and it stays selected; typing
+or a paste replaces it, **backspace** or **delete** deletes it, **esc**
+drops it, and any other key drops it before doing what it does.
+
+The mouse has no effect in CodeSmith other than the terminal's own: the UI
+never turns on mouse reporting, so the terminal selects, copies and pastes
+with the mouse as it does anywhere else (a paste arrives as typed text).
+There are no clicks, drags or wheel scrolling in the UI, and no
+`terminal.copy` or mouse setting; OpenCode's copy-on-select is the
+terminal's.
 
 The prompt history is kept across restarts, as OpenCode keeps it: the
 newest 50 prompts, shared by every tab and folder, in
