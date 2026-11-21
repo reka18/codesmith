@@ -115,6 +115,17 @@ const issues = await tools.github.list_issues({ repo: "acme/api", state: "open" 
 return issues.filter(i => i.labels.some(l => l.name === "bug")).map(i => i.title);
 ```
 
+`console.log`, `info`, `debug`, `warn`, `error`, `dir` and `table` each add
+a line (`warn`, `error` and `debug` lines start `[warn]`, `[error]` and
+`[debug]`). Values are shown as OpenCode's Code Mode shows them, without
+running any of the program's code: objects and arrays as compact JSON with
+accessors as `[Getter]`, `[Setter]` or `[Getter/Setter]`, an error as
+`Name: message`, `Map(1) [["a",1]]` and `Set(1) [1]`, a class instance
+with its class name (`Cache {"size":2}`), a class as `[class Cache]`, a
+function as `[opaque reference]`, a cycle as `[Circular]` and anything
+nested more than 32 levels deep as `...`. `console.table(rows, columns?)`
+prints a tab-separated table. A line is cut at 100,000 characters.
+
 The tools are listed in the system prompt with TypeScript-style signatures.
 When a server's tools come, go or change mid-session, the model is told what
 changed in a short update at that point in the conversation (new and removed

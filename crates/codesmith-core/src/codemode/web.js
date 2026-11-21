@@ -1272,4 +1272,28 @@
     },
   });
   global("Buffer", Buffer);
+
+  // How `console` shows these values, as OpenCode's Code Mode does: a URL
+  // as its href, search params as their query, headers as a name-to-value
+  // object, a Buffer as its first 50 bytes in hex.
+  const typedLength = Object.getOwnPropertyDescriptor(TypedArray.prototype, "length").get;
+  if (typeof G.__consoleInspect === "function") {
+    G.__consoleInspect((v) => {
+      if (v === null || typeof v !== "object") return undefined;
+      if (urls.has(v)) return urls.get(v).parts[0];
+      if (params.has(v)) return serialize(params.get(v).list);
+      if (headers.has(v)) {
+        const shown = {};
+        for (const [k, x] of combined(headers.get(v))) shown[k] = x;
+        return "Headers " + JSON.stringify(shown);
+      }
+      if (isBuffer(v)) {
+        const n = typedLength.call(v);
+        let shown = "";
+        for (let i = 0; i < Math.min(n, 50); i++) shown += " " + (v[i] < 16 ? "0" : "") + v[i].toString(16);
+        return "<Buffer" + shown + (n > 50 ? ` ... ${n - 50} more bytes` : "") + ">";
+      }
+      return undefined;
+    });
+  }
 });

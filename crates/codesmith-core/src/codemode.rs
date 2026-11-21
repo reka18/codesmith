@@ -347,10 +347,36 @@ const CAPS: &str = r#"(() => {
 })();
 "#;
 
+/// `console`, formatting values as OpenCode's Code Mode does.
+const CONSOLE: &str = include_str!("codemode/console.js");
+
+/// What kind of object `console` is showing, for the kinds a program
+/// cannot tell apart without running its own code: `"proxy"` (its traps
+/// are not called), `"function"` (a function the program wrote, as
+/// opposed to a built-in), `"error"` (an object made by an `Error`
+/// constructor), `"promise"`, or `""`.
+fn value_kind(
+    _: &boa_engine::JsValue,
+    args: &[boa_engine::JsValue],
+    _: &mut boa_engine::Context,
+) -> boa_engine::JsResult<boa_engine::JsValue> {
+    use boa_engine::builtins::{
+        error::Error, function::OrdinaryFunction, promise::Promise, proxy::Proxy,
+    };
+    let kind = match args.first().and_then(|v| v.as_object()) {
+        Some(o) if o.is::<Proxy>() => "proxy",
+        Some(o) if o.is::<OrdinaryFunction>() => "function",
+        Some(o) if o.is::<Error>() => "error",
+        Some(o) if o.is::<Promise>() => "promise",
+        _ => "",
+    };
+    Ok(boa_engine::js_string!(kind).into())
+}
+
 fn prelude(entries: &[Entry]) -> String {
     let mut s = search::prelude(entries);
     s.push_str(CAPS);
-    s.push_str("const __logs = [];\nconst console = { log: (...a) => { __logs.push(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')); } };\nconsole.error = console.log; console.warn = console.log; console.info = console.log;\n");
+    s.push_str(CONSOLE);
     s
 }
 
@@ -453,6 +479,13 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
         calls: count.load(Ordering::SeqCst),
     };
     if let Err(e) = ctx.register_global_callable(js_string!("__call"), 2, call) {
+        return fail(e.to_string(), &count);
+    }
+    if let Err(e) = ctx.register_global_callable(
+        js_string!("__kind"),
+        1,
+        NativeFunction::from_fn_ptr(value_kind),
+    ) {
         return fail(e.to_string(), &count);
     }
     if let Err(e) = search::install(&mut ctx, &entries) {
@@ -1395,5 +1428,131 @@ mod tests {
                 .await;
         let e = out.result.unwrap_err();
         assert!(e.contains("memory"), "{e}");
+    }
+
+    async fn logs(code: &str) -> Vec<String> {
+        let (out, _) = run_in(None, code).await;
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        out.logs
+    }
+
+    /// codemode.test.ts: "captures console output as bounded result logs"
+    /// (adapted: the logs; CodeSmith's result is its own).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_captures_console_output_with_method_prefixes() {
+        let got = logs(
+            r#"const returned = console.log("Thread info:", { name: "Demo", count: 2 })
+            console.warn("careful")
+            return returned"#,
+        )
+        .await;
+        assert_eq!(
+            got,
+            [
+                "Thread info: {\"name\":\"Demo\",\"count\":2}",
+                "[warn] careful"
+            ]
+        );
+        let got = logs(r#"console.error("bad", 1); console.debug("d"); console.info("i"); console.log(); return 0"#).await;
+        assert_eq!(got, ["[error] bad 1", "[debug] d", "i", ""]);
+    }
+
+    /// codemode.test.ts: "captures console.dir and console.table output".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_captures_console_dir_and_console_table_output() {
+        let got = logs(
+            r#"console.dir({ nested: { ok: true } })
+            console.table([
+              { name: "Kit", count: 1, hidden: "x" },
+              { name: "Olive", count: 2, hidden: "y" }
+            ], ["name", "count"])
+            return "done""#,
+        )
+        .await;
+        assert_eq!(
+            got,
+            [
+                "{\"nested\":{\"ok\":true}}",
+                "(index)\tname\tcount\n0\tKit\t1\n1\tOlive\t2"
+            ]
+        );
+    }
+
+    /// codemode.test.ts: "console.table renders CodeMode value cells".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oc_console_table_renders_code_mode_value_cells() {
+        let got = logs("console.table([{ when: new Date(0), n: NaN }])\nreturn null").await;
+        assert_eq!(got, ["(index)\twhen\tn\n0\t1970-01-01T00:00:00.000Z\tNaN"]);
+    }
+
+    /// Tables of primitives, of an object's rows, and of no columns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn console_table_shapes() {
+        let got = logs(
+            r#"console.table([1, "two"]); console.table({ a: { x: 1 }, b: { y: 2 } }); console.table(5); console.table()
+            return 0"#,
+        )
+        .await;
+        assert_eq!(
+            got,
+            [
+                "(index)\tValue\n0\t1\n1\ttwo",
+                "(index)\tx\ty\na\t1\t\nb\t\t2",
+                "(index)\tValue\n0\t5",
+                "undefined",
+            ]
+        );
+    }
+
+    /// Showing a value runs none of the program's code: no getter, proxy
+    /// trap or `toJSON` is called, and built-ins show what they are.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn console_shows_values_without_running_program_code() {
+        let got = logs(
+            r#"const boom = () => { throw new Error("program code ran") }
+            const p = new Proxy({}, { ownKeys: boom, getOwnPropertyDescriptor: boom, getPrototypeOf: boom })
+            const a = { self: null, toJSON: boom }; a.self = a
+            const arr = [1, , undefined]; Object.defineProperty(arr, 3, { get: boom, enumerable: true })
+            console.log(p, a, arr, Object.create(p), { get x() { boom() } })
+            console.log(new Set([1, "a"]), new WeakMap(), new WeakSet(), new Date(NaN), /a+/gi, Promise.resolve(1))
+            console.log(new Uint8Array([1, 2]), new ArrayBuffer(4), Object.create(null), Symbol("s"), 10n, () => 1)
+            console.log(Buffer.from("hi"), new URL("https://x.dev/a?b=1"), new URLSearchParams("a=1&b=2"))
+            console.log(new (class M extends Map {})([[1, 2]]), new (class B { #x = 1; y = 2 })())
+            class E2 extends TypeError {}
+            console.log(new E2("x"), [new Error("in")], new Error(""))
+            return 0"#,
+        )
+        .await;
+        assert_eq!(
+            got,
+            [
+                "[Proxy] {\"self\":[Circular],\"toJSON\":[opaque reference]} [1,null,null,[Getter]] {} {\"x\":[Getter]}",
+                "Set(2) [1,\"a\"] WeakMap { <items unknown> } WeakSet { <items unknown> } Invalid Date /a+/gi [Promise (await it to get its value)]",
+                "Uint8Array(2) [1,2] ArrayBuffer(4) {} Symbol(s) 10 [opaque reference]",
+                "<Buffer 68 69> https://x.dev/a?b=1 a=1&b=2",
+                "Map(1) [[1,2]] B {\"y\":2}",
+                "TypeError: x [Error: in] Error",
+            ]
+        );
+    }
+
+    /// Nesting past 32 levels shows as `...`, and a line stops at its cap,
+    /// so a value that fans out through shared references stays bounded.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn console_output_is_bounded() {
+        let got = logs(
+            r#"let d = {}, x = d
+            for (let i = 0; i < 40; i++) { x.n = {}; x = x.n }
+            console.log(d)
+            let big = ["x".repeat(100)]
+            for (let i = 0; i < 30; i++) big = [big, big]
+            console.log(big)
+            return 0"#,
+        )
+        .await;
+        assert_eq!(got[0].matches("{\"n\":").count(), 33);
+        assert!(got[0].contains("{\"n\":...}"), "{}", got[0]);
+        assert!(got[1].ends_with("... (cut)"));
+        assert!(got[1].chars().count() <= 100_000 + 9, "{}", got[1].len());
     }
 }

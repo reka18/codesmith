@@ -30,6 +30,14 @@ All notable changes to CodeSmith are listed here. Versions follow
   server listed, are read only from the global config file, and only a
   person can start a swap: it is not a tool, and `run`, automations,
   `serve`, ACP and CodeSmith's own shells cannot.
+- Code Mode's `console` shows values as OpenCode's Code Mode does instead
+  of as JSON: getters, `toJSON` and proxy traps are no longer run to log a
+  value (an accessor shows as `[Getter]`), a `Map`, `Set` or error shows its
+  contents (`Map(1) [["a",1]]`, `Error: boom`), class instances carry
+  their class name, and cycles and deep nesting are marked. `console.table`,
+  `console.dir` and `console.debug` are added, and `warn`, `error` and
+  `debug` lines start with `[warn]`, `[error]` and `[debug]`. A logged
+  line is cut at 100,000 characters.
 - The check that keeps a public host from redirecting `webfetch`, Code
   Mode `fetch`, OpenAPI calls and image input downloads to a local or
   private address now covers the connection itself: the target's name was

@@ -83,8 +83,8 @@ Where the tests live:
   time, recorded by running the test files under Node with Code Mode
   stubbed out; Test262-derived cases under the BSD license in
   `fixtures/LICENSE.test262`, web-platform-tests-derived ones under
-  `fixtures/LICENSE.wpt`), run through Code Mode on Boa. 1604 pass; the
-  other 200 are listed in the test with their reason, and the test fails if
+  `fixtures/LICENSE.wpt`), run through Code Mode on Boa. 1612 pass; the
+  other 192 are listed in the test with their reason, and the test fails if
   any other case fails or a listed one starts passing. A case can assert on
   part of a result (a member of the value, the error's message, the logs)
   or compare with another program's value, as its OpenCode test does.
@@ -121,11 +121,11 @@ Where the tests live:
 | tui: main UI | 1247 | 15 | 520 | 5 | 707 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
-| codemode | 1666 | 785 | 218 | 5 | 658 | 0 | 0 |
+| codemode | 1666 | 785 | 223 | 0 | 658 | 0 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **920** | **815** | **12** | **2462** | **0** | **428** |
+| **Total** | **4637** | **920** | **820** | **7** | **2462** | **0** | **428** |
 
 ## Fixes made while porting
 
@@ -187,6 +187,24 @@ Where the tests live:
   OpenCode's `activityCalendar`, a week now belongs to the month of its
   Thursday, kept inside the range, and a label is drawn only where it fits
   in its month's weeks, or for the last month.
+- **Code Mode's console** (`codemode/test/accessors`, `classes`,
+  `stdlib`): `console` logged each value as its JSON, so it ran getters
+  and `toJSON`, showed a `Map` or an error as `{}`, and had only `log`,
+  `info`, `warn` and `error`, with no `table`. It now formats values as
+  OpenCode's `stdlib/console.ts` does, without running the program's code:
+  compact JSON with accessors as `[Getter]`, `[Setter]` or
+  `[Getter/Setter]`, errors as `Name: message`, `Map(n) [...]`,
+  `Set(n) [...]`, class instances with their class name, classes as
+  `[class A extends B]`, functions as `[opaque reference]`, `[Circular]`,
+  `...` past 32 levels, and URL, Headers, Buffer, typed arrays and dates as
+  OpenCode shows them; a proxy's traps are not called (it shows as
+  `[Proxy]`). `debug`, `dir` and `table` are added, and `warn`, `error` and
+  `debug` lines carry OpenCode's `[warn] ` prefixes. A line is cut at
+  100,000 characters so shared references cannot fan a value out without
+  bound. The 5 tests pass, and so does the `Headers` console assertion
+  counted with OpenCode's restrictions; `codemode.rs` also pins
+  `codemode.test.ts`'s console expectations (`oc_captures_console_*`,
+  `oc_console_table_renders_code_mode_value_cells`).
 - **Code Mode runs programs in strict mode** (`codemode/test/parity`,
   `descriptors`, `stdlib`): programs ran as sloppy-mode async arrows, so
   writes to frozen, sealed or read-only properties were silently ignored,
@@ -1101,18 +1119,6 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
-### codemode: console rendering (5)
-
-CodeSmith's `console` logs each value as its JSON, so it reads getters and
-shows a `Map` or an error as `{}`, and it has no `console.table`;
-OpenCode renders values as Node does.
-
-- `codemode/test/accessors`: enumeration never calls accessors > keys, for...in, in, hasOwnProperty, delete and console.log
-- `codemode/test/accessors`: enumeration never calls accessors > console.table labels accessors, own and inherited
-- `codemode/test/classes`: showing and copying class values > console.log shows the class name
-- `codemode/test/stdlib`: Map > console.log renders map contents for debugging
-- `codemode/test/stdlib`: console.log of errors > prints name and message, nested too
-
 ### tui: per-agent and per-session model selection, the rest (1)
 
 - `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit (no runner-level test harness yet)
@@ -1207,16 +1213,15 @@ OpenCode renders values as Node does.
 ### Code Mode on Boa
 | acp: compaction replay | by design | 3 | 1 | CodeSmith's history keeps completed compactions only: a failed, cancelled or running compaction leaves nothing to replay |
 
-Of the 1804 Code Mode assertions run, 200 fail on purpose, by reason (the
+Of the 1804 Code Mode assertions run, 192 fail on purpose, by reason (the
 test names each one):
 
 | Reason | Assertions | Bucket |
 |---|---:|---|
-| OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs, `Headers` at the boundary, syntax OpenCode refuses and Boa runs) | 73 | by design |
+| OpenCode's own restrictions and result conversion (opaque function and iterator references, cycles, typed arrays at the boundary, errors returned as `{ name, message }`, promises awaited inside results, deterministic UTC dates and `en-US` formatting, empty programs, `Headers` at the boundary, syntax OpenCode refuses and Boa runs) | 72 | by design |
 | Boa 0.22 departs from the specification or lacks a recent addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` and `v` flags, `substr`, `super` in arrows, `localeCompare` without collation, some TDZ and property-order cases; one labeled `continue` loops forever) | 55 | by design (engine) |
 | Strict-mode checks where Boa's strict mode still differs from OpenCode's (wording of frozen-write errors, an early `SyntaxError` for `delete` of a variable or a parameter named `arguments`, no `TypeError` writing a named function expression's name or in one frozen-array case) | 6 | by design |
 | Boa's error wording, and OpenCode's error kinds | 53 | by design |
-| `console` output rendered as JSON (getters read, `Map` and errors as `{}`, no `console.table`) | 7 | roadmap |
 | CodeSmith's limits (400 nested calls where OpenCode allows 10000, 64 MiB buffers) | 5 | by design |
 | Depends on the time zone (passes in UTC, fails in local time), so either outcome is accepted | 1 | by design |
 

@@ -84,11 +84,6 @@ const LIMIT: &str = "CodeSmith's limits";
 /// addition (Set methods on Set-likes, `Error.isError`, the RegExp `d` flag,
 /// `substr`, `super` in arrows, some TDZ and property-order cases, ...).
 const ENGINE: &str = "Boa differs from the specification";
-/// `console` output: CodeSmith logs a value as its JSON (reading its
-/// getters, showing a `Map` or an error as `{}`) and has no
-/// `console.table`; OpenCode renders values as Node does (`[Getter]`,
-/// `Map(1) [...]`, `Error: boom`, class names). On the roadmap.
-const CONSOLE: &str = "console output is rendered as JSON";
 /// Boa's result depends on the local time zone: it passes in UTC (CI) and
 /// fails elsewhere, so either outcome is accepted.
 const TIMEZONE: &str = "Boa's answer depends on the local time zone";
@@ -782,30 +777,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "accessors.test.ts",
-        r#"enumeration never calls accessors > keys, for...in, in, hasOwnProperty, delete and console.log"#,
-        2,
-        CONSOLE,
-    ),
-    (
-        "accessors.test.ts",
-        r#"enumeration never calls accessors > keys, for...in, in, hasOwnProperty, delete and console.log"#,
-        3,
-        CONSOLE,
-    ),
-    (
-        "accessors.test.ts",
-        r#"enumeration never calls accessors > console.table labels accessors, own and inherited"#,
-        1,
-        CONSOLE,
-    ),
-    (
-        "accessors.test.ts",
-        r#"enumeration never calls accessors > console.table labels accessors, own and inherited"#,
-        2,
-        CONSOLE,
-    ),
-    (
-        "accessors.test.ts",
         r#"the iterator protocol > break calls a return getter once, and yield* delegates through getters"#,
         1,
         ENGINE,
@@ -875,12 +846,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         r#"classes extending Error > every error type can be subclassed"#,
         8,
         ENGINE,
-    ),
-    (
-        "classes.test.ts",
-        r#"showing and copying class values > console.log shows the class name"#,
-        1,
-        CONSOLE,
     ),
     (
         "classes.test.ts",
@@ -1148,21 +1113,9 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "stdlib.test.ts",
-        r#"Headers > serializes as a name-to-value object at the boundary and in JSON; prints for console"#,
-        2,
-        BOUNDARY,
-    ),
-    (
-        "stdlib.test.ts",
         r#"Headers > rejects what it cannot build from, and invalid names and values, with TypeErrors the program can catch"#,
         1,
         MESSAGE,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"Map > console.log renders map contents for debugging"#,
-        2,
-        CONSOLE,
     ),
     (
         "stdlib.test.ts",
@@ -1223,12 +1176,6 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
         r#"Object.prototype.toString > reports the built-in kind it is inherited by, as JS does through Symbol.toStringTag"#,
         1,
         BOUNDARY,
-    ),
-    (
-        "stdlib.test.ts",
-        r#"console.log of errors > prints name and message, nested too"#,
-        1,
-        CONSOLE,
     ),
     (
         "stdlib.test.ts",
