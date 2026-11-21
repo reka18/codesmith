@@ -27,6 +27,20 @@ All notable changes to CodeSmith are listed here. Versions follow
   rules, rather than unparented without them. Only an automation whose
   rules were never recorded and whose creator is gone is refused, with an
   error saying so, and paused.
+- **Signed releases:** each release's `SHA256SUMS` is signed with minisign
+  on the signing Mac (`SHA256SUMS.minisig`, made by the new
+  `scripts/sign-release.sh`, which `scripts/sign-macos.sh` runs).
+  `codesmith upgrade` verifies the signature, and its trusted comment naming
+  the version asked for, against the public keys compiled in from
+  `release_key.pub`, before it uses any checksum; a missing or bad signature,
+  or one for another version, refuses the upgrade, with no override.
+  `install.sh` checks the same signature when `minisign` is installed.
+  Until the first release key is generated, the key file is a placeholder
+  and upgrades check `SHA256SUMS` only, with a warning that releases aren't
+  signed yet; `scripts/release.sh --draft-upload` refuses to upload a
+  release then. Upgrades trusted `SHA256SUMS` from the same release, so
+  anyone able to replace a release's files could ship a bad binary with a
+  matching checksum.
 - A project root of `/` or the home folder no longer puts every path inside
   the project: the working directory is the boundary then (OpenCode does
   this for `/`), and a session working in `/` or `~` itself has none, so

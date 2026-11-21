@@ -1,7 +1,9 @@
 #!/bin/sh
-# Sign and notarize the macOS binaries of a CodeSmith release, then replace
-# them on the GitHub Release. Run this on the Mac that holds the Developer ID
-# key; nothing here needs (or should be given) CI secrets.
+# Sign and notarize the macOS binaries of a CodeSmith release, rewrite
+# SHA256SUMS, sign it with minisign (scripts/sign-release.sh), then replace
+# them on the GitHub Release and add SHA256SUMS.minisig. Run this on the Mac
+# that holds the Developer ID key and the minisign secret key; nothing here
+# needs (or should be given) CI secrets.
 #
 #   CODESMITH_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
 #   CODESMITH_NOTARY_PROFILE=codesmith-notary \
@@ -13,6 +15,7 @@
 #                             `xcrun notarytool store-credentials`
 #   CODESMITH_REPO            GitHub repo (default reka18/codesmith)
 #   CODESMITH_BUNDLE_ID       code-signing identifier (default codesmith)
+#   CODESMITH_MINISIGN_KEY    minisign secret key (default ~/.minisign/codesmith.key)
 #   CODESMITH_DRY_RUN=1       do everything except notarize and upload
 #
 # Notarization and stapling: a bare Mach-O executable cannot carry a stapled
@@ -42,6 +45,9 @@ bundle_id="${CODESMITH_BUNDLE_ID:-codesmith}"
 for c in gh codesign xcrun ditto shasum tar; do
     command -v "$c" >/dev/null 2>&1 || die "need $c"
 done
+here=$(cd "$(dirname "$0")" && pwd)
+# Before minutes of notarizing: minisign, its secret key and a pinned key.
+"$here/sign-release.sh" --check
 
 work=$(mktemp -d -t codesmith-sign)
 trap 'rm -rf "$work"' EXIT
@@ -108,17 +114,20 @@ sort -k 2 "$work/SHA256SUMS.new" > "$work/SHA256SUMS"
 say "new SHA256SUMS:"
 cat "$work/SHA256SUMS" >&2
 
+# Sign the final SHA256SUMS; codesmith upgrade refuses it unsigned.
+"$here/sign-release.sh" "$tag" "$work/SHA256SUMS"
+
 if [ "$dry" = 1 ]; then
     out="./codesmith-signed-$version"
     rm -rf "$out"
     mkdir -p "$out"
     # shellcheck disable=SC2086 # $signed is a space-separated list of paths without spaces
-    cp $signed "$work/SHA256SUMS" "$out/"
+    cp $signed "$work/SHA256SUMS" "$work/SHA256SUMS.minisig" "$out/"
     say "dry run: signed files left in $out, nothing uploaded"
     exit 0
 fi
 
 say "uploading to release $tag"
 # shellcheck disable=SC2086
-gh release upload "$tag" --repo "$repo" --clobber $signed "$work/SHA256SUMS"
+gh release upload "$tag" --repo "$repo" --clobber $signed "$work/SHA256SUMS" "$work/SHA256SUMS.minisig"
 say "done. Check the release, then publish it: gh release edit $tag --repo $repo --draft=false"

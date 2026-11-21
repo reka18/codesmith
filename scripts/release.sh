@@ -24,7 +24,10 @@
 #                   it also overrides --draft-upload.)
 #   --draft-upload  also run `gh release create vVERSION --draft --verify-tag`
 #                   with the tarballs and SHA256SUMS. Needs a clean tree at
-#                   the pushed tag vVERSION.
+#                   the pushed tag vVERSION, and a release key in
+#                   crates/codesmith/src/release_key.pub: the draft is
+#                   unsigned until scripts/sign-macos.sh signs it, and is
+#                   only published after that.
 #   --targets "..." build only these targets (smoke tests and packaging too);
 #                   only allowed with --dry-run.
 #
@@ -118,6 +121,16 @@ for t in $targets; do
   rust target $t: rustup target add $t"
 done
 [ -z "$missing" ] || die "missing tools (one-time setup):${missing}"
+
+# A draft is uploaded only when the signing step can follow: the binaries
+# pin a release key (release_key.pub) and sign-macos.sh signs SHA256SUMS
+# with it. Before the first key exists there is nothing to sign with.
+keys=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' -e '^PLACEHOLDER$' \
+    crates/codesmith/src/release_key.pub || true)
+if [ -z "$keys" ]; then
+    [ "$mode" = upload ] && die "no release key in crates/codesmith/src/release_key.pub, so this release could not be signed; generate one first (RELEASING.md, \"Signing the checksums\")"
+    printf 'release: note: no release key yet; a --draft-upload would refuse (RELEASING.md)\n' >&2
+fi
 sdk=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null) || die "no macOS SDK: install Xcode or run xcode-select --install"
 
 if [ "$mode" = upload ]; then
@@ -249,4 +262,4 @@ fi
 say "create the draft release ${tag}"
 gh release create "$tag" "$@" --repo "$repo" --draft --verify-tag \
     --title "CodeSmith ${tag}" --generate-notes
-say "done: sign it with scripts/sign-macos.sh ${tag} (RELEASING.md)"
+say "done: the draft ${tag} is NOT signed yet. Next, on the signing Mac: scripts/sign-macos.sh ${tag}, which signs the macOS binaries and SHA256SUMS; publish only after that (RELEASING.md)"
