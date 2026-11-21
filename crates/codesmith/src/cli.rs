@@ -187,6 +187,18 @@ enum Command {
         #[command(subcommand)]
         what: Debug,
     },
+    /// Upgrade CodeSmith to the latest or a specific release.
+    #[command(visible_alias = "update")]
+    Upgrade {
+        /// Version to upgrade to (with or without a leading v).
+        target: Option<String>,
+        /// Installation method to use (otherwise detected from where this copy lives).
+        #[arg(short, long, value_enum)]
+        method: Option<crate::upgrade::Method>,
+        /// Only report whether another release is out; change nothing.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -879,6 +891,45 @@ impl codesmith_core::question::Questioner for Terminal {
     }
 }
 
+/// Run the interactive UI with the opt-in update check alongside; once the
+/// terminal is restored, say if another release is out.
+async fn with_update_notice(ui: impl std::future::Future<Output = Result<()>>) -> Result<()> {
+    let check = crate::upgrade::start(env!("CARGO_PKG_VERSION"));
+    let result = ui.await;
+    if let Some(check) = check {
+        if let Some(notice) = check.notice().await {
+            eprintln!("{notice}");
+        }
+    }
+    result
+}
+
+/// `codesmith upgrade ...` parsed into (target, method, check).
+#[cfg(test)]
+pub(crate) fn parse_upgrade<'a>(
+    argv: impl Iterator<Item = &'a str>,
+) -> Result<(Option<String>, Option<crate::upgrade::Method>, bool), clap::Error> {
+    match Cli::try_parse_from(argv)?.command {
+        Some(Command::Upgrade {
+            target,
+            method,
+            check,
+        }) => Ok((target, method, check)),
+        _ => unreachable!("upgrade parses as upgrade"),
+    }
+}
+
+/// The long help of `codesmith` or of a subcommand path.
+#[cfg(test)]
+pub(crate) fn help(path: &[&str]) -> String {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    for name in path {
+        cmd = cmd.find_subcommand(name).expect("subcommand").clone();
+    }
+    cmd.render_long_help().to_string()
+}
+
 /// Parse the command line and run it; returns the exit code.
 pub async fn entry() -> i32 {
     let cli = Cli::parse();
@@ -926,7 +977,7 @@ async fn run(cli: Cli) -> Result<()> {
                 ),
                 (None, false) => None,
             };
-            tui::run(
+            with_update_notice(tui::run(
                 cwd,
                 tui::Opts {
                     resume,
@@ -935,7 +986,7 @@ async fn run(cli: Cli) -> Result<()> {
                     prompt: cli.prompt,
                     auto: cli.auto,
                 },
-            )
+            ))
             .await
         }
         Some(Command::Run(args)) => run_prompt(cwd, args).await,
@@ -1351,6 +1402,23 @@ async fn run(cli: Cli) -> Result<()> {
             }),
         ),
         Some(Command::Debug { what }) => debug(cwd, what),
+        Some(Command::Upgrade {
+            target,
+            method,
+            check,
+        }) => {
+            let current = env!("CARGO_PKG_VERSION");
+            let mut updater = crate::upgrade::Github::new(current);
+            crate::upgrade::command(
+                &mut updater,
+                current,
+                target.as_deref(),
+                method,
+                check,
+                &mut std::io::stdout(),
+            )
+            .await
+        }
     }
 }
 

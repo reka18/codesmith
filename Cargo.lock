@@ -615,6 +615,7 @@ dependencies = [
  "clap",
  "codesmith-ai",
  "codesmith-core",
+ "flate2",
  "futures-util",
  "hyper",
  "hyper-util",

@@ -22,6 +22,7 @@ mod cli;
 mod render;
 mod serve;
 mod tui;
+mod upgrade;
 
 pub use codesmith_core as core;
 pub use codesmith_core::plugin;

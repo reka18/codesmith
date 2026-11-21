@@ -1,0 +1,824 @@
+//! `codesmith upgrade` and the opt-in update check: OpenCode's updater
+//! (`packages/cli/src/services/updater.ts`, MIT), adapted to how CodeSmith
+//! is distributed.
+//!
+//! CodeSmith releases are GitHub releases of `reka18/codesmith`: one
+//! `codesmith-<version>-<target>.tar.gz` per target and a `SHA256SUMS`
+//! file. A copy installed from a tarball (`install.sh` or by hand) replaces
+//! itself: the tarball is checked against `SHA256SUMS`, the binary in it
+//! must report the expected version, and it is renamed over the running
+//! one, so the old binary stays whole until the new one is in place. A copy
+//! a package manager installed (Homebrew, `cargo install`) is never touched:
+//! the command names the package manager's own command instead.
+//!
+//! Every request is a plain GET with a `codesmith/<version>` user agent and
+//! no query string, cookies or credentials. Update checks are off unless the
+//! global config opts in (OpenCode checks by default).
+
+use anyhow::{anyhow, bail, Context, Result};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Where releases live; `$CODESMITH_RELEASES_URL` overrides it (mirrors,
+/// testing), as `$CODESMITH_BASE_URL` does for `install.sh`.
+pub const RELEASES: &str = "https://github.com/reka18/codesmith/releases";
+const BREW: &str = "brew upgrade reka18/tap/codesmith";
+const CARGO: &str = "cargo install --locked --git https://github.com/reka18/codesmith codesmith";
+const MAX_SUMS: usize = 64 * 1024;
+const MAX_TARBALL: usize = 256 * 1024 * 1024;
+const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
+
+/// This build's release target, if releases are built for it.
+pub const TARGET: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    Some("aarch64-apple-darwin")
+} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+    Some("x86_64-apple-darwin")
+} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    Some("x86_64-unknown-linux-musl")
+} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    Some("aarch64-unknown-linux-musl")
+} else {
+    None
+};
+
+// ---------------------------------------------------------------------------
+// Versions and the update policy (updater-action.ts).
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    Disable,
+    Notify,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    None,
+    Notify,
+    Auto,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Release {
+    pub core: String,
+    pub prerelease: Vec<String>,
+}
+
+/// The `update` preference in a config file's text (`"disable"`, `"notify"`
+/// or `"auto"`), or OpenCode's older `autoupdate` (`false`, `"notify"`,
+/// `true`). `None` when the file is not valid JSONC or doesn't say.
+pub fn decode_policy(text: &str) -> Option<Policy> {
+    let value: serde_json::Value =
+        serde_json::from_str(&codesmith_core::config::strip_jsonc(text)).ok()?;
+    let object = value.as_object()?;
+    if let Some(v) = object.get("update") {
+        return match v.as_str()? {
+            "disable" => Some(Policy::Disable),
+            "notify" => Some(Policy::Notify),
+            "auto" => Some(Policy::Auto),
+            _ => None,
+        };
+    }
+    match object.get("autoupdate")? {
+        serde_json::Value::Bool(false) => Some(Policy::Disable),
+        serde_json::Value::Bool(true) => Some(Policy::Auto),
+        serde_json::Value::String(s) if s == "notify" => Some(Policy::Notify),
+        _ => None,
+    }
+}
+
+/// What to do about `latest` when `current` is running: anything but the
+/// same release (an older one too, for a rollback) is reported.
+pub fn action(current: &str, latest: &str, policy: Policy) -> Action {
+    if policy == Policy::Disable {
+        return Action::None;
+    }
+    match (
+        parse_release_version(current),
+        parse_release_version(latest),
+    ) {
+        (Some(c), Some(l)) if !same_release(&c, &l) => match policy {
+            Policy::Notify => Action::Notify,
+            _ => Action::Auto,
+        },
+        _ => Action::None,
+    }
+}
+
+/// A strict semver version, with an optional leading `v` and surrounding
+/// whitespace, at most 256 characters before trimming, each number within
+/// JavaScript's safe integers (as OpenCode checks).
+pub fn parse_release_version(input: &str) -> Option<Release> {
+    if input.encode_utf16().count() > 256 {
+        return None;
+    }
+    let s = input.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
+    let (rest, build) = match s.split_once('+') {
+        Some((r, b)) => (r, Some(b)),
+        None => (s, None),
+    };
+    if let Some(b) = build {
+        if !identifiers(b) {
+            return None;
+        }
+    }
+    let (core, pre) = match rest.split_once('-') {
+        Some((c, p)) => (c, Some(p)),
+        None => (rest, None),
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|p| invalid_component(p)) {
+        return None;
+    }
+    let prerelease: Vec<String> = match pre {
+        Some(p) => {
+            if !identifiers(p) {
+                return None;
+            }
+            let ids: Vec<String> = p.split('.').map(str::to_string).collect();
+            if ids
+                .iter()
+                .any(|i| i.len() > 1 && i.starts_with('0') && numeric(i))
+            {
+                return None;
+            }
+            ids
+        }
+        None => Vec::new(),
+    };
+    Some(Release {
+        core: core.to_string(),
+        prerelease,
+    })
+}
+
+fn numeric(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn identifiers(s: &str) -> bool {
+    s.split('.')
+        .all(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+}
+
+fn invalid_component(value: &str) -> bool {
+    const MAX: &str = "9007199254740991";
+    if !numeric(value) || (value.len() > 1 && value.starts_with('0')) {
+        return true;
+    }
+    if value.len() != MAX.len() {
+        return value.len() > MAX.len();
+    }
+    value > MAX
+}
+
+fn same_release(a: &Release, b: &Release) -> bool {
+    a.core == b.core
+        && a.prerelease.len() == b.prerelease.len()
+        && a.prerelease.iter().zip(&b.prerelease).all(|(x, y)| {
+            // semver compares oversized numeric identifiers as JavaScript
+            // numbers, so two that round to the same double are equal.
+            x == y || (numeric(x) && numeric(y) && x.parse::<f64>().ok() == y.parse::<f64>().ok())
+        })
+}
+
+fn bare(version: &str) -> &str {
+    let v = version.trim();
+    v.strip_prefix('v').unwrap_or(v)
+}
+
+// ---------------------------------------------------------------------------
+// How this copy was installed.
+
+/// How to upgrade: replace the binary from a release tarball, or name a
+/// package manager's command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Method {
+    /// A release tarball (install.sh or a manual download): replace the binary.
+    Binary,
+    /// Homebrew: print `brew upgrade`.
+    Brew,
+    /// cargo install: print the `cargo install` command.
+    Cargo,
+}
+
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Method::Binary => "binary",
+            Method::Brew => "brew",
+            Method::Cargo => "cargo",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Detected {
+    Method(Method),
+    /// Built from a source checkout (`target/debug`, `target/release`).
+    Source,
+    /// Somewhere a system package manager owns (`/usr/bin`, the Nix store,
+    /// ...): never replaced, whatever method is asked for.
+    System,
+    /// The running executable could not be found.
+    Unknown,
+}
+
+/// Classify an executable by where it lives. `cargo_bins` are the folders
+/// `cargo install` puts binaries in (`$CARGO_HOME/bin`, `~/.cargo/bin`).
+pub fn detect(exe: &Path, cargo_bins: &[PathBuf]) -> Detected {
+    let names: Vec<&str> = exe
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    if names
+        .windows(2)
+        .any(|w| w[0] == "Cellar" && w[1] == "codesmith")
+    {
+        return Detected::Method(Method::Brew);
+    }
+    let parent = exe.parent().unwrap_or(Path::new(""));
+    if cargo_bins
+        .iter()
+        .any(|b| b.as_path() == parent || b.canonicalize().ok().as_deref() == Some(parent))
+    {
+        return Detected::Method(Method::Cargo);
+    }
+    let n = names.len();
+    let built = |i: usize| matches!(names[i], "debug" | "release" | "deps");
+    if (n >= 3 && built(n - 2) && names[..n - 2].contains(&"target"))
+        || (n >= 4 && built(n - 3) && names[n - 2] == "deps")
+    {
+        return Detected::Source;
+    }
+    const SYSTEM: &[&str] = &[
+        "/usr/bin/",
+        "/usr/sbin/",
+        "/bin/",
+        "/sbin/",
+        "/usr/lib/",
+        "/usr/libexec/",
+        "/usr/share/",
+        "/nix/",
+        "/gnu/store/",
+        "/snap/",
+        "/opt/local/",
+        "/var/lib/flatpak/",
+    ];
+    let s = exe.to_string_lossy();
+    if SYSTEM.iter().any(|p| s.starts_with(p)) {
+        return Detected::System;
+    }
+    Detected::Method(Method::Binary)
+}
+
+/// The running executable, symlinks resolved, and how it was installed.
+pub fn this_copy() -> (Option<PathBuf>, Detected) {
+    let Some(exe) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+    else {
+        return (None, Detected::Unknown);
+    };
+    let detected = detect(&exe, &cargo_bins());
+    (Some(exe), detected)
+}
+
+/// Where `cargo install` puts binaries.
+fn cargo_bins() -> Vec<PathBuf> {
+    let mut bins = Vec::new();
+    if let Some(c) = std::env::var_os("CARGO_HOME") {
+        bins.push(PathBuf::from(c).join("bin"));
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        bins.push(PathBuf::from(h).join(".cargo").join("bin"));
+    }
+    bins
+}
+
+fn managed(method: Method) -> Option<String> {
+    match method {
+        Method::Brew => Some(format!(
+            "CodeSmith is managed by Homebrew, which keeps its own record of the installed version, so CodeSmith won't update itself.\nRun: {BREW}"
+        )),
+        Method::Cargo => Some(format!(
+            "CodeSmith was installed with cargo install, so CodeSmith won't update itself.\nRun: {CARGO}"
+        )),
+        Method::Binary => None,
+    }
+}
+
+const SOURCE: &str = "This build runs from a source checkout. Rebuild it, or install a release to use codesmith upgrade.";
+const SYSTEM_OWNED: &str = "This copy is in a folder a system package manager owns, so CodeSmith won't update itself. Update it with that package manager.";
+const UNKNOWN: &str = "Could not detect the installation method. If a package manager installed this copy, update it with that package manager; if you installed it from a release tarball, pass --method binary.";
+
+// ---------------------------------------------------------------------------
+// The command (handlers/upgrade.ts).
+
+/// What the command needs from an updater; [`Github`] is the real one.
+pub(crate) trait Updater {
+    fn method(&mut self) -> Detected;
+    async fn latest(&mut self) -> Result<String>;
+    async fn upgrade(&mut self, version: &str) -> Result<()>;
+}
+
+/// `codesmith upgrade [TARGET] [--method M] [--check]`.
+pub(crate) async fn command(
+    updater: &mut impl Updater,
+    current: &str,
+    target: Option<&str>,
+    method: Option<Method>,
+    check: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if let Some(t) = target {
+        if parse_release_version(t).is_none() {
+            bail!("Invalid version: {t}");
+        }
+    }
+    let method = match method {
+        Some(m) => m,
+        None => match updater.method() {
+            Detected::Method(m) => m,
+            Detected::Source => bail!(SOURCE),
+            Detected::System => bail!(SYSTEM_OWNED),
+            Detected::Unknown => bail!(UNKNOWN),
+        },
+    };
+    writeln!(out, "Using method: {method}")?;
+    if !check {
+        if let Some(message) = managed(method) {
+            bail!(message);
+        }
+    }
+    let target = match target {
+        Some(t) => t.to_string(),
+        None => updater.latest().await.context("Update check failed")?,
+    };
+    let version = bare(&target);
+    if action(current, version, Policy::Notify) == Action::None {
+        writeln!(
+            out,
+            "CodeSmith upgrade skipped: {version} is already installed"
+        )?;
+        return Ok(());
+    }
+    if check {
+        writeln!(out, "CodeSmith {version} is available (this is {current})")?;
+        let how = managed(method)
+            .and_then(|m| m.lines().last().map(str::to_string))
+            .unwrap_or_else(|| "Run: codesmith upgrade".into());
+        writeln!(out, "{how}")?;
+        return Ok(());
+    }
+    writeln!(out, "From {current} → {version}")?;
+    writeln!(out, "Upgrading...")?;
+    match updater.upgrade(&target).await {
+        Ok(()) => {
+            writeln!(out, "Upgrade complete")?;
+            Ok(())
+        }
+        Err(e) => {
+            writeln!(out, "Upgrade failed")?;
+            Err(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub releases.
+
+/// Upgrades `exe` from the releases at `base`.
+pub(crate) struct Github {
+    pub base: String,
+    pub exe: Option<PathBuf>,
+    pub detected: Detected,
+    pub target: Option<&'static str>,
+    pub current: String,
+}
+
+impl Github {
+    pub fn new(current: &str) -> Self {
+        let (exe, detected) = this_copy();
+        Github {
+            base: std::env::var("CODESMITH_RELEASES_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| RELEASES.to_string()),
+            exe,
+            detected,
+            target: TARGET,
+            current: current.to_string(),
+        }
+    }
+}
+
+fn loopback(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .is_some_and(|h| h == "127.0.0.1" || h == "localhost" || h == "[::1]")
+}
+
+/// HTTPS only (redirects included), unless the releases are on loopback.
+fn client(base: &str, current: &str, follow: bool) -> Result<reqwest::Client> {
+    let local = loopback(base);
+    if !local && !base.starts_with("https://") {
+        bail!("the releases URL must use https: {base}");
+    }
+    reqwest::Client::builder()
+        .user_agent(format!("codesmith/{current}"))
+        .https_only(!local)
+        .redirect(if follow {
+            reqwest::redirect::Policy::limited(10)
+        } else {
+            reqwest::redirect::Policy::none()
+        })
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .context("building the HTTP client")
+}
+
+/// The newest published release: `<base>/latest` redirects to
+/// `<base>/tag/v<version>` (drafts and prereleases are never "latest").
+pub(crate) async fn latest_release(base: &str, current: &str) -> Result<String> {
+    let url = format!("{}/latest", base.trim_end_matches('/'));
+    let response = client(base, current, false)?
+        .get(&url)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .with_context(|| format!("could not reach {url}"))?;
+    let status = response.status();
+    if !status.is_redirection() {
+        bail!("{url} returned HTTP {}", status.as_u16());
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let tag = location
+        .split_once("/tag/")
+        .map(|(_, t)| t.trim_end_matches('/'))
+        .unwrap_or_default();
+    if parse_release_version(tag).is_none() {
+        bail!("no published release found at {url}");
+    }
+    Ok(bare(tag).to_string())
+}
+
+async fn download(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec<u8>> {
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("could not download {url}"))?;
+    if !response.status().is_success() {
+        bail!(
+            "download failed: {url} returned HTTP {}",
+            response.status().as_u16()
+        );
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("could not download {url}"))?
+    {
+        if body.len() + chunk.len() > max {
+            bail!("{url} is larger than {max} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+impl Updater for Github {
+    fn method(&mut self) -> Detected {
+        self.detected.clone()
+    }
+
+    async fn latest(&mut self) -> Result<String> {
+        latest_release(&self.base, &self.current).await
+    }
+
+    async fn upgrade(&mut self, version: &str) -> Result<()> {
+        let exe = self
+            .exe
+            .clone()
+            .ok_or_else(|| anyhow!("could not find the running executable"))?;
+        install(&self.base, &self.current, self.target, &exe, version).await
+    }
+}
+
+/// Removes the download folder however the upgrade ends.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Download `version` for `target` from `base`, check it, and put it in
+/// place of `exe`. Refuses a copy a package manager owns, whatever method
+/// was asked for.
+pub(crate) async fn install(
+    base: &str,
+    current: &str,
+    target: Option<&str>,
+    exe: &Path,
+    version: &str,
+) -> Result<()> {
+    if parse_release_version(version).is_none() {
+        bail!("Invalid version: {version}");
+    }
+    match detect(exe, &cargo_bins()) {
+        Detected::Method(Method::Binary) | Detected::Unknown => {}
+        Detected::Method(m) => bail!(managed(m).unwrap_or_default()),
+        Detected::Source => bail!(SOURCE),
+        Detected::System => bail!(SYSTEM_OWNED),
+    }
+    let target =
+        target.ok_or_else(|| anyhow!("no CodeSmith releases are built for this platform"))?;
+    let version = bare(version);
+    let name = format!("codesmith-{version}-{target}");
+    let file = format!("{name}.tar.gz");
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent folder", exe.display()))?;
+
+    let client = client(base, current, true)?;
+    let release = format!("{}/download/v{version}", base.trim_end_matches('/'));
+    let sums = download(&client, &format!("{release}/SHA256SUMS"), MAX_SUMS).await?;
+    let expected = String::from_utf8_lossy(&sums)
+        .lines()
+        .find_map(|line| {
+            let (hash, listed) = line.trim().split_once(char::is_whitespace)?;
+            let listed = listed.trim_start();
+            (listed == file || listed.strip_prefix('*') == Some(file.as_str()))
+                .then(|| hash.to_ascii_lowercase())
+        })
+        .ok_or_else(|| anyhow!("{file} is not listed in SHA256SUMS"))?;
+    let tarball = download(&client, &format!("{release}/{file}"), MAX_TARBALL).await?;
+    let actual = hex(&Sha256::digest(&tarball));
+    if actual != expected {
+        bail!(
+            "checksum mismatch for {file} (expected {expected}, got {actual}); nothing was changed"
+        );
+    }
+    let binary = extract(&tarball, &format!("{name}/codesmith"))?;
+
+    // Next to the executable, so the final rename stays on one filesystem.
+    let scratch = dir.join(format!(".codesmith-upgrade-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir(&scratch).with_context(|| {
+        format!(
+            "cannot write to {}; reinstall to a folder you own, or run the upgrade with permission to write there",
+            dir.display()
+        )
+    })?;
+    let scratch = Scratch(scratch);
+    let new = scratch.0.join("codesmith");
+    {
+        let mut f = std::fs::File::create(&new)?;
+        f.write_all(&binary)?;
+        f.sync_all()?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;
+    }
+    check_version(&new, version)?;
+    std::fs::rename(&new, exe).with_context(|| format!("could not replace {}", exe.display()))?;
+    Ok(())
+}
+
+/// The downloaded binary must run here and call itself `version`.
+fn check_version(binary: &Path, version: &str) -> Result<()> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("the downloaded binary did not run ({})", binary.display()))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut words = text.split_whitespace();
+    let reported = match (words.next(), words.next()) {
+        (Some("codesmith"), Some(v)) => v.to_string(),
+        _ => String::new(),
+    };
+    let same = match (
+        parse_release_version(&reported),
+        parse_release_version(version),
+    ) {
+        (Some(a), Some(b)) => same_release(&a, &b),
+        _ => false,
+    };
+    if !output.status.success() || !same {
+        bail!(
+            "the downloaded binary reports {:?}, not codesmith {version}; nothing was changed",
+            text.trim()
+        );
+    }
+    Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The regular file `want` from a gzipped tar (ustar, pax and GNU long
+/// names).
+fn extract(tgz: &[u8], want: &str) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    flate2::read::GzDecoder::new(tgz)
+        .take(MAX_UNPACKED)
+        .read_to_end(&mut data)
+        .context("the release tarball is not valid gzip")?;
+    let field = |b: &[u8]| {
+        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        String::from_utf8_lossy(&b[..end]).into_owned()
+    };
+    let mut offset = 0;
+    let mut long: Option<String> = None;
+    while offset + 512 <= data.len() {
+        let header = &data[offset..offset + 512];
+        if header.iter().all(|&b| b == 0) {
+            break;
+        }
+        let size_text = field(&header[124..136]);
+        let size = usize::from_str_radix(size_text.trim(), 8)
+            .map_err(|_| anyhow!("the release tarball has a bad header"))?;
+        let start = offset + 512;
+        let end = start
+            .checked_add(size)
+            .filter(|&e| e <= data.len())
+            .ok_or_else(|| anyhow!("the release tarball is truncated"))?;
+        let body = &data[start..end];
+        let mut name = field(&header[0..100]);
+        if &header[257..262] == b"ustar" {
+            let prefix = field(&header[345..500]);
+            if !prefix.is_empty() {
+                name = format!("{prefix}/{name}");
+            }
+        }
+        let name = long.take().unwrap_or(name);
+        match header[156] {
+            b'x' => long = pax_path(body),
+            b'L' => long = Some(field(body)),
+            b'0' | 0 if name.trim_start_matches("./") == want => return Ok(body.to_vec()),
+            _ => {}
+        }
+        offset = start + size.div_ceil(512) * 512;
+    }
+    bail!("the release tarball does not contain {want}")
+}
+
+fn pax_path(body: &[u8]) -> Option<String> {
+    let mut rest = body;
+    let mut path = None;
+    while !rest.is_empty() {
+        let space = rest.iter().position(|&b| b == b' ')?;
+        let len: usize = std::str::from_utf8(&rest[..space]).ok()?.parse().ok()?;
+        if len <= space || len > rest.len() {
+            return None;
+        }
+        let record = std::str::from_utf8(&rest[space + 1..len]).ok()?;
+        if let Some(p) = record.trim_end_matches('\n').strip_prefix("path=") {
+            path = Some(p.to_string());
+        }
+        rest = &rest[len..];
+    }
+    path
+}
+
+// ---------------------------------------------------------------------------
+// The opt-in update check.
+
+/// The update policy: `update` (or `autoupdate`) in the global
+/// `codesmith.json[c]` only, so a project can't turn on network requests;
+/// off when neither says, or when `$CODESMITH_DISABLE_AUTOUPDATE` is set.
+pub fn policy(config_dir: &Path) -> Policy {
+    if std::env::var("CODESMITH_DISABLE_AUTOUPDATE")
+        .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true"))
+    {
+        return Policy::Disable;
+    }
+    codesmith_core::config::NAMES
+        .iter()
+        .filter_map(|n| std::fs::read_to_string(config_dir.join(n)).ok())
+        .filter_map(|t| decode_policy(&t))
+        .next_back()
+        .unwrap_or(Policy::Disable)
+}
+
+const CHECK_EVERY: u64 = 24 * 60 * 60;
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn read_cache(path: &Path) -> Option<(u64, String)> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    Some((v["checked"].as_u64()?, v["latest"].as_str()?.to_string()))
+}
+
+/// A started check; [`Check::notice`] reads its result.
+pub struct Check {
+    current: String,
+    method: Method,
+    cached: Option<String>,
+    task: Option<tokio::task::JoinHandle<Option<String>>>,
+}
+
+/// Start the update check if the global config opts in: at most once a
+/// day (the result is kept in the cache folder), never for a source build.
+pub fn start(current: &str) -> Option<Check> {
+    if policy(&codesmith_core::paths::config_dir()) == Policy::Disable {
+        return None;
+    }
+    let Detected::Method(method) = this_copy().1 else {
+        return None;
+    };
+    let base = std::env::var("CODESMITH_RELEASES_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| RELEASES.to_string());
+    Some(start_with(
+        current,
+        method,
+        &base,
+        &codesmith_core::paths::cache_dir().join("update-check.json"),
+        now(),
+    ))
+}
+
+pub(crate) fn start_with(
+    current: &str,
+    method: Method,
+    base: &str,
+    cache: &Path,
+    now: u64,
+) -> Check {
+    let cached = read_cache(cache);
+    let fresh = cached
+        .as_ref()
+        .is_some_and(|(at, _)| *at <= now && now - at < CHECK_EVERY);
+    let task = (!fresh).then(|| {
+        let (base, current, cache) = (base.to_string(), current.to_string(), cache.to_path_buf());
+        tokio::spawn(async move {
+            let latest = latest_release(&base, &current).await.ok()?;
+            let _ = codesmith_core::paths::ensure_parent(&cache);
+            let _ = std::fs::write(
+                &cache,
+                serde_json::json!({"checked": now, "latest": latest}).to_string(),
+            );
+            Some(latest)
+        })
+    });
+    Check {
+        current: current.to_string(),
+        method,
+        cached: cached.map(|(_, l)| l),
+        task,
+    }
+}
+
+impl Check {
+    /// A line to print if another release is out; never waits for the
+    /// network (an unfinished check falls back to the last result).
+    pub async fn notice(self) -> Option<String> {
+        let latest = match self.task {
+            Some(t) if t.is_finished() => t.await.ok().flatten().or(self.cached),
+            Some(t) => {
+                t.abort();
+                self.cached
+            }
+            None => self.cached,
+        }?;
+        if action(&self.current, &latest, Policy::Notify) == Action::None {
+            return None;
+        }
+        let how = match self.method {
+            Method::Binary => "codesmith upgrade",
+            Method::Brew => BREW,
+            Method::Cargo => CARGO,
+        };
+        Some(format!(
+            "CodeSmith {} is available (this is {}). Run: {how}",
+            bare(&latest),
+            self.current
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests;
