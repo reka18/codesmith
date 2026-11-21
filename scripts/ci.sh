@@ -4,6 +4,15 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# Git sets GIT_DIR, GIT_INDEX_FILE and friends for the hooks it runs. A test
+# that runs git in a temporary repository would inherit them and act on this
+# repository instead (it once rewrote .git/config and a worktree's index), so
+# clear every repository-local variable git knows before anything runs.
+for v in $(git rev-parse --local-env-vars 2>/dev/null) GIT_DIR GIT_WORK_TREE \
+  GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX; do
+  unset "$v"
+done
+
 step() { printf '\n== %s\n' "$*"; }
 
 step "cargo fmt --all --check"

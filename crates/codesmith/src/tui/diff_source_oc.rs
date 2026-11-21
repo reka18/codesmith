@@ -9,7 +9,26 @@ use std::path::Path;
 use std::process::Command;
 
 fn git_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> String {
-    let out = Command::new("git")
+    let mut cmd = Command::new("git");
+    // A git hook (the pre-push hook runs CI) exports GIT_DIR and friends;
+    // inherited here they would point these commands at the real repository.
+    for v in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_NAMESPACE",
+    ] {
+        cmd.env_remove(v);
+    }
+    let out = cmd
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
