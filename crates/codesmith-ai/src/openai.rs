@@ -784,7 +784,7 @@ fn merge_detail(prev: &mut Value, d: &Value) -> bool {
     );
     if let (Some(p), Some(n)) = (prev.as_object_mut(), d.as_object()) {
         for (k, v) in n {
-            if !v.is_null() && !(k == "signature" && v.as_str() == Some("")) {
+            if !(v.is_null() || (k == "signature" && v.as_str() == Some(""))) {
                 p.insert(k.clone(), v.clone());
             }
         }
@@ -920,7 +920,7 @@ fn valid_chunk(v: &Value) -> bool {
 /// call changes after the finish reason, and a call still without a name
 /// when the response finishes are invalid output (as in OpenCode).
 pub fn handle(state: &mut State, v: &Value) -> Result<Vec<Event>, Error> {
-    if !v.is_null() && !(v.is_object() && valid_chunk(v)) {
+    if !(v.is_null() || (v.is_object() && valid_chunk(v))) {
         return Err(crate::shape::invalid(STREAM_ROUTE, v));
     }
     let mut out = Vec::new();
