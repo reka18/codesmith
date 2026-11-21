@@ -4836,10 +4836,20 @@ async fn stream_text(
         let mut out = String::new();
         let mut usage = Usage::default();
         let mut reason = None;
+        // Where the latest text block began: a Responses message the model
+        // marked as commentary (not its final answer) is dropped once its
+        // phase is known, at the block's end.
+        let mut block = 0;
         let res: Result<(), codesmith_ai::Error> = async {
             let mut s = model.provider.stream(client, req).await?;
             while let Some(ev) = s.next().await {
                 match ev? {
+                    Event::TextStart(_) => block = out.len(),
+                    Event::PartMeta(meta)
+                        if meta.phase.as_ref().and_then(|p| p.as_deref()) == Some("commentary") =>
+                    {
+                        out.truncate(block)
+                    }
                     Event::TextDelta(d) => {
                         delta(&d);
                         out.push_str(&d)

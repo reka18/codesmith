@@ -20,7 +20,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Session runner | 393 | 160 | 22 | 0 | 211 | 0 | 0 |
 | Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
 | Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
-| Titles | 26 | 8 | 0 | 0 | 13 | 5 | 0 |
+| Titles | 26 | 9 | 2 | 0 | 15 | 0 | 0 |
 | Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
 | Snapshots and undo | 15 | 7 | 2 | 0 | 5 | 1 | 0 |
 | Sessions and their store | 308 | 107 | 3 | 0 | 198 | 0 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2604** | **63** | **40** | **2526** | **355** | **0** |
+| **Total** | **5588** | **2605** | **65** | **40** | **2528** | **350** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -79,6 +79,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `session-runner.test.ts`: "retries an unknown finish before output" (1 case): an "unknown" finish ended the turn as a normal stop; it is now retried when no tool ran. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_before_output`.
 - `session-runner.test.ts`: "retries an unknown finish cleanly after observable text when no tool ran" (1 case): as above, dropping the text it streamed. Pinned by `tests/oc_runner.rs::oc_session_retries_an_unknown_finish_cleanly_after_text`.
 - `session-runner.test.ts`: "durably closes partial ${kind} when the provider stream is interrupted" (3 cases): an interrupt (the TUI's Esc drops the turn) lost the text and reasoning streamed so far; they are now recorded at once, as a failed stream's are: no calls, no unfinished provider state. Also oc_session_replays_an_interrupted_steps_output_once_in_the_next_prompt and oc_session_keeps_no_provider_state_from_an_interrupted_step. Pinned by `tests/oc_runner_backlog.rs::oc_session_closes_partial_output_when_the_stream_is_interrupted`.
+- `session-title.test.ts`: "excludes commentary from titles when the response phase arrives at ${timing}" (2 cases): a title written over OpenAI Responses took every message's text, so the model's commentary came before its final answer in the title; text the response marks as commentary is left out now. Pinned by `tests/oc_titles_backlog2.rs::oc_title_excludes_commentary_from_titles`.
 - `shell-parse-syntax.test.ts`: "%s rejects variable sinks when a substitution can build the subscript: %s" (5 cases): these rows passed (adapted: flagged dynamic, so asked about and refused under any deny rule), but porting them against real shells showed more arithmetic the scan did not see: Zsh evaluates the operands of `shift`, `exit`, `return`, `break`, `continue`, `repeat` and of `printf`'s numeric conversions as arithmetic, and Bash and Zsh evaluate a value assigned to `RANDOM`, `OPTIND` (and Zsh's `SECONDS`, `LINES`...), where a subscript runs its substitutions (with `a=(1)`, `shift 'a[$(rm x)]'` runs `rm x` but was checked as `shift`); these are sinks now, and `export`/`typeset` assignments are flagged as plain ones are (`export NULLCMD=rm; >f` ran `rm` in Zsh). Pinned by `tests/oc_shell_scan_backlog2.rs::oc_scan_rejects_variable_sinks_when_a_substitution_can_build_the_subscript`.
 - `shell-scan/bash-safety.test.ts`: "still requires redirect targets: %s" (1 case): `X=x > # comment` read `#` as the redirect's target and `comment` as a command; a `#` after a blank starts a comment, so the redirect has no target and the input is refused, as the shell refuses it. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_still_requires_redirect_targets`.
 - `shell-scan/bash-safety.test.ts`: "does not invent redirect commands for pure group descriptor duplications: %s" (3 cases): a group's descriptor duplication (`(make) 2>&1`) became a resource of its own, so the command also asked about `2>&1`; pure duplications and closes are no resource now. Pinned by `tests/oc_shell_scan_backlog.rs::oc_scan_invents_no_redirect_commands_for_group_descriptor_duplications`.
@@ -186,7 +187,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (355 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (350 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Subagents (1)
 
@@ -197,17 +198,6 @@ Tests for behaviour CodeSmith already has but no test pins (355 cases), by area,
 
 - tool media described without base64 (S) — `compaction::transcript`
   - `session-compaction.test.ts`: compaction describes tool media without embedding base64
-
-### Titles (5)
-
-- commentary (non-final response phase) excluded from titles (S) — `title`
-  - `session-title.test.ts`: excludes commentary from titles when the response phase arrives at ${timing} (2 cases)
-- explicitly requested child sessions get titles (S) — `tests/parity.rs`
-  - `session-title.test.ts`: generates a title for an explicitly requested child session
-- no title when the title agent is disabled (S) — `agent config`
-  - `session-title.test.ts`: does not generate when the title agent is removed
-- a failed title stream does not rename (S) — `tests/parity.rs`
-  - `session-title.test.ts`: does not rename after a failed title stream
 
 ### Model requests and transport (6)
 
@@ -656,7 +646,7 @@ Tests for behaviour CodeSmith already has but no test pins (355 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 649 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 651 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
@@ -1031,21 +1021,25 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Titles (21 of 26)</summary>
+<details><summary>Titles (26 of 26)</summary>
 
 
 **`session-title.test.ts`**
 
 - P generates a title from the sole user message and renames the session — `tests/parity.rs::oc_title_generates_a_title_from_the_sole_user_message`
+- F excludes commentary from titles when the response phase arrives at ${timing} ×2 — `tests/oc_titles_backlog2.rs::oc_title_excludes_commentary_from_titles` (a title written over OpenAI Responses took every message's text, so the model's commentary came before its final answer in the title; text the response marks as commentary is left out now)
 - P runs title hooks instead of context hooks — `tests/parity.rs::oc_title_uses_a_given_title_without_a_model_request` (adapted: a caller-given title, no title hooks)
 - P uses a hook-provided title without a model request — `tests/parity.rs::oc_title_uses_a_given_title_without_a_model_request` (adapted: a caller-given title, no title hooks)
 - D uses a small model from the primary provider · falls back to the primary model when the small model fails · uses the primary model at its lowest variant without a small model · falls back to the selected primary variant when the lowest variant fails · uses the selected primary variant when no lower variant exists · keeps the primary default variant instead of a low variant that may enable reasoning · uses the primary none variant from its default variant — deliberate: title.rs: titles use the session's own model (no small model or variant selection)
 - P generates from the first user message after later messages exist — `tests/parity.rs::oc_title_generates_from_the_first_user_message_only_once`
 - D retries a legacy persisted fallback title — storage-model: legacy persisted fallback titles
+- D generates a title for an explicitly requested child session — deliberate: a subagent's child session is named by the task description its parent gave it; there is no separate title request for it
+- P does not generate when the title agent is removed — `tests/oc_titles_backlog2.rs::oc_title_does_not_generate_when_the_title_agent_is_removed` (adapted: no title request; the session is named by its first line)
 - D regenerates an existing title using the title agent · bounds regeneration context while preserving the original request and recent conversation · keeps the clipped regeneration context well formed — deliberate: title.rs: no regeneration from later history
 - P clips a long generated title without splitting an emoji after ${prefix} letters ×3 — `src/title.rs::oc_title_clips_a_long_title_without_splitting_an_emoji`
 - D preserves the existing title when regeneration fails — deliberate: title.rs: no regeneration from later history
 - P retries after a failed title request — `tests/parity.rs::oc_title_a_failed_request_falls_back_to_the_first_line` (deliberate: falls back instead of retrying)
+- D does not rename after a failed title stream — deliberate: a failed title request names the session by its first line rather than leaving it untitled (pinned by tests/parity.rs::oc_title_a_failed_request_falls_back_to_the_first_line)
 - D preserves a manual rename completed while generation is in flight — deliberate: title.rs: no regeneration from later history
 
 </details>

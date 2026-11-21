@@ -85,6 +85,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   that only mentions `## Objective` is not a summary, and a second reply
   without the template fails the compaction instead of replacing the
   history. The skill list leaves out the skills the agent's rules deny.
+- A title written over OpenAI Responses leaves out the model's
+  commentary, keeping only its final answer.
 - A configured skill folder `~/x` is looked for in the home folder, not
   under the project.
 - A prompt of attachments alone no longer carries an empty text part

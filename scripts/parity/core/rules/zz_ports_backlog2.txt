@@ -108,3 +108,10 @@
 @tool-skill.test.ts
 34 :: ported :: tests/oc_skills_backlog2.rs::oc_skill_tool_refuses_a_denied_skill_before_loading_it :: adapted: an agent's deny rule stands in for a policy
 69 :: ported :: tests/oc_skills_backlog2.rs::oc_skill_tool_lists_skills_and_loads_the_chosen_ones_content
+
+# --- Titles (tests/oc_titles_backlog2.rs) ---
+@session-title.test.ts
+241 :: fixed :: tests/oc_titles_backlog2.rs::oc_title_excludes_commentary_from_titles :: a title written over OpenAI Responses took every message's text, so the model's commentary came before its final answer in the title; text the response marks as commentary is left out now
+520 :: design :: deliberate :: a subagent's child session is named by the task description its parent gave it; there is no separate title request for it
+554 :: ported :: tests/oc_titles_backlog2.rs::oc_title_does_not_generate_when_the_title_agent_is_removed :: adapted: no title request; the session is named by its first line
+719 :: design :: deliberate :: a failed title request names the session by its first line rather than leaving it untitled (pinned by tests/parity.rs::oc_title_a_failed_request_falls_back_to_the_first_line)
