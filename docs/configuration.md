@@ -81,7 +81,7 @@ is parsed:
 | Key | Default | What it does |
 |---|---|---|
 | `$schema` | | Ignored; allowed for editors. |
-| `model` | none | Default model as `provider/model`. Required unless you pass `-m`. |
+| `model` | none | Default model as `provider/model` (or `provider/model#variant`), or `{"providerID": "...", "model": "...", "variant": "..."}`. Required unless you pass `-m`. |
 | `default_agent` | `build` | Primary agent for new sessions. |
 | `small_model` | the session's model | The model that writes session titles, as `provider/model[#variant]`. See [Session titles](#session-titles). |
 | `title` | `true` | `false` names sessions after their first line, with no model request. See [Session titles](#session-titles). |

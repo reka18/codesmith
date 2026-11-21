@@ -851,6 +851,27 @@ mod selection {
         m
     }
 
+    // local-selection.test.tsx: "uses the last configured model and variant ahead of recents"
+    // (adapted) the config's layers merge, the last one's model wins in
+    // either form, and a session starts on it: recents only feed the cycle.
+    #[test]
+    fn oc_uses_the_last_configured_model_and_variant() {
+        use codesmith_core::config::{merge_layer, split_variant, Config};
+        use serde_json::json;
+        let mut merged = json!({});
+        for layer in [
+            json!({"model": "provider/first"}),
+            json!({"model": {"providerID": "provider", "model": "second", "variant": "high"}}),
+            json!({}),
+        ] {
+            merge_layer(&mut merged, layer);
+        }
+        let config: Config = serde_json::from_value(merged).unwrap();
+        let model = config.model.unwrap();
+        assert_eq!(model, "provider/second#high");
+        assert_eq!(split_variant(&model), ("provider/second", Some("high")));
+    }
+
     // local-selection.test.tsx: "switching agents restores their model and variant within the session"
     // (adapted) to the runner's selection memory.
     #[test]

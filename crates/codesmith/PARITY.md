@@ -118,14 +118,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 72 | 5 | 0 | 28 | 0 | 0 |
-| tui: main UI | 1247 | 15 | 519 | 6 | 707 | 0 | 0 |
+| tui: main UI | 1247 | 15 | 520 | 5 | 707 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 785 | 218 | 5 | 658 | 0 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **920** | **814** | **13** | **2462** | **0** | **428** |
+| **Total** | **4637** | **920** | **815** | **12** | **2462** | **0** | **428** |
 
 ## Fixes made while porting
 
@@ -360,6 +360,11 @@ Where the tests live:
   (its content read, the session taken), find no turn to stop, and be
   lost: the turn ran on. A prompt now notes the cancels that came after
   it, and stops its turn as soon as it starts, answering `cancelled`.
+- **The configured model's object form** (`context/local-selection`):
+  agents and commands took a model as `{"providerID", "model",
+  "variant"}`, but the top-level `model` only as a string, so a config
+  written that way (as OpenCode writes it) failed to load. It takes both
+  forms now.
 - **`mcp auth` without a name** (`cli/test/mcp-auth-choices`): the name
   was required. It is now optional: in a terminal CodeSmith lists the
   remote servers that take an OAuth sign-in and asks for one; without a
@@ -937,6 +942,7 @@ dropped.
 | `tui/test/cli/tui/composer-keymap` | shell output respects a configured binding with a focused textarea | after a fix | oc_shell_output_respects_a_configured_binding |
 | `tui/test/cli/tui/toast` | toast hides only the terminal cursor it covers, until dismissed | after a fix | oc_toast_hides_only_the_terminal_cursor_it_covers_until_dismissed (adapted: the prompt's cursor) |
 | `tui/test/plugin-toast` | toast for %s's family shows as-is while %s is open (3 cases) | after a fix | oc_toast_for_a_family_shows_as_is |
+| `tui/test/context/local-selection` | uses the last configured model and variant ahead of recents | after a fix | oc_uses_the_last_configured_model_and_variant (adapted: the config's merged layers; recents only feed the cycle) |
 | `tui/test/context/local-selection` | switching agents restores their model and variant within the session | after a fix | oc_switching_agents_restores_their_model_and_variant_within_the_session (adapted: the runner's selection memory) |
 | `tui/test/context/local-selection` | agent and model drafts are isolated across sessions and survive navigation | after a fix | oc_agent_and_model_drafts_are_isolated_across_sessions (adapted: the agent is saved with the session) |
 | `tui/test/context/local-selection` | retains an unavailable saved session model instead of selecting a fallback | after a fix | oc_retains_an_unavailable_saved_session_model (adapted) |
@@ -1099,9 +1105,8 @@ OpenCode renders values as Node does.
 - `codemode/test/stdlib`: Map > console.log renders map contents for debugging
 - `codemode/test/stdlib`: console.log of errors > prints name and message, nested too
 
-### tui: per-agent and per-session model selection, the rest (2)
+### tui: per-agent and per-session model selection, the rest (1)
 
-- `tui/test/context/local-selection`: uses the last configured model and variant ahead of recents (the object form of `model` with a variant)
 - `tui/test/context/local-selection`: a manual agent switch supersedes the CLI agent after its commit (no runner-level test harness yet)
 
 ### cli: SSH askpass for git prompts (2)

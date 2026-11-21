@@ -138,6 +138,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   completions keep both ends.
 - ACP: a `session/cancel` sent while a prompt is still being set up
   cancels its turn; it was lost, and the turn ran on.
+- The config's `model` also takes OpenCode's object form,
+  `{"providerID", "model", "variant"}`, as agents' and commands' models do.
 
 ## 0.1.0
 

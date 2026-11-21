@@ -45,7 +45,9 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     #[serde(rename = "$schema")]
     pub schema: Option<String>,
-    /// Default model as `provider/model`.
+    /// Default model as `provider/model[#variant]`, or
+    /// `{"providerID", "model", "variant"}` as OpenCode writes it.
+    #[serde(deserialize_with = "model_selection")]
     pub model: Option<String>,
     /// The model that writes session titles, as `provider/model[#variant]`
     /// (OpenCode's `small_model`); the session's own model when unset.
