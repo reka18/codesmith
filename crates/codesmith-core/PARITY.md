@@ -38,7 +38,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
-| Permission | 177 | 101 | 1 | 0 | 50 | 25 | 0 |
+| Permission | 177 | 119 | 2 | 0 | 54 | 2 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 33 | 5 | 0 | 21 | 0 | 0 |
 | Instructions and references | 78 | 63 | 0 | 0 | 13 | 2 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
-| **Total** | **5588** | **2645** | **65** | **40** | **2531** | **307** | **0** |
+| **Total** | **5588** | **2663** | **66** | **40** | **2535** | **284** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -61,6 +61,7 @@ OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client 
 - `automation-event.test.ts`: "pauses after three consecutive reconnects without confirmed stream output" (1 case): the opening acknowledgement no longer counts as stream output, so a stream that breaks right after it is not reconnected forever. Pinned by `tests/oc_automation_stream.rs::oc_automation_event_pauses_after_three_consecutive_reconnects_without_confirmed_stream_output`.
 - `config/skill.test.ts`: "maps config entry types to skill directories" (1 case): a configured `~/shared` skill folder was looked for under the project (`<project>/~/shared`); it is the home folder's now. Pinned by `tests/oc_skills_backlog2.rs::oc_skill_roots_map_config_entries_to_skill_directories`.
 - `file-access-path.test.ts`: "does not treat a filesystem-root project sentinel as an internal boundary" (1 case): a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary). Pinned by `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary`.
+- `file-access-path.test.ts`: "expands a leading tilde against the home directory" (1 case): a bare `~` was a file named `~` in the working folder; it is the home folder now. Pinned by `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`.
 - `generate.test.ts`: "sends a variant's reasoning setting and maps provider rejections" (1 case): a provider's 400 was reported as a local invalid request, without its status. Pinned by `tests/oc_decisions.rs::oc_generate_sends_a_variants_reasoning_setting_and_maps_provider_rejections`.
 - `generate.test.ts`: "rejects models of another type and unknown models" (1 case): text from an unknown model of a catalog provider was sent to the provider instead of failing as not found. Pinned by `tests/oc_decisions.rs::oc_generate_rejects_models_of_another_type_and_unknown_models`.
 - `ripgrep.test.ts`: "greps lines that are not valid UTF-8" (1 case): grep dropped every line of a file with invalid UTF-8; now decoded lossily. Pinned by `tests/oc_tools.rs::oc_ripgrep_greps_lines_that_are_not_valid_utf8`.
@@ -187,7 +188,7 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (307 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (284 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Model requests and transport (1)
 
@@ -218,36 +219,12 @@ Tests for behaviour CodeSmith already has but no test pins (307 cases), by area,
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
 
-### Permission (25)
+### Permission (2)
 
-- path resolution (relative, prospective, symlinked, tilde) and which targets need external_directory (S) — `tool read/write/edit external_directory checks`
-  - `file-access-path.test.ts`: resolves an active relative existing file target
-  - `file-access-path.test.ts`: resolves an active relative prospective file target
-  - `file-access-path.test.ts`: requires external-directory authorization for a relative lexical escape
-  - `file-access-path.test.ts`: allows a relative path outside the Location but inside the project worktree
-  - `file-access-path.test.ts`: resolves a prospective target below an external symlink lexically
-  - `file-access-path.test.ts`: follows an in-location symlink using ordinary filesystem semantics
-  - `file-access-path.test.ts`: accepts an explicit absolute in-location target without external approval
-  - `file-access-path.test.ts`: requires external-directory authorization for an explicit external absolute target
-  - `file-access-path.test.ts`: resolves an existing external file target
-  - `file-access-path.test.ts`: uses an explicit file kind without treating an existing directory as the target boundary
-  - `file-access-path.test.ts`: authorizes prospective external descendants at their lexical parent
-  - `file-access-path.test.ts`: expands a leading tilde against the home directory
-  - `file-access-path.test.ts`: resolves a tilde path as an external home target
-  - `file-access-path.test.ts`: treats a tilde path as in-location when the location is home
 - external directory authorized before the file's own rules; denial stops; first-seen order (S) — `tool external_directory checks`
-  - `file-access.test.ts`: authorizes an external directory before the file's read rules
-  - `file-access.test.ts`: propagates ${action} denial without continuing authorization (2 cases)
-  - `file-access.test.ts`: reuses a sibling's directory approval only for the supplied recovery call
-  - `file-access.test.ts`: checks the external directory for a target that is not a sibling
   - `file-access.test.ts`: batches external resources in first-seen order and preserves broader repository saves
 - omitted agent uses build's rules; no default agent denies (S) — `permission + agent`
-  - `permission.test.ts`: uses build permissions when the Session agent is omitted
   - `permission.test.ts`: denies omitted-agent permissions when no primary default agent exists
-- a rejection also rejects sibling requests of the same step (M) — `session`
-  - `permission.test.ts`: rejects sibling requests in the same step and leaves another step's request pending
-- pending auto-approval skipped after an "always" for a guarded request (S) — `permission`
-  - `permission.test.ts`: skips pending auto-approval after always for ${guard} (2 cases)
 
 ### Agents (5)
 
@@ -567,12 +544,12 @@ Tests for behaviour CodeSmith already has but no test pins (307 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 653 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 656 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 97 |
+| Other (each says why) | 98 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
@@ -2274,7 +2251,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Permission (152 of 177)</summary>
+<details><summary>Permission (175 of 177)</summary>
 
 
 **`config/policy.test.ts`**
@@ -2293,15 +2270,33 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`file-access-path.test.ts`**
 
+- P resolves an active relative existing file target — `tests/oc_permission_backlog2.rs::oc_file_access_resolves_targets_inside_the_project` (adapted: `Ctx::resolve`)
+- P resolves an active relative prospective file target — `tests/oc_permission_backlog2.rs::oc_file_access_resolves_targets_inside_the_project` (adapted: `Ctx::resolve`)
+- P requires external-directory authorization for a relative lexical escape — `tests/oc_permission_backlog2.rs::oc_file_access_requires_external_approval_outside_the_project` (adapted: the request names the file and saves its folder (or repository))
+- P allows a relative path outside the Location but inside the project worktree — `tests/oc_permission_backlog2.rs::oc_file_access_allows_a_path_outside_the_folder_but_inside_the_project`
 - F does not treat a filesystem-root project sentinel as an internal boundary — `tests/oc_file_access_boundary.rs::oc_file_access_does_not_treat_a_filesystem_root_project_as_an_internal_boundary` (a project root of `/` put every path inside the project, so nothing asked `external_directory`; the working directory is the boundary then, as OpenCode's Location is. Decided, safer than OpenCode: the home folder is no boundary either, and a session working in `/` or `~` has none (oc_file_access_treats_a_home_folder_project_as_no_boundary, oc_file_access_gives_a_session_working_in_root_or_home_no_boundary))
+- D resolves a prospective target below an external symlink lexically — deliberate: a path is judged by where it really is, so a file created through a link out of the project asks `external_directory` first (pinned by tests/oc_permission_backlog2.rs::oc_file_access_judges_a_target_below_an_external_symlink_by_where_it_is)
+- P follows an in-location symlink using ordinary filesystem semantics — `tests/oc_permission_backlog2.rs::oc_file_access_resolves_targets_inside_the_project` (adapted: `Ctx::resolve`)
+- P accepts an explicit absolute in-location target without external approval — `tests/oc_permission_backlog2.rs::oc_file_access_resolves_targets_inside_the_project` (adapted: `Ctx::resolve`)
+- P requires external-directory authorization for an explicit external absolute target — `tests/oc_permission_backlog2.rs::oc_file_access_requires_external_approval_outside_the_project` (adapted: the request names the file and saves its folder (or repository))
+- P resolves an existing external file target — `tests/oc_permission_backlog2.rs::oc_file_access_requires_external_approval_outside_the_project` (adapted: the request names the file and saves its folder (or repository))
+- D uses an explicit file kind without treating an existing directory as the target boundary — other: each tool resolves the kind of path it takes (write a file, glob a folder), so there is no explicit kind to pass
+- P authorizes prospective external descendants at their lexical parent — `tests/oc_permission_backlog2.rs::oc_file_access_requires_external_approval_outside_the_project` (adapted: the request names the file and saves its folder (or repository))
 - P saves external approval at the enclosing repository on the host filesystem — `tests/oc_external_approvals.rs::oc_file_access_saves_external_approval_at_the_enclosing_repository_on_the_host_filesystem`
 - D stats and finds the repository through the Location's Environment driver — client-server: Location Environment driver
 - D ignores unknown path input fields — effect-internal: schema input decoding
+- F expands a leading tilde against the home directory — `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home` (a bare `~` was a file named `~` in the working folder; it is the home folder now)
 - D normalizes Windows shell drive path %s before resolution ×4 — platform: Windows drive paths
+- P resolves a tilde path as an external home target — `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`
+- P treats a tilde path as in-location when the location is home — `tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home`
 
 **`file-access.test.ts`**
 
 - D returns an absolute target and preserves invocation identity on the read assertion — effect-internal: invocation identity on the assertion
+- P authorizes an external directory before the file's read rules — `tests/oc_permission_backlog2.rs::oc_file_access_authorizes_an_external_directory_before_the_read`
+- P propagates ${action} denial without continuing authorization ×2 — `tests/oc_permission_backlog2.rs::oc_file_access_propagates_a_denial_without_continuing`
+- P reuses a sibling's directory approval only for the supplied recovery call — `tests/oc_permission_backlog2.rs::oc_file_access_reuses_a_siblings_directory_approval_only_for_its_recovery` (adapted: the read tool's near-miss recovery)
+- P checks the external directory for a target that is not a sibling — `tests/oc_permission_backlog2.rs::oc_file_access_reuses_a_siblings_directory_approval_only_for_its_recovery` (adapted: the read tool's near-miss recovery)
 
 **`permission.test.ts`**
 
@@ -2313,14 +2308,17 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P matches Windows rule resources against slash-normalized file access resources — `src/permission.rs::oc_permission_matches_windows_rules_against_slash_normalized_resources`
 - P matches file rules without case where file systems ignore it by default — `src/permission.rs::oc_permission_matches_file_rules_without_case_where_files_ignore_it`
 - P allows managed output reads without granting external directory access — `src/permission.rs::oc_permission_allows_managed_output_reads_without_external_access`
+- P uses build permissions when the Session agent is omitted — `tests/oc_permission_backlog2.rs::oc_permission_uses_build_permissions_when_the_agent_is_omitted`
 - P evaluates bash with the normal configured-rule semantics — `src/permission.rs::oc_permission_evaluates_shell_with_normal_rule_semantics`
 - P merges session rules after agent rules and before saved approvals — `src/permission.rs::oc_permission_session_rules_after_agent_rules_before_saved_approvals`
 - P uses saved bash approvals while preserving configured deny precedence — `src/permission.rs::oc_permission_saved_approvals_keep_configured_deny_precedence`
 - P resolves an asked permission once — `src/permission.rs::oc_permission_resolves_an_asked_permission_once`
 - D shows a nested call's request on its parent's row until the scope closes · drops undefined metadata values so pending requests encode as JSON — client-server: pending-request rows and JSON encoding
 - P defects when an asked permission is declined — `src/permission.rs::oc_permission_declining_fails_the_request`
+- P rejects sibling requests in the same step and leaves another step's request pending — `tests/oc_permission_backlog2.rs::oc_permission_rejecting_a_call_stops_its_sibling` (adapted: a rejection stops the turn, so the step's other calls are not run or asked about)
 - P stores and removes saved resources for a project — `tests/oc_saved_approvals.rs::oc_permission_stores_and_removes_saved_resources_for_a_project` (adapted: kept in the session database per project; `codesmith permissions` and `/permissions/saved` list and remove them)
 - P edits saved approvals and enforces the edited rule — `tests/oc_saved_approvals.rs::oc_permission_edits_saved_approvals_and_enforces_the_edited_rule`
+- D skips pending auto-approval after always for ${guard} ×2 — deliberate: a session asks one permission request at a time, so there are no pending requests for an "always" to auto-approve
 - P ${fixture.name}: ${scenario.name} ×72 — `src/permission.rs::oc_permission_shell_scanner_impact` (Bash/Zsh fixtures)
 - D ${fixture.name}: ${scenario.name} ×24 — platform: PowerShell fixtures
 - P ${fixture.name}: always allow covers repeat execution and narrows prefix scope ×5 — `src/permission.rs::oc_permission_always_covers_repeats_and_narrows_prefix_scope` (Bash fixtures)

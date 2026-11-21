@@ -589,6 +589,7 @@ impl Ctx<'_> {
     pub fn resolve_in(&self, roots: &Roots, path: &str) -> Target {
         let expanded = match path.strip_prefix("~/") {
             Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None if path == "~" => dirs::home_dir().unwrap_or_default(),
             None => PathBuf::from(path),
         };
         let absolute = normalize(&if expanded.is_absolute() {

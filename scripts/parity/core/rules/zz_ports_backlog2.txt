@@ -159,3 +159,21 @@
 140 :: ported :: tests/oc_requests_backlog2.rs::oc_compaction_describes_tool_media_without_embedding_base64 :: adapted: CodeSmith's media label
 @tool-subagent.test.ts
 741 :: ported :: tests/oc_requests_backlog2.rs::oc_subagent_runs_the_child_on_an_explicitly_requested_model :: the first call; continuing a child with another model and the model errors are not covered
+
+# --- Permission (tests/oc_permission_backlog2.rs) ---
+@file-access-path.test.ts
+49,66,141,159 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_resolves_targets_inside_the_project :: adapted: `Ctx::resolve`
+80,174,195,225 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_requires_external_approval_outside_the_project :: adapted: the request names the file and saves its folder (or repository)
+98 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_allows_a_path_outside_the_folder_but_inside_the_project
+124 :: design :: deliberate :: a path is judged by where it really is, so a file created through a link out of the project asks `external_directory` first (pinned by tests/oc_permission_backlog2.rs::oc_file_access_judges_a_target_below_an_external_symlink_by_where_it_is)
+210 :: design :: other :: each tool resolves the kind of path it takes (write a file, glob a folder), so there is no explicit kind to pass
+295 :: fixed :: tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home :: a bare `~` was a file named `~` in the working folder; it is the home folder now
+316,334 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_expands_a_leading_tilde_against_home
+@file-access.test.ts
+72 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_authorizes_an_external_directory_before_the_read
+93 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_propagates_a_denial_without_continuing
+107,126 :: ported :: tests/oc_permission_backlog2.rs::oc_file_access_reuses_a_siblings_directory_approval_only_for_its_recovery :: adapted: the read tool's near-miss recovery
+@permission.test.ts
+218 :: ported :: tests/oc_permission_backlog2.rs::oc_permission_uses_build_permissions_when_the_agent_is_omitted
+403 :: ported :: tests/oc_permission_backlog2.rs::oc_permission_rejecting_a_call_stops_its_sibling :: adapted: a rejection stops the turn, so the step's other calls are not run or asked about
+487 :: design :: deliberate :: a session asks one permission request at a time, so there are no pending requests for an "always" to auto-approve
