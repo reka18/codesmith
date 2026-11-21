@@ -10,6 +10,9 @@ All notable changes to CodeSmith are listed here. Versions follow
   `HTTPS://Internal.Corp:443/x`, a tab in the host or a `%XX` escape no
   longer gets past a deny rule or policy. Write URL rules with a lowercase
   host and no default port.
+- A URL with `*` or `?` in its host is refused, and "always" never saves a
+  `webfetch` or `openapi` rule with a wildcard in its origin: approving
+  `https://*github.com/x` saved a rule that allowed almost every URL.
 - `scripts/ci-linux.sh` runs local CI (fmt, clippy, tests, shellcheck) in a
   Linux container, arm64 or `--amd64`; the pre-push hook adds it with
   `CODESMITH_CI_LINUX=1`.

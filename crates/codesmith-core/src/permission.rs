@@ -516,6 +516,14 @@ pub fn always_summary(req: &Request) -> String {
 /// the home directory or above it: approving `~/.zshrc` must not approve all
 /// of `$HOME`. Then the file itself is saved, and a directory not at all.
 fn safe_saves(req: &Request) -> Vec<String> {
+    if matches!(req.action.as_str(), "webfetch" | "openapi") {
+        return req
+            .save
+            .iter()
+            .filter(|s| exact_origin(s))
+            .cloned()
+            .collect();
+    }
     if req.action != "external_directory" {
         return req.save.clone();
     }
@@ -544,6 +552,23 @@ fn safe_saves(req: &Request) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether a `webfetch` (`<url>`) or `openapi` (`<METHOD> <url>`) pattern
+/// names one origin: a scheme and host with no `*` or `?` in them. Any
+/// other is never saved by "always" (`https://*/*` would allow every URL).
+fn exact_origin(pattern: &str) -> bool {
+    let url = pattern.split_once(' ').map_or(pattern, |(_, u)| u);
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    // Up to the first `/`: a `?` before it is a wildcard in the host.
+    let authority = rest.split('/').next().unwrap_or("");
+    !scheme.is_empty()
+        && !authority.is_empty()
+        && !scheme.contains(['*', '?'])
+        && !authority.contains(['*', '?'])
+        && !pattern.starts_with('*')
 }
 
 /// Whether other local users can put files in `dir`: a system temporary
@@ -763,6 +788,45 @@ mod tests {
         assert_eq!(evaluate("shell", "ls", &r), Effect::Allow);
     }
 
+    /// "Always" for a URL saves a rule for one origin only: a pattern with
+    /// a wildcard in its scheme or host is never saved.
+    #[test]
+    fn always_never_saves_a_wildcard_origin() {
+        let saves = |action: &str, save: &[&str]| {
+            safe_saves(&Request {
+                action: action.into(),
+                resources: vec!["x".into()],
+                save: save.iter().map(|s| s.to_string()).collect(),
+                title: String::new(),
+            })
+        };
+        assert_eq!(
+            saves("webfetch", &["https://a.dev", "https://a.dev/*"]),
+            ["https://a.dev", "https://a.dev/*"]
+        );
+        assert_eq!(
+            saves("openapi", &["GET https://a.dev/*"]),
+            ["GET https://a.dev/*"]
+        );
+        for wild in [
+            "*",
+            "https://*github.com",
+            "https://*github.com/*",
+            "https://*/*",
+            "https://a?/*",
+            "http*://a.dev/*",
+            "https://a.dev:*/*",
+            "a.dev/*",
+        ] {
+            assert!(saves("webfetch", &[wild]).is_empty(), "{wild}");
+            assert!(
+                saves("openapi", &[&format!("GET {wild}")]).is_empty(),
+                "{wild}"
+            );
+        }
+        assert!(saves("openapi", &["* https://a.dev/*"]).is_empty());
+    }
+
     #[test]
     fn always_never_saves_home_or_root_for_external_access() {
         let home = dirs::home_dir().unwrap().display().to_string();
@@ -941,7 +1005,7 @@ mod tests {
         // A new answer joins the shared list.
         let mut third = Gate::new(rules, Arc::new(Fixed(Reply::Always)));
         third.share_approvals(kept.clone());
-        third.assert(&req("webfetch", &["https://x"])).unwrap();
+        third.assert(&req("websearch", &["x"])).unwrap();
         assert_eq!(kept.lock().unwrap().len(), 3);
     }
 

@@ -549,3 +549,37 @@ async fn the_url_is_asked_as_requested() {
         .collect();
     assert_eq!(resources, vec![requested]);
 }
+
+/// A `*` in a URL's host is refused before anything is asked, and
+/// "always" never saves a rule with a wildcard origin even if asked for
+/// one. (Security review 7: approving `https://*github.com/x` allowed
+/// `https://attacker.example/github.com/steal`.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wildcard_host_is_refused_and_never_saved() {
+    for (raw, other) in [
+        (
+            "https://*github.com/x",
+            "https://attacker.example/github.com/steal",
+        ),
+        ("https://*/x", "https://anything.example/whatever"),
+    ] {
+        let (g, asked) = gate(vec![], Reply::Always);
+        let out = program(
+            &g,
+            &format!(r#"try {{ await fetch("{raw}") }} catch (e) {{ return e.message }}"#),
+        )
+        .await;
+        assert_eq!(out.result, Ok(json!("URL host must not contain * or ?")));
+        assert!(asked.asked.lock().unwrap().is_empty());
+        let url = url::Url::parse(raw).unwrap();
+        let req = Request {
+            action: ACTION.into(),
+            resources: vec![raw.to_string()],
+            save: webfetch::save_patterns(&url),
+            title: format!("Fetch {raw}"),
+        };
+        g.assert(&req).unwrap();
+        assert!(g.saved().is_empty(), "{:?}", g.saved());
+        assert!(!g.allows(ACTION, &[other.to_string()]), "{other}");
+    }
+}

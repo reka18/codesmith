@@ -182,6 +182,7 @@ pub async fn run(gate: &Gate, input: &Value) -> Result<Value, String> {
             parsed.scheme()
         ));
     }
+    webfetch::check_host(&parsed)?;
     let url = parsed.to_string();
     gate.assert_not_denied(ACTION, &webfetch::deny_forms(Some(&raw), &parsed))
         .map_err(|e| e.to_string())?;
@@ -253,6 +254,7 @@ async fn send(gate: &Gate, mut current: url::Url, mut req: Req) -> Result<Value,
         if !next.username().is_empty() || next.password().is_some() {
             return Err("fetch cannot follow a redirect with credentials in the URL.".into());
         }
+        webfetch::check_host(&next)?;
         next.set_fragment(None);
         gate.assert_not_denied(ACTION, &webfetch::deny_forms(None, &next))
             .map_err(|e| e.to_string())?;

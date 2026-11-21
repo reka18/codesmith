@@ -95,6 +95,16 @@ pub(crate) fn check_url(url: &reqwest::Url) -> Result<(), String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("URL must not include credentials".into());
     }
+    check_host(url)
+}
+
+/// Refuse a host with a `*` or `?` in it (the URL parser accepts `*`):
+/// rules read them as wildcards, so "always" for `https://*/x` would save a
+/// rule for every host.
+pub(crate) fn check_host(url: &reqwest::Url) -> Result<(), String> {
+    if url.host_str().is_some_and(|h| h.contains(['*', '?'])) {
+        return Err("URL host must not contain * or ?".into());
+    }
     Ok(())
 }
 
@@ -384,6 +394,13 @@ mod tests {
             check_url(&url("https://a:b@example.com/")).unwrap_err(),
             "URL must not include credentials"
         );
+        for wild in ["https://*github.com/x", "https://*/x", "http://a*.b:81/"] {
+            assert_eq!(
+                check_url(&url(wild)).unwrap_err(),
+                "URL host must not contain * or ?",
+                "{wild}"
+            );
+        }
         let saves = |s: &str| save_patterns(&normalize(s).unwrap());
         assert_eq!(
             saves("https://Example.com:8443/a?b"),

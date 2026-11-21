@@ -84,6 +84,11 @@ against the URL as written and with its `%XX` escapes decoded, so
 `/%73ecret` does not get past a deny for `/secret*`. OpenCode matches the
 URL as written.
 
+A URL whose host contains `*` or `?` is refused (rules would read them as
+wildcards), and "always" on a URL request saves rules for its origin only:
+a saved `webfetch` or `openapi` pattern never has a wildcard in its scheme
+or host.
+
 A tool is hidden from the model only when its action is denied for every
 resource. `{"action": "webfetch", "resource": "*", "effect": "deny"}` removes
 `webfetch` entirely. A rule like `{"action": "edit", "resource": "docs/*",
