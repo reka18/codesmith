@@ -30,6 +30,10 @@ All notable changes to CodeSmith are listed here. Versions follow
   server listed, are read only from the global config file, and only a
   person can start a swap: it is not a tool, and `run`, automations,
   `serve`, ACP and CodeSmith's own shells cannot.
+- Git's and ssh's passphrase and password prompts stay unrelayed, unlike
+  OpenCode's askpass helper: the answer could reach the model, which runs
+  the commands that ask. The troubleshooting guide says how to avoid the
+  prompts (`ssh-agent`, a git credential helper).
 - The transcript's activity summary counts the tool calls a Code Mode
   `execute` program finished (`+ 2 reads, 1 tool`) instead of the
   `execute` call itself, as OpenCode does, and shows the instruction files

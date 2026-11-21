@@ -45,6 +45,14 @@ on its own; to stay on HTTP from the start, set
 `"settings": {"transport": "http"}` on the provider (see
 [Responses over WebSocket](configuration.md#responses-over-websocket)).
 
+**`git push` or `git fetch` hangs or fails asking for a passphrase or
+password.** Commands run without a terminal to answer on, and CodeSmith
+does not relay git's or ssh's prompts to the UI (an answer there could be
+read by the model, which runs the commands; see
+[PARITY.md](../crates/codesmith/PARITY.md#ssh-askpass)). Load the key into
+`ssh-agent` (`ssh-add`) before starting CodeSmith, and use a git credential
+helper for HTTPS remotes, so nothing asks.
+
 **A config file is rejected.** CodeSmith stops on any file that doesn't
 parse, and names it, rather than skip it and maybe drop a `deny` rule. JSONC
 comments and trailing commas are fine. Check `{env:}` values that contain
