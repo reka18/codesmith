@@ -29,6 +29,7 @@
 use crate::config::ToolOutputConfig;
 use crate::permission::{Denied, Effect, Gate, Granted, Request, Rule};
 use crate::tool::read::authorize_target;
+use crate::tool::webfetch::{check_url, deny_forms, normalize};
 use crate::tool::{real_path, Ctx, Target};
 use std::collections::HashMap;
 use std::path::Path;
@@ -440,21 +441,36 @@ impl Browsers {
         }
         self.current(session)?;
         if parsed.scheme() != "file" {
-            return self.show(gate, session, url);
+            return self.show(gate, session, Some(url), web_url(url)?);
         }
         let path = parsed.to_file_path().map_err(|_| invalid())?;
         let mut file = authorize_file(gate, session, root, &path, Within::Anywhere)?;
         file.set_fragment(parsed.fragment());
-        self.show(gate, session, file.as_str())
+        self.show(gate, session, Some(url), file)
     }
 
-    /// Open `url`, checked already as a URL or file a browser may open, once
-    /// the gate allows `browser` for it.
-    fn show(&self, gate: &Gate, session: &str, url: &str) -> Result<(), BrowserError> {
+    /// Open `url`, checked already as a URL or file a browser may open
+    /// ([`web_url`], [`authorize_file`]), once the gate allows `browser` for
+    /// it. The rules see it without its fragment, and its other forms (as
+    /// `written`, percent-decoded) must pass the deny rules too, as for
+    /// webfetch.
+    fn show(
+        &self,
+        gate: &Gate,
+        session: &str,
+        written: Option<&str>,
+        url: Url,
+    ) -> Result<(), BrowserError> {
         let id = self.current(session)?;
-        assert(gate, ACTION, url)?;
+        let mut checked = url.clone();
+        checked.set_fragment(None);
+        gate.assert_not_denied(ACTION, &deny_forms(written, &checked))
+            .map_err(|e| BrowserError::Denied(e.to_string()))?;
+        assert(gate, ACTION, checked.as_str())?;
         self.touch(session, id)?;
-        self.driver.open(session, url).map_err(BrowserError::Driver)
+        self.driver
+            .open(session, url.as_str())
+            .map_err(BrowserError::Driver)
     }
 
     /// Open workspace file `path` (relative to `root`) as a file:// tab
@@ -485,7 +501,7 @@ impl Browsers {
         }
         self.current(session)?;
         let url = authorize_file(gate, session, root, &root.join(rel), Within::Workspace)?;
-        self.show(gate, session, url.as_str())
+        self.show(gate, session, None, url)
     }
 
     /// The id of the session's live attachment.
@@ -498,6 +514,34 @@ impl Browsers {
             .map(|s| s.id)
             .ok_or_else(|| BrowserError::NotAttached(session.to_string()))
     }
+}
+
+/// `raw`, an http(s) URL, as the `browser` rules see it: parsed as
+/// webfetch parses it ([`normalize`]: the scheme and host lowercased, a
+/// default port dropped, `.` segments resolved), its host without trailing
+/// dots, and refused with credentials or a `*` or `?` in the host
+/// ([`check_url`]), so `HTTPS://u@EVIL.test.:443/x` meets a rule for
+/// `https://evil.test/*`. The fragment is kept for the browser.
+fn web_url(raw: &str) -> Result<Url, BrowserError> {
+    let invalid =
+        |why: String| BrowserError::Invalid(format!("Not a URL a browser may open: {why}"));
+    let fragment = Url::parse(raw)
+        .ok()
+        .and_then(|u| u.fragment().map(String::from));
+    let mut url = normalize(raw).map_err(|e| invalid(e.to_string()))?;
+    check_url(&url).map_err(invalid)?;
+    if let Some(url::Host::Domain(host)) = url.host() {
+        let bare = host.trim_end_matches('.').to_string();
+        if bare.len() != host.len() {
+            if bare.is_empty() {
+                return Err(invalid(format!("no host in {raw}")));
+            }
+            url.set_host(Some(&bare))
+                .map_err(|e| invalid(e.to_string()))?;
+        }
+    }
+    url.set_fragment(fragment.as_deref());
+    Ok(url)
 }
 
 /// Where a file a browser shows may be.
@@ -1133,6 +1177,92 @@ mod tests {
         }
         assert!(rec.requests().is_empty(), "{:?}", rec.requests());
         assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
+    /// A configured `browser` deny meets the URL however it is spelled:
+    /// the rules see it as it would be requested.
+    #[test]
+    fn a_browser_deny_is_not_dodged_by_spelling() {
+        let f = files();
+        let deny = vec![
+            Rule::new(ACTION, "https://evil.test/*", Effect::Deny),
+            Rule::new(ACTION, "https://good.test/secret", Effect::Deny),
+        ];
+        let (b, _a, gate, rec, driver) = attached(&f, deny);
+        for url in [
+            "https://evil.test/x",
+            "HTTPS://evil.test/x",
+            "https://EVIL.test/x",
+            "https://evil.test:443/x",
+            "https://evil.test./x",
+            "https://evil.test../x",
+            "HtTpS://EvIl.TeSt.:443/a/../x#top",
+            "https://evil.test",
+            "https://evil.te\tst/x",
+            "https://good.test/%73ecret",
+            "https://good.test/a/../secret",
+            "https://good.test/secret#f",
+        ] {
+            assert!(
+                matches!(open(&b, &gate, &f, url), Err(BrowserError::Denied(_))),
+                "{url}"
+            );
+        }
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
+    /// Credentials would put the host somewhere a rule does not look; they
+    /// are refused before anything is asked, like other schemes.
+    #[test]
+    fn a_browser_url_with_credentials_or_another_scheme_is_refused() {
+        let f = files();
+        let deny = vec![Rule::new(ACTION, "https://evil.test/*", Effect::Deny)];
+        let (b, _a, gate, rec, driver) = attached(&f, deny);
+        for url in [
+            "https://u@evil.test/x",
+            "https://u:p@evil.test/x",
+            "https://:p@good.test/",
+            "https://*.test/",
+            "https://.../",
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "ftp://good.test/",
+            "about:blank",
+            "chrome://settings",
+            "blob:https://good.test/x",
+            "view-source:https://evil.test/",
+            "//evil.test/x",
+            "evil.test/x",
+            "",
+        ] {
+            assert!(
+                matches!(open(&b, &gate, &f, url), Err(BrowserError::Invalid(_))),
+                "{url}"
+            );
+        }
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
+        assert!(driver.urls().is_empty(), "{:?}", driver.urls());
+    }
+
+    /// The browser is handed the URL the rules saw, with its fragment.
+    #[test]
+    fn a_browser_opens_the_url_the_rules_saw() {
+        let f = files();
+        let (b, _a, gate, rec, driver) = attached(&f, vec![]);
+        open(&b, &gate, &f, "HTTPS://Good.Test.:443/a/../b?q=1#frag").unwrap();
+        open(&b, &gate, &f, "http://good.test:80").unwrap();
+        open(&b, &gate, &f, "http://good.test:8080/").unwrap();
+        assert_eq!(
+            driver.urls(),
+            [
+                "https://good.test/b?q=1#frag",
+                "http://good.test/",
+                "http://good.test:8080/",
+            ]
+        );
+        assert!(rec.requests().is_empty(), "{:?}", rec.requests());
     }
 
     #[test]

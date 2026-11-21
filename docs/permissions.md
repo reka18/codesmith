@@ -403,6 +403,14 @@ workspace path must not be absolute, contain `.`, `..`, `%`, `#` or `?`, or
 lead out of the workspace through a symlink. The browser is handed the
 `file://` URL of the file's real path.
 
+A `browser` rule matches a URL as it would be requested, as for
+[webfetch](#actions-and-resources): the scheme and host lowercased, a default port
+dropped, `.` segments resolved, and trailing dots dropped from the host,
+so `browser https://evil.test/* deny` also covers `HTTPS://EVIL.test.:443/x`.
+Its written and percent-decoded forms must pass the deny rules too. A URL
+with credentials (`https://user@host/`) is refused, and so is any scheme
+but `http`, `https` and `file`.
+
 CodeSmith has no browser of its own, so no browser driver is built in:
 `codesmith_core::plugin::browser` provides the attachment lifecycle and
 the permission checks in front of a driver, and a custom build plugs a

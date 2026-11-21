@@ -25,6 +25,14 @@ All notable changes to CodeSmith are listed here. Versions follow
   and `file:///w/../../etc/passwd` is checked as `/etc/passwd`, where it
   used to need only `browser`, which an attachment grants. `open` now
   takes the project root.
+- **`browser` rules see a URL as it would be requested:** `open` parses
+  an http(s) URL as webfetch does (scheme and host lowercased, default
+  port dropped, `.` segments resolved) and drops trailing dots from the
+  host, so `HTTPS://EVIL.test.:443/x` meets a `browser
+  https://evil.test/*` deny, and its written and percent-decoded forms
+  must pass the denies too. A URL with credentials is refused, as are
+  schemes other than http, https and file. The browser is handed the URL
+  the rules saw.
 - **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
   backend reached through GitLab's unpublished Duo workflow and
   agentic-chat SDK protocols; porting it would mean reimplementing a
