@@ -199,6 +199,33 @@ impl Ui {
         assert_eq!(seen, Ok(true), "{text:?} was not drawn:\n{}", plain(&fresh));
     }
 
+    /// Wait until `raw` (escape sequences included, e.g. a window-title
+    /// OSC) appears anywhere the UI has written. Unlike `wait_for`, it
+    /// searches the whole accumulated output, because an escape sequence
+    /// like the window title is interleaved with other writes and may have
+    /// arrived before the previous match's marker.
+    async fn wait_for_raw(&mut self, raw: &str) {
+        let mut buf = [0u8; 8192];
+        let stdout = &mut self.stdout;
+        let term = &mut self.term;
+        let screen = &mut self.screen;
+        let seen = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if screen.contains(raw) {
+                    return true;
+                }
+                let n = stdout.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return false;
+                }
+                term.process(&buf[..n]);
+                screen.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        })
+        .await;
+        assert_eq!(seen, Ok(true), "{raw:?} was not written:\n{screen:?}");
+    }
+
     async fn send(&mut self, bytes: &[u8]) {
         self.stdin.write_all(bytes).await.unwrap();
         self.stdin.flush().await.unwrap();
@@ -1134,6 +1161,9 @@ async fn oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summa
     };
     ui.wait_for("Hello from the scripted model.").await;
     ui.wait_for("110 tokens").await;
+    // The title comes from its own request, which can finish after the
+    // reply on a loaded machine: wait for the window title it sets.
+    ui.wait_for_raw("\x1b]0;CS | Greeting\x07").await;
     ui.quit_reading().await;
     let raw = ui.screen.clone();
     let boot = raw.find("\x1b]0;CodeSmith\x07").expect("the boot title");
