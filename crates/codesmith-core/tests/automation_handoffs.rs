@@ -642,3 +642,102 @@ async fn runners_on_one_database_never_resume_a_run_in_flight() {
     assert_eq!(w.phase(&id, 1).as_deref(), Some(au::SETTLED));
     assert_eq!(replies(&w, &au::run_session_id(&id, 1)), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_child_whose_creator_rules_changed_is_failed_not_run() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let id = w.prompt(
+        Some(&creator),
+        "hold the triage",
+        Target::Child {
+            child: creator.clone(),
+            agent: "build".into(),
+            model: None,
+        },
+    );
+    w.model.hold();
+    w.due_now(&id);
+    let r = spawn_tick(w.runner());
+    until("the held request", || w.model.requests("hold") == 1).await;
+    r.kill(&w.db).await;
+    // The creating session's rules change before the turn is resumed: the
+    // recorded child no longer matches, so its prompt is not run under the
+    // old authority.
+    w.db.set_permissions(
+        &creator,
+        &serde_json::from_value::<Vec<_>>(
+            json!([{"action": "edit", "resource": "*", "effect": "deny"}]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    w.model.release();
+    w.stale();
+    w.runner().tick().await.unwrap();
+    assert_eq!(w.phase(&id, 1).as_deref(), Some(au::FAILED));
+    let run = &au::runs(&w.db, &id).unwrap()[0];
+    assert!(
+        run.detail
+            .contains("no longer matches the creator's permissions"),
+        "{}",
+        run.detail
+    );
+    assert_eq!(w.model.requests("hold"), 1, "no turn under the old rules");
+    assert_eq!(replies(&w, &au::run_session_id(&id, 1)), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_claimed_before_a_crash_runs_once_when_the_stream_replays_it() {
+    let Some(w) = World::new(json!({})).await else {
+        return;
+    };
+    let creator = w.creator(json!([]));
+    let id = watch_plan(
+        &w,
+        Some(&creator),
+        json!([{"events": [["e1", "c1", "one"], ["e2", "c2", "two"]]}]),
+        Action::Prompt {
+            prompt: "triage".into(),
+            to: Target::Session {
+                session: creator.clone(),
+            },
+        },
+    );
+    // A process claimed e1 and stopped before its handoff: the cursor is
+    // still before it, so the stream replays it.
+    let p = au::EventPosition {
+        opened: true,
+        cursor: Some("c1".into()),
+        id: Some("e1".into()),
+    };
+    let event = json!({"id": "e1", "timestamp": "2026-11-19T10:00:00Z", "data": {"title": "one"}});
+    w.sql(
+        "INSERT INTO automation_run (automation_id, run, at, outcome, detail, phase, prompt, attempts, updated, position)
+         VALUES (?1, 1, 0, 'fired', '', 'claimed', ?2, 0, 0, ?3)",
+        rusqlite::params![
+            id,
+            au::event_prompt("triage", &event).unwrap(),
+            serde_json::to_string(&p).unwrap()
+        ],
+    );
+    w.sql("UPDATE automation SET runs = 1 WHERE id = ?1", [&id]);
+    let runner = w.runner();
+    tick_until(&runner, "both events", || {
+        w.get(&id).event.and_then(|p| p.id).as_deref() == Some("e2")
+            && au::pending(&w.db, &id).unwrap().is_empty()
+    })
+    .await;
+    let prompts: Vec<String> = w
+        .texts(&creator)
+        .into_iter()
+        .filter(|t| t.starts_with("u:"))
+        .collect();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[0].contains("\"id\":\"e1\"") && prompts[1].contains("\"id\":\"e2\""));
+    assert_eq!(w.get(&id).runs, 2);
+    au::remove(&w.db, &id).unwrap();
+    runner.tick().await.unwrap();
+}

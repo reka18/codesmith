@@ -775,12 +775,7 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
             let was_due = a.next_due.unwrap_or(now);
             let next = next_slot(&a.trigger, a.created, now).unwrap_or(None);
             let status = if next.is_none() { "done" } else { "active" };
-            let n = tx.execute(
-                "UPDATE automation SET runs = runs + 1, next_due = ?2, status = ?3, last_run = ?4, retry_at = NULL
-                 WHERE id = ?1 AND runs = ?5 AND status = 'active'",
-                params![a.id, next, status, now, a.runs as i64],
-            )?;
-            if n == 0 {
+            if !claim_one(&tx, &a, next, status, now)? {
                 continue;
             }
             a.runs += 1;
@@ -799,7 +794,35 @@ pub fn claim_due(db: &Store, now: i64) -> Result<Vec<(Automation, i64)>> {
     })
 }
 
-/// The phases of a run (see the module docs in `docs/automations.md`).
+/// Count one run of `a` and move its schedule on, only while its run count
+/// is still the one read and it is active.
+fn claim_one(
+    c: &Connection,
+    a: &Automation,
+    next: Option<i64>,
+    status: &str,
+    now: i64,
+) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE automation SET runs = runs + 1, next_due = ?2, status = ?3, last_run = ?4, retry_at = NULL
+         WHERE id = ?1 AND runs = ?5 AND status = 'active'",
+        params![a.id, next, status, now, a.runs as i64],
+    )? > 0)
+}
+
+/// Take the one resume of admitted run `run`, only while its attempts are
+/// still `attempts` (another resumer has not taken it).
+fn take_resume(db: &Store, id: &str, run: u64, attempts: u32) -> Result<bool> {
+    db.with_conn(|c| {
+        Ok(c.execute(
+            "UPDATE automation_run SET attempts = attempts + 1, updated = ?4
+             WHERE automation_id = ?1 AND run = ?2 AND phase = 'admitted' AND attempts = ?3",
+            params![id, run as i64, attempts as i64, crate::store::now()],
+        )? > 0)
+    })
+}
+
+/// The phases of a run (see `docs/automations.md`).
 pub const CLAIMED: &str = "claimed";
 /// A Code Mode program ran and its result is saved; it never runs again.
 pub const CHECKED: &str = "checked";
@@ -1808,6 +1831,10 @@ impl Runner {
                 let Some(current) = get(db, id).map_err(fatal)? else {
                     return Ok(());
                 };
+                // The run waited for may have been this event's.
+                if current.event.as_ref().and_then(|p| p.id.as_deref()) == Some(eid.as_str()) {
+                    continue;
+                }
                 // The position moves on with the handoff, as OpenCode
                 // commits it: a refused one leaves it, so the event is
                 // replayed when the automation is resumed.
@@ -2458,14 +2485,7 @@ impl Runner {
             if p.attempts >= MAX_TURN_ATTEMPTS {
                 return fail(INTERRUPTED_TWICE);
             }
-            let taken = db.with_conn(|c| {
-                Ok(c.execute(
-                    "UPDATE automation_run SET attempts = attempts + 1, updated = ?4
-                     WHERE automation_id = ?1 AND run = ?2 AND phase = 'admitted' AND attempts = ?3",
-                    params![a.id, p.run as i64, p.attempts as i64, crate::store::now()],
-                )?)
-            })?;
-            if taken == 0 {
+            if !take_resume(db, &a.id, p.run, p.attempts)? {
                 return Ok(());
             }
         }
@@ -3350,6 +3370,46 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_and_a_resume_are_compare_and_sets() {
+        let db = Store::memory().unwrap();
+        let a = claimed(&db);
+        // `a` as read before its claim: its run count is stale.
+        let stale = Automation {
+            runs: a.runs - 1,
+            ..a.clone()
+        };
+        assert!(!db
+            .with_conn(|c| claim_one(c, &stale, None, "active", 1))
+            .unwrap());
+        assert!(db
+            .with_conn(|c| claim_one(c, &a, None, "active", 1))
+            .unwrap());
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation SET runs = ?2 WHERE id = ?1",
+                params![a.id, a.runs as i64],
+            )?)
+        })
+        .unwrap();
+        // One resume of an admitted run, whoever asks first.
+        let state = json!(1);
+        let v = Commit {
+            state: Some(&state),
+            done: false,
+            position: None,
+            label: "fired",
+        };
+        assert!(db
+            .with_conn(|c| commit_run(c, &a.id, a.runs, Some(("s", "m")), &v, None))
+            .unwrap());
+        assert!(take_resume(&db, &a.id, a.runs, 1).unwrap());
+        assert!(
+            !take_resume(&db, &a.id, a.runs, 1).unwrap(),
+            "a second resumer with the same view loses"
+        );
+    }
+
+    #[test]
     fn each_phase_moves_only_from_the_phase_before_it() {
         let db = Store::memory().unwrap();
         let a = claimed(&db);
@@ -3427,10 +3487,23 @@ mod tests {
         let b = get(&db, &a.id).unwrap().unwrap();
         assert_eq!((b.state, b.status.as_str()), (Value::Null, "paused"));
         set_status(&db, &a.id, "active").unwrap();
-        assert!(
-            !admit(&db, a.runs + 1),
-            "another run's count does not match"
-        );
+        // Another process counted a run meanwhile: this one's result is dropped.
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation SET runs = runs + 1 WHERE id = ?1",
+                [&a.id],
+            )?)
+        })
+        .unwrap();
+        assert!(!admit(&db, a.runs), "the run count moved on");
+        assert_eq!(phase_of(&db, &a.id, a.runs), CLAIMED);
+        db.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE automation SET runs = runs - 1 WHERE id = ?1",
+                [&a.id],
+            )?)
+        })
+        .unwrap();
         assert!(admit(&db, a.runs));
         let b = get(&db, &a.id).unwrap().unwrap();
         assert_eq!((b.state, b.status.as_str()), (json!("new"), "done"));
