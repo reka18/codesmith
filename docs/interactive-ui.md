@@ -191,11 +191,16 @@ The commands CodeSmith runs, by where they apply:
   `input.word.forward/backward`, `input.line.home/end`,
   `input.visual.line.home/end`, `input.buffer.home/end`, `input.backspace`,
   `input.delete`, `input.delete.word.forward/backward`,
-  `input.delete.to.line.end/start`, `input.delete.line`,
-  `prompt.history.previous/next`, `prompt.clear`.
+  `input.delete.to.line.end/start`, `input.delete.line`, `input.undo`,
+  `input.redo`, the `input.select.*` commands, `prompt.history.previous/next`,
+  `prompt.clear`, `prompt.editor`, `prompt.stash`, `prompt.stash.pop`,
+  `app.toggle.paste_summary`.
 - **Session:** `app.exit`, `session.interrupt`, `session.background`,
-  `agent.cycle`, `agent.cycle.reverse`, `agent.list`, `model.list`,
-  `variant.cycle`, `session.list`, `session.new`, `session.compact`,
+  `command.palette.show`, `agent.cycle`, `agent.cycle.reverse`,
+  `agent.list`, `model.list`, `model.cycle_recent` and
+  `model.cycle_favorite` (and their `_reverse`), `variant.cycle`,
+  `session.list`, `open.menu`, `session.move`, `session.new`,
+  `session.copy.id`, `session.child.first`, `mcp.list`, `session.compact`,
   `session.tab.next/previous`, `session.tab.next_unread/previous_unread`,
   `session.tab.close`, `session.tab.reopen`, `session.tab.select.1` to
   `.10`, `session.tab.move.left/right` (CodeSmith's),
@@ -204,9 +209,17 @@ The commands CodeSmith runs, by where they apply:
   `session.toggle.tool_output` (CodeSmith's), `session.verbosity.cycle`,
   `session.toggle.exploration_grouping`, `session.page.up/down`,
   `session.half.page.up/down`, `session.line.up/down`, `session.first`,
-  `session.last`, `terminal.suspend`.
+  `session.last`, `session.message.next/previous`,
+  `session.message.user.next/previous`, `session.messages_last_user`,
+  `terminal.suspend`, `terminal.title.toggle`.
 - **Autocomplete:** `prompt.autocomplete.prev/next/select/complete/hide`.
-- **Pickers:** `dialog.select.prev/next/page_up/page_down/home/end/submit`.
+- **Pickers:** `dialog.select.prev/next/page_up/page_down/home/end/submit`,
+  and `model.dialog.favorite` in the model picker.
+- **Worktrees dialog:** the picker's keys and
+  `dialog.move_session.new/move/delete/refresh`.
+- **Subagent and shell panel:** `composer.subagent.up/down/select/interrupt`,
+  `composer.shell.up/down/select/kill`, and `dialog.mcp.toggle` in the MCP
+  servers dialog.
 - **Questions:** `dialog.prompt.submit`.
 - **Permission dialog:** `permission.allow.once` (**y**),
   `permission.allow.always` (**a**), `permission.reject` (**n**), CodeSmith's.
@@ -403,8 +416,11 @@ one.
 picker (and so do **ctrl+x m**, **a** and **l**). Type to filter. **↑/↓**,
 **ctrl+p/n** or **tab** move, **pgup/pgdn** jump, **home/end** go to the
 ends, **enter** chooses, and **esc** closes. The model picker
-lists the models configured under `providers`, plus the current one. To use
-any other model, type `/model provider/model`.
+lists the models configured under `providers`, the models found on running
+[local servers](configuration.md#local-model-discovery-ollama-lm-studio-vllm-llamacpp),
+and the current one, then a `provider/…` row for each other built-in
+provider, which fills in `/model provider/` for you to finish. To use any
+other model, type `/model provider/model`.
 
 **ctrl+p** opens the command palette, as in OpenCode: every UI command
 with its keys, and the slash commands, filtered as you type; **enter**
