@@ -262,7 +262,7 @@ an explicit `--token`. See [local server](local-server.md).
 
 | Command | Shows |
 |---|---|
-| `debug paths` | The config, data, tool-output and scratch folders. |
+| `debug paths` | The config, data, tool-output, scratch and cache folders. |
 | `debug config` | The merged config and the files it came from. |
 | `debug agents` | Every agent, its tools and its final permission rules. |
 | `debug plugins` | The plugins compiled into this binary, and whether config turns them off. |
