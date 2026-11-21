@@ -114,14 +114,14 @@ Where the tests live:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | cli | 269 | 40 | 51 | 2 | 176 | 0 | 0 |
 | cli: ACP | 105 | 55 | 4 | 0 | 25 | 21 | 0 |
-| tui: main UI | 1247 | 15 | 519 | 6 | 706 | 1 | 0 |
+| tui: main UI | 1247 | 15 | 519 | 6 | 707 | 0 | 0 |
 | tui: mini mode | 428 | 0 | 0 | 0 | 0 | 0 | 428 |
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
 | util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **765** | **813** | **8** | **2386** | **237** | **428** |
+| **Total** | **4637** | **765** | **813** | **8** | **2387** | **236** | **428** |
 
 ## Fixes made while porting
 
@@ -1130,6 +1130,7 @@ its remaining work is tracked in
 | tui: keys | by design | 1 | 1 | Tab and Shift+Tab both cycle agents (documented) |
 | tui: permission dialog | by design | 1 | 1 | the dialog shows the request title itself |
 | tui: path display | by design | 1 | 1 | tool and permission paths are named by the core (relative inside the project, absolute outside it, as the tool resolved them); the UI does not reformat them with `~` or read Windows paths on a POSIX base |
+| tui: tool output | by design | 1 | 1 | a command is its tool row's one-line header (`⚙ shell npm test`), cut to the width, so only its output is collapsed; OpenCode collapses the command and its output under one line budget |
 | tui: interrupt | by design | 1 | 1 | Esc interrupts at once; no armed state |
 | tui: slash commands | by design | 2 | 2 | commands complete only at the start of the prompt; one parser for both UIs, where any whitespace (`\r` too) ends a command's name |
 | tui: OpenTUI internals | n/a | 272 | 41 | OpenTUI cell offsets; Solid config and keymap contexts, command object identity and keymap modes, developer tools; Solid batching and renderer internals; layout, virtualization, reactive data or event-stream internals; renderer lifecycle, caching and server sync; select widget layout and reconciliation; widgets, animation and layout helpers |
@@ -1230,9 +1231,3 @@ behaviour exists; no test cites it not cited by a test oc_acp_elicitation_mappin
 - `cli/test/acp/translate`: settles a shell that exits before its call's result arrives
 - `cli/test/acp/translate`: leaves a user's shell command, whose notice waits for the next prompt, out of pending work
 - `cli/test/acp/turn`: cancels unsupported session forms so execution can continue
-
-### tui: tool output (1)
-
-CodeSmith collapses output; the line budget lives in view.rs
-
-- `tui/test/cli/tui/collapse-tool-output`: limits command input and output to the same line budget
