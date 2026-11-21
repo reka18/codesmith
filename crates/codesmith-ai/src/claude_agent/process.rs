@@ -4,7 +4,9 @@
 //! The process gets its own process group, so killing it also kills what
 //! it started, and it is killed when dropped. Its output is read line by
 //! line, each line bounded; its error output is drained and only its tail
-//! kept. At most [`MAX_PROCESSES`] run at once.
+//! kept. At most [`MAX_PROCESSES`] run at once in all, and a registry
+//! caps its own further (see [`super::Pool`]): the slot a process holds is
+//! given back only once its child has been reaped.
 
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -74,8 +76,11 @@ pub(crate) struct Process {
     messages: tokio::sync::Mutex<mpsc::UnboundedReceiver<Value>>,
     exit: watch::Receiver<Option<Exit>>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
-    _slot: OwnedSemaphorePermit,
+    pid: Option<u32>,
 }
+
+/// Held while a process runs; dropped once its child was reaped.
+pub(crate) type Guard = Box<dyn Send + Sync>;
 
 fn random_id() -> String {
     super::uuid().replace('-', "")[..12].to_string()
@@ -96,8 +101,12 @@ async fn write_line(
 }
 
 impl Process {
-    pub fn start(spawn: Spawn, handler: Arc<dyn Handler>) -> Result<Process, String> {
-        let slot = SLOTS.clone().try_acquire_owned().map_err(|_| {
+    pub fn start(
+        spawn: Spawn,
+        handler: Arc<dyn Handler>,
+        guard: Option<Guard>,
+    ) -> Result<Process, String> {
+        let slot: OwnedSemaphorePermit = SLOTS.clone().try_acquire_owned().map_err(|_| {
             format!("CodeSmith is already running {MAX_PROCESSES} Claude Code processes")
         })?;
         let mut cmd = tokio::process::Command::new(&spawn.executable);
@@ -119,8 +128,9 @@ impl Process {
                 spawn.executable.display()
             )
         })?;
+        let pid = child.id();
         #[cfg(unix)]
-        let pgid = child.id().map(|p| p as i32);
+        let pgid = pid.map(|p| p as i32);
         let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take()));
         let stdout = child.stdout.take().ok_or("Claude Code has no output")?;
         let stderr = child.stderr.take();
@@ -164,6 +174,9 @@ impl Process {
                     owned.child.wait().await.ok()
                 }
             };
+            // Reaped: the slots go back before anyone hears of the exit.
+            drop(guard);
+            drop(slot);
             let _ = status_tx.send(status.and_then(|s| s.code()));
         });
 
@@ -253,8 +266,13 @@ impl Process {
             messages: tokio::sync::Mutex::new(rx),
             exit: exit_rx,
             kill: Mutex::new(Some(kill_tx)),
-            _slot: slot,
+            pid,
         })
+    }
+
+    /// The child's process id.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     /// Send a message (a user message).

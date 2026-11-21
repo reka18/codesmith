@@ -5,6 +5,20 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Claude Agent processes are capped, and can start ahead of a turn.**
+  The global `claude_agent` setting (`max_processes`, `prewarm`, `spare`;
+  ignored in project config) bounds every `claude` CodeSmith runs, 4 by
+  default where it was 32: at the cap a spare, then the least recently
+  used idle session's process stops (it resumes next time); a running or
+  parked turn is never stopped, and a request over the cap waits, failing
+  after two minutes. `prewarm` (off by default) starts a session's own
+  process as its turn begins; `spare` (0 by default) keeps never-used
+  processes, each started like the session that made room for it, for new
+  sessions launched the same way. A process still serves one session for
+  good once it carried a turn, and each session keeps its own Claude
+  session, history control, model and effort. A process's slot is now
+  given back only once it has exited. See
+  [Claude Code processes](docs/configuration.md#claude-code-processes-claude_agent).
 - **A trailing dot in a URL host no longer dodges a deny.** `https://host./` resolves to the same server as `https://host/` but parsed as a distinct host, so a `webfetch`/`fetch`/OpenAPI deny on the host could be bypassed; the dot is now stripped before allow/deny matching.
 - **Browser attachments** (OpenCode's browser plugin): a browser attached
   to a session grants it `browser *` and the `browser` skill while the

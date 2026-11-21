@@ -13,6 +13,11 @@
 //!
 //! Claude Code keeps its own transcript; [`history`] keeps it in step with
 //! CodeSmith's history, which stays the source of truth.
+//!
+//! How many processes run is capped ([`Pool`]): a process belongs to one
+//! session for good once it carried a turn, the least recently used idle
+//! one is stopped to make room, and a session's process can be started
+//! ahead of its turn (see [`registry`]).
 
 pub mod catalog;
 pub mod convert;
@@ -195,10 +200,13 @@ impl Io {
 /// How long things may take.
 #[derive(Debug, Clone, Copy)]
 pub struct Timing {
-    /// A session's process stops after this long idle.
+    /// A session's process (and a spare) stops after this long idle.
     pub idle: Duration,
     /// `claude` must start within this.
     pub startup: Duration,
+    /// How long a request waits for a process slot while every process
+    /// is busy, before it fails.
+    pub queue: Duration,
 }
 
 impl Default for Timing {
@@ -206,6 +214,54 @@ impl Default for Timing {
         Timing {
             idle: Duration::from_secs(5 * 60),
             startup: Duration::from_secs(30),
+            queue: Duration::from_secs(120),
+        }
+    }
+}
+
+/// How many `claude` processes a registry runs, and which it starts
+/// before they are needed (`claude_agent` in the global config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pool {
+    /// Start a session's process as its turn begins, before the request
+    /// is ready, so the request does not wait for Claude Code to start.
+    pub prewarm: bool,
+    /// Never-used processes kept ready for new sessions. Claude Code takes
+    /// its system prompt and tools when it starts, so a spare is started
+    /// like the session whose new process left room for it, and serves
+    /// only a new session launched the same way (the model and effort may
+    /// differ).
+    pub spare: usize,
+    /// The most processes at once: sessions', spares, side calls and
+    /// login checks together.
+    pub max_processes: usize,
+}
+
+impl Default for Pool {
+    fn default() -> Self {
+        Pool {
+            prewarm: false,
+            spare: 0,
+            max_processes: DEFAULT_MAX_PROCESSES,
+        }
+    }
+}
+
+/// [`Pool::max_processes`] when not configured.
+pub const DEFAULT_MAX_PROCESSES: usize = 4;
+
+/// The highest [`Pool::max_processes`] takes.
+pub const MAX_PROCESSES: usize = process::MAX_PROCESSES;
+
+impl Pool {
+    /// Within bounds: 1 to [`MAX_PROCESSES`] processes, and spares that
+    /// leave room for at least one session's.
+    pub fn clamped(self) -> Pool {
+        let max_processes = self.max_processes.clamp(1, MAX_PROCESSES);
+        Pool {
+            prewarm: self.prewarm,
+            spare: self.spare.min(max_processes - 1),
+            max_processes,
         }
     }
 }
@@ -328,6 +384,18 @@ pub fn stream_with(registry: &Registry, request: registry::Request) -> EventStre
         rx.recv().await.map(|e| (e, (rx, guard)))
     })
     .boxed()
+}
+
+/// Start the process a request's session will use, in the background
+/// (see [`Registry::prewarm`]); nothing when prewarming is off.
+pub fn prewarm(p: &Provider, req: &Request) {
+    let registry = global();
+    if !registry.pool().prewarm {
+        return;
+    }
+    if let Ok(request) = agent_request(p, req) {
+        registry.prewarm(request);
+    }
 }
 
 /// [`Provider::stream`] for this provider.

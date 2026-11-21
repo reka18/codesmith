@@ -375,3 +375,65 @@ async fn claude_tool_calls_never_run_when_codesmiths_permissions_refuse_them() {
     assert!(e.fake.run(0).mcp_results().is_empty());
     check(&e.fake);
 }
+
+// CodeSmith's own (not an OpenCode port): the global `claude_agent`
+// settings reach the registry as a turn starts, and with `prewarm` the
+// session's process starts then, before the request is built, launched as
+// the request launches it: that one process serves the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_prewarm_starts_the_sessions_process_as_its_turn_begins_and_that_process_serves_it()
+{
+    use codesmith_ai::claude_agent::{global, Pool};
+    let _serial = serial();
+    let e = start(vec![
+        expect_startup(),
+        expect_turn(),
+        claude_fake::expect_interrupt(),
+    ]);
+    let l = loaded(
+        e.dir.path(),
+        json!({"claude_agent": {"prewarm": true, "max_processes": 3}}),
+    );
+    let before = global().prewarmed();
+    let mut s = Session::new(
+        &l,
+        e.dir.path().to_path_buf(),
+        options(),
+        Arc::new(Fixed(Reply::Once)),
+        None,
+    )
+    .unwrap();
+    let mut sink = Collect::default();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        s.prompt(
+            "Remember the marker COPPER-OTTER. Reply only with that marker.",
+            &mut sink,
+        ),
+    )
+    .await
+    .expect("the turn finished")
+    .unwrap();
+    assert_eq!(sink.0, "COPPER-OTTER");
+    assert_eq!(
+        global().pool(),
+        Pool {
+            prewarm: true,
+            spare: 0,
+            max_processes: 3
+        }
+    );
+    assert_eq!(global().prewarmed() - before, 1);
+    // Login checks aside, one `claude` ran: the prewarmed one.
+    let chats: Vec<_> = e
+        .fake
+        .runs()
+        .into_iter()
+        .filter(|r| r.args.iter().any(|a| a == "--include-partial-messages"))
+        .collect();
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].users().len(), 1);
+    close().await;
+    global().set_pool(Pool::default());
+    check(&e.fake);
+}

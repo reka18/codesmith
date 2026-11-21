@@ -7,6 +7,31 @@
 //! questions can take longer than that, and stopping then would record the
 //! calls as refused. Once CodeSmith stops running the session
 //! ([`Registry::idle`]) the timer starts.
+//!
+//! The pool ([`Pool`]) bounds and warms these processes:
+//!
+//! - **One session per process.** A process is bound to one session's
+//!   entry when it starts (or when a spare is claimed) and leaves it only
+//!   by stopping. Nothing moves a bound process to another entry or back
+//!   to the spares, so a process that carried a conversation never serves
+//!   another session. A subagent's child session has an entry, and so a
+//!   process, of its own.
+//! - **Spares.** Claude Code takes its system prompt and tools in its
+//!   start-up request, so a spare is started with a launch (system prompt,
+//!   tools, folder, connection, output limit) and only a session starting
+//!   a new Claude session with the same launch may claim it; the model and
+//!   effort are set on it as on any running process. A spare never had a
+//!   turn, and on claim it leaves the pool for good.
+//! - **The cap.** Every process holds a slot until its child is reaped,
+//!   and at most [`Pool::max_processes`] slots are taken. To make room a
+//!   spare is stopped first, then the least recently used idle session's
+//!   process (as its idle timer would stop it: it resumes next time). A
+//!   running or parked turn is never stopped for room: the request waits
+//!   for one to finish, failing after [`Timing::queue`].
+//! - **Prewarm** starts a session's process as its turn begins, exactly as
+//!   the turn would (resuming its Claude session or starting a new one);
+//!   the turn still decides everything about the history, and stops a
+//!   prewarmed process it cannot use.
 
 use super::catalog::{self, Catalog, State};
 use super::history::{self, Decision, Msg, ReplyPart};
@@ -16,12 +41,12 @@ use super::query::{Launch, System};
 use super::session::{Session, Step};
 use super::store::{Record, Records};
 use super::tools::{self, Outcome, Pending};
-use super::{Io, Timing};
+use super::{Io, Pool, Timing};
 use crate::ToolSpec;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
@@ -78,6 +103,43 @@ struct Live {
     launch: String,
     /// The calls a parked turn waits on.
     waiting: Option<Vec<String>>,
+    /// Started for a new Claude session rather than resuming one.
+    fresh: bool,
+    /// Its start-up report (the model list) was recorded.
+    reported: bool,
+    /// Bound by this request (started or claimed): when the request ends a
+    /// spare takes its place, so the spare's start never competes with
+    /// this turn's.
+    refill: bool,
+}
+
+/// A never-used process, waiting for a new session launched like it.
+struct Spare {
+    id: u64,
+    live: Live,
+}
+
+/// The slots processes hold (see [`Pool::max_processes`]).
+struct Slots {
+    taken: Mutex<usize>,
+    /// Bumped whenever a slot is given back or a process becomes idle.
+    changed: watch::Sender<u64>,
+}
+
+impl Slots {
+    fn bump(&self) {
+        self.changed.send_modify(|g| *g = g.wrapping_add(1));
+    }
+}
+
+/// One process's slot, given back when its child has been reaped.
+struct Slot(Arc<Slots>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        *self.0.taken.lock().unwrap() -= 1;
+        self.0.bump();
+    }
 }
 
 #[derive(Default)]
@@ -93,6 +155,8 @@ struct Entry {
     idle: AtomicU64,
     /// Cancels the running request.
     active: Mutex<Option<watch::Sender<bool>>>,
+    /// When it was last used (the registry's clock), for eviction.
+    used: AtomicU64,
 }
 
 struct Continuation {
@@ -109,6 +173,20 @@ struct Inner {
     status: watch::Sender<State>,
     checking: tokio::sync::Mutex<()>,
     checked: Mutex<HashSet<String>>,
+    pool: Mutex<Pool>,
+    slots: Arc<Slots>,
+    /// Oldest first.
+    spares: Mutex<Vec<Spare>>,
+    filling: tokio::sync::Mutex<()>,
+    clock: AtomicU64,
+    /// Prewarms and spare fills still running.
+    warming: watch::Sender<usize>,
+    /// Processes started, for tests.
+    started: AtomicUsize,
+    /// Processes prewarming bound, for tests.
+    prewarmed: AtomicUsize,
+    /// Requests waiting for a slot.
+    queued: watch::Sender<usize>,
 }
 
 /// The registry of running sessions.
@@ -136,6 +214,23 @@ impl Cancel {
                 r = self.closed.changed() => if r.is_err() { std::future::pending::<()>().await },
             }
         }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Warm {
+    Bound,
+    Skip,
+    /// No slot is free.
+    Room,
+}
+
+/// Counts something (a background task, a queued request) while it lasts.
+struct Counted(watch::Sender<usize>);
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n -= 1);
     }
 }
 
@@ -290,7 +385,443 @@ impl Registry {
             status,
             checking: tokio::sync::Mutex::new(()),
             checked: Mutex::default(),
+            pool: Mutex::new(Pool::default()),
+            slots: Arc::new(Slots {
+                taken: Mutex::new(0),
+                changed: watch::channel(0).0,
+            }),
+            spares: Mutex::default(),
+            filling: tokio::sync::Mutex::new(()),
+            clock: AtomicU64::new(0),
+            warming: watch::channel(0).0,
+            started: AtomicUsize::new(0),
+            prewarmed: AtomicUsize::new(0),
+            queued: watch::channel(0).0,
         }))
+    }
+
+    /// A registry with these pool settings.
+    pub fn with_pool(io: Io, timing: Timing, pool: Pool) -> Registry {
+        let r = Registry::new(io, timing);
+        r.set_pool(pool);
+        r
+    }
+
+    /// The pool settings in force.
+    pub fn pool(&self) -> Pool {
+        *self.0.pool.lock().unwrap()
+    }
+
+    /// Change the pool settings (clamped, see [`Pool::clamped`]). Running
+    /// processes are not stopped for a lower cap: the next process to
+    /// start makes room. Spares over the new count are stopped.
+    pub fn set_pool(&self, pool: Pool) {
+        let pool = pool.clamped();
+        let surplus: Vec<Spare> = {
+            let mut current = self.0.pool.lock().unwrap();
+            if *current == pool {
+                return;
+            }
+            *current = pool;
+            let mut spares = self.0.spares.lock().unwrap();
+            let n = spares.len().saturating_sub(pool.spare);
+            spares.drain(..n).collect()
+        };
+        if !surplus.is_empty() {
+            self.background(async move {
+                for s in surplus {
+                    s.live.session.stop().await;
+                }
+            });
+        }
+        self.0.slots.bump();
+    }
+
+    /// Live `claude` processes: every one that holds a slot (sessions',
+    /// spares, side calls and login checks), until it is reaped.
+    pub fn live(&self) -> usize {
+        *self.0.slots.taken.lock().unwrap()
+    }
+
+    /// Wait until the live count satisfies `f`.
+    pub async fn live_until(&self, f: impl Fn(usize) -> bool) {
+        let mut changed = self.0.slots.changed.subscribe();
+        loop {
+            changed.mark_unchanged();
+            if f(self.live()) {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// How many processes prewarming bound to a session.
+    pub fn prewarmed(&self) -> usize {
+        self.0.prewarmed.load(Ordering::SeqCst)
+    }
+
+    /// How many `claude` processes this registry has started.
+    pub fn started(&self) -> usize {
+        self.0.started.load(Ordering::SeqCst)
+    }
+
+    /// How many requests wait for a slot.
+    pub fn queued(&self) -> watch::Receiver<usize> {
+        self.0.queued.subscribe()
+    }
+
+    /// Spares waiting to be claimed.
+    pub fn spares(&self) -> usize {
+        self.0.spares.lock().unwrap().len()
+    }
+
+    /// The process id of each session's process.
+    pub async fn pids(&self) -> BTreeMap<String, u32> {
+        let all: Vec<(String, Arc<Entry>)> = self
+            .0
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, e)| (k.clone(), e.clone()))
+            .collect();
+        let mut out = BTreeMap::new();
+        for (id, e) in all {
+            let st = e.state.lock().await;
+            if let Some(pid) = st.process.as_ref().and_then(|p| p.session.pid()) {
+                out.insert(id, pid);
+            }
+        }
+        out
+    }
+
+    /// Wait until prewarms and spare fills finished and every process
+    /// they started answered its start-up request.
+    pub async fn settled(&self) {
+        let mut rx = self.0.warming.subscribe();
+        let _ = rx.wait_for(|n| *n == 0).await;
+        let spares: Vec<Arc<Session>> = self
+            .0
+            .spares
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.live.session.clone())
+            .collect();
+        let entries: Vec<Arc<Entry>> = self.0.entries.lock().unwrap().values().cloned().collect();
+        let mut sessions = spares;
+        for e in entries {
+            if let Ok(st) = e.state.try_lock() {
+                if let Some(p) = &st.process {
+                    sessions.push(p.session.clone());
+                }
+            }
+        }
+        for s in sessions {
+            let _ = tokio::time::timeout(self.0.timing.startup, s.ready()).await;
+        }
+    }
+
+    fn background(&self, f: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.0.warming.send_modify(|n| *n += 1);
+        let counted = Counted(self.0.warming.clone());
+        tokio::spawn(async move {
+            let _counted = counted;
+            f.await;
+        });
+    }
+
+    fn tick(&self) -> u64 {
+        self.0.clock.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// A slot, if one is free now.
+    fn try_slot(&self) -> Option<Slot> {
+        let max = self.pool().max_processes;
+        let mut taken = self.0.slots.taken.lock().unwrap();
+        if *taken >= max {
+            return None;
+        }
+        *taken += 1;
+        Some(Slot(self.0.slots.clone()))
+    }
+
+    /// A slot now, making room if needed, or none.
+    async fn slot_now(&self) -> Option<Slot> {
+        loop {
+            if let Some(s) = self.try_slot() {
+                return Some(s);
+            }
+            if !self.make_room().await {
+                return None;
+            }
+        }
+    }
+
+    /// A slot, making room if needed, else waiting for a busy process to
+    /// finish (or be cancelled), up to [`Timing::queue`].
+    async fn slot(&self, mut cancel: Option<&mut Cancel>) -> Result<Slot, String> {
+        let deadline = tokio::time::Instant::now() + self.0.timing.queue;
+        loop {
+            let mut changed = self.0.slots.changed.subscribe();
+            changed.mark_unchanged();
+            if let Some(s) = self.slot_now().await {
+                return Ok(s);
+            }
+            let cancelled = async {
+                match cancel.as_mut() {
+                    Some(c) => c.wait().await,
+                    None => std::future::pending().await,
+                }
+            };
+            self.0.queued.send_modify(|n| *n += 1);
+            let _queued = Counted(self.0.queued.clone());
+            tokio::select! {
+                _ = changed.changed() => {}
+                _ = cancelled => return Err(CANCELLED.into()),
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(format!(
+                        "CodeSmith is already running {} Claude Code processes (claude_agent.max_processes) and none of them is idle",
+                        self.pool().max_processes
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Stop one process to make room: a spare first (it never carried a
+    /// conversation), else the least recently used idle session's, as its
+    /// idle timer would. False when every process is busy.
+    async fn make_room(&self) -> bool {
+        let spare = {
+            let mut spares = self.0.spares.lock().unwrap();
+            (!spares.is_empty()).then(|| spares.remove(0))
+        };
+        if let Some(s) = spare {
+            s.live.session.stop().await;
+            return true;
+        }
+        let mut all: Vec<(u64, Arc<Entry>)> = self
+            .0
+            .entries
+            .lock()
+            .unwrap()
+            .values()
+            .map(|e| (e.used.load(Ordering::SeqCst), e.clone()))
+            .collect();
+        all.sort_by_key(|(used, _)| *used);
+        for (_, e) in all {
+            if e.active.lock().unwrap().is_some() {
+                continue;
+            }
+            // A request holds the lock for as long as it runs.
+            let Ok(mut st) = e.state.try_lock() else {
+                continue;
+            };
+            let idle = st
+                .process
+                .as_ref()
+                .is_some_and(|p| p.waiting.is_none() && !p.session.running());
+            if !idle {
+                continue;
+            }
+            e.idle.fetch_add(1, Ordering::SeqCst);
+            stop(&mut st).await;
+            return true;
+        }
+        false
+    }
+
+    /// Start a process for `request`'s entry: resuming `resume`, else a new
+    /// Claude session.
+    fn spawn(
+        &self,
+        request: &Request,
+        mut launch: Launch,
+        resume: Option<String>,
+        slot: Slot,
+    ) -> Result<Live, String> {
+        let pending = Arc::new(Pending::default());
+        launch.directory = request.directory.clone();
+        launch.model = Some(request.model.clone());
+        launch.effort = request.effort.clone();
+        launch.max_output = request.max_output;
+        launch.system = Some(request.system.clone());
+        launch.tools = request.tools.clone();
+        launch.chat = true;
+        launch.persist = request.session_id.is_some();
+        launch.session_id = resume.is_none().then(super::uuid);
+        let fresh = resume.is_none();
+        launch.resume = resume;
+        let handler = Arc::new(ChatHandler {
+            pending: pending.clone(),
+            tools: request.tools.clone(),
+            cancelled: Mutex::default(),
+        });
+        let session = Session::start(&launch, Arc::new(handler), Some(Box::new(slot)))?;
+        self.0.started.fetch_add(1, Ordering::SeqCst);
+        Ok(Live {
+            session: Arc::new(session),
+            pending,
+            model: request.model.clone(),
+            effort: request.effort.clone(),
+            launch: request.launch(),
+            waiting: None,
+            fresh,
+            reported: false,
+            refill: true,
+        })
+    }
+
+    /// Take a spare launched like `request`, binding it to the caller.
+    fn claim(&self, request: &Request) -> Option<Live> {
+        request.session_id.as_ref()?;
+        let launch = request.launch();
+        let mut spares = self.0.spares.lock().unwrap();
+        spares.retain(|s| !s.live.session.ended());
+        let i = spares.iter().position(|s| s.live.launch == launch)?;
+        let mut live = spares.remove(i).live;
+        debug_assert!(!live.session.used());
+        live.refill = true;
+        Some(live)
+    }
+
+    /// Keep a spare launched like `request` (a session's request) for the
+    /// next new session, while there are fewer than [`Pool::spare`], in a
+    /// free slot only: a spare never stops a session's process for room,
+    /// nor another spare (which would only trade one launch for another,
+    /// as a subagent's would each time).
+    async fn fill(&self, request: &Request) {
+        let pool = self.pool();
+        if pool.spare == 0 || request.session_id.is_none() {
+            return;
+        }
+        let _one = self.0.filling.lock().await;
+        {
+            let mut spares = self.0.spares.lock().unwrap();
+            spares.retain(|s| !s.live.session.ended());
+            if spares.len() >= pool.spare {
+                return;
+            }
+        }
+        let Some(base) = self.launch_base(&request.connection) else {
+            return;
+        };
+        let Some(slot) = self.try_slot() else {
+            return;
+        };
+        let Ok(mut live) = self.spawn(request, base, None, slot) else {
+            return;
+        };
+        live.refill = false;
+        let id = self.tick();
+        self.0.spares.lock().unwrap().push(Spare { id, live });
+        // An unclaimed spare stops after the idle time, as a session's does.
+        let me = self.clone();
+        let idle = self.0.timing.idle;
+        tokio::spawn(async move {
+            tokio::time::sleep(idle).await;
+            let spare = {
+                let mut spares = me.0.spares.lock().unwrap();
+                spares
+                    .iter()
+                    .position(|s| s.id == id)
+                    .map(|i| spares.remove(i))
+            };
+            if let Some(s) = spare {
+                s.live.session.stop().await;
+            }
+        });
+    }
+
+    fn fill_later(&self, request: &Request) {
+        if self.pool().spare == 0 || request.session_id.is_none() {
+            return;
+        }
+        let me = self.clone();
+        let request = request.clone();
+        self.background(async move { me.fill(&request).await });
+    }
+
+    /// Start the process `request`'s session will use, in the background,
+    /// so its turn does not wait for Claude Code to start. It binds to that
+    /// session at once, resuming its Claude session (if Claude Code still
+    /// has it) or starting a new one, from a spare when one matches. Does
+    /// nothing while the session runs a request or has a process, for a
+    /// fork's first request (which branches its source), or when no slot
+    /// can be had without waiting (after stopping a spare or an idle
+    /// session's process, as a request would). The turn decides about the
+    /// history as it always does, and stops a prewarmed process it cannot
+    /// use.
+    pub fn prewarm(&self, request: Request) {
+        if !self.pool().prewarm || request.session_id.is_none() {
+            return;
+        }
+        // Bound before this returns when a slot is free; making room (which
+        // stops another process) goes on in the background.
+        if self.warm(&request, false) == Warm::Room {
+            let me = self.clone();
+            self.background(async move {
+                if me.make_room().await {
+                    me.warm(&request, true);
+                }
+            });
+        }
+    }
+
+    /// Bind a process to `request`'s session, if it should have one now;
+    /// [`Warm::Room`] when it should but no slot is free.
+    fn warm(&self, request: &Request, again: bool) -> Warm {
+        let Some(session_id) = &request.session_id else {
+            return Warm::Skip;
+        };
+        let entry = self.entry_for(request);
+        if entry.active.lock().unwrap().is_some() {
+            return Warm::Skip;
+        }
+        let Ok(mut st) = entry.state.try_lock() else {
+            return Warm::Skip;
+        };
+        if st.process.is_some() {
+            return Warm::Skip;
+        }
+        if st.record.is_none() {
+            st.record = self.0.records.get(session_id);
+        }
+        let resume = match &st.record {
+            Some(r) => {
+                let saved = r.history.as_ref().is_some_and(|h| !h.is_empty());
+                if !saved || !self.0.io.transcripts().exists(&r.claude_session_id) {
+                    return Warm::Skip;
+                }
+                Some(r.claude_session_id.clone())
+            }
+            None if request.source_id.is_some() => return Warm::Skip,
+            None => None,
+        };
+        let live = match resume.is_none().then(|| self.claim(request)).flatten() {
+            Some(live) => live,
+            None => {
+                let Some(base) = self.launch_base(&request.connection) else {
+                    return Warm::Skip;
+                };
+                let Some(slot) = self.try_slot() else {
+                    return if again { Warm::Skip } else { Warm::Room };
+                };
+                match self.spawn(request, base, resume, slot) {
+                    Ok(live) => live,
+                    Err(_) => return Warm::Skip,
+                }
+            }
+        };
+        st.process = Some(live);
+        entry.used.store(self.tick(), Ordering::SeqCst);
+        drop(st);
+        self.0.prewarmed.fetch_add(1, Ordering::SeqCst);
+        self.arm_idle(&entry);
+        Warm::Bound
     }
 
     pub fn io(&self) -> &Io {
@@ -328,16 +859,38 @@ impl Registry {
         let _one = self.0.checking.lock().await;
         let state = match self.launch_base(connection) {
             None => State::Missing,
-            Some(launch) => match probe::run(&launch, self.0.timing.startup).await {
-                Ok(probe) => State::Ready {
-                    probe,
-                    from_chat: false,
-                },
+            Some(launch) => match self.slot(None).await {
+                Ok(slot) => self.probe(&launch, slot).await,
                 Err(e) => State::Failed(e),
             },
         };
         self.report(state.clone(), connection);
         state
+    }
+
+    async fn probe(&self, launch: &Launch, slot: Slot) -> State {
+        self.0.started.fetch_add(1, Ordering::SeqCst);
+        match probe::run_with(launch, self.0.timing.startup, Some(Box::new(slot))).await {
+            Ok(probe) => State::Ready {
+                probe,
+                from_chat: false,
+            },
+            Err(e) => State::Failed(e),
+        }
+    }
+
+    /// A check a chat's report asked for, only if a slot is free: it is
+    /// not worth stopping or waiting for anything.
+    async fn recheck(&self, connection: &BTreeMap<String, String>) {
+        let _one = self.0.checking.lock().await;
+        let Some(launch) = self.launch_base(connection) else {
+            return;
+        };
+        let Some(slot) = self.try_slot() else {
+            return;
+        };
+        let state = self.probe(&launch, slot).await;
+        self.report(state, connection);
     }
 
     /// Record what Claude Code reported: the status, and with a report its
@@ -360,7 +913,7 @@ impl Registry {
                 let me = self.clone();
                 let connection = connection.clone();
                 tokio::spawn(async move {
-                    me.refresh(&connection).await;
+                    me.recheck(&connection).await;
                 });
             }
             if next != saved {
@@ -411,6 +964,7 @@ impl Registry {
             }
         };
         entry.idle.fetch_add(1, Ordering::SeqCst);
+        entry.used.store(self.tick(), Ordering::SeqCst);
         *entry.active.lock().unwrap() = Some(close_tx);
         let r = async {
             let (start, continuation) = self.prepare(&mut st, &request).await?;
@@ -434,6 +988,9 @@ impl Registry {
 
     async fn release(&self, entry: &Arc<Entry>, st: &mut EntryState, request: &Request) {
         entry.active.lock().unwrap().take();
+        entry.used.store(self.tick(), Ordering::SeqCst);
+        // A waiting request may now stop this process for room.
+        self.0.slots.bump();
         if request.session_id.is_none() {
             stop(st).await;
             if let Some(r) = st.record.take() {
@@ -441,6 +998,10 @@ impl Registry {
             }
             self.forget(entry, request);
             return;
+        }
+        if let Some(live) = st.process.as_mut().filter(|l| l.refill) {
+            live.refill = false;
+            self.fill_later(request);
         }
         // A turn waiting for tool results is still busy (see `idle`).
         if st.process.as_ref().is_some_and(|p| p.waiting.is_some()) {
@@ -486,6 +1047,12 @@ impl Registry {
     /// Stop everything: cancel running requests (they drain), then stop
     /// every process.
     pub async fn close(&self) {
+        let mut warming = self.0.warming.subscribe();
+        let _ = warming.wait_for(|n| *n == 0).await;
+        let spares: Vec<Spare> = self.0.spares.lock().unwrap().drain(..).collect();
+        for s in spares {
+            s.live.session.stop().await;
+        }
         let all: Vec<Arc<Entry>> = {
             let entries = self.0.entries.lock().unwrap();
             let temporary = self.0.temporary.lock().unwrap();
@@ -502,6 +1069,12 @@ impl Registry {
             stop(&mut st).await;
         }
         self.0.entries.lock().unwrap().clear();
+        // A spare a cancelled request asked for meanwhile.
+        let _ = warming.wait_for(|n| *n == 0).await;
+        let spares: Vec<Spare> = self.0.spares.lock().unwrap().drain(..).collect();
+        for s in spares {
+            s.live.session.stop().await;
+        }
     }
 
     /// How many sessions have a running process.
@@ -540,15 +1113,30 @@ impl Registry {
         let decision = history::decide(&request.prompt, st.record.as_ref());
         let start = match decision {
             Decision::Fresh | Decision::Changed => {
+                // A process that never carried a turn and resumes nothing
+                // (a prewarmed one) is what a new Claude session starts
+                // with anyway: it stays if the request starts one.
+                let unused = match &st.process {
+                    Some(p) if p.fresh && !p.session.used() => st.process.take(),
+                    _ => None,
+                };
                 stop(st).await;
                 let previous = st.record.take();
-                if decision == Decision::Changed {
-                    self.branch(st, request, previous.as_ref())?
+                let start = if decision == Decision::Changed {
+                    self.branch(st, request, previous.as_ref())
                 } else if previous.is_none() {
-                    self.snapshot(st, request).await?
+                    self.snapshot(st, request).await
                 } else {
-                    0
+                    Ok(0)
+                };
+                if let Some(live) = unused {
+                    if st.record.is_none() {
+                        st.process = Some(live);
+                    } else {
+                        live.session.stop().await;
+                    }
                 }
+                start?
             }
             _ if st.process.is_some() || st.record.is_none() => decision.start(),
             _ => {
@@ -665,38 +1253,20 @@ impl Registry {
         request: &Request,
         cancel: &mut Cancel,
     ) -> Result<(Arc<Session>, Arc<Pending>), String> {
-        let starting = st.process.is_none();
-        if starting {
-            let Some(mut launch) = self.launch_base(&request.connection) else {
+        if st.process.is_none() {
+            let Some(launch) = self.launch_base(&request.connection) else {
                 self.report(State::Missing, &request.connection);
                 return Err("Install Claude Code and run `claude auth login` first".into());
             };
-            let pending = Arc::new(Pending::default());
             let resume = st.record.as_ref().map(|r| r.claude_session_id.clone());
-            launch.directory = request.directory.clone();
-            launch.model = Some(request.model.clone());
-            launch.effort = request.effort.clone();
-            launch.max_output = request.max_output;
-            launch.system = Some(request.system.clone());
-            launch.tools = request.tools.clone();
-            launch.chat = true;
-            launch.persist = request.session_id.is_some();
-            launch.session_id = resume.is_none().then(super::uuid);
-            launch.resume = resume;
-            let handler = Arc::new(ChatHandler {
-                pending: pending.clone(),
-                tools: request.tools.clone(),
-                cancelled: Mutex::default(),
-            });
-            let session = Session::start(&launch, Arc::new(handler))?;
-            st.process = Some(Live {
-                session: Arc::new(session),
-                pending,
-                model: request.model.clone(),
-                effort: request.effort.clone(),
-                launch: request.launch(),
-                waiting: None,
-            });
+            let live = match resume.is_none().then(|| self.claim(request)).flatten() {
+                Some(live) => live,
+                None => {
+                    let slot = self.slot(Some(cancel)).await?;
+                    self.spawn(request, launch, resume, slot)?
+                }
+            };
+            st.process = Some(live);
         }
         let session = st.process.as_ref().unwrap().session.clone();
         let startup = self.0.timing.startup;
@@ -716,7 +1286,9 @@ impl Registry {
         };
         // A new process reports its version, login and models, which keeps
         // the model list current without a separate check.
-        if starting {
+        let live = st.process.as_mut().unwrap();
+        if !live.reported {
+            live.reported = true;
             self.report(
                 State::Ready {
                     probe,

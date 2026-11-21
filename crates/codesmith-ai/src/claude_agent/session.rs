@@ -6,7 +6,7 @@
 //! to its result before another starts.
 
 use super::probe::{version_error, Probe};
-use super::process::{Handler, Process, Spawn};
+use super::process::{Guard, Handler, Process, Spawn};
 use super::query::Launch;
 use super::tools;
 use crate::ToolSpec;
@@ -50,7 +50,11 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub fn start(launch: &Launch, handler: Arc<dyn Handler>) -> Result<Session, String> {
+    pub fn start(
+        launch: &Launch,
+        handler: Arc<dyn Handler>,
+        guard: Option<Guard>,
+    ) -> Result<Session, String> {
         let id = launch
             .resume
             .clone()
@@ -64,6 +68,7 @@ impl Session {
                 cwd: launch.directory.clone(),
             },
             handler,
+            guard,
         )?);
         let state = Arc::new(Mutex::new(State::default()));
         let wake = Arc::new(Notify::new());
@@ -139,6 +144,16 @@ impl Session {
                 return Err("Claude Code session has stopped".into());
             }
         }
+    }
+
+    /// A turn was ever started on this process: it has carried a
+    /// conversation, so it belongs to its session for good.
+    pub fn used(&self) -> bool {
+        self.state.lock().unwrap().turn.is_some()
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.process.pid()
     }
 
     pub fn ended(&self) -> bool {
@@ -290,17 +305,19 @@ impl Session {
         Ok(())
     }
 
-    /// Stop the process: interrupt and drain a running turn, close the
-    /// input, and wait for it to exit (killing it if it does not).
+    /// Stop the process: interrupt and drain a running turn (after any
+    /// turn at all), close the input, and wait for it to exit (killing it
+    /// if it does not).
     pub async fn stop(&self) {
         self.stopped
             .get_or_init(|| async {
-                let (initialized, ended) = {
+                let (initialized, ended, used) = {
                     let mut s = self.state.lock().unwrap();
                     s.stopping = true;
-                    (s.initialized, s.ended)
+                    (s.initialized, s.ended, s.turn.is_some())
                 };
-                if initialized && !ended {
+                // A process that never had a turn has nothing to interrupt.
+                if initialized && !ended && used {
                     let _ = tokio::time::timeout(STOP_WAIT, async {
                         let _ = self.process.request(json!({"subtype": "interrupt"})).await;
                         self.drained().await;

@@ -1316,6 +1316,32 @@ impl Provider {
         }
     }
 
+    /// Start the Claude Code process a Claude Agent request's session will
+    /// use, ahead of the request (see [`claude_agent::prewarm`]): the
+    /// request as [`Provider::stream`] would send it. Nothing for other
+    /// protocols, or when prewarming is off.
+    pub fn prewarm(&self, req: &Request) {
+        if self.protocol != Protocol::ClaudeAgent {
+            return;
+        }
+        let defaults = options::defaults(self.protocol, &self.base_url, &req.model);
+        let owned;
+        let req = if defaults.is_empty() {
+            req
+        } else {
+            owned = Request {
+                options: defaults.merged(&req.options),
+                ..req.clone()
+            };
+            &owned
+        };
+        if check(self.protocol, req).is_err() || self.check_compat().is_err() {
+            return;
+        }
+        let p = self.for_request(req);
+        claude_agent::prewarm(p.as_ref(), req);
+    }
+
     /// Whether this provider compacts conversations itself through
     /// `mechanism`: OpenAI Responses (Azure through the endpoint only).
     pub fn can_compact(&self, mechanism: CompactMechanism) -> bool {

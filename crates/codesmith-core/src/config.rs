@@ -178,6 +178,15 @@ pub struct Config {
     #[serde(skip)]
     pub swap_ignored: Vec<String>,
 
+    /// How many Claude Code processes the Claude Agent provider runs and
+    /// which it starts ahead of need (`claude_agent`). Read only from the
+    /// global config file: a project cannot change process caps.
+    pub claude_agent: ClaudeAgentConfig,
+    /// The sources whose `claude_agent` [`load_from`] dropped (anything but
+    /// the global config file).
+    #[serde(skip)]
+    pub claude_agent_ignored: Vec<String>,
+
     /// What the programs CodeSmith starts lose and keep of its
     /// environment (see [`crate::child_env`]), from every source's
     /// `shell.env`.
@@ -189,6 +198,41 @@ pub struct Config {
     /// [`crate::trust`]).
     #[serde(skip)]
     pub trust: crate::trust::Outcome,
+}
+
+/// `claude_agent` in the global codesmith.json: the Claude Agent
+/// provider's process pool (see [`codesmith_ai::claude_agent::Pool`]).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ClaudeAgentConfig {
+    /// Start a session's `claude` as its turn begins (default off).
+    pub prewarm: Option<bool>,
+    /// Never-used processes kept ready for new sessions (default 0).
+    pub spare: Option<usize>,
+    /// The most `claude` processes at once (default 4, at most 32).
+    pub max_processes: Option<usize>,
+}
+
+impl ClaudeAgentConfig {
+    pub fn pool(&self) -> codesmith_ai::claude_agent::Pool {
+        let d = codesmith_ai::claude_agent::Pool::default();
+        codesmith_ai::claude_agent::Pool {
+            prewarm: self.prewarm.unwrap_or(d.prewarm),
+            spare: self.spare.unwrap_or(d.spare),
+            max_processes: self.max_processes.unwrap_or(d.max_processes),
+        }
+        .clamped()
+    }
+}
+
+/// Drop `claude_agent` from a source other than the global config file.
+pub fn strip_claude_agent(v: &mut Value, source: &str, ignored: &mut Vec<String>) {
+    if v.as_object_mut()
+        .and_then(|o| o.remove("claude_agent"))
+        .is_some()
+    {
+        ignored.push(source.to_string());
+    }
 }
 
 /// `shell.env` in codesmith.json (see [`crate::child_env`]).
@@ -1215,6 +1259,7 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     let mut merged = Value::Object(Map::new());
     let mut files: Vec<PathBuf> = Vec::new();
     let mut swap_ignored: Vec<String> = Vec::new();
+    let mut claude_agent_ignored: Vec<String> = Vec::new();
     let mut shell_env = ShellEnv::default();
     // Only the global config file may set a provider's `swap`.
     let global_dir = (!global_disabled()).then(|| {
@@ -1292,6 +1337,11 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
             .is_some_and(|g| canonical.parent() == Some(g));
         if !global_file {
             strip_swap(&mut v, &path.display().to_string(), &mut swap_ignored);
+            strip_claude_agent(
+                &mut v,
+                &path.display().to_string(),
+                &mut claude_agent_ignored,
+            );
         }
         take_shell_env(
             &mut v,
@@ -1308,6 +1358,11 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     if let Some(text) = &sources.content {
         let mut v = parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?;
         strip_swap(&mut v, "$CODESMITH_CONFIG_CONTENT", &mut swap_ignored);
+        strip_claude_agent(
+            &mut v,
+            "$CODESMITH_CONFIG_CONTENT",
+            &mut claude_agent_ignored,
+        );
         take_shell_env(&mut v, "$CODESMITH_CONFIG_CONTENT", false, &mut shell_env);
         shell_env
             .credentials
@@ -1316,6 +1371,7 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     }
     let mut config: Config = serde_json::from_value(merged).context("invalid codesmith config")?;
     config.swap_ignored = swap_ignored;
+    config.claude_agent_ignored = claude_agent_ignored;
     config.shell_env = shell_env;
     config.trust = crate::trust::Outcome {
         request,
@@ -2991,6 +3047,69 @@ mod tests {
         src.content = Some(r#"{"shell": "content"}"#.into());
         let l = load_from(&project, &src).unwrap();
         assert_eq!(l.config.shell.as_deref(), Some("content"));
+    }
+
+    // The Claude Agent process caps guard the machine, so only the global
+    // config file sets them: a project file, an explicit file and
+    // $CODESMITH_CONFIG_CONTENT cannot raise (or change) them.
+    #[test]
+    fn claude_agent_pool_comes_only_from_the_global_config_file() {
+        use codesmith_ai::claude_agent::Pool;
+        let (_d, t) = tmp();
+        let (global, project) = (t.join("global"), project(&t));
+        let l = load_from(&project, &sources(&global)).unwrap();
+        assert_eq!(
+            l.config.claude_agent.pool(),
+            Pool {
+                prewarm: false,
+                spare: 0,
+                max_processes: 4
+            }
+        );
+        write(
+            &global.join("codesmith.json"),
+            r#"{"claude_agent": {"prewarm": true, "spare": 1, "max_processes": 6}}"#,
+        );
+        let explicit = t.join("custom.json");
+        write(&explicit, r#"{"claude_agent": {"max_processes": 30}}"#);
+        write(
+            &project.join("codesmith.json"),
+            r#"{"claude_agent": {"max_processes": 32, "spare": 8}}"#,
+        );
+        write(
+            &project.join(".codesmith/codesmith.json"),
+            r#"{"claude_agent": {"prewarm": false}}"#,
+        );
+        let mut src = sources(&global);
+        src.file = Some(explicit);
+        src.content = Some(r#"{"claude_agent": {"max_processes": 31}}"#.into());
+        let l = load_from(&project, &src).unwrap();
+        assert_eq!(
+            l.config.claude_agent.pool(),
+            Pool {
+                prewarm: true,
+                spare: 1,
+                max_processes: 6
+            }
+        );
+        assert_eq!(l.config.claude_agent_ignored.len(), 4);
+        // Out of range values are brought within bounds.
+        let c: Config =
+            serde_json::from_value(json!({"claude_agent": {"spare": 99, "max_processes": 1000}}))
+                .unwrap();
+        assert_eq!(
+            c.claude_agent.pool(),
+            Pool {
+                prewarm: false,
+                spare: 31,
+                max_processes: 32
+            }
+        );
+        let c: Config =
+            serde_json::from_value(json!({"claude_agent": {"spare": 3, "max_processes": 0}}))
+                .unwrap();
+        assert_eq!(c.claude_agent.pool().max_processes, 1);
+        assert_eq!(c.claude_agent.pool().spare, 0);
     }
 
     // A provider's `swap` runs commands, so only the global config file

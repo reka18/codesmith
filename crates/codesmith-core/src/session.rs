@@ -1392,6 +1392,46 @@ impl Session {
         (req, renamed)
     }
 
+    /// As in OpenCode, the output limit leaves the prompt its room in the
+    /// window, so a long conversation is not rejected for asking for more
+    /// than is left.
+    fn fit_output(&self, req: &mut Request) {
+        if let (Some(window), Some(max)) = (self.model.context.filter(|w| *w > 0), req.max_tokens) {
+            let size = self.measured_prompt().unwrap_or(compaction::Estimate {
+                measured: 0,
+                estimated: compaction::estimate_request(req),
+            });
+            let fitted = compaction::turn_output_limit(window, max, size);
+            req.max_tokens = Some(fitted.min(max as u64) as u32);
+        }
+    }
+
+    /// On a Claude Agent model: apply the global `claude_agent` pool
+    /// settings, and with `prewarm` on start this session's Claude Code
+    /// process now, from the request its first step would send (see
+    /// [`codesmith_ai::claude_agent::Registry::prewarm`]). Skipped while
+    /// plugins are enabled, since their hooks may change that request.
+    fn claude_prewarm(&self) {
+        if self.model.provider.protocol != codesmith_ai::Protocol::ClaudeAgent {
+            return;
+        }
+        let config = &self.loaded.config;
+        let pool = config.claude_agent.pool();
+        codesmith_ai::claude_agent::global().set_pool(pool);
+        let plugins = crate::plugin::active();
+        if !pool.prewarm || plugins.enabled(config).next().is_some() {
+            return;
+        }
+        let mut req = self.base_request(&plugins);
+        self.claude_context(crate::plugin::RequestKind::Primary, &mut req);
+        self.fit_output(&mut req);
+        self.auto_route
+            .as_ref()
+            .unwrap_or(&self.model)
+            .provider
+            .prewarm(&req);
+    }
+
     /// What a Claude Agent request carries beside the conversation
     /// (OpenCode's session and instruction hooks for the provider): its
     /// kind, a fork's source, the agent's own prompt as its role,
@@ -1973,6 +2013,9 @@ impl Session {
         }
         self.observe_instructions()?;
         self.turn.observed = true;
+        // The instructions are known now: Claude Code can start while the
+        // rest of the turn's preparation runs.
+        self.claude_prewarm();
         // Subagents share the parent's turn snapshot.
         let mut snapshots = None;
         if self.parent.is_none()
@@ -4542,17 +4585,7 @@ impl Session {
         self.mcp.refresh().await;
         self.auto_route = self.route_auto().await;
         let (mut req, renamed) = self.request();
-        // As in OpenCode, the output limit leaves the prompt its room in the
-        // window, so a long conversation is not rejected for asking for
-        // more than is left.
-        if let (Some(window), Some(max)) = (self.model.context.filter(|w| *w > 0), req.max_tokens) {
-            let size = self.measured_prompt().unwrap_or(compaction::Estimate {
-                measured: 0,
-                estimated: compaction::estimate_request(&req),
-            });
-            let fitted = compaction::turn_output_limit(window, max, size);
-            req.max_tokens = Some(fitted.min(max as u64) as u32);
-        }
+        self.fit_output(&mut req);
         self.turn.offered = req.tools.iter().map(|t| t.name.clone()).collect();
         self.turn.schemas = req
             .tools

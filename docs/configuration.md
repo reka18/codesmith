@@ -1101,7 +1101,9 @@ settings are not used and `settings.baseURL` takes a plain key.
 Code, found on `PATH`, or set `CODESMITH_CLAUDE_PATH`), as OpenCode's
 Claude Agent provider does. CodeSmith speaks to it the stream-json protocol
 the Claude Agent SDK uses: one long-running process per session, which
-stops after five minutes idle and resumes its Claude session next time.
+stops after five minutes idle and resumes its Claude session next time (at
+most four processes at once by default; see
+[Claude Code processes](#claude-code-processes-claude_agent)).
 Any login Claude Code has works (a subscription, an API key, a cloud
 account). CodeSmith never reads, stores or passes a credential for it:
 
@@ -1168,6 +1170,58 @@ prompt or the tools starts a new process; the model and effort change on
 the running one. Temperature and other sampling options do not apply, and
 the HTTP hooks of plugins never run, since Claude Code makes the API calls.
 `claude` must run on the same machine.
+
+#### Claude Code processes (`claude_agent`)
+
+How many `claude` processes CodeSmith runs, and which it starts before
+they are needed. Only the **global** `codesmith.json` sets this: in a
+project's config, an explicit `$CODESMITH_CONFIG` file or
+`$CODESMITH_CONFIG_CONTENT` it is ignored, so a project cannot raise (or
+change) the cap.
+
+```jsonc
+{
+  "claude_agent": {
+    "max_processes": 4,  // the most `claude` processes at once (1 to 32)
+    "prewarm": false,    // start a session's process as its turn begins
+    "spare": 0           // never-used processes kept ready for new sessions
+  }
+}
+```
+
+- **`max_processes`** (default 4) counts every `claude` CodeSmith runs:
+  sessions' (subagents' included), spares, titles, summaries, compactions
+  and login checks. A process counts until it has exited. When a new one
+  is needed at the cap, a spare is stopped first, then the least recently
+  used idle session's process, as its five-minute idle stop would (it
+  resumes its Claude session next time). A process running a turn, or
+  waiting for tool results (a subagent, a permission prompt, a question),
+  is never stopped for room: the request waits for one to finish, and
+  fails after two minutes with a message naming this setting.
+- **`prewarm`** (default off) starts a session's process as its turn
+  begins, once the instructions are known, so Claude Code starts while
+  CodeSmith prepares the turn (snapshot, title, tool lists) rather than
+  after. It starts exactly the process the turn would: the session's own,
+  resuming its Claude session or starting a new one; if the turn needs a
+  different one (say the tools changed) the prewarmed one is stopped
+  having heard nothing. It is skipped while plugins are enabled, since
+  their hooks can change the request. Turning it on changes when Claude
+  Code starts, nothing else.
+- **`spare`** (default 0; at most `max_processes` - 1) keeps processes
+  that never carried a conversation ready for new sessions. Claude Code
+  takes its system prompt and tools when it starts, so a spare is started
+  like the session whose new process made room for it (same agent prompt,
+  instructions, tools, folder and connection) and serves only a new
+  session launched the same way; the model and effort are switched on it
+  as on any running process. A spare is started only into a free slot,
+  goes to one session on first use and never returns, and stops after
+  five minutes unclaimed.
+
+What does not change: a process belongs to one session (a subagent's
+child session has its own) and is never handed to another once it carried
+a turn; each session keeps its own Claude session, checkpoints, branching,
+undo and compaction, with CodeSmith's history the source of truth; each
+process carries its own session's model and effort.
 
 ### Live model lists (Modal, GitHub Copilot, Azure)
 

@@ -256,6 +256,8 @@ pub fn replay(recording: &str) -> Vec<Step> {
 
 /// One `claude` CodeSmith started.
 pub struct Run {
+    /// The fake `claude`'s own process id.
+    pub pid: u32,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
     pub cwd: String,
@@ -349,6 +351,14 @@ struct Inner {
     runs: Mutex<Vec<Arc<Run>>>,
     probes: bool,
     config: PathBuf,
+    /// The most fake `claude`s alive at once, counted as each started.
+    peak: AtomicUsize,
+}
+
+/// Whether a process (not yet reaped) exists.
+fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 #[derive(Clone)]
@@ -394,7 +404,15 @@ impl Fake {
             runs: Mutex::default(),
             probes,
             config: config.to_path_buf(),
+            peak: AtomicUsize::new(0),
         }))
+    }
+
+    /// The most fake `claude`s that were alive at once: when each started,
+    /// every earlier one not yet reaped counts. CodeSmith gives a process's
+    /// slot back only once it reaped it, so this never exceeds its cap.
+    pub fn peak(&self) -> usize {
+        self.0.peak.load(Ordering::SeqCst)
     }
 
     pub fn step(&self, i: usize) -> Step {
@@ -477,6 +495,7 @@ impl Fake {
         };
         let hello: Value = serde_json::from_str(&hello).unwrap();
         let run = Arc::new(Run {
+            pid: hello["pid"].as_u64().unwrap_or_default() as u32,
             args: serde_json::from_value(hello["args"].clone()).unwrap(),
             env: serde_json::from_value(hello["env"].clone()).unwrap(),
             cwd: hello["cwd"].as_str().unwrap_or_default().to_string(),
@@ -486,7 +505,12 @@ impl Fake {
             exited: AtomicBool::new(false),
             request_ids: Mutex::default(),
         });
-        self.0.runs.lock().unwrap().push(run.clone());
+        {
+            let mut runs = self.0.runs.lock().unwrap();
+            runs.push(run.clone());
+            let live = runs.iter().filter(|r| alive(r.pid)).count();
+            self.0.peak.fetch_max(live, Ordering::SeqCst);
+        }
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;

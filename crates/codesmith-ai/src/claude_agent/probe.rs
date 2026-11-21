@@ -2,7 +2,7 @@
 //! without sending a prompt, so no model call is made, and read the
 //! version, the login and the models it reports.
 
-use super::process::{Handler, Process, Spawn};
+use super::process::{Guard, Handler, Process, Spawn};
 use super::query::Launch;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -93,6 +93,16 @@ impl Handler for NoRequests {
 /// Code) each model's context window, and close. A stuck start fails after
 /// `timeout`; a stuck context discovery keeps what it found.
 pub async fn run(launch: &Launch, timeout: Duration) -> Result<Probe, String> {
+    run_with(launch, timeout, None).await
+}
+
+/// [`run`], holding `guard` (a registry's process slot) while `claude`
+/// runs.
+pub(crate) async fn run_with(
+    launch: &Launch,
+    timeout: Duration,
+    guard: Option<Guard>,
+) -> Result<Probe, String> {
     let launch = Launch {
         chat: false,
         persist: false,
@@ -106,6 +116,7 @@ pub async fn run(launch: &Launch, timeout: Duration) -> Result<Probe, String> {
             cwd: launch.directory.clone(),
         },
         Arc::new(NoRequests),
+        guard,
     )?;
     let result = check(&process, &launch, timeout).await;
     process.close_input().await;
