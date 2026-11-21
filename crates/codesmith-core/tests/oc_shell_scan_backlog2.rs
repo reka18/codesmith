@@ -380,6 +380,12 @@ fn oc_scan_rejects_variable_sinks_when_a_substitution_can_build_the_subscript() 
         "printf '%d' 'a[$(touch pwn)]'",
         "printf '%.*s' 'a[$(touch pwn)]' x",
         "print -f '%d' 'a[$(touch pwn)]'",
+        // A format given with other options, attached, or after `-v`.
+        "print -rf '%d' 'a[$(touch pwn)]'",
+        "print -f%d 'a[$(touch pwn)]'",
+        "print -v v -f '%d' 'a[$(touch pwn)]'",
+        "printf -v v '%d' 'a[$(touch pwn)]'",
+        "printf -vv -- '%d' 'a[$(touch pwn)]'",
         "RANDOM='a[$(touch pwn)]'",
         "OPTIND='a[$(touch pwn)]'",
         "export SECONDS='a[$(touch pwn)]'",
@@ -397,6 +403,7 @@ fn oc_scan_rejects_variable_sinks_when_a_substitution_can_build_the_subscript() 
         "printf '%s\\n' '$HOME'; exit 1",
         "echo '$x'; exit $?",
         "echo '$x'; shift 2; RANDOM=7",
+        "echo '$x'; print -rf '%s' 'a[$(touch pwn)]'",
     ] {
         let a = shell_scan::analyze(source, Path::new("/workspace")).unwrap();
         assert_eq!(a.dynamic, None, "{source:?}");

@@ -1854,6 +1854,14 @@ a=(1); v='a[$(rm F)]'; printf %x "$v"
 %%
 a=(1); print -f '%d' 'a[$(rm F)]'
 %%
+a=(1); print -rf '%d' 'a[$(rm F)]'
+%%
+a=(1); print -f%d 'a[$(rm F)]'
+%%
+a=(1); print -v v -f '%d' 'a[$(rm F)]'
+%%
+a=(1); printf -v v '%d' 'a[$(rm F)]'
+%%
 a=(1); RANDOM='a[$(rm F)]'
 %%
 a=(1); OPTIND='a[$(rm F)]'

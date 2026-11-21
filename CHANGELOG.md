@@ -68,8 +68,9 @@ All notable changes to CodeSmith are listed here. Versions follow
   `CODESMITH_CI_LINUX=1`.
 - **Shell permission fixes:** arithmetic the scan did not see is flagged
   as dynamic now: Zsh evaluates the operands of `shift`, `exit`, `return`,
-  `break`, `continue`, `repeat` and `printf`'s numeric conversions as
-  arithmetic, and Bash and Zsh a value assigned to `RANDOM`, `OPTIND` (and
+  `break`, `continue`, `repeat` and the numeric conversions of `printf`
+  and `print -f` (however the options are written: `print -rf %d`,
+  `print -f%d`) as arithmetic, and Bash and Zsh a value assigned to `RANDOM`, `OPTIND` (and
   Zsh's `SECONDS`, `LINES`...), where an array subscript runs its command
   substitutions, so `shift 'a[$(rm -rf x)]'` ran `rm` but was checked as
   `shift`. A declaration (`export NULLCMD=rm`, `typeset ...`) is checked as

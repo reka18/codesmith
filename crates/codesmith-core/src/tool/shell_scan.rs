@@ -143,11 +143,11 @@ fn numeric_operand(raw: &str) -> bool {
 
 /// A `printf` format with no conversion that reads a number: only `%s`,
 /// `%b`, `%q` and `%%`, without a `*` width or precision, and static.
-fn numeric_free_format(w: &Word) -> bool {
-    if w.raw.contains(['$', '`']) {
+fn numeric_free_format(raw: &str, value: &str) -> bool {
+    if raw.contains(['$', '`']) {
         return false;
     }
-    let mut chars = w.value.chars();
+    let mut chars = value.chars();
     while let Some(c) = chars.next() {
         if c != '%' {
             continue;
@@ -161,6 +161,54 @@ fn numeric_free_format(w: &Word) -> bool {
         }
     }
     true
+}
+
+/// The format of a Zsh `printf` or `print -f` and the operands after it:
+/// `(raw, value, operands)`. Options are read as Zsh reads them, so a
+/// format given with others (`print -rf %d`) or attached (`print -f%d`,
+/// `printf -vv %d`) is found too.
+fn printf_format<'w>(name: &str, args: &'w [Word]) -> Option<(&'w str, String, &'w [Word])> {
+    // The options that take an argument.
+    let with_arg: &[char] = match name {
+        "printf" => &['v'],
+        "print" => &['C', 'f', 'u', 'v', 'x', 'X'],
+        _ => return None,
+    };
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        let v = w.value.as_str();
+        if v == "--" {
+            i += 1;
+            break;
+        }
+        if !v.starts_with(['-', '+']) || v.len() == 1 {
+            break;
+        }
+        i += 1;
+        for (at, c) in v.char_indices().skip(1) {
+            if !with_arg.contains(&c) {
+                continue;
+            }
+            let attached = &v[at + c.len_utf8()..];
+            if c == 'f' {
+                return if attached.is_empty() {
+                    let f = args.get(i)?;
+                    Some((&f.raw, f.value.clone(), &args[i + 1..]))
+                } else {
+                    Some((&w.raw, attached.to_string(), &args[i..]))
+                };
+            }
+            if attached.is_empty() {
+                i += 1;
+            }
+            break;
+        }
+    }
+    if name == "print" {
+        return None;
+    }
+    let f = args.get(i)?;
+    Some((&f.raw, f.value.clone(), &args[i + 1..]))
 }
 
 /// `$((i + 1))`: a word that is one arithmetic expansion, so a number.
@@ -2512,23 +2560,9 @@ impl<'a> Scanner<'a> {
         }
         // Zsh's `printf` (and `print -f`) evaluates the operands of numeric
         // conversions and `*` widths as arithmetic, as above.
-        let format = match name {
-            "printf" => args
-                .iter()
-                .position(|w| !w.value.starts_with('-') || w.value == "--"),
-            "print" => args.iter().position(|w| w.value == "-f").map(|i| i + 1),
-            _ => None,
-        };
-        if let Some(mut f) = format {
-            if name == "printf" && args[f].value == "--" {
-                f += 1;
-            }
-            if let Some(fmt) = args.get(f) {
-                if !numeric_free_format(fmt)
-                    && args[f + 1..].iter().any(|w| !numeric_operand(&w.raw))
-                {
-                    self.flags.sink = true;
-                }
+        if let Some((raw, value, rest)) = printf_format(name, args) {
+            if !numeric_free_format(raw, &value) && rest.iter().any(|w| !numeric_operand(&w.raw)) {
+                self.flags.sink = true;
             }
         }
         match name {
