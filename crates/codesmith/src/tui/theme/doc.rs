@@ -498,7 +498,7 @@ fn categorical_schema(o: &Map<String, Value>, required: bool) -> D {
             return Err(got(v));
         }
         for x in a {
-            if !x.as_str().is_some_and(|s| !s.is_empty()) {
+            if x.as_str().is_none_or(|s| s.is_empty()) {
                 return Err(got(x));
             }
         }
