@@ -406,10 +406,15 @@ pub struct DurableNow(Vec<Rule>, Vec<Rule>);
 /// [`crate::plugin::browser`]). They are read afresh at every request and
 /// judged like saved approvals: after the configured, built-in and policy
 /// denies, which they never lift, and never over a secret guard. Only their
-/// plain allows count ([`Gate::granted`]).
+/// plain allows for the [`GRANTABLE`] actions count ([`Gate::granted`]).
 pub trait Granted: Send + Sync {
     fn rules(&self) -> Vec<Rule>;
 }
+
+/// The actions a [`Granted`] source may grant: a browser attachment's
+/// (`browser` and `skill`, see [`crate::plugin::browser::rules`]), each
+/// matched literally, so a grant whose action is a pattern is ignored.
+pub const GRANTABLE: [&str; 2] = ["browser", "skill"];
 
 /// Approvals saved by "always" answers. Shared, so a session rebuilt from
 /// the store (after an interrupt, undo or agent switch) keeps them.
@@ -450,16 +455,24 @@ impl Gate {
         self.granted.clone()
     }
 
-    /// The rules granted now: only plain allows, so a grant can add what
-    /// the session may do but never mark a rule built-in, a guard or a
-    /// policy statement.
+    /// The rules granted now: only plain allows for an action in
+    /// [`GRANTABLE`], named literally, so a grant can add what the session
+    /// may do only there, and never mark a rule built-in, a guard or a
+    /// policy statement. A grant for `*`, `webfetch` or any other action
+    /// is ignored.
     pub fn granted(&self) -> Vec<Rule> {
         let Some(g) = &self.granted else {
             return vec![];
         };
         g.rules()
             .into_iter()
-            .filter(|r| r.effect == Effect::Allow && !r.builtin && !r.guard && r.policy.is_none())
+            .filter(|r| {
+                r.effect == Effect::Allow
+                    && !r.builtin
+                    && !r.guard
+                    && r.policy.is_none()
+                    && GRANTABLE.contains(&r.action.as_str())
+            })
             .collect()
     }
 

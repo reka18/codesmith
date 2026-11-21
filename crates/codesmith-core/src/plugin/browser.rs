@@ -1299,6 +1299,19 @@ mod tests {
             .all(|r| r.effect == Effect::Allow && !r.builtin && !r.guard && r.policy.is_none()));
     }
 
+    /// Every rule an attachment grants is one the gate keeps.
+    #[test]
+    fn a_grant_names_only_grantable_actions() {
+        let (b, _) = registry();
+        let mut gate = Gate::new(vec![], Arc::new(Fixed(Reply::Reject(None))));
+        gate.set_granted(Some(b.grants_for("s")));
+        let _a = b.attach("s", "c").unwrap();
+        assert_eq!(gate.granted(), rules());
+        assert!(rules()
+            .iter()
+            .all(|r| crate::permission::GRANTABLE.contains(&r.action.as_str())));
+    }
+
     #[test]
     fn a_dropped_registry_grants_nothing_and_ends_its_attachments() {
         let (b, _) = registry();

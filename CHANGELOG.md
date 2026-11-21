@@ -36,6 +36,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 - **Documented: a browser attachment answers a `browser` ask** as an
   "always" approval would, for the attached session only; write `deny`
   to forbid a URL even with a browser attached.
+- **A grant source can grant only `browser` and `skill`:** the gate keeps
+  a granted rule only when its action is one of those, named literally,
+  so a source that hands it `* * allow` or `webfetch * allow` grants
+  nothing.
 - **GitLab Duo is not supported, by decision.** It is a GitLab-subscription
   backend reached through GitLab's unpublished Duo workflow and
   agentic-chat SDK protocols; porting it would mean reimplementing a

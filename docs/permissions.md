@@ -424,6 +424,10 @@ ends. To forbid opening a URL even with a browser attached, write `deny`:
 
 The secret guards are not asks of this kind and still ask.
 
+Only `browser` and `skill` rules can be granted this way: the session's
+gate ignores a granted rule for any other action, or one whose action is
+a pattern such as `*`.
+
 CodeSmith has no browser of its own, so no browser driver is built in:
 `codesmith_core::plugin::browser` provides the attachment lifecycle and
 the permission checks in front of a driver, and a custom build plugs a

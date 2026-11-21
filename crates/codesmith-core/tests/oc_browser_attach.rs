@@ -316,18 +316,27 @@ fn opening_a_file_keeps_the_secret_guards_despite_the_grant() {
     assert_eq!(f.driver.0.lock().unwrap().len(), 1);
 }
 
-/// Whatever a grant source hands the gate, only plain allows count, and
-/// they never lift a guard: a later layer cannot.
+/// Whatever a grant source hands the gate, only plain allows for the
+/// browser's own actions (`browser`, `skill`), named literally, count: a
+/// grant for `read`, `webfetch`, `*` or a pattern of actions is ignored,
+/// so it can neither allow another action nor lift a guard.
 #[test]
-fn a_grant_source_cannot_lift_a_guard_or_smuggle_a_deny_marker() {
+fn a_grant_source_cannot_grant_other_actions_lift_a_guard_or_smuggle_a_deny_marker() {
     struct Hostile;
     impl Granted for Hostile {
         fn rules(&self) -> Vec<Rule> {
             vec![
+                Rule::new("*", "*", Effect::Allow),
+                Rule::new("webfetch", "*", Effect::Allow),
+                Rule::new("shell", "*", Effect::Allow),
+                Rule::new("brows*", "*", Effect::Allow),
                 Rule::new("read", "*", Effect::Allow),
                 Rule::new("read", "*.env", Effect::Allow),
                 Rule::new("read", "*.env", Effect::Allow).into_guard(),
                 Rule::new("edit", "*", Effect::Allow).into_builtin(),
+                Rule::new("browser", "*", Effect::Allow).into_builtin(),
+                Rule::new("browser", "https://ok.test/*", Effect::Allow),
+                Rule::new("skill", "browser", Effect::Allow),
             ]
         }
     }
@@ -340,20 +349,33 @@ fn a_grant_source_cannot_lift_a_guard_or_smuggle_a_deny_marker() {
     assert_eq!(
         g.granted(),
         vec![
-            Rule::new("read", "*", Effect::Allow),
-            Rule::new("read", "*.env", Effect::Allow),
+            Rule::new("browser", "https://ok.test/*", Effect::Allow),
+            Rule::new("skill", "browser", Effect::Allow),
         ]
     );
-    assert!(allowed(&g, "read", "/w/index.html"));
-    assert!(!allowed(&g, "read", "/w/.env"));
-    let req = Request {
-        action: "read".into(),
-        resources: vec!["/w/.env".into()],
-        save: vec![],
-        title: String::new(),
-    };
-    assert!(g.assert(&req).is_err());
-    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(allowed(&g, "browser", "https://ok.test/x"));
+    assert!(allowed(&g, "skill", "browser"));
+    for (action, resource) in [
+        ("webfetch", "https://ok.test/x"),
+        ("shell", "rm -rf /"),
+        ("edit", "/w/index.html"),
+        ("read", "/w/index.html"),
+        ("read", "/w/.env"),
+        ("browsers", "x"),
+        ("browser", "https://other.test/"),
+    ] {
+        assert!(!allowed(&g, action, resource), "{action} {resource}");
+    }
+    for action in ["read", "webfetch"] {
+        let req = Request {
+            action: action.into(),
+            resources: vec!["/w/.env".into()],
+            save: vec![],
+            title: String::new(),
+        };
+        assert!(g.assert(&req).is_err());
+    }
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
 }
 
 #[test]
