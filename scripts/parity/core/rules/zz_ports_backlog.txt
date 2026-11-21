@@ -122,3 +122,14 @@
 665 :: ported :: src/tool/read.rs::oc_read_checks_skipped_lines_for_null_bytes
 680,695 :: ported :: src/tool/read.rs::oc_read_reads_page_two_after_a_long_first_line :: adapted: the file is read whole, so a chunk boundary is any long first line
 710 :: ported :: src/tool/read.rs::oc_read_preserves_the_media_ingestion_limit_message
+
+# --- Shell tool and runtime (tests/oc_tools_backlog.rs) ---
+@shell-cleanup.test.ts
+27 :: ported :: tests/oc_tools_backlog.rs::oc_shell_cleanup_removes_expired_output_files_across_sessions :: adapted: CodeSmith's own tool-output folders, where every file ages out
+@shell-result.test.ts
+17,28,37 :: design :: deliberate :: a stopped foreground call fails with "Command cancelled" without its output (see the deliberate differences in src/tool/shell.rs's tests)
+51 :: ported :: tests/oc_tools_backlog.rs::oc_shell_reports_a_command_killed_without_an_exit_code_of_its_own :: adapted: the notice, no metadata flag
+@tool-shell.test.ts
+866 :: ported :: tests/oc_tools_backlog.rs::oc_shell_returns_both_parallel_code_mode_shell_results
+2250,2283,2316,2338,2357,2408,2564 :: design :: deliberate :: a user's stop drops the running call, whose guard stops the command's process group (SIGTERM, then SIGKILL); a stopped foreground call fails with "Command cancelled" (see src/tool/shell.rs's a_dropped_foreground_call_stops_its_process_group)
+

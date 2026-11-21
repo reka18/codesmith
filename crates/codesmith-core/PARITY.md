@@ -36,7 +36,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Tool registry, schemas, placement | 100 | 30 | 0 | 3 | 58 | 9 | 0 |
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
-| Shell tool and runtime | 207 | 124 | 2 | 0 | 66 | 15 | 0 |
+| Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
 | Shell scan and parse | 1465 | 174 | 0 | 0 | 444 | 847 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **1789** | **31** | **45** | **2436** | **1284** | **3** |
+| **Total** | **5588** | **1792** | **31** | **45** | **2446** | **1271** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -187,7 +187,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (1284 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (1271 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -375,26 +375,10 @@ Tests for behaviour CodeSmith already has but no test pins (1284 cases), by area
   - `mime.test.ts`: detects Windows and OS/2 bitmaps from a prefix
   - `mime.test.ts`: tells ISO-BMFF brands apart
 
-### Shell tool and runtime (15)
+### Shell tool and runtime (2)
 
-- expired output files removed across projects (S) — `tool::shell output files`
-  - `shell-cleanup.test.ts`: removes expired output files across projects
-- output file and shell named, truncated tail notice, no-output wording, killed without exit code (S) — `tool::shell::notice / result`
-  - `shell-result.test.ts`: names the output file and the shell even when the output fits
-  - `shell-result.test.ts`: keeps a truncated tail's own notice
-  - `shell-result.test.ts`: says once that there was no output, and that a command still stopping is not done
-  - `shell-result.test.ts`: reports a command killed without an exit code or signal of its own
 - parallel shells from one Code Mode program (M) — `codemode + tool::shell`
-  - `tool-shell.test.ts`: returns both parallel CodeMode shell results
   - `tool-shell.test.ts`: runs parallel Code Mode shells with the long default and notifies after a shorter timeout
-- a user stop ends the call with the tail, file and shell ID, before or while it starts; SIGTERM-ignoring commands (M) — `tool::shell::Jobs::cancel`
-  - `tool-shell.test.ts`: stops a command the user stopped, keeps its file and fails the call with the tail, file and shell ID
-  - `tool-shell.test.ts`: ends a call the user stopped before its command started, without starting it
-  - `tool-shell.test.ts`: ends a call the user stopped while its working directory resolved, without starting it
-  - `tool-shell.test.ts`: says once that a stopped command wrote nothing
-  - `tool-shell.test.ts`: settles a stopped call without waiting for a command that ignores SIGTERM
-  - `tool-shell.test.ts`: stops a command the user stopped while it was being created
-  - `tool-shell.test.ts`: stops a command whose call an interrupt cut off, with no handoff to take it over
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
 
@@ -885,7 +869,7 @@ Tests for behaviour CodeSmith already has but no test pins (1284 cases), by area
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 687 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 570 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 580 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -2089,7 +2073,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell tool and runtime (192 of 207)</summary>
+<details><summary>Shell tool and runtime (205 of 207)</summary>
 
 
 **`persistent-pty-daemon.test.ts`**
@@ -2152,6 +2136,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P rejects tickets scoped to a different workspace — `tests/oc_pty.rs::oc_ticket_rejects_tickets_scoped_to_a_different_workspace`
 - P keeps PTY and client MCP targets apart — `tests/oc_pty.rs::oc_ticket_keeps_pty_and_client_mcp_targets_apart`
 
+**`shell-cleanup.test.ts`**
+
+- P removes expired output files across projects — `tests/oc_tools_backlog.rs::oc_shell_cleanup_removes_expired_output_files_across_sessions` (adapted: CodeSmith's own tool-output folders, where every file ages out)
+
 **`shell-daemon.test.ts`**
 
 - P runs a command with the server's environment, an absolute cwd and its metadata — `tests/oc_shell_daemon.rs::oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_metadata` (adapted: the session environment stands in for the server's, the server token is kept out)
@@ -2180,6 +2168,8 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`shell-result.test.ts`**
 
+- D names the output file and the shell even when the output fits · keeps a truncated tail's own notice · says once that there was no output, and that a command still stopping is not done — deliberate: a stopped foreground call fails with "Command cancelled" without its output (see the deliberate differences in src/tool/shell.rs's tests)
+- P reports a command killed without an exit code or signal of its own — `tests/oc_tools_backlog.rs::oc_shell_reports_a_command_killed_without_an_exit_code_of_its_own` (adapted: the notice, no metadata flag)
 - D keeps a removed command's result unchanged — storage-model: removed command rows
 
 **`shell-retention.test.ts`**
@@ -2213,6 +2203,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D ${shell}: ${fixture.name} reuses existing approvals ×4 — platform: PowerShell rows
 - P ${shell}: a loop body deny prevents execution ×2 — `src/tool/shell.rs::oc_shell_loop_body_deny_prevents_execution`
 - D PowerShell: ordinary syntax reuses approvals: ${command} ×8 · PowerShell: always allow covers repeat execution and preserves exact deny: ${command} ×3 — platform: PowerShell
+- P returns both parallel CodeMode shell results — `tests/oc_tools_backlog.rs::oc_shell_returns_both_parallel_code_mode_shell_results`
 - P registers and returns real successful output from the active Location — `src/tool/shell.rs::oc_shell_registers_and_returns_real_output`
 - P uses the session environment instead of the server environment — `src/tool/shell.rs::oc_shell_uses_the_session_environment_instead_of_the_process_one`
 - P identifies agent shell commands without inheriting a stale session ID — `src/tool/shell.rs::oc_shell_identifies_agent_commands, src/tool/shell.rs::oc_shell_identifies_agent_commands_without_a_stale_session_id`
@@ -2254,9 +2245,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P words the status as an exit code — `src/tool/shell.rs::oc_shell_words_the_status_as_an_exit_code`
 - P settles a shell terminated by an external signal — `src/tool/shell.rs::oc_shell_settles_a_command_ended_by_an_external_signal`
 - P backgrounds a foreground command when the session is signaled — `src/tool/shell.rs::oc_shell_backgrounds_a_foreground_command_when_the_session_is_signaled`
+- D stops a command the user stopped, keeps its file and fails the call with the tail, file and shell ID · ends a call the user stopped before its command started, without starting it · ends a call the user stopped while its working directory resolved, without starting it · says once that a stopped command wrote nothing · settles a stopped call without waiting for a command that ignores SIGTERM · stops a command the user stopped while it was being created — deliberate: a user's stop drops the running call, whose guard stops the command's process group (SIGTERM, then SIGKILL); a stopped foreground call fails with "Command cancelled" (see src/tool/shell.rs's a_dropped_foreground_call_stops_its_process_group)
 - D stops a command the user stopped after its Location reloaded — client-server: Location reload / daemon hand-off
 - D ${handoff ? "leaves a command running" : "stops a command"} when an interrupt ${handoff ? "during a handoff " : ""}cuts its call off while it ${starting ? "starts" : "runs"} ×4 — deliberate: tool/shell.rs: commands never outlive the session (no daemon hand-off)
 - D records which call waits on a daemon command, and keeps no timeout for a restart — client-server: Location reload / daemon hand-off
+- D stops a command whose call an interrupt cut off, with no handoff to take it over — deliberate: a user's stop drops the running call, whose guard stops the command's process group (SIGTERM, then SIGKILL); a stopped foreground call fails with "Command cancelled" (see src/tool/shell.rs's a_dropped_foreground_call_stops_its_process_group)
 
 </details>
 

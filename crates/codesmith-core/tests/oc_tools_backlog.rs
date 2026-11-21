@@ -73,3 +73,68 @@ async fn oc_registry_code_mode_programs_have_no_path_or_bun() {
     let out = r[0].1.replace([' ', '\n'], "");
     assert!(out.contains(r#"["undefined","undefined"]"#), "{}", r[0].1);
 }
+
+// --- Shell tool and runtime ---
+
+/// "returns both parallel CodeMode shell results" (`tool-shell.test.ts`)
+#[tokio::test(flavor = "multi_thread")]
+async fn oc_shell_returns_both_parallel_code_mode_shell_results() {
+    let mut t = start(Setup {
+        extra: json!({"full_codemode": true, "model": "fake/gpt-5"}),
+        reply: codesmith_core::permission::Reply::Always,
+        ..Default::default()
+    })
+    .await;
+    let code = "return await Promise.all([tools.shell({command: 'echo one; sleep 0.1'}), tools.shell({command: 'echo two; sleep 0.1'})])";
+    t.push([
+        call("call-parallel-shells", "execute", json!({"code": code})),
+        text("Done"),
+    ]);
+    t.prompt("Run both").await.unwrap();
+    let r = results(&t.s);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(!r[0].2, "{r:?}");
+    let one = r[0].1.find("one").unwrap_or_else(|| panic!("{}", r[0].1));
+    let two = r[0].1.find("two").unwrap_or_else(|| panic!("{}", r[0].1));
+    assert!(one < two, "{}", r[0].1);
+}
+
+/// "reports a command killed without an exit code or signal of its own"
+/// (`shell-result.test.ts`). Adapted: no metadata flag; the notice says it.
+#[test]
+fn oc_shell_reports_a_command_killed_without_an_exit_code_of_its_own() {
+    use codesmith_core::tool::shell::{notice, render, Ending};
+    assert_eq!(
+        notice(&Ending::Lost, 1_000).as_deref(),
+        Some("Command was killed: the process daemon stopped")
+    );
+    assert_eq!(
+        render("partial\n", &Ending::Lost, 1_000),
+        "partial\n\nCommand was killed: the process daemon stopped"
+    );
+}
+
+/// "removes expired output files across projects" (`shell-cleanup.test.ts`).
+/// Adapted: CodeSmith's own tool-output directory, one folder per session;
+/// every file there ages out, not only shell output.
+#[test]
+fn oc_shell_cleanup_removes_expired_output_files_across_sessions() {
+    use codesmith_core::tool::{cleanup_outputs, OUTPUT_RETENTION};
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("first/tool_0123456789ab");
+    let recent = dir.path().join("second/tool_0123456789cd");
+    for f in [&old, &recent] {
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, "output").unwrap();
+    }
+    let expired = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(expired)
+        .unwrap();
+    cleanup_outputs(dir.path(), OUTPUT_RETENTION);
+    assert!(!old.exists());
+    assert!(recent.exists());
+}
