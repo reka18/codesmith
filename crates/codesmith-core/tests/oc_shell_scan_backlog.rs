@@ -1450,3 +1450,235 @@ fn oc_scan_uses_identical_delimiter_decoding_in_every_context() {
         failed.join("\n")
     );
 }
+
+// --- parity-regressions.test.ts ---
+
+const REGRESSION_CONTEXTS: &[fn(&str) -> String] = &[
+    |s| s.to_string(),
+    |s| format!("( {s} )"),
+    |s| format!("{{ {s}; }}"),
+    |s| format!("if {s}; then printf visible; fi"),
+    |s| format!("check() {{ {s}; }}; check"),
+    |s| format!("printf '%s' \"$( {s}; printf visible)\""),
+];
+
+/// Whether `source` analyzes with `scan_probe` as one of its resources.
+fn probes(source: &str) -> bool {
+    shell_scan::analyze(source, Path::new("/workspace"))
+        .is_ok_and(|a| a.commands.iter().any(|(r, _)| r == "scan_probe"))
+}
+
+/// Run `source` in `shell` with the probe functions defined; its stderr.
+fn run_with_probes(shell: &str, source: &str, home: &Path) -> (Option<i32>, String) {
+    let flags: &[&str] = if shell.ends_with("bash") {
+        &["--noprofile", "--norc"]
+    } else {
+        &["-f"]
+    };
+    let out = Command::new(shell)
+        .args(flags)
+        .args([
+            "-c",
+            &format!(
+                "scan_probe() {{ printf 'executed\\n' >&2; }}; scan_ignored() {{ printf 'unexpected\\n' >&2; }}; {source}; wait"
+            ),
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// How many of `sources` are refused as unanalyzable; none may analyze
+/// without finding `scan_probe` (a refusal asks, a miss would not).
+fn refused_or_found(sources: &[String]) -> usize {
+    let mut refused = 0;
+    for source in sources {
+        match shell_scan::analyze(source, Path::new("/workspace")) {
+            Ok(a) => assert!(
+                a.commands.iter().any(|(r, _)| r == "scan_probe"),
+                "{source:?} misses the probe: {:?}",
+                a.commands
+            ),
+            Err(_) => refused += 1,
+        }
+    }
+    refused
+}
+
+/// "preserves deeply indented function definitions: %s". Differs on
+/// purpose for Zsh's anonymous function `() { ... }`, which is refused.
+#[test]
+fn oc_scan_preserves_deeply_indented_function_definitions() {
+    let indent = " ".repeat(32_000);
+    assert!(probes(&format!(
+        "( {indent}probe() {{ scan_probe; }}; probe )"
+    )));
+    assert!(shell_scan::scan(&format!("( {indent}() {{ scan_probe; }} )")).is_err());
+}
+
+/// "retains conditional process substitutions and permission resources: %s"
+#[test]
+fn oc_scan_retains_conditional_process_substitutions() {
+    for condition in ["[[ -n <(scan_probe) ]]", "[[ -n >(scan_probe) ]]"] {
+        for context in REGRESSION_CONTEXTS {
+            let source = context(condition);
+            assert!(probes(&source), "{source:?}");
+        }
+    }
+}
+
+/// "${shell} preserves line continuations at function boundaries: %s".
+/// 51 of the 72 sources scan with the probe; the others (a continuation
+/// between a function's name and its `()`, or one ending a comment inside
+/// a quoted substitution) are refused, which asks.
+#[test]
+fn oc_scan_preserves_line_continuations_at_function_boundaries() {
+    let mut sources = Vec::new();
+    for head in [
+        "probe()",
+        "probe \\\n()",
+        "function \\\nprobe()",
+        "function probe \\\n()",
+    ] {
+        for gap in [" \\\n", " \\\n # ignored ) }\n", "# ignored \\\n"] {
+            for context in REGRESSION_CONTEXTS {
+                sources.push(context(&format!("{head}{gap}{{ scan_probe; }}; probe")));
+            }
+        }
+    }
+    assert_eq!(sources.len(), 72);
+    assert_eq!(refused_or_found(&sources), 21);
+}
+
+/// "${shell} preserves comments between a function head and its body:
+/// %s". 48 of the 54 sources scan with the probe; a comment holding `)`
+/// inside a quoted substitution is refused, which asks.
+#[test]
+fn oc_scan_preserves_comments_between_a_function_head_and_its_body() {
+    let mut sources = Vec::new();
+    for head in ["probe()", "function probe", "function probe()"] {
+        for gap in [
+            " # ignored ) }\n",
+            "\n# ignored ) }\n\n",
+            " # first\n# second\n",
+        ] {
+            for context in REGRESSION_CONTEXTS {
+                sources.push(context(&format!("{head}{gap}{{ scan_probe; }}; probe")));
+            }
+        }
+    }
+    assert_eq!(sources.len(), 54);
+    assert_eq!(refused_or_found(&sources), 6);
+}
+
+/// "${shell} preserves function resources, saved prefixes, and
+/// directories: %s". 52 of the 60 sources scan with the probe; `function
+/// name` followed by a bare subshell or arithmetic body is refused.
+#[test]
+fn oc_scan_preserves_function_resources() {
+    let mut sources = Vec::new();
+    for name in ["probe", "probe-name", "probe.name", "probe:name"] {
+        for head in [
+            format!("{name}()"),
+            format!("function {name}"),
+            format!("function {name}()"),
+        ] {
+            for body in [
+                "{ scan_probe; }",
+                "(scan_probe)",
+                "if true; then scan_probe; fi",
+                "[[ $(scan_probe) == ok ]]",
+                "(( 1 + $(scan_probe) ))",
+            ] {
+                sources.push(format!("{head} {body}; {name}"));
+            }
+        }
+    }
+    assert_eq!(sources.len(), 60);
+    assert_eq!(refused_or_found(&sources), 8);
+}
+
+/// "${shell} really executes the extracted command: %s". The scan finds
+/// the probe the shell runs, or refuses the source on purpose: a
+/// continuation between a function's name and its `()`, and Zsh's
+/// anonymous function.
+#[test]
+fn oc_scan_finds_the_command_the_shell_really_executes() {
+    let home = tempfile::tempdir().unwrap();
+    for name in ["bash", "zsh"] {
+        let Some(exe) = shell(name) else { continue };
+        let mut sources = vec![
+            "probe-name() { scan_probe; }; probe-name",
+            "function probe.name { scan_probe; }; probe.name",
+            "probe:name() if true; then scan_probe; fi; probe:name",
+            "probe()# ignored ) }\n{ scan_probe; }; probe",
+            "probe \\\n() \\\n{ scan_probe; }; probe",
+            "function \\\nprobe() # ignored \\\n{ scan_probe; }; probe",
+        ];
+        if name == "bash" {
+            sources.extend(["[[ -n <(scan_probe) ]]", "[[ -n >(scan_probe) ]]"]);
+        } else {
+            sources.push("() { scan_probe; }");
+        }
+        for source in sources {
+            let (code, stderr) = run_with_probes(&exe, source, home.path());
+            assert_eq!(
+                (code, stderr.as_str()),
+                (Some(0), "executed\n"),
+                "{name}: {source:?}"
+            );
+            match heads_of(source) {
+                Ok(heads) => assert!(
+                    heads.contains(&"scan_probe".to_string()),
+                    "{source:?}: {heads:?}"
+                ),
+                Err(_) => assert!(
+                    source.starts_with("probe \\\n()") || source.starts_with("()"),
+                    "{source:?} is refused"
+                ),
+            }
+        }
+    }
+}
+
+/// "preserves Zsh anonymous functions and parenthesized loop permissions:
+/// %s" and "accepts anonymous-function compositions without recovery
+/// artifacts: $source". Differs on purpose: Zsh's anonymous functions and
+/// `while() { ... }` loops are refused as unanalyzable, which asks.
+#[test]
+fn oc_scan_refuses_zsh_anonymous_functions_and_parenthesized_loops() {
+    for source in [
+        "() { scan_probe; }",
+        "( () { scan_probe; } )",
+        "{ () { scan_probe; }; }",
+        "while() { scan_probe; break; }",
+        "until() { scan_probe; break; }",
+        "if () { scan_probe; }; then printf visible; fi",
+        "check() { () { scan_probe; }; }; check",
+        "printf '%s' \"$( () { scan_probe; }; printf visible)\"",
+    ] {
+        assert!(shell_scan::scan(source).is_err(), "{source:?}");
+    }
+}
+
+/// "does not turn quoted process-substitution text into commands: %s"
+#[test]
+fn oc_scan_does_not_turn_quoted_process_substitution_text_into_commands() {
+    for source in [
+        "[[ -n '<(scan_ignored)' ]]",
+        "[[ -n \"<(scan_ignored)\" ]]",
+        "[[ -n '>(scan_ignored)' ]]",
+        "[[ -n \">(scan_ignored)\" ]]",
+        "[[ -n $'<(scan_ignored)' ]]",
+    ] {
+        assert_eq!(shell_scan::scan(source), Ok(vec![]), "{source:?}");
+    }
+}

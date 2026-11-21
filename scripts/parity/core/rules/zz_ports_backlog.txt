@@ -206,3 +206,17 @@
 186:1 :: design :: deliberate :: a quoted `)` in a substitution nested in a quoted one is refused as unanalyzable, which asks rather than guesses; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_does_not_lose_commands_through_delimiter_or_quote_confusion
 @shell-parse-syntax.test.ts
 30 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_extracts_commands_without_rejecting_ordinary_syntax :: the Bash and Zsh rows, one check each
+@shell-scan/parity-regressions.test.ts
+29:1 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_deeply_indented_function_definitions
+29:1 :: design :: deliberate :: Zsh's anonymous function `() { ... }` is refused as unanalyzable, which asks
+38 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_retains_conditional_process_substitutions
+47:6 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_line_continuations_at_function_boundaries :: 51 of the 72 sources
+47:2 :: design :: deliberate :: a continuation between a function's name and its `()`, or one ending a comment inside a quoted substitution, is refused as unanalyzable (21 of 72 sources), which asks; none is read without its command (tests/oc_shell_scan_backlog.rs::oc_scan_preserves_line_continuations_at_function_boundaries)
+58:5 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_comments_between_a_function_head_and_its_body :: 48 of the 54 sources
+58:1 :: design :: deliberate :: a comment holding `)` between a function's head and body inside a quoted substitution is refused (6 of 54 sources), which asks
+69:1 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_preserves_function_resources :: 52 of the 60 sources
+69:1 :: design :: deliberate :: `function name` followed by a bare subshell or arithmetic body is refused (8 of 60 sources), which asks
+78:11 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_finds_the_command_the_shell_really_executes :: against real bash and zsh
+78:3 :: design :: deliberate :: a continuation between a function's name and its `()`, and Zsh's anonymous function, are refused, which asks (tests/oc_shell_scan_backlog.rs::oc_scan_finds_the_command_the_shell_really_executes)
+108,119 :: design :: deliberate :: Zsh's anonymous functions and `while() { ... }` loops are refused as unanalyzable, which asks; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_refuses_zsh_anonymous_functions_and_parenthesized_loops
+137 :: ported :: tests/oc_shell_scan_backlog.rs::oc_scan_does_not_turn_quoted_process_substitution_text_into_commands

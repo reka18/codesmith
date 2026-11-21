@@ -37,7 +37,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
-| Shell scan and parse | 1465 | 807 | 8 | 0 | 482 | 168 | 0 |
+| Shell scan and parse | 1465 | 838 | 8 | 0 | 498 | 121 | 0 |
 | Permission | 177 | 101 | 0 | 0 | 50 | 26 | 0 |
 | Agents | 65 | 46 | 0 | 0 | 14 | 5 | 0 |
 | Skills and commands | 59 | 27 | 0 | 0 | 21 | 11 | 0 |
@@ -52,7 +52,7 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
 | Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2431** | **41** | **45** | **2486** | **582** | **3** |
+| **Total** | **5588** | **2462** | **41** | **45** | **2502** | **535** | **3** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -193,7 +193,7 @@ Missing features, by how many OpenCode test cases each would unlock (45 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (582 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (535 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
 ### Session runner (21)
 
@@ -376,7 +376,7 @@ Tests for behaviour CodeSmith already has but no test pins (582 cases), by area,
 - an after hook replaces a stopped call's failure (S) — `plugin::Plugin::tool_after`
   - `tool-shell.test.ts`: lets an execute.after hook replace a stopped call's failure
 
-### Shell scan and parse (168)
+### Shell scan and parse (121)
 
 - prefix for long argument lists (S) — `shell_scan::scan`
   - `shell-parse-compatibility.test.ts`: derives the prefix for long argument lists
@@ -418,17 +418,6 @@ Tests for behaviour CodeSmith already has but no test pins (582 cases), by area,
   - `shell-scan/generated.test.ts`: fails closed when valid commands are mutated with malformed syntax
   - `shell-scan/generated.test.ts`: retains generated dynamic command heads without resolving them
   - `shell-scan/generated.test.ts`: keeps wrappers and shell evaluators at their delegated boundary
-- regression table: function definitions, continuations, comments, zsh anonymous functions, process substitutions (M) — `shell_scan::scan`
-  - `shell-scan/parity-regressions.test.ts`: preserves deeply indented function definitions: %s (2 cases)
-  - `shell-scan/parity-regressions.test.ts`: retains conditional process substitutions and permission resources: %s (2 cases)
-  - `shell-scan/parity-regressions.test.ts`: ${shell} preserves line continuations at function boundaries: %s (8 cases)
-  - `shell-scan/parity-regressions.test.ts`: ${shell} preserves comments between a function head and its body: %s (6 cases)
-  - `shell-scan/parity-regressions.test.ts`: ${shell} preserves function resources, saved prefixes, and directories: %s (2 cases)
-  - `shell-scan/parity-regressions.test.ts`: preserves Zsh anonymous functions and parenthesized loop permissions: %s (5 cases)
-  - `shell-scan/parity-regressions.test.ts`: accepts anonymous-function compositions without recovery artifacts: $source (3 cases)
-  - `shell-scan/parity-regressions.test.ts`: does not turn quoted process-substitution text into commands: %s (5 cases)
-- the extracted command really executes (M) — `tests/shell_differential.rs`
-  - `shell-scan/parity-regressions.test.ts`: ${shell} really executes the extracted command: %s (14 cases)
 
 ### Permission (26)
 
@@ -813,7 +802,7 @@ Tests for behaviour CodeSmith already has but no test pins (582 cases), by area,
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 688 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 619 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 635 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 257 |
@@ -2209,7 +2198,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Shell scan and parse (1297 of 1465)</summary>
+<details><summary>Shell scan and parse (1344 of 1465)</summary>
 
 
 **`shell-parse-compatibility.test.ts`**
@@ -2330,6 +2319,22 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P reports or rejects real-shell execution: %j ×2 — `tests/shell_differential.rs` (real-shell oracle (CodeSmith's differential runner checks the scanner against Bash, Zsh, sh, Dash and Bash 3.2))
 - P reports or rejects in %s: %j ×8 — `tests/shell_differential.rs` (real-shell oracle (CodeSmith's differential runner checks the scanner against Bash, Zsh, sh, Dash and Bash 3.2))
 - P reports the directory a real shell changes to: %s ×4 — `tests/shell_differential.rs` (real-shell oracle (CodeSmith's differential runner checks the scanner against Bash, Zsh, sh, Dash and Bash 3.2))
+
+**`shell-scan/parity-regressions.test.ts`**
+
+- P preserves deeply indented function definitions: %s — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_deeply_indented_function_definitions`
+- D preserves deeply indented function definitions: %s — deliberate: Zsh's anonymous function `() { ... }` is refused as unanalyzable, which asks
+- P retains conditional process substitutions and permission resources: %s ×2 — `tests/oc_shell_scan_backlog.rs::oc_scan_retains_conditional_process_substitutions`
+- P ${shell} preserves line continuations at function boundaries: %s ×6 — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_line_continuations_at_function_boundaries` (51 of the 72 sources)
+- D ${shell} preserves line continuations at function boundaries: %s ×2 — deliberate: a continuation between a function's name and its `()`, or one ending a comment inside a quoted substitution, is refused as unanalyzable (21 of 72 sources), which asks; none is read without its command (tests/oc_shell_scan_backlog.rs::oc_scan_preserves_line_continuations_at_function_boundaries)
+- P ${shell} preserves comments between a function head and its body: %s ×5 — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_comments_between_a_function_head_and_its_body` (48 of the 54 sources)
+- D ${shell} preserves comments between a function head and its body: %s — deliberate: a comment holding `)` between a function's head and body inside a quoted substitution is refused (6 of 54 sources), which asks
+- P ${shell} preserves function resources, saved prefixes, and directories: %s — `tests/oc_shell_scan_backlog.rs::oc_scan_preserves_function_resources` (52 of the 60 sources)
+- D ${shell} preserves function resources, saved prefixes, and directories: %s — deliberate: `function name` followed by a bare subshell or arithmetic body is refused (8 of 60 sources), which asks
+- P ${shell} really executes the extracted command: %s ×11 — `tests/oc_shell_scan_backlog.rs::oc_scan_finds_the_command_the_shell_really_executes` (against real bash and zsh)
+- D ${shell} really executes the extracted command: %s ×3 — deliberate: a continuation between a function's name and its `()`, and Zsh's anonymous function, are refused, which asks (tests/oc_shell_scan_backlog.rs::oc_scan_finds_the_command_the_shell_really_executes)
+- D preserves Zsh anonymous functions and parenthesized loop permissions: %s ×5 · accepts anonymous-function compositions without recovery artifacts: $source ×3 — deliberate: Zsh's anonymous functions and `while() { ... }` loops are refused as unanalyzable, which asks; pinned by tests/oc_shell_scan_backlog.rs::oc_scan_refuses_zsh_anonymous_functions_and_parenthesized_loops
+- P does not turn quoted process-substitution text into commands: %s ×5 — `tests/oc_shell_scan_backlog.rs::oc_scan_does_not_turn_quoted_process_substitution_text_into_commands`
 
 **`shell-scan/powershell-runtime.test.ts`**
 
