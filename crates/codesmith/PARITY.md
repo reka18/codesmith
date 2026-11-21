@@ -74,7 +74,8 @@ Where the tests live:
 - `tests/e2e/oc_cli.rs`: tests that need the binary (`debug paths`, piped
   input, session export and import, `auth list` and `logout`, the session
   environment, XDG folders).
-- `codesmith-core/tests/oc_stats.rs`: the `stats` card (`cli/test/stats`).
+- `codesmith-core/tests/oc_stats.rs`: the `stats` card (`cli/test/stats`);
+  `oc_activity_calendar.rs`: its calendar (`util/src/activity-calendar`).
 - `codesmith-core/tests/oc_codemode.rs` with
   `tests/fixtures/oc_codemode.json`: 1137 assertions from
   `packages/codemode/test` (the programs and the values they expect,
@@ -116,9 +117,9 @@ Where the tests live:
 | server | 123 | 0 | 0 | 0 | 123 | 0 | 0 |
 | codemode | 1666 | 647 | 218 | 0 | 586 | 215 | 0 |
 | plugin | 38 | 0 | 0 | 0 | 38 | 0 | 0 |
-| util | 140 | 2 | 17 | 0 | 111 | 10 | 0 |
+| util | 140 | 8 | 21 | 0 | 111 | 0 | 0 |
 | session-ui | 621 | 0 | 0 | 0 | 621 | 0 | 0 |
-| **Total** | **4637** | **759** | **798** | **8** | **2385** | **259** | **428** |
+| **Total** | **4637** | **765** | **802** | **8** | **2385** | **249** | **428** |
 
 ## Fixes made while porting
 
@@ -332,6 +333,13 @@ Where the tests live:
   tool tables kept their 68-column rows; below 68 columns each row is now
   two lines, the name and then its numbers, as in OpenCode. The width is
   the terminal's when `COLUMNS` is not set.
+- **Calendar intensity and length** (`util/src/activity-calendar`): a
+  day's shade was its count over the busiest day's, so a range with one
+  very busy day showed every other day at the lowest level, and a wide
+  terminal drew more than a year of weeks. As in OpenCode's
+  `activityCalendar` (now `stats::activity_calendar`), the shade ranks a
+  day's count among the range's distinct counts in four levels, and the
+  calendar keeps at most the latest 53 weeks.
 - **`mcp auth` without a name** (`cli/test/mcp-auth-choices`): the name
   was required. It is now optional: in a terminal CodeSmith lists the
   remote servers that take an OAuth sign-in and asks for one; without a
@@ -711,6 +719,16 @@ callbacks and `groupBy`; and `parity`, `stdlib`, `callbacks`, `classes`,
 | `tui/test/cli/tui/thinking` | preserves markdown-significant indentation in the extracted body | after a fix | oc_preserves_markdown_significant_indentation_in_the_extracted_body |
 | `tui/test/cli/tui/thinking` | does not consume ordinary leading bold content | after a fix | oc_does_not_consume_ordinary_leading_bold_content |
 | `tui/test/cli/tui/thinking` | leaves content without a leading title in its body | after a fix | oc_leaves_content_without_a_leading_title_in_its_body |
+| `util/src/activity-calendar` | aligns Monday-first weeks and excludes cells outside the end-exclusive range | after a fix | oc_aligns_monday_first_weeks_and_excludes_cells_outside_the_range (`codesmith-core/tests/oc_activity_calendar.rs`) |
+| `util/src/activity-calendar` | clips to the latest weeks and keeps empty days distinct from out-of-range cells | ported | oc_clips_to_the_latest_weeks_and_keeps_empty_days_distinct |
+| `util/src/activity-calendar` | caps long histories at 53 weeks | after a fix | oc_caps_long_histories_at_53_weeks |
+| `util/src/activity-calendar` | returns month positions and spans for partial first and last months | ported | oc_returns_month_positions_and_spans_for_partial_months |
+| `util/src/activity-calendar` | places month labels across a year boundary | ported | oc_places_month_labels_across_a_year_boundary |
+| `util/src/activity-calendar` | keeps exactly seven distinct cells per week across DST and leap days | ported | oc_keeps_seven_distinct_cells_per_week_across_dst_and_leap_days |
+| `util/src/activity-calendar` | uses the highest intensity for a single distinct positive count | ported | oc_uses_the_highest_intensity_for_a_single_distinct_count |
+| `util/src/activity-calendar` | ranks distinct activity counts in four levels | after a fix | oc_ranks_distinct_activity_counts_in_four_levels |
+| `util/src/activity-calendar` | keeps intensity relative to the requested range when older weeks are clipped | after a fix | oc_keeps_intensity_relative_to_the_range_when_clipped |
+| `util/src/activity-calendar` | returns an empty calendar for an empty range | ported | oc_returns_an_empty_calendar_for_an_empty_range |
 | `util/src/session-mention` | session tokens round-trip independently of the title | after a fix | oc_session_tokens_round_trip_independently_of_the_title (`tui/mention.rs`; adapted: CodeSmith's 17-character IDs are mentions too) |
 | `util/src/session-mention` | does not parse malformed or embedded IDs: %s (7 cases) | after a fix | oc_does_not_parse_malformed_or_embedded_ids |
 | `tui/test/app-lifecycle` | boots on the simulation renderer with the terminal title enabled | after a fix | oc_the_terminal_title_follows_the_session_and_the_exit_prints_the_summary (e2e; adapted: in a pty) |
@@ -1207,21 +1225,6 @@ file paths and middle truncation, which view.rs does not do as OpenCode does
 - `tui/test/ui/file-path`: never exceeds the requested width
 - `tui/test/util/locale`: truncates text in the middle without overflowing small widths
 - `tui/test/util/path-format`: formats relative, home, and foreign paths
-
-### util: activity calendar (10)
-
-CodeSmith draws the calendar in stats.rs (private helpers)
-
-- `util/src/activity-calendar`: aligns Monday-first weeks and excludes cells outside the end-exclusive range
-- `util/src/activity-calendar`: clips to the latest weeks and keeps empty days distinct from out-of-range cells
-- `util/src/activity-calendar`: caps long histories at 53 weeks
-- `util/src/activity-calendar`: returns month positions and spans for partial first and last months
-- `util/src/activity-calendar`: places month labels across a year boundary
-- `util/src/activity-calendar`: keeps exactly seven distinct cells per week across DST and leap days
-- `util/src/activity-calendar`: uses the highest intensity for a single distinct positive count
-- `util/src/activity-calendar`: ranks distinct activity counts in four levels
-- `util/src/activity-calendar`: keeps intensity relative to the requested range when older weeks are clipped
-- `util/src/activity-calendar`: returns an empty calendar for an empty range
 
 ### tui: tool output (1)
 

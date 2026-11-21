@@ -129,6 +129,9 @@ All notable changes to CodeSmith are listed here. Versions follow
   OpenAI's agent registration; CodeSmith ships none. The ID token is
   verified; requests go over HTTP to ChatGPT's models only, with plan
   context caps, summary compaction, and no retries for usage limits.
+- `codesmith stats`: the calendar shades each day by how its count ranks
+  among the range's distinct counts, as OpenCode does, rather than by its
+  share of the busiest day, and shows at most the latest 53 weeks.
 
 ## 0.1.0
 

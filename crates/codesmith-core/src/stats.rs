@@ -508,14 +508,6 @@ fn count(v: u64, noun: &str, color: bool) -> String {
     )
 }
 
-fn level(v: u64, max: u64) -> i32 {
-    if v == 0 || max == 0 {
-        0
-    } else {
-        ((v * 4).div_ceil(max)).clamp(1, 4) as i32
-    }
-}
-
 fn paint(level: i32, color: bool) -> String {
     if color {
         let c = ["238", "22", "28", "34", "40"][level as usize];
@@ -525,46 +517,127 @@ fn paint(level: i32, color: bool) -> String {
     }
 }
 
-/// A GitHub-style calendar: one column per week (Monday first), clipped to the latest weeks that fit.
-fn calendar(s: &Stats, color: bool, width: usize) -> Vec<String> {
-    let to_ms = s.to.saturating_sub(1);
-    let (Some(from), Some(to)) = (
-        Local.timestamp_millis_opt(s.from).single(),
-        Local.timestamp_millis_opt(to_ms).single(),
-    ) else {
-        return vec![];
+/// One cell of the activity calendar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarDay {
+    /// The local date, `YYYY-MM-DD`.
+    pub date: String,
+    pub steps: u64,
+    /// -1 outside the range, 0 for no activity, 1 to 4 for its intensity.
+    pub level: i32,
+}
+
+/// A month label over the calendar's weeks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarMonth {
+    pub week: usize,
+    pub label: String,
+    pub span: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Calendar {
+    /// Monday-first weeks, oldest first.
+    pub weeks: Vec<[CalendarDay; 7]>,
+    pub months: Vec<CalendarMonth>,
+    /// Older weeks were left out to fit `max_weeks` (or the 53-week cap).
+    pub clipped: bool,
+}
+
+/// OpenCode's `activityCalendar` (`util/src/activity-calendar`): the
+/// Monday-first weeks from `from` to `to` (milliseconds, `to` exclusive, in
+/// local time), at most `max_weeks` and 53 of them, keeping the latest. A
+/// day's level ranks its count among the distinct positive counts of
+/// `activity` in four levels; a week belongs to the month of its Thursday,
+/// kept inside the range.
+pub fn activity_calendar(
+    activity: &BTreeMap<String, u64>,
+    from: i64,
+    to: i64,
+    max_weeks: usize,
+) -> Calendar {
+    let local = |ms: i64| {
+        Local
+            .timestamp_millis_opt(ms)
+            .earliest()
+            .map(|t| t.date_naive())
     };
-    let (first, last) = (from.date_naive(), to.date_naive());
-    let start = first - Duration::days(first.weekday().num_days_from_monday() as i64);
-    let mut weeks = ((last - start).num_days() / 7 + 1) as usize;
-    let max_weeks = width.saturating_sub(4).max(4);
-    let mut origin = start;
-    let clipped = weeks > max_weeks;
-    if clipped {
-        origin = start + Duration::weeks((weeks - max_weeks) as i64);
-        weeks = max_weeks;
+    let (Some(first), Some(last)) = (local(from), local(to.saturating_sub(1))) else {
+        return Calendar::default();
+    };
+    if to <= from {
+        return Calendar::default();
     }
-    let max = s.activity.values().copied().max().unwrap_or(0);
-    // As in OpenCode's `activityCalendar`, a week belongs to the month of
-    // its Thursday (kept inside the range, so a partial first or last week
-    // is labelled by the days shown), and a label is drawn where it fits in
-    // its month's weeks, or for the last month.
-    let mut spans: Vec<(String, usize)> = Vec::new();
-    for w in 0..weeks {
-        let thursday = (origin + Duration::days(w as i64 * 7 + 3)).clamp(first, last);
+    let monday = first - Duration::days(first.weekday().num_days_from_monday() as i64);
+    let total = ((last - monday).num_days() / 7 + 1) as usize;
+    let count = total.min(53).min(max_weeks.max(1));
+    let start = monday + Duration::weeks((total - count) as i64);
+    let levels: Vec<u64> = activity
+        .values()
+        .copied()
+        .filter(|&v| v > 0)
+        .collect::<BTreeSet<u64>>()
+        .into_iter()
+        .collect();
+    let weeks: Vec<[CalendarDay; 7]> = (0..count)
+        .map(|w| {
+            std::array::from_fn(|d| {
+                let day = start + Duration::days((w * 7 + d) as i64);
+                let date = day.format("%Y-%m-%d").to_string();
+                let steps = activity.get(&date).copied().unwrap_or(0);
+                let level = if day < first || day > last {
+                    -1
+                } else if steps == 0 {
+                    0
+                } else {
+                    let rank = levels.binary_search(&steps).unwrap_or(0) + 1;
+                    ((rank * 4).div_ceil(levels.len())).max(1) as i32
+                };
+                CalendarDay { date, steps, level }
+            })
+        })
+        .collect();
+    let mut months: Vec<CalendarMonth> = Vec::new();
+    for w in 0..count {
+        let thursday = (start + Duration::days(w as i64 * 7 + 3)).clamp(first, last);
         let label = thursday.format("%b").to_string();
-        match spans.last_mut() {
-            Some((l, span)) if *l == label => *span += 1,
-            _ => spans.push((label, 1)),
+        if months.last().is_none_or(|m| m.label != label) {
+            months.push(CalendarMonth {
+                week: w,
+                label,
+                span: 0,
+            });
         }
     }
-    let n = spans.len();
-    let months: String = spans
+    for i in 0..months.len() {
+        let next = months.get(i + 1).map_or(count, |m| m.week);
+        months[i].span = next - months[i].week;
+    }
+    Calendar {
+        weeks,
+        months,
+        clipped: count < total,
+    }
+}
+
+/// A GitHub-style calendar: one column per week (Monday first), clipped to the latest weeks that fit.
+fn calendar(s: &Stats, color: bool, width: usize) -> Vec<String> {
+    let cal = activity_calendar(&s.activity, s.from, s.to, width.saturating_sub(4).max(4));
+    if cal.weeks.is_empty() {
+        return vec![];
+    }
+    let weeks = cal.weeks.len();
+    // A label is drawn where it fits in its month's weeks, or for the last
+    // month.
+    let n = cal.months.len();
+    let months: String = cal
+        .months
         .iter()
         .enumerate()
-        .map(|(i, (label, span))| {
-            let shown = if i + 1 == n || label.len() <= *span {
-                label.as_str()
+        .map(|(i, m)| {
+            let span = m.span;
+            let shown = if i + 1 == n || m.label.len() <= span {
+                m.label.as_str()
             } else {
                 ""
             };
@@ -573,7 +646,7 @@ fn calendar(s: &Stats, color: bool, width: usize) -> Vec<String> {
         .collect();
     let mut out = vec![
         style(
-            &if clipped {
+            &if cal.clipped {
                 format!("activity · last {weeks} weeks")
             } else {
                 "activity".into()
@@ -588,20 +661,10 @@ fn calendar(s: &Stats, color: bool, width: usize) -> Vec<String> {
         .enumerate()
     {
         let mut row = format!("{} ", style(name, "2", color));
-        for w in 0..weeks {
-            let d = origin + Duration::days((w * 7 + i) as i64);
-            if d < first || d > last {
-                row.push(' ');
-            } else {
-                row.push_str(&paint(
-                    level(
-                        *s.activity
-                            .get(&d.format("%Y-%m-%d").to_string())
-                            .unwrap_or(&0),
-                        max,
-                    ),
-                    color,
-                ));
+        for week in &cal.weeks {
+            match week[i].level {
+                -1 => row.push(' '),
+                l => row.push_str(&paint(l, color)),
             }
         }
         out.push(row.trim_end().to_string());
@@ -1375,7 +1438,6 @@ mod tests {
             ),
             ("999".into(), "1.5k".into(), "2m".into(), "3.4b".into())
         );
-        assert_eq!((level(0, 9), level(1, 9), level(9, 9)), (0, 1, 4));
         let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
         assert_eq!(
             streak(
