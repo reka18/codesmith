@@ -1474,3 +1474,75 @@ fn verbosity_default_matches_openai_model_ids_only_on_their_boundaries() {
         assert!(!crate::verbosity_default(id), "{id:?}");
     }
 }
+
+// provider-chatgpt.test.ts: "${connection} sends mid-session reasoning
+// effort switches in a form its backend accepts" (2 cases; adapted: a
+// ChatGPT sign-in resolves with `effortUpdates: false`, which
+// codesmith-core's tests/oc_chatgpt.rs pins; a key leaves the detection on)
+#[test]
+fn oc_chatgpt_and_key_send_effort_switches_in_a_form_their_backend_accepts() {
+    let switched = vec![
+        user("a"),
+        asst(vec![text("b")]),
+        effort(Some("max"), Some("high")),
+        user("c"),
+    ];
+    let mut back = switched.clone();
+    back.extend([
+        asst(vec![text("d")]),
+        effort(Some("high"), Some("max")),
+        user("e"),
+    ]);
+    let kinds = |b: &Value| -> Vec<String> {
+        b["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| match i["type"].as_str() {
+                Some("configuration_update") => {
+                    format!("update:{}", i["reasoning"]["effort"].as_str().unwrap())
+                }
+                _ => format!(
+                    "{}:{}",
+                    i["role"].as_str().unwrap_or("?"),
+                    i["content"][0]["text"].as_str().unwrap_or("")
+                ),
+            })
+            .collect()
+    };
+    let body = |messages: Vec<Message>, effort: &str, chatgpt: bool| {
+        let mut o = json!({"reasoningEffort": effort});
+        if chatgpt {
+            o["effortUpdates"] = json!(false);
+        }
+        responses::body(&with(req("gpt-6.1-sol", messages), o))
+    };
+    // ChatGPT: the new effort for the whole request, no update items.
+    let b = body(switched.clone(), "max", true);
+    assert_eq!(b["reasoning"]["effort"], "max");
+    assert_eq!(kinds(&b), ["user:a", "assistant:b", "user:c"]);
+    let b = body(back.clone(), "high", true);
+    assert_eq!(b["reasoning"]["effort"], "high");
+    assert_eq!(
+        kinds(&b),
+        ["user:a", "assistant:b", "user:c", "assistant:d", "user:e"]
+    );
+    // A key: the first effort stays at the top, updates go in place.
+    let b = body(switched, "max", false);
+    assert_eq!(b["reasoning"]["effort"], "high");
+    assert_eq!(kinds(&b), ["user:a", "assistant:b", "update:max", "user:c"]);
+    let b = body(back, "high", false);
+    assert_eq!(b["reasoning"]["effort"], "high");
+    assert_eq!(
+        kinds(&b),
+        [
+            "user:a",
+            "assistant:b",
+            "update:max",
+            "user:c",
+            "assistant:d",
+            "update:high",
+            "user:e"
+        ]
+    );
+}

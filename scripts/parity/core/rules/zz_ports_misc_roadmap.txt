@@ -24,3 +24,13 @@
 # tests/oc_verbosity.rs) ---
 @plugin/verbosity.test.ts
 32 :: ported :: ../codesmith-ai/src/parity_options.rs::oc_sets_known_openai_responses_verbosity_defaults_without_overriding_configured_or_unknown_models :: adapted: a Responses route default by URL and the model id sent; configured layering in tests/oc_verbosity.rs; no Vercel gateway
+
+# --- ChatGPT Subscription Login (tests/oc_output_limit.rs, tests/oc_chatgpt.rs
+# and codesmith-ai's parity_options.rs) ---
+@plugin/provider-chatgpt.test.ts
+985 :: ported :: tests/oc_output_limit.rs::oc_omits_the_default_output_limit_from_openai_steps_and_compaction :: adapted: OpenAI Chat to a local fake under a key; the provider id decides, as OpenCode's hook does
+1101 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_sends_effort_switches_in_a_form_its_backend_accepts :: adapted: the sign-in resolves with effortUpdates off; the bodies are pinned by ../codesmith-ai/src/parity_options.rs::oc_chatgpt_and_key_send_effort_switches_in_a_form_their_backend_accepts
+1179 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_selects_websocket_only_from_explicit_policy :: adapted: the policy is a provider's transport setting
+@plugin/provider-openai.test.ts
+292 :: ported :: tests/oc_output_limit.rs::oc_omits_the_default_output_limit_from_openai_steps_and_compaction
+317 :: ported :: tests/oc_chatgpt.rs::oc_chatgpt_selects_websocket_only_from_explicit_policy :: adapted: the policy is a provider's transport setting

@@ -603,7 +603,7 @@ impl Session {
             ));
         };
         let mut req = plan.request;
-        req.max_tokens = self.model.max_output;
+        req.max_tokens = self.requested_output();
         let mut policy = retry::Policy::default().for_protocol(provider.protocol);
         let compacted = loop {
             // A trigger rides the session's socket when its steps do, so
@@ -739,7 +739,12 @@ impl Session {
         let budget = self.budget(reason);
         // The output limit leaves room for the most `deliver` sends.
         let hooked_output = request.max_tokens;
-        if window.is_some() || hooked_output.is_some() {
+        // A provider that is sent no output limit (see
+        // `Session::requested_output`) gets none fitted here either, unless
+        // a hook asked for one.
+        let omit =
+            self.model.provider_id == crate::providers::chatgpt::ID && hooked_output.is_none();
+        if !omit && (window.is_some() || hooked_output.is_some()) {
             let limit = compaction::output_limit(
                 window,
                 hooked_output,

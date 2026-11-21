@@ -1873,10 +1873,15 @@ impl Config {
         let mut native_compaction =
             native_compaction(m.compaction.as_ref().or(p.compaction.as_ref()));
         let mut context = context;
-        // A ChatGPT sign-in: summary compaction, and the plan's input window.
+        // A ChatGPT sign-in: summary compaction, no effort updates, and the
+        // plan's input window.
         if matches!(&auth, codesmith_ai::Auth::Dynamic(a) if a.describe() == crate::providers::chatgpt::DESCRIBE)
         {
             native_compaction = None;
+            // The ChatGPT backend takes no `configuration_update` items: a
+            // mid-session effort switch sends the new effort for the whole
+            // request instead, as OpenCode sends it.
+            options.set("effortUpdates", false.into());
             if let Some(c) = context {
                 let out = max_output.unwrap_or(0) as u64;
                 if let Some((ctx, _)) = crate::providers::chatgpt::capped(&wire_model, c, None, out)

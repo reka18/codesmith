@@ -1439,7 +1439,7 @@ impl Session {
             messages: self.sendable_history(&self.messages),
             tools: self.tool_specs(plugins, &code),
             namespaces: Vec::new(),
-            max_tokens: self.model.max_output,
+            max_tokens: self.requested_output(),
             temperature: self.model.temperature,
             options: self.model.options.clone(),
             body: self.model.body.clone(),
@@ -3078,6 +3078,18 @@ impl Session {
             Ok(r) | Err(r) => r,
         };
         self.append_exchange(shown, &report, &Usage::default())
+    }
+
+    /// The output limit a step or compaction asks for: the model's, except
+    /// on the `openai` provider (key or ChatGPT sign-in), where OpenCode
+    /// asks for none: the ChatGPT backend rejects a requested limit and
+    /// OpenAI counts one against rate limits. The limit still sizes the
+    /// context budget.
+    pub(crate) fn requested_output(&self) -> Option<u32> {
+        if self.model.provider_id == crate::providers::chatgpt::ID {
+            return None;
+        }
+        self.model.max_output
     }
 
     fn codemode_on(&self) -> bool {

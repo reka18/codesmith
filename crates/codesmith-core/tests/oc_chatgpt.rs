@@ -875,3 +875,60 @@ fn a_chatgpt_token_goes_only_to_the_openai_api() {
         .to_string();
     assert!(e.contains("only to https://api.openai.com/v1"), "{e}");
 }
+
+// provider-chatgpt.test.ts: "${connection} sends mid-session reasoning
+// effort switches in a form its backend accepts" (2 cases): a ChatGPT
+// sign-in turns effort updates off, so a switch sends the new effort for
+// the whole request (codesmith-ai's parity_options.rs pins the bodies); a
+// key leaves them to the model's detection.
+#[test]
+fn oc_chatgpt_sends_effort_switches_in_a_form_its_backend_accepts() {
+    let _g = serial();
+    let _d = isolate();
+    save_login(codesmith_core::providers::oauth::now_ms() + 3_600_000);
+    let signed_in = openai_config(json!({}));
+    let m = signed_in.resolve_model("openai/gpt-6.1-sol").unwrap();
+    assert_eq!(m.options.bool("effortUpdates"), Some(false));
+    // Even a configured opt-in cannot send updates the backend rejects.
+    let forced = openai_config(json!({"options": {"effortUpdates": true}}));
+    let m = forced.resolve_model("openai/gpt-6.1-sol").unwrap();
+    assert_eq!(m.options.bool("effortUpdates"), Some(false));
+    let keyed = openai_config(json!({"settings": {"apiKey": "sk-test"}}));
+    let m = keyed.resolve_model("openai/gpt-6.1-sol").unwrap();
+    assert_eq!(m.options.bool("effortUpdates"), None);
+}
+
+// provider-chatgpt.test.ts and provider-openai.test.ts: "selects WebSocket
+// only from explicit policy" (adapted: the policy is a provider's
+// `transport`, which the built-in OpenAI, xAI and Azure v1 providers set
+// to websocket as OpenCode's plugins do; a ChatGPT sign-in is HTTP only)
+#[test]
+fn oc_chatgpt_selects_websocket_only_from_explicit_policy() {
+    let _g = serial();
+    let _d = isolate();
+    let c: codesmith_core::config::Config = serde_json::from_value(json!({"providers": {
+        "unset": {"protocol": "openai-responses", "settings": {"baseURL": "https://r.example/v1", "apiKey": "k"}},
+        "ws": {"protocol": "openai-responses", "settings": {"baseURL": "https://r.example/v1", "apiKey": "k", "transport": "websocket"}},
+        "http": {"protocol": "openai-responses", "settings": {"baseURL": "https://r.example/v1", "apiKey": "k", "transport": "http"}},
+        "azure": {"protocol": "openai-responses", "settings": {"resourceName": "r", "apiKey": "k", "useDeploymentBasedUrls": true}},
+        "openai": {"settings": {"apiKey": "k", "transport": "http"}}
+    }}))
+    .unwrap();
+    let ws = |spec: &str| c.resolve_model(spec).unwrap().websocket.is_some();
+    assert!(ws("ws/gpt-5.5"));
+    assert!(!ws("unset/gpt-5.5"));
+    assert!(!ws("http/gpt-5.5"));
+    assert!(
+        !ws("azure/deployment-responses"),
+        "deployment URLs: no default"
+    );
+    assert!(!ws("openai/gpt-5.5"), "an explicit http beats the default");
+    // A ChatGPT sign-in stays on HTTP whatever the policy says.
+    save_login(codesmith_core::providers::oauth::now_ms() + 3_600_000);
+    let signed_in = openai_config(json!({"settings": {"transport": "websocket"}}));
+    assert!(signed_in
+        .resolve_model("openai/gpt-5.5")
+        .unwrap()
+        .websocket
+        .is_none());
+}

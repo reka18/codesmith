@@ -32,6 +32,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **ChatGPT and OpenAI requests:** the `openai` provider (a key or a
+  ChatGPT sign-in) is sent no output limit on session steps and compaction
+  summaries, as OpenCode sends none; the ChatGPT backend rejected one. A
+  ChatGPT sign-in turns `effortUpdates` off, so a mid-session effort switch
+  sends the new effort for the whole request instead of in-place updates
+  its backend does not take. WebSocket selection stays an explicit
+  `transport` policy (the built-in providers' defaults), with tests pinning
+  it. No client id is built in: it stays yours or issued by the
+  registration opt-in.
 - **OpenAI verbosity defaults:** known OpenAI Responses models (GPT-5,
   5.1 to 5.6, mini, nano and GPT-6, on OpenAI, Azure, Bedrock Mantle and
   Cloudflare's OpenAI passthrough) are sent `text.verbosity: "low"` unless a

@@ -902,9 +902,17 @@ expires (a `baseURL` on another host is refused rather than sent the
 token). Only the models ChatGPT serves are listed, at no per-token cost;
 their context is capped as ChatGPT plans cap it (272K of input, 500K from
 gpt-6.1 on, 272K for Astra models); compaction writes a summary rather
-than using OpenAI's native compaction. Failures retrying can't fix (a
+than using OpenAI's native compaction. A mid-session effort switch sends
+the new effort for the whole request: the ChatGPT backend takes no
+in-place effort updates, so `effortUpdates` is always off. Failures retrying can't fix (a
 usage limit, an ineligible account, an unsupported request) aren't
 retried, and the error starts with what to do about them.
+
+On the `openai` provider, signed in or with a key, a session's steps and
+compaction summaries ask for no output limit, as OpenCode's do: the ChatGPT
+backend rejects one, and OpenAI counts a requested limit against rate
+limits. The model's output limit still sizes the context budget. Other
+providers, Azure included, are sent it.
 
 Codex CLI's own browser and device sign-ins are not offered: they work
 only as Codex CLI's OAuth client.
