@@ -32,6 +32,11 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `session::Options` takes an optional fixed `id`; a stored session with it
   is adopted.
 
+- **Code Mode rejection warnings:** a promise a Code Mode program rejects
+  and never awaits or handles is reported in the result under `Warnings:`
+  (`Unhandled rejection from an un-awaited promise: Error: boom`), as
+  OpenCode reports it, instead of being dropped. The program still
+  succeeds; at most ten warnings are listed, each bounded.
 - **Default model fallback:** with no model chosen (no `-m`, agent model or
   `"model"`), a session runs the newest available chat model that takes and
   makes text, as OpenCode does, instead of refusing to start: the newest by

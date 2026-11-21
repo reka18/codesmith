@@ -126,6 +126,14 @@ function as `[opaque reference]`, a cycle as `[Circular]` and anything
 nested more than 32 levels deep as `...`. `console.table(rows, columns?)`
 prints a tab-separated table. A line is cut at 100,000 characters.
 
+A promise the program rejects and never awaits or handles (a tool call it
+forgot to `await` that failed, say) does not fail the program, but it is not
+dropped either: the result ends with a `Warnings:` list, one
+`Unhandled rejection from an un-awaited promise: <reason>` line each, as
+OpenCode warns. At most ten are listed (then a count of the rest), each cut
+at 500 characters with control characters escaped. A rejection the program
+returns is its error instead.
+
 The tools are listed in the system prompt with TypeScript-style signatures.
 When a server's tools come, go or change mid-session, the model is told what
 changed in a short update at that point in the conversation (new and removed

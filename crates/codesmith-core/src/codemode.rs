@@ -391,6 +391,9 @@ pub struct Call {
 pub struct Outcome {
     pub result: Result<Value, String>,
     pub logs: Vec<String>,
+    /// What went wrong without failing the program: a promise rejected and
+    /// never awaited or handled (OpenCode's unhandled rejection warning).
+    pub warnings: Vec<String>,
     pub calls: usize,
 }
 
@@ -406,6 +409,13 @@ impl Outcome {
         };
         if !self.logs.is_empty() {
             s.push_str(&format!("\n\nLogs:\n{}", self.logs.join("\n")));
+        }
+        if !self.warnings.is_empty() {
+            s.push_str("\n\nWarnings:");
+            for w in &self.warnings {
+                s.push_str("\n- ");
+                s.push_str(w);
+            }
         }
         s.push_str(&format!(
             "\n\n({} tool call{})",
@@ -423,10 +433,12 @@ type Caller = Arc<dyn Fn(String, Value) -> Option<Result<String, String>> + Send
 fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -> Outcome {
     use boa_engine::builtins::promise::PromiseState;
     use boa_engine::object::builtins::JsPromise;
-    use boa_engine::{js_string, JsNativeError, JsValue, NativeFunction, Source};
+    use boa_engine::{js_string, JsNativeError, JsObject, JsValue, NativeFunction, Source};
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let mut ctx = web::context();
+    let rejections = Rc::new(Rejections::default());
+    let mut ctx = web::context(rejections.clone());
     ctx.runtime_limits_mut()
         .set_loop_iteration_limit(LOOP_LIMIT);
     ctx.runtime_limits_mut()
@@ -476,6 +488,7 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
     let fail = |e: String, count: &Arc<AtomicUsize>| Outcome {
         result: Err(e),
         logs: vec![],
+        warnings: vec![],
         calls: count.load(Ordering::SeqCst),
     };
     if let Err(e) = ctx.register_global_callable(js_string!("__call"), 2, call) {
@@ -531,6 +544,25 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
         .and_then(|v| v.to_json(&mut ctx).ok().flatten())
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
+    // Promises rejected and still unhandled once every job ran, the
+    // program's own promise aside (its rejection is the result).
+    let main = promise.as_object();
+    let unhandled: Vec<JsValue> = rejections
+        .take()
+        .into_iter()
+        .filter(|p| !main.as_ref().is_some_and(|m| JsObject::equals(m, p)))
+        .filter_map(|p| match JsPromise::from_object(p).ok()?.state() {
+            PromiseState::Rejected(e) => Some(e),
+            _ => None,
+        })
+        .collect();
+    let warnings = bound_warnings(unhandled.into_iter().map(|e| {
+        let reason = e
+            .to_string(&mut ctx)
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_else(|_| "an unprintable value".into());
+        format!("Unhandled rejection from an un-awaited promise: {reason}")
+    }));
     let result = match promise
         .as_object()
         .and_then(|o| JsPromise::from_object(o.clone()).ok())
@@ -552,7 +584,76 @@ fn run_js(code: String, entries: Vec<Entry>, caller: Caller, max_calls: usize) -
     Outcome {
         result,
         logs,
+        warnings,
         calls: count.load(Ordering::SeqCst),
+    }
+}
+
+/// How many unhandled rejections a result lists, and how long each may be.
+const MAX_WARNINGS: usize = 10;
+const MAX_WARNING_CHARS: usize = 500;
+
+/// At most [`MAX_WARNINGS`] warnings of at most [`MAX_WARNING_CHARS`]
+/// characters each, control characters (but newlines) shown escaped, and
+/// a count of the ones left out.
+fn bound_warnings(all: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut more = 0usize;
+    for w in all {
+        if out.len() == MAX_WARNINGS {
+            more += 1;
+            continue;
+        }
+        let mut t: String = w
+            .chars()
+            .flat_map(|c| match c {
+                '\n' => vec!['\n'],
+                c if c.is_control() => c.escape_default().collect(),
+                c => vec![c],
+            })
+            .take(MAX_WARNING_CHARS + 1)
+            .collect();
+        if t.chars().count() > MAX_WARNING_CHARS {
+            t = t.chars().take(MAX_WARNING_CHARS).collect();
+            t.push('…');
+        }
+        out.push(t);
+    }
+    if more > 0 {
+        out.push(format!(
+            "… and {more} more unhandled rejection{}",
+            if more == 1 { "" } else { "s" }
+        ));
+    }
+    out
+}
+
+/// Promises rejected with no handler, as Boa reports them
+/// (HostPromiseRejectionTracker): one rejected is added, and dropped again
+/// once a handler is attached.
+#[derive(Default)]
+pub(crate) struct Rejections(std::cell::RefCell<Vec<boa_engine::JsObject>>);
+
+impl Rejections {
+    fn take(&self) -> Vec<boa_engine::JsObject> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
+impl boa_engine::context::HostHooks for Rejections {
+    fn promise_rejection_tracker(
+        &self,
+        promise: &boa_engine::JsObject<boa_engine::builtins::promise::Promise>,
+        operation: boa_engine::builtins::promise::OperationType,
+        _context: &mut boa_engine::Context,
+    ) {
+        use boa_engine::builtins::promise::OperationType;
+        let promise = promise.clone().upcast();
+        let mut list = self.0.borrow_mut();
+        match operation {
+            OperationType::Reject => list.push(promise),
+            OperationType::Handle => list.retain(|p| !boa_engine::JsObject::equals(p, &promise)),
+        }
     }
 }
 
@@ -560,6 +661,7 @@ fn timed_out(timeout: Duration, calls: usize) -> Outcome {
     Outcome {
         result: Err(format!("timed out after {}s", timeout.as_secs_f64())),
         logs: vec![],
+        warnings: vec![],
         calls,
     }
 }
@@ -572,6 +674,7 @@ fn failed(e: String) -> Outcome {
     Outcome {
         result: Err(e),
         logs: vec![],
+        warnings: vec![],
         calls: 0,
     }
 }
@@ -630,6 +733,7 @@ fn outcome_json(o: &Outcome) -> Value {
         "done": true,
         "result": match &o.result { Ok(v) => json!({"ok": v}), Err(e) => json!({"err": e}) },
         "logs": o.logs,
+        "warnings": o.warnings,
         "calls": o.calls,
     })
 }
@@ -642,6 +746,9 @@ fn outcome_from(v: &Value) -> Outcome {
             None => Ok(r.get("ok").cloned().unwrap_or(Value::Null)),
         },
         logs: serde_json::from_value(v["logs"].clone()).unwrap_or_default(),
+        warnings: serde_json::from_value::<Vec<String>>(v["warnings"].clone())
+            .map(|w| bound_warnings(w.into_iter()))
+            .unwrap_or_default(),
         calls: v["calls"].as_u64().unwrap_or(0) as usize,
     }
 }
@@ -1019,6 +1126,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A helper's warnings survive the trip to the session, bounded again
+    /// on the way in (a helper is not trusted to have bounded them), and
+    /// an outcome from a helper that sends none has none.
+    #[test]
+    fn warnings_cross_from_the_helper_bounded() {
+        let o = Outcome {
+            result: Ok(Value::Null),
+            logs: vec![],
+            warnings: vec!["Unhandled rejection from an un-awaited promise: 1".into()],
+            calls: 0,
+        };
+        assert_eq!(outcome_from(&outcome_json(&o)), o);
+        let flood: Vec<String> = (0..50).map(|_| "y".repeat(10_000)).collect();
+        let v = json!({"done": true, "result": {"ok": null}, "warnings": flood, "calls": 0});
+        let back = outcome_from(&v).warnings;
+        assert_eq!(back.len(), MAX_WARNINGS + 1);
+        assert!(back[0].chars().count() <= MAX_WARNING_CHARS + 1);
+        let old = json!({"done": true, "result": {"ok": 1}, "logs": [], "calls": 0});
+        assert!(outcome_from(&old).warnings.is_empty());
+        let bad = json!({"done": true, "result": {"ok": 1}, "warnings": [1, 2], "calls": 0});
+        assert!(outcome_from(&bad).warnings.is_empty());
+    }
 
     fn entries() -> Vec<Entry> {
         vec![

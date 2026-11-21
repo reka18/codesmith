@@ -11,3 +11,7 @@
 @catalog.test.ts
 533 :: ported :: tests/oc_default_model.rs::oc_falls_back_to_the_newest_available_model_when_no_default_is_configured :: adapted: the catalog drops video and speech models, so a configured audio-only model stands in as the newest non-text one
 640 :: ported :: tests/oc_default_model.rs::oc_ignores_a_configured_default_on_a_disabled_provider :: adapted: disabled by OpenCode's disabled_providers config
+
+# --- Code Mode Rejection Warnings (tests/oc_codemode_warnings.rs) ---
+@tool-execute.test.ts
+372 :: ported :: tests/oc_codemode_warnings.rs::oc_execute_a_program_that_only_warns_shows_its_warnings :: adapted: CodeSmith's result also shows its value (null), and the warning has no diagnostic kind

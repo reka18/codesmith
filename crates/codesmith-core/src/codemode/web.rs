@@ -282,10 +282,12 @@ pub fn install(ctx: &mut Context) -> JsResult<()> {
 }
 
 /// The context Code Mode programs run in: Boa's, with module loading
-/// limited to [`Loader`]'s built-in modules.
-pub fn context() -> Context {
+/// limited to [`Loader`]'s built-in modules, and `rejections` tracking
+/// promises rejected without a handler.
+pub(crate) fn context(rejections: Rc<super::Rejections>) -> Context {
     Context::builder()
         .module_loader(Rc::new(Loader))
+        .host_hooks(rejections)
         .build()
         .unwrap_or_default()
 }
