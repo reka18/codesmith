@@ -115,3 +115,47 @@
 520 :: design :: deliberate :: a subagent's child session is named by the task description its parent gave it; there is no separate title request for it
 554 :: ported :: tests/oc_titles_backlog2.rs::oc_title_does_not_generate_when_the_title_agent_is_removed :: adapted: no title request; the session is named by its first line
 719 :: design :: deliberate :: a failed title request names the session by its first line rather than leaving it untitled (pinned by tests/parity.rs::oc_title_a_failed_request_falls_back_to_the_first_line)
+
+# --- Tools: write, search, websearch, question, todo, media, formatters (tests/oc_tools_backlog2.rs, tests/oc_question_backlog2.rs, tests/oc_which.rs) ---
+@file-mutation.test.ts
+34 :: ported :: tests/oc_tools.rs::oc_write_overwrites_an_existing_file :: adapted: through the write tool
+53 :: ported :: tests/oc_tools.rs::oc_write_creates_a_relative_file_and_its_parents :: adapted: through the write tool
+91 :: ported :: tests/oc_tools_backlog2.rs::oc_write_normalizes_the_bom_of_created_text :: the overwrite half is tests/oc_tools.rs::oc_write_preserves_exactly_one_bom
+110 :: ported :: tests/oc_tools.rs::oc_write_approves_an_external_path_before_edit :: adapted: through the write tool
+131 :: design :: deliberate :: a step's tool calls run one at a time (runner.rs), so two writes to one file never overlap
+@tool-write.test.ts
+156 :: ported :: tests/oc_tools_backlog2.rs::oc_write_formats_the_committed_file
+@filesystem/search.test.ts
+147 :: ported :: tests/oc_tools_backlog2.rs::oc_glob_honors_wildcard_directory_rules_from_gitignore :: adapted: the glob tool
+238 :: design :: other :: CodeSmith keeps no background file index (OpenCode's fff search); glob and grep scan the session's folder when called
+@tool-websearch.test.ts
+101 :: ported :: tests/oc_tools_backlog2.rs::oc_websearch_asks_permission_before_searching
+144 :: ported :: tests/oc_tools_backlog2.rs::oc_websearch_returns_flat_results :: adapted: one search service (SearXNG), so no provider in the result
+185 :: ported :: tests/oc_tools_backlog2.rs::oc_websearch_uses_the_concise_no_results_fallback
+431 :: ported :: tests/oc_tools_backlog2.rs::oc_websearch_reports_safe_http_failures :: adapted: the status, without the service's reply
+@tool-question.test.ts
+73 :: ported :: tests/oc_question_backlog2.rs::oc_question_emits_one_item_schema_for_the_nonempty_questions_array
+101 :: ported :: tests/oc_question_backlog2.rs::oc_question_omits_a_denied_question_and_refuses_it
+130 :: ported :: tests/oc_question_backlog2.rs::oc_question_returns_answers_without_a_permission_prompt
+239 :: ported :: tests/oc_question_backlog2.rs::oc_question_keeps_dismissed_questions_out_of_model_facing_output :: adapted: the dismissal is the tool's result and stops the turn
+@tool-todo.test.ts
+45 :: ported :: tests/oc_question_backlog2.rs::oc_todo_registers_todowrite_and_summarizes_the_update
+@mime.test.ts
+7,16 :: ported :: tests/oc_tools_backlog2.rs::oc_mime_leaves_samples_without_media_headers_to_the_text_fallback :: adapted: `media::detect` (CodeSmith's text fallback is not a MIME type)
+20 :: design :: deliberate :: BMP is not one of the image types the providers take, so it is not detected as media
+31 :: ported :: tests/oc_tools_backlog2.rs::oc_mime_tells_iso_bmff_brands_apart :: adapted: AVIF, HEIC and M4A are not media here
+@formatter.test.ts
+156 :: ported :: tests/oc_tools_backlog2.rs::oc_formatter_layers_merge_as_configured :: adapted: the layers merged as config files merge; custom extensions so no installed formatter takes the file first
+@util/which.test.ts
+45,49,58,70 :: ported :: tests/oc_which.rs::oc_which_looks_commands_up_on_path
+
+# --- Model requests, compaction, subagents (tests/oc_requests_backlog2.rs) ---
+@session-model-request.test.ts
+8 :: ported :: tests/oc_requests_backlog2.rs::oc_model_request_replaces_unsupported_user_media_with_a_visible_error
+27 :: ported :: tests/oc_requests_backlog2.rs::oc_model_request_replaces_unsupported_media_nested_in_tool_results
+107,112 :: ported :: tests/oc_requests_backlog2.rs::oc_model_request_preserves_supported_media :: adapted: the same messages compare equal (no object identity)
+132 :: ported :: tests/oc_requests_backlog2.rs::oc_model_request_rebuilds_only_messages_with_unsupported_media
+@session-compaction.test.ts
+140 :: ported :: tests/oc_requests_backlog2.rs::oc_compaction_describes_tool_media_without_embedding_base64 :: adapted: CodeSmith's media label
+@tool-subagent.test.ts
+741 :: ported :: tests/oc_requests_backlog2.rs::oc_subagent_runs_the_child_on_an_explicitly_requested_model :: the first call; continuing a child with another model and the model errors are not covered

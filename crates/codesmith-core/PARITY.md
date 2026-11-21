@@ -18,23 +18,23 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | Area | Tests examined | Ported | Ported after a fix | Gap: missing feature | Gap: by design / n.a. | Gap: not yet ported | Gap: found bug |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Session runner | 393 | 160 | 22 | 0 | 211 | 0 | 0 |
-| Subagents | 46 | 10 | 0 | 0 | 35 | 1 | 0 |
-| Compaction | 51 | 42 | 0 | 0 | 8 | 1 | 0 |
+| Subagents | 46 | 11 | 0 | 0 | 35 | 0 | 0 |
+| Compaction | 51 | 43 | 0 | 0 | 8 | 0 | 0 |
 | Titles | 26 | 9 | 2 | 0 | 15 | 0 | 0 |
-| Model requests and transport | 68 | 22 | 0 | 0 | 40 | 6 | 0 |
+| Model requests and transport | 68 | 27 | 0 | 0 | 40 | 1 | 0 |
 | Snapshots and undo | 15 | 7 | 2 | 0 | 5 | 1 | 0 |
 | Sessions and their store | 308 | 107 | 3 | 0 | 198 | 0 | 0 |
 | Tool: read | 82 | 80 | 0 | 0 | 2 | 0 | 0 |
 | Tool: edit | 22 | 22 | 0 | 0 | 0 | 0 | 0 |
-| Tool: write | 19 | 6 | 1 | 0 | 6 | 6 | 0 |
+| Tool: write | 19 | 11 | 1 | 0 | 7 | 0 | 0 |
 | Tool: apply_patch | 90 | 90 | 0 | 0 | 0 | 0 | 0 |
-| Tools: glob and grep | 39 | 21 | 5 | 0 | 11 | 2 | 0 |
+| Tools: glob and grep | 39 | 22 | 5 | 0 | 12 | 0 | 0 |
 | Tool: webfetch | 100 | 100 | 0 | 0 | 0 | 0 | 0 |
-| Tool: websearch | 55 | 0 | 0 | 0 | 51 | 4 | 0 |
-| Tools: question, todo, skill | 9 | 2 | 0 | 0 | 2 | 5 | 0 |
+| Tool: websearch | 55 | 4 | 0 | 0 | 51 | 0 | 0 |
+| Tools: question, todo, skill | 9 | 7 | 0 | 0 | 2 | 0 | 0 |
 | Tool output | 17 | 12 | 0 | 0 | 5 | 0 | 0 |
 | Tool registry, schemas, placement | 100 | 34 | 0 | 0 | 57 | 9 | 0 |
-| Media tools | 39 | 18 | 0 | 3 | 12 | 6 | 0 |
+| Media tools | 39 | 23 | 0 | 3 | 13 | 0 | 0 |
 | Tool target environments | 7 | 2 | 0 | 0 | 5 | 0 | 0 |
 | Shell tool and runtime | 207 | 127 | 2 | 0 | 76 | 2 | 0 |
 | Shell scan and parse | 1465 | 943 | 13 | 0 | 509 | 0 | 0 |
@@ -46,13 +46,13 @@ How the buckets were decided: a test is **ported** only when a CodeSmith test na
 | MCP | 212 | 30 | 0 | 0 | 61 | 121 | 0 |
 | Code Mode | 67 | 29 | 8 | 0 | 17 | 13 | 0 |
 | Automations | 107 | 2 | 1 | 12 | 45 | 47 | 0 |
-| Formatters | 26 | 14 | 0 | 0 | 3 | 9 | 0 |
+| Formatters | 26 | 23 | 0 | 0 | 3 | 0 | 0 |
 | Worktrees, VCS and projects | 158 | 6 | 0 | 0 | 109 | 43 | 0 |
 | Providers, models and credentials | 796 | 389 | 0 | 22 | 351 | 34 | 0 |
 | Plugins | 90 | 21 | 0 | 0 | 69 | 0 | 0 |
 | Storage, state and bus | 189 | 0 | 0 | 0 | 189 | 0 | 0 |
-| Runtime, locations and filesystem | 242 | 24 | 0 | 3 | 211 | 4 | 0 |
-| **Total** | **5588** | **2605** | **65** | **40** | **2528** | **350** | **0** |
+| Runtime, locations and filesystem | 242 | 28 | 0 | 3 | 211 | 0 | 0 |
+| **Total** | **5588** | **2645** | **65** | **40** | **2531** | **307** | **0** |
 
 OpenCode's `packages/core` has no LSP tests (CodeSmith's language-server client is tested on its own in `tests/lsp.rs`). Shell scan and parse is large because its tables expand into many cases; most of what is left there is PowerShell (by design: CodeSmith runs commands with `<shell> -c` and ports only the POSIX grammar) and Bash/Zsh table rows CodeSmith's scanner should already pass but no test runs yet.
 
@@ -187,26 +187,10 @@ Missing features, by how many OpenCode test cases each would unlock (40 cases in
 
 ## Porting backlog
 
-Tests for behaviour CodeSmith already has but no test pins (350 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
+Tests for behaviour CodeSmith already has but no test pins (307 cases), by area, with what to drive and assert. Sizes: S a few lines on an existing harness, M a new fixture or scripted model.
 
-### Subagents (1)
+### Model requests and transport (1)
 
-- the child runs on an explicitly requested model (S) — `tests/runner_parity.rs`
-  - `tool-subagent.test.ts`: runs the child on an explicitly requested model
-
-### Compaction (1)
-
-- tool media described without base64 (S) — `compaction::transcript`
-  - `session-compaction.test.ts`: compaction describes tool media without embedding base64
-
-### Model requests and transport (6)
-
-- unsupported media replaced with a visible error, including in tool results (M) — `runner history`
-  - `session-model-request.test.ts`: replaces unsupported user media with a visible error
-  - `session-model-request.test.ts`: replaces unsupported media nested in tool results
-  - `session-model-request.test.ts`: preserves supported media
-  - `session-model-request.test.ts`: returns the same messages when nothing is unsupported
-  - `session-model-request.test.ts`: rebuilds only messages with unsupported media
 - native instruction epochs after durable replay and provider switches — `store::history_for`
   - `session-native.test.ts`: advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches
 
@@ -214,48 +198,6 @@ Tests for behaviour CodeSmith already has but no test pins (350 cases), by area,
 
 - diff of the busy period containing a user message (M) — `snapshot::Snapshots::diff`
   - `session-diff.test.ts`: diffs the busy period containing a user message and ranges across later turns
-
-### Tool: write (6)
-
-- writes create parents, keep one BOM, external targets, concurrent writes serialize (S) — `tool::write`
-  - `file-mutation.test.ts`: writes an existing internal file and returns a stable result
-  - `file-mutation.test.ts`: writes a prospective internal file and creates parent directories
-  - `file-mutation.test.ts`: preserves exactly one BOM for text writes and normalizes created text
-  - `file-mutation.test.ts`: writes an explicitly resolved external target
-  - `file-mutation.test.ts`: serializes concurrent writes to the same absolute target
-- the committed file is formatted (S) — `tool::write + format`
-  - `tool-write.test.ts`: formats the committed file
-
-### Tools: glob and grep (2)
-
-- wildcard directory rules from .gitignore are honoured (S) — `tool::glob`
-  - `filesystem/search.test.ts`: honors wildcard directory rules from .gitignore
-- a scan from home is bounded (S) — `tool::glob`
-  - `filesystem/search.test.ts`: bounds a home scan even when home is detected as a repository
-
-### Tool: websearch (4)
-
-- permission asked before searching (S) — `tool::websearch`
-  - `tool-websearch.test.ts`: asserts permission before delegating to WebSearch
-- flat results (S) — `tool::websearch`
-  - `tool-websearch.test.ts`: returns flat results and keeps the provider in metadata
-- the no-results fallback text (S) — `tool::websearch`
-  - `tool-websearch.test.ts`: uses the concise no-results fallback
-- HTTP failures reported safely (S) — `tool::websearch`
-  - `tool-websearch.test.ts`: reports safe HTTP failures with the attempted provider
-
-### Tools: question, todo, skill (5)
-
-- one item schema for the questions array (S) — `question schema`
-  - `tool-question.test.ts`: emits one item schema for the nonempty questions array
-- a denied question is not offered (S) — `permission + question`
-  - `tool-question.test.ts`: omits a catalog-denied question and enforces its leaf permission
-- answers returned to the model without a permission prompt (S) — `question`
-  - `tool-question.test.ts`: registers question and projects user answers without a permission assertion
-- dismissed questions stay out of model-facing output (S) — `question`
-  - `tool-question.test.ts`: keeps dismissed questions out of model-facing output
-- todowrite summarizes the update (S) — `tool::todo`
-  - `tool-todo.test.ts`: registers todowrite on the native tool list and summarizes the update
 
 ### Tool registry, schemas, placement (9)
 
@@ -268,14 +210,6 @@ Tests for behaviour CodeSmith already has but no test pins (350 cases), by area,
   - `tool-registry.test.ts`: hooks see one ID per call inside a Code Mode program
 - JSON-schema validation of tool input and readable failures (S) — `tool schema validation`
   - `tool-schema.test.ts`: missing external input schemas fall back to an empty schema
-
-### Media tools (6)
-
-- byte sniffing: text fallback, BM text, BMP prefixes, ISO-BMFF brands (S) — `media::detect`
-  - `mime.test.ts`: leaves samples without media headers to the text fallback: %j (3 cases)
-  - `mime.test.ts`: keeps ordinary text starting with BM as text
-  - `mime.test.ts`: detects Windows and OS/2 bitmaps from a prefix
-  - `mime.test.ts`: tells ISO-BMFF brands apart
 
 ### Shell tool and runtime (2)
 
@@ -531,11 +465,6 @@ Tests for behaviour CodeSmith already has but no test pins (350 cases), by area,
   - `tool-automation.test.ts`: puts each automation's id, trigger, status, next run and action in the text without Code Mode
   - `tool-automation.test.ts`: treats another project's automation as missing
 
-### Formatters (9)
-
-- per-formatter detection table (S) — `format::builtins`
-  - `formatter.test.ts`: {entry.name} (9 cases)
-
 ### Worktrees, VCS and projects (43)
 
 - create/list/remove linked worktrees; unborn repositories (S) — `worktree`
@@ -633,25 +562,17 @@ Tests for behaviour CodeSmith already has but no test pins (350 cases), by area,
   - `model-resolver.test.ts`: merges mapped OpenRouter headers and body with catalog overlays
   - `model-resolver.test.ts`: merges mapped Mistral headers and body with catalog overlays
 
-### Runtime, locations and filesystem (4)
-
-- PATH lookup (S) — `format::which`
-  - `util/which.test.ts`: returns null when command is missing
-  - `util/which.test.ts`: finds a command from PATH override
-  - `util/which.test.ts`: uses first PATH match
-  - `util/which.test.ts`: returns null for non-executable file on unix
-
 ## By design or not applicable
 
 | Reason | Cases |
 |---|---:|
 | Windows, PowerShell, Bun/Node and npm/AI SDK packages | 694 |
-| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 651 |
+| Deliberate differences, documented in the module headers (no steers, queues or session moves; subagents run inside the tool call; no live config reload or v1 config migration; compiled-in plugins; SearXNG-only web search; ...) | 653 |
 | OpenCode's SQLite/drizzle event store, projector rows and bus (CodeSmith has its own session store) | 350 |
 | OpenCode internals with no counterpart: Effect layers, services, fibers and schema types | 313 |
 | OpenCode's client/server architecture: Locations, instances, workspaces, RPC and API shapes | 262 |
 | Hosted OpenCode services: Zen, Console, free models, organizations, integrations, well-known config | 160 |
-| Other (each says why) | 96 |
+| Other (each says why) | 97 |
 | Behaviour that differs and is for the maintainer to decide (see above) | 2 |
 
 ## Per-test inventory
@@ -915,7 +836,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Subagents (45 of 46)</summary>
+<details><summary>Subagents (46 of 46)</summary>
 
 
 **`session-background.test.ts`**
@@ -952,6 +873,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P continues an existing child session — `tests/runner_parity.rs::oc_subagent_continues_an_existing_child_session`
 - D steers a running child session in the background · follow-ups to a running child return immediately and notify once — deliberate: session.rs: subagents run inside the tool call (no background steering or notices)
 - P rejects unrelated children and switches agents on continuation — `tests/runner_parity.rs::oc_subagent_rejects_unrelated_children`
+- P runs the child on an explicitly requested model — `tests/oc_requests_backlog2.rs::oc_subagent_runs_the_child_on_an_explicitly_requested_model` (the first call; continuing a child with another model and the model errors are not covered)
 - D notifies once when background work completes — deliberate: session.rs: subagents run inside the tool call (no background steering or notices)
 - P reports the child's final answer to the parent — `tests/runner_parity.rs::oc_subagent_starts_a_child_session_and_returns_its_report`
 - D reports only the current busy period when an idle child is continued — deliberate: session.rs: subagents run inside the tool call (no background steering or notices)
@@ -960,7 +882,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Compaction (50 of 51)</summary>
+<details><summary>Compaction (51 of 51)</summary>
 
 
 **`config/compaction.test.ts`**
@@ -974,6 +896,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`session-compaction.test.ts`**
 
 - P compaction prompt preserves detailed work state and relevant files — `src/compaction.rs::oc_compaction_prompt_preserves_detailed_work_state_and_relevant_files`
+- P compaction describes tool media without embedding base64 — `tests/oc_requests_backlog2.rs::oc_compaction_describes_tool_media_without_embedding_base64` (adapted: CodeSmith's media label)
 - P compaction truncation does not split surrogate pairs — `src/compaction.rs::oc_compaction_truncation_does_not_split_characters`
 - D summaries written before kept-message references keep their stored recent text · forks rebuild the recent text of a summary they copied · ignores non-message keepID strings when loading history or forking · history from the latest completed compaction matches the full transcript cut there · history never decodes rows before the latest compaction or its kept tail — deliberate: compaction.rs: the kept tail stays as real messages (no kept-message references or forks)
 - P compaction prompt requires the checkpoint headings in order — `src/compaction.rs::oc_compaction_prompt_requires_the_checkpoint_headings_in_order`
@@ -1044,7 +967,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Model requests and transport (62 of 68)</summary>
+<details><summary>Model requests and transport (67 of 68)</summary>
 
 
 **`session-checkpoint-transport.test.ts`**
@@ -1067,7 +990,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`session-model-request.test.ts`**
 
+- P replaces unsupported user media with a visible error — `tests/oc_requests_backlog2.rs::oc_model_request_replaces_unsupported_user_media_with_a_visible_error`
+- P replaces unsupported media nested in tool results — `tests/oc_requests_backlog2.rs::oc_model_request_replaces_unsupported_media_nested_in_tool_results`
 - P replaces images xAI cannot decode and keeps png, jpeg and webp — `tests/oc_image_eviction.rs::oc_replaces_images_xai_cannot_decode_and_keeps_png_jpeg_and_webp` (adapted: a replaced tool-result image's note joins the result's text)
+- P preserves supported media — `tests/oc_requests_backlog2.rs::oc_model_request_preserves_supported_media` (adapted: the same messages compare equal (no object identity))
+- P returns the same messages when nothing is unsupported — `tests/oc_requests_backlog2.rs::oc_model_request_preserves_supported_media` (adapted: the same messages compare equal (no object identity))
+- P rebuilds only messages with unsupported media — `tests/oc_requests_backlog2.rs::oc_model_request_rebuilds_only_messages_with_unsupported_media`
 - P preserves images below the trigger — `tests/oc_image_eviction.rs::oc_images_below_the_trigger_are_kept`
 - P replaces oldest images until the retained payload reaches the target — `tests/oc_image_eviction.rs::oc_oldest_images_are_replaced_down_to_the_target`
 - P keeps the replaced prefix stable as new images arrive, so the prompt cache survives — `tests/oc_image_eviction.rs::oc_the_replaced_prefix_stays_stable_as_images_arrive`
@@ -1495,17 +1423,23 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool: write (13 of 19)</summary>
+<details><summary>Tool: write (19 of 19)</summary>
 
 
 **`file-mutation.test.ts`**
 
+- P writes an existing internal file and returns a stable result — `tests/oc_tools.rs::oc_write_overwrites_an_existing_file` (adapted: through the write tool)
+- P writes a prospective internal file and creates parent directories — `tests/oc_tools.rs::oc_write_creates_a_relative_file_and_its_parents` (adapted: through the write tool)
 - D appends bytes to a file, creating it when missing — other: append API of OpenCode's FileMutation service (no tool appends)
+- P preserves exactly one BOM for text writes and normalizes created text — `tests/oc_tools_backlog2.rs::oc_write_normalizes_the_bom_of_created_text` (the overwrite half is tests/oc_tools.rs::oc_write_preserves_exactly_one_bom)
+- P writes an explicitly resolved external target — `tests/oc_tools.rs::oc_write_approves_an_external_path_before_edit` (adapted: through the write tool)
+- D serializes concurrent writes to the same absolute target — deliberate: a step's tool calls run one at a time (runner.rs), so two writes to one file never overlap
 - D shares transaction locks across Location service instances · allows transaction locks for distinct resolved paths to proceed independently · allows distinct absolute targets to proceed independently — effect-internal: transaction locks across service instances
 
 **`tool-write.test.ts`**
 
 - P registers and creates a relative file through FileMutation once — `tests/oc_tools.rs::oc_write_creates_a_relative_file_and_its_parents`
+- P formats the committed file — `tests/oc_tools_backlog2.rs::oc_write_formats_the_committed_file`
 - P overwrites a relative existing file and reports that it wrote the file — `tests/oc_tools.rs::oc_write_overwrites_an_existing_file`
 - F preserves exactly one BOM when overwriting existing files — `tests/oc_tools.rs::oc_write_preserves_exactly_one_bom` (overwriting a file dropped its byte order mark)
 - P accepts an absolute file path inside the active Location — `tests/oc_tools.rs::oc_write_accepts_an_absolute_path_inside_the_project`
@@ -1618,12 +1552,16 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tools: glob and grep (37 of 39)</summary>
+<details><summary>Tools: glob and grep (39 of 39)</summary>
 
 
 **`filesystem/search.test.ts`**
 
-- D creates the fff picker on first search and waits for its initial scan · returns partial fff results once the initial scan wait times out · keeps the fff picker owned by the layer when the first search is interrupted · real fff finds files on first search · selects the ripgrep layer for workspace-backed locations even when vcs would pick fff · refreshes a stale ripgrep index atomically without blocking search · reuses location-owned fuzzy targets across index refreshes — other: OpenCode's fff/ripgrep index layers; CodeSmith walks the tree per call
+- D creates the fff picker on first search and waits for its initial scan · returns partial fff results once the initial scan wait times out · keeps the fff picker owned by the layer when the first search is interrupted — other: OpenCode's fff/ripgrep index layers; CodeSmith walks the tree per call
+- P honors wildcard directory rules from .gitignore — `tests/oc_tools_backlog2.rs::oc_glob_honors_wildcard_directory_rules_from_gitignore` (adapted: the glob tool)
+- D real fff finds files on first search · selects the ripgrep layer for workspace-backed locations even when vcs would pick fff — other: OpenCode's fff/ripgrep index layers; CodeSmith walks the tree per call
+- D bounds a home scan even when home is detected as a repository — other: CodeSmith keeps no background file index (OpenCode's fff search); glob and grep scan the session's folder when called
+- D refreshes a stale ripgrep index atomically without blocking search · reuses location-owned fuzzy targets across index refreshes — other: OpenCode's fff/ripgrep index layers; CodeSmith walks the tree per call
 
 **`ripgrep.test.ts`**
 
@@ -1728,7 +1666,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tool: websearch (51 of 55)</summary>
+<details><summary>Tool: websearch (55 of 55)</summary>
 
 
 **`plugin/websearch.test.ts`**
@@ -1737,7 +1675,11 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`tool-websearch.test.ts`**
 
+- P asserts permission before delegating to WebSearch — `tests/oc_tools_backlog2.rs::oc_websearch_asks_permission_before_searching`
+- P returns flat results and keeps the provider in metadata — `tests/oc_tools_backlog2.rs::oc_websearch_returns_flat_results` (adapted: one search service (SearXNG), so no provider in the result)
+- P uses the concise no-results fallback — `tests/oc_tools_backlog2.rs::oc_websearch_uses_the_concise_no_results_fallback`
 - D asks once and uses the default provider when web search is first enabled · honors automatic consent when the configured provider is unavailable · asks a second form when choosing another provider · shares provider consent across concurrent searches · persists the choice to disable web search · keeps provider progress, output, and metadata accurate across automatic failover · does not reopen consent when all automatic providers are cooling down — deliberate: tool/websearch.rs: no provider consent forms, provider choice or failover
+- P reports safe HTTP failures with the attempted provider — `tests/oc_tools_backlog2.rs::oc_websearch_reports_safe_http_failures` (adapted: the status, without the service's reply)
 
 **`websearch.test.ts`**
 
@@ -1745,12 +1687,16 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Tools: question, todo, skill (4 of 9)</summary>
+<details><summary>Tools: question, todo, skill (9 of 9)</summary>
 
 
 **`tool-question.test.ts`**
 
+- P emits one item schema for the nonempty questions array — `tests/oc_question_backlog2.rs::oc_question_emits_one_item_schema_for_the_nonempty_questions_array`
+- P omits a catalog-denied question and enforces its leaf permission — `tests/oc_question_backlog2.rs::oc_question_omits_a_denied_question_and_refuses_it`
+- P registers question and projects user answers without a permission assertion — `tests/oc_question_backlog2.rs::oc_question_returns_answers_without_a_permission_prompt`
 - D does not invent tool ownership metadata without a durable registry source — storage-model: tool ownership metadata
+- P keeps dismissed questions out of model-facing output — `tests/oc_question_backlog2.rs::oc_question_keeps_dismissed_questions_out_of_model_facing_output` (adapted: the dismissal is the tool's result and stops the turn)
 
 **`tool-skill.test.ts`**
 
@@ -1760,6 +1706,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`tool-todo.test.ts`**
 
 - D is absent unless experimental.todo is enabled — deliberate: todowrite is always on in CodeSmith
+- P registers todowrite on the native tool list and summarizes the update — `tests/oc_question_backlog2.rs::oc_todo_registers_todowrite_and_summarizes_the_update`
 
 </details>
 
@@ -1852,12 +1799,19 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Media tools (30 of 39)</summary>
+<details><summary>Media tools (36 of 39)</summary>
 
 
 **`image-photon.test.ts`**
 
 - D resizes in a worker to the same bytes as before · shares one resizer across the process · falls back to resizing in-process when the worker cannot start, warning once · queues concurrent calls on one worker · fails only the request a crash interrupts, then runs the queue on a fresh worker · terminates a worker when interrupted between acquiring it and sending the request · terminates the worker once it has been idle · an idle worker does not keep the process alive · terminates a worker whose startup is interrupted — platform: Photon WASM worker pool (CodeSmith resizes in-process with the image crate)
+
+**`mime.test.ts`**
+
+- P leaves samples without media headers to the text fallback: %j ×3 — `tests/oc_tools_backlog2.rs::oc_mime_leaves_samples_without_media_headers_to_the_text_fallback` (adapted: `media::detect` (CodeSmith's text fallback is not a MIME type))
+- P keeps ordinary text starting with BM as text — `tests/oc_tools_backlog2.rs::oc_mime_leaves_samples_without_media_headers_to_the_text_fallback` (adapted: `media::detect` (CodeSmith's text fallback is not a MIME type))
+- D detects Windows and OS/2 bitmaps from a prefix — deliberate: BMP is not one of the image types the providers take, so it is not detected as media
+- P tells ISO-BMFF brands apart — `tests/oc_tools_backlog2.rs::oc_mime_tells_iso_bmff_brands_apart` (adapted: AVIF, HEIC and M4A are not media here)
 
 **`tool-image-generate.test.ts`**
 
@@ -2858,11 +2812,12 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Formatters (17 of 26)</summary>
+<details><summary>Formatters (26 of 26)</summary>
 
 
 **`formatter.test.ts`**
 
+- P {entry.name} ×9 — `tests/oc_tools_backlog2.rs::oc_formatter_layers_merge_as_configured` (adapted: the layers merged as config files merge; custom extensions so no installed formatter takes the file first)
 - P matches ${entry.file} against ${JSON.stringify(entry.extension)}: ${entry.matches} ×10 — `tests/oc_tools.rs::oc_format_matches_files_against_configured_extensions`
 - P does not run formatters marked as disabled in config — `tests/oc_tools.rs::oc_format_skips_disabled_formatters`
 - P file() returns false when no formatter runs — `tests/oc_tools.rs::oc_format_returns_none_when_no_formatter_runs`
@@ -3671,7 +3626,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 </details>
 
-<details><summary>Runtime, locations and filesystem (235 of 242)</summary>
+<details><summary>Runtime, locations and filesystem (239 of 242)</summary>
 
 
 **`app.test.ts`**
@@ -3833,6 +3788,10 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 
 **`util/which.test.ts`**
 
+- P returns null when command is missing — `tests/oc_which.rs::oc_which_looks_commands_up_on_path`
+- P finds a command from PATH override — `tests/oc_which.rs::oc_which_looks_commands_up_on_path`
+- P uses first PATH match — `tests/oc_which.rs::oc_which_looks_commands_up_on_path`
+- P returns null for non-executable file on unix — `tests/oc_which.rs::oc_which_looks_commands_up_on_path`
 - D uses PATHEXT on windows · finds a Microsoft Store app execution alias on windows · uses Windows Path casing fallback — platform: Windows PATHEXT / aliases
 
 **`wellknown.test.ts`**
