@@ -515,7 +515,12 @@ How CodeSmith runs them:
 - **Only names the server listed.** The name must be one that `list`
   printed (or, without `list`, a configured model), and only letters,
   digits and `. _ + - : @ /`, with no `..`. `ssh` hands its arguments to a
-  shell on the other machine, so nothing else is allowed through.
+  shell on the other machine, so nothing else is allowed through. Names
+  shaped like a remote path or URL are refused too, since `scp`, `rsync`
+  or `git` would reach out to them: `@` together with `:`
+  (`user@host:path`), a `:` followed by `/` (`host:/path`, `https://`), or
+  a single letter before a `:` (`x:path`). Tags such as `qwen:7b` or
+  `org/llama3:8b` are fine.
 - **Only from the global config file**, since it runs commands (see
   [Files and precedence](#files-and-precedence)).
 - **Only when you choose it.** A swap starts from the model picker

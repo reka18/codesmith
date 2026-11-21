@@ -20,7 +20,8 @@
 //!   must be one `list` returned (or, without `list`, a configured model of
 //!   the provider) and of letters, digits and `. _ + - : @ /`, so it is safe
 //!   even when the command is `ssh`, which hands its arguments to a shell on
-//!   the other machine.
+//!   the other machine, and not shaped like a remote path or URL
+//!   ([`valid_name`]).
 //! - The model selected afterwards is the requested one, or the
 //!   `model_id` `use` reports when it is one `list` offered; another
 //!   reported id is ignored, with a warning.
@@ -113,7 +114,12 @@ pub fn validate(s: &SwapConfig) -> Result<()> {
 
 /// A model name that is safe as an argument here and on the far side of
 /// `ssh`: letters, digits and `. _ + - : @ /`, not starting with `-` or `.`,
-/// with no `..` part.
+/// with no `..` part, and not shaped like a remote path or URL, which a
+/// command such as `scp`, `rsync` or `git` would reach out to: no `@`
+/// together with `:` (`user@host:path`), no `:` followed by `/`
+/// (`host:/path`, `scheme://`), and no one-letter head before a `:`
+/// (`x:path`, a drive). Ollama-style tags (`qwen:7b`, `org/llama3:8b`)
+/// stay valid.
 pub fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 255
@@ -122,6 +128,9 @@ pub fn valid_name(s: &str) -> bool {
         && s.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-' | ':' | '@' | '/')
         })
+        && !(s.contains('@') && s.contains(':'))
+        && !s.contains(":/")
+        && !s.split_once(':').is_some_and(|(head, _)| head.len() == 1)
 }
 
 /// `template` with each `{model}` element replaced by `model`.
@@ -609,15 +618,46 @@ mod tests {
         for ok in [
             "Qwen3.5-122B-A10B-oQ3.5e-mtp",
             "llama3:8b",
+            "qwen:7b",
+            "qwen2.5-coder:32b-instruct-q4_K_M",
+            "org/llama3:8b",
+            "hf.co/org/model:Q4_K_M",
+            "ab:c:d",
             "org/model",
             "m@v2",
+            "org/m@main",
             "a+b_c",
+            "A",
+            "a.",
         ] {
             assert!(valid_name(ok), "{ok}");
         }
         for bad in [
             "", "-rf", ".hidden", "/abs", "a/../b", "a//b", "a/", "a b", "a;b", "$(x)", "`x`",
             "a'b", "a\"b", "a|b", "a&b", "a\nb", "é", "a*",
+        ] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+        // Security review 8, finding 7: names shaped like remote paths or
+        // URLs, which scp, rsync or git would reach out to.
+        for bad in [
+            "u@h:/etc/passwd",
+            "u@h:x",
+            "h@u:7b",
+            "git@github.com:o/r",
+            "a:b@c",
+            "host:/etc/passwd",
+            "h:/x",
+            "org/m:/x",
+            "https://evil",
+            "file:/etc/passwd",
+            "x:y",
+            "a:b",
+            "c:model",
+            "x:",
+            "Z:9",
+            "ｑwen:7b",
+            "qwen：7b",
         ] {
             assert!(!valid_name(bad), "{bad:?}");
         }

@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Swap names can't look like remote paths:** a model name with both `@`
+  and `:`, a `:` followed by `/`, or a one-letter head before `:` (`x:y`)
+  is refused. Tags like `qwen:7b` still work.
 - **Starting a model swap from the shell asks:** every agent asks before
   its shell runs `codesmith models swap`, even with a broad `shell` allow.
   The swap docs now say plainly that this and the session check are not a
