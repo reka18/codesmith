@@ -184,6 +184,19 @@ offer its tools as direct calls instead. That suits models that write
 JavaScript poorly. An agent whose rules deny `execute` gets every MCP tool
 as a direct call too.
 
+Known servers that have a Code Mode of their own get defaults, as in
+OpenCode, so one Code Mode is never nested in the other. A server with
+`codemode` set is left exactly as configured:
+
+- [Executor](https://executor.sh) (`https://executor.sh/<workspace>/mcp`,
+  or `executor mcp` run locally) is a Code Mode server itself, so its tools
+  are offered directly (`codemode: false`).
+- PostHog (`mcp.posthog.com`, `mcp-eu.posthog.com`, `mcp.us.posthog.com`,
+  `mcp.eu.posthog.com`) wraps its tools in one Code Mode tool unless asked
+  for plain ones, so CodeSmith sends `x-posthog-mcp-mode: tools` and keeps
+  its own Code Mode, unless the URL's `?mode=` or a header of yours already
+  picks a mode.
+
 ### `fetch`
 
 As in OpenCode, programs have a `fetch` global for HTTP requests, with the

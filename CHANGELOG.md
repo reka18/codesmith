@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **MCP Code Mode defaults for known servers:** without `codemode` set,
+  Executor's tools are offered directly (it is a Code Mode server itself),
+  and PostHog is asked for its plain tools (`x-posthog-mcp-mode: tools`,
+  unless the URL or a header picks a mode), as OpenCode does.
 - **`list_mcp_events` tool:** while a connected server offers MCP Events,
   the model can list the events one server pushes, to use as an
   automation's trigger. It asks `list_mcp_events` for the server, is denied

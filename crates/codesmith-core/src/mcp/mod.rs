@@ -11,6 +11,7 @@
 //! automations.
 
 pub mod blobs;
+pub mod defaults;
 pub mod elicit;
 pub mod events;
 pub mod oauth;
@@ -1618,8 +1619,14 @@ impl Mcp {
         )
     }
 
-    /// Connect to every enabled server concurrently.
+    /// Connect to every enabled server concurrently, known servers with
+    /// their Code Mode defaults ([`defaults`]).
     pub async fn connect(cfg: &McpConfig, root: &Path) -> Arc<Mcp> {
+        let mut cfg = cfg.clone();
+        for server in cfg.servers.values_mut() {
+            defaults::apply(server);
+        }
+        let cfg = &cfg;
         let mut clients = BTreeMap::new();
         let mut statuses = BTreeMap::new();
         let mut pending = Vec::new();
@@ -1674,7 +1681,8 @@ impl Mcp {
 
     /// Configure (or reconfigure) server `name` and connect it now, in
     /// place of any connection it had: its status after.
-    pub async fn add(&self, name: &str, cfg: ServerConfig) -> Status {
+    pub async fn add(&self, name: &str, mut cfg: ServerConfig) -> Status {
+        defaults::apply(&mut cfg);
         self.configs.write().unwrap().insert(name.to_string(), cfg);
         self.restart(name)
             .await
@@ -3368,6 +3376,38 @@ mod tests {
         let mcp = Mcp::connect(&cfg, Path::new("/")).await;
         assert!(start.elapsed() < Duration::from_secs(5));
         assert!(matches!(&mcp.statuses()["slow"], Status::Failed(e) if e.contains("timed out")));
+    }
+}
+
+#[cfg(test)]
+mod defaults_tests {
+    use super::*;
+
+    // Servers connect with the known-server defaults; disabled ones are
+    // never started, so nothing is contacted.
+    #[tokio::test]
+    async fn connecting_applies_the_code_mode_defaults() {
+        let cfg: McpConfig = serde_json::from_value(json!({"servers": {
+            "exe": {"type": "local", "command": ["executor", "mcp"], "disabled": true},
+            "ph": {"type": "remote", "url": "https://mcp.posthog.com/mcp", "disabled": true}
+        }}))
+        .unwrap();
+        let m = Mcp::connect(&cfg, Path::new("/")).await;
+        let configs = m.configs.read().unwrap().clone();
+        assert!(!configs["exe"].codemode());
+        let ServerConfig::Remote { headers, .. } = &configs["ph"] else {
+            panic!()
+        };
+        assert_eq!(headers[defaults::POSTHOG_MODE], "tools");
+        m.add(
+            "exe2",
+            serde_json::from_value(
+                json!({"type": "local", "command": ["executor", "mcp"], "disabled": true}),
+            )
+            .unwrap(),
+        )
+        .await;
+        assert!(!m.configs.read().unwrap()["exe2"].codemode());
     }
 }
 

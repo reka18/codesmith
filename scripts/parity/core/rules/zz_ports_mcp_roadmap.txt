@@ -22,3 +22,5 @@
 @tool-mcp-events.test.ts
 81 :: ported :: tests/oc_mcp_roadmap.rs::oc_tool_mcp_events_lists_one_servers_push_events_after_asking_permission :: adapted: named list_mcp_events, a direct tool; a rule denying watch_mcp_event on the server denies it too
 90 :: ported :: tests/oc_mcp_roadmap.rs::oc_tool_mcp_events_fails_for_a_server_that_sends_no_events
+@plugin/mcp-codemode-defaults.test.ts
+8 :: ported :: src/mcp/defaults.rs::oc_mcp_codemode_defaults_apply_to_known_servers_unless_codemode_is_configured :: adapted: applied to the config servers connect with (Mcp::connect, Mcp::add)
