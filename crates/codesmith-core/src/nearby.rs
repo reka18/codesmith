@@ -93,7 +93,24 @@ pub fn given(history: &[Message]) -> Vec<PathBuf> {
 /// each file by its permission name (relative to the root), as the
 /// read tool would; a file it refuses is left out, as is
 /// a symlink and anything under one of [`SKIPPED_DIRS`].
+///
+/// Nothing at all when project config is turned off
+/// (`$CODESMITH_DISABLE_PROJECT_CONFIG`): the project's instruction files
+/// are project config, as for the baseline ([`crate::instructions`]).
 pub fn discover(
+    cwd: &Path,
+    root: &Path,
+    target: &Path,
+    readable: &dyn Fn(&[String]) -> bool,
+) -> Vec<PathBuf> {
+    if crate::config::project_disabled() {
+        return Vec::new();
+    }
+    discover_in(cwd, root, target, readable)
+}
+
+/// [`discover`] with project config on.
+fn discover_in(
     cwd: &Path,
     root: &Path,
     target: &Path,
@@ -210,7 +227,7 @@ pub fn message(files: &[PathBuf]) -> Option<String> {
 
 /// The messages to add after a step, one per successful `read` among the
 /// calls of `assistant` (answered in `results`), in call order, given what
-/// `history` already gave.
+/// `history` already gave. None when project config is turned off.
 pub fn after_step(
     cwd: &Path,
     root: &Path,
@@ -219,6 +236,9 @@ pub fn after_step(
     history: &[Message],
     readable: &dyn Fn(&[String]) -> bool,
 ) -> Vec<String> {
+    if crate::config::project_disabled() {
+        return Vec::new();
+    }
     let mut seen = given(history);
     let mut out = Vec::new();
     for p in &assistant.parts {

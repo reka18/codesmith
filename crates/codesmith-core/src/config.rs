@@ -1032,6 +1032,12 @@ pub enum Layer {
 /// folder's `.claude` and `.agents` folders are then not read, even when
 /// the project walk passes through them. The explicit file and inline
 /// config still load.
+/// Whether `$CODESMITH_DISABLE_PROJECT_CONFIG` turns project config off:
+/// no project config files, instructions or nested instructions.
+pub fn project_disabled() -> bool {
+    std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_some()
+}
+
 pub fn global_disabled() -> bool {
     std::env::var_os("CODESMITH_DISABLE_GLOBAL_CONFIG").is_some_and(|v| !v.is_empty() && v != "0")
 }

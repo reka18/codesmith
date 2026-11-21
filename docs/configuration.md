@@ -1774,7 +1774,7 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `CODESMITH_CONFIG` | An extra config file, loaded after the global one. |
 | `CODESMITH_CONFIG_CONTENT` | Inline JSON config, loaded last. |
 | `CODESMITH_CONFIG_DIR` | The global config folder (default `$XDG_CONFIG_HOME/codesmith`, else `~/.config/codesmith`). |
-| `CODESMITH_DISABLE_PROJECT_CONFIG` | Ignore `codesmith.json[c]` and `.codesmith/` in the project. |
+| `CODESMITH_DISABLE_PROJECT_CONFIG` | Ignore `codesmith.json[c]` and `.codesmith/` in the project, and its `AGENTS.md`/`CLAUDE.md` files, including the nested ones a read would bring in. |
 | `CODESMITH_DISABLE_GLOBAL_CONFIG` | Ignore the global config folder and the home folder's `.claude` and `.agents`, however they are reached ([files and precedence](#files-and-precedence)). |
 | `CODESMITH_DISABLE_CLAUDE_CODE` | Don't read `CLAUDE.md` or `.claude/` skills and commands. |
 | `CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` | Don't read `.claude/skills` only. |

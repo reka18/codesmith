@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **`CODESMITH_DISABLE_PROJECT_CONFIG` covers nested instructions:** with
+  project config off, reading a file no longer brings in the `AGENTS.md`
+  or `CLAUDE.md` files of the folders around it.
 - **Release signing checks the draft against the build:** `release.sh`
   writes `BUILT-SHA256SUMS`, a manifest of the tarballs it built (and of
   each macOS tarball's files), uploads it with the draft and prints its
